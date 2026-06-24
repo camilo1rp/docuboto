@@ -1,0 +1,200 @@
+name: orpyca-mcp-e2e
+
+# Stack mínimo para tests E2E — sin Keycloak ni api-gateway.
+# Los tests llaman a los servicios directamente en sus puertos
+# e inyectan X-Tenant-Slug y X-User-Id manualmente.
+
+networks:
+  e2e-net:
+    driver: bridge
+
+volumes:
+  e2e-postgres:
+  e2e-minio:
+  e2e-redis:
+
+services:
+
+  # ─── Infraestructura ───────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: e2e-postgres
+    environment:
+      POSTGRES_USER: orpycamcp
+      POSTGRES_PASSWORD: orpycamcp
+      POSTGRES_DB: orpycamcp_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - e2e-postgres:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - e2e-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orpycamcp -d orpycamcp_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: e2e-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - e2e-redis:/data
+    networks:
+      - e2e-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: e2e-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: orpycamcp
+      MINIO_ROOT_PASSWORD: orpycamcp_dev
+    ports:
+      - "9002:9000"
+    volumes:
+      - e2e-minio:/data
+    networks:
+      - e2e-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── Servicios de negocio ──────────────────────────────────────────────────
+
+  tenant-service:
+    build: ./services/tenant-service
+    container_name: e2e-tenant
+    ports:
+      - "8102:8002"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - e2e-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  document-service:
+    build: ./services/document-service
+    container_name: e2e-document
+    ports:
+      - "8103:8003"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_SERVICE_URL=http://storage-service:8005
+    networks:
+      - e2e-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  storage-service:
+    build: ./services/storage-service
+    container_name: e2e-storage
+    ports:
+      - "8105:8005"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=orpycamcp
+      - MINIO_SECRET_KEY=orpycamcp_dev
+      - MINIO_USE_SSL=false
+    networks:
+      - e2e-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  workflow-service:
+    build: ./services/workflow-service
+    container_name: e2e-workflow
+    ports:
+      - "8106:8006"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - e2e-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  archive-service:
+    build:
+      context: .
+      dockerfile: services/archive-service/Dockerfile
+    container_name: e2e-archive
+    ports:
+      - "8104:8004"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - e2e-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  notification-service:
+    build: ./services/notification-service
+    container_name: e2e-notification
+    ports:
+      - "8107:8007"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - SMTP_HOST=localhost
+      - SMTP_PORT=1025
+      - SMTP_FROM=noreply@orpycamcp.local
+    networks:
+      - e2e-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

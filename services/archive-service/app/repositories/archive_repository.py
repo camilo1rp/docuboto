@@ -1,0 +1,683 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import UTC, date, datetime
+
+import asyncpg
+
+from app.core.clearance import resolve_caller_clearance
+from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
+
+
+class ArchiveRepository:
+    def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+        self._conn = conn
+        self._tenant_slug = tenant_slug
+
+    async def _set_search_path(self) -> None:
+        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+
+    # ------------------------------------------------------------------
+    # Expediente sequences
+    # ------------------------------------------------------------------
+
+    async def next_expediente_code(self, year: int) -> str:
+        await self._set_search_path()
+        # Atomic upsert increments the sequence for the given year.
+        await self._conn.execute(
+            """
+            INSERT INTO expediente_sequences (year, last_seq)
+            VALUES ($1, 1)
+            ON CONFLICT (year) DO UPDATE SET last_seq = expediente_sequences.last_seq + 1
+            """,
+            year,
+        )
+        seq: int = await self._conn.fetchval(
+            "SELECT last_seq FROM expediente_sequences WHERE year = $1", year
+        )
+        return f"EXP-{year}-{seq:04d}"
+
+    # ------------------------------------------------------------------
+    # Expediente CRUD
+    # ------------------------------------------------------------------
+
+    async def create_expediente(
+        self,
+        *,
+        code: str,
+        name: str,
+        description: str | None,
+        trd_serie_id: uuid.UUID | None,
+        opened_by: uuid.UUID | None,
+        metadata: dict,
+        metadata_template_id: uuid.UUID | None,
+        nivel_seguridad: int = 1,
+    ) -> Expediente:
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO expedientes
+                (code, name, description, trd_serie_id, opened_by,
+                 metadata, metadata_template_id, nivel_seguridad)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+            RETURNING *
+            """,
+            code,
+            name,
+            description,
+            trd_serie_id,
+            opened_by,
+            json.dumps(metadata),
+            metadata_template_id,
+            nivel_seguridad,
+        )
+        return _row_to_expediente(row)
+
+    async def list_expedientes(
+        self,
+        *,
+        status: str | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Expediente], int]:
+        await self._set_search_path()
+
+        conditions = ["1=1"]
+        params: list[object] = []
+        idx = 1
+
+        if status is not None:
+            conditions.append(f"status = ${idx}")
+            params.append(status)
+            idx += 1
+
+        where = " AND ".join(conditions)
+
+        total: int = await self._conn.fetchval(
+            f"SELECT COUNT(*) FROM expedientes WHERE {where}", *params
+        )
+
+        rows = await self._conn.fetch(
+            f"""
+            SELECT * FROM expedientes
+             WHERE {where}
+             ORDER BY opened_at DESC
+             LIMIT ${idx} OFFSET ${idx + 1}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+        return [_row_to_expediente(r) for r in rows], total
+
+    async def caller_clearance(self, user_id: uuid.UUID | None) -> int:
+        """Clearance del llamante, con el search_path ya fijado al tenant para que el
+        resolutor vea las tablas RBAC (RF-SEG-08 / RF-BUS-04)."""
+        await self._set_search_path()
+        return await resolve_caller_clearance(self._conn, user_id)
+
+    async def insert_expediente_evento(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        numero_expediente: str | None,
+        accion: str,
+        actor: uuid.UUID | None = None,
+        comentario: str | None = None,
+        detalles: dict | None = None,
+    ) -> None:
+        """Inserta un evento en la hoja de ruta append-only del expediente (E02 §9)."""
+        await self._set_search_path()
+        await self._conn.execute(
+            """
+            INSERT INTO expediente_eventos
+                (expediente_id, numero_expediente, accion, actor, comentario, detalles)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            """,
+            expediente_id,
+            numero_expediente,
+            accion,
+            actor,
+            comentario,
+            json.dumps(detalles or {}),
+        )
+
+    async def list_expediente_eventos(
+        self, expediente_id: uuid.UUID, max_clearance: int = 3
+    ) -> list[asyncpg.Record]:
+        # Hoja de ruta visible solo si el expediente lo es para el clearance (no read-up,
+        # RF-SEG-08); COALESCE a PUBLICA(1) si faltara la fila. max_clearance=3 = sin tope.
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT id, expediente_id, numero_expediente, accion, actor,
+                       comentario, detalles, ts
+                FROM expediente_eventos
+                WHERE expediente_id = $1
+                  AND COALESCE(
+                        (SELECT nivel_seguridad FROM expedientes WHERE id = $1), 1
+                      ) <= $2
+                ORDER BY ts ASC, id ASC
+                """,
+                expediente_id,
+                max_clearance,
+            )
+        )
+
+    async def get_expediente_by_id(
+        self, expediente_id: uuid.UUID, max_clearance: int = 3
+    ) -> Expediente | None:
+        # max_clearance=3 (CLASIFICADA) = sin restricción para llamantes internos/sistema;
+        # el GET de usuario pasa el clearance real → un expediente por encima devuelve None
+        # (el servicio lo traduce a 404, sin revelar su existencia). RF-SEG-08 / RF-BUS-04.
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM expedientes WHERE id = $1 AND nivel_seguridad <= $2",
+            expediente_id,
+            max_clearance,
+        )
+        if row is None:
+            return None
+        expediente = _row_to_expediente(row)
+        expediente.radicados = await self._get_radicados(expediente_id)
+        return expediente
+
+    async def _get_radicados(self, expediente_id: uuid.UUID) -> list[ExpedienteRadicado]:
+        rows = await self._conn.fetch(
+            "SELECT * FROM expediente_radicados WHERE expediente_id = $1 ORDER BY added_at ASC",
+            expediente_id,
+        )
+        return [_row_to_radicado(r) for r in rows]
+
+    async def update_expediente(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        name: str | None,
+        description: str | None,
+        trd_serie_id: uuid.UUID | None,
+        status: str | None,
+    ) -> Expediente | None:
+        await self._set_search_path()
+
+        assignments: list[str] = ["updated_at = $1"]
+        params: list[object] = [datetime.now(tz=UTC)]
+        idx = 2
+
+        if name is not None:
+            assignments.append(f"name = ${idx}")
+            params.append(name)
+            idx += 1
+        if description is not None:
+            assignments.append(f"description = ${idx}")
+            params.append(description)
+            idx += 1
+        if trd_serie_id is not None:
+            assignments.append(f"trd_serie_id = ${idx}")
+            params.append(trd_serie_id)
+            idx += 1
+        if status is not None:
+            assignments.append(f"status = ${idx}")
+            params.append(status)
+            idx += 1
+            if status == "closed":
+                assignments.append(f"closed_at = ${idx}")
+                params.append(datetime.now(tz=UTC))
+                idx += 1
+
+        set_clause = ", ".join(assignments)
+        params.append(expediente_id)
+
+        row = await self._conn.fetchrow(
+            f"""
+            UPDATE expedientes
+               SET {set_clause}
+             WHERE id = ${idx}
+            RETURNING *
+            """,
+            *params,
+        )
+        return _row_to_expediente(row) if row is not None else None
+
+    async def transition_expediente(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        status: str,
+        disposition: dict | None = None,
+    ) -> Expediente | None:
+        """Cambia el estado del ciclo de vida (cierre/transferencia) y, al cerrar,
+        materializa la disposición calculada (E02/ADR-015)."""
+        await self._set_search_path()
+        now = datetime.now(tz=UTC)
+        assignments = ["status = $1", "updated_at = $2"]
+        params: list[object] = [status, now]
+        idx = 3
+        if status == "closed":
+            assignments.append(f"closed_at = ${idx}")
+            params.append(now)
+            idx += 1
+        if disposition is not None:
+            assignments.append(f"disposition = ${idx}::jsonb")
+            params.append(json.dumps(disposition, default=str))
+            idx += 1
+        params.append(expediente_id)
+        row = await self._conn.fetchrow(
+            f"UPDATE expedientes SET {', '.join(assignments)} " f"WHERE id = ${idx} RETURNING *",
+            *params,
+        )
+        return _row_to_expediente(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # Expediente-radicado associations
+    # ------------------------------------------------------------------
+
+    async def link_radicado(
+        self,
+        expediente_id: uuid.UUID,
+        radicado_id: uuid.UUID,
+        tracking_number: str,
+        content_hash: str | None = None,
+    ) -> ExpedienteRadicado:
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO expediente_radicados
+                (expediente_id, radicado_id, tracking_number, content_hash)
+            VALUES ($1, $2, $3, $4)
+            RETURNING *
+            """,
+            expediente_id,
+            radicado_id,
+            tracking_number,
+            content_hash,
+        )
+        return _row_to_radicado(row)
+
+    async def radicado_link_exists(self, expediente_id: uuid.UUID, radicado_id: uuid.UUID) -> bool:
+        await self._set_search_path()
+        val = await self._conn.fetchval(
+            """
+            SELECT COUNT(*) FROM expediente_radicados
+             WHERE expediente_id = $1 AND radicado_id = $2
+            """,
+            expediente_id,
+            radicado_id,
+        )
+        return bool(val)
+
+    async def unlink_radicado(self, expediente_id: uuid.UUID, radicado_id: uuid.UUID) -> bool:
+        await self._set_search_path()
+        result: str = await self._conn.execute(
+            """
+            DELETE FROM expediente_radicados
+             WHERE expediente_id = $1 AND radicado_id = $2
+            """,
+            expediente_id,
+            radicado_id,
+        )
+        # asyncpg returns "DELETE <n>" as the command tag
+        deleted = int(result.split()[-1])
+        return deleted > 0
+
+    # ------------------------------------------------------------------
+    # TRD series CRUD
+    # ------------------------------------------------------------------
+
+    async def create_trd_serie(
+        self,
+        *,
+        code: str,
+        name: str,
+        description: str | None,
+        retention_years: int,
+        total_retention: int,
+        disposition: str,
+        parent_id: uuid.UUID | None = None,
+        archivo_gestion_years: int | None = None,
+        archivo_central_years: int | None = None,
+    ) -> TrdSerie:
+        await self._set_search_path()
+        # Si no se indican las dos fases, se derivan de los campos previos.
+        agest = archivo_gestion_years if archivo_gestion_years is not None else retention_years
+        acentral = (
+            archivo_central_years
+            if archivo_central_years is not None
+            else max(total_retention - retention_years, 0)
+        )
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO trd_series (
+                code, name, description, retention_years, total_retention,
+                disposition, parent_id, archivo_gestion_years, archivo_central_years
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+            """,
+            code,
+            name,
+            description,
+            retention_years,
+            total_retention,
+            disposition,
+            parent_id,
+            agest,
+            acentral,
+        )
+        return _row_to_trd_serie(row)
+
+    async def list_trd_series(
+        self,
+        *,
+        is_active: bool | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[TrdSerie], int]:
+        await self._set_search_path()
+
+        conditions = ["1=1"]
+        params: list[object] = []
+        idx = 1
+
+        if is_active is not None:
+            conditions.append(f"is_active = ${idx}")
+            params.append(is_active)
+            idx += 1
+
+        where = " AND ".join(conditions)
+
+        total: int = await self._conn.fetchval(
+            f"SELECT COUNT(*) FROM trd_series WHERE {where}", *params
+        )
+
+        rows = await self._conn.fetch(
+            f"""
+            SELECT * FROM trd_series
+             WHERE {where}
+             ORDER BY code ASC
+             LIMIT ${idx} OFFSET ${idx + 1}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+        return [_row_to_trd_serie(r) for r in rows], total
+
+    async def get_trd_serie_by_id(self, serie_id: uuid.UUID) -> TrdSerie | None:
+        await self._set_search_path()
+        row = await self._conn.fetchrow("SELECT * FROM trd_series WHERE id = $1", serie_id)
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def update_trd_serie(
+        self,
+        serie_id: uuid.UUID,
+        *,
+        name: str | None,
+        description: str | None,
+        retention_years: int | None,
+        total_retention: int | None,
+        disposition: str | None,
+        is_active: bool | None,
+    ) -> TrdSerie | None:
+        await self._set_search_path()
+
+        assignments: list[str] = []
+        params: list[object] = []
+        idx = 1
+
+        if name is not None:
+            assignments.append(f"name = ${idx}")
+            params.append(name)
+            idx += 1
+        if description is not None:
+            assignments.append(f"description = ${idx}")
+            params.append(description)
+            idx += 1
+        if retention_years is not None:
+            assignments.append(f"retention_years = ${idx}")
+            params.append(retention_years)
+            idx += 1
+        if total_retention is not None:
+            assignments.append(f"total_retention = ${idx}")
+            params.append(total_retention)
+            idx += 1
+        if disposition is not None:
+            assignments.append(f"disposition = ${idx}")
+            params.append(disposition)
+            idx += 1
+        if is_active is not None:
+            assignments.append(f"is_active = ${idx}")
+            params.append(is_active)
+            idx += 1
+
+        if not assignments:
+            return await self.get_trd_serie_by_id(serie_id)
+
+        set_clause = ", ".join(assignments)
+        params.append(serie_id)
+
+        row = await self._conn.fetchrow(
+            f"""
+            UPDATE trd_series
+               SET {set_clause}
+             WHERE id = ${idx}
+            RETURNING *
+            """,
+            *params,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # Tipos documentales (3.er nivel TRD, RF-MET-07)
+    # ------------------------------------------------------------------
+
+    _TD_COLS = (
+        "id, trd_serie_id, code, nombre, obligatorio, metadata_template, " "activo, created_at"
+    )
+
+    async def create_tipo_documental(self, data: dict) -> asyncpg.Record:
+        await self._set_search_path()
+        cols = list(data.keys())
+        placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+        row = await self._conn.fetchrow(
+            f"INSERT INTO tipos_documentales ({', '.join(cols)}) "
+            f"VALUES ({placeholders}) RETURNING {self._TD_COLS}",
+            *data.values(),
+        )
+        assert row is not None
+        return row
+
+    async def list_tipos_documentales(
+        self, *, trd_serie_id: uuid.UUID | None, activo: bool | None
+    ) -> list[asyncpg.Record]:
+        await self._set_search_path()
+        conds: list[str] = []
+        params: list[object] = []
+        idx = 1
+        if trd_serie_id is not None:
+            conds.append(f"trd_serie_id = ${idx}")
+            params.append(trd_serie_id)
+            idx += 1
+        if activo is not None:
+            conds.append(f"activo = ${idx}")
+            params.append(activo)
+            idx += 1
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        return list(
+            await self._conn.fetch(
+                f"SELECT {self._TD_COLS} FROM tipos_documentales {where} ORDER BY code",
+                *params,
+            )
+        )
+
+    async def get_tipo_documental(self, tipo_id: uuid.UUID) -> asyncpg.Record | None:
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            f"SELECT {self._TD_COLS} FROM tipos_documentales WHERE id = $1", tipo_id
+        )
+
+    async def update_tipo_documental(self, tipo_id: uuid.UUID, data: dict) -> asyncpg.Record | None:
+        await self._set_search_path()
+        if not data:
+            return await self.get_tipo_documental(tipo_id)
+        set_clause = ", ".join(f"{c} = ${i}" for i, c in enumerate(data, start=1))
+        idx = len(data) + 1
+        return await self._conn.fetchrow(
+            f"UPDATE tipos_documentales SET {set_clause} "
+            f"WHERE id = ${idx} RETURNING {self._TD_COLS}",
+            *data.values(),
+            tipo_id,
+        )
+
+    async def delete_tipo_documental(self, tipo_id: uuid.UUID) -> bool:
+        await self._set_search_path()
+        result = await self._conn.execute("DELETE FROM tipos_documentales WHERE id = $1", tipo_id)
+        return result.endswith("1")
+
+    # ------------------------------------------------------------------
+    # Búsqueda full-text de expedientes (E09, ADR-014)
+    # ------------------------------------------------------------------
+
+    async def search_expedientes(
+        self,
+        *,
+        q: str | None,
+        status: str | None,
+        date_from: date | None,
+        date_to: date | None,
+        metadata_filter: dict | None,
+        page: int,
+        size: int,
+        user_id: uuid.UUID | None,
+    ) -> tuple[list[asyncpg.Record], int]:
+        await self._set_search_path()
+        conds: list[str] = []
+        params: list[object] = []
+        idx = 1
+        q_idx: int | None = None
+
+        # Control de acceso por clasificación (RF-SEG-08 / RF-BUS-04): solo expedientes
+        # cuyo nivel no supere el clearance del llamante. El search_path ya apunta al
+        # tenant, así que el resolutor ve las tablas RBAC. Siempre aplica.
+        clearance = await resolve_caller_clearance(self._conn, user_id)
+        conds.append(f"nivel_seguridad <= ${idx}")
+        params.append(clearance)
+        idx += 1
+
+        if q:
+            params.append(q)
+            q_idx = idx
+            idx += 1
+            conds.append(
+                f"(search_vector @@ websearch_to_tsquery('spanish', ${q_idx}) "
+                f"OR code ILIKE '%' || ${q_idx} || '%')"
+            )
+        if status:
+            params.append(status)
+            conds.append(f"status = ${idx}")
+            idx += 1
+        if date_from is not None:
+            params.append(date_from)
+            conds.append(f"opened_at >= ${idx}")
+            idx += 1
+        if date_to is not None:
+            params.append(date_to)
+            conds.append(f"opened_at <= ${idx}")
+            idx += 1
+        if metadata_filter:
+            params.append(json.dumps(metadata_filter))
+            conds.append(f"metadata @> ${idx}::jsonb")
+            idx += 1
+
+        where = " AND ".join(conds) if conds else "TRUE"
+        rank_expr = (
+            f"ts_rank(search_vector, websearch_to_tsquery('spanish', ${q_idx}))" if q_idx else "0"
+        )
+        order_by = "rank DESC, opened_at DESC" if q_idx else "opened_at DESC"
+
+        total: int = (
+            await self._conn.fetchval(f"SELECT COUNT(*) FROM expedientes WHERE {where}", *params)
+            or 0
+        )
+        offset = (page - 1) * size
+        rows = await self._conn.fetch(
+            f"SELECT id, code, name, status, opened_at, {rank_expr} AS rank "
+            f"FROM expedientes WHERE {where} ORDER BY {order_by} "
+            f"LIMIT ${idx} OFFSET ${idx + 1}",
+            *params,
+            size,
+            offset,
+        )
+        return rows, total
+
+
+# ------------------------------------------------------------------
+# Row mappers
+# ------------------------------------------------------------------
+
+
+def _json_obj(raw: object) -> dict:
+    # asyncpg devuelve JSONB como str; toleramos dict por si hay codec.
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    return json.loads(raw)
+
+
+def _row_to_expediente(row: asyncpg.Record) -> Expediente:
+    return Expediente(
+        id=row["id"],
+        code=row["code"],
+        name=row["name"],
+        description=row["description"],
+        trd_serie_id=row["trd_serie_id"],
+        status=row["status"],
+        opened_by=row["opened_by"],
+        opened_at=row["opened_at"],
+        closed_at=row["closed_at"],
+        updated_at=row["updated_at"],
+        metadata=_json_obj(row["metadata"]),
+        metadata_template_id=row["metadata_template_id"],
+        disposition=(_json_obj(row["disposition"]) if row["disposition"] is not None else None),
+    )
+
+
+def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
+    return ExpedienteRadicado(
+        expediente_id=row["expediente_id"],
+        radicado_id=row["radicado_id"],
+        tracking_number=row["tracking_number"],
+        content_hash=row["content_hash"],
+        added_at=row["added_at"],
+    )
+
+
+def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
+    return TrdSerie(
+        id=row["id"],
+        code=row["code"],
+        name=row["name"],
+        description=row["description"],
+        retention_years=row["retention_years"],
+        total_retention=row["total_retention"],
+        disposition=row["disposition"],
+        is_active=row["is_active"],
+        created_at=row["created_at"],
+        parent_id=row["parent_id"],
+        archivo_gestion_years=row["archivo_gestion_years"],
+        archivo_central_years=row["archivo_central_years"],
+        version=row["version"],
+        valid_from=row["valid_from"],
+    )

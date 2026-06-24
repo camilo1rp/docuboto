@@ -1,0 +1,337 @@
+# OrpycaMCP — Docker Compose (Development)
+# Production: see infra/docker-compose.prod.yml
+
+name: orpyca-mcp
+
+networks:
+  orpycamcp-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  minio-data:
+  keycloak-data:
+  redis-data:
+
+services:
+
+  # ─── Infrastructure ───────────────────────────────────────────────────────────
+
+  postgres:
+    # pgvector/pgvector:pg15 = PostgreSQL 15 + extensión pgvector (capa de conocimiento E21).
+    # Mismo major (15) que la imagen anterior (postgres:15-alpine) → compatible con el volumen existente.
+    image: pgvector/pgvector:pg15
+    container_name: orpycamcp-postgres
+    environment:
+      POSTGRES_USER: orpycamcp
+      POSTGRES_PASSWORD: orpycamcp
+      POSTGRES_DB: orpycamcp_db
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - orpycamcp-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orpycamcp -d orpycamcp_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: orpycamcp-redis
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - orpycamcp-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: orpycamcp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: orpycamcp
+      MINIO_ROOT_PASSWORD: orpycamcp_dev
+    ports:
+      - "19900:9000"
+      - "19901:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - orpycamcp-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: orpycamcp-keycloak
+    command: start-dev --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/orpycamcp_db
+      KC_DB_USERNAME: orpycamcp
+      KC_DB_PASSWORD: orpycamcp
+      KC_DB_SCHEMA: keycloak
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: orpycamcp_dev
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "19180:8080"
+    volumes:
+      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ─── Application Services ──────────────────────────────────────────────────────
+
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: orpycamcp-gateway
+    ports:
+      - "19080:8080"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - TENANT_SERVICE_URL=http://tenant-service:8002
+      - DOCUMENT_SERVICE_URL=http://document-service:8003
+      - ARCHIVE_SERVICE_URL=http://archive-service:8004
+      - STORAGE_SERVICE_URL=http://storage-service:8005
+      - WORKFLOW_SERVICE_URL=http://workflow-service:8006
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8007
+      - SIGNATURE_SERVICE_URL=http://signature-service:8008
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      - redis
+      - keycloak
+    restart: "no"
+
+  mcp-server:
+    # Capa MCP (E18, ADR-019): fachada fina cliente del api-gateway. Sin BD/MinIO/Redis.
+    build: ./services/mcp-server
+    container_name: orpycamcp-mcp
+    ports:
+      - "19009:8009"
+    environment:
+      - GATEWAY_URL=http://api-gateway:8080
+    networks:
+      - orpycamcp-net
+    depends_on:
+      - api-gateway
+    restart: "no"
+
+  signature-service:
+    # Firma electrónica (E06, ADR-016): sign-xml + verify; proveedor pluggable.
+    build: ./services/signature-service
+    container_name: orpycamcp-signature
+    ports:
+      - "19008:8008"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  knowledge-service:
+    # Capa de conocimiento (E21, ADR-006): pgvector por tenant, advisoria/derivada.
+    build: ./services/knowledge-service
+    container_name: orpycamcp-knowledge
+    ports:
+      - "19011:8011"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  auth-service:
+    # Contexto en la raíz para incluir shared/ (ADR-010): el Dockerfile hace
+    # COPY shared + pip install /shared. El .dockerignore de la raíz acota el contexto.
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    container_name: orpycamcp-auth
+    ports:
+      - "19001:8001"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+      - KEYCLOAK_CLIENT_ID=auth-service
+      - KEYCLOAK_CLIENT_SECRET=change-me-in-production
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    restart: "no"
+
+  tenant-service:
+    build: ./services/tenant-service
+    container_name: orpycamcp-tenant
+    ports:
+      - "19002:8002"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  document-service:
+    # Contexto en la raíz para incluir shared/ (ADR-010): el Dockerfile hace
+    # COPY shared + pip install /shared. El .dockerignore de la raíz acota el contexto.
+    build:
+      context: .
+      dockerfile: services/document-service/Dockerfile
+    container_name: orpycamcp-documents
+    ports:
+      - "19003:8003"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_SERVICE_URL=http://storage-service:8005
+      - TENANT_SERVICE_URL=http://tenant-service:8002
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  archive-service:
+    build:
+      context: .
+      dockerfile: services/archive-service/Dockerfile
+    container_name: orpycamcp-archive
+    ports:
+      - "19004:8004"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  storage-service:
+    build: ./services/storage-service
+    container_name: orpycamcp-storage
+    ports:
+      - "19005:8005"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=orpycamcp
+      - MINIO_SECRET_KEY=orpycamcp_dev
+      - MINIO_USE_SSL=false
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  workflow-service:
+    # Contexto en la raíz para incluir shared/ (ADR-010): emite eventos en el
+    # sobre canónico con orpycamcp_common.
+    build:
+      context: .
+      dockerfile: services/workflow-service/Dockerfile
+    container_name: orpycamcp-workflow
+    ports:
+      - "19006:8006"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  notification-service:
+    # Contexto en la raíz para incluir shared/ (ADR-010): consume el sobre
+    # canónico de eventos (orpycamcp.document.events) con orpycamcp_common.
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    container_name: orpycamcp-notifications
+    ports:
+      - "19007:8007"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - SMTP_FROM=noreply@orpycamcp.local
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+    networks:
+      - orpycamcp-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── Development Tools ────────────────────────────────────────────────────────
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: orpycamcp-mailhog
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    networks:
+      - orpycamcp-net
+    profiles:
+      - dev

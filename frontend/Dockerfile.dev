@@ -1,0 +1,14 @@
+# Frontend OrpycaMCP — modo desarrollo (Vite dev server con HMR).
+# El código se sobreescribe por volúmenes en docker-compose; arranca en :5173
+# (el cliente Keycloak orpyca-frontend ya tiene este redirectUri).
+FROM node:18-alpine
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 5173
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]

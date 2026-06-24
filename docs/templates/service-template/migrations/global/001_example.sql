@@ -1,0 +1,14 @@
+-- services/__SERVICE_NAME__-service/migrations/001_*.sql
+-- Primera migración del servicio. Reemplaza este ejemplo.
+-- Convenciones:
+--   · SQL crudo, sin SQLAlchemy/Alembic (ADR-003).
+--   · Idempotente (IF NOT EXISTS) — el runner registra cada fichero en public._migrations.
+--   · Las tablas de dominio viven en el schema del tenant (tenant_{slug}); el
+--     search_path se fija por petición (multi-tenancy, ADR-002).
+--   · Numeración NNN_ canónica: ver documentos/specDrive/00-reconciliacion-tecnica.md §2.
+
+-- Ejemplo:
+-- CREATE TABLE IF NOT EXISTS ejemplo (
+--     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+-- );

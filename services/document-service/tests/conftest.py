@@ -1,0 +1,223 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+Test fixtures for document-service.
+
+The tenant DB dependency (get_tenant_conn) and the global one (get_db_conn,
+used by /health) are overridden with an AsyncMock connection so tests run
+without a real PostgreSQL instance. The real get_tenant_conn validates the
+X-Tenant-Slug header and sets search_path; tests that exercise that validation
+pop the override explicitly.
+"""
+
+import uuid
+from collections.abc import AsyncGenerator
+from datetime import UTC, date, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from app.clients.tenant_client import TenantServiceError
+from app.core.database import (
+    get_db_conn,
+    get_redis,
+    get_tenant_client,
+    get_tenant_conn,
+)
+from app.main import app
+
+TENANT_SLUG = "demo"
+TENANT_CODE = "DEMO"
+TENANT_HEADERS = {
+    "X-Tenant-Slug": TENANT_SLUG,
+    "X-User-Id": str(uuid.uuid4()),
+}
+
+
+class FakeTenantClient:
+    """Sustituye al cliente HTTP a tenant-service; registra llamadas."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, date, int]] = []
+        self.due_date: date = date(2024, 1, 22)
+        self.raise_error: bool = False
+        # Organigrama simulado: codigo -> dependencia.
+        self.dependencias: dict[int, dict] = {}
+        self.dep_calls: list[tuple[str, int]] = []
+        self.dep_raise_error: bool = False
+
+    async def calculate_due_date(
+        self, *, tenant_slug: str, from_date: date, business_days: int
+    ) -> date:
+        self.calls.append((tenant_slug, from_date, business_days))
+        if self.raise_error:
+            raise TenantServiceError("simulated tenant-service failure")
+        return self.due_date
+
+    async def get_dependencia(self, *, tenant_slug: str, codigo: int) -> dict | None:
+        self.dep_calls.append((tenant_slug, codigo))
+        if self.dep_raise_error:
+            raise TenantServiceError("simulated tenant-service failure")
+        return self.dependencias.get(codigo)
+
+
+def _make_mock_conn() -> AsyncMock:
+    conn = AsyncMock()
+    conn.fetchval.return_value = 1
+    conn.execute.return_value = None
+    conn.fetch.return_value = []
+    conn.fetchrow.return_value = None
+    # `async with conn.transaction()` (auditoría atómica): transaction() es una
+    # llamada síncrona que devuelve un context manager asíncrono.
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    return conn
+
+
+def _make_fake_redis() -> AsyncMock:
+    redis = AsyncMock()
+    redis.xadd.return_value = b"1-0"
+    return redis
+
+
+def make_radicado_record(
+    *,
+    doc_id: uuid.UUID | None = None,
+    tracking_number: str = "2024-DEMO-E-000001",
+    doc_type: str = "E",
+    year: int = 2024,
+    sequence: int = 1,
+    subject: str = "Solicitud de información",
+    doc_class: str | None = "Derechos de Petición",
+    origin_dept: str | None = None,
+    dest_dept: str | None = "Dirección General",
+    origin_dept_code: int | None = None,
+    dest_dept_code: int | None = None,
+    sender_name: str | None = "Juan Pérez",
+    sender_entity: str | None = "Ciudadano",
+    status: str = "registered",
+    pages: int = 3,
+    observations: str | None = None,
+    registered_by: uuid.UUID | None = None,
+    tenant_code: str = TENANT_CODE,
+    due_date: date | None = None,
+    metadata: dict | None = None,
+    metadata_template_id: uuid.UUID | None = None,
+) -> dict:
+    now = datetime.now(tz=UTC)
+    return {
+        "id": doc_id or uuid.uuid4(),
+        "tracking_number": tracking_number,
+        "doc_type": doc_type,
+        "year": year,
+        "sequence": sequence,
+        "subject": subject,
+        "doc_class": doc_class,
+        "origin_dept": origin_dept,
+        "dest_dept": dest_dept,
+        "origin_dept_code": origin_dept_code,
+        "dest_dept_code": dest_dept_code,
+        "sender_name": sender_name,
+        "sender_entity": sender_entity,
+        "status": status,
+        "pages": pages,
+        "observations": observations,
+        "registered_by": registered_by or uuid.uuid4(),
+        "registered_at": now,
+        "updated_at": now,
+        "tenant_code": tenant_code,
+        "due_date": due_date,
+        "metadata": metadata if metadata is not None else {},
+        "metadata_template_id": metadata_template_id,
+    }
+
+
+def make_anexo_record(
+    *,
+    radicado_id: uuid.UUID | None = None,
+    anexo_id: uuid.UUID | None = None,
+) -> dict:
+    now = datetime.now(tz=UTC)
+    return {
+        "id": anexo_id or uuid.uuid4(),
+        "radicado_id": radicado_id or uuid.uuid4(),
+        "file_id": uuid.uuid4(),
+        "filename": "carta.pdf",
+        "file_size": 12345,
+        "mime_type": "application/pdf",
+        "created_at": now,
+        "tipo_anexo": None,
+        "es_principal": False,
+        "folios": None,
+    }
+
+
+def _override_conn(mock_conn: AsyncMock, fake_client: FakeTenantClient) -> None:
+    async def _dep() -> AsyncGenerator[AsyncMock, None]:
+        yield mock_conn
+
+    app.dependency_overrides[get_tenant_conn] = _dep
+    app.dependency_overrides[get_db_conn] = _dep
+    # El endpoint de creación depende de get_tenant_client y get_redis (sin
+    # lifespan no hay http_client ni redis reales); se sustituyen por dobles.
+    app.dependency_overrides[get_tenant_client] = lambda: fake_client
+    app.dependency_overrides[get_redis] = _make_fake_redis
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client() -> AsyncGenerator[AsyncClient, None]:
+    mock_conn = _make_mock_conn()
+    _override_conn(mock_conn, FakeTenantClient())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
+    """Yields (client, mock_conn) so tests can configure mock_conn per-call."""
+    mock_conn = _make_mock_conn()
+    _override_conn(mock_conn, FakeTenantClient())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, mock_conn
+
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client_with_deps() -> (
+    AsyncGenerator[tuple[AsyncClient, AsyncMock, FakeTenantClient], None]
+):
+    """Yields (client, mock_conn, fake_tenant_client) para tests de RF-RAD-04."""
+    mock_conn = _make_mock_conn()
+    fake_client = FakeTenantClient()
+    _override_conn(mock_conn, fake_client)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, mock_conn, fake_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client_with_redis() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, AsyncMock], None]:
+    """Yields (client, mock_conn, fake_redis) para tests de emisión de eventos."""
+    mock_conn = _make_mock_conn()
+    fake_redis = _make_fake_redis()
+    _override_conn(mock_conn, FakeTenantClient())
+    app.dependency_overrides[get_redis] = lambda: fake_redis
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, mock_conn, fake_redis
+
+    app.dependency_overrides.clear()

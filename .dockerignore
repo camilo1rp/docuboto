@@ -1,0 +1,24 @@
+# Contexto de build en la raíz (ADR-010): acota lo que se envía al daemon
+# cuando los servicios usan `context: .` para ver shared/.
+.git/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+**/.env
+**/.env.*
+!**/.env.example
+
+# No son necesarios para construir imágenes de servicios backend:
+frontend/
+documentos/
+docs/
+data/
+node_modules/
+**/node_modules/
+.claude/
+*.md
+**/*.md

@@ -1,0 +1,127 @@
+# Integraciones externas (notas de operación)
+
+Varias capacidades de OrpycaMCP están implementadas con un **proveedor enchufable** y un **stub funcional por defecto**, de modo que el sistema opera de extremo a extremo sin dependencias externas pesadas. Esta guía indica, para cada una, **dónde conectar el componente real** cuando se disponga del entorno (certificados, almacenamiento WORM, librerías, modelos), qué **contrato permanece estable** y los **pasos** de activación.
+
+Principio común: el contrato (firmas de función / endpoints REST) **no cambia** al sustituir el stub por el proveedor real. Solo se implementa el adaptador y se ajusta la configuración.
+
+---
+
+## 1. Firma digital cualificada (PKI / XAdES) — `signature-service`
+
+| | |
+|---|---|
+| Estado actual | Firma **electrónica** nativa (SHA-256 + identidad + sello). Detecta alteración; **no** es firma digital cualificada. |
+| Punto de swap | `services/signature-service/app/services/signer.py` (funciones `firmar` / `verificar`). |
+| Selector | `SIGNER_PROVIDER` (config; `nativa` por defecto). |
+| Norma | Decreto 2364/2012 (electrónica) → certificada para trámites que exijan firma **digital**. |
+
+**Para activar PKI:**
+1. Añadir una librería de firma (p. ej. `pyhanko`/`endesive` + `cryptography`) a `services/signature-service/requirements.txt`.
+2. Implementar un proveedor `xades` en `signer.py` con la misma interfaz: `firmar(payload, firmante) -> {payload_sha256, firma_blob, provider}` y `verificar(...)`, usando certificado **X.509**, sello de tiempo **TSA (RFC 3161)** y, si aplica, validación **CRL/OCSP**.
+3. Provisionar el certificado y el endpoint TSA (variables de entorno/secretos), seleccionarlo con `SIGNER_PROVIDER=xades`.
+4. La firma del índice al cierre (`archive → signature-service /sign-xml`) y `/verify` ya consumen este contrato: pasan a firma digital sin cambios en archive.
+
+---
+
+## 2. WORM / inmutabilidad (MinIO Object Lock) — `storage-service`
+
+| | |
+|---|---|
+| Estado actual | Plan de preservación + eventos PREMIS + AIP/BagIt. El evento `WORM` se registra, pero **no** hay Object Lock real. |
+| Punto de swap | `storage-service` (cliente MinIO + bucket de preservación; al persistir el AIP). |
+| Norma | Acuerdo AGN 001/2024 Art. 4.3.2.6; Decreto 2609/2012 Art. 26. |
+
+**Para activar WORM:**
+1. Crear un **bucket de preservación** con *versioning* y **Object Lock** habilitado (modo *compliance*).
+2. Al empaquetar el AIP (`POST /api/v1/preservacion/aip`), subir el objeto con `retention until` derivado de la **TRD** (E04, `archivo_central_years`) y, si aplica, *legal hold*.
+3. Registrar el evento `WORM` (ya soportado) con la fecha de retención aplicada.
+4. Requiere MinIO/S3 con Object Lock; el cálculo de retención ya existe (E04 `GET /trd/{id}/retention`).
+
+---
+
+## 3. Validación PDF/A (veraPDF) — `storage-service`
+
+| | |
+|---|---|
+| Estado actual | E07 entrega PDF/A *best-effort* sin validar. La preservación no valida conformidad. |
+| Punto de swap | `storage-service` (paso de ingesta/normalización de preservación). |
+| Norma | Decreto 2609/2012 Art. 32 (estándares abiertos); ISO 19005 (PDF/A). |
+
+**Para activar veraPDF:**
+1. Disponer de **veraPDF** (CLI Java) o un microservicio validador accesible.
+2. En la normalización a PDF/A-1b/2b, invocar veraPDF y registrar el resultado como evento `VALIDACION_PDFA` (`ok`/`fallo`) en preservación (ya soportado).
+3. Rechazar/marcar los objetos no conformes antes de empaquetar el AIP.
+
+---
+
+## 4. Capa MCP — servidor MCP — `mcp-server`
+
+| | |
+|---|---|
+| Estado actual | **Servidor MCP completo** (SDK oficial `mcp`) por **stdio** y **HTTP streamable**: expone **tools** (catálogo), **resources** (`orfeo://…`) y **prompts**, con **OAuth por sesión** (obtiene/refresca el token Keycloak vía auth-service). Refinamiento abierto: sincronización proactiva del refresh. |
+| Implementación | `services/mcp-server/app/mcp_app.py` (tools) + `app/mcp_resources.py` (resources+prompts) + `app/mcp_stdio.py` (entrypoint stdio) + endpoint **`/mcp`** en la app FastAPI (`app/main.py`, `StreamableHTTPSessionManager`). El núcleo `catalog.py` + `dispatcher.py` se reutiliza intacto. |
+| Norma/decisión | Constitución §1; ADR-019. |
+
+**Transporte stdio (cliente local tipo escritorio):** el cliente lanza el proceso y habla por stdio; la sesión se configura por entorno. Para el **token** hay tres modos (precedencia de arriba abajo):
+
+```bash
+GATEWAY_URL=http://localhost:8080 \
+MCP_TENANT_SLUG=icetex \
+MCP_USER_PERMISSIONS=RADI_CREAR,... \
+# (a) token estático (sin refresco):   MCP_BEARER_TOKEN=<jwt>
+# (b) refresh por sesión:              MCP_REFRESH_TOKEN=<refresh-token>
+# (c) ROPC (usuario/contraseña):       MCP_AUTH_USERNAME=ana MCP_AUTH_PASSWORD=...
+python -m app.mcp_stdio
+```
+
+Con (b)/(c) el mcp-server **obtiene y refresca** el access token Keycloak vía `auth-service` (`/api/v1/auth/token` y `/api/v1/auth/refresh`, públicos en el gateway) y lo cachea hasta su expiración.
+
+**Transporte HTTP streamable (clientes remotos):** el cliente se conecta al endpoint **`POST http://mcp-server:8009/mcp`**; el contexto de sesión llega por **cabeceras** de cada petición: `Authorization: Bearer <jwt>`, `X-Tenant-Slug`, `X-User-Permissions`, `X-User-Roles`.
+
+En ambos casos el servidor propaga `Authorization` + `X-Tenant-Slug` al gateway (que resuelve autenticación/RBAC/tenant) y filtra las tools visibles por los permisos (ROOT ve todas). Las operaciones de escritura quedan sujetas a la aprobación de tool del cliente MCP (human-in-the-loop) + el scope de permiso.
+
+**Resources** (`orfeo://normativa`, plantillas `orfeo://radicado/{id}`, `orfeo://expediente/{id}`, `orfeo://expediente/{id}/indice`) y **prompts** (`radicar_pqrsd`, `resumen_expediente`, `buscar_antecedentes`) están disponibles en ambos transportes.
+
+La capa MCP queda así **completa** (tools + resources + prompts + ambos transportes + OAuth por sesión).
+
+---
+
+## 5. Capa de conocimiento — embeddings/LLM reales — `knowledge-service`
+
+| | |
+|---|---|
+| Estado actual | Embedding **stub** determinista (hash→vector dim 64). pgvector + recuperación con pre-filtrado ACL ya funcionan. |
+| Punto de swap | `services/knowledge-service/app/services/embeddings.py` (`embed`). |
+| Selector | `EMBEDDING_PROVIDER` / `EMBEDDING_DIM` (config). |
+| Decisión | ADR-006 (proveedor de IA configurable, local por defecto). |
+
+**Para activar embeddings/RAG reales:**
+1. Conectar un modelo de embeddings (p. ej. `sentence-transformers` local o una API) implementando `embed(text) -> list[float]`; ajustar `EMBEDDING_DIM` y la columna `vector(N)` (migración) a la dimensión del modelo.
+2. Para RAG anclado con citas y sugerencias TRD/dependencia (advisorias), conectar un LLM **pluggable** (ADR-006); mantener el **pre-filtrado ACL** (`acl @>`) antes de recuperar.
+3. Es una capa **advisoria/derivada y opt-in por tenant**: no es fuente de verdad.
+
+---
+
+## 6. Operador postal real (4-72 / Servientrega) — `document-service`
+
+| | |
+|---|---|
+| Estado actual | Proveedor **stub** (guía determinista, sin API real). |
+| Punto de swap | `services/document-service/app/services/postal_provider.py` (`generar_guia`). |
+
+**Para activar el operador real:** implementar `generar_guia(operador, radicado_id)` (y, si aplica, la consulta de estado) contra la API del operador con sus credenciales; el estado de entrega ya se actualiza vía `POST /api/v1/envios/{id}/estado` (callback/sondeo).
+
+---
+
+## Resumen
+
+| Capacidad | Servicio | Swap | Necesita |
+|---|---|---|---|
+| Firma digital PKI | signature-service | `signer.py` | cert X.509 + TSA + lib |
+| WORM (Object Lock) | storage-service | cliente MinIO | MinIO con Object Lock |
+| PDF/A | storage-service | normalización | veraPDF |
+| Protocolo MCP (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | hecho (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
+| Embeddings/RAG | knowledge-service | `embeddings.py` | modelo/LLM |
+| Operador postal | document-service | `postal_provider.py` | credenciales API |
+
+Todas las integraciones conservan su contrato; activar cada una es implementar el adaptador y proveer la dependencia/credencial — **sin cambios en la lógica de dominio**.

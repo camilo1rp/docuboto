@@ -1,0 +1,41 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
+
+    @property
+    def database_url_asyncpg(self) -> str:
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    redis_url: str = "redis://redis:6379/0"
+    storage_service_url: str = "http://storage-service:8005"
+    tenant_service_url: str = "http://tenant-service:8002"
+    keycloak_url: str = "http://keycloak:8080"
+    keycloak_realm: str = "orpycamcp"
+
+    service_port: int = 8003
+    log_level: str = "info"
+
+    # Ingesta de correo (E19). Si imap_host está vacío, la ingesta queda
+    # deshabilitada y el endpoint de poll responde 503.
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    imap_use_ssl: bool = True
+    imap_mailbox: str = "INBOX"
+
+
+settings = Settings()

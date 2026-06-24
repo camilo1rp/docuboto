@@ -1,0 +1,16 @@
+[project]
+name = "orpycamcp-common"
+version = "0.1.0"
+description = "Utilidades compartidas de OrpycaMCP: auditoría inmutable (audit_log encadenado por hash) y sobre canónico de eventos Redis Streams. Ver ADR-010."
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.29.0",
+    "redis>=5.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["orpycamcp_common"]

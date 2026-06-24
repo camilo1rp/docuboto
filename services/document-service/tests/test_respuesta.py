@@ -1,0 +1,50 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""Tests de respuesta rápida (antecedente Entrada↔Salida, paridad legado)."""
+
+import uuid
+from datetime import UTC, datetime
+
+import pytest
+
+from tests.conftest import TENANT_HEADERS
+
+
+@pytest.mark.asyncio
+async def test_crear_respuesta_antecedente_no_existe(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = None  # get_by_id(entrada) → None
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/respuesta",
+        json={"subject": "Respuesta"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "document_not_found"
+
+
+@pytest.mark.asyncio
+async def test_listar_respuestas(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetch.return_value = [
+        {
+            "id": uuid.uuid4(),
+            "tracking_number": "2024-DEMO-S-000010",
+            "doc_type": "S",
+            "subject": "RE: Solicitud",
+            "status": "registered",
+            "registered_at": datetime.now(tz=UTC),
+        },
+    ]
+    resp = await client.get(f"/api/v1/documents/{uuid.uuid4()}/respuestas", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body[0]["doc_type"] == "S"
+    assert body[0]["tracking_number"] == "2024-DEMO-S-000010"

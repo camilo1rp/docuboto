@@ -1,0 +1,121 @@
+site_name: OrpycaMCP
+site_description: Sistema de Gestión Documental Libre — Free Document Management System
+site_url: https://orpyca.com/orpyca
+repo_url: https://gitlab.com/orpyca/orpyca-mcp
+repo_name: GitLab
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: es
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Modo oscuro / Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Modo claro / Light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+    - content.tabs.link
+
+plugins:
+  - search:
+      lang:
+        - es
+        - en
+  # Documentación bilingüe: carpetas docs/es (default) y docs/en.
+  # Las páginas sin traducción en docs/en/ caen al español (fallback_to_default).
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true
+      languages:
+        - locale: es
+          name: Español
+          default: true
+          build: true
+        - locale: en
+          name: English
+          build: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/gitlab
+      link: https://gitlab.com/orpyca/orpyca-mcp
+    - icon: fontawesome/solid/globe
+      link: https://orpyca.com
+
+# La nav referencia rutas SIN el prefijo de idioma (es/ o en/).
+# El plugin i18n las resuelve por idioma según docs_structure: folder.
+nav:
+  - Inicio: index.md
+  - El SGD:
+    - Dominio documental: domain.md
+    - Marco normativo: normativa.md
+    - Ciclo de vida del documento: lifecycle.md
+  - Primeros Pasos: getting-started.md
+  - Arquitectura:
+    - Visión general: architecture.md
+    - Multi-tenancy: multi-tenancy.md
+    - Decisiones (ADRs): adrs.md
+    - ADR-001 Microservicios: adr/ADR-001-microservices-architecture.md
+    - ADR-002 Multi-tenancy: adr/ADR-002-multi-tenancy-schema-isolation.md
+    - ADR-003 asyncpg sin ORM: adr/ADR-003-asyncpg-sin-orm.md
+    - ADR-005 API batch: adr/ADR-005-batch-api.md
+    - ADR-006 Proveedor de IA configurable: adr/ADR-006-proveedor-ia-configurable.md
+    - ADR-007 Metadatos JSONB: adr/ADR-007-metadatos-jsonb.md
+    - ADR-008 Auditoría inmutable: adr/ADR-008-auditoria-inmutable.md
+    - ADR-009 Historial de flujos: adr/ADR-009-historial-flujos-eventos.md
+    - ADR-010 Librería compartida: adr/ADR-010-libreria-compartida.md
+    - ADR-011 Frontend SvelteKit: adr/ADR-011-frontend-sveltekit-monorepo.md
+    - ADR-012 Migraciones por tenant: adr/ADR-012-migraciones-por-tenant.md
+    - ADR-013 Autorización en BD: adr/ADR-013-autorizacion-resuelta-en-bd.md
+    - ADR-014 Búsqueda PostgreSQL FTS: adr/ADR-014-busqueda-postgresql-fts.md
+    - ADR-015 Modelo TRD/CCD: adr/ADR-015-trd-ccd-modelo.md
+    - ADR-016 Firma electrónica: adr/ADR-016-firma-electronica.md
+    - ADR-017 Archivo físico: adr/ADR-017-archivo-fisico.md
+    - ADR-018 Interoperabilidad webhooks: adr/ADR-018-interoperabilidad-webhooks.md
+    - ADR-019 Capa MCP: adr/ADR-019-capa-mcp.md
+  - Referencia API: api.md
+  - Despliegue: deployment.md
+  - Integraciones externas: integraciones-externas.md
+  - Roadmap: roadmap.md
+  - Contribuir: contributing.md
+  - Seguridad: security-audit.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.inlinehilite
+  - admonition
+  - pymdownx.details
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true

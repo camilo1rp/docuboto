@@ -1,0 +1,517 @@
+name: orpyca-mcp
+
+# OrpycaMCP — Docker Compose (Production)
+#
+# SECURITY CHECKLIST before deploy:
+# ✓ All credentials from environment variables (.env file)
+# ✓ PostgreSQL backup strategy configured
+# ✓ MinIO access logs enabled
+# ✓ Keycloak TLS certificate installed
+# ✓ Redis persistence enabled (RDB or AOF)
+# ✓ All services have resource limits
+# ✓ External logging configured (ELK, Datadog, etc.)
+# ✓ Network isolation (internal services on private network)
+
+networks:
+  orpycamcp-net:
+    driver: bridge
+    # In production, consider using custom driver with encryption
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+  # Optional: separated network for database if using RDS/managed DB
+  # postgres-net:
+  #   driver: bridge
+
+volumes:
+  postgres-data:
+    # In production, use named volumes on persistent storage
+    # E.g., AWS EBS, Google Persistent Disk, etc.
+  minio-data:
+  redis-data:
+  # Keycloak uses external PostgreSQL, no separate volume
+
+services:
+
+  # ─── Infrastructure ───────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: orpycamcp-postgres-prod
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${DB_USER:?Database user required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Database password required}
+      POSTGRES_DB: ${DB_NAME:?Database name required}
+    # SECURITY: Don't expose database port externally
+    # Only internal services access this
+    networks:
+      - orpycamcp-net
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      # Optional: database backup script
+      # - ./infra/postgres/backup.sh:/usr/local/bin/backup.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: orpycamcp-redis-prod
+    restart: "no"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?Redis password required}
+    networks:
+      - orpycamcp-net
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  minio:
+    image: minio/minio:latest
+    container_name: orpycamcp-minio-prod
+    restart: "no"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MinIO root user required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MinIO root password required}
+      # Enable access logs for audit trail
+      MINIO_LOG_QUERY_STRING: "on"
+    networks:
+      - orpycamcp-net
+    volumes:
+      - minio-data:/data
+    # SECURITY: Only expose S3 API and console to internal network
+    # Use a reverse proxy (Nginx) for external access
+    expose:
+      - "9000"
+      - "9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: orpycamcp-keycloak-prod
+    restart: "no"
+    command: start --db=postgres --hostname-strict=true --hostname=${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME}
+      KC_DB_USERNAME: ${DB_USER}
+      KC_DB_PASSWORD: ${DB_PASSWORD}
+      KC_DB_SCHEMA: keycloak
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
+
+      # SECURITY: Enable HTTPS in production
+      KC_HTTPS_ENABLED: "true"
+      KC_HTTPS_PORT: "8443"
+      KC_HTTP_ENABLED: "false"
+      KC_PROXY: edge
+
+      # Performance tuning
+      KC_CACHE: default
+      KC_CACHE_STACK: kubernetes  # or tcp for external cache
+    networks:
+      - orpycamcp-net
+    volumes:
+      # Mount your TLS certificate here
+      # - ./infra/certs/tls.crt:/etc/x509/https/tls.crt:ro
+      # - ./infra/certs/tls.key:/etc/x509/https/tls.key:ro
+      # Mount realm configuration (optional)
+      # - ./infra/keycloak/realm-prod.json:/opt/keycloak/data/import/realm-prod.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 3G
+        reservations:
+          cpus: '1'
+          memory: 1.5G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─── Application Services ──────────────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: ../services/api-gateway
+      dockerfile: Dockerfile
+    container_name: orpycamcp-api-gateway-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: orpycamcp
+      KEYCLOAK_CLIENT_ID: api-gateway
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_API_GATEWAY_SECRET:?API Gateway Keycloak secret required}
+      TENANT_HEADER: X-Tenant-Slug
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 2  # Scale horizontally
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  auth-service:
+    build:
+      context: ../services/auth-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-auth-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: orpycamcp
+      KEYCLOAK_CLIENT_ID: auth-service
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tenant-service:
+    build:
+      context: ../services/tenant-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-tenant-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  document-service:
+    build:
+      context: ../services/document-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-document-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 2  # Scale horizontally for read load
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  storage-service:
+    build:
+      context: ../services/storage-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-storage-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_SECURE: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 2  # Scale for file upload throughput
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  workflow-service:
+    build:
+      context: ../services/workflow-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-workflow-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  archive-service:
+    build:
+      context: ../services/archive-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-archive-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  notification-service:
+    build:
+      context: ../services/notification-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-notification-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      SMTP_HOST: ${SMTP_HOST:?SMTP host required}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:?SMTP user required}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP password required}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?From email required}
+      SMTP_TLS: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

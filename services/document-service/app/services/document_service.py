@@ -1,0 +1,338 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+Document service — business logic for radicado lifecycle.
+
+Tracking number assignment is atomic: the repository executes an
+INSERT … ON CONFLICT DO UPDATE RETURNING on the tracking_sequences table,
+which is safe under concurrent requests within the same tenant schema.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import UTC, date, datetime
+from typing import Any
+
+import asyncpg
+from orpycamcp_common import audit, events
+
+from app.clients.tenant_client import TenantServiceClient
+from app.models.document import Radicado
+from app.repositories.document_repository import (
+    DocumentRepository,
+    InvalidTenantSlugError,
+)
+from app.repositories.metadata_repository import MetadataRepository
+from app.schemas.document import (
+    AnexoResponse,
+    DispositionUpdate,
+    DocumentCreate,
+    DocumentResponse,
+    DocumentUpdate,
+)
+from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
+from app.services.metadata_service import validate_metadata
+
+logger = logging.getLogger(__name__)
+
+_SERVICE = "document-service"
+_STREAM = "orpycamcp.document.events"
+
+
+class DocumentNotFoundError(Exception):
+    pass
+
+
+class InvalidTenantError(Exception):
+    pass
+
+
+class InvalidDependenciaError(Exception):
+    """El radicado referencia una dependencia inexistente o inactiva."""
+
+
+class DocumentService:
+    def __init__(
+        self,
+        conn: asyncpg.Connection,
+        tenant_slug: str,
+        tenant_client: TenantServiceClient | None = None,
+        redis: Any | None = None,
+    ) -> None:
+        try:
+            self._repo = DocumentRepository(conn, tenant_slug)
+        except InvalidTenantSlugError as exc:
+            raise InvalidTenantError(str(exc)) from exc
+        self._conn = conn
+        self._slug = tenant_slug
+        self._tenant_client = tenant_client
+        self._redis = redis
+        self._metadata_repo = MetadataRepository(conn)
+
+    async def create(
+        self,
+        payload: DocumentCreate,
+        registered_by: uuid.UUID | None,
+    ) -> DocumentResponse:
+        now = datetime.now(tz=UTC)
+        year = now.year
+
+        # Vínculo con el organigrama: si se indican códigos de dependencia, se
+        # validan contra tenant-service y se denormaliza el nombre (snapshot
+        # legal) en los campos de texto origin_dept/dest_dept.
+        if payload.origin_dept_code is not None:
+            payload.origin_dept = await self._resolve_dependencia(payload.origin_dept_code)
+        if payload.dest_dept_code is not None:
+            payload.dest_dept = await self._resolve_dependencia(payload.dest_dept_code)
+
+        # RF-RAD-04: la fecha de vencimiento se calcula en días hábiles desde la
+        # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP;
+        # sin response_days el radicado no tiene plazo.
+        due_date: date | None = None
+        if payload.response_days is not None:
+            if self._tenant_client is None:
+                raise RuntimeError("tenant_client requerido para calcular el plazo")
+            due_date = await self._tenant_client.calculate_due_date(
+                tenant_slug=self._slug,
+                from_date=now.date(),
+                business_days=payload.response_days,
+            )
+
+        # Metadatos (E03, ADR-007): si el tipo documental (doc_class) tiene una
+        # plantilla activa, los valores se validan contra su JSON Schema antes de
+        # radicar; se guarda la versión de plantilla usada. Sin plantilla, los
+        # metadatos se almacenan tal cual (plantillas opt-in por tipo en F1).
+        metadata_template_id: uuid.UUID | None = None
+        if payload.doc_class:
+            template = await self._metadata_repo.get_active_template(payload.doc_class)
+            if template is not None:
+                validate_metadata(payload.metadata, template["json_schema"])
+                metadata_template_id = template["id"]
+
+        tenant_code = await self._repo.get_tenant_code()
+        sequence = await self._repo.next_sequence(year, payload.doc_type)
+        tracking_number = f"{year}-{tenant_code}-{payload.doc_type}-{sequence:06d}"
+
+        actor = str(registered_by) if registered_by else None
+
+        # El radicado y su entrada de auditoría son atómicos: o se persisten
+        # ambos o ninguno (la auditoría es la traza legal del radicado, ADR-008).
+        async with self._conn.transaction():
+            radicado = await self._repo.create(
+                payload=payload,
+                tracking_number=tracking_number,
+                year=year,
+                sequence=sequence,
+                tenant_code=tenant_code,
+                registered_by=registered_by,
+                due_date=due_date,
+                metadata_template_id=metadata_template_id,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.radicado_created",
+                object_type="radicado",
+                object_ref=tracking_number,
+                actor=actor,
+                payload={"doc_type": radicado.doc_type, "id": str(radicado.id)},
+            )
+
+        # El evento de dominio se publica tras confirmar la transacción. Es
+        # best-effort: un fallo de Redis no revierte la radicación (la BD es la
+        # fuente de verdad; el stream se puede reconstruir).
+        await self._emit_created(radicado, actor)
+
+        return _to_response(radicado)
+
+    async def _emit_created(self, radicado: Radicado, actor: str | None) -> None:
+        if self._redis is None:
+            return
+        try:
+            await events.emit(
+                self._redis,
+                _STREAM,
+                "document.radicado.created",
+                tenant_slug=self._slug,
+                actor=actor,
+                dedup_key=radicado.tracking_number,
+                payload={
+                    "id": str(radicado.id),
+                    "tracking_number": radicado.tracking_number,
+                    "doc_type": radicado.doc_type,
+                    "doc_class": radicado.doc_class,
+                    "subject": radicado.subject,
+                    "dest_dept": radicado.dest_dept,
+                    "dest_dept_code": radicado.dest_dept_code,
+                    "origin_dept": radicado.origin_dept,
+                    "sender_name": radicado.sender_name,
+                    "sender_entity": radicado.sender_entity,
+                    "pages": radicado.pages,
+                    "due_date": radicado.due_date.isoformat() if radicado.due_date else None,
+                },
+            )
+        except Exception:  # noqa: BLE001 — evento best-effort
+            logger.warning(
+                "No se pudo publicar el evento de radicado %s",
+                radicado.tracking_number,
+                exc_info=True,
+            )
+
+    async def get_disposition(self, document_id: uuid.UUID) -> dict:
+        exists, disp = await self._repo.get_disposition(document_id)
+        if not exists:
+            raise DocumentNotFoundError(str(document_id))
+        return disp
+
+    async def set_disposition(self, document_id: uuid.UUID, payload: DispositionUpdate) -> dict:
+        """Fija/actualiza (merge) los metadatos de disposición (RF-MET-08)."""
+        exists, current = await self._repo.get_disposition(document_id)
+        if not exists:
+            raise DocumentNotFoundError(str(document_id))
+        merged = {**current, **payload.model_dump(exclude_unset=True)}
+        result = await self._repo.set_disposition(document_id, merged)
+        return result if result is not None else {}
+
+    async def _resolve_dependencia(self, codigo: int) -> str:
+        """Valida la dependencia por código y devuelve su nombre (denormalizado)."""
+        if self._tenant_client is None:
+            raise RuntimeError("tenant_client requerido para validar dependencias")
+        dep = await self._tenant_client.get_dependencia(tenant_slug=self._slug, codigo=codigo)
+        if dep is None:
+            raise InvalidDependenciaError(f"La dependencia {codigo} no existe")
+        if not dep.get("activo", True):
+            raise InvalidDependenciaError(f"La dependencia {codigo} está inactiva")
+        nombre: str = dep["nombre"]
+        return nombre
+
+    async def list(
+        self,
+        *,
+        doc_type: str | None,
+        status: str | None,
+        max_clearance: int,
+        metadata_filter: dict | None = None,
+        page: int,
+        size: int,
+    ) -> tuple[list[DocumentResponse], int]:
+        radicados, total = await self._repo.find_all(
+            doc_type=doc_type,
+            status=status,
+            metadata_filter=metadata_filter,
+            page=page,
+            size=size,
+            max_clearance=max_clearance,
+        )
+        return [_to_response(r) for r in radicados], total
+
+    async def get_by_id(
+        self, document_id: uuid.UUID, max_clearance: int = 3
+    ) -> DocumentResponse:
+        radicado = await self._repo.get_by_id(document_id, max_clearance)
+        if radicado is None:
+            raise DocumentNotFoundError(str(document_id))
+        return _to_response(radicado)
+
+    async def get_by_tracking_number(
+        self, tracking_number: str, max_clearance: int = 3
+    ) -> DocumentResponse:
+        radicado = await self._repo.get_by_tracking_number(tracking_number, max_clearance)
+        if radicado is None:
+            raise DocumentNotFoundError(tracking_number)
+        return _to_response(radicado)
+
+    async def crear_respuesta(
+        self,
+        antecedente_id: uuid.UUID,
+        payload: RespuestaRapidaCreate,
+        registered_by: uuid.UUID | None,
+    ) -> DocumentResponse:
+        """Respuesta rápida: crea una Salida vinculada a la Entrada antecedente."""
+        entrada = await self._repo.get_by_id(antecedente_id)
+        if entrada is None:
+            raise DocumentNotFoundError(str(antecedente_id))
+        salida = DocumentCreate(
+            doc_type="S",
+            subject=(payload.subject or f"RE: {entrada.subject}")[:2000],
+            dest_dept=payload.dest_dept or entrada.origin_dept,
+            dest_dept_code=payload.dest_dept_code,
+            observations=payload.observations,
+            response_days=payload.response_days,
+            metadata={
+                **(payload.metadata or {}),
+                "responde_a": str(antecedente_id),
+                "antecedente": entrada.tracking_number,
+            },
+        )
+        result = await self.create(salida, registered_by)
+        await self._repo.set_responde_a(result.id, antecedente_id)
+        return result
+
+    async def listar_respuestas(self, antecedente_id: uuid.UUID) -> list[RespuestaItem]:
+        rows = await self._repo.list_respuestas(antecedente_id)
+        return [RespuestaItem(**dict(r)) for r in rows]
+
+    async def update(
+        self,
+        document_id: uuid.UUID,
+        payload: DocumentUpdate,
+    ) -> DocumentResponse:
+        radicado = await self._repo.update(document_id, payload)
+        if radicado is None:
+            raise DocumentNotFoundError(str(document_id))
+        return _to_response(radicado)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _to_response(radicado: Radicado) -> DocumentResponse:
+    return DocumentResponse(
+        id=radicado.id,
+        tracking_number=radicado.tracking_number,
+        doc_type=radicado.doc_type,
+        year=radicado.year,
+        sequence=radicado.sequence,
+        subject=radicado.subject,
+        doc_class=radicado.doc_class,
+        origin_dept=radicado.origin_dept,
+        dest_dept=radicado.dest_dept,
+        origin_dept_code=radicado.origin_dept_code,
+        dest_dept_code=radicado.dest_dept_code,
+        sender_name=radicado.sender_name,
+        sender_entity=radicado.sender_entity,
+        status=radicado.status,
+        pages=radicado.pages,
+        observations=radicado.observations,
+        registered_by=radicado.registered_by,
+        registered_at=radicado.registered_at,
+        updated_at=radicado.updated_at,
+        due_date=radicado.due_date,
+        metadata=radicado.metadata,
+        anexos=[
+            AnexoResponse(
+                id=a.id,
+                file_id=a.file_id,
+                filename=a.filename,
+                file_size=a.file_size,
+                mime_type=a.mime_type,
+                created_at=a.created_at,
+                tipo_anexo=a.tipo_anexo,
+                es_principal=a.es_principal,
+                folios=a.folios,
+            )
+            for a in radicado.anexos
+        ],
+    )

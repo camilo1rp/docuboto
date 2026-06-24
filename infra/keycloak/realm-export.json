@@ -1,0 +1,68 @@
+{
+  "realm": "orpycamcp",
+  "displayName": "OrpycaMCP",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "clients": [
+    {
+      "clientId": "api-gateway",
+      "name": "API Gateway",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "secret": "change-me-in-production"
+    },
+    {
+      "clientId": "auth-service",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "serviceAccountsEnabled": true,
+      "secret": "change-me-in-production"
+    },
+    {
+      "clientId": "orpycamcp-frontend",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*", "http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:3000", "http://localhost:5173"]
+    }
+  ],
+  "roles": {
+    "realm": [
+      {"name": "superadmin", "description": "OrpycaMCP platform administrator"},
+      {"name": "tenant_admin", "description": "Institution administrator"},
+      {"name": "manager", "description": "Department manager"},
+      {"name": "operator", "description": "Document operator (radica, distribuye)"},
+      {"name": "viewer", "description": "Read-only access"}
+    ]
+  },
+  "users": [
+    {
+      "username": "admin",
+      "email": "admin@orpycamcp.local",
+      "enabled": true,
+      "credentials": [{"type": "password", "value": "orpycamcp_dev", "temporary": false}],
+      "realmRoles": ["superadmin"]
+    },
+    {
+      "username": "operador",
+      "email": "operador@demo.orpycamcp.local",
+      "enabled": true,
+      "credentials": [{"type": "password", "value": "orpycamcp_dev", "temporary": false}],
+      "realmRoles": ["operator"],
+      "attributes": {"tenant_slug": ["demo"]}
+    }
+  ]
+}

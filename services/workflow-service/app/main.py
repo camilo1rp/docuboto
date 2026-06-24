@@ -1,0 +1,91 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+workflow-service — FastAPI application factory.
+
+Responsibilities:
+- Distribution and routing of radicados between dependencias (departments)
+- Full audit trail of every step in a document's lifecycle
+- Redis Stream events on every state change
+- Tenant-isolated storage: PostgreSQL schema per tenant (SET search_path)
+"""
+
+import asyncio
+import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+from app.core.config import settings
+from app.core.database import close_pool, create_pool
+from app.core.redis_client import close_redis, init_redis
+from app.routers.health import router as health_router
+from app.routers.rules import router as rules_router
+from app.routers.visto_bueno import router as visto_bueno_router
+from app.routers.workflow import router as workflow_router
+from app.workers import document_consumer
+
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    logger.info("workflow-service starting up")
+    app.state.db_pool = await create_pool(settings.database_url_asyncpg)
+    await init_redis(settings.redis_url)
+    # Distribución automática (RF-FLU-04): consume orpycamcp.document.events.
+    consumer_task = asyncio.create_task(document_consumer.run())
+    yield
+    logger.info("workflow-service shutting down")
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
+    await close_pool()
+    await close_redis()
+
+
+app = FastAPI(
+    redirect_slashes=False,
+    title="OrpycaMCP — Workflow Service",
+    description=(
+        "Manages distribution and routing of radicados between dependencias. "
+        "Records every transfer with full traceability and publishes events to Redis Streams."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+app.include_router(workflow_router)
+app.include_router(rules_router)
+app.include_router(visto_bueno_router)
+app.include_router(health_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "detail": "An unexpected error occurred",
+            "status": 500,
+        },
+    )
