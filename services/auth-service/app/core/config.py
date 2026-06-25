@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     keycloak_gateway_client_id: str = "api-gateway"
     keycloak_gateway_client_secret: str = "change-me-in-production"
 
+    # Issuer (claim `iss`) esperado en los tokens. Por defecto se deriva de
+    # `keycloak_realm_url`, pero debe poder sobreescribirse: en despliegues con
+    # Docker, los tokens se emiten con la URL pública de Keycloak (p. ej.
+    # http://localhost:19180/realms/orpycamcp) mientras el servicio resuelve
+    # Keycloak por la URL interna (http://keycloak:8080). Si difieren, fija aquí
+    # el issuer público para que la validación del `iss` no rechace tokens válidos.
+    keycloak_issuer: str | None = None
+
     # JWKS public key cache TTL (seconds)
     jwks_cache_ttl: int = 600
 
@@ -44,6 +52,11 @@ class Settings(BaseSettings):
     @property
     def keycloak_realm_url(self) -> str:
         return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
+
+    @property
+    def expected_issuer(self) -> str:
+        """Issuer (`iss`) que debe traer todo token. Override vía KEYCLOAK_ISSUER."""
+        return self.keycloak_issuer or self.keycloak_realm_url
 
     @property
     def keycloak_token_url(self) -> str:

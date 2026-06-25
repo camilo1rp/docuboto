@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app.core.config import settings
 from app.core.database import get_db_conn
 from app.main import app
 from app.routers.auth import set_auth_service
@@ -81,6 +82,7 @@ def build_jwt_claims(
         "email": f"{username}@orpycamcp.test",
         "tenant_slug": tenant_slug,
         "realm_access": {"roles": roles or ["operator"]},
+        "iss": settings.expected_issuer,
         "iat": now - 60,
         "exp": (now - 10) if expired else (now + 300),
     }

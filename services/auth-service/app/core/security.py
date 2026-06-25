@@ -21,7 +21,8 @@ import time
 from typing import Any
 
 import httpx
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError, PyJWKSet
 
 from app.core.config import settings
 
@@ -60,6 +61,20 @@ async def _get_jwks() -> dict[str, Any]:
     return _jwks_cache
 
 
+def _select_signing_key(jwks: dict[str, Any], token: str) -> Any:
+    """Return the public key from the JWKS whose ``kid`` matches the token header.
+
+    python-jose accepted the whole JWKS in ``decode`` and picked the key itself;
+    PyJWT requires us to resolve the signing key by ``kid`` first.
+    """
+    kid = jwt.get_unverified_header(token).get("kid")
+    jwk_set = PyJWKSet.from_dict(jwks)
+    for key in jwk_set.keys:
+        if key.key_id == kid:
+            return key.key
+    raise InvalidTokenError(f"No signing key in JWKS matches kid={kid!r}")
+
+
 def _extract_claims(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalise raw JWT payload into the claims shape the platform uses."""
     realm_access = payload.get("realm_access", {})
@@ -85,20 +100,20 @@ async def validate_token(token: str) -> dict[str, Any]:
     Validate a Bearer JWT against Keycloak's public JWKS.
 
     Returns normalised claims on success.
-    Raises ``JWTError`` on any validation failure (expired, bad signature, etc.).
+    Raises ``PyJWTError`` on any validation failure (expired, bad signature, etc.).
     """
     jwks = await _get_jwks()
 
-    try:
-        payload = jwt.decode(
-            token,
-            jwks,
-            algorithms=["RS256"],
-            audience=None,  # Keycloak tokens may omit 'aud' for bearer-only flow
-            options={"verify_aud": False},
-        )
-    except JWTError:
-        raise
+    signing_key = _select_signing_key(jwks, token)
+    payload = jwt.decode(
+        token,
+        signing_key,
+        algorithms=["RS256"],
+        issuer=settings.expected_issuer,  # reject tokens from another realm/IdP
+        # Keycloak access tokens may omit 'aud' for bearer-only flows; issuer is
+        # verified instead. 'verify_iss' is enabled implicitly by passing issuer.
+        options={"verify_aud": False},
+    )
 
     return _extract_claims(payload)
 

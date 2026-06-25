@@ -24,7 +24,7 @@ use its credentials to perform the password grant on behalf of the caller.
 import logging
 
 import httpx
-from jose import JWTError
+from jwt import PyJWTError
 
 from app.core.config import settings
 from app.core.security import validate_token
@@ -144,13 +144,13 @@ class AuthService:
                 tenant_slug=claims.get("tenant_slug"),
                 roles=claims.get("roles", []),
             )
-        except JWTError:
+        except PyJWTError:
             return ValidateResponse(valid=False)
 
     async def get_current_user(self, token: str) -> UserInfoResponse:
         try:
             claims = await validate_token(token)
-        except JWTError:
+        except PyJWTError:
             raise KeycloakError(401, "invalid_token")
 
         return UserInfoResponse(
