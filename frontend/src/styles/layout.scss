@@ -1,0 +1,384 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+// =============================================================================
+// layout.scss — Grid de aplicación: sidebar + topbar + breadcrumb + contenido
+//
+// Estructura visual:
+//   ┌──────────────────────────────────────────────────────┐
+//   │  Topbar (--op-topbar-height, fijo)                   │
+//   ├────────┬─────────────────────────────────────────────┤
+//   │        │  Breadcrumb (--op-breadcrumb-height)        │
+//   │Sidebar ├─────────────────────────────────────────────┤
+//   │(fijo)  │  Main content (scroll)                      │
+//   │        │                                             │
+//   └────────┴─────────────────────────────────────────────┘
+//
+// El sidebar es colapsable; en móvil (<768px) se convierte en drawer overlay.
+// Todos los valores dimensionales provienen de tokens --op-* (sin px sueltos).
+// =============================================================================
+
+@use "_tokens" as t;
+
+// ── Estructura raíz de la app ────────────────────────────────────────────────
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--op-bg);
+}
+
+// ── Topbar ───────────────────────────────────────────────────────────────────
+
+.app-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  height: var(--op-topbar-height);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--op-space-4);
+  background: var(--op-surface);
+  border-bottom: 1px solid var(--op-border);
+  box-shadow: var(--op-shadow-sm);
+  gap: var(--op-space-4);
+
+  &__brand {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    font-weight: var(--op-weight-bold);
+    font-size: var(--op-font-md);
+    color: var(--op-primary);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  &__logo {
+    height: 28px;
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  &__spacer {
+    flex: 1;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-3);
+  }
+
+  &__toggle {
+    // Botón hamburguesa de sidebar (visible solo en móvil)
+    display: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: var(--op-space-2);
+    border-radius: var(--op-radius-sm);
+    color: var(--op-text);
+    transition: background var(--op-transition);
+
+    &:hover {
+      background: var(--op-bg);
+    }
+
+    @media (max-width: 768px) {
+      display: flex;
+      align-items: center;
+    }
+  }
+}
+
+// ── Body bajo el topbar ──────────────────────────────────────────────────────
+
+.app-body {
+  display: flex;
+  margin-top: var(--op-topbar-height);
+  min-height: calc(100vh - var(--op-topbar-height));
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+
+.app-sidebar {
+  position: fixed;
+  top: var(--op-topbar-height);
+  left: 0;
+  bottom: 0;
+  z-index: 90;
+  width: var(--op-sidebar-width);
+  background: var(--op-surface);
+  border-right: 1px solid var(--op-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    width var(--op-transition),
+    transform var(--op-transition);
+
+  // Estado colapsado (clase aplicada por el store ui)
+  &.is-collapsed {
+    width: var(--op-sidebar-collapsed-width);
+
+    .sidebar-label,
+    .sidebar-section-title {
+      display: none;
+    }
+
+    .sidebar-link {
+      justify-content: center;
+      padding: var(--op-space-2);
+    }
+  }
+
+  // ── Móvil: drawer overlay ─────────────────────────────────────────────────
+  @media (max-width: 768px) {
+    position: fixed;
+    transform: translateX(-100%);
+    box-shadow: var(--op-shadow-lg);
+
+    &.is-open {
+      transform: translateX(0);
+    }
+  }
+}
+
+// Overlay oscuro tras el sidebar en móvil
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  background: rgba(33, 36, 33, 0.4);
+
+  @media (max-width: 768px) {
+    display: block;
+  }
+}
+
+// Nav dentro del sidebar
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--op-space-2) 0;
+}
+
+// Sección del nav
+.sidebar-section {
+  &:not(:first-child) {
+    margin-top: var(--op-space-3);
+  }
+}
+
+.sidebar-section-title {
+  padding: var(--op-space-1) var(--op-space-4);
+  font-size: var(--op-font-xs);
+  font-weight: var(--op-weight-bold);
+  color: var(--op-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+// Enlace de navegación individual
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: var(--op-space-3);
+  padding: var(--op-space-2) var(--op-space-4);
+  color: var(--op-text);
+  text-decoration: none;
+  font-size: var(--op-font-sm);
+  border-radius: var(--op-radius-sm);
+  margin: 1px var(--op-space-2);
+  transition:
+    background var(--op-transition),
+    color var(--op-transition);
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--op-bg);
+    color: var(--op-primary);
+  }
+
+  &.is-active {
+    background: var(--op-primary-light);
+    color: var(--op-primary-dark);
+    font-weight: var(--op-weight-medium);
+  }
+
+  .sidebar-icon {
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    color: inherit;
+  }
+
+  .sidebar-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+// Pie del sidebar (usuario, versión)
+.sidebar-footer {
+  padding: var(--op-space-3) var(--op-space-4);
+  border-top: 1px solid var(--op-border);
+  font-size: var(--op-font-xs);
+  color: var(--op-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+// ── Área de contenido principal ───────────────────────────────────────────────
+
+.app-content {
+  margin-left: var(--op-sidebar-width);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0; // evita overflow en flex
+  transition: margin-left var(--op-transition);
+
+  // Sidebar colapsado
+  .app-sidebar.is-collapsed ~ & {
+    margin-left: var(--op-sidebar-collapsed-width);
+  }
+
+  @media (max-width: 768px) {
+    margin-left: 0;
+  }
+}
+
+// ── Breadcrumb bar ────────────────────────────────────────────────────────────
+
+.app-breadcrumb {
+  height: var(--op-breadcrumb-height);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--op-space-5);
+  background: var(--op-surface);
+  border-bottom: 1px solid var(--op-border);
+  font-size: var(--op-font-xs);
+  color: var(--op-text-secondary);
+  gap: var(--op-space-2);
+  white-space: nowrap;
+  overflow: hidden;
+
+  a {
+    color: var(--op-text-secondary);
+    text-decoration: none;
+
+    &:hover {
+      color: var(--op-primary);
+    }
+  }
+
+  .breadcrumb-separator {
+    color: var(--op-border);
+  }
+
+  .breadcrumb-current {
+    color: var(--op-text);
+    font-weight: var(--op-weight-medium);
+  }
+}
+
+// ── Zona de página (bajo breadcrumb, contenido scroll) ────────────────────────
+
+.app-page {
+  flex: 1;
+  padding: var(--op-space-5);
+  overflow-y: auto;
+}
+
+.page-header {
+  margin-bottom: var(--op-space-5);
+
+  &__title {
+    font-size: var(--op-font-xl);
+    font-weight: var(--op-weight-bold);
+    color: var(--op-text);
+    margin: 0 0 var(--op-space-1) 0;
+  }
+
+  &__subtitle {
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+    margin: 0;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-3);
+    margin-top: var(--op-space-4);
+  }
+}
+
+// ── Dock del asistente (panel lateral derecho, inicialmente vacío) ────────────
+
+.assistant-dock {
+  position: fixed;
+  top: var(--op-topbar-height);
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  width: 360px;
+  background: var(--op-surface);
+  border-left: 1px solid var(--op-border);
+  box-shadow: var(--op-shadow-lg);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--op-transition);
+
+  &.is-open {
+    transform: translateX(0);
+  }
+
+  @media (max-width: 768px) {
+    width: 100%;
+    top: var(--op-topbar-height);
+  }
+}
+
+// ── Utilidades de layout ──────────────────────────────────────────────────────
+
+.is-fullheight-content {
+  min-height: calc(100vh - var(--op-topbar-height) - var(--op-breadcrumb-height));
+}
+
+.panel-split {
+  display: flex;
+  gap: var(--op-space-5);
+
+  @media (max-width: 1024px) {
+    flex-direction: column;
+  }
+
+  &__main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__aside {
+    width: 300px;
+    flex-shrink: 0;
+
+    @media (max-width: 1024px) {
+      width: 100%;
+    }
+  }
+}

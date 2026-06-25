@@ -1,0 +1,762 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+// =============================================================================
+// utilities.scss — Clases utilitarias de tipografía, espaciado y ayudas
+//
+// Principios:
+//  - Nombrado semántico (.text-secondary, .mt-4) no .text-#515551
+//  - Escala de 8px: unidades 1–8 = 4, 8, 12, 16, 24, 32, 48, 64 px
+//  - Todos los valores consumen tokens --op-*; cero px literales sueltos
+//  - Pensadas para densidad alta: gestión documental en jornadas largas
+// =============================================================================
+
+@use "_tokens" as t;
+
+// =============================================================================
+// 1. Tipografía
+// =============================================================================
+
+// Tamaños
+.text-xs {
+  font-size: var(--op-font-xs) !important;
+}
+.text-sm {
+  font-size: var(--op-font-sm) !important;
+}
+.text-base {
+  font-size: var(--op-font-base) !important;
+}
+.text-md {
+  font-size: var(--op-font-md) !important;
+}
+.text-lg {
+  font-size: var(--op-font-lg) !important;
+}
+.text-xl {
+  font-size: var(--op-font-xl) !important;
+}
+.text-2xl {
+  font-size: var(--op-font-2xl) !important;
+}
+
+// Pesos
+.font-regular {
+  font-weight: var(--op-weight-regular) !important;
+}
+.font-medium {
+  font-weight: var(--op-weight-medium) !important;
+}
+.font-bold {
+  font-weight: var(--op-weight-bold) !important;
+}
+
+// Color de texto semántico
+.text-primary {
+  color: var(--op-primary) !important;
+}
+.text-secondary {
+  color: var(--op-text-secondary) !important;
+}
+.text-muted {
+  color: var(--op-text-secondary) !important;
+}
+.text-success {
+  color: var(--op-success) !important;
+}
+.text-warning {
+  color: var(--op-warning) !important;
+}
+.text-error {
+  color: var(--op-error) !important;
+}
+.text-info {
+  color: var(--op-info) !important;
+}
+.text-body {
+  color: var(--op-text) !important;
+}
+
+// Alineación
+.text-left {
+  text-align: left !important;
+}
+.text-center {
+  text-align: center !important;
+}
+.text-right {
+  text-align: right !important;
+}
+
+// Transformaciones y decoraciones
+.text-upper {
+  text-transform: uppercase !important;
+}
+.text-lower {
+  text-transform: lowercase !important;
+}
+.text-capital {
+  text-transform: capitalize !important;
+}
+.text-nowrap {
+  white-space: nowrap !important;
+}
+.text-truncate {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.text-no-decoration {
+  text-decoration: none !important;
+}
+
+// Mono para radicados, ids, fechas técnicas
+.text-mono {
+  font-family: "Courier New", Courier, monospace !important;
+  font-size: var(--op-font-sm) !important;
+  letter-spacing: 0.02em;
+}
+
+// =============================================================================
+// 2. Espaciado — margin y padding (escala 8px, unidades 0–8)
+// =============================================================================
+
+// --- Margin ---
+.m-0 {
+  margin: 0 !important;
+}
+.m-1 {
+  margin: var(--op-space-1) !important;
+}
+.m-2 {
+  margin: var(--op-space-2) !important;
+}
+.m-3 {
+  margin: var(--op-space-3) !important;
+}
+.m-4 {
+  margin: var(--op-space-4) !important;
+}
+.m-5 {
+  margin: var(--op-space-5) !important;
+}
+.m-6 {
+  margin: var(--op-space-6) !important;
+}
+
+.mt-0 {
+  margin-top: 0 !important;
+}
+.mt-1 {
+  margin-top: var(--op-space-1) !important;
+}
+.mt-2 {
+  margin-top: var(--op-space-2) !important;
+}
+.mt-3 {
+  margin-top: var(--op-space-3) !important;
+}
+.mt-4 {
+  margin-top: var(--op-space-4) !important;
+}
+.mt-5 {
+  margin-top: var(--op-space-5) !important;
+}
+.mt-6 {
+  margin-top: var(--op-space-6) !important;
+}
+
+.mb-0 {
+  margin-bottom: 0 !important;
+}
+.mb-1 {
+  margin-bottom: var(--op-space-1) !important;
+}
+.mb-2 {
+  margin-bottom: var(--op-space-2) !important;
+}
+.mb-3 {
+  margin-bottom: var(--op-space-3) !important;
+}
+.mb-4 {
+  margin-bottom: var(--op-space-4) !important;
+}
+.mb-5 {
+  margin-bottom: var(--op-space-5) !important;
+}
+.mb-6 {
+  margin-bottom: var(--op-space-6) !important;
+}
+
+.ml-0 {
+  margin-left: 0 !important;
+}
+.ml-1 {
+  margin-left: var(--op-space-1) !important;
+}
+.ml-2 {
+  margin-left: var(--op-space-2) !important;
+}
+.ml-3 {
+  margin-left: var(--op-space-3) !important;
+}
+.ml-4 {
+  margin-left: var(--op-space-4) !important;
+}
+.ml-5 {
+  margin-left: var(--op-space-5) !important;
+}
+
+.mr-0 {
+  margin-right: 0 !important;
+}
+.mr-1 {
+  margin-right: var(--op-space-1) !important;
+}
+.mr-2 {
+  margin-right: var(--op-space-2) !important;
+}
+.mr-3 {
+  margin-right: var(--op-space-3) !important;
+}
+.mr-4 {
+  margin-right: var(--op-space-4) !important;
+}
+.mr-5 {
+  margin-right: var(--op-space-5) !important;
+}
+
+.mx-auto {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+.my-0 {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+.my-1 {
+  margin-top: var(--op-space-1) !important;
+  margin-bottom: var(--op-space-1) !important;
+}
+.my-2 {
+  margin-top: var(--op-space-2) !important;
+  margin-bottom: var(--op-space-2) !important;
+}
+.my-3 {
+  margin-top: var(--op-space-3) !important;
+  margin-bottom: var(--op-space-3) !important;
+}
+.my-4 {
+  margin-top: var(--op-space-4) !important;
+  margin-bottom: var(--op-space-4) !important;
+}
+.my-5 {
+  margin-top: var(--op-space-5) !important;
+  margin-bottom: var(--op-space-5) !important;
+}
+
+// --- Padding ---
+.p-0 {
+  padding: 0 !important;
+}
+.p-1 {
+  padding: var(--op-space-1) !important;
+}
+.p-2 {
+  padding: var(--op-space-2) !important;
+}
+.p-3 {
+  padding: var(--op-space-3) !important;
+}
+.p-4 {
+  padding: var(--op-space-4) !important;
+}
+.p-5 {
+  padding: var(--op-space-5) !important;
+}
+.p-6 {
+  padding: var(--op-space-6) !important;
+}
+
+.pt-0 {
+  padding-top: 0 !important;
+}
+.pt-2 {
+  padding-top: var(--op-space-2) !important;
+}
+.pt-3 {
+  padding-top: var(--op-space-3) !important;
+}
+.pt-4 {
+  padding-top: var(--op-space-4) !important;
+}
+.pt-5 {
+  padding-top: var(--op-space-5) !important;
+}
+
+.pb-0 {
+  padding-bottom: 0 !important;
+}
+.pb-2 {
+  padding-bottom: var(--op-space-2) !important;
+}
+.pb-3 {
+  padding-bottom: var(--op-space-3) !important;
+}
+.pb-4 {
+  padding-bottom: var(--op-space-4) !important;
+}
+.pb-5 {
+  padding-bottom: var(--op-space-5) !important;
+}
+
+.pl-0 {
+  padding-left: 0 !important;
+}
+.pl-2 {
+  padding-left: var(--op-space-2) !important;
+}
+.pl-3 {
+  padding-left: var(--op-space-3) !important;
+}
+.pl-4 {
+  padding-left: var(--op-space-4) !important;
+}
+.pl-5 {
+  padding-left: var(--op-space-5) !important;
+}
+
+.pr-0 {
+  padding-right: 0 !important;
+}
+.pr-2 {
+  padding-right: var(--op-space-2) !important;
+}
+.pr-3 {
+  padding-right: var(--op-space-3) !important;
+}
+.pr-4 {
+  padding-right: var(--op-space-4) !important;
+}
+.pr-5 {
+  padding-right: var(--op-space-5) !important;
+}
+
+.px-0 {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+.px-2 {
+  padding-left: var(--op-space-2) !important;
+  padding-right: var(--op-space-2) !important;
+}
+.px-3 {
+  padding-left: var(--op-space-3) !important;
+  padding-right: var(--op-space-3) !important;
+}
+.px-4 {
+  padding-left: var(--op-space-4) !important;
+  padding-right: var(--op-space-4) !important;
+}
+.px-5 {
+  padding-left: var(--op-space-5) !important;
+  padding-right: var(--op-space-5) !important;
+}
+
+.py-0 {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.py-2 {
+  padding-top: var(--op-space-2) !important;
+  padding-bottom: var(--op-space-2) !important;
+}
+.py-3 {
+  padding-top: var(--op-space-3) !important;
+  padding-bottom: var(--op-space-3) !important;
+}
+.py-4 {
+  padding-top: var(--op-space-4) !important;
+  padding-bottom: var(--op-space-4) !important;
+}
+.py-5 {
+  padding-top: var(--op-space-5) !important;
+  padding-bottom: var(--op-space-5) !important;
+}
+
+// =============================================================================
+// 3. Colores de fondo
+// =============================================================================
+
+.bg-primary {
+  background-color: var(--op-primary) !important;
+}
+.bg-primary-light {
+  background-color: var(--op-primary-light) !important;
+}
+.bg-surface {
+  background-color: var(--op-surface) !important;
+}
+.bg-base {
+  background-color: var(--op-bg) !important;
+}
+.bg-success {
+  background-color: var(--op-success) !important;
+}
+.bg-warning {
+  background-color: var(--op-warning) !important;
+}
+.bg-error {
+  background-color: var(--op-error) !important;
+}
+.bg-info {
+  background-color: var(--op-info) !important;
+}
+
+// =============================================================================
+// 4. Display y flex
+// =============================================================================
+
+.d-flex {
+  display: flex !important;
+}
+.d-inline-flex {
+  display: inline-flex !important;
+}
+.d-block {
+  display: block !important;
+}
+.d-inline {
+  display: inline !important;
+}
+.d-inline-block {
+  display: inline-block !important;
+}
+.d-none {
+  display: none !important;
+}
+
+.flex-row {
+  flex-direction: row !important;
+}
+.flex-col {
+  flex-direction: column !important;
+}
+.flex-wrap {
+  flex-wrap: wrap !important;
+}
+.flex-nowrap {
+  flex-wrap: nowrap !important;
+}
+.flex-1 {
+  flex: 1 !important;
+}
+.flex-shrink-0 {
+  flex-shrink: 0 !important;
+}
+
+.items-start {
+  align-items: flex-start !important;
+}
+.items-center {
+  align-items: center !important;
+}
+.items-end {
+  align-items: flex-end !important;
+}
+.items-stretch {
+  align-items: stretch !important;
+}
+
+.justify-start {
+  justify-content: flex-start !important;
+}
+.justify-center {
+  justify-content: center !important;
+}
+.justify-end {
+  justify-content: flex-end !important;
+}
+.justify-between {
+  justify-content: space-between !important;
+}
+
+.gap-1 {
+  gap: var(--op-space-1) !important;
+}
+.gap-2 {
+  gap: var(--op-space-2) !important;
+}
+.gap-3 {
+  gap: var(--op-space-3) !important;
+}
+.gap-4 {
+  gap: var(--op-space-4) !important;
+}
+.gap-5 {
+  gap: var(--op-space-5) !important;
+}
+
+// =============================================================================
+// 5. Bordes y sombras
+// =============================================================================
+
+.rounded-sm {
+  border-radius: var(--op-radius-sm) !important;
+}
+.rounded {
+  border-radius: var(--op-radius) !important;
+}
+.rounded-lg {
+  border-radius: var(--op-radius-lg) !important;
+}
+.rounded-full {
+  border-radius: 9999px !important;
+}
+
+.border {
+  border: 1px solid var(--op-border) !important;
+}
+.border-primary {
+  border: 1px solid var(--op-primary) !important;
+}
+.border-none {
+  border: none !important;
+}
+.border-top {
+  border-top: 1px solid var(--op-border) !important;
+}
+.border-bottom {
+  border-bottom: 1px solid var(--op-border) !important;
+}
+
+.shadow-sm {
+  box-shadow: var(--op-shadow-sm) !important;
+}
+.shadow {
+  box-shadow: var(--op-shadow) !important;
+}
+.shadow-lg {
+  box-shadow: var(--op-shadow-lg) !important;
+}
+.shadow-none {
+  box-shadow: none !important;
+}
+
+// =============================================================================
+// 6. Posición y overflow
+// =============================================================================
+
+.relative {
+  position: relative !important;
+}
+.absolute {
+  position: absolute !important;
+}
+.fixed {
+  position: fixed !important;
+}
+.sticky {
+  position: sticky !important;
+  top: 0;
+}
+
+.overflow-auto {
+  overflow: auto !important;
+}
+.overflow-hidden {
+  overflow: hidden !important;
+}
+.overflow-x-auto {
+  overflow-x: auto !important;
+}
+.overflow-y-auto {
+  overflow-y: auto !important;
+}
+
+.w-full {
+  width: 100% !important;
+}
+.h-full {
+  height: 100% !important;
+}
+.min-w-0 {
+  min-width: 0 !important;
+}
+
+// =============================================================================
+// 7. Estado semántico: chips de estado para radicados y expedientes
+//    Usados en bandeja, búsqueda y workspace de expediente.
+// =============================================================================
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--op-space-1);
+  padding: 2px var(--op-space-2);
+  border-radius: var(--op-radius-sm);
+  font-size: var(--op-font-xs);
+  font-weight: var(--op-weight-medium);
+  line-height: 1.4;
+  white-space: nowrap;
+
+  &--success,
+  &--open {
+    background: t.$op-primary-light;
+    color: t.$op-primary-dark;
+  }
+  &--warning,
+  &--pending {
+    background: var(--op-warning-bg);
+    color: var(--op-warning-fg);
+  }
+  &--error,
+  &--closed {
+    background: var(--op-error-bg);
+    color: var(--op-error-fg);
+  }
+  &--info,
+  &--active {
+    background: var(--op-info-bg);
+    color: var(--op-info-fg);
+  }
+  &--neutral {
+    background: var(--op-bg);
+    color: var(--op-text-secondary);
+  }
+}
+
+// Semáforo PQRSD (T-17b, verde/amarillo/rojo/vencido)
+.semaforo-verde {
+  @extend .status-chip;
+  @extend .status-chip--success;
+}
+.semaforo-amarillo {
+  @extend .status-chip;
+  @extend .status-chip--warning;
+}
+.semaforo-rojo {
+  @extend .status-chip;
+  @extend .status-chip--error;
+}
+.semaforo-vencido {
+  @extend .status-chip;
+  background: var(--op-error-strong-bg);
+  color: var(--op-error-strong-fg);
+}
+
+// =============================================================================
+// 8. Accesibilidad
+// =============================================================================
+
+// Focus visible para navegación por teclado (contraste AA)
+:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
+}
+
+// Skip-to-content para lectores de pantalla
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: var(--op-space-4);
+  z-index: 9999;
+  padding: var(--op-space-2) var(--op-space-4);
+  background: var(--op-primary);
+  color: var(--op-surface);
+  border-radius: var(--op-radius-sm);
+  font-weight: var(--op-weight-bold);
+  text-decoration: none;
+
+  &:focus {
+    top: var(--op-space-4);
+  }
+}
+
+// Visualmente oculto pero accesible para screen readers
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+// =============================================================================
+// 9. Utilidades de carga/vacío (estados explícitos de UI)
+// =============================================================================
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--op-space-8) var(--op-space-5);
+  text-align: center;
+  color: var(--op-text-secondary);
+
+  &__icon {
+    font-size: 2.5rem;
+    margin-bottom: var(--op-space-4);
+    opacity: 0.4;
+  }
+
+  &__title {
+    font-size: var(--op-font-md);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-text);
+    margin-bottom: var(--op-space-2);
+  }
+
+  &__description {
+    font-size: var(--op-font-sm);
+    max-width: 320px;
+  }
+}
+
+// Skeleton loader (barras de carga animadas)
+@keyframes op-skeleton-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.skeleton {
+  background: var(--op-border);
+  border-radius: var(--op-radius-sm);
+  animation: op-skeleton-pulse 1.4s ease infinite;
+
+  &--text {
+    height: 1em;
+    width: 80%;
+  }
+  &--title {
+    height: 1.4em;
+    width: 50%;
+  }
+  &--block {
+    height: 48px;
+    width: 100%;
+  }
+  &--avatar {
+    height: 36px;
+    width: 36px;
+    border-radius: 50%;
+  }
+}

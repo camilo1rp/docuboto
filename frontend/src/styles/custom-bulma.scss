@@ -1,0 +1,219 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+// =============================================================================
+// custom-bulma.scss — Bulma 0.9.x compilada con la paleta Orpyca
+//
+// Bulma 0.9.x usa el sistema clásico @import + variables !default.
+// El patrón correcto es declarar los overrides ANTES del @import de Bulma,
+// en el mismo alcance global (no @use).
+//
+// Flujo:
+//   1. Declaramos $primary, $link, etc. con los valores Orpyca (sin !default,
+//      para que Bulma los encuentre ya definidos cuando evalúe los suyos).
+//   2. @import 'bulma/bulma' compila con esos overrides incorporados.
+//   3. Ajustes post-import con var(--op-*) para que el rebranding runtime
+//      por tenant funcione sin recompilar.
+// =============================================================================
+
+// --- Paleta cromática Orpyca (fuente de verdad: _tokens.scss) ---------------
+// Copiamos los valores hex aquí estrictamente para alimentar las variables de
+// Bulma en build-time. En TODOS los demás contextos (componentes, layout,
+// utilities) se consume var(--op-*). Esta es la ÚNICA excepción permitida.
+
+$op-primary: #459940;
+$op-primary-dark: #305336;
+$op-primary-light: #dceed7;
+$op-accent: #94bc2f;
+$op-text: #212421;
+$op-text-secondary: #515551;
+$op-border: #d8ddd6;
+$op-bg: #f5f7f4;
+$op-surface: #ffffff;
+$op-success: #459940;
+$op-warning: #d8a32e;
+$op-error: #d9534f;
+$op-info: #3e7fa6;
+
+// Tipografía
+$op-font-family:
+  "Segoe UI",
+  system-ui,
+  -apple-system,
+  sans-serif;
+$op-font-base: 14px;
+$op-line-height: 1.55;
+$op-radius-sm: 4px;
+$op-radius: 6px;
+$op-radius-lg: 10px;
+
+// --- Overrides de variables Bulma (declarados antes del @import) -------------
+
+// Colores
+$primary: $op-primary;
+$link: $op-primary;
+$link-hover: $op-primary-dark;
+$link-active: $op-primary-dark;
+$link-focus: $op-primary;
+$link-visited: $op-primary-dark;
+
+$success: $op-success;
+$warning: $op-warning;
+$danger: $op-error;
+$info: $op-info;
+
+// Tipografía
+$family-sans-serif: $op-font-family;
+$family-primary: $op-font-family;
+$size-normal: $op-font-base;
+$body-size: $op-font-base;
+$body-line-height: $op-line-height;
+$body-color: $op-text;
+
+// Fondos y superficies
+$body-background-color: $op-bg;
+$scheme-main: $op-surface;
+$scheme-main-bis: $op-bg;
+$white: $op-surface;
+$white-bis: $op-bg;
+
+// Bordes
+$radius: $op-radius;
+$radius-small: $op-radius-sm;
+$radius-large: $op-radius-lg;
+$border: $op-border;
+
+// Buttons
+$button-color: $op-text;
+$button-border-color: $op-border;
+$button-hover-border-color: $op-primary;
+
+// Navbar
+$navbar-background-color: $op-surface;
+$navbar-item-color: $op-text;
+$navbar-item-hover-color: $op-primary;
+$navbar-item-hover-background-color: $op-bg;
+$navbar-item-active-color: $op-primary;
+
+// Inputs
+$input-border-color: $op-border;
+$input-focus-border-color: $op-primary;
+$input-color: $op-text;
+$input-placeholder-color: $op-text-secondary;
+$input-background-color: $op-surface;
+
+// Card
+$card-color: $op-text;
+$card-background-color: $op-surface;
+$card-shadow: 0 2px 8px rgba(33, 36, 33, 0.12);
+
+// Tag
+$tag-background-color: $op-primary-light;
+$tag-color: $op-primary-dark;
+
+// Table
+$table-color: $op-text;
+$table-background-color: $op-surface;
+$table-cell-border-color: $op-border;
+$table-row-hover-background-color: $op-primary-light;
+$table-striped-row-even-background-color: $op-bg;
+
+// Modal
+$modal-content-width: 720px;
+$modal-card-head-background-color: $op-surface;
+$modal-card-body-background-color: $op-surface;
+$modal-card-foot-background-color: $op-bg;
+$modal-card-foot-border-top: 1px solid $op-border;
+
+// -----------------------------------------------------------------------
+// Importar Bulma DESPUÉS de declarar las variables
+// (Bulma 0.9.x: @import clásico en SCSS es compatible)
+// -----------------------------------------------------------------------
+@import "bulma/bulma";
+
+// -----------------------------------------------------------------------
+// Ajustes post-import con var(--op-*) para rebranding por tenant en runtime
+// -----------------------------------------------------------------------
+
+// Botón primario
+.button.is-primary {
+  background-color: var(--op-primary);
+  border-color: transparent;
+  color: var(--op-surface);
+
+  &:hover,
+  &:focus {
+    background-color: var(--op-primary-dark);
+    border-color: transparent;
+    color: var(--op-surface);
+  }
+
+  &:active {
+    background-color: var(--op-primary-dark);
+  }
+
+  &.is-outlined {
+    background-color: transparent;
+    border-color: var(--op-primary);
+    color: var(--op-primary);
+
+    &:hover {
+      background-color: var(--op-primary);
+      color: var(--op-surface);
+    }
+  }
+
+  &.is-light {
+    background-color: var(--op-primary-light);
+    color: var(--op-primary-dark);
+
+    &:hover {
+      background-color: var(--op-primary-light);
+      color: var(--op-primary-dark);
+      filter: brightness(0.95);
+    }
+  }
+}
+
+// Tag primario
+.tag.is-primary {
+  background-color: var(--op-primary);
+  color: var(--op-surface);
+}
+
+.tag.is-primary.is-light {
+  background-color: var(--op-primary-light);
+  color: var(--op-primary-dark);
+}
+
+// Links globales
+a {
+  color: var(--op-primary);
+
+  &:hover {
+    color: var(--op-primary-dark);
+  }
+}
+
+// Fondo del body
+html,
+body {
+  background-color: var(--op-bg);
+  color: var(--op-text);
+  font-family: var(--op-font-family);
+  font-size: var(--op-font-size-base);
+  line-height: var(--op-line-height);
+}
+
+// Reset de box-sizing complementario
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}

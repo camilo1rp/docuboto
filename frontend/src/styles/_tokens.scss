@@ -1,0 +1,202 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+// =============================================================================
+// _tokens.scss — Fuente única de tokens Orpyca (paleta, tipografía, espaciados)
+//
+// REGLA 60/30/10:
+//   60% neutros  (--op-bg, --op-surface, --op-border, --op-text)
+//   30% primario (--op-primary, --op-primary-dark, --op-primary-light)
+//   10% acento   (--op-accent)
+// No saturar de verde pantallas de uso prolongado; el verde es para acción/marca,
+// no para decoración. Los demás archivos SIEMPRE consumen estos tokens vía
+// `var(--op-*)` o las variables Sass de este archivo; nunca valores hex sueltos.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// 1. Variables Sass (alimentan Bulma en tiempo de build)
+// -----------------------------------------------------------------------------
+
+// Paleta cromática
+$op-primary: #459940;
+$op-primary-dark: #305336;
+$op-primary-light: #dceed7;
+$op-accent: #94bc2f;
+
+$op-text: #212421;
+$op-text-secondary: #515551;
+
+$op-border: #d8ddd6;
+$op-bg: #f5f7f4;
+$op-surface: #ffffff;
+
+// Estados semánticos — color del borde/icono (border-left, dot)
+$op-success: #459940;
+$op-warning: #d8a32e;
+$op-error: #d9534f;
+$op-info: #3e7fa6;
+
+// Fondos y textos de estado para chips, toasts y semáforos
+// Verificados con contraste AA (≥4.5:1) sobre sus fondos respectivos.
+$op-success-bg: #dceed7; // = $op-primary-light  (reutiliza la paleta verde)
+$op-success-fg: #305336; // = $op-primary-dark   (ratio ~7:1)
+$op-warning-bg: #fdf3dc; // amarillo pálido        (ratio ~5.6:1 con fg)
+$op-warning-fg: #7a5700; // marrón oscuro           (ratio ~5.6:1)
+$op-error-bg: #fce8e8; // rojo pálido             (ratio ~6.3:1 con fg)
+$op-error-fg: #8b1a1a; // rojo oscuro             (ratio ~6.3:1)
+$op-info-bg: #e0eef7; // azul pálido             (ratio ~5.1:1 con fg)
+$op-info-fg: #1e4e6b; // azul marino             (ratio ~5.1:1)
+// Fondo de semáforo vencido (estado crítico — contraste ~7:1)
+$op-error-strong-bg: #3b0000;
+$op-error-strong-fg: #ffdddd;
+
+// Focus rings tokenizados
+$op-focus-ring: rgba(69, 153, 64, 0.15); // primario al 15%
+$op-error-ring: rgba(217, 83, 79, 0.15); // error al 15%
+
+// Tipografía
+$op-font-family:
+  "Segoe UI",
+  system-ui,
+  -apple-system,
+  sans-serif;
+$op-font-size-base: 14px; // densidad cómoda para jornadas largas en gestión documental
+$op-line-height: 1.55;
+
+// Escala tipográfica (múltiplos de 2px sobre base 14)
+$op-font-xs: 12px;
+$op-font-sm: 13px;
+$op-font-base: 14px;
+$op-font-md: 16px;
+$op-font-lg: 18px;
+$op-font-xl: 22px;
+$op-font-2xl: 28px;
+
+// Pesos
+$op-weight-regular: 400;
+$op-weight-medium: 500;
+$op-weight-bold: 600;
+
+// Espaciado — unidad base 8px
+$op-space-1: 4px; // 0.5u
+$op-space-2: 8px; // 1u
+$op-space-3: 12px; // 1.5u
+$op-space-4: 16px; // 2u
+$op-space-5: 24px; // 3u
+$op-space-6: 32px; // 4u
+$op-space-7: 48px; // 6u
+$op-space-8: 64px; // 8u
+
+// Radio de borde
+$op-radius-sm: 4px;
+$op-radius: 6px;
+$op-radius-lg: 10px;
+
+// Sombras
+$op-shadow-sm: 0 1px 3px rgba(33, 36, 33, 0.08);
+$op-shadow: 0 2px 8px rgba(33, 36, 33, 0.12);
+$op-shadow-lg: 0 4px 16px rgba(33, 36, 33, 0.16);
+
+// Transiciones
+$op-transition: 150ms ease;
+
+// Layout — sidebar/topbar
+$op-sidebar-width: 220px;
+$op-sidebar-collapsed-width: 52px;
+$op-topbar-height: 52px;
+$op-breadcrumb-height: 36px;
+
+// -----------------------------------------------------------------------------
+// 2. CSS Custom Properties en :root (rebranding por tenant en runtime)
+//    Al cargar la sesión, el store de tenant inyecta un <style> que sobreescribe
+//    los valores --op-* sin recompilar. Los archivos .scss consumen var(--op-*).
+// -----------------------------------------------------------------------------
+
+:root {
+  // Paleta
+  --op-primary: #{$op-primary};
+  --op-primary-dark: #{$op-primary-dark};
+  --op-primary-light: #{$op-primary-light};
+  --op-accent: #{$op-accent};
+
+  // Texto
+  --op-text: #{$op-text};
+  --op-text-secondary: #{$op-text-secondary};
+
+  // Superficies
+  --op-border: #{$op-border};
+  --op-bg: #{$op-bg};
+  --op-surface: #{$op-surface};
+
+  // Estados — color borde/icono
+  --op-success: #{$op-success};
+  --op-warning: #{$op-warning};
+  --op-error: #{$op-error};
+  --op-info: #{$op-info};
+
+  // Estados — fondos y textos para chips, toasts y semáforos
+  --op-success-bg: #{$op-success-bg};
+  --op-success-fg: #{$op-success-fg};
+  --op-warning-bg: #{$op-warning-bg};
+  --op-warning-fg: #{$op-warning-fg};
+  --op-error-bg: #{$op-error-bg};
+  --op-error-fg: #{$op-error-fg};
+  --op-info-bg: #{$op-info-bg};
+  --op-info-fg: #{$op-info-fg};
+  --op-error-strong-bg: #{$op-error-strong-bg};
+  --op-error-strong-fg: #{$op-error-strong-fg};
+
+  // Focus rings
+  --op-focus-ring: #{$op-focus-ring};
+  --op-error-ring: #{$op-error-ring};
+
+  // Tipografía
+  --op-font-family: #{$op-font-family};
+  --op-font-size-base: #{$op-font-size-base};
+  --op-line-height: #{$op-line-height};
+
+  --op-font-xs: #{$op-font-xs};
+  --op-font-sm: #{$op-font-sm};
+  --op-font-base: #{$op-font-base};
+  --op-font-md: #{$op-font-md};
+  --op-font-lg: #{$op-font-lg};
+  --op-font-xl: #{$op-font-xl};
+  --op-font-2xl: #{$op-font-2xl};
+
+  --op-weight-regular: #{$op-weight-regular};
+  --op-weight-medium: #{$op-weight-medium};
+  --op-weight-bold: #{$op-weight-bold};
+
+  // Espaciado
+  --op-space-1: #{$op-space-1};
+  --op-space-2: #{$op-space-2};
+  --op-space-3: #{$op-space-3};
+  --op-space-4: #{$op-space-4};
+  --op-space-5: #{$op-space-5};
+  --op-space-6: #{$op-space-6};
+  --op-space-7: #{$op-space-7};
+  --op-space-8: #{$op-space-8};
+
+  // Bordes y sombras
+  --op-radius-sm: #{$op-radius-sm};
+  --op-radius: #{$op-radius};
+  --op-radius-lg: #{$op-radius-lg};
+
+  --op-shadow-sm: #{$op-shadow-sm};
+  --op-shadow: #{$op-shadow};
+  --op-shadow-lg: #{$op-shadow-lg};
+
+  --op-transition: #{$op-transition};
+
+  // Layout
+  --op-sidebar-width: #{$op-sidebar-width};
+  --op-sidebar-collapsed-width: #{$op-sidebar-collapsed-width};
+  --op-topbar-height: #{$op-topbar-height};
+  --op-breadcrumb-height: #{$op-breadcrumb-height};
+}

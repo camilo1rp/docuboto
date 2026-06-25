@@ -1,6 +1,6 @@
 # Frontend — OrpycaMCP
 
-> **Estado: PLANIFICADO (scaffold).** Esta carpeta fija el stack y la estructura del frontend; **aún no hay aplicación implementada**. Las dependencias **no** se instalan en el host: el build y el dev server corren siempre en Docker (regla *Docker-only* del proyecto). Decisión registrada en [ADR-011](../docs/es/adr/ADR-011-frontend-sveltekit-monorepo.md).
+> **Estado: PLANIFICADO (scaffold).** Esta carpeta fija el stack y la estructura del frontend; **aún no hay aplicación implementada**. Las dependencias **no** se instalan en el host: el build y el dev server corren siempre en Docker (regla _Docker-only_ del proyecto). Decisión registrada en [ADR-011](../docs/es/adr/ADR-011-frontend-sveltekit-monorepo.md).
 
 ## Qué es
 
@@ -15,22 +15,22 @@ navegador → frontend (SvelteKit SSR) → api-gateway:8080 → microservicios
 
 Las herramientas replican el frontend de `sgdINTI`, que ya está probado en producción:
 
-| Área | Herramienta |
-|---|---|
-| Framework | **SvelteKit 2** + **Svelte 4** |
-| Render | **SSR** con `@sveltejs/adapter-node` (servidor Node sirve HTML) |
-| Bundler / dev | **Vite 5** (HMR) |
-| Estilos | **Bulma** + **Sass (SCSS)** |
-| Iconos | FontAwesome Free |
-| Editor de texto rico | **TipTap 3** (*opcional*; colaboración con **Yjs** + **Hocuspocus**) |
-| Formularios dinámicos | **SurveyJS** (*opcional*; *form builder* — útil para PQRSD/ventanilla) |
-| Drag & drop | `svelte-dnd-action` |
-| Captcha (portal ciudadano) | `altcha` (*opcional*) |
-| Markdown | `marked` |
-| Tests | **Vitest** |
-| Calidad | **ESLint** + **Prettier** |
+| Área                       | Herramienta                                                            |
+| -------------------------- | ---------------------------------------------------------------------- |
+| Framework                  | **SvelteKit 2** + **Svelte 4**                                         |
+| Render                     | **SSR** con `@sveltejs/adapter-node` (servidor Node sirve HTML)        |
+| Bundler / dev              | **Vite 5** (HMR)                                                       |
+| Estilos                    | **Bulma** + **Sass (SCSS)**                                            |
+| Iconos                     | FontAwesome Free                                                       |
+| Editor de texto rico       | **TipTap 3** (_opcional_; colaboración con **Yjs** + **Hocuspocus**)   |
+| Formularios dinámicos      | **SurveyJS** (_opcional_; _form builder_ — útil para PQRSD/ventanilla) |
+| Drag & drop                | `svelte-dnd-action`                                                    |
+| Captcha (portal ciudadano) | `altcha` (_opcional_)                                                  |
+| Markdown                   | `marked`                                                               |
+| Tests                      | **Vitest**                                                             |
+| Calidad                    | **ESLint** + **Prettier**                                              |
 
-> TipTap/Yjs/Hocuspocus, SurveyJS y altcha están en `optionalDependencies`: se habilitan cuando se aborden las funcionalidades que los necesitan (edición colaborativa, *form builder*, portal ciudadano). El núcleo arranca sin ellos.
+> TipTap/Yjs/Hocuspocus, SurveyJS y altcha están en `optionalDependencies`: se habilitan cuando se aborden las funcionalidades que los necesitan (edición colaborativa, _form builder_, portal ciudadano). El núcleo arranca sin ellos.
 
 ## Estructura prevista (igual que sgdINTI)
 

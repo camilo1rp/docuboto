@@ -9,6 +9,7 @@
 
 import { sveltekit } from "@sveltejs/kit/vite";
 import { defineConfig } from "vite";
+import { resolve } from "path";
 
 export default defineConfig({
   plugins: [sveltekit()],
@@ -18,6 +19,21 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+  },
+  resolve: {
+    alias: {
+      // Alias para importar estilos desde componentes sin rutas relativas largas.
+      // Uso: @use '$styles/tokens' as *;
+      $styles: resolve(process.cwd(), "src/styles"),
+    },
+  },
+  css: {
+    preprocessorOptions: {
+      scss: {
+        // Permite @use '$styles/tokens' en bloques <style lang="scss"> de .svelte
+        loadPaths: [resolve(process.cwd(), "src/styles")],
+      },
+    },
   },
   // Edición colaborativa (TipTap + Yjs + Hocuspocus) es opcional/futura;
   // pre-bundle solo si se habilita (ver optionalDependencies en package.json).

@@ -1,0 +1,33 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+// =============================================================================
+// app.scss — Punto de entrada único de estilos OrpycaMCP
+//
+// Orden de importación:
+//   1. _tokens    → variables Sass + CSS custom properties :root (--op-*)
+//   2. custom-bulma → Bulma compilada con overrides Orpyca + ajustes post-import
+//   3. layout     → grid de app (sidebar, topbar, breadcrumb, contenido)
+//   4. utilities  → tipografía, espaciados, helpers
+//
+// Regla de oro: ningún archivo de componente introduce colores hex sueltos.
+// Todos los valores visuales pasan por los tokens de _tokens.scss.
+// =============================================================================
+
+// 1. Tokens (define :root con --op-* y variables Sass $op-*)
+@use "tokens";
+
+// 2. Bulma con paleta Orpyca
+@use "custom-bulma";
+
+// 3. Grid / layout de la shell
+@use "layout";
+
+// 4. Clases utilitarias
+@use "utilities";
