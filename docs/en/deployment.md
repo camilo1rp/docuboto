@@ -480,4 +480,4 @@ docker compose up -d postgres
 
 ---
 
-**Questions?** Contact: giampieruccini@gmail.com
+**Questions?** Contact: aurigadl@gmail.com

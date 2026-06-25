@@ -16,7 +16,20 @@ La norma fundamental. Obliga a todas las entidades públicas colombianas a:
 **Qué implementa OrpycaMCP de esta ley:**
 - Módulo TRD con estructura de secciones, series y subseries
 - Estados del expediente con control de transferencia
-- Disposición final configurable por serie: CT, E, MT, S
+- Disposición final configurable por serie: **CT** (conservación total), **E** (eliminación), **MF** (microfilmación), **RD** (reproducción/digitalización), **S** (selección)
+
+---
+
+## Ley 527 de 1999 y Decreto Único 1074 de 2015 — Firma electrónica y digital
+
+Dan **equivalencia funcional** y valor probatorio a los documentos electrónicos y sus firmas. La **Ley 527/1999** define la firma electrónica (métodos: claves, biométricos, contraseñas) y la firma digital (criptografía con certificado de entidad acreditada), y la **equivalencia funcional** de la firma (art. 7) y del escrito. Su reglamento vigente es el **Decreto Único 1074/2015, Cap. 47** (arts. 2.2.2.47.1–47.10, que **compilan y amplían** el Decreto 2364/2012: confiabilidad 47.4, efectos jurídicos 47.5, obligaciones del firmante 47.6, grado de seguridad 47.8) y **Cap. 48** + **Decreto 333/2014** (entidades de certificación / acreditación **ONAC**). El **Decreto 526/2021** habilita la firma electrónica del contrato de trabajo.
+
+> ⚠️ Citar el **DUR 1074/2015**, no el Decreto 2364/2012 de forma autónoma. Marco íntegro extraído en `documentos/normativa-firma/`.
+
+**Qué implementa (o especifica) OrpycaMCP de este marco** (épica E06):
+- Firma del **índice electrónico al cierre** del expediente (Acuerdo AGN 001/2024 Art. 4.3.2.4) — hoy firma nativa, XAdES+TSA diferida.
+- **Atribución verificada** del firmante (identidad del JWT), **2FA en el acto de firma personal** y **sello electrónico de persona jurídica** para el autofirmado de documentos generados por el sistema.
+- Conservación de la prueba (firma + certificado + estampado de tiempo + refrendo) sin alterar el contenido firmado.
 
 ---
 

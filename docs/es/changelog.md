@@ -8,6 +8,13 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ## [Unreleased]
 
+### Seguridad
+
+- `refactor(auth)`: migración `python-jose` → `PyJWT[crypto]` — jose está mínimamente mantenida (CVE-2024-33663/33664); PyJWT resuelve la clave del JWKS por `kid` antes de validar. Nuevos tests que firman JWT RS256 reales.
+- `fix(auth)`: validación del emisor (`iss`) en los JWT — ahora `jwt.decode` rechaza tokens de otro realm/cliente. Nuevo `KEYCLOAK_ISSUER` opcional para el desfase URL pública/interna en Docker.
+- `fix(deps)`: suelos elevados por CVE — `python-multipart` `>=0.0.18` (CVE-2024-53981), `mcp` `>=1.12.0` (API actual del SDK).
+- `chore(build)`: dependencias congeladas con `requirements.lock` por servicio (pin transitivo con `uv pip compile`); los `Dockerfile` instalan desde el `.lock` para builds reproducibles.
+
 ### Cambiado
 
 - `docs(rebrand)`: nombre visible del proyecto `OrfeoMCP` → **`OrpycaMCP`** (marca, documentación, encabezados de licencia, títulos de API) — *Por qué*: el proyecto es la evolución de Orfeo bajo el concepto **Orpyca** ("Orfeo Pyme Calidad") con conexión a IA vía **MCP** (Model Context Protocol) — *Impacto*: convención por superficie — marca `OrpycaMCP` · repo/imágenes `orpyca-mcp` · imports Python `orpycamcp_common` · datos/infra `orpycamcp` (sin la sigla, por restricciones de Postgres/MinIO)

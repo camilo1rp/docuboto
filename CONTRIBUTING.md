@@ -217,7 +217,7 @@ Release checklist:
 - Open an issue for bugs or feature requests
 - Check existing issues/PRs to avoid duplicates
 - For architecture discussions, start with an ADR draft
-- Contact maintainers: giampieruccini@gmail.com
+- Contact maintainers: aurigadl@gmail.com
 
 ---
 
