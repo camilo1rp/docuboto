@@ -19,8 +19,8 @@ COPY shared /shared
 RUN pip install --no-cache-dir /shared
 
 # 2) Dependencias del servicio.
-COPY services/archive-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY services/archive-service/requirements.txt services/archive-service/requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 # 3) Código del servicio.
 COPY services/archive-service/ .

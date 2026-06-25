@@ -20,8 +20,8 @@ COPY shared /shared
 RUN pip install --no-cache-dir /shared
 
 # 2) Dependencias del servicio.
-COPY services/document-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY services/document-service/requirements.txt services/document-service/requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 # 3) Código del servicio.
 COPY services/document-service/ .
