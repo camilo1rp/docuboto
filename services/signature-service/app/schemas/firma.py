@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Schemas del signature-service (E06, ADR-016)."""
+"""Schemas del signature-service (E06, ADR-016, RF-FIR-11)."""
 
 from __future__ import annotations
 
@@ -18,11 +18,17 @@ from pydantic import BaseModel, Field
 
 
 class SignXmlRequest(BaseModel):
+    """
+    Solicitud de firma de un payload XML (o hash de documento).
+
+    El firmante NO se acepta en el cuerpo de la petición — se deriva
+    exclusivamente del JWT validado (RF-FIR-11, D-01).
+    """
+
     payload_xml: str = Field(..., min_length=1)
     objeto_tipo: str = Field(..., min_length=1, max_length=40)
     objeto_id: str | None = None
     formato: str | None = Field(default="XAdES", max_length=20)
-    firmante_id: uuid.UUID | None = None
 
 
 class FirmaResponse(BaseModel):
@@ -30,8 +36,10 @@ class FirmaResponse(BaseModel):
     objeto_tipo: str
     objeto_id: str | None
     formato_solicitado: str | None
+    firmante_id: uuid.UUID | None
     payload_sha256: str
     provider: str
+    sello_tiempo: datetime
     created_at: datetime
 
 

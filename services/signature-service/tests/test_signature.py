@@ -7,29 +7,79 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Tests del signature-service (E06, ADR-016)."""
+"""Tests del signature-service (E06, ADR-016, RF-FIR-11..14, D-01)."""
+
+from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException, status
+from httpx import ASGITransport, AsyncClient
 
+from unittest.mock import AsyncMock, patch
+
+from app.core.config import settings
+from app.core.database import get_tenant_conn
+from app.core.security import get_current_user
+from app.main import app
 from app.services import signer
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, USER, VALID_CLAIMS
 
+# Fixed timestamp used to build test firma rows so verify tests are deterministic.
+SELLO_DT = datetime(2024, 1, 1, tzinfo=timezone.utc)
+SELLO_STR = SELLO_DT.astimezone(timezone.utc).isoformat()
 NOW = datetime.now(tz=UTC)
-USER = uuid.uuid4()
 
 
-def test_signer_native_deterministic_and_detects_tamper() -> None:
-    blob = signer.firmar(b"<indice/>", str(USER))["firma_blob"]
-    assert signer.verificar(b"<indice/>", str(USER), blob) is True
-    assert signer.verificar(b"<indice ALTERADO/>", str(USER), blob) is False
-    assert signer.verificar(b"<indice/>", str(uuid.uuid4()), blob) is False
+# ---------------------------------------------------------------------------
+# Unit tests — signer module
+# ---------------------------------------------------------------------------
+
+
+def test_signer_hmac_verify_roundtrip() -> None:
+    """Sign and verify succeed for same inputs."""
+    secret = settings.signature_secret
+    result = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)
+    assert signer.verificar(b"<indice/>", str(USER), result["firma_blob"], SELLO_STR, secret) is True
+
+
+def test_signer_detects_tampered_payload() -> None:
+    secret = settings.signature_secret
+    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
+    assert signer.verificar(b"<indice ALTERADO/>", str(USER), blob, SELLO_STR, secret) is False
+
+
+def test_signer_detects_wrong_firmante() -> None:
+    secret = settings.signature_secret
+    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
+    assert signer.verificar(b"<indice/>", str(uuid.uuid4()), blob, SELLO_STR, secret) is False
+
+
+def test_signer_non_reproducible_without_secret() -> None:
+    """firma_blob is not reproducible by a caller who doesn't know the secret."""
+    secret = settings.signature_secret
+    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
+    assert signer.verificar(b"<indice/>", str(USER), blob, SELLO_STR, "wrong-secret") is False
+
+
+def test_signer_detects_wrong_sello_tiempo() -> None:
+    secret = settings.signature_secret
+    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
+    assert signer.verificar(b"<indice/>", str(USER), blob, "2025-06-01T00:00:00+00:00", secret) is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
-    r = signer.firmar(payload, str(firmante))
+    """Build a fake DB row matching FirmaRepository._COLS."""
+    r = signer.firmar(payload, str(firmante), SELLO_STR, settings.signature_secret)
     return {
         "id": uuid.uuid4(),
         "objeto_tipo": "indice",
@@ -39,59 +89,205 @@ def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
         "payload_sha256": r["payload_sha256"],
         "firma_blob": r["firma_blob"],
         "provider": r["provider"],
+        "sello_tiempo": SELLO_DT,
         "created_at": NOW,
     }
 
 
+# ---------------------------------------------------------------------------
+# HTTP tests — sign-xml
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_sign_xml(client_with_conn) -> None:
+async def test_sign_xml_happy_path(client_with_conn) -> None:
+    """POST /sign-xml with valid JWT (PERM_FIRMA) creates a firma record."""
     client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)
+
     resp = await client.post(
         "/api/v1/signature/sign-xml",
-        json={
-            "payload_xml": "<indice/>",
-            "objeto_tipo": "indice",
-            "objeto_id": "exp-1",
-            "formato": "XAdES",
-        },
-        headers={**TENANT_HEADERS, "X-User-Id": str(USER)},
+        json={"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"},
+        headers=TENANT_HEADERS,
     )
     assert resp.status_code == 201
     body = resp.json()
     assert body["provider"] == "nativa"
     assert body["objeto_tipo"] == "indice"
     assert len(body["payload_sha256"]) == 64
+    # firmante_id must come from JWT claims, not from request body
+    assert body["firmante_id"] == str(USER)
 
 
 @pytest.mark.asyncio
-async def test_verify_ok_and_tamper(client_with_conn) -> None:
+async def test_sign_xml_body_firmante_id_ignored() -> None:
+    """firmante_id in the request body must not exist in the schema (RF-FIR-11)."""
+    from app.schemas.firma import SignXmlRequest
+
+    # Pydantic should reject or ignore a firmante_id field — it's not in the schema.
+    req = SignXmlRequest(payload_xml="<x/>", objeto_tipo="indice", firmante_id=str(uuid.uuid4()))  # type: ignore[call-arg]
+    # Pydantic v2 with extra="ignore" silently drops unknown fields.
+    assert not hasattr(req, "firmante_id")
+
+
+@pytest.mark.asyncio
+async def test_sign_xml_requires_auth() -> None:
+    """POST /sign-xml without Authorization header returns 401 (RF-FIR-11)."""
+    # No dependency override — real get_current_user sees no credentials.
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post(
+            "/api/v1/signature/sign-xml",
+            json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
+            headers=TENANT_HEADERS,  # no Authorization header
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sign_xml_requires_perm_firma() -> None:
+    """POST /sign-xml with valid token but no PERM_FIRMA returns 403 (RF-FIR-11).
+
+    We override get_current_user to raise the same 403 it raises when the
+    subject's roles don't include PERM_FIRMA, validating that the router
+    propagates the dependency exception correctly.
+    """
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+
+    async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    async def _no_perm() -> dict:
+        # Mirrors the HTTPException raised by get_current_user when PERM_FIRMA is absent.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "forbidden", "detail": "PERM_FIRMA permission is required to sign documents", "status": 403},
+        )
+
+    app.dependency_overrides[get_tenant_conn] = _conn_dep
+    app.dependency_overrides[get_current_user] = _no_perm
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/sign-xml",
+                json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "forbidden"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# HTTP tests — verify
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_ok(client_with_conn) -> None:
+    """POST /verify returns valida=true for untampered payload."""
     client, conn = client_with_conn
     row = _firma_row(b"<indice/>", USER)
     conn.fetchrow.return_value = row
 
-    ok = await client.post(
+    resp = await client.post(
         "/api/v1/signature/verify",
         json={"firma_id": str(row["id"]), "payload_xml": "<indice/>"},
         headers=TENANT_HEADERS,
     )
-    assert ok.status_code == 200 and ok.json()["valida"] is True
+    assert resp.status_code == 200
+    assert resp.json()["valida"] is True
 
-    bad = await client.post(
+
+@pytest.mark.asyncio
+async def test_verify_tampered_payload(client_with_conn) -> None:
+    """POST /verify returns valida=false when payload differs from signed content."""
+    client, conn = client_with_conn
+    row = _firma_row(b"<indice/>", USER)
+    conn.fetchrow.return_value = row
+
+    resp = await client.post(
         "/api/v1/signature/verify",
         json={"firma_id": str(row["id"]), "payload_xml": "<indice ALTERADO/>"},
         headers=TENANT_HEADERS,
     )
-    assert bad.json()["valida"] is False
+    assert resp.status_code == 200
+    assert resp.json()["valida"] is False
 
 
 @pytest.mark.asyncio
 async def test_verify_not_found(client_with_conn) -> None:
+    """POST /verify returns 404 when firma_id does not exist."""
     client, conn = client_with_conn
     conn.fetchrow.return_value = None
+
     resp = await client.post(
         "/api/v1/signature/verify",
         json={"firma_id": str(uuid.uuid4()), "payload_xml": "<x/>"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — get_current_user permission & tenant-binding (D-01)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_role_without_permission() -> None:
+    """PERM_FIRMA in roles[] but NOT in permissions[] must yield 403 (D-01).
+
+    Before the fix, the check was against roles[] — a valid RBAC role could
+    grant signing rights without the explicit permission, breaking ADR-013.
+    """
+    from fastapi import HTTPException
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    from app.core.security import get_current_user
+
+    claims_role_only = {
+        "user_id": str(USER),
+        "username": "testuser",
+        "email": "test@demo.example",
+        "tenant_slug": "demo",
+        "roles": ["PERM_FIRMA"],  # role present
+        "permissions": [],         # permission absent — must be rejected
+        "exp": None,
+        "iat": None,
+    }
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake-token")
+
+    with patch("app.core.security.validate_token", new=AsyncMock(return_value=claims_role_only)):
+        with pytest.raises(HTTPException) as exc_info:
+            await get_current_user(credentials=creds, x_tenant_slug="demo")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_tenant_mismatch() -> None:
+    """Token tenant != X-Tenant-Slug must yield 403 — prevents cross-tenant signing (D-01)."""
+    from fastapi import HTTPException
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    from app.core.security import get_current_user
+
+    claims_wrong_tenant = {
+        "user_id": str(USER),
+        "username": "testuser",
+        "email": "test@demo.example",
+        "tenant_slug": "other-org",   # token is for a different tenant
+        "roles": [],
+        "permissions": ["PERM_FIRMA"],
+        "exp": None,
+        "iat": None,
+    }
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake-token")
+
+    with patch("app.core.security.validate_token", new=AsyncMock(return_value=claims_wrong_tenant)):
+        with pytest.raises(HTTPException) as exc_info:
+            await get_current_user(credentials=creds, x_tenant_slug="demo")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "forbidden"

@@ -15,8 +15,12 @@ certifi==2026.6.17
     # via
     #   httpcore
     #   httpx
+cffi==2.0.0
+    # via cryptography
 click==8.4.2
     # via uvicorn
+cryptography==49.0.0
+    # via pyjwt
 fastapi==0.138.0
     # via -r services/signature-service/requirements.txt
 h11==0.16.0
@@ -39,6 +43,8 @@ packaging==26.2
     # via pytest
 pluggy==1.6.0
     # via pytest
+pycparser==3.0
+    # via cffi
 pydantic==2.13.4
     # via
     #   fastapi
@@ -49,6 +55,8 @@ pydantic-settings==2.14.2
     # via -r services/signature-service/requirements.txt
 pygments==2.20.0
     # via pytest
+pyjwt==2.13.0
+    # via -r services/signature-service/requirements.txt
 pytest==9.1.1
     # via
     #   -r services/signature-service/requirements.txt

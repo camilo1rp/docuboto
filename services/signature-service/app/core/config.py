@@ -25,5 +25,23 @@ class Settings(BaseSettings):
     service_port: int = 8008
     log_level: str = "info"
 
+    # Keycloak — JWT validation (RF-FIR-11, D-01)
+    keycloak_url: str = "http://keycloak:8180"
+    keycloak_realm: str = "orpycamcp"
+    jwks_cache_ttl: int = 300  # seconds
+
+    @property
+    def keycloak_jwks_url(self) -> str:
+        return f"{self.keycloak_url}/realms/{self.keycloak_realm}/protocol/openid-connect/certs"
+
+    @property
+    def expected_issuer(self) -> str:
+        return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
+
+    # Server-side HMAC secret — makes firma_blob non-reproducible from public data
+    # (RF-FIR-12, D-01). Must be at least 32 random bytes; rotate with a migration
+    # of existing firmas if compromised. NEVER commit the real value.
+    signature_secret: str = "change-me-in-production"
+
 
 settings = Settings()

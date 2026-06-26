@@ -17,7 +17,7 @@ import asyncpg
 
 _COLS = (
     "id, objeto_tipo, objeto_id, formato_solicitado, firmante_id, "
-    "payload_sha256, firma_blob, provider, created_at"
+    "payload_sha256, firma_blob, provider, sello_tiempo, created_at"
 )
 
 
@@ -28,8 +28,8 @@ class FirmaRepository:
     async def insert(self, data: dict) -> asyncpg.Record:
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma (objeto_tipo, objeto_id, formato_solicitado,
-                firmante_id, payload_sha256, firma_blob, provider)
-                VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING {_COLS}""",
+                firmante_id, payload_sha256, firma_blob, provider, sello_tiempo)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING {_COLS}""",
             data["objeto_tipo"],
             data.get("objeto_id"),
             data.get("formato_solicitado"),
@@ -37,6 +37,7 @@ class FirmaRepository:
             data["payload_sha256"],
             data["firma_blob"],
             data["provider"],
+            data["sello_tiempo"],
         )
         assert row is not None
         return row
