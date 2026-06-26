@@ -43,7 +43,7 @@
   // Datos del resumen (vienen del server load)
   // ---------------------------------------------------------------------------
 
-  /** @type {import('$lib/services/report.service.js').ReportSummary|null} */
+  /** @type {import('$lib/types/api.js').ReportSummary|null} */
   $: summary = data.summary;
   $: summaryError = data.summaryError;
 

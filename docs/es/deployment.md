@@ -151,8 +151,48 @@ nano .env
 | `KEYCLOAK_HOSTNAME` | Dominio FQDN de Keycloak | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Contraseña admin Keycloak | `<secure password>` |
 | `KEYCLOAK_*_SECRET` | Secrets de clientes OAuth2 | `<32 char hex>` |
+| `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN` y el `redirect_uri` del login) | `app.yourdomain.com` |
+| `API_PUBLIC_HOSTNAME` | FQDN público del api-gateway que ve el navegador | `api.yourdomain.com` |
+| `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar | `<openssl rand -base64 32>` |
+| `KNOWLEDGE_INTERNAL_TOKEN` | Token de ingesta interna (E21). Vacío ⇒ ingesta fail-closed | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | Host SMTP | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | Contraseña o token de aplicación SMTP | `app-specific-password` |
+
+### Contrato de issuer (`iss`) — crítico
+
+El `iss` de los tokens es **siempre la URL pública** por la que el navegador hace
+login. Cualquier servicio que valide JWT (`auth-service`, `signature-service`) debe
+esperar exactamente ese `iss` o rechazará **todos** los tokens (fail-closed).
+
+- **Producción (single-host):** Keycloak corre con `--hostname-strict=true
+  --hostname=${KEYCLOAK_HOSTNAME}`, por lo que navegador y servicios usan el mismo
+  host. `expected_issuer` se deriva de `KEYCLOAK_URL` y **no hace falta override**.
+- **Desarrollo (`docker-compose.yml`):** hay split (navegador `localhost:19180` ↔
+  red interna `keycloak:8080`); por eso allí se fija `KEYCLOAK_ISSUER` con la URL
+  pública del realm.
+
+Al arrancar, `auth-service` y `signature-service` registran en el log el `iss`
+esperado y emiten un **WARNING fail-fast** si `KEYCLOAK_URL` apunta a un host
+interno de Docker sin `KEYCLOAK_ISSUER` definido (configuración que rechazaría todo
+token). Verifica este log tras el despliegue:
+
+```bash
+docker compose -f docker-compose.prod.yml logs auth-service | grep "issuer esperado"
+```
+
+### Frontend SSR
+
+El frontend (SvelteKit + adapter-node) corre en su **propio contenedor** detrás del
+proxy reverso. Necesita resolver correctamente el `origin` para construir el
+`redirect_uri` del login PKCE:
+
+- `ORIGIN=https://${FRONTEND_HOSTNAME}` (o `PROTOCOL_HEADER=x-forwarded-proto` +
+  `HOST_HEADER=x-forwarded-host` si el proxy los inyecta).
+- URLs **públicas** (navegador): `PUBLIC_API_URL`, `PUBLIC_KEYCLOAK_URL`.
+- URLs **internas** (SSR → red Docker): `INTERNAL_API_URL`, `INTERNAL_KEYCLOAK_URL`.
+
+El `redirect_uri` resultante (`https://${FRONTEND_HOSTNAME}/login/callback`) debe
+estar en `redirectUris`/`webOrigins` del cliente `orpycamcp-frontend` en Keycloak.
 
 ### Rotación de secretos
 

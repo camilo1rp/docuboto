@@ -58,6 +58,35 @@ class Settings(BaseSettings):
         """Issuer (`iss`) que debe traer todo token. Override vía KEYCLOAK_ISSUER."""
         return self.keycloak_issuer or self.keycloak_realm_url
 
+    def issuer_config_warnings(self) -> list[str]:
+        """Fail-fast visible del contrato de issuer (complementa la nota de
+        infra/.env.example). Devuelve avisos a emitir en el arranque; lista vacía
+        significa configuración coherente.
+
+        Caso roto clásico: ``KEYCLOAK_URL`` apunta a un host interno de Docker
+        (p. ej. ``keycloak``) y no se definió ``KEYCLOAK_ISSUER``. Entonces
+        ``expected_issuer`` queda con la URL interna, que NUNCA coincide con el
+        ``iss`` público de los tokens del navegador → el servicio rechaza todos
+        los tokens (fail-closed) sin pista visible. Aquí lo hacemos explícito.
+
+        No dispara en dev (allí ``KEYCLOAK_ISSUER`` sí está definido) ni en prod
+        single-host (el host es un FQDN con puntos, no un nombre de servicio).
+        """
+        from urllib.parse import urlparse
+
+        warnings: list[str] = []
+        host = urlparse(self.keycloak_url).hostname or ""
+        looks_internal = host not in ("localhost", "127.0.0.1") and "." not in host
+        if self.keycloak_issuer is None and looks_internal:
+            warnings.append(
+                f"KEYCLOAK_ISSUER sin definir y KEYCLOAK_URL apunta a un host interno "
+                f"('{host}'): el `iss` esperado sera '{self.expected_issuer}', que no "
+                f"coincidira con el issuer publico de los tokens del navegador y se "
+                f"rechazaran TODOS los tokens (fail-closed). Define KEYCLOAK_ISSUER con "
+                f"la URL publica del realm."
+            )
+        return warnings
+
     @property
     def keycloak_token_url(self) -> str:
         return f"{self.keycloak_realm_url}/protocol/openid-connect/token"

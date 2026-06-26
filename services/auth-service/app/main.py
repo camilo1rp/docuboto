@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("auth-service starting up")
+    # Fail-fast visible del contrato de issuer: deja en el log el `iss` esperado
+    # y avisa si la configuración rechazaría todos los tokens (ver config.py).
+    logger.info("JWT issuer esperado (iss): %s", settings.expected_issuer)
+    for warning in settings.issuer_config_warnings():
+        logger.warning(warning)
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     service = AuthService()
     set_auth_service(service)

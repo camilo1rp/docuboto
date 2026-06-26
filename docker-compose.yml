@@ -88,6 +88,12 @@ services:
       KEYCLOAK_ADMIN_PASSWORD: orpycamcp_dev
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
+      # Fija las frontend-URLs (incluido el `iss` de los tokens) a la URL pública
+      # por la que el navegador hace el login PKCE. Aunque el SSR del frontend y
+      # los backends alcancen Keycloak internamente por http://keycloak:8080, el
+      # issuer emitido es SIEMPRE http://localhost:19180/realms/orpycamcp → así
+      # navegador y servidor coinciden y la validación del `iss` no rechaza tokens.
+      KC_HOSTNAME_URL: http://localhost:19180
     ports:
       - "19180:8080"
     volumes:
@@ -149,8 +155,12 @@ services:
       - "19008:8008"
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - KEYCLOAK_URL=http://keycloak:8180
+      # Corrige puerto interno de Keycloak (era 8180, inexistente en la red) → 8080.
+      - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      # Mismo issuer público canónico que auth-service (signature revalida el JWT
+      # directamente para PERM_FIRMA — D-01).
+      - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
       - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
     networks:
       - orpycamcp-net
@@ -188,6 +198,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      # Issuer público canónico (KC_HOSTNAME_URL): los tokens los emite el
+      # navegador vía localhost:19180, pero el JWKS se resuelve por keycloak:8080.
+      - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
       - KEYCLOAK_CLIENT_ID=auth-service
       - KEYCLOAK_CLIENT_SECRET=change-me-in-production
     networks:
@@ -331,6 +344,42 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: "no"
+
+  # ─── Frontend (E22) ───────────────────────────────────────────────────────────
+
+  frontend:
+    # SvelteKit 2 + Svelte 4 SSR (adapter-node). Build de producción en Docker,
+    # sin bind-mount del código: no genera artefactos root en el host (.svelte-kit,
+    # node_modules viven dentro de la imagen). Split de URLs público/interno:
+    #   - el NAVEGADOR usa PUBLIC_* (localhost:19xxx, puertos publicados al host)
+    #   - el SSR usa INTERNAL_* (nombres de servicio en la red Docker)
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: orpycamcp-frontend
+    ports:
+      - "19300:3000"
+    environment:
+      - PORT=3000
+      # Origen público por el que el navegador alcanza el frontend. adapter-node
+      # lo usa para derivar `url.origin` (p. ej. el redirect_uri del login PKCE).
+      # Sin esto, SSR infiere el esquema/host del request y arma un redirect_uri
+      # https:// que Keycloak rechaza. En prod tras TLS: ORIGIN=https://dominio,
+      # o usar PROTOCOL_HEADER=x-forwarded-proto + HOST_HEADER=x-forwarded-host.
+      - ORIGIN=http://localhost:19300
+      # Públicas — las construye y usa el JS del navegador (login PKCE, logout).
+      - PUBLIC_API_URL=http://localhost:19080
+      - PUBLIC_KEYCLOAK_URL=http://localhost:19180
+      # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
+      # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
+      - INTERNAL_API_URL=http://api-gateway:8080
+      - INTERNAL_KEYCLOAK_URL=http://keycloak:8080
+    networks:
+      - orpycamcp-net
+    depends_on:
+      - api-gateway
+      - keycloak
     restart: "no"
 
   # ─── Development Tools ────────────────────────────────────────────────────────

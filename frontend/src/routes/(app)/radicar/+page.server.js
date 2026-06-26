@@ -32,7 +32,7 @@
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
-import { API_V1 } from "$lib/utils/config.js";
+import { API_V1 } from "$lib/utils/config.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {

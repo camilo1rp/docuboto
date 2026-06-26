@@ -291,7 +291,7 @@
   // ---------------------------------------------------------------------------
   let showConfirmModal = false;
   let submitting = false;
-  /** @type {import('$lib/services/document.service.js').DocumentResponse|null} */
+  /** @type {import('$lib/types/api.js').DocumentResponse|null} */
   let createdDocument = null;
 
   function openConfirmModal() {
@@ -323,7 +323,7 @@
       Object.entries(extraMetadata).filter(([, v]) => v !== "" && v !== null && v !== undefined),
     );
 
-    /** @type {import('$lib/services/document.service.js').DocumentCreate} */
+    /** @type {import('$lib/types/api.js').DocumentCreate} */
     const payload = {
       doc_type: /** @type {'E'|'S'|'I'} */ (docType),
       subject: subject.trim(),

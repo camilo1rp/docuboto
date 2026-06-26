@@ -10,6 +10,8 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Seguridad
 
+- `fix(frontend)`: **D-05** — el `access_token` deja de viajar al cliente. Las llamadas al gateway pasan a endpoints proxy SSR (`(app)/**/api/+server.js`) que leen `locals.accessToken` y usan la URL interna; eliminada la capa de servicios cliente (`*.service.js` + `ENDPOINTS`), sustituida por tipos puros en `$lib/types/api.js`. `npm run check` y `spec-drift.sh` en verde.
+- `feat(auth,signature)`: guard **fail-fast** del contrato de issuer — al arranque se loguea el `iss` esperado y se avisa si la config (host interno sin `KEYCLOAK_ISSUER`) rechazaría todos los tokens. Sin falsos positivos en dev ni en prod single-host. Tests `issuer_config_warnings`.
 - `refactor(auth)`: migración `python-jose` → `PyJWT[crypto]` — jose está mínimamente mantenida (CVE-2024-33663/33664); PyJWT resuelve la clave del JWKS por `kid` antes de validar. Nuevos tests que firman JWT RS256 reales.
 - `fix(auth)`: validación del emisor (`iss`) en los JWT — ahora `jwt.decode` rechaza tokens de otro realm/cliente. Nuevo `KEYCLOAK_ISSUER` opcional para el desfase URL pública/interna en Docker.
 - `fix(deps)`: suelos elevados por CVE — `python-multipart` `>=0.0.18` (CVE-2024-53981), `mcp` `>=1.12.0` (API actual del SDK).
@@ -24,6 +26,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Agregado
 
+- `feat(infra)`: **frontend en su propio contenedor** (dev `19300:3000` y `docker-compose.prod.yml`) — split de URLs público/interno, `ORIGIN`/`PROTOCOL_HEADER`/`HOST_HEADER` para el `redirect_uri` del PKCE tras el proxy, y pinning de issuer (`KC_HOSTNAME_URL` + `KEYCLOAK_ISSUER`) para el desfase navegador↔red Docker. E2E verificado (login → token → gateway 200). Documentado en `docs/es/deployment.md`.
 - `fix(workflow)`: `GET /workflows/{id}/events` acotado por clearance (E05 §10 / RF-SEG-08) — la hoja de ruta del radicado solo es visible para quien pueda leerlo (no read-up); Canal B operativo, no auditoría forense.
 - `feat(archive)`: hoja de ruta del expediente (E02 §9) — tabla `expediente_eventos` append-only (migración `archive tenant/014`), eventos en apertura/vinculación/exclusión/cierre/transferencia, y `GET /api/v1/expedientes/{id}/eventos` acotado por clearance.
 - `feat(audit)`: cobertura de `public.audit_log` (E08 §9) — workflow y archive emiten a la auditoría forense transversal vía `orpycamcp_common.audit` (archive-service ahora instala la librería compartida).

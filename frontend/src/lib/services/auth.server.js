@@ -27,7 +27,8 @@
  */
 
 import { dev } from "$app/environment";
-import { KEYCLOAK_TOKEN_URL, KEYCLOAK_LOGOUT_URL, KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
+import { KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
+import { KEYCLOAK_TOKEN_URL, KEYCLOAK_LOGOUT_URL } from "$lib/utils/config.server.js";
 
 // ---------------------------------------------------------------------------
 // Constantes de cookies

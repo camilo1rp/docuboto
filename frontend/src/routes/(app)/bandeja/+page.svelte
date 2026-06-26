@@ -50,7 +50,7 @@
   // Estado local de la bandeja
   // ---------------------------------------------------------------------------
 
-  /** @type {import('$lib/services/document.service.js').DocumentResponse[]} */
+  /** @type {import('$lib/types/api.js').DocumentResponse[]} */
   let documents = data.documents ?? [];
   let total = data.total ?? 0;
   let loading = false;
@@ -65,7 +65,7 @@
   // Drawer de detalle
   // ---------------------------------------------------------------------------
   let drawerOpen = false;
-  /** @type {import('$lib/services/document.service.js').DocumentResponse|null} */
+  /** @type {import('$lib/types/api.js').DocumentResponse|null} */
   let selectedDoc = null;
   let detailLoading = false;
 
@@ -181,7 +181,7 @@
    * Si el item ya está en el listado usamos esos datos; luego cargamos el
    * detalle completo (con anexos, metadata) en background.
    * Llama al endpoint local /bandeja/api/[id] — el token permanece en el servidor.
-   * @param {import('$lib/services/document.service.js').DocumentResponse} doc
+   * @param {import('$lib/types/api.js').DocumentResponse} doc
    */
   async function openDrawer(doc) {
     selectedDoc = doc;

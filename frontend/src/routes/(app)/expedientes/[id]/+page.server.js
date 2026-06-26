@@ -41,7 +41,7 @@
 
 import { error } from "@sveltejs/kit";
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
-import { API_V1 } from "$lib/utils/config.js";
+import { API_V1 } from "$lib/utils/config.server.js";
 
 // ---------------------------------------------------------------------------
 // Helper: fetch autenticado del servidor

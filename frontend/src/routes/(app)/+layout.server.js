@@ -32,7 +32,7 @@ import {
   decodeJwt,
   extractSessionUser,
 } from "$lib/services/auth.server.js";
-import { ENDPOINTS } from "$lib/utils/config.js";
+import { API_V1 } from "$lib/utils/config.server.js";
 
 /**
  * @param {import('@sveltejs/kit').RequestEvent} event
@@ -70,7 +70,7 @@ export async function load({ cookies, url, fetch }) {
   // --- Cargar permisos granulares desde /auth/me ---
   // Se hace con el access_token de la cookie; SvelteKit pasa el fetch del servidor.
   try {
-    const meData = await fetch(ENDPOINTS.auth.me, {
+    const meData = await fetch(`${API_V1}/auth/me`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "X-Tenant-Slug": user.tenant_slug ?? "",

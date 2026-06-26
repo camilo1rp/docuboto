@@ -18,7 +18,7 @@
  */
 
 import { json } from "@sveltejs/kit";
-import { API_V1 } from "$lib/utils/config.js";
+import { API_V1 } from "$lib/utils/config.server.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function GET({ locals, params }) {

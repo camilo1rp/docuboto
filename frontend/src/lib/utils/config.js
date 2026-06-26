@@ -17,7 +17,10 @@
  * (prefijo PUBLIC_ reconocido por SvelteKit).
  */
 
-import { PUBLIC_API_URL, PUBLIC_KEYCLOAK_URL } from "$env/static/public";
+import { env } from "$env/dynamic/public";
+
+const PUBLIC_API_URL = env.PUBLIC_API_URL ?? "";
+const PUBLIC_KEYCLOAK_URL = env.PUBLIC_KEYCLOAK_URL ?? "";
 
 // ---------------------------------------------------------------------------
 // Gateway
@@ -48,107 +51,12 @@ export const KEYCLOAK_CLIENT_ID = "orpycamcp-frontend";
  */
 export const KEYCLOAK_AUTH_URL = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth`;
 
-/** URL del Token Endpoint (llamada server-side, nunca desde el navegador) */
-export const KEYCLOAK_TOKEN_URL = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token`;
-
-/** URL del Logout Endpoint (end_session_endpoint) */
+/**
+ * URL del end_session_endpoint de Keycloak para redirección del navegador.
+ * Úsala para construir la URL de logout a la que el servidor redirige al usuario.
+ * Para revocación back-channel (server-side), usa config.server.js.
+ */
 export const KEYCLOAK_LOGOUT_URL = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/logout`;
-
-/** URL de UserInfo Endpoint (carga claims del usuario) */
-export const KEYCLOAK_USERINFO_URL = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/userinfo`;
-
-// ---------------------------------------------------------------------------
-// Endpoints del api-gateway — agrupados por dominio
-// ---------------------------------------------------------------------------
-
-export const ENDPOINTS = {
-  // Auth / sesión
-  auth: {
-    me: `${API_V1}/auth/me`,
-    contextSwitch: `${API_V1}/auth/context/switch`,
-  },
-
-  // Radicados / documentos
-  documents: {
-    base: `${API_V1}/documents`,
-    byId: (id) => `${API_V1}/documents/${id}`,
-    anular: (id) => `${API_V1}/documents/${id}/anular`,
-    devolver: (id) => `${API_V1}/documents/${id}/devolver`,
-    respuesta: (id) => `${API_V1}/documents/${id}/respuesta`,
-  },
-
-  // Expedientes (archive-service, vía gateway)
-  expedientes: {
-    base: `${API_V1}/expedientes`,
-    byId: (id) => `${API_V1}/expedientes/${id}`,
-    close: (id) => `${API_V1}/expedientes/${id}/close`,
-    transfer: (id) => `${API_V1}/expedientes/${id}/transfer`,
-    eventos: (id) => `${API_V1}/expedientes/${id}/eventos`,
-    foliado: (id) => `${API_V1}/expedientes/${id}/foliado`,
-    indice: (id) => `${API_V1}/expedientes/${id}/indice`,
-    indiceXml: (id) => `${API_V1}/expedientes/${id}/indice.xml`,
-    indiceVersions: (id) => `${API_V1}/expedientes/${id}/indice/versions`,
-    indiceVerify: (id) => `${API_V1}/expedientes/${id}/indice/verify`,
-    unidades: (id) => `${API_V1}/expedientes/${id}/unidades`,
-  },
-
-  // TRD / CCD — prefijos reales del backend (archive-service, vía gateway)
-  // /api/v1/trd                  — series/subseries TRD (GET/POST/PATCH)
-  // /api/v1/tipos-documentales   — catálogo de tipos documentales (GET/POST/PATCH)
-  // /api/v1/metadata/templates   — plantillas de metadatos por tipo (GET/POST)
-  trd: {
-    series: `${API_V1}/trd`,
-    tiposDocumentales: `${API_V1}/tipos-documentales`,
-    metadataTemplates: `${API_V1}/metadata/templates`,
-  },
-
-  // Flujos / workflow
-  workflows: {
-    base: `${API_V1}/workflows`,
-    byId: (id) => `${API_V1}/workflows/${id}`,
-    vistoBueno: (id) => `${API_V1}/workflows/${id}/vistos-buenos`,
-  },
-
-  // Storage / anexos
-  storage: {
-    upload: `${API_V1}/storage/upload`,
-    download: (id) => `${API_V1}/storage/${id}`,
-  },
-
-  // Búsqueda / reportes
-  search: `${API_V1}/search`,
-  reports: {
-    radicados: `${API_V1}/reports/radicados`,
-    csv: `${API_V1}/reports/radicados/csv`,
-  },
-
-  // Asistente conversacional (vía gateway → mcp-server)
-  assistant: {
-    message: `${API_V1}/assistant/message`,
-    transcribe: `${API_V1}/assistant/transcribe`,
-  },
-
-  // Firmas (E06)
-  signatures: {
-    base: `${API_V1}/signatures`,
-    byId: (id) => `${API_V1}/signatures/${id}`,
-  },
-
-  // Dependencias del tenant (tenant-service, vía gateway)
-  // /api/v1/dependencias         — listado (GET) con ?activo=true
-  // /api/v1/dependencias/tree    — árbol jerárquico (GET)
-  dependencias: {
-    base: `${API_V1}/dependencias`,
-    tree: `${API_V1}/dependencias/tree`,
-    byCodigo: (codigo) => `${API_V1}/dependencias/by-codigo/${codigo}`,
-  },
-
-  // Administración / tenant
-  config: {
-    catalogos: `${API_V1}/catalogos`,
-    tenantBranding: `${API_V1}/config/branding`,
-  },
-};
 
 // ---------------------------------------------------------------------------
 // Rutas de la aplicación (SvelteKit client-side)

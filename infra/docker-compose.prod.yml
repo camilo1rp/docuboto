@@ -163,12 +163,15 @@ services:
       KC_CACHE_STACK: kubernetes  # or tcp for external cache
     networks:
       - orpycamcp-net
-    volumes:
-      # Mount your TLS certificate here
-      # - ./infra/certs/tls.crt:/etc/x509/https/tls.crt:ro
-      # - ./infra/certs/tls.key:/etc/x509/https/tls.key:ro
-      # Mount realm configuration (optional)
-      # - ./infra/keycloak/realm-prod.json:/opt/keycloak/data/import/realm-prod.json:ro
+    # Montajes opcionales (descomenta y añade `volumes:` como lista cuando los uses):
+    # volumes:
+    #   # Certificado TLS (si NO terminas TLS en el reverse proxy):
+    #   - ./certs/tls.crt:/etc/x509/https/tls.crt:ro
+    #   - ./certs/tls.key:/etc/x509/https/tls.key:ro
+    #   # Realm de PRODUCCIÓN propio (NO reutilizar el realm-export.json de dev:
+    #   # ese trae usuarios de prueba y redirectUris localhost). El realm de prod
+    #   # debe tener redirectUris/webOrigins SOLO con https://app.yourdomain.com:
+    #   - ./keycloak/realm-prod.json:/opt/keycloak/data/import/realm-prod.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -192,7 +195,8 @@ services:
     build:
       context: ../services/api-gateway
       dockerfile: Dockerfile
-    container_name: orpycamcp-api-gateway-prod
+    # Sin container_name fijo: este servicio escala (deploy.replicas), los nombres
+    # deben ser únicos por réplica (Compose los genera como proyecto-servicio-N).
     restart: "no"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
@@ -316,7 +320,7 @@ services:
     build:
       context: ../services/document-service
       dockerfile: Dockerfile
-    container_name: orpycamcp-document-service-prod
+    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: "no"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
@@ -355,7 +359,7 @@ services:
     build:
       context: ../services/storage-service
       dockerfile: Dockerfile
-    container_name: orpycamcp-storage-service-prod
+    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: "no"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
@@ -503,6 +507,168 @@ services:
       timeout: 5s
       retries: 3
     deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  signature-service:
+    # Firma electrónica (E06). Contexto raíz: el Dockerfile instala shared/orpycamcp_common (ADR-010).
+    build:
+      context: ..
+      dockerfile: services/signature-service/Dockerfile
+    container_name: orpycamcp-signature-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      # En prod el navegador y los servicios usan el MISMO hostname público de
+      # Keycloak (DNS real), así que el `iss` coincide sin override: expected_issuer
+      # se deriva de KEYCLOAK_URL. NO se setea KEYCLOAK_ISSUER (a diferencia de dev,
+      # donde el split localhost:19180 ↔ keycloak:8080 obliga al override).
+      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: orpycamcp
+      SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8008"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  knowledge-service:
+    # Capa de conocimiento (E21, pgvector). INTERNAL_SERVICE_TOKEN obligatorio:
+    # sin él la ingesta queda fail-closed (D-02 / RF-SEG-08) y rechaza todo /ingest.
+    build:
+      context: ../services/knowledge-service
+      dockerfile: Dockerfile
+    container_name: orpycamcp-knowledge-service-prod
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      INTERNAL_SERVICE_TOKEN: ${KNOWLEDGE_INTERNAL_TOKEN:?Knowledge internal token required}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8011"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mcp-server:
+    # Capa MCP (E18): fachada cliente del api-gateway. Sin BD/Redis/MinIO.
+    build:
+      context: ../services/mcp-server
+      dockerfile: Dockerfile
+    container_name: orpycamcp-mcp-server-prod
+    restart: "no"
+    environment:
+      GATEWAY_URL: http://api-gateway:8080
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8009"
+    depends_on:
+      - api-gateway
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    # SvelteKit SSR (adapter-node) detrás del reverse proxy/TLS. Split de URLs:
+    #   - PUBLIC_* → orígenes públicos HTTPS que ve el NAVEGADOR (login PKCE, logout)
+    #   - INTERNAL_* → cómo alcanza el SSR al gateway dentro de la red Docker
+    # ORIGIN + PROTOCOL_HEADER/HOST_HEADER son IMPRESCINDIBLES tras un proxy: sin
+    # ellos adapter-node deriva mal `url.origin` y arma un redirect_uri inválido.
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    restart: "no"
+    environment:
+      PORT: "3000"
+      ORIGIN: https://${FRONTEND_HOSTNAME:?Frontend hostname required}
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: x-forwarded-host
+      # Públicas (navegador): gateway y Keycloak por su dominio público HTTPS.
+      PUBLIC_API_URL: https://${API_PUBLIC_HOSTNAME:?Public API hostname required}
+      PUBLIC_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
+      # Internas (SSR): el gateway por la red Docker; Keycloak por su hostname
+      # público (hostname-strict=true + TLS solo aceptan el dominio del cert).
+      INTERNAL_API_URL: http://api-gateway:8080
+      INTERNAL_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
+    networks:
+      - orpycamcp-net
+    # Tras reverse proxy: no publicar el puerto, solo exponerlo a la red interna.
+    expose:
+      - "3000"
+    depends_on:
+      - api-gateway
+      - keycloak
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 2
       resources:
         limits:
           cpus: '1'

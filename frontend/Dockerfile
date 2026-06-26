@@ -22,12 +22,24 @@ COPY --from=builder /app/build ./build
 
 ENV NODE_ENV=production
 ENV PORT=3000
-# URL del api-gateway; se inyecta en despliegue.
-ENV PUBLIC_API_URL=http://api-gateway:8080
+
+# --- URLs públicas (navegador del usuario) ---
+# Sobreescribir en despliegue con la URL real accesible por los usuarios.
+ENV PUBLIC_API_URL=http://localhost:19080
+ENV PUBLIC_KEYCLOAK_URL=http://localhost:19180
+
+# --- URLs internas (SSR dentro de la red Docker) ---
+# El servidor SSR usa estas URLs para hacer fetch al gateway y a Keycloak.
+# Con $env/dynamic/private se leen en runtime, no se hornean en el build.
+ENV INTERNAL_API_URL=http://api-gateway:8080
+ENV INTERNAL_KEYCLOAK_URL=http://keycloak:8080
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1
+
+# No ejecutar como root para evitar artefactos root en volúmenes y reducir superficie de ataque.
+USER node
 
 CMD ["node", "build"]

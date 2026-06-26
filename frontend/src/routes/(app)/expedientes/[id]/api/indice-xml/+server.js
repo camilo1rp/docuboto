@@ -18,7 +18,7 @@
  *   Respuesta: application/xml (binario, pass-through del gateway)
  */
 
-import { API_V1 } from "$lib/utils/config.js";
+import { API_V1 } from "$lib/utils/config.server.js";
 import { json } from "@sveltejs/kit";
 
 /** @type {import('./$types').RequestHandler} */
