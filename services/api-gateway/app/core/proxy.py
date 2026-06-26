@@ -10,6 +10,12 @@
 import httpx
 from fastapi import Request, Response
 
+# Whitelist of client request headers that are forwarded to upstream services.
+# Headers NOT listed here are silently dropped at this trust boundary.
+#
+# Security note (D-03): "x-canal" is intentionally excluded so that clients
+# cannot forge the audit canal.  The gateway injects X-Canal server-side via
+# JWTValidationMiddleware.derive_canal() and adds it through extra_headers.
 FORWARDED_REQUEST_HEADERS = {
     "authorization",
     "content-type",

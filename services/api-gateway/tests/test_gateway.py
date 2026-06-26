@@ -311,3 +311,75 @@ async def test_public_verify_route_is_public_and_routed():
         signature_service_url="http://signature:8008",
     )
     assert _route_to_upstream("/api/v1/public/demo/verify/abc", state) == "http://document:8003"
+
+
+# ---------------------------------------------------------------------------
+# D-03: canal derivation and X-Canal header security
+# ---------------------------------------------------------------------------
+
+async def test_derive_canal_returns_api_for_standard_path():
+    """D-03: caminos normales reciben canal 'api'."""
+    from app.middleware.auth import derive_canal
+
+    assert derive_canal("/api/v1/documents/") == "api"
+    assert derive_canal("/api/v1/tenants/") == "api"
+    assert derive_canal("/api/v1/auth/validate") == "api"
+    assert derive_canal("/api/v1/workflows/inbox") == "api"
+
+
+async def test_derive_canal_returns_mcp_for_mcp_prefix():
+    """D-03: el espacio de nombres /api/v1/mcp/ recibe canal 'mcp'."""
+    from app.middleware.auth import derive_canal
+
+    assert derive_canal("/api/v1/mcp/query") == "mcp"
+    assert derive_canal("/api/v1/mcp/") == "mcp"
+
+
+async def test_client_x_canal_header_is_not_forwarded(test_client):
+    """D-03: X-Canal enviado por el cliente NO debe llegar al upstream."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"ok": True},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    await client.get(
+        "/api/v1/documents/",
+        headers={"Authorization": "Bearer valid-token", "X-Canal": "mcp"},
+    )
+
+    forwarded = http_client.request.call_args.kwargs["headers"]
+    # Client-supplied X-Canal must not reach the upstream.
+    assert forwarded.get("X-Canal") != "mcp", (
+        "Client-supplied X-Canal must be discarded at the gateway"
+    )
+
+
+async def test_gateway_injects_server_derived_x_canal(test_client):
+    """D-03: el gateway inyecta X-Canal derivado server-side, no el del cliente."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"ok": True},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    # Client sends no X-Canal; gateway must inject 'api' for a standard path.
+    await client.get(
+        "/api/v1/documents/",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    forwarded = http_client.request.call_args.kwargs["headers"]
+    assert forwarded.get("X-Canal") == "api", (
+        "Gateway must inject server-derived X-Canal='api' for standard API paths"
+    )

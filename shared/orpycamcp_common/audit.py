@@ -49,6 +49,26 @@ import asyncpg
 # se ancla en una cadena de sistema dedicada en vez de violar el NOT NULL.
 SYSTEM_TENANT = "__system__"
 
+# Enum cerrado de canales válidos (espejo del CHECK de BD en migration 003).
+# El gateway deriva el valor server-side; nunca lo acepta de cabeceras de cliente.
+#   api    — acceso REST directo
+#   ui     — petición originada en el frontend SvelteKit
+#   mcp    — petición originada en el MCP-server
+#   system — operación interna de un job/worker
+VALID_CANALES: frozenset[str] = frozenset({"api", "ui", "mcp", "system"})
+
+
+def _validate_canal(canal: str) -> None:
+    """Valida que el canal sea uno de los valores registrados.
+
+    Raises:
+        ValueError: si ``canal`` no pertenece a ``VALID_CANALES``.
+    """
+    if canal not in VALID_CANALES:
+        raise ValueError(
+            f"Invalid canal {canal!r}. Allowed values: {sorted(VALID_CANALES)}"
+        )
+
 _INSERT_SQL = """
     INSERT INTO public.audit_log
         (tenant_slug, service, actor, canal, action, object_type, object_ref,
@@ -120,6 +140,8 @@ async def append(
     tenant garantice el orden de la cadena. Si ``conn`` ya está en transacción,
     ``conn.transaction()`` crea un savepoint.
     """
+    _validate_canal(canal)
+
     tenant = tenant_slug or SYSTEM_TENANT
     payload = payload or {}
 

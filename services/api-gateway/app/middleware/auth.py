@@ -12,6 +12,35 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+# ---------------------------------------------------------------------------
+# Canal derivation — server-side only (D-03)
+# ---------------------------------------------------------------------------
+# The audit `canal` field identifies the request origin in the chain-of-custody
+# log.  It MUST be derived here, at the gateway trust boundary, and never taken
+# from client-supplied headers (X-Canal is absent from FORWARDED_REQUEST_HEADERS
+# in proxy.py, so it is already stripped before reaching upstream services).
+#
+# Current mapping (path-based):
+#   /api/v1/mcp/…  → 'mcp'  (MCP-server namespace, ADR-019)
+#   everything else → 'api'
+#
+# 'ui' is reserved for SvelteKit frontend requests.  It will be set when the
+# nginx reverse-proxy injects a trusted origin marker that the gateway can
+# verify cryptographically (independent of the client-accessible User-Agent).
+
+_MCP_PREFIX = "/api/v1/mcp/"
+
+
+def derive_canal(path: str) -> str:
+    """Returns the audit canal for *path*, derived entirely server-side.
+
+    Never call this with a value taken from a client header.
+    """
+    if path.startswith(_MCP_PREFIX):
+        return "mcp"
+    return "api"
+
+
 PUBLIC_PATHS = {
     "/api/v1/auth/token",
     "/api/v1/auth/refresh",
@@ -97,12 +126,15 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
 
         # Inject validated identity headers so downstream services trust them
         # without needing to re-validate the JWT themselves.
+        # X-Canal is derived server-side here; the client-supplied value (if any)
+        # is already stripped by the FORWARDED_REQUEST_HEADERS whitelist in proxy.py.
         roles = payload.get("roles", [])
         request.state.auth_headers = {
             "X-User-Id": payload.get("user_id", ""),
             "X-Username": payload.get("username", ""),
             "X-Tenant-Slug": payload.get("tenant_slug") or "",
             "X-User-Roles": ",".join(roles),
+            "X-Canal": derive_canal(request.url.path),
         }
 
         return await call_next(request)
