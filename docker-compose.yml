@@ -140,12 +140,18 @@ services:
 
   signature-service:
     # Firma electrónica (E06, ADR-016): sign-xml + verify; proveedor pluggable.
-    build: ./services/signature-service
+    # Contexto raíz para acceder a shared/orpycamcp_common (ADR-010, RF-FIR-14).
+    build:
+      context: .
+      dockerfile: services/signature-service/Dockerfile
     container_name: orpycamcp-signature
     ports:
       - "19008:8008"
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - KEYCLOAK_URL=http://keycloak:8180
+      - KEYCLOAK_REALM=orpycamcp
+      - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
     networks:
       - orpycamcp-net
     depends_on:
@@ -255,7 +261,11 @@ services:
     restart: "no"
 
   storage-service:
-    build: ./services/storage-service
+    # Contexto en la raíz para incluir shared/ (ADR-010): auditoría inmutable
+    # orpycamcp_common (soft-delete auditado D-04).
+    build:
+      context: .
+      dockerfile: services/storage-service/Dockerfile
     container_name: orpycamcp-storage
     ports:
       - "19005:8005"
