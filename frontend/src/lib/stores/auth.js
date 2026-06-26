@@ -78,7 +78,7 @@ export function hasRole(...requiredRoles) {
  * Devuelve true si el usuario tiene el permiso granular indicado.
  * Los permisos se cargan de /auth/me tras el login.
  *
- * @param {string} permission — en SCREAMING_SNAKE_CASE (ej. 'RADICAR_ENTRADA')
+ * @param {string} permission — en SCREAMING_SNAKE_CASE (ej. 'PERM_RADI_ENTRADA')
  * @returns {boolean}
  */
 export function can(permission) {

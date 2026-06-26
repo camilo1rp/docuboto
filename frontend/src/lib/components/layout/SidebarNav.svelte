@@ -39,32 +39,39 @@
       label: "Bandeja",
       href: ROUTES.bandeja,
       icon: "fas fa-inbox",
-      permission: "VER_BANDEJA",
+      // D-07: 'VER_BANDEJA' no existe en el catálogo RBAC (migración 004).
+      // La bandeja es la pantalla base de cualquier operador que trabaja con radicados.
+      // Se gatea por PERM_RADI (permiso base de radicación): todo operador activo lo tiene.
+      permission: "PERM_RADI",
     },
     {
       label: "Radicar",
       href: ROUTES.radicar,
       icon: "fas fa-file-import",
-      // La página permite RADICAR_ENTRADA || RADICAR_SALIDA || RADICAR_INTERNO (ADR-013)
-      permissions: ["RADICAR_ENTRADA", "RADICAR_SALIDA", "RADICAR_INTERNO"],
+      // La página permite PERM_RADI_ENTRADA || PERM_RADI_SALIDA || PERM_RADI_INTERNO (ADR-013)
+      permissions: ["PERM_RADI_ENTRADA", "PERM_RADI_SALIDA", "PERM_RADI_INTERNO"],
     },
     {
       label: "Expedientes",
       href: ROUTES.expedientes,
       icon: "fas fa-folder-open",
-      permission: "VER_EXPEDIENTES",
+      // D-07: 'VER_EXPEDIENTES' → USUA_PERM_EXPEDIENTE (migración 004)
+      permission: "USUA_PERM_EXPEDIENTE",
     },
     {
       label: "Búsqueda",
       href: ROUTES.busqueda,
       icon: "fas fa-search",
-      permission: "BUSCAR_DOCUMENTOS",
+      // D-07: 'BUSCAR_DOCUMENTOS' no existe en el catálogo RBAC.
+      // La búsqueda es consulta de radicados; se gatea por PERM_RADI igual que la bandeja.
+      permission: "PERM_RADI",
     },
     {
       label: "Reportes",
       href: ROUTES.reportes,
       icon: "fas fa-chart-bar",
-      permission: "VER_REPORTES",
+      // D-07: 'VER_REPORTES' → SGD_PERM_ESTADISTICA (migración 004)
+      permission: "SGD_PERM_ESTADISTICA",
     },
     {
       label: "Administración",

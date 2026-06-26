@@ -61,8 +61,13 @@
     return $permissions.includes(p);
   }
 
-  $: canClose = can("CERRAR_EXPEDIENTE") && expediente?.status === "open";
-  $: canTransfer = can("TRANSFERIR_EXPEDIENTE") && expediente?.status === "closed";
+  // D-07: 'CERRAR_EXPEDIENTE' y 'TRANSFERIR_EXPEDIENTE' no existen en el catálogo
+  // RBAC (migración 004). El único permiso de expediente disponible es
+  // USUA_PERM_EXPEDIENTE ("Gestión de expedientes"). Ambas acciones requieren
+  // ese permiso; el backend re-valida el estado y los permisos granulares en
+  // cada endpoint.
+  $: canClose = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
+  $: canTransfer = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "closed";
 
   // ---------------------------------------------------------------------------
   // Pestañas (tablist ARIA)

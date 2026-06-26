@@ -452,7 +452,8 @@
   $: stepAnnounce = `Paso ${currentStep + 1} de ${STEP_LABELS.length}: ${STEP_LABELS[currentStep]}`;
 
   // Permiso de radicación
-  $: canRadicar = can("RADICAR_ENTRADA") || can("RADICAR_SALIDA") || can("RADICAR_INTERNO");
+  // D-07: RADICAR_* → PERM_RADI_* (nombres reales del catálogo RBAC, migración 004)
+  $: canRadicar = can("PERM_RADI_ENTRADA") || can("PERM_RADI_SALIDA") || can("PERM_RADI_INTERNO");
 </script>
 
 <svelte:head>
