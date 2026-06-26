@@ -16,6 +16,12 @@ validated by regex before interpolation.
 
 Versionado (E07): cada fila es una versión inmutable; `root_id` agrupa la
 cadena, `is_current` marca la vigente, `replaces_id` enlaza a la anterior.
+
+Soft-delete (D-04, constitución inv. 12): las operaciones normales de usuario
+marcan `deleted_at` con la hora actual (y `deleted_by` con el actor). Todos
+los listados/descargas normales filtran `AND deleted_at IS NULL`. El borrado
+físico de la fila solo ocurre mediante `purge()`, que se llama exclusivamente
+desde el proceso de disposición final del TRD.
 """
 
 import re
@@ -29,7 +35,8 @@ _SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 
 _COLS = (
     "id, filename, mime_type, file_size, sha256, bucket, object_key, "
-    "uploaded_by, uploaded_at, version, is_current, root_id, replaces_id"
+    "uploaded_by, uploaded_at, version, is_current, root_id, replaces_id, "
+    "deleted_at, deleted_by"
 )
 
 
@@ -49,10 +56,11 @@ class FileRepository:
         await self._conn.execute(f'SET search_path = "{self._schema}", public')
 
     async def find_by_sha256(self, sha256: str) -> FileRecord | None:
-        # Deduplicación de subidas nuevas: solo contra versiones vigentes.
+        # Deduplicación de subidas nuevas: solo contra versiones vigentes y activas.
         await self._set_search_path()
         row = await self._conn.fetchrow(
-            f"SELECT {_COLS} FROM files WHERE sha256 = $1 AND is_current LIMIT 1",
+            f"SELECT {_COLS} FROM files "
+            "WHERE sha256 = $1 AND is_current AND deleted_at IS NULL LIMIT 1",
             sha256,
         )
         return _row_to_file_record(row) if row is not None else None
@@ -130,25 +138,68 @@ class FileRepository:
         return _row_to_file_record(row)
 
     async def get_by_id(self, file_id: uuid.UUID) -> FileRecord | None:
+        """Returns the record only if it is NOT soft-deleted."""
         await self._set_search_path()
-        row = await self._conn.fetchrow(f"SELECT {_COLS} FROM files WHERE id = $1", file_id)
+        row = await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM files WHERE id = $1 AND deleted_at IS NULL",
+            file_id,
+        )
+        return _row_to_file_record(row) if row is not None else None
+
+    async def get_by_id_any_state(self, file_id: uuid.UUID) -> FileRecord | None:
+        """Returns the record regardless of its deleted_at state.
+
+        Used exclusively by the TRD disposition purge path, which must be able
+        to physically remove files that were already soft-deleted.
+        """
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM files WHERE id = $1",
+            file_id,
+        )
         return _row_to_file_record(row) if row is not None else None
 
     async def list_versions(self, root_id: uuid.UUID) -> list[FileRecord]:
+        """Lists the version chain excluding soft-deleted entries."""
         await self._set_search_path()
         rows = await self._conn.fetch(
-            f"SELECT {_COLS} FROM files WHERE root_id = $1 ORDER BY version",
+            f"SELECT {_COLS} FROM files "
+            "WHERE root_id = $1 AND deleted_at IS NULL ORDER BY version",
             root_id,
         )
         return [_row_to_file_record(r) for r in rows]
 
-    async def delete(self, file_id: uuid.UUID) -> bool:
+    async def soft_delete(
+        self, file_id: uuid.UUID, deleted_by: uuid.UUID | None
+    ) -> bool:
+        """Marks the file as logically deleted.
+
+        Does NOT remove the row or the MinIO object. Returns True if exactly
+        one active row was updated (False means file was already soft-deleted
+        or never existed).
+        """
+        await self._set_search_path()
+        result = await self._conn.execute(
+            "UPDATE files SET deleted_at = now(), deleted_by = $2 "
+            "WHERE id = $1 AND deleted_at IS NULL",
+            file_id,
+            deleted_by,
+        )
+        # asyncpg returns "UPDATE N" where N is the affected row count.
+        return result.endswith("1")
+
+    async def purge(self, file_id: uuid.UUID) -> bool:
+        """Physically deletes the row from the database.
+
+        Only call from the TRD final-disposition path, AFTER the MinIO object
+        has been removed. Returns True if a row was deleted.
+        """
         await self._set_search_path()
         result = await self._conn.execute(
             "DELETE FROM files WHERE id = $1",
             file_id,
         )
-        # asyncpg returns "DELETE N" where N is the row count
+        # asyncpg returns "DELETE N"
         return result.endswith("1")
 
 
@@ -167,4 +218,6 @@ def _row_to_file_record(row: asyncpg.Record) -> FileRecord:
         is_current=row["is_current"],
         root_id=row["root_id"],
         replaces_id=row["replaces_id"],
+        deleted_at=row["deleted_at"],
+        deleted_by=row["deleted_by"],
     )

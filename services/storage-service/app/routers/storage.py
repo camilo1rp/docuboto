@@ -244,10 +244,11 @@ async def get_presigned_url(
 async def delete_file(
     file_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    deleted_by: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> None:
     service = StorageService(conn, tenant_slug)
-    deleted = await service.delete(file_id)
+    deleted = await service.delete(file_id, deleted_by=deleted_by)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -51,6 +51,9 @@ def make_file_record(
     is_current: bool = True,
     root_id: uuid.UUID | None = None,
     replaces_id: uuid.UUID | None = None,
+    # Soft-delete fields (D-04): NULL means active; NOT NULL means logically deleted.
+    deleted_at: datetime | None = None,
+    deleted_by: uuid.UUID | None = None,
 ) -> dict:
     fid = file_id or FILE_ID
     return {
@@ -67,6 +70,8 @@ def make_file_record(
         "is_current": is_current,
         "root_id": root_id or fid,
         "replaces_id": replaces_id,
+        "deleted_at": deleted_at,
+        "deleted_by": deleted_by,
     }
 
 

@@ -28,12 +28,12 @@ Repository call sequence for GET metadata / presigned URL:
   1. execute  — SET search_path (get_by_id)
   2. fetchrow — SELECT file
 
-Repository call sequence for DELETE:
-  1. execute  — SET search_path (get_by_id in delete method)
+Repository call sequence for DELETE (soft-delete D-04 — NO MinIO call):
+  1. execute  — SET search_path (get_by_id)
   2. fetchrow — SELECT file
-  3. [MinIO]  remove_object
-  4. execute  — SET search_path (delete)
-  5. execute  — DELETE FROM files
+  3. execute  — SET search_path (soft_delete)
+  4. execute  — UPDATE files SET deleted_at ... → "UPDATE 1"
+  5. [audit]  conn.transaction + advisory lock + fetchval + INSERT
 """
 
 import uuid
@@ -201,20 +201,29 @@ async def test_get_presigned_url(
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/v1/storage/files/{file_id} — success
+# DELETE /api/v1/storage/files/{file_id} — soft-delete (D-04)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_delete_file(
+async def test_delete_file_soft_deletes_not_purges(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
+    """DELETE marks the row as logically deleted — does NOT remove the MinIO object.
+
+    execute call order:
+      #1 SET search_path (get_by_id)
+      #2 SET search_path (soft_delete)
+      #3 UPDATE files SET deleted_at ... → "UPDATE 1"
+      #4 advisory lock inside audit.append transaction
+      #5 INSERT INTO public.audit_log inside audit.append transaction
+    """
     client, mock_conn, mock_minio = client_with_conn
     record = make_file_record(file_id=FILE_ID)
 
-    # get_by_id returns the record, then DELETE returns "DELETE 1"
     mock_conn.fetchrow.return_value = record
-    mock_conn.execute.side_effect = [None, None, "DELETE 1"]
+    # audit.append also calls fetchval for prev_hash → already returns None by default.
+    mock_conn.execute.side_effect = [None, None, "UPDATE 1", None, None]
 
     response = await client.delete(
         f"/api/v1/storage/files/{FILE_ID}",
@@ -222,7 +231,56 @@ async def test_delete_file(
     )
 
     assert response.status_code == 204
-    mock_minio.remove_object.assert_awaited_once()
+    # Soft-delete MUST NOT call remove_object (MinIO object is preserved until
+    # TRD final disposition explicitly purges it — D-04, constitución inv. 12).
+    mock_minio.remove_object.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_file(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Alias kept for backward compatibility; delegates to the canonical test above."""
+    client, mock_conn, mock_minio = client_with_conn
+    record = make_file_record(file_id=FILE_ID)
+
+    mock_conn.fetchrow.return_value = record
+    mock_conn.execute.side_effect = [None, None, "UPDATE 1", None, None]
+
+    response = await client.delete(
+        f"/api/v1/storage/files/{FILE_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/storage/files/{file_id} — soft-deleted file is not visible (D-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_soft_deleted_file_returns_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """A soft-deleted file must be invisible to normal metadata and download routes.
+
+    The repository's get_by_id filters `AND deleted_at IS NULL`; the DB returns
+    no row, so the service treats it as not found. We simulate this by making
+    fetchrow return None (as the real DB would for a soft-deleted row).
+    """
+    client, mock_conn, _ = client_with_conn
+    # Simulate that the row has deleted_at set → DB WHERE clause filters it out.
+    mock_conn.fetchrow.return_value = None
+
+    response = await client.get(
+        f"/api/v1/storage/files/{FILE_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "file_not_found"
 
 
 # ---------------------------------------------------------------------------

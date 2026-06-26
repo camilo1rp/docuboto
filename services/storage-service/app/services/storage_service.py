@@ -14,7 +14,13 @@ Responsibilities:
 - SHA-256 deduplication per tenant before uploading to MinIO
 - Bucket provisioning (create if not exists) per tenant
 - Presigned URL generation for client-side downloads
-- Coordinated delete from both MinIO and PostgreSQL
+- Soft-delete (logical deletion) — does NOT remove from MinIO
+- Physical purge (TRD final disposition only) — removes from MinIO + DB row
+
+Soft-delete vs. purge (D-04, constitución inv. 12):
+  `delete()`               → marks deleted_at, audits the act. No MinIO call.
+  `purge_for_disposition()` → removes the MinIO object THEN hard-deletes the row.
+                              Only for TRD final-disposition workflows.
 """
 
 import hashlib
@@ -33,8 +39,10 @@ from app.schemas.storage import (
     IntegrityResponse,
     PresignedUrlResponse,
 )
+from orpycamcp_common import audit
 
 _BUCKET_PREFIX = "orpycamcp"
+_SERVICE = "storage-service"
 
 
 class UnsupportedFormatError(Exception):
@@ -59,6 +67,7 @@ def _check_format(mime_type: str | None) -> None:
 
 class StorageService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+        self._conn = conn
         self._repo = FileRepository(conn, tenant_slug)
         self._tenant_slug = tenant_slug
         self._bucket = _bucket_name(tenant_slug)
@@ -220,15 +229,74 @@ class StorageService:
             integrity_ok=(actual == record.sha256),
         )
 
-    async def delete(self, file_id: uuid.UUID) -> bool:
+    async def delete(
+        self, file_id: uuid.UUID, deleted_by: uuid.UUID | None = None
+    ) -> bool:
+        """Soft-delete: marks the file as logically deleted.
+
+        Does NOT call remove_object on MinIO — the object is preserved until
+        a TRD final disposition explicitly purges it. Records the act in the
+        immutable audit_log via orpycamcp_common.audit (constitución inv. 12).
+        """
         record = await self._repo.get_by_id(file_id)
+        if record is None:
+            return False
+
+        soft_deleted = await self._repo.soft_delete(file_id, deleted_by)
+        if not soft_deleted:
+            # File was already soft-deleted between get_by_id and soft_delete;
+            # treat as not found so the caller returns 404.
+            return False
+
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="file.soft_deleted",
+            object_type="file",
+            object_ref=str(file_id),
+            actor=str(deleted_by) if deleted_by else None,
+            payload={"filename": record.filename, "sha256": record.sha256},
+        )
+        return True
+
+    async def purge_for_disposition(
+        self,
+        file_id: uuid.UUID,
+        reason: str,
+        actor: uuid.UUID | None = None,
+    ) -> bool:
+        """Physical removal as part of TRD final disposition.
+
+        This is the ONLY place that calls remove_object on MinIO. The file may
+        be either active or already soft-deleted when disposition is executed.
+        Sequence: remove MinIO object → hard-delete DB row → audit.
+
+        Returns False if no record exists (already purged or never existed).
+        """
+        record = await self._repo.get_by_id_any_state(file_id)
         if record is None:
             return False
 
         minio = get_minio()
         await minio.remove_object(record.bucket, record.object_key)
 
-        await self._repo.delete(file_id)
+        await self._repo.purge(file_id)
+
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="file.purged_disposition",
+            object_type="file",
+            object_ref=str(file_id),
+            actor=str(actor) if actor else None,
+            payload={
+                "filename": record.filename,
+                "sha256": record.sha256,
+                "disposition_reason": reason,
+            },
+        )
         return True
 
 

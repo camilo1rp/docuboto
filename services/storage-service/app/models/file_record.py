@@ -27,3 +27,7 @@ class FileRecord:
     is_current: bool = True
     root_id: uuid.UUID | None = None
     replaces_id: uuid.UUID | None = None
+    # Soft-delete fields (D-04, constitución inv. 12).
+    # NULL → active; NOT NULL → logically deleted (pending TRD disposition).
+    deleted_at: datetime | None = None
+    deleted_by: uuid.UUID | None = None
