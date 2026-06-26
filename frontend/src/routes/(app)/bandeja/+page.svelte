@@ -26,7 +26,7 @@
   Acciones inline implementadas (T-08, sin T-08b):
     - Ver detalle en drawer (sin navegar)
     - PATCH /documents/{id} para actualizar estado (distributed / in_progress)
-      → Solo si el usuario tiene permiso GESTIONAR_RADICADO o RADICAR_ENTRADA.
+      → Solo si el usuario tiene permiso PERM_RADI o PERM_RADI_ENTRADA.
     - TODO T-08b: anular, devolver, responder, VoBo.
 -->
 <script>
@@ -37,6 +37,7 @@
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
   // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
   import Drawer from "$lib/components/ui/Drawer.svelte";
+  import Modal from "$lib/components/ui/Modal.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -73,6 +74,36 @@
   // Acciones inline
   // ---------------------------------------------------------------------------
   let actionLoading = false;
+
+  // ---------------------------------------------------------------------------
+  // T-08b: estado de modales de operador
+  // ---------------------------------------------------------------------------
+  let modalAnulacion = false;
+  let modalDevolver = false;
+  let modalResponder = false;
+  let modalVoBo = false;
+
+  // Anulacion — causal (req, ≤15 chars), motivo (opt, ≤2000)
+  let anulCausal = "";
+  let anulMotivo = "";
+  let anulCausalError = "";
+
+  // Devolver — to_dept (req, ≤100), causal (req, ≤15), comentario (opt)
+  let devToDept = "";
+  let devCausal = "";
+  let devComentario = "";
+  let devToDeptError = "";
+  let devCausalError = "";
+
+  // Responder — todos opcionales en RespuestaRapidaCreate
+  let respSubject = "";
+  let respDestDept = "";
+  let respObservations = "";
+  let respResponseDays = "";
+
+  // VoBo — aprobar (req), comentario (opt)
+  let voboAprobarStr = ""; // "true" | "false" | "" (vacío = sin seleccionar)
+  let voboComentario = "";
 
   // ---------------------------------------------------------------------------
   // Breadcrumbs
@@ -207,6 +238,232 @@
   }
 
   // ---------------------------------------------------------------------------
+  // T-08b: helpers para abrir modales (resetean estado del formulario)
+  // ---------------------------------------------------------------------------
+
+  /** Abre el modal de anulación para el radicado actualmente seleccionado. */
+  function openModalAnulacion() {
+    anulCausal = "";
+    anulMotivo = "";
+    anulCausalError = "";
+    modalAnulacion = true;
+  }
+
+  /** Abre el modal de devolución para el radicado actualmente seleccionado. */
+  function openModalDevolver() {
+    devToDept = "";
+    devCausal = "";
+    devComentario = "";
+    devToDeptError = "";
+    devCausalError = "";
+    modalDevolver = true;
+  }
+
+  /** Abre el modal de respuesta rápida (Salida vinculada). */
+  function openModalResponder() {
+    // Precargar asunto del Entrada como punto de partida
+    respSubject = selectedDoc?.subject ? `RE: ${selectedDoc.subject}` : "";
+    respDestDept = selectedDoc?.origin_dept ?? "";
+    respObservations = "";
+    respResponseDays = "";
+    modalResponder = true;
+  }
+
+  /** Abre el modal de decisión de Visto Bueno. */
+  function openModalVoBo() {
+    voboAprobarStr = ""; // sin preselección — el operador elige explícitamente
+    voboComentario = "";
+    modalVoBo = true;
+  }
+
+  /**
+   * Abre el modal de anulación desde la fila de la tabla sin abrir el drawer.
+   * @param {import('$lib/types/api.js').DocumentResponse} doc
+   */
+  function openAnulacionFromRow(doc) {
+    selectedDoc = doc; // target del modal
+    openModalAnulacion();
+  }
+
+  // ---------------------------------------------------------------------------
+  // T-08b: funciones de acción (llaman a los endpoints proxy SSR)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Solicita la anulación del radicado seleccionado.
+   * POST /bandeja/api/[id]/anulacion → /api/v1/documents/{id}/anulacion
+   */
+  async function requestAnulacion() {
+    if (!selectedDoc || actionLoading) return;
+
+    // Validación cliente
+    anulCausalError = "";
+    if (!anulCausal.trim()) {
+      anulCausalError = "La causal es obligatoria.";
+      return;
+    }
+    if (anulCausal.trim().length > 15) {
+      anulCausalError = "Máximo 15 caracteres.";
+      return;
+    }
+
+    actionLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${selectedDoc.id}/anulacion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          causal: anulCausal.trim(),
+          ...(anulMotivo.trim() ? { motivo: anulMotivo.trim() } : {}),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw result;
+
+      modalAnulacion = false;
+      notifySuccess("Solicitud de anulación registrada correctamente.");
+      // Recargar lista para reflejar el cambio de estado
+      await loadDocuments();
+      if (drawerOpen) closeDrawer();
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo registrar la solicitud de anulación.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  /**
+   * Devuelve el radicado seleccionado en flujo.
+   * POST /bandeja/api/[id]/devolver → /api/v1/workflows/{id}/devolver
+   */
+  async function devolver() {
+    if (!selectedDoc || actionLoading) return;
+
+    // Validación cliente
+    devToDeptError = "";
+    devCausalError = "";
+    let valid = true;
+    if (!devToDept.trim()) {
+      devToDeptError = "La dependencia destino es obligatoria.";
+      valid = false;
+    } else if (devToDept.trim().length > 100) {
+      devToDeptError = "Máximo 100 caracteres.";
+      valid = false;
+    }
+    if (!devCausal.trim()) {
+      devCausalError = "La causal es obligatoria.";
+      valid = false;
+    } else if (devCausal.trim().length > 15) {
+      devCausalError = "Máximo 15 caracteres.";
+      valid = false;
+    }
+    if (!valid) return;
+
+    actionLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${selectedDoc.id}/devolver`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to_dept: devToDept.trim(),
+          causal: devCausal.trim(),
+          ...(devComentario.trim() ? { comentario: devComentario.trim() } : {}),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw result;
+
+      modalDevolver = false;
+      notifySuccess("Radicado devuelto correctamente.");
+      await loadDocuments();
+      if (drawerOpen) closeDrawer();
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo devolver el radicado.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  /**
+   * Crea un radicado de Salida vinculado al Entrada seleccionado.
+   * POST /bandeja/api/[id]/respuesta → /api/v1/documents/{id}/respuesta
+   */
+  async function responder() {
+    if (!selectedDoc || actionLoading) return;
+
+    actionLoading = true;
+    try {
+      const days = parseInt(respResponseDays, 10);
+      const res = await fetch(`/bandeja/api/${selectedDoc.id}/respuesta`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(respSubject.trim() ? { subject: respSubject.trim() } : {}),
+          ...(respDestDept.trim() ? { dest_dept: respDestDept.trim() } : {}),
+          ...(respObservations.trim() ? { observations: respObservations.trim() } : {}),
+          ...(!isNaN(days) && days > 0 ? { response_days: days } : {}),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw result;
+
+      modalResponder = false;
+      const newTracking = result.tracking_number ?? "";
+      notifySuccess(
+        newTracking
+          ? `Respuesta radicada: ${newTracking}`
+          : "Radicado de respuesta creado correctamente.",
+      );
+      await loadDocuments();
+      if (drawerOpen) closeDrawer();
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo crear el radicado de respuesta.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  /**
+   * Registra la decisión del usuario sobre un Visto Bueno pendiente.
+   * POST /bandeja/api/[id]/vobo → /api/v1/workflows/{id}/vistos-buenos/decidir
+   *
+   * Nota: la creación de una cadena de VoBo (POST .../vistos-buenos con revisores[])
+   * requiere un selector de usuarios que aún no existe en el frontend.
+   * TODO T-08c: implementar cuando esté disponible el componente UserPicker.
+   */
+  async function voboDecidir() {
+    if (!selectedDoc || actionLoading) return;
+    if (!voboAprobarStr) {
+      notifyError("Seleccione una decisión antes de confirmar.");
+      return;
+    }
+
+    actionLoading = true;
+    try {
+      const aprobar = voboAprobarStr === "true";
+      const res = await fetch(`/bandeja/api/${selectedDoc.id}/vobo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          aprobar,
+          ...(voboComentario.trim() ? { comentario: voboComentario.trim() } : {}),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw result;
+
+      modalVoBo = false;
+      notifySuccess(aprobar ? "Visto bueno aprobado." : "Visto bueno rechazado.");
+      await loadDocuments();
+      if (drawerOpen) closeDrawer();
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo registrar la decisión del visto bueno.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Acciones inline (T-08 scope — sin T-08b)
   // ---------------------------------------------------------------------------
 
@@ -243,10 +500,28 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Autorización (la UI filtra; el backend re-valida)
+  // Autorización (la UI filtra; el backend re-valida — D-05, ADR-013/020)
+  // Los permisos en $permissions vienen de /auth/me (layout.server.js).
+  // D-07: 'GESTIONAR_RADICADO' y 'RADICAR_ENTRADA' no existen en el catálogo
+  // RBAC real (migración 004/005/007). Mapeados a los permisos reales:
+  //   PERM_RADI            — permiso base de radicación (acceso general a radicados)
+  //   PERM_RADI_ENTRADA    — radicar documentos de entrada
+  //   PERM_SOL_ANULAR      — solicitar anulación de radicado (migración 007)
+  //   PERM_RESPUESTA_VINCULADA — crear respuesta vinculada Salida RE: (migración 007)
+  //   PERM_RADI_SALIDA     — radicar documentos de salida (cubre crear respuesta)
+  // El backend re-valida RBAC en cada endpoint; la UI no es fuente de verdad.
   // ---------------------------------------------------------------------------
-  $: canManage =
-    $permissions.includes("GESTIONAR_RADICADO") || $permissions.includes("RADICAR_ENTRADA");
+  $: canManage = $permissions.includes("PERM_RADI") || $permissions.includes("PERM_RADI_ENTRADA");
+
+  // T-08b: permisos para acciones de operador
+  $: canAnular = $permissions.includes("PERM_SOL_ANULAR");
+  $: canDevolver = $permissions.includes("PERM_RADI");
+  $: canResponder =
+    $permissions.includes("PERM_RESPUESTA_VINCULADA") || $permissions.includes("PERM_RADI_SALIDA");
+  $: canVoBo = $permissions.includes("PERM_RADI");
+  // Pre-computed para evitar condiciones largas en template (printWidth)
+  $: canDevolverInDrawer =
+    canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
 </script>
 
 <svelte:head>
@@ -440,7 +715,19 @@
                       </button>
                     {/if}
                   {/if}
-                  <!-- TODO T-08b: anular, devolver, responder, VoBo -->
+                  <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
+                  {#if canAnular && doc.status !== "closed" && doc.status !== "cancelled"}
+                    <button
+                      class="action-btn action-btn--danger"
+                      type="button"
+                      aria-label="Solicitar anulación del radicado {doc.tracking_number}"
+                      disabled={actionLoading}
+                      on:click={() => openAnulacionFromRow(doc)}
+                    >
+                      <i class="fas fa-ban" aria-hidden="true"></i>
+                      Anular
+                    </button>
+                  {/if}
                 </td>
               </tr>
             {/each}
@@ -615,11 +902,260 @@
           Iniciar trámite
         </Button>
       {/if}
-      <!-- TODO T-08b: anular, devolver, responder, VoBo -->
+      <!-- T-08b: acciones de operador -->
+      {#if canResponder && selectedDoc.doc_type === "E"}
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={actionLoading}
+          on:click={openModalResponder}
+        >
+          <i class="fas fa-reply" aria-hidden="true"></i>
+          Responder
+        </Button>
+      {/if}
+      {#if canDevolverInDrawer}
+        <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openModalDevolver}>
+          <i class="fas fa-undo" aria-hidden="true"></i>
+          Devolver
+        </Button>
+      {/if}
+      {#if canVoBo && selectedDoc.status === "in_progress"}
+        <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openModalVoBo}>
+          <i class="fas fa-check-double" aria-hidden="true"></i>
+          VoBo
+        </Button>
+      {/if}
+      {#if canAnular && selectedDoc.status !== "closed" && selectedDoc.status !== "cancelled"}
+        <Button variant="danger" size="sm" disabled={actionLoading} on:click={openModalAnulacion}>
+          <i class="fas fa-ban" aria-hidden="true"></i>
+          Anular
+        </Button>
+      {/if}
     {/if}
     <Button variant="ghost" size="sm" on:click={closeDrawer}>Cerrar</Button>
   </svelte:fragment>
 </Drawer>
+
+<!-- =========================================================================
+  T-08b: Modales de acciones de operador
+  Cada modal pide confirmación explícita antes de la acción (ADR-020 §3).
+  Los endpoints proxy leen el token de la cookie httpOnly (nunca el cliente).
+========================================================================= -->
+
+<!-- Modal: Solicitar anulación -->
+<Modal
+  open={modalAnulacion}
+  title="Solicitar anulación"
+  size="sm"
+  on:close={() => (modalAnulacion = false)}
+>
+  <p class="modal-desc">
+    Solicita la anulación del radicado
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong>. La anulación requiere aprobación
+    posterior por un supervisor.
+  </p>
+  <div class="modal-form">
+    <FormField
+      id="anul-causal"
+      label="Causal"
+      type="text"
+      bind:value={anulCausal}
+      required={true}
+      placeholder="Ej. DUPLICADO"
+      hint="Código de causal, máx. 15 caracteres."
+      error={anulCausalError}
+    />
+    <FormField
+      id="anul-motivo"
+      label="Motivo (opcional)"
+      type="textarea"
+      bind:value={anulMotivo}
+      placeholder="Descripción detallada de la razón de anulación…"
+      rows={3}
+    />
+  </div>
+  <svelte:fragment slot="footer">
+    <Button variant="danger" size="sm" loading={actionLoading} on:click={requestAnulacion}>
+      Solicitar anulación
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={actionLoading}
+      on:click={() => (modalAnulacion = false)}
+    >
+      Cancelar
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- Modal: Devolver en flujo -->
+<Modal
+  open={modalDevolver}
+  title="Devolver radicado"
+  size="sm"
+  on:close={() => (modalDevolver = false)}
+>
+  <p class="modal-desc">
+    Devuelve el radicado
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong> a otra dependencia dentro del flujo.
+  </p>
+  <div class="modal-form">
+    <FormField
+      id="dev-to-dept"
+      label="Dependencia destino"
+      type="text"
+      bind:value={devToDept}
+      required={true}
+      placeholder="Nombre o código de la dependencia"
+      hint="Máx. 100 caracteres."
+      error={devToDeptError}
+    />
+    <FormField
+      id="dev-causal"
+      label="Causal"
+      type="text"
+      bind:value={devCausal}
+      required={true}
+      placeholder="Ej. INCOMPLETO"
+      hint="Código de causal, máx. 15 caracteres."
+      error={devCausalError}
+    />
+    <FormField
+      id="dev-comentario"
+      label="Comentario (opcional)"
+      type="textarea"
+      bind:value={devComentario}
+      placeholder="Información adicional para la dependencia destino…"
+      rows={3}
+    />
+  </div>
+  <svelte:fragment slot="footer">
+    <Button variant="primary" size="sm" loading={actionLoading} on:click={devolver}>
+      <i class="fas fa-undo" aria-hidden="true"></i>
+      Devolver
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={actionLoading}
+      on:click={() => (modalDevolver = false)}
+    >
+      Cancelar
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- Modal: Responder (crear Salida vinculada) -->
+<Modal
+  open={modalResponder}
+  title="Responder radicado"
+  size="md"
+  on:close={() => (modalResponder = false)}
+>
+  <p class="modal-desc">
+    Crea un radicado de Salida vinculado a
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong>. Todos los campos son opcionales; el
+    backend genera el número de radicado.
+  </p>
+  <div class="modal-form">
+    <FormField
+      id="resp-subject"
+      label="Asunto de la respuesta"
+      type="text"
+      bind:value={respSubject}
+      placeholder="Asunto del radicado de salida"
+    />
+    <FormField
+      id="resp-dest-dept"
+      label="Dependencia destino"
+      type="text"
+      bind:value={respDestDept}
+      placeholder="Dependencia que recibirá la respuesta"
+    />
+    <FormField
+      id="resp-observations"
+      label="Observaciones"
+      type="textarea"
+      bind:value={respObservations}
+      placeholder="Observaciones para el radicado de respuesta…"
+      rows={3}
+    />
+    <FormField
+      id="resp-days"
+      label="Días de respuesta"
+      type="text"
+      bind:value={respResponseDays}
+      placeholder="Ej. 15"
+      hint="Número de días hábiles de plazo para la respuesta."
+    />
+  </div>
+  <svelte:fragment slot="footer">
+    <Button variant="primary" size="sm" loading={actionLoading} on:click={responder}>
+      <i class="fas fa-reply" aria-hidden="true"></i>
+      Crear respuesta
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={actionLoading}
+      on:click={() => (modalResponder = false)}
+    >
+      Cancelar
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- Modal: Decisión de Visto Bueno -->
+<Modal open={modalVoBo} title="Visto bueno" size="sm" on:close={() => (modalVoBo = false)}>
+  <p class="modal-desc">
+    Registra tu decisión sobre el radicado
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong>.
+  </p>
+  <div class="modal-form">
+    <FormField
+      id="vobo-decision"
+      label="Decisión"
+      type="select"
+      bind:value={voboAprobarStr}
+      required={true}
+      placeholder="Seleccione una decisión…"
+      options={[
+        { value: "true", label: "Aprobar" },
+        { value: "false", label: "Rechazar" },
+      ]}
+    />
+    <FormField
+      id="vobo-comentario"
+      label="Comentario (opcional)"
+      type="textarea"
+      bind:value={voboComentario}
+      placeholder="Justificación de la decisión…"
+      rows={3}
+    />
+  </div>
+  <!--
+    TODO T-08c: Crear cadena de VoBo (POST /workflows/{id}/vistos-buenos con revisores[])
+    requiere un componente UserPicker que aún no existe en el frontend.
+    Implementar cuando esté disponible.
+  -->
+  <svelte:fragment slot="footer">
+    <Button
+      variant="primary"
+      size="sm"
+      loading={actionLoading}
+      disabled={actionLoading || !voboAprobarStr}
+      on:click={voboDecidir}
+    >
+      <i class="fas fa-check-double" aria-hidden="true"></i>
+      Confirmar decisión
+    </Button>
+    <Button variant="ghost" size="sm" disabled={actionLoading} on:click={() => (modalVoBo = false)}>
+      Cancelar
+    </Button>
+  </svelte:fragment>
+</Modal>
 
 <style lang="scss">
   // ---------------------------------------------------------------------------
@@ -889,6 +1425,40 @@
         color: var(--op-surface);
       }
     }
+
+    &--danger {
+      background: transparent;
+      color: var(--op-error);
+      border-color: var(--op-error);
+
+      &:hover:not(:disabled) {
+        background: var(--op-error);
+        color: var(--op-surface);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modales de operador (T-08b)
+  // ---------------------------------------------------------------------------
+
+  .modal-desc {
+    font-size: var(--op-font-sm);
+    color: var(--op-text);
+    margin: 0 0 var(--op-space-4);
+    line-height: var(--op-line-height);
+
+    strong {
+      font-family: monospace;
+      font-weight: var(--op-weight-bold);
+      color: var(--op-primary-dark);
+    }
+  }
+
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-4);
   }
 
   // ---------------------------------------------------------------------------
