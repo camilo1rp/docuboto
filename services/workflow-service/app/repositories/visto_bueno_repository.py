@@ -62,6 +62,16 @@ class VistoBuenoRepository:
             radicado_id,
         )
 
+    async def is_reviewer(self, radicado_id: uuid.UUID, actor: uuid.UUID) -> bool:
+        """Devuelve ``True`` si ``actor`` pertenece a la cadena de revisores del radicado."""
+        await self._sp()
+        val = await self._conn.fetchval(
+            "SELECT 1 FROM visto_bueno WHERE radicado_id = $1 AND revisor_id = $2 LIMIT 1",
+            radicado_id,
+            actor,
+        )
+        return val is not None
+
     async def decide(self, vobo_id: uuid.UUID, estado: str, comentario: str | None) -> None:
         await self._sp()
         await self._conn.execute(

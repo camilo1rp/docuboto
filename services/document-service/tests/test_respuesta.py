@@ -31,6 +31,20 @@ async def test_crear_respuesta_antecedente_no_existe(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_crear_respuesta_sin_permiso_403(client_with_conn) -> None:
+    """D-06: PERM_RESPUESTA_VINCULADA requerido; fetchval None → sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # no row in auth_users → no permission
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/respuesta",
+        json={"subject": "RE: Solicitud"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
 async def test_listar_respuestas(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetch.return_value = [

@@ -97,3 +97,66 @@ async def test_aprobar_sin_solicitud_404(client_with_conn) -> None:
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "sin_solicitud_activa"
+
+
+# ---------------------------------------------------------------------------
+# D-06: comprobaciones de autorización (PERM_SOL_ANULAR / PERM_PANU_CODI)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_solicitar_sin_permiso_403(client_with_conn) -> None:
+    """check_permission usa fetchval; None → usuario no encontrado → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # sin fila en auth_users → no tiene permiso
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/anulacion",
+        json={"causal": "ANU-ERR", "motivo": "Sin permiso"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_solicitar_con_permiso_201(client_with_conn) -> None:
+    """fetchval truthy → permission ok; fetchrow → INSERT anulacion."""
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True  # permission granted
+    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion",
+        json={"causal": "ANU-ERR", "motivo": "Con permiso"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["estado"] == "solicitada"
+
+
+@pytest.mark.asyncio
+async def test_aprobar_sin_permiso_403(client_with_conn) -> None:
+    """PERM_PANU_CODI requerido para aprobar; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/anulacion/aprobar",
+        json={},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_rechazar_sin_permiso_403(client_with_conn) -> None:
+    """PERM_PANU_CODI requerido para rechazar; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/anulacion/rechazar",
+        json={},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"

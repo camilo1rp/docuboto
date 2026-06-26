@@ -16,6 +16,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Request, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_tenant_conn
 from app.schemas.anulacion import (
     AnulacionDecision,
@@ -40,6 +41,7 @@ def _actor(request: Request) -> uuid.UUID | None:
     response_model=AnulacionResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Solicitar anulación de un radicado (paso 1)",
+    dependencies=[Depends(require_permission("PERM_SOL_ANULAR"))],
 )
 async def solicitar_anulacion(
     document_id: uuid.UUID,
@@ -62,6 +64,7 @@ async def get_anulacion(
     "/{document_id}/anulacion/aprobar",
     response_model=AnulacionResponse,
     summary="Aprobar la anulación (paso 2; supervisor) → radicado anulado",
+    dependencies=[Depends(require_permission("PERM_PANU_CODI"))],
 )
 async def aprobar_anulacion(
     document_id: uuid.UUID,
@@ -76,6 +79,7 @@ async def aprobar_anulacion(
     "/{document_id}/anulacion/rechazar",
     response_model=AnulacionResponse,
     summary="Rechazar la anulación (paso 2; supervisor)",
+    dependencies=[Depends(require_permission("PERM_PANU_CODI"))],
 )
 async def rechazar_anulacion(
     document_id: uuid.UUID,

@@ -579,7 +579,10 @@ async def test_devolver_al_remitente(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
-    current = make_step_record(step_number=2, step_status="pending", to_dept="Jurídica")
+    # D-06: assigned_to debe coincidir con el actor (USER_ID) para pasar la verificación de tenencia.
+    current = make_step_record(
+        step_number=2, step_status="pending", to_dept="Jurídica", assigned_to=USER_ID
+    )
     devuelto = make_step_record(step_number=3, step_status="pending", to_dept="Ventanilla")
     mock_conn.fetchrow.side_effect = [current, devuelto]
 
@@ -608,6 +611,28 @@ async def test_devolver_no_active_step(
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "no_active_step"
+
+
+@pytest.mark.asyncio
+async def test_devolver_not_current_holder_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """D-06: solo el tenedor actual (assigned_to) puede devolver el radicado."""
+    client, mock_conn, _ = client_with_conn
+    # El paso pertenece a un usuario distinto del actor (USER_ID).
+    other_holder = uuid.uuid4()
+    current = make_step_record(
+        step_number=1, step_status="pending", to_dept="Jurídica", assigned_to=other_holder
+    )
+    mock_conn.fetchrow.return_value = current
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/devolver",
+        json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "not_current_holder"
 
 
 @pytest.mark.asyncio

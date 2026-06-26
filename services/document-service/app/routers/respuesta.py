@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.document import DocumentResponse
 from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
@@ -59,6 +60,7 @@ def _service(conn, slug, tenant_client, redis) -> DocumentService:
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Respuesta rápida: crear una Salida en respuesta a este radicado",
+    dependencies=[Depends(require_permission("PERM_RESPUESTA_VINCULADA"))],
 )
 async def crear_respuesta(
     document_id: uuid.UUID,

@@ -59,6 +59,26 @@ class VistoBuenoService:
     async def decidir(
         self, radicado_id: uuid.UUID, payload: VoBoDecision, actor: uuid.UUID | None
     ) -> CadenaResponse:
+        # Requerir identidad: un actor desconocido no puede participar en la cadena.
+        if actor is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "not_a_reviewer",
+                    "detail": "Se requiere X-User-Id: el actor no pertenece a la cadena de revisores",
+                    "status": 403,
+                },
+            )
+        # Verificación de membership: el actor debe estar en la cadena de este radicado.
+        if not await self._repo.is_reviewer(radicado_id, actor):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "not_a_reviewer",
+                    "detail": "El actor no pertenece a la cadena de revisores de este radicado",
+                    "status": 403,
+                },
+            )
         active = await self._repo.active(radicado_id)
         if active is None:
             raise HTTPException(
@@ -69,7 +89,8 @@ class VistoBuenoService:
                     "status": 404,
                 },
             )
-        if actor is not None and active["revisor_id"] != actor:
+        # Verificación de turno: el actor debe ser el revisor de turno.
+        if active["revisor_id"] != actor:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={

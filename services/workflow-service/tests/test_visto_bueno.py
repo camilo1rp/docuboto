@@ -71,6 +71,38 @@ async def test_crear_cadena_duplicada_409(
 
 
 @pytest.mark.asyncio
+async def test_decidir_sin_user_id_400(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """D-06: X-User-Id es obligatorio en decidir; sin él el router devuelve 400."""
+    client, _, _ = client_with_conn
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
+        json={"aprobar": True},
+        headers={"X-Tenant-Slug": "demo"},  # sin X-User-Id
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "missing_user"
+
+
+@pytest.mark.asyncio
+async def test_decidir_not_reviewer_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """D-06: el actor debe pertenecer a la cadena; si no → 403 not_a_reviewer."""
+    client, mock_conn, _ = client_with_conn
+    stranger = uuid.uuid4()
+    mock_conn.fetchval.return_value = None  # is_reviewer → False (no está en la cadena)
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
+        json={"aprobar": True},
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(stranger)},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "not_a_reviewer"
+
+
+@pytest.mark.asyncio
 async def test_decidir_fuera_de_turno_403(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:

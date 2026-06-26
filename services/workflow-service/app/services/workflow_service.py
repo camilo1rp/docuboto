@@ -233,7 +233,12 @@ class WorkflowService:
         comentario: str | None,
         actor: uuid.UUID | None,
     ) -> FlowStepResponse:
-        """Devuelve el radicado a su remitente/origen con causal (re-enrutado)."""
+        """Devuelve el radicado a su remitente/origen con causal (re-enrutado).
+
+        Autorización por tenencia (fiel al legado): solo quien tenga el radicado
+        asignado actualmente puede devolverlo.  No hay permiso RBAC global para
+        esta acción (RF-FLU / Orfeo legacy).
+        """
         current = await self._repo.get_current(radicado_id)
         if current is None:
             raise HTTPException(
@@ -242,6 +247,16 @@ class WorkflowService:
                     "error": "no_active_step",
                     "detail": f"No active flow step found for radicado {radicado_id}",
                     "status": 404,
+                },
+            )
+        # Verificación de tenencia: el actor debe ser el responsable del paso activo.
+        if current.assigned_to != actor:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "not_current_holder",
+                    "detail": "Solo el tenedor actual del radicado puede devolverlo",
+                    "status": 403,
                 },
             )
         new_step = await self._repo.apply_devolucion(
