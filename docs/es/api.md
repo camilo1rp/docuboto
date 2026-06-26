@@ -76,18 +76,24 @@ Valida un Bearer token. Usado internamente por el api-gateway.
 ```
 
 ### `GET /api/v1/auth/me`
-Información del usuario autenticado extraída del token.
+Información del usuario autenticado extraída del token, incluyendo sus permisos efectivos resueltos desde la BD del tenant (D-07).
+
+Requiere `Authorization: Bearer <token>`. Si se proporciona `X-Tenant-Slug`, se resuelven los permisos desde la BD del tenant. Sin esa cabecera (superadmin / llamada directa), `permissions` devuelve `[]` (fail-closed).
 
 ```json
 // Response 200
 {
-  "user_id": "uuid",
+  "user_id": "uuid-keycloak-sub",
   "username": "operador",
   "email": "operador@demo.orpycamcp.local",
   "tenant_slug": "demo",
-  "roles": ["operator"]
+  "roles": ["operator"],
+  "permissions": ["PERM_RADI", "USUA_PERM_CONSULTA"]
 }
 ```
+
+- `permissions`: lista de nombres de permisos con `crud > 0` asignados al usuario a través de sus grupos. Los usuarios `is_root=true` siempre incluyen `USUA_PERM_ROOT`, coherente con `has_permission()` y `GET /users/{id}/permissions`.
+- Si el usuario no está aprovisionado en el tenant, `permissions` es `[]` (fail-closed).
 
 ### URD y contexto de dependencia (E08)
 - `GET /api/v1/auth/users/{user_id}/urd` · `POST` · `DELETE /{urd_id}` — administra las asignaciones Usuario-Rol-Dependencia (una por (usuario, dependencia); una sola principal). Exige `USUA_PERM_ADMIN`.
@@ -358,11 +364,11 @@ Barrido de vencimientos (RF-FLU-07): detecta pasos activos vencidos no alertados
 
 ### Vistos buenos secuenciales (paridad legado)
 - `POST /api/v1/workflows/{radicado_id}/vistos-buenos` `{revisores: [uuid,...]}` — crea la cadena ordenada de revisión.
-- `POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir` `{aprobar, comentario?}` — el revisor de turno (menor orden pendiente) aprueba/rechaza; `403` si no es su turno; un rechazo detiene la cadena.
+- `POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir` `{aprobar, comentario?}` — el revisor de turno (menor orden pendiente) aprueba/rechaza. Requiere `X-User-Id` válido (400 si falta). `403 not_a_reviewer` si el actor no está en la cadena de revisores de ese radicado; `403 no_es_su_turno` si está en la cadena pero no es su turno; un rechazo detiene la cadena.
 - `GET /api/v1/workflows/{radicado_id}/vistos-buenos` — cadena + estado global (`en_revision|aprobado|rechazado`).
 
 ### `POST /api/v1/workflows/{radicado_id}/devolver` (devolución al remitente)
-Re-enruta un radicado mal asignado: `{ "to_dept": "...", "causal": "DEV-DEP", "comentario"? }`. Cierra el paso activo como `returned` y crea uno nuevo hacia `to_dept`, con la causal (catálogo `causales` de tenant) en el historial. `404` si no hay paso activo.
+Re-enruta un radicado mal asignado: `{ "to_dept": "...", "causal": "DEV-DEP", "comentario"? }`. Cierra el paso activo como `returned` y crea uno nuevo hacia `to_dept`, con la causal en el historial. Autorización por tenencia: solo el responsable actual del paso activo puede devolver. `403 not_current_holder` si el actor no es el tenedor. `404` si no hay paso activo.
 
 ### Transacciones de trámite (RF-FLU-01)
 - `GET /api/v1/workflows/transaction-types` — catálogo (informar, NRR, agendar, no_agendar, change_folder, marcar_leido, validate_trd_send, solicitar_firma, vobo, cerrar_exp, anular…), con su permiso atómico y efecto de estado.
@@ -635,14 +641,14 @@ Crea 1-100 expedientes con radicados vinculados. Retorna `202 Accepted`.
 - `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (editar solo si no radicado), `POST /{id}/aprobar` (borrador→aprobado), `POST /{id}/radicar` (→ genera el radicado real y marca el borrador `radicado`).
 
 ### Respuesta rápida (paridad legado)
-- `POST /api/v1/documents/{id}/respuesta` `{subject?, dest_dept?, observations?, response_days?}` — crea un radicado de **Salida** en respuesta a este (hereda asunto `RE: …` y dependencia si se omiten), enlazado al antecedente (`responde_a`). Devuelve el nuevo radicado.
+- `POST /api/v1/documents/{id}/respuesta` `{subject?, dest_dept?, observations?, response_days?}` — crea un radicado de **Salida** en respuesta a este (hereda asunto `RE: …` y dependencia si se omiten), enlazado al antecedente (`responde_a`). Requiere permiso `PERM_RESPUESTA_VINCULADA`. `403 forbidden` si falta. Devuelve el nuevo radicado.
 - `GET /api/v1/documents/{id}/respuestas` — salidas que responden a este radicado.
 
 ### Anulación de radicado en dos pasos (paridad legado)
 La ley prohíbe borrar radicados: se anulan con aprobación supervisora.
-- `POST /api/v1/documents/{id}/anulacion` `{causal, motivo?}` — solicita (paso 1). `409` si ya está anulado o hay solicitud pendiente.
-- `POST /api/v1/documents/{id}/anulacion/aprobar` `{observacion?}` — aprueba (paso 2): el radicado pasa a `anulado` (el número se conserva).
-- `POST /api/v1/documents/{id}/anulacion/rechazar` `{observacion?}` — rechaza. `GET /api/v1/documents/{id}/anulacion` — última solicitud.
+- `POST /api/v1/documents/{id}/anulacion` `{causal, motivo?}` — solicita (paso 1). Requiere permiso `PERM_SOL_ANULAR`. `403 forbidden` si falta. `409` si ya está anulado o hay solicitud pendiente.
+- `POST /api/v1/documents/{id}/anulacion/aprobar` `{observacion?}` — aprueba (paso 2; nivel jefe): el radicado pasa a `anulado` (el número se conserva). Requiere `PERM_PANU_CODI`. `403 forbidden` si falta.
+- `POST /api/v1/documents/{id}/anulacion/rechazar` `{observacion?}` — rechaza. Requiere `PERM_PANU_CODI`. `403 forbidden` si falta. `GET /api/v1/documents/{id}/anulacion` — última solicitud.
 
 ### Firma electrónica (E06, ADR-016)
 - `POST /api/v1/documents/{id}/signatures` `{ "content_hash": "<sha256 hex>", "anexo_id"?, "reason"? }` — firma el radicado/anexo: registra identidad (claims del gateway), `content_hash` y sello de tiempo. `422` si el hash no es SHA-256.

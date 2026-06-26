@@ -8,8 +8,13 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ## [Unreleased]
 
+### Corregido
+
+- `fix(auth)`: **D-07 — espejo RBAC de la UI roto** — `GET /auth/me` devolvía `UserInfoResponse` sin `permissions`; el frontend hacía `me.permissions ?? []` → siempre vacío → toda la UI de control por rol desactivada. `UserInfoResponse` incluye ahora `permissions: list[str]` resuelto desde la BD del tenant via `RBACService.resolve_effective_permissions` (mismo que `GET /users/{id}/permissions`). Root incluye `USUA_PERM_ROOT`. Fail-closed: `[]` sin `X-Tenant-Slug` o sin aprovisionamiento. 4 nuevos tests verdes.
+
 ### Seguridad
 
+- `fix(document,workflow)`: **D-06** — hueco de autorización en acciones de operador. `POST /{id}/anulacion` exige `PERM_SOL_ANULAR`; `aprobar`/`rechazar` exigen `PERM_PANU_CODI`; `POST /{id}/respuesta` exige `PERM_RESPUESTA_VINCULADA`; `devolver` verifica tenencia del paso activo; `vistos-buenos/decidir` requiere `X-User-Id` válido y membership en la cadena. Comprobación DB-based (ADR-013, fail-closed). Migración `auth-service tenant/007`. 10 nuevos tests, `ruff check` limpio.
 - `fix(frontend)`: **D-05** — el `access_token` deja de viajar al cliente. Las llamadas al gateway pasan a endpoints proxy SSR (`(app)/**/api/+server.js`) que leen `locals.accessToken` y usan la URL interna; eliminada la capa de servicios cliente (`*.service.js` + `ENDPOINTS`), sustituida por tipos puros en `$lib/types/api.js`. `npm run check` y `spec-drift.sh` en verde.
 - `feat(auth,signature)`: guard **fail-fast** del contrato de issuer — al arranque se loguea el `iss` esperado y se avisa si la config (host interno sin `KEYCLOAK_ISSUER`) rechazaría todos los tokens. Sin falsos positivos en dev ni en prod single-host. Tests `issuer_config_warnings`.
 - `refactor(auth)`: migración `python-jose` → `PyJWT[crypto]` — jose está mínimamente mantenida (CVE-2024-33663/33664); PyJWT resuelve la clave del JWKS por `kid` antes de validar. Nuevos tests que firman JWT RS256 reales.
