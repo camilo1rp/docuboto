@@ -26,6 +26,7 @@
  * SvelteKit previene su inclusión en el bundle cliente.
  */
 
+import { dev } from "$app/environment";
 import { KEYCLOAK_TOKEN_URL, KEYCLOAK_LOGOUT_URL, KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ export const COOKIE_PKCE_STATE = "op_pkce_state";
 const COOKIE_BASE = /** @type {const} */ ({
   path: "/",
   httpOnly: true,
-  secure: false, // true en producción (requiere HTTPS)
+  secure: !dev, // true en producción (requiere HTTPS); false solo en dev local
   sameSite: /** @type {"lax"} */ ("lax"),
 });
 

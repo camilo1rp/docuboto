@@ -45,6 +45,7 @@
     transferExpediente,
     downloadIndiceXml,
   } from "$lib/services/archive.service.js";
+  import { getDownloadUrl } from "$lib/services/storage.service.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -139,6 +140,30 @@
     } finally {
       actionLoading = false;
       showTransferModal = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Descarga de anexo (URL pre-firmada via gateway — E07)
+  // ---------------------------------------------------------------------------
+  /**
+   * Solicita la URL pre-firmada de descarga al gateway y la abre en una nueva pestaña.
+   * @param {string} fileId
+   * @param {string} filename
+   */
+  async function handleDownloadAnexo(fileId, filename) {
+    try {
+      const result = await getDownloadUrl(fileId, { token, tenant });
+      const url = result?.url ?? result?.download_url ?? result;
+      if (typeof url !== "string") throw new Error("La respuesta no contiene una URL válida.");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      a.click();
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo obtener el enlace de descarga.");
     }
   }
 
@@ -255,7 +280,7 @@
 
   <!-- Tablist -->
   <div class="exp-tabs" role="tablist" aria-label="Facetas del expediente">
-    {#each TABS as tab}
+    {#each TABS as tab (tab.id)}
       <button
         id="tab-{tab.id}"
         class="exp-tabs__tab"
@@ -341,7 +366,7 @@
           {#if expediente?.metadata && Object.keys(expediente.metadata).length}
             <h3 class="exp-section-subtitle">Metadatos adicionales</h3>
             <dl class="exp-meta-list">
-              {#each Object.entries(expediente.metadata) as [k, v]}
+              {#each Object.entries(expediente.metadata) as [k, v] (k)}
                 <div class="exp-meta-list__item">
                   <dt>{k}</dt>
                   <dd>{String(v)}</dd>
@@ -365,7 +390,7 @@
             />
           {:else}
             <div class="exp-radicado-list" role="list" aria-label="Radicados del expediente">
-              {#each expediente.radicados as rad}
+              {#each expediente.radicados as rad (rad.tracking_number)}
                 <div class="exp-radicado-list__item" role="listitem">
                   <a
                     href="/bandeja?q={rad.tracking_number}"
@@ -480,7 +505,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {#each indice.items as item}
+                  {#each indice.items as item (item.document_id)}
                     <tr>
                       <td>{item.orden}</td>
                       <td>
@@ -553,7 +578,7 @@
                 </tr>
               </thead>
               <tbody>
-                {#each allAnexos as anexo}
+                {#each allAnexos as anexo (anexo.file_id)}
                   <tr>
                     <td>
                       <a href="/bandeja?q={anexo.tracking_number}" class="exp-link"
@@ -571,17 +596,15 @@
                       {/if}
                     </td>
                     <td>
-                      <!-- Descarga vía endpoint del gateway (token en cookie httpOnly → SSR) -->
-                      <!-- TODO: presigned URL via GET /api/v1/storage/files/{id}/download -->
-                      <a
-                        href="/api/storage/download/{anexo.file_id}"
+                      <!-- Descarga vía URL pre-firmada (GET /api/v1/storage/files/{id}/download) -->
+                      <button
+                        type="button"
                         class="exp-action-link"
                         aria-label="Descargar {anexo.filename}"
-                        target="_blank"
-                        rel="noreferrer"
+                        on:click={() => handleDownloadAnexo(anexo.file_id, anexo.filename)}
                       >
                         <i class="fas fa-download" aria-hidden="true"></i> Descargar
-                      </a>
+                      </button>
                     </td>
                   </tr>
                 {/each}
@@ -631,7 +654,7 @@
           </p>
 
           <ol class="exp-timeline" aria-label="Eventos del expediente">
-            {#each facetas.eventos.data as evento}
+            {#each facetas.eventos.data as evento (evento.id ?? evento.ts)}
               <li class="exp-timeline__item">
                 <div class="exp-timeline__marker" aria-hidden="true"></div>
                 <div class="exp-timeline__content">
@@ -707,7 +730,7 @@
                 </tr>
               </thead>
               <tbody>
-                {#each facetas.ubicacion.data as unidad}
+                {#each facetas.ubicacion.data as unidad (unidad.unidad_id)}
                   <tr>
                     <td>{unidad.signatura ?? "—"}</td>
                     <td class="exp-uuid">{unidad.unidad_id}</td>
@@ -1021,7 +1044,7 @@
     color: var(--op-primary-dark);
     font-size: var(--op-font-xs);
     font-weight: var(--op-weight-bold);
-    border-radius: 999px;
+    border-radius: var(--op-radius-full);
     min-width: 20px;
     height: 20px;
     padding: 0 var(--op-space-1);

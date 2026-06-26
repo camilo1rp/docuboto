@@ -24,11 +24,74 @@
   y sirve de ancla para los tests de T-05.
 -->
 <script>
+  import { onMount, onDestroy, tick } from "svelte";
+
   /** Controla si el dock está visible */
   export let open = false;
 
   /** Manejador de cierre (padre lo gestiona) */
   export let onClose = () => {};
+
+  // ---------------------------------------------------------------------------
+  // Trampa de foco (patrón de Modal.svelte)
+  // ---------------------------------------------------------------------------
+  const FOCUSABLE =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  let dockEl;
+  let closeBtnEl;
+  /** @type {Element|null} */
+  let previousFocus = null;
+
+  function getFocusable() {
+    return dockEl ? Array.from(dockEl.querySelectorAll(FOCUSABLE)) : [];
+  }
+
+  function trapFocus(e) {
+    if (!open || !dockEl) return;
+    const focusable = getFocusable();
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    if (e.key === "Tab") {
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+
+    if (e.key === "Escape") {
+      onClose();
+    }
+  }
+
+  $: if (open) {
+    previousFocus = document.activeElement;
+    tick().then(() => {
+      if (closeBtnEl) closeBtnEl.focus();
+    });
+  } else if (previousFocus) {
+    tick().then(() => {
+      /** @type {HTMLElement} */ (previousFocus).focus?.();
+      previousFocus = null;
+    });
+  }
+
+  onMount(() => {
+    document.addEventListener("keydown", trapFocus);
+  });
+
+  onDestroy(() => {
+    document.removeEventListener("keydown", trapFocus);
+  });
 </script>
 
 {#if open}
@@ -39,13 +102,21 @@
     on:keydown={() => {}}
   ></div>
 
-  <aside class="assistant-dock" aria-label="Asistente conversacional" aria-live="polite">
+  <aside
+    bind:this={dockEl}
+    class="assistant-dock"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Asistente conversacional"
+    aria-live="polite"
+  >
     <div class="assistant-dock__header">
       <span class="assistant-dock__title">
         <i class="fas fa-robot" aria-hidden="true"></i>
         Asistente OrpycaMCP
       </span>
       <button
+        bind:this={closeBtnEl}
         class="assistant-dock__close"
         type="button"
         aria-label="Cerrar asistente"

@@ -97,6 +97,7 @@ $op-space-8: 64px; // 8u
 $op-radius-sm: 4px;
 $op-radius: 6px;
 $op-radius-lg: 10px;
+$op-radius-full: 999px; // badge redondeado (pill)
 
 // Sombras
 $op-shadow-sm: 0 1px 3px rgba(33, 36, 33, 0.08);
@@ -187,6 +188,7 @@ $op-breadcrumb-height: 36px;
   --op-radius-sm: #{$op-radius-sm};
   --op-radius: #{$op-radius};
   --op-radius-lg: #{$op-radius-lg};
+  --op-radius-full: #{$op-radius-full};
 
   --op-shadow-sm: #{$op-shadow-sm};
   --op-shadow: #{$op-shadow};

@@ -45,7 +45,8 @@
       label: "Radicar",
       href: ROUTES.radicar,
       icon: "fas fa-file-import",
-      permission: "RADICAR_ENTRADA",
+      // La página permite RADICAR_ENTRADA || RADICAR_SALIDA || RADICAR_INTERNO (ADR-013)
+      permissions: ["RADICAR_ENTRADA", "RADICAR_SALIDA", "RADICAR_INTERNO"],
     },
     {
       label: "Expedientes",
@@ -75,6 +76,7 @@
 
   /** Filtra los ítems según los permisos/roles del usuario actual */
   $: visibleItems = NAV_ITEMS.filter((item) => {
+    if (item.permissions) return item.permissions.some((p) => $permissions.includes(p));
     if (item.permission) return $permissions.includes(item.permission);
     if (item.role) return $roles.includes(item.role);
     return true;

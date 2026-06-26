@@ -27,6 +27,7 @@
 -->
 
 <script>
+  import { goto } from "$app/navigation";
   import { dndzone } from "svelte-dnd-action";
   import { can } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
@@ -501,7 +502,7 @@
         {/if}
       </dl>
       <div class="radicar-success__actions">
-        <Button variant="primary" on:click={() => (window.location.href = `/bandeja`)}>
+        <Button variant="primary" on:click={() => goto("/bandeja")}>
           <i class="fas fa-list" aria-hidden="true"></i>
           Ir a la bandeja
         </Button>
@@ -1176,16 +1177,17 @@
       color: var(--op-primary-dark);
 
       &--e {
-        background: #e8f4e8;
-        color: var(--op-primary-dark);
+        background: var(--op-info-bg);
+        color: var(--op-info-fg);
       }
       &--s {
-        background: #e8f0f8;
-        color: #2a5a8c;
+        background: var(--op-warning-bg);
+        color: var(--op-warning-fg);
       }
       &--i {
-        background: #f5f0e8;
-        color: #7a5a1c;
+        background: var(--op-bg);
+        color: var(--op-text-secondary);
+        border: 1px solid var(--op-border);
       }
     }
 
