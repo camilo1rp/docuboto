@@ -13,8 +13,9 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.database import get_db_conn
+from app.core.database import get_db_conn, get_optional_tenant_conn
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.rbac_repository import RBACRepository
 from app.schemas.auth import (
     LogoutRequest,
     RefreshRequest,
@@ -24,6 +25,7 @@ from app.schemas.auth import (
     ValidateResponse,
 )
 from app.services.auth_service import AuthService, KeycloakError
+from app.services.rbac_service import RBACService
 
 logger = logging.getLogger(__name__)
 
@@ -182,11 +184,12 @@ async def validate(
     "/me",
     response_model=UserInfoResponse,
     status_code=status.HTTP_200_OK,
-    summary="Return current user info from Bearer token",
+    summary="Return current user info from Bearer token, including effective permissions",
 )
 async def me(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     service: AuthService = Depends(get_auth_service),
+    conn: asyncpg.Connection | None = Depends(get_optional_tenant_conn),
 ) -> UserInfoResponse:
     if not credentials:
         raise HTTPException(
@@ -199,6 +202,24 @@ async def me(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return await service.get_current_user(credentials.credentials)
+        user_info = await service.get_current_user(credentials.credentials)
     except KeycloakError as exc:
         raise _keycloak_error_to_http(exc)
+
+    # Resolve effective permissions from the tenant DB (D-07).
+    # `user_id` in the JWT claims equals the Keycloak `sub`, which is stored as
+    # `keycloak_sub` in `auth_users`. Fail-closed: empty list when:
+    #   - no tenant context (superadmin / direct call without X-Tenant-Slug), or
+    #   - user is not yet provisioned in the tenant.
+    permissions: list[str] = []
+    if conn is not None:
+        repo = RBACRepository(conn)
+        user = await repo.get_user_by_keycloak_sub(user_info.user_id)
+        if user is not None:
+            rbac = RBACService(repo)
+            # resolve_effective_permissions embeds USUA_PERM_ROOT for root users
+            # (consistent with rbac.py:88 and has_permission() logic).
+            perms = await rbac.resolve_effective_permissions(user["id"])
+            permissions = list(perms.keys())
+
+    return user_info.model_copy(update={"permissions": permissions})

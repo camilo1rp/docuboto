@@ -47,6 +47,13 @@ class UserInfoResponse(BaseModel):
     email: str
     tenant_slug: str | None
     roles: list[str]
+    permissions: list[str] = []
+    """Effective permission names for the authenticated user (D-07 / RBAC mirror).
+
+    Resolved from the tenant DB on each call; empty when the user has no
+    tenant context (superadmin) or is not provisioned in the tenant (fail-closed).
+    Root users always include ``USUA_PERM_ROOT``.
+    """
 
 
 class HealthResponse(BaseModel):

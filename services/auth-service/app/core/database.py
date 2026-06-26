@@ -53,6 +53,30 @@ def tenant_schema(slug: str) -> str:
     return f"tenant_{slug.replace('-', '_')}"
 
 
+async def get_optional_tenant_conn(
+    request: Request,
+) -> AsyncGenerator[asyncpg.Connection | None, None]:
+    """Tenant-scoped connection when ``X-Tenant-Slug`` is present; ``None`` otherwise.
+
+    Used by endpoints that must serve both tenant-scoped users and tenant-less
+    superadmins (e.g. ``GET /auth/me``). Callers must treat ``None`` as
+    "no tenant context" and apply fail-closed defaults (empty permission lists,
+    not full access).
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    if not slug:
+        yield None
+        return
+    schema = tenant_schema(slug)  # raises HTTP 400 if slug is syntactically invalid
+    pool: asyncpg.Pool = request.app.state.db_pool
+    async with pool.acquire() as conn:
+        await conn.execute(f'SET search_path = "{schema}", public')
+        try:
+            yield conn
+        finally:
+            await conn.execute("SET search_path = public")
+
+
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión con ``search_path`` fijado al schema del tenant (ADR-002/ADR-012).
 

@@ -15,12 +15,25 @@ validation, audit logging, and correct error mapping without requiring a live
 Keycloak instance.
 """
 
+import uuid
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
 
+from app.core.database import get_optional_tenant_conn
+from app.main import app
 from tests.conftest import FAKE_TOKEN_RESPONSE
+
+
+def _override_optional_conn(conn: AsyncMock | None) -> None:
+    """Override get_optional_tenant_conn for tests that exercise the /me permissions path."""
+
+    async def _dep() -> AsyncGenerator[AsyncMock | None, None]:
+        yield conn
+
+    app.dependency_overrides[get_optional_tenant_conn] = _dep
 
 # ---------------------------------------------------------------------------
 # POST /api/v1/auth/token
@@ -225,7 +238,10 @@ async def test_validate_missing_header(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_me_returns_user_info(client: AsyncClient) -> None:
-    """Authenticated user gets their own info from the token claims."""
+    """Authenticated user gets their own info from the token claims.
+
+    No X-Tenant-Slug → get_optional_tenant_conn yields None → permissions=[].
+    """
     from app.schemas.auth import UserInfoResponse
 
     expected = UserInfoResponse(
@@ -247,7 +263,147 @@ async def test_me_returns_user_info(client: AsyncClient) -> None:
         )
 
     assert response.status_code == 200
-    assert response.json()["username"] == "operador"
+    body = response.json()
+    assert body["username"] == "operador"
+    # No tenant header → fail-closed: empty permissions
+    assert body["permissions"] == []
+
+
+@pytest.mark.asyncio
+async def test_me_permissions_populated(client: AsyncClient) -> None:
+    """When the user is provisioned in the tenant, permissions are resolved and returned."""
+    from app.schemas.auth import UserInfoResponse
+
+    sub = str(uuid.uuid4())
+    user_id = uuid.uuid4()
+
+    user_info = UserInfoResponse(
+        user_id=sub,
+        username="operador",
+        email="operador@demo.orpycamcp.local",
+        tenant_slug="demo",
+        roles=["operator"],
+    )
+
+    conn = AsyncMock()
+    # get_user_by_keycloak_sub → user exists
+    conn.fetchrow.return_value = {
+        "id": user_id,
+        "username": "OPERADOR",
+        "email": "operador@demo.orpycamcp.local",
+        "keycloak_sub": sub,
+        "is_root": False,
+        "is_active": True,
+    }
+    # resolve_permissions → two granted permissions
+    conn.fetch.return_value = [
+        {"nombre": "PERM_RADI", "crud": 3},
+        {"nombre": "USUA_PERM_CONSULTA", "crud": 1},
+    ]
+    # is_root → False
+    conn.fetchval.return_value = False
+    _override_optional_conn(conn)
+
+    with patch(
+        "app.services.auth_service.AuthService.get_current_user",
+        new_callable=AsyncMock,
+        return_value=user_info,
+    ):
+        response = await client.get(
+            "/api/v1/auth/me",
+            headers={
+                "Authorization": "Bearer eyFAKE_ACCESS_TOKEN",
+                "X-Tenant-Slug": "demo",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["permissions"]) == {"PERM_RADI", "USUA_PERM_CONSULTA"}
+
+
+@pytest.mark.asyncio
+async def test_me_permissions_empty_when_not_provisioned(client: AsyncClient) -> None:
+    """User authenticated via Keycloak but not in tenant DB → permissions=[] (fail-closed)."""
+    from app.schemas.auth import UserInfoResponse
+
+    user_info = UserInfoResponse(
+        user_id="ghost-sub",
+        username="ghost",
+        email="ghost@demo.test",
+        tenant_slug="demo",
+        roles=[],
+    )
+
+    conn = AsyncMock()
+    # get_user_by_keycloak_sub → user NOT provisioned in tenant
+    conn.fetchrow.return_value = None
+    _override_optional_conn(conn)
+
+    with patch(
+        "app.services.auth_service.AuthService.get_current_user",
+        new_callable=AsyncMock,
+        return_value=user_info,
+    ):
+        response = await client.get(
+            "/api/v1/auth/me",
+            headers={
+                "Authorization": "Bearer eyFAKE_ACCESS_TOKEN",
+                "X-Tenant-Slug": "demo",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["permissions"] == []
+
+
+@pytest.mark.asyncio
+async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
+    """Root users always have USUA_PERM_ROOT in their permissions list."""
+    from app.schemas.auth import UserInfoResponse
+
+    sub = str(uuid.uuid4())
+    user_id = uuid.uuid4()
+
+    user_info = UserInfoResponse(
+        user_id=sub,
+        username="admin",
+        email="admin@demo.test",
+        tenant_slug="demo",
+        roles=["operator"],
+    )
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {
+        "id": user_id,
+        "username": "ADMIN",
+        "email": "admin@demo.test",
+        "keycloak_sub": sub,
+        "is_root": True,
+        "is_active": True,
+    }
+    # resolve_permissions returns normal perms; is_root=True embeds USUA_PERM_ROOT
+    conn.fetch.return_value = [{"nombre": "PERM_RADI", "crud": 5}]
+    conn.fetchval.return_value = True  # is_root
+    _override_optional_conn(conn)
+
+    with patch(
+        "app.services.auth_service.AuthService.get_current_user",
+        new_callable=AsyncMock,
+        return_value=user_info,
+    ):
+        response = await client.get(
+            "/api/v1/auth/me",
+            headers={
+                "Authorization": "Bearer eyFAKE_ACCESS_TOKEN",
+                "X-Tenant-Slug": "demo",
+            },
+        )
+
+    assert response.status_code == 200
+    perms = response.json()["permissions"]
+    assert "USUA_PERM_ROOT" in perms
+    assert "PERM_RADI" in perms
 
 
 # ---------------------------------------------------------------------------
