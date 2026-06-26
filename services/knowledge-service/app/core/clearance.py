@@ -25,6 +25,7 @@ import uuid
 import asyncpg
 
 PUBLICA = 1
+RESERVADA = 2
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
 
 

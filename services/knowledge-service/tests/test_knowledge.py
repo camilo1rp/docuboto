@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.services.embeddings import embed, to_pgvector
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, TEST_INTERNAL_TOKEN
 
 NOW = datetime.now(tz=UTC)
 
@@ -39,7 +39,8 @@ def test_to_pgvector_format() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingest(client_with_conn) -> None:
+async def test_ingest(client_with_conn, token_settings) -> None:
+    """Ingesta autorizada (token de servicio interno correcto) → 201."""
     client, conn = client_with_conn
     cid = uuid.uuid4()
     conn.fetchrow.return_value = {
@@ -54,15 +55,52 @@ async def test_ingest(client_with_conn) -> None:
             "source_type": "radicado",
             "source_ref": "2024-DEMO-E-000001",
             "texto": "Solicitud de información sobre contrato",
+            "nivel_seguridad": 1,
             "acl": {"dependencias": [120]},
         },
-        headers=TENANT_HEADERS,
+        headers={**TENANT_HEADERS, "X-Internal-Token": TEST_INTERNAL_TOKEN},
     )
     assert resp.status_code == 201
     assert resp.json()["source_ref"] == "2024-DEMO-E-000001"
     # El INSERT recibió un literal vector y el ACL.
     sql = conn.fetchrow.call_args.args[0]
     assert "::vector" in sql and "knowledge_chunk" in sql
+
+
+@pytest.mark.asyncio
+async def test_ingest_without_token_is_rejected(client_with_conn, token_settings) -> None:
+    """D-02: ingesta sin X-Internal-Token es rechazada con 401 (header ausente)."""
+    client, _conn = client_with_conn
+    resp = await client.post(
+        "/api/v1/knowledge/ingest",
+        json={
+            "source_type": "radicado",
+            "source_ref": "2024-DEMO-E-000001",
+            "texto": "Solicitud de información sobre contrato",
+            "nivel_seguridad": 1,
+        },
+        headers=TENANT_HEADERS,  # sin X-Internal-Token
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "missing_internal_token"
+
+
+@pytest.mark.asyncio
+async def test_ingest_with_wrong_token_is_rejected(client_with_conn, token_settings) -> None:
+    """D-02: ingesta con token incorrecto es rechazada con 403."""
+    client, _conn = client_with_conn
+    resp = await client.post(
+        "/api/v1/knowledge/ingest",
+        json={
+            "source_type": "radicado",
+            "source_ref": "2024-DEMO-E-000001",
+            "texto": "Solicitud de información sobre contrato",
+            "nivel_seguridad": 1,
+        },
+        headers={**TENANT_HEADERS, "X-Internal-Token": "wrong-token"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "invalid_internal_token"
 
 
 @pytest.mark.asyncio

@@ -25,5 +25,10 @@ class Settings(BaseSettings):
     service_port: int = 8011
     log_level: str = "info"
 
+    # Token de ingesta (D-02 / RF-SEG-08): cadena compartida que deben enviar los
+    # servicios internos en X-Internal-Token para invocar /ingest. Si está vacío el
+    # endpoint rechaza TODAS las llamadas (fail-closed).  Nunca exponer en logs.
+    internal_service_token: str = ""
+
 
 settings = Settings()

@@ -12,13 +12,24 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app.core import config as cfg_module
 from app.core.database import get_tenant_conn
 from app.main import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
+
+# Token compartido que usan los tests que ejercen el endpoint /ingest.
+TEST_INTERNAL_TOKEN = "test-internal-service-token-xxx"
+
+
+@pytest.fixture
+def token_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Activa el token de ingesta para tests que necesitan llamar a /ingest."""
+    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
 
 
 @pytest_asyncio.fixture

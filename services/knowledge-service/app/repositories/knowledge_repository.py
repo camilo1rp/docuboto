@@ -29,12 +29,13 @@ class KnowledgeRepository:
         embedding_literal: str,
         metadata: dict,
         acl: dict,
+        nivel_seguridad: int,
     ) -> asyncpg.Record:
         row = await self._conn.fetchrow(
             """
             INSERT INTO knowledge_chunk
-                (source_type, source_ref, texto, embedding, metadata, acl)
-            VALUES ($1, $2, $3, $4::vector, $5::jsonb, $6::jsonb)
+                (source_type, source_ref, texto, embedding, metadata, acl, nivel_seguridad)
+            VALUES ($1, $2, $3, $4::vector, $5::jsonb, $6::jsonb, $7)
             RETURNING id, source_type, source_ref, created_at
             """,
             source_type,
@@ -43,6 +44,7 @@ class KnowledgeRepository:
             embedding_literal,
             json.dumps(metadata or {}),
             json.dumps(acl or {}),
+            nivel_seguridad,
         )
         assert row is not None
         return row
@@ -58,15 +60,17 @@ class KnowledgeRepository:
         """Vecinos más cercanos (coseno) con PRE-FILTRADO ACL.
 
         El control de acceso se resuelve **en el servidor** (RF-SEG-08 / RF-BUS-04): se
-        acota SIEMPRE por la clasificación del chunk (``acl.nivel_seguridad``, default
-        PUBLICA si no está) ≤ el clearance del llamante. El ``acl_filter`` opcional del
+        acota SIEMPRE por la clasificación del chunk (columna ``nivel_seguridad``,
+        ``NOT NULL`` con default **CLASIFICADA** — fail-closed, D-02) ≤ el clearance del
+        llamante. El ``acl_filter`` opcional del
         cliente es solo NARROW adicional (p. ej. por dependencia); nunca amplía acceso.
         """
         params: list[object] = [embedding_literal]
         conds: list[str] = []
 
+        # D-02: filtro sobre la columna de primera clase, no sobre JSONB.
         params.append(max_clearance)
-        conds.append(f"COALESCE(NULLIF(acl->>'nivel_seguridad', '')::int, 1) <= ${len(params)}")
+        conds.append(f"nivel_seguridad <= ${len(params)}")
 
         if acl_filter:
             params.append(json.dumps(acl_filter))
