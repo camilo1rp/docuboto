@@ -34,11 +34,8 @@
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
-  import {
-    fetchDocuments,
-    fetchDocumentById,
-    updateDocument,
-  } from "$lib/services/document.service.js";
+  // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
+  // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
   import Drawer from "$lib/components/ui/Drawer.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
@@ -63,10 +60,6 @@
   let filterStatus = data.initialFilters?.status ?? "";
   let currentPage = data.initialFilters?.page ?? 1;
   const pageSize = 20;
-
-  // Tokens de autenticación (del server load, para llamadas cliente)
-  const token = data.token;
-  const tenant = data.tenant;
 
   // ---------------------------------------------------------------------------
   // Drawer de detalle
@@ -124,20 +117,24 @@
 
   /**
    * Carga la página actual de radicados con los filtros activos.
-   * Usada tanto en la carga inicial-cliente (si los datos SSR son parciales)
-   * como en cada cambio de filtro/página.
+   * Llama al endpoint local /bandeja/api que lee la cookie httpOnly en el servidor.
+   * El token nunca alcanza el JS del cliente (D-05).
    */
   async function loadDocuments() {
     loading = true;
     try {
-      const result = await fetchDocuments({
-        token,
-        tenant,
-        docType: filterDocType || undefined,
-        status: filterStatus || undefined,
-        page: currentPage,
-        size: pageSize,
+      const params = new URLSearchParams({
+        page: String(currentPage),
+        size: String(pageSize),
       });
+      if (filterDocType) params.set("doc_type", filterDocType);
+      if (filterStatus) params.set("status", filterStatus);
+
+      const res = await fetch(`/bandeja/api?${params}`);
+      const result = await res.json();
+      if (!res.ok) {
+        throw result;
+      }
       documents = result.documents;
       total = result.total;
     } catch (err) {
@@ -183,6 +180,7 @@
    * Abre el drawer con el detalle completo del radicado.
    * Si el item ya está en el listado usamos esos datos; luego cargamos el
    * detalle completo (con anexos, metadata) en background.
+   * Llama al endpoint local /bandeja/api/[id] — el token permanece en el servidor.
    * @param {import('$lib/services/document.service.js').DocumentResponse} doc
    */
   async function openDrawer(doc) {
@@ -192,7 +190,10 @@
     // Cargar detalle completo (incluye anexos y metadata)
     detailLoading = true;
     try {
-      selectedDoc = await fetchDocumentById(doc.id, { token, tenant });
+      const res = await fetch(`/bandeja/api/${doc.id}`);
+      const result = await res.json();
+      if (!res.ok) throw result;
+      selectedDoc = result;
     } catch (err) {
       notifyError(err.detail ?? "No se pudo cargar el detalle del radicado.");
     } finally {
@@ -212,7 +213,7 @@
   /**
    * Avanza el estado de un radicado (solo transiciones válidas).
    * Solo disponible si el usuario tiene permisos de operador.
-   * El backend re-valida la autorización.
+   * Llama al endpoint local /bandeja/api/[id] — el backend re-valida RBAC.
    * @param {string} docId
    * @param {'distributed'|'in_progress'} newStatus
    */
@@ -220,7 +221,13 @@
     if (actionLoading) return;
     actionLoading = true;
     try {
-      const updated = await updateDocument(docId, { status: newStatus }, { token, tenant });
+      const res = await fetch(`/bandeja/api/${docId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const updated = await res.json();
+      if (!res.ok) throw updated;
       // Actualizar en la lista local para evitar reload completo
       documents = documents.map((d) => (d.id === docId ? { ...d, status: updated.status } : d));
       // Actualizar en el drawer si está abierto

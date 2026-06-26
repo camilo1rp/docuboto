@@ -34,8 +34,9 @@
  *   expediente (hoja de ruta E02 §9). Los eventos de flujo por radicado se cargan
  *   on-demand desde la bandeja de cada radicado.
  *
- * token + tenant se exponen en `data` para que el cliente pueda ejecutar
- * acciones (cerrar/transferir) sin volver al servidor.
+ * Las acciones del cliente (cerrar/transferir, descargar XML/anexos) usan los
+ * endpoints locales /expedientes/[id]/api/* que leen la cookie httpOnly (D-05).
+ * El access_token NO se expone en $page.data.
  */
 
 import { error } from "@sveltejs/kit";
@@ -149,14 +150,11 @@ export async function load({ params, cookies, parent }) {
 
   return {
     expediente: resumenResult.value,
-    // Token + tenant para acciones del cliente (cerrar/transferir)
-    token,
-    tenant,
-    userId,
     facetas: {
       indice: settle(indiceResult),
       eventos: settle(eventosResult),
       ubicacion: settle(ubicacionResult),
     },
+    // token, tenant y userId NO se exponen: las acciones cliente usan /expedientes/[id]/api/* (D-05)
   };
 }

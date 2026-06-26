@@ -26,8 +26,9 @@
  * Si algún catálogo falla, se devuelve vacío y el stepper lo maneja con
  * estados de error en el paso correspondiente (degradación elegante).
  *
- * Expone token + tenant al cliente para las llamadas POST de creación
- * y subida de anexos (client-side).
+ * Las llamadas POST de creación y subida de anexos usan los endpoints locales
+ * /radicar/api/documents y /radicar/api/storage que leen la cookie httpOnly (D-05).
+ * El access_token NO se expone en $page.data.
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
@@ -77,11 +78,10 @@ export async function load({ cookies, parent, fetch }) {
   }
 
   return {
-    token,
-    tenant,
     user,
     dependencias,
     trdSeries,
     tiposDocumentales,
+    // token y tenant NO se exponen: las llamadas cliente usan /radicar/api/* (D-05)
   };
 }

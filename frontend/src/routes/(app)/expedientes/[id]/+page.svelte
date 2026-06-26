@@ -40,12 +40,9 @@
 
   import { permissions } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
-  import {
-    closeExpediente,
-    transferExpediente,
-    downloadIndiceXml,
-  } from "$lib/services/archive.service.js";
-  import { getDownloadUrl } from "$lib/services/storage.service.js";
+  // Las acciones (cerrar/transferir, descargar XML/anexos) usan los endpoints locales
+  // /expedientes/[id]/api/* que leen la cookie httpOnly en el servidor (D-05).
+  // El token nunca alcanza el JS del cliente.
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -55,11 +52,6 @@
   // ---------------------------------------------------------------------------
   $: expediente = data.expediente;
   $: facetas = data.facetas;
-
-  // Token y tenant vienen del server load (mismo patrón que bandeja/radicar)
-  const token = data.token;
-  const tenant = data.tenant;
-  const userId = data.userId;
 
   // ---------------------------------------------------------------------------
   // Autorización (espejo del RBAC; backend re-valida siempre)
@@ -118,7 +110,9 @@
   async function handleClose() {
     actionLoading = true;
     try {
-      await closeExpediente(expediente.id, { token, tenant, userId });
+      const res = await fetch(`/expedientes/${expediente.id}/api/close`, { method: "POST" });
+      const result = await res.json();
+      if (!res.ok) throw result;
       notifySuccess(`Expediente ${expediente.code} cerrado correctamente.`);
       await invalidateAll();
     } catch (err) {
@@ -132,7 +126,9 @@
   async function handleTransfer() {
     actionLoading = true;
     try {
-      await transferExpediente(expediente.id, { token, tenant });
+      const res = await fetch(`/expedientes/${expediente.id}/api/transfer`, { method: "POST" });
+      const result = await res.json();
+      if (!res.ok) throw result;
       notifySuccess(`Expediente ${expediente.code} transferido correctamente.`);
       await invalidateAll();
     } catch (err) {
@@ -147,13 +143,16 @@
   // Descarga de anexo (URL pre-firmada via gateway — E07)
   // ---------------------------------------------------------------------------
   /**
-   * Solicita la URL pre-firmada de descarga al gateway y la abre en una nueva pestaña.
+   * Obtiene la URL pre-firmada de descarga vía el endpoint local y la abre en nueva pestaña.
+   * El endpoint /expedientes/[id]/api/download/[fileId] lee la cookie httpOnly en el servidor.
    * @param {string} fileId
    * @param {string} filename
    */
   async function handleDownloadAnexo(fileId, filename) {
     try {
-      const result = await getDownloadUrl(fileId, { token, tenant });
+      const res = await fetch(`/expedientes/${expediente.id}/api/download/${fileId}`);
+      const result = await res.json();
+      if (!res.ok) throw result;
       const url = result?.url ?? result?.download_url ?? result;
       if (typeof url !== "string") throw new Error("La respuesta no contiene una URL válida.");
       const a = document.createElement("a");
@@ -175,7 +174,13 @@
   async function handleDownloadXml() {
     xmlDownloading = true;
     try {
-      const blob = await downloadIndiceXml(expediente.id, { token, tenant });
+      // El endpoint local /expedientes/[id]/api/indice-xml lee la cookie httpOnly.
+      const res = await fetch(`/expedientes/${expediente.id}/api/indice-xml`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw err;
+      }
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

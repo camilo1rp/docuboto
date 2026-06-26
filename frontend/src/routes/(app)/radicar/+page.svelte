@@ -37,11 +37,11 @@
   import Card from "$lib/components/ui/Card.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
-  import { uploadFile } from "$lib/services/storage.service.js";
-  import { createDocument } from "$lib/services/document.service.js";
-  import { fetchMetadataTemplates } from "$lib/services/trd.service.js";
+  // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
+  // se realizan a través de los endpoints locales /radicar/api/* que leen la
+  // cookie httpOnly en el servidor — el token nunca alcanza el JS del cliente (D-05).
 
-  /** @type {{ token: string, tenant: string, user: any, dependencias: any[], trdSeries: any[], tiposDocumentales: any[] }} */
+  /** @type {{ user: any, dependencias: any[], trdSeries: any[], tiposDocumentales: any[] }} */
   export let data;
 
   // ---------------------------------------------------------------------------
@@ -121,7 +121,8 @@
     })),
   ];
 
-  // Cuando cambia el tipo documental, cargamos la plantilla de metadatos
+  // Cuando cambia el tipo documental, cargamos la plantilla de metadatos.
+  // Usa el endpoint local /radicar/api/templates que lee la cookie httpOnly en el servidor.
   async function onDocClassChange() {
     activeTemplate = null;
     extraMetadata = {};
@@ -130,15 +131,15 @@
 
     loadingTemplate = true;
     try {
+      const params = new URLSearchParams();
+      params.set("tipo_documental", docClass);
+      const res = await fetch(`/radicar/api/templates?${params}`);
       /** @type {any[]} */
-      const templates = await fetchMetadataTemplates({
-        token: data.token,
-        tenant: data.tenant,
-        tipoDocumental: docClass,
-      });
+      const templates = await res.json();
+      if (!res.ok) throw templates;
       // Tomar la plantilla activa (si existe)
       /** @type {any} */
-      const found = templates.find((t) => t.activo);
+      const found = Array.isArray(templates) ? templates.find((t) => t.activo) : null;
       activeTemplate = found ?? null;
       // Inicializar los campos extra con valores vacíos
       if (activeTemplate?.schema?.properties) {
@@ -146,7 +147,7 @@
           Object.keys(activeTemplate.schema.properties).map((k) => [k, ""]),
         );
       }
-    } catch (err) {
+    } catch {
       // Sin plantilla activa es válido; el backend valida de todas formas
       activeTemplate = null;
     } finally {
@@ -210,7 +211,8 @@
     anexos = anexos.filter((a) => a.id !== id);
   }
 
-  // Subida de todos los anexos pendientes al storage-service
+  // Subida de todos los anexos pendientes al storage-service.
+  // Usa el endpoint local /radicar/api/storage que inyecta el token + userId desde el servidor.
   async function uploadPendingAnexos() {
     const pending = anexos.filter((a) => !a.uploaded && !a.uploading);
     if (!pending.length) return;
@@ -220,14 +222,14 @@
       pending.map(async (item) => {
         anexos = anexos.map((a) => (a.id === item.id ? { ...a, uploading: true } : a));
         try {
-          const res = await uploadFile(item.file, {
-            token: data.token,
-            tenant: data.tenant,
-            userId: data.user?.id,
-          });
+          const form = new FormData();
+          form.append("file", item.file);
+          const res = await fetch("/radicar/api/storage", { method: "POST", body: form });
+          const fileResponse = await res.json();
+          if (!res.ok) throw fileResponse;
           anexos = anexos.map((a) =>
             a.id === item.id
-              ? { ...a, uploading: false, uploaded: true, fileId: res.id, error: "" }
+              ? { ...a, uploading: false, uploaded: true, fileId: fileResponse.id, error: "" }
               : a,
           );
         } catch (err) {
@@ -342,10 +344,14 @@
     };
 
     try {
-      const doc = await createDocument(payload, {
-        token: data.token,
-        tenant: data.tenant,
+      // Usa el endpoint local /radicar/api/documents que inyecta el token desde el servidor.
+      const res = await fetch("/radicar/api/documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
+      const doc = await res.json();
+      if (!res.ok) throw doc;
       createdDocument = doc;
       showConfirmModal = false;
       notify({ type: "success", message: `Radicado creado: ${doc.tracking_number}` });

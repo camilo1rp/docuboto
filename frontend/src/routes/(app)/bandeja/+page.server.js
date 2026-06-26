@@ -15,16 +15,18 @@
  *   - Paginación vía X-Total-Count (header de respuesta)
  *   - Filtros de fecha y dependencia disponibles en /api/v1/search (T-11)
  *
- * La carga inicial es SSR (page=1, sin filtros). Los cambios de filtro y paginación
- * subsiguientes se hacen en el cliente reutilizando document.service.js.
+ * La carga inicial es SSR (page=1, sin filtros). Los cambios de filtro, paginación
+ * y acciones de operador (avanzar estado, ver detalle) usan el endpoint local
+ * /bandeja/api[/id] que lee la cookie httpOnly en el servidor (D-05, ADR-011).
  *
- * Expone token + tenant al cliente para que pueda hacer llamadas paginadas/filtradas
- * sin volver al servidor. NOTA: el token se pasa como dato público de página
- * SOLO porque se requiere para las llamadas cliente; nunca se incluye en el bundle.
+ * El access_token NO se expone en $page.data — nunca alcanza el JS del cliente.
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.js";
+
+// Nota: el token se lee aquí solo para la carga SSR inicial.
+// Las llamadas cliente-side usan /bandeja/api[/id] que leen la cookie en el servidor.
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, url, fetch }) {
@@ -70,10 +72,8 @@ export async function load({ cookies, parent, url, fetch }) {
     documents,
     total,
     loadError,
-    // Pasar contexto de sesión al cliente para llamadas paginadas/filtradas
-    token,
-    tenant,
-    // Filtros activos al cargar
+    // Filtros activos al cargar (para deep-link)
     initialFilters: { docType, status, page },
+    // token y tenant NO se exponen: las llamadas cliente usan /bandeja/api (D-05)
   };
 }
