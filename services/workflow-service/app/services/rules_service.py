@@ -17,6 +17,7 @@ from uuid import UUID
 
 import asyncpg
 
+from app.core.database import tenant_schema
 from app.schemas.rules import (
     RuleBatchEvaluationRequest,
     RuleBatchEvaluationResponse,
@@ -63,7 +64,8 @@ class WorkflowRulesService:
 
     async def _set_search_path(self) -> None:
         # Las tablas de reglas viven en tenant_{slug} (ADR-012).
-        await self.conn.execute(f"SET search_path TO tenant_{self.tenant_slug}, public")
+        schema = tenant_schema(self.tenant_slug)  # valida + normaliza (fail-closed)
+        await self.conn.execute(f'SET search_path TO "{schema}", public')
 
     async def create_rule(
         self, payload: WorkflowRuleCreate, created_by: UUID

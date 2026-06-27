@@ -336,34 +336,39 @@ class WorkflowService:
 
     async def _create_step(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStep:
         step_number = await self._repo.get_next_step_number(payload.radicado_id)
-        # Complete whichever step is currently active before opening a new one.
-        await self._repo.complete_active_step(payload.radicado_id)
-        step = await self._repo.create(
-            radicado_id=payload.radicado_id,
-            tracking_number=payload.tracking_number,
-            step_number=step_number,
-            from_dept=payload.from_dept,
-            to_dept=payload.to_dept,
-            assigned_to=payload.assigned_to,
-            assigned_by=assigned_by,
-            action=payload.action,
-            notes=payload.notes,
-            doc_type=payload.doc_type,
-            due_at=payload.due_at,
-        )
-        # Auditoría forense transversal (E08 §9, Canal A): además del historial
-        # operativo flow_events (Canal B), cada transacción de trámite deja traza
-        # legal en public.audit_log.
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service="workflow-service",
-            action=f"workflow.{payload.action}",
-            object_type="radicado",
-            object_ref=payload.tracking_number,
-            actor=str(assigned_by) if assigned_by else None,
-            payload={"to_dept": payload.to_dept, "from_dept": payload.from_dept},
-        )
+        # Atomicidad (hallazgo 2.1): cerrar el paso activo, abrir el nuevo y dejar la
+        # traza forense commitean juntos. Si audit.append falla, el cambio de paso no
+        # queda persistido sin auditoría (las transacciones internas de los repos
+        # actúan como savepoints dentro de esta externa).
+        async with self._conn.transaction():
+            # Complete whichever step is currently active before opening a new one.
+            await self._repo.complete_active_step(payload.radicado_id)
+            step = await self._repo.create(
+                radicado_id=payload.radicado_id,
+                tracking_number=payload.tracking_number,
+                step_number=step_number,
+                from_dept=payload.from_dept,
+                to_dept=payload.to_dept,
+                assigned_to=payload.assigned_to,
+                assigned_by=assigned_by,
+                action=payload.action,
+                notes=payload.notes,
+                doc_type=payload.doc_type,
+                due_at=payload.due_at,
+            )
+            # Auditoría forense transversal (E08 §9, Canal A): además del historial
+            # operativo flow_events (Canal B), cada transacción de trámite deja traza
+            # legal en public.audit_log.
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="workflow-service",
+                action=f"workflow.{payload.action}",
+                object_type="radicado",
+                object_ref=payload.tracking_number,
+                actor=str(assigned_by) if assigned_by else None,
+                payload={"to_dept": payload.to_dept, "from_dept": payload.from_dept},
+            )
         return step
 
     async def _publish(self, event_type: str, step: FlowStep) -> None:

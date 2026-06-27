@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 
 from app.core.clearance import resolve_caller_clearance
+from app.core.database import tenant_schema
 from app.models.flow import FlowStep
 
 
@@ -26,7 +27,8 @@ class WorkflowRepository:
         self._tenant_slug = tenant_slug
 
     async def _set_search_path(self) -> None:
-        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+        schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
+        await self._conn.execute(f'SET search_path TO "{schema}", public')
 
     async def caller_clearance(self, user_id: uuid.UUID | None) -> int:
         """Clearance del llamante, resuelto tras fijar el search_path del tenant."""

@@ -16,6 +16,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.visto_bueno import CadenaCreate, CadenaResponse, VoBoDecision
 from app.services.visto_bueno_service import VistoBuenoService
@@ -34,6 +35,20 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             },
         )
     return x_tenant_slug
+
+
+def _optional_actor(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
+    """Extrae ``X-User-Id`` como UUID sin lanzar (None si falta o es inválido).
+
+    Para ``crear_cadena``: la compuerta de identidad la aplica ya ``require_permission``
+    (403 si falta/inválido); aquí solo se obtiene el actor para auditarlo.
+    """
+    if not x_user_id:
+        return None
+    try:
+        return uuid.UUID(x_user_id)
+    except ValueError:
+        return None
 
 
 def _require_actor(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
@@ -69,14 +84,19 @@ def _require_actor(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
     response_model=CadenaResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Crear cadena de vistos buenos (orden de revisión)",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def crear_cadena(
     radicado_id: uuid.UUID,
     payload: CadenaCreate,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> CadenaResponse:
-    return await VistoBuenoService(conn, tenant_slug).crear(radicado_id, payload)
+    # D-09: la autorización fina (PERM_RADI) la aplica require_permission; conformar la
+    # cadena de revisores es una acción de gestión de radicados, no abierta al tenant.
+    # El actor (X-User-Id) se registra en audit_log (Canal A).
+    return await VistoBuenoService(conn, tenant_slug).crear(radicado_id, payload, actor)
 
 
 @router.get("/{radicado_id}/vistos-buenos", response_model=CadenaResponse)

@@ -15,6 +15,8 @@ import uuid
 
 import asyncpg
 
+from app.core.database import tenant_schema
+
 
 class VistoBuenoRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
@@ -22,7 +24,8 @@ class VistoBuenoRepository:
         self._tenant_slug = tenant_slug
 
     async def _sp(self) -> None:
-        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+        schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
+        await self._conn.execute(f'SET search_path TO "{schema}", public')
 
     async def exists(self, radicado_id: uuid.UUID) -> bool:
         await self._sp()

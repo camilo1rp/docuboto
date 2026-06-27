@@ -11,14 +11,32 @@
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 
+from app.core.database import tenant_schema
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
+
+
+# --- hardening de slug (defensa en profundidad ante inyección de schema) -----
+def test_tenant_schema_valido() -> None:
+    assert tenant_schema("demo") == "tenant_demo"
+    assert tenant_schema("bogota-limpia") == "tenant_bogota_limpia"  # normaliza guiones
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "Demo", "demo; DROP", 'a" OR "1', "tenant public", "../x", "demo,public"],
+)
+def test_tenant_schema_invalido_400(bad: str) -> None:
+    with pytest.raises(HTTPException) as exc:
+        tenant_schema(bad)
+    assert exc.value.status_code == 400
 RAD = uuid.uuid4()
 REV1 = uuid.uuid4()
 REV2 = uuid.uuid4()
@@ -40,19 +58,28 @@ async def test_crear_cadena(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
-    # exists → None (fetchval), crear (execute), get → list (fetch)
-    mock_conn.fetchval.return_value = None
+    # D-09: require_permission consume el 1.er fetchval (RBAC → True); luego el
+    # servicio consulta exists (2.º fetchval → None), crea (execute) y get (fetch).
+    mock_conn.fetchval.side_effect = [True, None]
     mock_conn.fetch.return_value = [_row(1, REV1), _row(2, REV2)]
 
-    resp = await client.post(
-        f"/api/v1/workflows/{RAD}/vistos-buenos",
-        json={"revisores": [str(REV1), str(REV2)]},
-        headers=TENANT_HEADERS,
-    )
+    # La auditoría forense (audit.append) se ejercita en sus propios tests; aquí se
+    # aísla para no acoplar el test al detalle interno (advisory lock + prev_hash).
+    with patch(
+        "app.services.visto_bueno_service.audit.append", new_callable=AsyncMock
+    ) as mock_audit:
+        resp = await client.post(
+            f"/api/v1/workflows/{RAD}/vistos-buenos",
+            json={"revisores": [str(REV1), str(REV2)]},
+            headers=TENANT_HEADERS,
+        )
     assert resp.status_code == 201
     body = resp.json()
     assert body["estado"] == "en_revision"
     assert len(body["items"]) == 2
+    # La creación de la cadena queda auditada (Canal A) con la acción esperada.
+    mock_audit.assert_awaited_once()
+    assert mock_audit.await_args.kwargs["action"] == "vobo.cadena_creada"
 
 
 @pytest.mark.asyncio
@@ -60,7 +87,8 @@ async def test_crear_cadena_duplicada_409(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.return_value = 1  # exists → True
+    # RBAC (True) + exists (True) → 409
+    mock_conn.fetchval.side_effect = [True, 1]
     resp = await client.post(
         f"/api/v1/workflows/{RAD}/vistos-buenos",
         json={"revisores": [str(REV1)]},
@@ -68,6 +96,38 @@ async def test_crear_cadena_duplicada_409(
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "cadena_existente"
+
+
+@pytest.mark.asyncio
+async def test_crear_cadena_sin_permiso_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """D-09: sin PERM_RADI, crear_cadena devuelve 403 (fail-closed)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None  # check_permission → False
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos",
+        json={"revisores": [str(REV1), str(REV2)]},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_crear_cadena_sin_user_id_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """D-09: sin X-User-Id no hay identidad → check_permission fail-closed → 403."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1  # aunque el RBAC "permitiría", no hay user_id
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos",
+        json={"revisores": [str(REV1)]},
+        headers={"X-Tenant-Slug": "demo"},  # sin X-User-Id
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
 
 
 @pytest.mark.asyncio

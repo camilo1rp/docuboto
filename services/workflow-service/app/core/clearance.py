@@ -24,6 +24,9 @@ no provisionadas o cualquier duda, se devuelve PUBLICA (1) — mínimo privilegi
 import uuid
 
 import asyncpg
+from fastapi import Depends, Header, HTTPException, status
+
+from app.core.database import get_db_conn, tenant_schema
 
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
@@ -60,3 +63,91 @@ async def resolve_caller_clearance(
         return CLASIFICADA
     max_level = row.get("max_level")
     return int(max_level) if max_level is not None else PUBLICA
+
+
+async def check_permission(
+    conn: asyncpg.Connection, user_id: uuid.UUID | None, perm_name: str
+) -> bool:
+    """Devuelve ``True`` si ``user_id`` tiene el permiso ``perm_name`` en el tenant.
+
+    Gemelo de ``document-service``/``archive-service`` ``check_permission`` (D-06/D-08).
+    La conexión debe tener ``search_path`` fijado al schema del tenant. Fail-closed a
+    ``False`` en todos los casos dudosos: usuario ausente, tablas RBAC no provisionadas,
+    ``user_id`` nulo.
+    """
+    if user_id is None:
+        return False
+    try:
+        allowed = await conn.fetchval(
+            """
+            SELECT (
+                u.is_root
+                OR EXISTS (
+                    SELECT 1
+                    FROM auth_memberships m
+                    JOIN auth_group_permissions gp ON gp.group_id = m.group_id
+                    JOIN auth_permissions p ON p.id = gp.permission_id
+                    WHERE m.user_id = u.id
+                      AND p.nombre = $2
+                      AND gp.crud > 0
+                )
+            )
+            FROM auth_users u
+            WHERE u.id = $1
+            """,
+            user_id,
+            perm_name,
+        )
+    except asyncpg.UndefinedTableError:
+        # Tablas RBAC del tenant ausentes (entorno aislado / no provisionado).
+        return False
+    return bool(allowed) if allowed is not None else False
+
+
+def require_permission(perm_name: str):
+    """FastAPI dependency factory: eleva 403 si el llamante carece de ``perm_name``.
+
+    D-09: el workflow-service usa ``get_db_conn`` (sin search_path automático); esta
+    dependencia fija el search_path al tenant antes de consultar las tablas RBAC.
+    FastAPI cachea ``get_db_conn`` por request, así que la conexión que recibe esta
+    dependencia es la misma que la del endpoint y el search_path es visible para ambos.
+    Normaliza el slug igual que ``acquire_tenant`` (guiones → guiones bajos).
+
+    Uso::
+
+        @router.post("/...", dependencies=[Depends(require_permission("PERM_X"))])
+    """
+
+    async def _dep(
+        x_user_id: str | None = Header(default=None),
+        x_tenant_slug: str | None = Header(default=None),
+        conn: asyncpg.Connection = Depends(get_db_conn),
+    ) -> None:
+        try:
+            user_id = uuid.UUID(x_user_id) if x_user_id else None
+        except ValueError:
+            user_id = None
+        # Sin tenant slug no se puede verificar el RBAC del tenant → deny EXPLÍCITO
+        # (no depender de que la tabla no exista en el search_path heredado del pool).
+        if not x_tenant_slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "detail": "Se requiere X-Tenant-Slug para autorizar",
+                    "status": 403,
+                },
+            )
+        schema = tenant_schema(x_tenant_slug)  # valida + normaliza (fail-closed 400)
+        await conn.execute(f'SET search_path TO "{schema}", public')
+        if not await check_permission(conn, user_id, perm_name):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "detail": f"Se requiere el permiso {perm_name}",
+                    "status": 403,
+                },
+            )
+
+    return _dep

@@ -21,6 +21,7 @@ import uuid
 
 import asyncpg
 from fastapi import HTTPException, status
+from orpycamcp_common import audit
 
 from app.repositories.visto_bueno_repository import VistoBuenoRepository
 from app.schemas.visto_bueno import (
@@ -41,9 +42,13 @@ def _estado_global(items: list[VistoBuenoItem]) -> str:
 
 class VistoBuenoService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+        self._conn = conn
+        self._tenant_slug = tenant_slug
         self._repo = VistoBuenoRepository(conn, tenant_slug)
 
-    async def crear(self, radicado_id: uuid.UUID, payload: CadenaCreate) -> CadenaResponse:
+    async def crear(
+        self, radicado_id: uuid.UUID, payload: CadenaCreate, actor: uuid.UUID | None = None
+    ) -> CadenaResponse:
         if await self._repo.exists(radicado_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -53,7 +58,23 @@ class VistoBuenoService:
                     "status": 409,
                 },
             )
-        await self._repo.crear_cadena(radicado_id, payload.revisores)
+        # Atomicidad (hallazgo 2.1): la creación de la cadena y su traza forense
+        # commitean juntas. Si audit.append falla, la cadena NO queda persistida sin
+        # auditoría (la transacción interna de crear_cadena actúa como savepoint).
+        async with self._conn.transaction():
+            await self._repo.crear_cadena(radicado_id, payload.revisores)
+            # Auditoría forense transversal (E08 §9, Canal A): conformar la cadena de
+            # revisores es una acción de gestión sobre el radicado y deja traza legal.
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="workflow-service",
+                action="vobo.cadena_creada",
+                object_type="radicado",
+                object_ref=str(radicado_id),
+                actor=str(actor) if actor else None,
+                payload={"revisores": [str(r) for r in payload.revisores]},
+            )
         return await self.get(radicado_id)
 
     async def decidir(
