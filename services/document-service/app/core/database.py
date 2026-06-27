@@ -19,7 +19,10 @@ if TYPE_CHECKING:
 
 _pool: asyncpg.Pool | None = None
 
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,98}$")
+# Largo acotado a 55 (+ "tenant_" = 62) para no exceder el límite de 63 bytes de
+# identificador de PostgreSQL: dos slugs largos de prefijo común se truncarían al
+# mismo schema → fuga cross-tenant. (auditoría hardening, hallazgo 1.1)
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
 
 
 async def create_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> asyncpg.Pool:
