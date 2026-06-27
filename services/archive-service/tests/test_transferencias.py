@@ -41,6 +41,7 @@ def _transfer_row(**kw) -> dict:
 @pytest.mark.asyncio
 async def test_create_requires_closed_expediente(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: permission ok; service raises 409
     mock_conn.fetchrow.return_value = make_expediente_record(exp_status="open")
     mock_conn.fetch.return_value = []
 
@@ -56,6 +57,7 @@ async def test_create_requires_closed_expediente(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_create_transferencia(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     # get_expediente (closed) + fetch radicados, insert transferencia
     mock_conn.fetchrow.side_effect = [
@@ -76,6 +78,7 @@ async def test_create_transferencia(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_enviar_then_recibir_freezes_expediente(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     tid = uuid.uuid4()
     exp_id = uuid.uuid4()
     # enviar: get(preparada) → update(enviada)
@@ -105,6 +108,7 @@ async def test_enviar_then_recibir_freezes_expediente(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_recibir_invalid_from_preparada(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: permission ok; service raises 409
     tid = uuid.uuid4()
     mock_conn.fetchrow.return_value = _transfer_row(id=tid, estado="preparada")
 
@@ -116,6 +120,7 @@ async def test_recibir_invalid_from_preparada(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_transferencia_fuid(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     tid = uuid.uuid4()
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.return_value = _transfer_row(id=tid, expediente_id=exp_id)
@@ -139,3 +144,89 @@ async def test_transferencia_fuid(client_with_conn) -> None:
     resp = await client.get(f"/api/v1/transferencias/{tid}/fuid", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# D-08: comprobaciones de autorización (USUA_PERM_EXPEDIENTE)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_transferencia_sin_permiso_403(client_with_conn) -> None:
+    """check_permission usa fetchval; None → usuario no encontrado → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # sin fila en auth_users → sin permiso
+    resp = await client.post(
+        "/api/v1/transferencias",
+        json={"tipo": "primaria", "expediente_id": str(uuid.uuid4())},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_transferencias_sin_permiso_403(client_with_conn) -> None:
+    """GET también requiere USUA_PERM_EXPEDIENTE."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get("/api/v1/transferencias", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_enviar_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/transferencias/{uuid.uuid4()}/enviar",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_recibir_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/transferencias/{uuid.uuid4()}/recibir",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_transferencia_fuid_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        f"/api/v1/transferencias/{uuid.uuid4()}/fuid",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_create_transferencia_con_permiso_201(client_with_conn) -> None:
+    """fetchval truthy → permission ok; fetchrow → expediente closed → INSERT."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _transfer_row(expediente_id=exp_id),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        "/api/v1/transferencias",
+        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        headers={**TENANT_HEADERS, "X-Username": "ana"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["estado"] == "preparada"

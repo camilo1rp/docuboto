@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime
 import asyncpg
 
 from app.core.clearance import resolve_caller_clearance
+from app.core.database import tenant_schema
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 
 
@@ -25,7 +26,8 @@ class ArchiveRepository:
         self._tenant_slug = tenant_slug
 
     async def _set_search_path(self) -> None:
-        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+        schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
+        await self._conn.execute(f'SET search_path TO "{schema}", public')
 
     # ------------------------------------------------------------------
     # Expediente sequences

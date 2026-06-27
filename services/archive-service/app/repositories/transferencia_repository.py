@@ -15,6 +15,8 @@ import uuid
 
 import asyncpg
 
+from app.core.database import tenant_schema
+
 _COLS = (
     "id, tipo, estado, expediente_id, ubicacion_origen_id, ubicacion_destino_id, "
     "creada_por, observacion, created_at, enviada_at, recibida_at, decidida_por"
@@ -27,7 +29,8 @@ class TransferenciaRepository:
         self._tenant_slug = tenant_slug
 
     async def _sp(self) -> None:
-        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+        schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
+        await self._conn.execute(f'SET search_path TO "{schema}", public')
 
     async def insert(self, data: dict) -> asyncpg.Record:
         await self._sp()

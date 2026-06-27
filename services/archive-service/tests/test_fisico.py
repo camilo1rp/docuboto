@@ -55,6 +55,7 @@ def _unidad_row(**kw) -> dict:
 @pytest.mark.asyncio
 async def test_create_ubicacion(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = _ubicacion_row()
     mock_conn.fetch.return_value = [{"codigo": "DEP01"}]  # ubicacion_path
 
@@ -77,6 +78,7 @@ async def test_create_ubicacion(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_create_unidad_computes_signatura(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     ub_id = uuid.uuid4()
     # get_ubicacion (existe), insert_unidad (RETURNING con signatura)
     mock_conn.fetchrow.side_effect = [
@@ -104,6 +106,7 @@ async def test_create_unidad_computes_signatura(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_link_and_locate_expediente(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     unidad_id = uuid.uuid4()
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.return_value = _unidad_row(id=unidad_id)  # get_unidad → existe
@@ -134,6 +137,7 @@ async def test_link_and_locate_expediente(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_get_unidad_not_found(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: permission ok; service raises 404
     mock_conn.fetchrow.return_value = None
     resp = await client.get(f"/api/v1/unidades/{uuid.uuid4()}", headers=TENANT_HEADERS)
     assert resp.status_code == 404
@@ -161,6 +165,7 @@ def _prestamo_row(**kw) -> dict:
 @pytest.mark.asyncio
 async def test_create_prestamo(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     unidad_id = uuid.uuid4()
     # get_unidad (existe), active_loan (None), insert_prestamo (row)
     mock_conn.fetchrow.side_effect = [
@@ -182,6 +187,7 @@ async def test_create_prestamo(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_create_prestamo_already_loaned(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: permission ok; service raises 409
     unidad_id = uuid.uuid4()
     # get_unidad (existe), active_loan (existe → 409)
     mock_conn.fetchrow.side_effect = [_unidad_row(id=unidad_id), {"id": uuid.uuid4()}]
@@ -196,6 +202,7 @@ async def test_create_prestamo_already_loaned(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_devolver_prestamo(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     pid = uuid.uuid4()
     # get_prestamo (existe, prestado), devolver_prestamo (row devuelto)
     mock_conn.fetchrow.side_effect = [
@@ -230,6 +237,7 @@ def _fuid_inv_row(**kw) -> dict:
 @pytest.mark.asyncio
 async def test_fuid_inventory_json(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetch.return_value = [_fuid_inv_row(), _fuid_inv_row(expediente_code="EXP-2024-0002")]
 
     resp = await client.get("/api/v1/fuid", headers=TENANT_HEADERS)
@@ -243,6 +251,7 @@ async def test_fuid_inventory_json(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_fuid_export_xml(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetch.return_value = [_fuid_inv_row()]
 
     resp = await client.get("/api/v1/fuid.xml", headers=TENANT_HEADERS)
@@ -255,6 +264,7 @@ async def test_fuid_export_xml(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_list_movimientos(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     unidad_id = uuid.uuid4()
     mock_conn.fetch.return_value = [
         {
@@ -270,3 +280,111 @@ async def test_list_movimientos(client_with_conn) -> None:
     resp = await client.get(f"/api/v1/unidades/{unidad_id}/movimientos", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     assert resp.json()[0]["accion"] == "RETIRADO"
+
+
+# ---------------------------------------------------------------------------
+# D-08: comprobaciones de autorización (USUA_PERM_EXPEDIENTE)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_ubicacion_sin_permiso_403(client_with_conn) -> None:
+    """check_permission usa fetchval; None → usuario no encontrado → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # sin fila en auth_users → sin permiso
+    resp = await client.post(
+        "/api/v1/ubicaciones",
+        json={"nivel": "deposito", "codigo": "DEP01", "nombre": "Dep 1", "tipo_archivo": "central"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_create_unidad_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        "/api/v1/unidades",
+        json={"tipo": "caja", "codigo": "C0001", "soporte": "papel", "num_folios": 100},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_create_prestamo_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/unidades/{uuid.uuid4()}/prestamos",
+        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_ubicaciones_sin_permiso_403(client_with_conn) -> None:
+    """GET también requiere USUA_PERM_EXPEDIENTE (inventario de archivo)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get("/api/v1/ubicaciones", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_fuid_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get("/api/v1/fuid", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_devolver_prestamo_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/prestamos/{uuid.uuid4()}/devolver",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_units_of_expediente_sin_permiso_403(client_with_conn) -> None:
+    """Faceta 'Ubicación física' del workspace de expediente (T-10, frontend SSR)
+    requiere USUA_PERM_EXPEDIENTE. El frontend usa Promise.allSettled, por lo que
+    el fallo de esta faceta no bloquea el resto de la vista."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        f"/api/v1/expedientes/{uuid.uuid4()}/unidades",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_create_ubicacion_con_permiso_201(client_with_conn) -> None:
+    """fetchval truthy → permission ok; fetchrow → INSERT ubicación."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # USUA_PERM_EXPEDIENTE granted
+    mock_conn.fetchrow.return_value = _ubicacion_row()
+    mock_conn.fetch.return_value = [{"codigo": "DEP01"}]
+
+    resp = await client.post(
+        "/api/v1/ubicaciones",
+        json={"nivel": "deposito", "codigo": "DEP01", "nombre": "Dep 1", "tipo_archivo": "central"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["codigo"] == "DEP01"

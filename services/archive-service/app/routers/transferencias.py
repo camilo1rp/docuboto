@@ -16,6 +16,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
@@ -45,7 +46,12 @@ def _actor(request: Request) -> str | None:
     return request.headers.get("X-Username") or request.headers.get("X-User-Id")
 
 
-@router.post("", response_model=TransferenciaResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=TransferenciaResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def create_transferencia(
     payload: TransferenciaCreate,
     request: Request,
@@ -55,7 +61,11 @@ async def create_transferencia(
     return await TransferenciaService(conn, tenant_slug).create(payload, _actor(request))
 
 
-@router.get("", response_model=list[TransferenciaResponse])
+@router.get(
+    "",
+    response_model=list[TransferenciaResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def list_transferencias(
     estado: str | None = Query(default=None),
     tipo: str | None = Query(default=None),
@@ -65,7 +75,11 @@ async def list_transferencias(
     return await TransferenciaService(conn, tenant_slug).list(estado=estado, tipo=tipo)
 
 
-@router.get("/{transferencia_id}", response_model=TransferenciaResponse)
+@router.get(
+    "/{transferencia_id}",
+    response_model=TransferenciaResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def get_transferencia(
     transferencia_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
@@ -74,7 +88,11 @@ async def get_transferencia(
     return await TransferenciaService(conn, tenant_slug).get(transferencia_id)
 
 
-@router.post("/{transferencia_id}/enviar", response_model=TransferenciaResponse)
+@router.post(
+    "/{transferencia_id}/enviar",
+    response_model=TransferenciaResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def enviar(
     transferencia_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
@@ -83,7 +101,11 @@ async def enviar(
     return await TransferenciaService(conn, tenant_slug).enviar(transferencia_id)
 
 
-@router.post("/{transferencia_id}/recibir", response_model=TransferenciaResponse)
+@router.post(
+    "/{transferencia_id}/recibir",
+    response_model=TransferenciaResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def recibir(
     transferencia_id: uuid.UUID,
     request: Request,
@@ -93,7 +115,11 @@ async def recibir(
     return await TransferenciaService(conn, tenant_slug).recibir(transferencia_id, _actor(request))
 
 
-@router.post("/{transferencia_id}/rechazar", response_model=TransferenciaResponse)
+@router.post(
+    "/{transferencia_id}/rechazar",
+    response_model=TransferenciaResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def rechazar(
     transferencia_id: uuid.UUID,
     payload: TransferenciaDecision,
@@ -110,6 +136,7 @@ async def rechazar(
     "/{transferencia_id}/fuid",
     response_model=FuidResponse,
     summary="FUID entregable of the transfer (consumes E17, RF-TRA-02)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def transferencia_fuid(
     transferencia_id: uuid.UUID,

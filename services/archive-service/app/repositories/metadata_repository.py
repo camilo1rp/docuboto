@@ -22,6 +22,8 @@ import uuid
 
 import asyncpg
 
+from app.core.database import tenant_schema
+
 _COLS = "id, trd_serie_id, version, json_schema, activo, created_at"
 
 
@@ -31,7 +33,8 @@ class MetadataRepository:
         self._tenant_slug = tenant_slug
 
     async def _set_search_path(self) -> None:
-        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+        schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
+        await self._conn.execute(f'SET search_path TO "{schema}", public')
 
     async def get_active_template(self, trd_serie_id: uuid.UUID) -> asyncpg.Record | None:
         await self._set_search_path()

@@ -20,6 +20,8 @@ import uuid
 
 import asyncpg
 
+from app.core.database import tenant_schema
+
 _UB_COLS = "id, parent_id, nivel, codigo, nombre, tipo_archivo, capacidad_ml, " "activo, created_at"
 _UN_COLS = (
     "id, parent_id, ubicacion_id, tipo, codigo, signatura, soporte, "
@@ -33,7 +35,8 @@ class FisicoRepository:
         self._tenant_slug = tenant_slug
 
     async def _sp(self) -> None:
-        await self._conn.execute(f"SET search_path TO tenant_{self._tenant_slug}, public")
+        schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
+        await self._conn.execute(f'SET search_path TO "{schema}", public')
 
     # -- ubicaciones ---------------------------------------------------
 

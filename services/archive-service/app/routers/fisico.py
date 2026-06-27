@@ -18,6 +18,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.fisico import (
     ExpedienteEnUnidad,
@@ -53,7 +54,12 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
 # -- ubicaciones -------------------------------------------------------
 
 
-@router.post("/ubicaciones", response_model=UbicacionResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/ubicaciones",
+    response_model=UbicacionResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def create_ubicacion(
     payload: UbicacionCreate,
     tenant_slug: str = Depends(_require_tenant),
@@ -62,7 +68,11 @@ async def create_ubicacion(
     return await FisicoService(conn, tenant_slug).create_ubicacion(payload)
 
 
-@router.get("/ubicaciones", response_model=list[UbicacionResponse])
+@router.get(
+    "/ubicaciones",
+    response_model=list[UbicacionResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def list_ubicaciones(
     parent_id: uuid.UUID | None = Query(default=None),
     activo: bool | None = Query(default=None),
@@ -74,7 +84,11 @@ async def list_ubicaciones(
     )
 
 
-@router.get("/ubicaciones/{ubicacion_id}", response_model=UbicacionResponse)
+@router.get(
+    "/ubicaciones/{ubicacion_id}",
+    response_model=UbicacionResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def get_ubicacion(
     ubicacion_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
@@ -86,7 +100,12 @@ async def get_ubicacion(
 # -- unidades de conservación -----------------------------------------
 
 
-@router.post("/unidades", response_model=UnidadResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/unidades",
+    response_model=UnidadResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def create_unidad(
     payload: UnidadCreate,
     tenant_slug: str = Depends(_require_tenant),
@@ -95,7 +114,11 @@ async def create_unidad(
     return await FisicoService(conn, tenant_slug).create_unidad(payload)
 
 
-@router.get("/unidades", response_model=list[UnidadResponse])
+@router.get(
+    "/unidades",
+    response_model=list[UnidadResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def list_unidades(
     ubicacion_id: uuid.UUID | None = Query(default=None),
     tipo: str | None = Query(default=None),
@@ -107,7 +130,11 @@ async def list_unidades(
     )
 
 
-@router.get("/unidades/{unidad_id}", response_model=UnidadResponse)
+@router.get(
+    "/unidades/{unidad_id}",
+    response_model=UnidadResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def get_unidad(
     unidad_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
@@ -123,6 +150,7 @@ async def get_unidad(
     "/unidades/{unidad_id}/expedientes",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Link an expediente to a conservation unit (folio range)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def link_expediente(
     unidad_id: uuid.UUID,
@@ -137,6 +165,7 @@ async def link_expediente(
     "/unidades/{unidad_id}/expedientes",
     response_model=list[ExpedienteEnUnidad],
     summary="What does this unit contain",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def expedientes_in_unit(
     unidad_id: uuid.UUID,
@@ -150,6 +179,7 @@ async def expedientes_in_unit(
     "/expedientes/{expediente_id}/unidades",
     response_model=list[UnidadDeExpediente],
     summary="Where is this expediente (physical units + signatura)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def units_of_expediente(
     expediente_id: uuid.UUID,
@@ -170,6 +200,7 @@ def _performed_by(request: Request) -> str | None:
     "/unidades/{unidad_id}/prestamos",
     response_model=PrestamoResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def create_prestamo(
     unidad_id: uuid.UUID,
@@ -183,7 +214,11 @@ async def create_prestamo(
     )
 
 
-@router.get("/unidades/{unidad_id}/prestamos", response_model=list[PrestamoResponse])
+@router.get(
+    "/unidades/{unidad_id}/prestamos",
+    response_model=list[PrestamoResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def list_prestamos_of_unit(
     unidad_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
@@ -192,7 +227,11 @@ async def list_prestamos_of_unit(
     return await FisicoService(conn, tenant_slug).list_prestamos(estado=None, unidad_id=unidad_id)
 
 
-@router.get("/prestamos", response_model=list[PrestamoResponse])
+@router.get(
+    "/prestamos",
+    response_model=list[PrestamoResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def list_prestamos(
     estado: str | None = Query(default=None, description="prestado|devuelto|vencido"),
     tenant_slug: str = Depends(_require_tenant),
@@ -201,7 +240,11 @@ async def list_prestamos(
     return await FisicoService(conn, tenant_slug).list_prestamos(estado=estado, unidad_id=None)
 
 
-@router.post("/prestamos/{prestamo_id}/devolver", response_model=PrestamoResponse)
+@router.post(
+    "/prestamos/{prestamo_id}/devolver",
+    response_model=PrestamoResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def devolver_prestamo(
     prestamo_id: uuid.UUID,
     request: Request,
@@ -217,6 +260,7 @@ async def devolver_prestamo(
     "/unidades/{unidad_id}/movimientos",
     response_model=list[MovimientoResponse],
     summary="Append-only physical movement history of a unit (RF-ARF-08)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def list_movimientos(
     unidad_id: uuid.UUID,
@@ -233,6 +277,7 @@ async def list_movimientos(
     "/fuid",
     response_model=FuidResponse,
     summary="Formato Único de Inventario Documental (RF-ARF-10)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def get_fuid(
     ubicacion_id: uuid.UUID | None = Query(default=None),
@@ -245,7 +290,11 @@ async def get_fuid(
     )
 
 
-@router.get("/fuid.xml", summary="FUID export as XML (RF-ARF-10)")
+@router.get(
+    "/fuid.xml",
+    summary="FUID export as XML (RF-ARF-10)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def get_fuid_xml(
     ubicacion_id: uuid.UUID | None = Query(default=None),
     trd_serie_id: uuid.UUID | None = Query(default=None),
