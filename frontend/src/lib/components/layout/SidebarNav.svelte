@@ -74,6 +74,20 @@
       permission: "SGD_PERM_ESTADISTICA",
     },
     {
+      label: "Borradores",
+      href: ROUTES.borradores,
+      icon: "fas fa-file-alt",
+      // PERM_RADI: mismo permiso que bandeja; todo operador que radica gestiona borradores.
+      permission: "PERM_RADI",
+    },
+    {
+      label: "Envíos",
+      href: ROUTES.envios,
+      icon: "fas fa-truck",
+      // PERM_RADI_SALIDA: solo operadores de salida gestionan envíos postales (T-12e).
+      permission: "PERM_RADI_SALIDA",
+    },
+    {
       label: "Archivo físico",
       href: ROUTES.archivoFisico,
       icon: "fas fa-box-archive",
@@ -91,6 +105,13 @@
       href: ROUTES.admin,
       icon: "fas fa-cog",
       role: "tenant_admin",
+    },
+    {
+      label: "Plantillas",
+      href: ROUTES.adminPlantillas,
+      icon: "fas fa-copy",
+      // USUA_PERM_ADMIN: gestión de plantillas de contenido (T-12c, D-11)
+      permission: "USUA_PERM_ADMIN",
     },
   ];
 

@@ -114,6 +114,92 @@
  */
 
 // ---------------------------------------------------------------------------
+// Borradores / Plantillas (document-service, T-12c)
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {object} BorradorResponse
+ * @property {string}                           id
+ * @property {'S'|'I'}                          doc_type
+ * @property {string}                           subject
+ * @property {string|null}                      dest_dept
+ * @property {string|null}                      cuerpo
+ * @property {string} [cuerpo_html]             cuerpo saneado server-side (T-12c)
+ * @property {string|null}                      plantilla_id
+ * @property {'borrador'|'aprobado'|'radicado'} estado
+ * @property {string|null}                      radicado_id
+ * @property {string|null} [_tracking_number]   N.° radicado (frontend-only; set after radicar)
+ * @property {string|null}                      creado_por
+ * @property {string}                           created_at
+ * @property {string}                           updated_at
+ */
+
+/**
+ * @typedef {object} PlantillaResponse
+ * @property {string}      id
+ * @property {string}      nombre
+ * @property {string|null} tipo_documental
+ * @property {string}      cuerpo
+ * @property {string} [cuerpo_html]       cuerpo saneado server-side (T-12c)
+ * @property {boolean}     activo
+ * @property {string}      created_at
+ */
+
+// ---------------------------------------------------------------------------
+// Envíos postales (document-service, T-12e)
+// ---------------------------------------------------------------------------
+
+/**
+ * Un evento de trazabilidad del envío (elemento del historial de estados).
+ *
+ * @typedef {object} ShipmentEvent
+ * @property {'registrado'|'en_transito'|'entregado'|'devuelto'|'fallido'} estado
+ * @property {string|null} descripcion  — nota libre del operador
+ * @property {string}      ts           — ISO 8601 UTC
+ */
+
+/**
+ * Respuesta del gateway para un envío postal.
+ * Los envíos se crean por radicado (POST /documents/{id}/envios) y se consultan
+ * tanto por radicado (GET /documents/{id}/envios) como de forma transversal
+ * (GET /envios?estado=&page=&size=) con paginación X-Total-Count.
+ *
+ * @typedef {object} ShipmentResponse
+ * @property {string}                                         id
+ * @property {string}                                         radicado_id
+ * @property {'4-72'|'servientrega'|'otro'}                   operador
+ * @property {string|null}                                    guia
+ * @property {'registrado'|'en_transito'|'entregado'|'devuelto'|'fallido'} estado
+ * @property {string|null}                                    destinatario
+ * @property {string|null}                                    direccion
+ * @property {string}                                         created_at
+ * @property {string}                                         updated_at
+ * @property {ShipmentEvent[]}                                eventos
+ */
+
+/**
+ * Cuerpo para crear un nuevo envío.
+ * `radicado_id` (= document_id) va en la ruta del endpoint, no en el body del gateway.
+ * Se usa en el proxy frontend para saber a qué documento asociar el envío.
+ *
+ * @typedef {object} ShipmentCreate
+ * @property {string}                          radicado_id    — UUID del documento de salida
+ * @property {'4-72'|'servientrega'|'otro'}    operador
+ * @property {string|null} [destinatario]
+ * @property {string|null} [direccion]
+ */
+
+/**
+ * Cuerpo para cambiar el estado de un envío.
+ * Para registrar una devolución con causal, el campo `descripcion` lleva el prefijo
+ * "Causal: <causal> — <nota>" (T-12e). La causal estructurada en catálogo es roadmap backend.
+ *
+ * @typedef {object} ShipmentStatusUpdate
+ * @property {'registrado'|'en_transito'|'entregado'|'devuelto'|'fallido'} estado
+ * @property {string|null} [descripcion]
+ */
+
+// ---------------------------------------------------------------------------
 // Reportes / estadísticas (reports endpoint, E09)
 // ---------------------------------------------------------------------------
 
