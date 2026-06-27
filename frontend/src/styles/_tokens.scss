@@ -27,6 +27,7 @@
 $op-primary: #459940;
 $op-primary-dark: #305336;
 $op-primary-light: #dceed7;
+$op-on-primary: #ffffff; // texto sobre superficie primaria (usar con --op-primary-dark: ~7:1, AA)
 $op-accent: #94bc2f;
 
 $op-text: #212421;
@@ -124,6 +125,7 @@ $op-breadcrumb-height: 36px;
   --op-primary: #{$op-primary};
   --op-primary-dark: #{$op-primary-dark};
   --op-primary-light: #{$op-primary-light};
+  --op-on-primary: #{$op-on-primary};
   --op-accent: #{$op-accent};
 
   // Texto

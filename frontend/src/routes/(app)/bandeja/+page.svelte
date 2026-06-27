@@ -43,6 +43,7 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import UserPicker from "$lib/components/ui/UserPicker.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -82,6 +83,7 @@
   let modalDevolver = false;
   let modalResponder = false;
   let modalVoBo = false;
+  let modalCrearCadena = false;
 
   // Anulacion — causal (req, ≤15 chars), motivo (opt, ≤2000)
   let anulCausal = "";
@@ -104,6 +106,14 @@
   // VoBo — aprobar (req), comentario (opt)
   let voboAprobarStr = ""; // "true" | "false" | "" (vacío = sin seleccionar)
   let voboComentario = "";
+
+  // T-08c: crear cadena de visto bueno (revisores ordenados)
+  /** @type {Array<{id:string; username:string; email?:string; is_active?:boolean}>} */
+  let cadenaUsers = [];
+  /** @type {string[]} — ids de revisores en orden */
+  let cadenaRevisores = [];
+  let cadenaUsersLoading = false;
+  let cadenaUsersError = "";
 
   // ---------------------------------------------------------------------------
   // Breadcrumbs
@@ -426,10 +436,6 @@
   /**
    * Registra la decisión del usuario sobre un Visto Bueno pendiente.
    * POST /bandeja/api/[id]/vobo → /api/v1/workflows/{id}/vistos-buenos/decidir
-   *
-   * Nota: la creación de una cadena de VoBo (POST .../vistos-buenos con revisores[])
-   * requiere un selector de usuarios que aún no existe en el frontend.
-   * TODO T-08c: implementar cuando esté disponible el componente UserPicker.
    */
   async function voboDecidir() {
     if (!selectedDoc || actionLoading) return;
@@ -458,6 +464,69 @@
       if (drawerOpen) closeDrawer();
     } catch (err) {
       notifyError(err?.detail ?? "No se pudo registrar la decisión del visto bueno.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  /**
+   * Abre el modal de creación de cadena de VoBo y carga los usuarios del tenant
+   * vía el proxy SSR (D-05 — el token vive en la cookie httpOnly, no en el cliente).
+   * T-08c.
+   */
+  async function openModalCrearCadena() {
+    cadenaRevisores = [];
+    cadenaUsersError = "";
+    modalCrearCadena = true;
+    // Recargar siempre: el universo de usuarios puede cambiar entre aperturas.
+    cadenaUsersLoading = true;
+    try {
+      const res = await fetch("/bandeja/api/users?size=100");
+      const result = await res.json();
+      if (!res.ok) throw result;
+      cadenaUsers = result.users ?? [];
+      if (cadenaUsers.length === 0) {
+        cadenaUsersError = "No hay usuarios disponibles para conformar la cadena.";
+      }
+    } catch (err) {
+      cadenaUsers = [];
+      cadenaUsersError = err?.detail ?? "No se pudo cargar la lista de usuarios.";
+    } finally {
+      cadenaUsersLoading = false;
+    }
+  }
+
+  /**
+   * Crea la cadena de vistos buenos (revisores ordenados) sobre el radicado.
+   * POST /bandeja/api/[id]/vobo-cadena → /api/v1/workflows/{id}/vistos-buenos
+   * T-08c.
+   */
+  async function crearCadena() {
+    if (!selectedDoc || actionLoading) return;
+    if (cadenaRevisores.length === 0) {
+      cadenaUsersError = "Seleccione al menos un revisor.";
+      return;
+    }
+
+    actionLoading = true;
+    cadenaUsersError = "";
+    try {
+      const res = await fetch(`/bandeja/api/${selectedDoc.id}/vobo-cadena`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revisores: cadenaRevisores }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw result;
+
+      modalCrearCadena = false;
+      notifySuccess(`Cadena de visto bueno creada (${cadenaRevisores.length} revisor(es)).`);
+      await loadDocuments();
+      if (drawerOpen) closeDrawer();
+    } catch (err) {
+      // Errores de envío → toast (coherente con las otras acciones de operador).
+      // cadenaUsersError se reserva para validación local / carga de usuarios.
+      notifyError(err?.detail ?? "No se pudo crear la cadena de visto bueno.");
     } finally {
       actionLoading = false;
     }
@@ -846,11 +915,21 @@
         </dl>
       </section>
 
-      <!-- Observaciones -->
+      <!-- Observaciones / cuerpo -->
       {#if selectedDoc.observations}
         <section class="doc-detail__section" aria-labelledby="detail-obs-heading">
-          <h4 id="detail-obs-heading" class="doc-detail__section-title">Observaciones</h4>
-          <p class="doc-detail__obs">{selectedDoc.observations}</p>
+          <h4 id="detail-obs-heading" class="doc-detail__section-title">
+            {selectedDoc.doc_type === "E" ? "Observaciones" : "Cuerpo del documento"}
+          </h4>
+          {#if selectedDoc.doc_type === "S" || selectedDoc.doc_type === "I"}
+            <!-- Cuerpo rico (T-12b): observations_html ya viene saneado del server (D-05). -->
+            <div class="doc-detail__obs doc-detail__obs--rich">
+              {@html selectedDoc.observations_html ?? ""}
+            </div>
+          {:else}
+            <!-- Entrada: texto plano; Svelte lo escapa, white-space conserva saltos. -->
+            <p class="doc-detail__obs">{selectedDoc.observations}</p>
+          {/if}
         </section>
       {/if}
 
@@ -924,6 +1003,15 @@
         <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openModalVoBo}>
           <i class="fas fa-check-double" aria-hidden="true"></i>
           VoBo
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={actionLoading}
+          on:click={openModalCrearCadena}
+        >
+          <i class="fas fa-users" aria-hidden="true"></i>
+          Cadena VoBo
         </Button>
       {/if}
       {#if canAnular && selectedDoc.status !== "closed" && selectedDoc.status !== "cancelled"}
@@ -1135,11 +1223,6 @@
       rows={3}
     />
   </div>
-  <!--
-    TODO T-08c: Crear cadena de VoBo (POST /workflows/{id}/vistos-buenos con revisores[])
-    requiere un componente UserPicker que aún no existe en el frontend.
-    Implementar cuando esté disponible.
-  -->
   <svelte:fragment slot="footer">
     <Button
       variant="primary"
@@ -1152,6 +1235,59 @@
       Confirmar decisión
     </Button>
     <Button variant="ghost" size="sm" disabled={actionLoading} on:click={() => (modalVoBo = false)}>
+      Cancelar
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- Modal: Crear cadena de Visto Bueno (T-08c) -->
+<Modal
+  open={modalCrearCadena}
+  title="Crear cadena de visto bueno"
+  size="md"
+  on:close={() => (modalCrearCadena = false)}
+>
+  <p class="modal-desc">
+    Define la secuencia ordenada de revisores para el radicado
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong>. Cada revisor da su visto bueno en
+    el orden establecido.
+  </p>
+  {#if cadenaUsersLoading}
+    <div class="modal-loader">
+      <Loader />
+      <span>Cargando usuarios…</span>
+    </div>
+  {:else}
+    <div class="modal-form">
+      <UserPicker
+        id="cadena-vobo"
+        label="Revisores (en orden de revisión)"
+        users={cadenaUsers}
+        bind:value={cadenaRevisores}
+        disabled={actionLoading}
+        error={cadenaUsersError}
+        hint="Use la búsqueda para agregar revisores; ordénelos con las flechas."
+        max={20}
+      />
+    </div>
+  {/if}
+  <svelte:fragment slot="footer">
+    <Button
+      variant="primary"
+      size="sm"
+      loading={actionLoading}
+      disabled={actionLoading || cadenaUsersLoading || cadenaRevisores.length === 0}
+      on:click={crearCadena}
+    >
+      <i class="fas fa-users" aria-hidden="true"></i>
+      Crear cadena
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={actionLoading}
+      on:click={() => (modalCrearCadena = false)}
+    >
       Cancelar
     </Button>
   </svelte:fragment>
@@ -1461,6 +1597,16 @@
     gap: var(--op-space-4);
   }
 
+  .modal-loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--op-space-3);
+    padding: var(--op-space-6) 0;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+  }
+
   // ---------------------------------------------------------------------------
   // Paginación
   // ---------------------------------------------------------------------------
@@ -1586,6 +1732,35 @@
     margin: 0;
     font-style: italic;
     line-height: var(--op-line-height);
+    white-space: pre-wrap; // conserva saltos de línea del texto plano (Entrada)
+  }
+
+  // Cuerpo rico (Salida/Interno): HTML saneado del editor TipTap.
+  .doc-detail__obs--rich {
+    font-style: normal;
+    color: var(--op-text);
+
+    :global(p) {
+      margin: 0 0 var(--op-space-2);
+    }
+    :global(h2),
+    :global(h3) {
+      margin: var(--op-space-2) 0 var(--op-space-1);
+      color: var(--op-text);
+    }
+    :global(ul),
+    :global(ol) {
+      margin: 0 0 var(--op-space-2) var(--op-space-5);
+    }
+    :global(blockquote) {
+      margin: 0 0 var(--op-space-2);
+      padding-left: var(--op-space-3);
+      border-left: 3px solid var(--op-primary-light);
+    }
+    :global(a) {
+      color: var(--op-primary);
+      text-decoration: underline;
+    }
   }
 
   .anexos-list {

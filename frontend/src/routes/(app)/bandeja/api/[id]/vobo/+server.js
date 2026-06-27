@@ -22,8 +22,7 @@
  *
  * Implementa solo la acción "decidir" (aprobar/rechazar) de un VoBo pendiente.
  * La creación de cadenas de VoBo (POST .../vistos-buenos con lista de revisores)
- * requiere un selector de usuarios que aún no está disponible en el frontend.
- * TODO T-08c: implementar creación de cadena de VoBo cuando exista UserPicker.
+ * vive en el proxy hermano ./vobo-cadena (T-08c).
  *
  * POST → registra la decisión del revisor en el workflow-service.
  *   Body (VoBoDecision): { aprobar: boolean, comentario?: string }
