@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.core.clearance import require_permission
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.borrador import (
     BorradorCreate,
@@ -49,7 +50,12 @@ def _user(request: Request) -> uuid.UUID | None:
 # -- plantillas --------------------------------------------------------
 
 
-@router.post("/api/v1/plantillas", response_model=PlantillaResponse, status_code=201)
+@router.post(
+    "/api/v1/plantillas",
+    response_model=PlantillaResponse,
+    status_code=201,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def crear_plantilla(
     payload: PlantillaCreate,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -57,7 +63,11 @@ async def crear_plantilla(
     return await BorradorService(conn).crear_plantilla(payload)
 
 
-@router.get("/api/v1/plantillas", response_model=list[PlantillaResponse])
+@router.get(
+    "/api/v1/plantillas",
+    response_model=list[PlantillaResponse],
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def listar_plantillas(
     activo: bool | None = Query(default=None),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -65,7 +75,11 @@ async def listar_plantillas(
     return await BorradorService(conn).listar_plantillas(activo)
 
 
-@router.delete("/api/v1/plantillas/{plantilla_id}", status_code=204)
+@router.delete(
+    "/api/v1/plantillas/{plantilla_id}",
+    status_code=204,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def borrar_plantilla(
     plantilla_id: uuid.UUID,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -76,7 +90,12 @@ async def borrar_plantilla(
 # -- borradores --------------------------------------------------------
 
 
-@router.post("/api/v1/borradores", response_model=BorradorResponse, status_code=201)
+@router.post(
+    "/api/v1/borradores",
+    response_model=BorradorResponse,
+    status_code=201,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def crear_borrador(
     payload: BorradorCreate,
     request: Request,
@@ -85,7 +104,11 @@ async def crear_borrador(
     return await BorradorService(conn).crear(payload, _user(request))
 
 
-@router.get("/api/v1/borradores", response_model=list[BorradorResponse])
+@router.get(
+    "/api/v1/borradores",
+    response_model=list[BorradorResponse],
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def listar_borradores(
     estado: str | None = Query(default=None),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -93,7 +116,11 @@ async def listar_borradores(
     return await BorradorService(conn).listar(estado)
 
 
-@router.get("/api/v1/borradores/{borrador_id}", response_model=BorradorResponse)
+@router.get(
+    "/api/v1/borradores/{borrador_id}",
+    response_model=BorradorResponse,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def get_borrador(
     borrador_id: uuid.UUID,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -101,7 +128,11 @@ async def get_borrador(
     return await BorradorService(conn).get(borrador_id)
 
 
-@router.patch("/api/v1/borradores/{borrador_id}", response_model=BorradorResponse)
+@router.patch(
+    "/api/v1/borradores/{borrador_id}",
+    response_model=BorradorResponse,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def editar_borrador(
     borrador_id: uuid.UUID,
     payload: BorradorUpdate,
@@ -110,7 +141,11 @@ async def editar_borrador(
     return await BorradorService(conn).editar(borrador_id, payload)
 
 
-@router.post("/api/v1/borradores/{borrador_id}/aprobar", response_model=BorradorResponse)
+@router.post(
+    "/api/v1/borradores/{borrador_id}/aprobar",
+    response_model=BorradorResponse,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def aprobar_borrador(
     borrador_id: uuid.UUID,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -123,6 +158,7 @@ async def aprobar_borrador(
     response_model=DocumentResponse,
     status_code=201,
     summary="Radicar el borrador → genera el radicado real",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def radicar_borrador(
     borrador_id: uuid.UUID,

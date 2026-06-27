@@ -281,6 +281,22 @@ async def test_create_document_survives_event_failure(client_with_redis) -> None
 
 
 @pytest.mark.asyncio
+async def test_create_document_sin_permiso_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """D-12: PERM_RADI requerido para radicar; sin permiso → 403 (sin asignar tracking_number)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # check_permission → False → 403
+    response = await client.post(
+        "/api/v1/documents",
+        json=_CREATE_PAYLOAD,
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
 async def test_create_document_missing_tenant_header(
     client: AsyncClient,
 ) -> None:
@@ -487,6 +503,117 @@ async def test_get_document_by_tracking(
     body = response.json()
     assert body["tracking_number"] == tracking
     assert body["id"] == str(doc_id)
+
+
+# ---------------------------------------------------------------------------
+# D-13: comprobaciones de autorización (PERM_RADI / USUA_PERM_EXPEDIENTE)
+# ---------------------------------------------------------------------------
+
+_USER = str(uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_update_document_sin_permiso_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """D-13: PERM_RADI requerido para actualizar radicado; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    response = await client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}",
+        json={"subject": "Intento sin permiso"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_update_document_con_permiso_200(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """PERM_RADI concedido → actualizar radicado devuelve 200."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = make_radicado_record(doc_id=doc_id, subject="Actualizado")
+    mock_conn.fetch.return_value = []
+    response = await client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"subject": "Actualizado"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert response.status_code == 200
+    assert response.json()["subject"] == "Actualizado"
+
+
+@pytest.mark.asyncio
+async def test_set_disposition_sin_permiso_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """D-13: USUA_PERM_EXPEDIENTE requerido para fijar disposición; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    response = await client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}/disposition",
+        json={"accion": "eliminar", "marcado_eliminacion": True},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_set_disposition_con_permiso_200(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """USUA_PERM_EXPEDIENTE concedido → fijar disposición devuelve 200."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        {"disposition": None},  # get_disposition (existe)
+        {"disposition": '{"accion": "eliminar", "marcado_eliminacion": true}'},  # set result
+    ]
+    response = await client.patch(
+        f"/api/v1/documents/{doc_id}/disposition",
+        json={"accion": "eliminar", "marcado_eliminacion": True},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert response.status_code == 200
+    assert response.json()["disposition"]["accion"] == "eliminar"
+
+
+@pytest.mark.asyncio
+async def test_get_disposition_sin_permiso_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """D-13: USUA_PERM_EXPEDIENTE requerido para leer disposición; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    response = await client.get(
+        f"/api/v1/documents/{uuid.uuid4()}/disposition",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_disposition_con_permiso_200(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """USUA_PERM_EXPEDIENTE concedido → leer disposición devuelve 200."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = {"disposition": None}
+    response = await client.get(
+        f"/api/v1/documents/{doc_id}/disposition",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert response.status_code == 200
+    assert response.json()["radicado_id"] == str(doc_id)
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.clients.tenant_client import TenantServiceClient, TenantServiceError
-from app.core.clearance import resolve_caller_clearance
+from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.document import (
     DispositionResponse,
@@ -84,6 +84,7 @@ def _build_service(
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new radicado (document)",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def create_document(
     payload: DocumentCreate,
@@ -213,6 +214,7 @@ async def get_document(
     "/{document_id}/disposition",
     response_model=DispositionResponse,
     summary="Get document disposition metadata (RF-MET-08)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def get_disposition(
     document_id: uuid.UUID,
@@ -234,6 +236,7 @@ async def get_disposition(
     "/{document_id}/disposition",
     response_model=DispositionResponse,
     summary="Set/update document disposition metadata (RF-MET-08)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def set_disposition(
     document_id: uuid.UUID,
@@ -256,6 +259,7 @@ async def set_disposition(
     "/{document_id}",
     response_model=DocumentResponse,
     summary="Update mutable fields of a radicado — tracking_number is immutable",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def update_document(
     document_id: uuid.UUID,

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, make_radicado_record
 
 NOW = datetime.now(tz=UTC)
 
@@ -110,3 +110,199 @@ async def test_aprobar_borrador(client_with_conn) -> None:
     resp = await client.post(f"/api/v1/borradores/{bid}/aprobar", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["estado"] == "aprobado"
+
+
+# ---------------------------------------------------------------------------
+# D-11: comprobaciones de autorización (PERM_RADI / USUA_PERM_ADMIN)
+# ---------------------------------------------------------------------------
+
+_USER = str(uuid.uuid4())
+
+# -- Plantillas: USUA_PERM_ADMIN (crear/borrar) y PERM_RADI (listar) --------
+
+
+@pytest.mark.asyncio
+async def test_crear_plantilla_sin_permiso_403(client_with_conn) -> None:
+    """USUA_PERM_ADMIN requerido para crear plantilla; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        "/api/v1/plantillas",
+        json={"nombre": "Oficio", "cuerpo": "...", "tipo_documental": "Oficio"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_crear_plantilla_con_permiso_201(client_with_conn) -> None:
+    """USUA_PERM_ADMIN concedido → crear plantilla devuelve 201."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _plantilla_row()
+    resp = await client.post(
+        "/api/v1/plantillas",
+        json={"nombre": "Oficio estándar", "cuerpo": "Cordial saludo", "tipo_documental": "Oficio"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_listar_plantillas_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para listar plantillas; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        "/api/v1/plantillas",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_listar_plantillas_con_permiso_200(client_with_conn) -> None:
+    """PERM_RADI concedido → listar plantillas devuelve 200."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = [_plantilla_row()]
+    resp = await client.get(
+        "/api/v1/plantillas",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_borrar_plantilla_sin_permiso_403(client_with_conn) -> None:
+    """USUA_PERM_ADMIN requerido para borrar plantilla; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.delete(
+        f"/api/v1/plantillas/{uuid.uuid4()}",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_borrar_plantilla_con_permiso_204(client_with_conn) -> None:
+    """USUA_PERM_ADMIN concedido → borrar plantilla devuelve 204."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.execute.return_value = "DELETE 1"
+    resp = await client.delete(
+        f"/api/v1/plantillas/{uuid.uuid4()}",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 204
+
+
+# -- Borradores: PERM_RADI (todas las operaciones) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_crear_borrador_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para crear borrador; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        "/api/v1/borradores",
+        json={"doc_type": "S", "subject": "Prueba"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_listar_borradores_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para listar borradores; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        "/api/v1/borradores",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_borrador_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para consultar borrador; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        f"/api/v1/borradores/{uuid.uuid4()}",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_editar_borrador_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para editar borrador; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.patch(
+        f"/api/v1/borradores/{uuid.uuid4()}",
+        json={"subject": "Nuevo"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_aprobar_borrador_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para aprobar borrador; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/borradores/{uuid.uuid4()}/aprobar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_radicar_borrador_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI requerido para radicar; sin permiso → 403 (sin asignar tracking_number)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/borradores/{uuid.uuid4()}/radicar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_radicar_borrador_con_permiso_201(client_with_conn) -> None:
+    """PERM_RADI concedido → radicar borrador asigna tracking_number oficial y devuelve 201."""
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    rid = uuid.uuid4()
+    radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
+    # fetchval covers: check_permission (True) + next_sequence (True=1) + audit hash (True).
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []  # _get_anexos
+    mock_conn.fetchrow.side_effect = [
+        _borrador_row(id=bid, doc_type="S", estado="aprobado"),  # get_borrador
+        {"code": "DEMO"},                                          # get_tenant_code
+        radicado,                                                  # repo.create
+        _borrador_row(id=bid, doc_type="S", estado="radicado", radicado_id=rid),  # set_estado
+    ]
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 201
+    assert "tracking_number" in resp.json()
