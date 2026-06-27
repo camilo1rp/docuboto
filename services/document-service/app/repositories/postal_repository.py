@@ -16,7 +16,12 @@ import uuid
 import asyncpg
 
 _COLS = (
-    "id, radicado_id, operador, guia, estado, destinatario, direccion, " "created_at, updated_at"
+    "id, radicado_id, operador, guia, estado, destinatario, direccion, created_at, updated_at"
+)
+# Prefixed for JOIN queries to avoid column-name ambiguity with the radicados table.
+_COLS_S = (
+    "s.id, s.radicado_id, s.operador, s.guia, s.estado, "
+    "s.destinatario, s.direccion, s.created_at, s.updated_at"
 )
 
 
@@ -55,17 +60,29 @@ class PostalRepository:
             )
         return row
 
-    async def get(self, shipment_id: uuid.UUID) -> asyncpg.Record | None:
+    async def get(self, shipment_id: uuid.UUID, clearance: int = 3) -> asyncpg.Record | None:
+        # RF-SEG-08: join radicados to enforce no-read-up; clearance=3 (CLASIFICADA)
+        # means no restriction and is used by internal callers (e.g. update_estado).
         return await self._conn.fetchrow(
-            f"SELECT {_COLS} FROM postal_shipment WHERE id = $1", shipment_id
+            f"SELECT {_COLS_S} FROM postal_shipment s "
+            "JOIN radicados r ON r.id = s.radicado_id "
+            "WHERE s.id = $1 AND r.nivel_seguridad <= $2",
+            shipment_id,
+            clearance,
         )
 
-    async def list_by_radicado(self, radicado_id: uuid.UUID) -> list[asyncpg.Record]:
+    async def list_by_radicado(
+        self, radicado_id: uuid.UUID, clearance: int = 3
+    ) -> list[asyncpg.Record]:
+        # RF-SEG-08: only return shipments whose parent radicado is within clearance.
         return list(
             await self._conn.fetch(
-                f"SELECT {_COLS} FROM postal_shipment WHERE radicado_id = $1 "
-                "ORDER BY created_at",
+                f"SELECT {_COLS_S} FROM postal_shipment s "
+                "JOIN radicados r ON r.id = s.radicado_id "
+                "WHERE s.radicado_id = $1 AND r.nivel_seguridad <= $2 "
+                "ORDER BY s.created_at",
                 radicado_id,
+                clearance,
             )
         )
 
@@ -77,6 +94,55 @@ class PostalRepository:
                 shipment_id,
             )
         )
+
+    async def list_all_paginated(
+        self, *, estado: str | None, page: int, size: int, clearance: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Listado paginado transversal del tenant, filtrado por clearance y opcionalmente estado.
+
+        RF-SEG-08: COUNT and SELECT use the same JOIN/filter so X-Total-Count never
+        leaks the existence of shipments above the caller's clearance level.
+        """
+        offset = (page - 1) * size
+        if estado is None:
+            total: int = await self._conn.fetchval(
+                "SELECT COUNT(*) FROM postal_shipment s "
+                "JOIN radicados r ON r.id = s.radicado_id "
+                "WHERE r.nivel_seguridad <= $1",
+                clearance,
+            )
+            rows = list(
+                await self._conn.fetch(
+                    f"SELECT {_COLS_S} FROM postal_shipment s "
+                    "JOIN radicados r ON r.id = s.radicado_id "
+                    "WHERE r.nivel_seguridad <= $1 "
+                    "ORDER BY s.created_at DESC LIMIT $2 OFFSET $3",
+                    clearance,
+                    size,
+                    offset,
+                )
+            )
+        else:
+            total = await self._conn.fetchval(
+                "SELECT COUNT(*) FROM postal_shipment s "
+                "JOIN radicados r ON r.id = s.radicado_id "
+                "WHERE r.nivel_seguridad <= $1 AND s.estado = $2",
+                clearance,
+                estado,
+            )
+            rows = list(
+                await self._conn.fetch(
+                    f"SELECT {_COLS_S} FROM postal_shipment s "
+                    "JOIN radicados r ON r.id = s.radicado_id "
+                    "WHERE r.nivel_seguridad <= $1 AND s.estado = $2 "
+                    "ORDER BY s.created_at DESC LIMIT $3 OFFSET $4",
+                    clearance,
+                    estado,
+                    size,
+                    offset,
+                )
+            )
+        return rows, total
 
     async def update_estado(
         self, shipment_id: uuid.UUID, estado: str, descripcion: str | None

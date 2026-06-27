@@ -79,8 +79,9 @@ class PostalService:
             )
         return await self._response(row)
 
-    async def get(self, shipment_id: uuid.UUID) -> ShipmentResponse:
-        row = await self._repo.get(shipment_id)
+    async def get(self, shipment_id: uuid.UUID, clearance: int = 3) -> ShipmentResponse:
+        # clearance=3 (CLASIFICADA) = no restriction; router passes the real caller clearance.
+        row = await self._repo.get(shipment_id, clearance)
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -88,9 +89,20 @@ class PostalService:
             )
         return await self._response(row)
 
-    async def list_for_radicado(self, radicado_id: uuid.UUID) -> list[ShipmentResponse]:
-        rows = await self._repo.list_by_radicado(radicado_id)
+    async def list_for_radicado(
+        self, radicado_id: uuid.UUID, clearance: int = 3
+    ) -> list[ShipmentResponse]:
+        rows = await self._repo.list_by_radicado(radicado_id, clearance)
         return [await self._response(r) for r in rows]
+
+    async def list_all(
+        self, *, estado: str | None, page: int, size: int, clearance: int
+    ) -> tuple[list[ShipmentResponse], int]:
+        """Listado transversal paginado del tenant para la bandeja (E20)."""
+        rows, total = await self._repo.list_all_paginated(
+            estado=estado, page=page, size=size, clearance=clearance
+        )
+        return [await self._response(r) for r in rows], total
 
     async def update_estado(
         self, shipment_id: uuid.UUID, payload: ShipmentStatusUpdate

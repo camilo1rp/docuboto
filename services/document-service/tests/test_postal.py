@@ -108,3 +108,176 @@ async def test_get_envio_not_found(client_with_conn) -> None:
     mock_conn.fetchrow.return_value = None
     resp = await client.get(f"/api/v1/envios/{uuid.uuid4()}", headers=TENANT_HEADERS)
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# D-14: comprobaciones de autorización (PERM_RADI_SALIDA)
+# ---------------------------------------------------------------------------
+
+_USER = str(uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_create_envio_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI_SALIDA requerido para crear envío; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/envios",
+        json={"operador": "4-72"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_create_envio_con_permiso_201(client_with_conn) -> None:
+    """PERM_RADI_SALIDA concedido → crear envío devuelve 201."""
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _ship_row(radicado_id=rid)
+    mock_conn.fetch.return_value = [
+        {"estado": "registrado", "descripcion": "Envío registrado", "ts": NOW}
+    ]
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/envios",
+        json={"operador": "4-72"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["estado"] == "registrado"
+
+
+@pytest.mark.asyncio
+async def test_update_estado_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI_SALIDA requerido para cambiar estado; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        f"/api/v1/envios/{uuid.uuid4()}/estado",
+        json={"estado": "en_transito"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/envios — listado transversal paginado (E20, T-12e)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_envios_global_sin_permiso_403(client_with_conn) -> None:
+    """PERM_RADI_SALIDA requerido para el listado global; sin permiso → 403."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        "/api/v1/envios",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_envios_global_con_permiso_200_total_count(client_with_conn) -> None:
+    """Listado global con permiso: 200 + X-Total-Count correcto."""
+    client, mock_conn = client_with_conn
+    sid = uuid.uuid4()
+    ship = _ship_row(id=sid)
+    # fetchval side_effect: check_permission (True) → COUNT(*) (3)
+    mock_conn.fetchval.side_effect = [True, 3]
+    mock_conn.fetch.side_effect = [
+        [ship],  # list_all_paginated rows
+        [{"estado": "registrado", "descripcion": "Envío registrado", "ts": NOW}],  # events
+    ]
+    resp = await client.get(
+        "/api/v1/envios?page=1&size=10",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["x-total-count"] == "3"
+    assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_envios_global_filtro_estado(client_with_conn) -> None:
+    """?estado=entregado filtra por estado y devuelve X-Total-Count correcto."""
+    client, mock_conn = client_with_conn
+    sid = uuid.uuid4()
+    ship = _ship_row(id=sid, estado="entregado")
+    mock_conn.fetchval.side_effect = [True, 1]  # permission + COUNT filtrado
+    mock_conn.fetch.side_effect = [
+        [ship],  # rows filtradas por estado=entregado
+        [{"estado": "entregado", "descripcion": "Entregado al destinatario", "ts": NOW}],
+    ]
+    resp = await client.get(
+        "/api/v1/envios?estado=entregado",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["x-total-count"] == "1"
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["estado"] == "entregado"
+
+
+# ---------------------------------------------------------------------------
+# RF-SEG-08: no-read-up — envíos de radicados CLASIFICADOS ocultos a PUBLICA
+#
+# resolve_caller_clearance usa fetchrow (no fetchval); fetchrow.return_value = None
+# → usuario no encontrado → fail-closed a PUBLICA (1). Las consultas del
+# repositorio reciben clearance=1, el JOIN r.nivel_seguridad <= 1 filtra las filas
+# de radicados CLASIFICADOS (nivel 3) y el mock devuelve vacío / None.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_envios_global_no_read_up(client_with_conn) -> None:
+    """Listado transversal: PUBLICA clearance → envíos CLASIFICADOS excluidos; count=0."""
+    client, mock_conn = client_with_conn
+    # fetchval: permission (True) + COUNT filtrado (0, sin filas visibles)
+    mock_conn.fetchval.side_effect = [True, 0]
+    mock_conn.fetchrow.return_value = None  # resolve_caller_clearance → PUBLICA (1)
+    mock_conn.fetch.return_value = []       # list_all_paginated rows → filtrado
+    resp = await client.get(
+        "/api/v1/envios",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["x-total-count"] == "0"
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_by_radicado_no_read_up(client_with_conn) -> None:
+    """Por radicado: PUBLICA clearance → envío de radicado CLASIFICADO excluido."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permission granted
+    mock_conn.fetchrow.return_value = None  # resolve_caller_clearance → PUBLICA (1)
+    mock_conn.fetch.return_value = []       # list_by_radicado → filtrado por clearance
+    resp = await client.get(
+        f"/api/v1/documents/{uuid.uuid4()}/envios",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_get_envio_no_read_up_404(client_with_conn) -> None:
+    """Detalle: GET envio cuyo radicado es CLASIFICADO → 404 para llamante PUBLICA."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permission granted
+    # fetchrow=None: resolve_caller_clearance → PUBLICA (1);
+    # repo.get(shipment_id, clearance=1) → JOIN filtra fila → None → 404.
+    mock_conn.fetchrow.return_value = None
+    resp = await client.get(
+        f"/api/v1/envios/{uuid.uuid4()}",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "envio_not_found"
