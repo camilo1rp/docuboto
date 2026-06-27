@@ -24,6 +24,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { attachSafeBody } from "$lib/server/sanitizeHtml.js";
 
 // Nota: el token se lee aquí solo para la carga SSR inicial.
 // Las llamadas cliente-side usan /bandeja/api[/id] que leen la cookie en el servidor.
@@ -60,6 +61,11 @@ export async function load({ cookies, parent, url, fetch }) {
     if (res.ok) {
       total = Number(res.headers.get("X-Total-Count") ?? 0);
       documents = await res.json();
+      // T-12b — defensa durable en el punto de render: el cuerpo de Salida/Interno es
+      // HTML (editor TipTap). Se sanea AQUÍ (server-side) sea cual sea su origen
+      // (este BFF, asistente MCP, datos legacy) y se expone como `observations_html`
+      // listo para {@html} en el drawer. Cierra la trampa de XSS señalada en la revisión.
+      if (Array.isArray(documents)) documents.forEach(attachSafeBody);
     } else {
       const body = await res.json().catch(() => ({}));
       loadError = body.detail ?? `Error ${res.status}`;

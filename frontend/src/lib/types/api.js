@@ -65,6 +65,7 @@
  * @property {string}              status              — 'registered'|'distributed'|'in_progress'|'closed'
  * @property {number}              pages
  * @property {string|null}         observations
+ * @property {string} [observations_html] cuerpo S/I saneado server-side (T-12b)
  * @property {string|null}         registered_by       — UUID
  * @property {string}              registered_at       — ISO 8601
  * @property {string}              updated_at          — ISO 8601

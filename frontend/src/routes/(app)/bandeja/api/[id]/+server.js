@@ -18,6 +18,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { attachSafeBody } from "$lib/server/sanitizeHtml.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function GET({ locals, params }) {
@@ -37,6 +38,8 @@ export async function GET({ locals, params }) {
     });
 
     const data = await res.json().catch(() => ({}));
+    // T-12b: sanea el cuerpo rico (S/I) del detalle antes de entregarlo al cliente.
+    if (res.ok) attachSafeBody(data);
     return json(data, { status: res.status });
   } catch {
     return json(

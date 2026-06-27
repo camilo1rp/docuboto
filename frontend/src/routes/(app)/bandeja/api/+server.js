@@ -21,6 +21,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { attachSafeBody } from "$lib/server/sanitizeHtml.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function GET({ locals, url }) {
@@ -54,6 +55,10 @@ export async function GET({ locals, url }) {
     if (!res.ok) {
       return json(data, { status: res.status });
     }
+
+    // T-12b: sanea el cuerpo rico (S/I) antes de entregarlo al cliente (mismo punto
+    // de render que el server load; cubre la recarga client-side de loadDocuments).
+    if (Array.isArray(data)) data.forEach(attachSafeBody);
 
     return json({ documents: data, total });
   } catch {

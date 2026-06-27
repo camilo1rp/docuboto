@@ -22,8 +22,9 @@
 
   El número de radicado lo asigna el backend. Se muestra al confirmar.
 
-  Nota: Editor rico de cuerpo de Salida diferido a T-12b (TipTap).
-        Por ahora se usa un textarea simple.
+  Nota: El cuerpo de Salida/Interno usa el editor rico TipTap (RichEditor, T-12b);
+        el HTML se sanea en el proxy SSR antes de persistir. Las Entradas mantienen
+        observaciones de texto plano.
 -->
 
 <script>
@@ -37,6 +38,7 @@
   import Card from "$lib/components/ui/Card.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
+  import RichEditor from "$lib/components/editor/RichEditor.svelte";
   // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
   // se realizan a través de los endpoints locales /radicar/api/* que leen la
   // cookie httpOnly en el servidor — el token nunca alcanza el JS del cliente (D-05).
@@ -703,19 +705,16 @@
               </div>
             {/if}
 
-            <!-- Cuerpo del documento (solo Salida e Interno) -->
+            <!-- Cuerpo del documento (solo Salida e Interno) — editor rico T-12b -->
             {#if docType === "S" || docType === "I"}
               <div class="radicar-step__field radicar-step__field--full">
-                <FormField
+                <RichEditor
                   id="observations"
                   label="Contenido / cuerpo del documento"
-                  type="textarea"
                   bind:value={observations}
-                  rows={6}
-                  placeholder="Texto del documento..."
-                  hint="Editor de texto plano — el editor rico (TipTap) se integrará en T-12b"
+                  placeholder="Redacte el cuerpo del documento…"
+                  hint="El formato se conserva; el servidor sanea el contenido antes de guardarlo."
                 />
-                <!-- TODO T-12b: reemplazar textarea por <RichEditor /> -->
               </div>
             {:else}
               <!-- Observaciones para Entradas -->
