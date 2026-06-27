@@ -74,6 +74,19 @@
       permission: "SGD_PERM_ESTADISTICA",
     },
     {
+      label: "Archivo físico",
+      href: ROUTES.archivoFisico,
+      icon: "fas fa-box-archive",
+      // USUA_PERM_EXPEDIENTE: gestión de expedientes/archivo (migración 004)
+      permission: "USUA_PERM_EXPEDIENTE",
+    },
+    {
+      label: "Transferencias",
+      href: ROUTES.transferencias,
+      icon: "fas fa-exchange-alt",
+      permission: "USUA_PERM_EXPEDIENTE",
+    },
+    {
       label: "Administración",
       href: ROUTES.admin,
       icon: "fas fa-cog",

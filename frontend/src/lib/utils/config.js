@@ -73,5 +73,7 @@ export const ROUTES = {
   expedientes: "/expedientes",
   busqueda: "/busqueda",
   reportes: "/reportes",
+  archivoFisico: "/archivo-fisico",
+  transferencias: "/transferencias",
   admin: "/admin",
 };
