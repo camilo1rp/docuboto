@@ -29,6 +29,7 @@ from app.schemas.rbac import (
     GroupResponse,
     PermissionResponse,
     UserCreate,
+    UserPickItem,
     UserResponse,
 )
 from app.services.rbac_service import RBACService
@@ -38,6 +39,31 @@ router = APIRouter(
     tags=["rbac"],
     dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
+
+# D-10: router hermano para selectores de UI. NO hereda el gate admin del router
+# principal; solo exige PERM_RADI (cualquier operador de radicación). Devuelve una
+# proyección mínima (id + username) sin PII administrativa, para el UserPicker (T-08c).
+# Debe incluirse ANTES de `router` en main.py: la ruta estática `/users/pickable`
+# tiene prioridad y no colisiona con `/users/{user_id}/...`.
+pick_router = APIRouter(
+    prefix="/api/v1/auth",
+    tags=["rbac"],
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
+
+
+@pick_router.get("/users/pickable", response_model=list[UserPickItem])
+async def list_pickable_users(
+    size: int = Query(100, ge=1, le=500),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[UserPickItem]:
+    """Lista mínima de usuarios activos (id + username) para selectores de UI.
+
+    Gateado con `PERM_RADI` (no admin), a diferencia de `GET /users` (USUA_PERM_ADMIN).
+    """
+    repo = RBACRepository(conn)
+    rows = await repo.list_pickable_users(limit=size)
+    return [UserPickItem(**dict(r)) for r in rows]
 
 
 def _conflict(detail: str) -> HTTPException:

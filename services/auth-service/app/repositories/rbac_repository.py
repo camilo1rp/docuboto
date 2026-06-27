@@ -64,6 +64,18 @@ class RBACRepository:
         total: int = await self._conn.fetchval("SELECT count(*) FROM auth_users")
         return rows, total
 
+    async def list_pickable_users(self, *, limit: int) -> list[asyncpg.Record]:
+        """Listado mínimo (id + username) de usuarios activos, para selectores de UI.
+
+        D-10: alimenta el `UserPicker` (cadena de visto bueno) sin exponer `email`
+        ni metadatos administrativos. Gateado con `PERM_RADI` en el router (no admin).
+        """
+        return await self._conn.fetch(
+            "SELECT id, username FROM auth_users "
+            "WHERE is_active = true ORDER BY username LIMIT $1",
+            limit,
+        )
+
     async def is_root(self, user_id: uuid.UUID) -> bool:
         val = await self._conn.fetchval("SELECT is_root FROM auth_users WHERE id = $1", user_id)
         return bool(val)

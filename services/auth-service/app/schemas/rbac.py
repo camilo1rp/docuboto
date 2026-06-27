@@ -30,6 +30,13 @@ class UserResponse(BaseModel):
     is_active: bool
 
 
+class UserPickItem(BaseModel):
+    """Proyección mínima de usuario para selectores de UI (D-10). Sin PII extra."""
+
+    id: uuid.UUID
+    username: str
+
+
 class GroupCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     description: str | None = None

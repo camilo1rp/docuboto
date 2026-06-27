@@ -32,6 +32,7 @@ from app.routers.auth import set_auth_service
 from app.routers.clearance import router as clearance_router
 from app.routers.context import router as context_router
 from app.routers.health import router as health_router
+from app.routers.rbac import pick_router as rbac_pick_router
 from app.routers.rbac import router as rbac_router
 from app.routers.urd import router as urd_router
 from app.services.auth_service import AuthService
@@ -73,6 +74,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router)
+app.include_router(rbac_pick_router)  # D-10: antes de rbac_router (ruta /users/pickable)
 app.include_router(rbac_router)
 app.include_router(urd_router)
 app.include_router(context_router)

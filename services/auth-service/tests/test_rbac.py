@@ -136,6 +136,58 @@ async def test_user_permissions_resolution(client: AsyncClient) -> None:
     assert body["permissions"]["USUA_PERM_EXPEDIENTE"] == 2
 
 
+# --- D-10: endpoint ligero para selectores (PERM_RADI, no admin) ------------
+def _override_caller(conn: AsyncMock, caller: Caller) -> None:
+    async def _dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    app.dependency_overrides[get_tenant_conn] = _dep
+    app.dependency_overrides[get_caller] = lambda: caller
+
+
+@pytest.mark.asyncio
+async def test_list_pickable_users_perm_radi(client: AsyncClient) -> None:
+    """Un operador con PERM_RADI (sin admin) obtiene id+username; sin email/PII."""
+    u1, u2 = uuid.uuid4(), uuid.uuid4()
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {"id": u1, "username": "ANA"},
+        {"id": u2, "username": "BETO"},
+    ]
+    _override_caller(
+        conn,
+        Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
+    )
+    resp = await client.get(
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-op"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [u["username"] for u in body] == ["ANA", "BETO"]
+    # Proyección mínima: solo id + username, sin email ni metadatos administrativos.
+    assert set(body[0].keys()) == {"id", "username"}
+
+
+@pytest.mark.asyncio
+async def test_list_pickable_users_denies_without_perm_radi(client: AsyncClient) -> None:
+    """Sin PERM_RADI (ni root), el endpoint pickable responde 403."""
+    conn = AsyncMock()
+    _override_caller(
+        conn,
+        Caller(
+            user_id=uuid.uuid4(),
+            keycloak_sub="kc-nobody",
+            is_root=False,
+            permissions={"USUA_PERM_CONSULTA": 1},
+        ),
+    )
+    resp = await client.get(
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-nobody"}
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
 # --- gate de autorización (ADR-013) ----------------------------------------
 @pytest.mark.asyncio
 async def test_gate_denies_without_admin(client: AsyncClient) -> None:
