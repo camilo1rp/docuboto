@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 import { describe, it, expect } from "vitest";
-import { sanitizeHtml, attachSafeBody } from "./sanitizeHtml.js";
+import { sanitizeHtml, attachSafeBody, attachSafeCuerpo } from "./sanitizeHtml.js";
 
 describe("sanitizeHtml — formato permitido (StarterKit + Link)", () => {
   it("conserva el formato básico", () => {
@@ -115,28 +115,70 @@ describe("sanitizeHtml — neutraliza vectores XSS", () => {
 
 describe("attachSafeBody — observations_html es campo de salida", () => {
   it("sanea el cuerpo S/I y lo expone como observations_html", () => {
-    const doc = { doc_type: "S", observations: '<p>ok</p><script>x</script>' };
+    const doc = { doc_type: "S", observations: "<p>ok</p><script>x</script>" };
     attachSafeBody(doc);
     expect(doc.observations_html).toBe("<p>ok</p>");
   });
 
   it("ignora un observations_html inyectado cuando observations es null (S/I)", () => {
-    const doc = { doc_type: "I", observations: null, observations_html: "<img src=x onerror=alert(1)>" };
+    const doc = {
+      doc_type: "I",
+      observations: null,
+      observations_html: "<img src=x onerror=alert(1)>",
+    };
     attachSafeBody(doc);
     // se reescribe desde el saneo (observations null → ""), nunca se acepta el inyectado
     expect(doc.observations_html).toBe("");
   });
 
   it("sobrescribe un observations_html inyectado aunque observations sea válido (S/I)", () => {
-    const doc = { doc_type: "S", observations: "<p>real</p>", observations_html: "<script>evil</script>" };
+    const doc = {
+      doc_type: "S",
+      observations: "<p>real</p>",
+      observations_html: "<script>evil</script>",
+    };
     attachSafeBody(doc);
     expect(doc.observations_html).toBe("<p>real</p>");
   });
 
   it("elimina cualquier observations_html en documentos de Entrada", () => {
-    const doc = { doc_type: "E", observations: "nota", observations_html: "<img src=x onerror=alert(1)>" };
+    const doc = {
+      doc_type: "E",
+      observations: "nota",
+      observations_html: "<img src=x onerror=alert(1)>",
+    };
     attachSafeBody(doc);
     expect("observations_html" in doc).toBe(false);
+  });
+});
+
+describe("attachSafeCuerpo — cuerpo_html es campo de salida (T-12c)", () => {
+  it("sanea el cuerpo y lo expone como cuerpo_html", () => {
+    const item = { cuerpo: "<p>ok</p><script>x</script>" };
+    attachSafeCuerpo(item);
+    expect(item.cuerpo_html).toBe("<p>ok</p>");
+  });
+
+  it("ignora un cuerpo_html inyectado cuando cuerpo es null", () => {
+    const item = { cuerpo: null, cuerpo_html: "<img src=x onerror=alert(1)>" };
+    attachSafeCuerpo(item);
+    expect(item.cuerpo_html).toBe("");
+  });
+
+  it("sobrescribe un cuerpo_html inyectado aunque cuerpo sea válido", () => {
+    const item = { cuerpo: "<p>real</p>", cuerpo_html: "<script>evil</script>" };
+    attachSafeCuerpo(item);
+    expect(item.cuerpo_html).toBe("<p>real</p>");
+  });
+
+  it("devuelve null sin modificar para items null", () => {
+    expect(attachSafeCuerpo(null)).toBeNull();
+  });
+
+  it("sanea cuerpo HTML sin alterar el texto legítimo", () => {
+    const item = { cuerpo: "<p>Comunicado <strong>oficial</strong></p>" };
+    attachSafeCuerpo(item);
+    expect(item.cuerpo_html).toBe("<p>Comunicado <strong>oficial</strong></p>");
   });
 });
 
