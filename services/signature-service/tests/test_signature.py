@@ -11,21 +11,16 @@
 
 from __future__ import annotations
 
-import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import jwt
 import pytest
-from fastapi import HTTPException, status
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import Settings, settings
+from app.core.config import settings
 from app.core.database import get_tenant_conn
-from app.core.security import get_current_user
 from app.main import app
 from app.services import signer
 from tests.conftest import TENANT_HEADERS, USER
@@ -102,7 +97,7 @@ def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
 
 @pytest.mark.asyncio
 async def test_sign_xml_happy_path(client_with_conn) -> None:
-    """POST /sign-xml with valid JWT (PERM_FIRMA) creates a firma record."""
+    """POST /sign-xml with valid X-User-Id (PERM_FIRMA granted) creates a firma record."""
     client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)
 
@@ -116,7 +111,7 @@ async def test_sign_xml_happy_path(client_with_conn) -> None:
     assert body["provider"] == "nativa"
     assert body["objeto_tipo"] == "indice"
     assert len(body["payload_sha256"]) == 64
-    # firmante_id must come from JWT claims, not from request body
+    # firmante_id must come from X-User-Id header, not from request body
     assert body["firmante_id"] == str(USER)
 
 
@@ -231,243 +226,3 @@ async def test_verify_not_found(client_with_conn) -> None:
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# Unit tests — get_current_user permission & tenant-binding (D-01)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_current_user_rejects_role_without_permission() -> None:
-    """PERM_FIRMA in roles[] but NOT in permissions[] must yield 403 (D-01).
-
-    Before the fix, the check was against roles[] — a valid RBAC role could
-    grant signing rights without the explicit permission, breaking ADR-013.
-    """
-    from fastapi import HTTPException
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    from app.core.security import get_current_user
-
-    claims_role_only = {
-        "user_id": str(USER),
-        "username": "testuser",
-        "email": "test@demo.example",
-        "tenant_slug": "demo",
-        "roles": ["PERM_FIRMA"],  # role present
-        "permissions": [],         # permission absent — must be rejected
-        "exp": None,
-        "iat": None,
-    }
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake-token")
-
-    with patch("app.core.security.validate_token", new=AsyncMock(return_value=claims_role_only)):
-        with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=creds, x_tenant_slug="demo")
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail["error"] == "forbidden"
-
-
-@pytest.mark.asyncio
-async def test_get_current_user_rejects_tenant_mismatch() -> None:
-    """Token tenant != X-Tenant-Slug must yield 403 — prevents cross-tenant signing (D-01)."""
-    from fastapi import HTTPException
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    from app.core.security import get_current_user
-
-    claims_wrong_tenant = {
-        "user_id": str(USER),
-        "username": "testuser",
-        "email": "test@demo.example",
-        "tenant_slug": "other-org",   # token is for a different tenant
-        "roles": [],
-        "permissions": ["PERM_FIRMA"],
-        "exp": None,
-        "iat": None,
-    }
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake-token")
-
-    with patch("app.core.security.validate_token", new=AsyncMock(return_value=claims_wrong_tenant)):
-        with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=creds, x_tenant_slug="demo")
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail["error"] == "forbidden"
-
-
-# ---------------------------------------------------------------------------
-# Unit tests — Settings.expected_issuer override (KEYCLOAK_ISSUER)
-# ---------------------------------------------------------------------------
-
-
-def test_settings_expected_issuer_fallback_to_keycloak_url() -> None:
-    """Without an override, expected_issuer is derived from keycloak_url."""
-    s = Settings.model_construct(
-        keycloak_url="http://keycloak:8080",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer=None,
-    )
-    assert s.expected_issuer == "http://keycloak:8080/realms/orpycamcp"
-
-
-def test_settings_expected_issuer_override_wins() -> None:
-    """When keycloak_issuer is set it takes precedence over keycloak_url."""
-    s = Settings.model_construct(
-        keycloak_url="http://keycloak:8080",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer="http://localhost:19180/realms/orpycamcp",
-    )
-    assert s.expected_issuer == "http://localhost:19180/realms/orpycamcp"
-
-
-def test_issuer_warnings_fire_on_internal_host_without_override() -> None:
-    """Caso roto: host interno de Docker y sin KEYCLOAK_ISSUER → aviso fail-fast."""
-    s = Settings.model_construct(
-        keycloak_url="http://keycloak:8080",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer=None,
-    )
-    warnings = s.issuer_config_warnings()
-    assert len(warnings) == 1
-    assert "KEYCLOAK_ISSUER" in warnings[0]
-
-
-def test_issuer_warnings_silent_with_override() -> None:
-    """Dev/prod-split: con override explícito no hay aviso."""
-    s = Settings.model_construct(
-        keycloak_url="http://keycloak:8080",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer="http://localhost:19180/realms/orpycamcp",
-    )
-    assert s.issuer_config_warnings() == []
-
-
-def test_issuer_warnings_silent_on_public_fqdn() -> None:
-    """Prod single-host: FQDN público sin override no es un error → sin aviso."""
-    s = Settings.model_construct(
-        keycloak_url="https://keycloak.example.com",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer=None,
-    )
-    assert s.issuer_config_warnings() == []
-
-
-# ---------------------------------------------------------------------------
-# Helpers for JWT integration tests
-# ---------------------------------------------------------------------------
-
-
-def _make_test_rsa_jwks() -> tuple[Any, dict]:
-    """Return (private_key, jwks_dict) signed with a fresh RSA-2048 key."""
-    import json
-
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from jwt.algorithms import RSAAlgorithm
-
-    priv = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend(),
-    )
-    jwk_dict = json.loads(RSAAlgorithm.to_jwk(priv.public_key()))
-    jwks: dict = {"keys": [{**jwk_dict, "kid": "test-kid", "use": "sig"}]}
-    return priv, jwks
-
-
-# ---------------------------------------------------------------------------
-# Integration tests — validate_token issuer acceptance / rejection
-# ---------------------------------------------------------------------------
-
-_PUBLIC_ISSUER = "http://localhost:19180/realms/orpycamcp"
-_INTERNAL_ISSUER = "http://keycloak:8080/realms/orpycamcp"
-
-
-@pytest.mark.asyncio
-async def test_validate_token_accepts_public_issuer_via_override() -> None:
-    """Token carrying public iss is accepted when keycloak_issuer matches it.
-
-    Reproduces the Docker dev scenario: Keycloak uses KC_HOSTNAME_URL=
-    http://localhost:19180 for the public issuer, but backends resolve JWKS
-    internally via http://keycloak:8080. Without KEYCLOAK_ISSUER the iss check
-    would fail even though the signature is valid.
-    """
-    import jwt as pyjwt
-
-    from app.core.security import invalidate_jwks_cache, validate_token
-
-    priv, jwks = _make_test_rsa_jwks()
-
-    token = pyjwt.encode(
-        {
-            "sub": str(USER),
-            "iss": _PUBLIC_ISSUER,
-            "iat": int(time.time()),
-            "exp": int(time.time()) + 300,
-            "realm_access": {"roles": []},
-            "permissions": ["PERM_FIRMA"],
-            "tenant_slug": "demo",
-        },
-        priv,
-        algorithm="RS256",
-        headers={"kid": "test-kid"},
-    )
-
-    override_settings = Settings.model_construct(
-        keycloak_url="http://keycloak:8080",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer=_PUBLIC_ISSUER,  # override to public URL
-        jwks_cache_ttl=300,
-    )
-
-    invalidate_jwks_cache()
-    with patch("app.core.security._get_jwks", new=AsyncMock(return_value=jwks)):
-        with patch("app.core.security.settings", new=override_settings):
-            claims = await validate_token(token)
-
-    assert claims["user_id"] == str(USER)
-    assert claims["tenant_slug"] == "demo"
-
-
-@pytest.mark.asyncio
-async def test_validate_token_rejects_public_issuer_without_override() -> None:
-    """Token with public iss is rejected when keycloak_issuer is not configured.
-
-    expected_issuer defaults to the internal URL (http://keycloak:8080/…) while
-    the token carries the public URL — PyJWT raises InvalidIssuerError.
-    """
-    import jwt as pyjwt
-
-    from app.core.security import invalidate_jwks_cache, validate_token
-
-    priv, jwks = _make_test_rsa_jwks()
-
-    token = pyjwt.encode(
-        {
-            "sub": str(USER),
-            "iss": _PUBLIC_ISSUER,   # public issuer; no override configured below
-            "iat": int(time.time()),
-            "exp": int(time.time()) + 300,
-            "realm_access": {"roles": []},
-            "permissions": [],
-            "tenant_slug": "demo",
-        },
-        priv,
-        algorithm="RS256",
-        headers={"kid": "test-kid"},
-    )
-
-    # keycloak_issuer=None → expected_issuer resolves to _INTERNAL_ISSUER (mismatch)
-    no_override_settings = Settings.model_construct(
-        keycloak_url="http://keycloak:8080",
-        keycloak_realm="orpycamcp",
-        keycloak_issuer=None,
-        jwks_cache_ttl=300,
-    )
-
-    invalidate_jwks_cache()
-    with patch("app.core.security._get_jwks", new=AsyncMock(return_value=jwks)):
-        with patch("app.core.security.settings", new=no_override_settings):
-            with pytest.raises(jwt.InvalidIssuerError):
-                await validate_token(token)
