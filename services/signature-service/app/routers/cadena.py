@@ -80,9 +80,10 @@ async def create_request(
 )
 async def get_request(
     solicitud_id: uuid.UUID,
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SolicitudResponse:
-    return await CadenaFirmaService(conn, "").get(solicitud_id)
+    return await CadenaFirmaService(conn, "").get(solicitud_id, actor)
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +99,10 @@ async def get_request(
 async def get_request_by_object(
     objeto_tipo: str = Query(..., min_length=1, max_length=40),
     objeto_id: str = Query(..., min_length=1),
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SolicitudResponse:
-    return await CadenaFirmaService(conn, "").get_por_objeto(objeto_tipo, objeto_id)
+    return await CadenaFirmaService(conn, "").get_por_objeto(objeto_tipo, objeto_id, actor)
 
 
 # ---------------------------------------------------------------------------

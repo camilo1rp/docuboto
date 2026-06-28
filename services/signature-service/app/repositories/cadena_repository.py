@@ -21,7 +21,10 @@ import uuid
 
 import asyncpg
 
-_SOL_COLS = "id, objeto_tipo, objeto_id, titulo, payload_sha256, estado, creado_por, created_at, updated_at"
+_SOL_COLS = (
+    "id, objeto_tipo, objeto_id, titulo, payload_sha256, estado, creado_por, "
+    "nivel_seguridad, created_at, updated_at"
+)
 
 _CAD_COLS = "id, solicitud_id, orden, firmante_id, estado, firma_id, comentario, decidido_at"
 
@@ -37,17 +40,36 @@ class CadenaRepository:
     async def crear_solicitud(self, data: dict) -> asyncpg.Record:
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma_solicitud
-                    (objeto_tipo, objeto_id, titulo, payload_sha256, creado_por)
-                VALUES ($1, $2, $3, $4, $5)
+                    (objeto_tipo, objeto_id, titulo, payload_sha256, creado_por, nivel_seguridad)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING {_SOL_COLS}""",
             data["objeto_tipo"],
             data.get("objeto_id"),
             data.get("titulo"),
             data.get("payload_sha256"),
             data.get("creado_por"),
+            data.get("nivel_seguridad", 1),
         )
         assert row is not None
         return row
+
+    async def resolver_nivel_radicado(self, objeto_id: str) -> int | None:
+        """Returns nivel_seguridad for a radicado matched by tracking_number or UUID text.
+
+        Returns None when no radicado matches (the object_id may be a different type,
+        or the radicados table may be absent in test/isolated environments).
+        The OR condition tolerates callers passing either a tracking number
+        (e.g. '2024-DEMO-E-000001') or the radicado's UUID as text.
+        """
+        try:
+            return await self._conn.fetchval(
+                "SELECT nivel_seguridad FROM radicados "
+                "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+                objeto_id,
+            )
+        except asyncpg.UndefinedTableError:
+            # radicados table absent in this tenant schema (test or isolated env).
+            return None
 
     async def get_solicitud(self, solicitud_id: uuid.UUID) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
@@ -187,10 +209,15 @@ class CadenaRepository:
         firmante_id: uuid.UUID,
         offset: int,
         limit: int,
+        max_clearance: int = 1,
     ) -> tuple[list[asyncpg.Record], int]:
         """
         Returns (rows, total) for the inbox: solicitudes where the ACTIVE turn
-        (lowest pending orden) belongs to firmante_id.
+        (lowest pending orden) belongs to firmante_id, filtered by max_clearance.
+
+        The nivel_seguridad <= max_clearance predicate enforces no-read-up (RF-SEG-08):
+        the window COUNT(*) OVER() applies the same filter so X-Total-Count does not
+        reveal the number of hidden solicitudes above the actor's clearance.
 
         Each row contains: solicitud_id, objeto_tipo, objeto_id, titulo, orden, created_at.
         """
@@ -206,9 +233,10 @@ class CadenaRepository:
                 COUNT(*) OVER() AS total_count
             FROM firma_solicitud s
             JOIN firma_cadena c ON c.solicitud_id = s.id
-            WHERE s.estado      = 'pendiente'
-              AND c.firmante_id = $1
-              AND c.estado      = 'pendiente'
+            WHERE s.estado          = 'pendiente'
+              AND c.firmante_id     = $1
+              AND c.estado          = 'pendiente'
+              AND s.nivel_seguridad <= $4
               AND c.orden = (
                   SELECT MIN(c2.orden)
                   FROM firma_cadena c2
@@ -220,6 +248,7 @@ class CadenaRepository:
             firmante_id,
             limit,
             offset,
+            max_clearance,
         )
         total = int(rows[0]["total_count"]) if rows else 0
         return list(rows), total

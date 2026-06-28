@@ -30,6 +30,10 @@ class SolicitudCreate(BaseModel):
     payload_sha256: str | None = None
     # At least one signer required; the requester's identity comes from JWT (RF-FIR-11).
     firmantes: list[uuid.UUID] = Field(..., min_length=1)
+    # Security level override for non-radicado objects (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA).
+    # For objeto_tipo='radicado', the level is resolved from radicados.nivel_seguridad
+    # and this field is ignored. For other types, defaults to 1 (PUBLICA) when omitted.
+    nivel_seguridad: int | None = Field(default=None, ge=1, le=3)
 
     @field_validator("payload_sha256")
     @classmethod
@@ -60,6 +64,7 @@ class SolicitudResponse(BaseModel):
     objeto_id: str
     titulo: str | None
     estado: str
+    nivel_seguridad: int
     items: list[TurnoItem]
     created_at: datetime
 

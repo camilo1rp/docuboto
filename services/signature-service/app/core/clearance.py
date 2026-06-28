@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Gate de autorización resuelto en la BD del tenant (E06, ADR-013).
+"""Gate de autorización resuelto en la BD del tenant (E06, ADR-013, RF-SEG-08).
 
 Espejo de document-service/app/core/clearance.py adaptado para signature-service.
 
@@ -16,8 +16,9 @@ El api-gateway inyecta:
                         ``/validate`` con lazy provisioning (NO es el keycloak_sub).
   - ``X-Tenant-Slug`` → slug del tenant (get_tenant_conn fija el search_path).
 
-``require_permission`` verifica el permiso en las tablas RBAC del tenant (fail-closed).
-``get_actor``         extrae el UUID del llamante desde X-User-Id (401 si ausente/inválido).
+``require_permission``       verifica el permiso en las tablas RBAC del tenant (fail-closed).
+``get_actor``                extrae el UUID del llamante desde X-User-Id (401 si ausente/inválido).
+``resolve_caller_clearance`` resuelve el nivel de seguridad máximo del actor (1..3, fail-closed a 1).
 """
 
 from __future__ import annotations
@@ -28,6 +29,45 @@ import asyncpg
 from fastapi import Depends, HTTPException, Request, status
 
 from app.core.database import get_tenant_conn
+
+# Security level constants (mirrors document-service, security_levels table).
+PUBLICA = 1
+CLASIFICADA = 3  # maximum nivel (security_levels.code)
+
+
+async def resolve_caller_clearance(
+    conn: asyncpg.Connection, user_id: uuid.UUID | None
+) -> int:
+    """Returns the maximum security level (1..3) accessible by ``user_id``.
+
+    The connection must have ``search_path`` set to the tenant schema (guaranteed by
+    ``get_tenant_conn``).  Fail-closed to :data:`PUBLICA` on any doubt: unknown user,
+    RBAC tables absent (UndefinedTableError), or ``user_id`` is None.
+    """
+    if user_id is None:
+        return PUBLICA
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT u.is_root,
+                   (SELECT MAX(rc.max_level)
+                      FROM auth_memberships m
+                      JOIN role_clearance rc ON rc.group_id = m.group_id
+                     WHERE m.user_id = u.id) AS max_level
+            FROM auth_users u
+            WHERE u.id = $1
+            """,
+            user_id,
+        )
+    except asyncpg.UndefinedTableError:
+        # RBAC tables absent — tenant not provisioned yet.
+        return PUBLICA
+    if row is None:
+        return PUBLICA
+    if row.get("is_root"):
+        return CLASIFICADA
+    max_level = row.get("max_level")
+    return int(max_level) if max_level is not None else PUBLICA
 
 
 async def check_permission(

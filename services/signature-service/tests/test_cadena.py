@@ -42,7 +42,7 @@ FIRMA_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 NOW = datetime.now(tz=UTC)
 
 
-def _sol_row(estado: str = "pendiente") -> dict:
+def _sol_row(estado: str = "pendiente", nivel_seguridad: int = 1) -> dict:
     return {
         "id": SOL_ID,
         "objeto_tipo": "radicado",
@@ -51,6 +51,7 @@ def _sol_row(estado: str = "pendiente") -> dict:
         "payload_sha256": None,
         "estado": estado,
         "creado_por": USER,
+        "nivel_seguridad": nivel_seguridad,
         "created_at": NOW,
         "updated_at": NOW,
     }
@@ -140,12 +141,12 @@ async def test_create_request_happy_path() -> None:
     sol = _sol_row()
     turno = _turno_row()
 
-    # fetchval call order:
-    #   [check_permission(True), existe_abierta(None=False), audit.append→prev_hash(None)]
-    conn.fetchval.side_effect = [True, None, None]
+    # fetchval order: [check_permission(True), resolver_nivel_radicado(None→nivel=1),
+    #                  existe_abierta(None=False), audit.append→prev_hash(None)]
+    conn.fetchval.side_effect = [True, None, None, None]
     conn.fetchrow.side_effect = [
+        {},    # resolve_caller_clearance → PUBLICA=1 (>= nivel 1), creation gate passes
         sol,   # crear_solicitud RETURNING
-        sol,   # get_solicitud (inside get)
     ]
     conn.fetch.return_value = [turno]  # list_turnos
 
@@ -166,6 +167,7 @@ async def test_create_request_happy_path() -> None:
         body = resp.json()
         assert body["objeto_tipo"] == "radicado"
         assert body["estado"] == "pendiente"
+        assert body["nivel_seguridad"] == 1
         assert len(body["items"]) == 1
         assert body["items"][0]["firmante_id"] == str(USER)
     finally:
@@ -173,10 +175,38 @@ async def test_create_request_happy_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_request_nivel3_clearance1_returns_404() -> None:
+    """No-read-up on creation (D-15 #1): clearance-1 actor creating a chain on a
+    nivel-3 radicado gets a neutral 404 (no existence/level leak), before existe_abierta."""
+    conn = _make_conn()
+    # fetchval: [check_permission(True), resolver_nivel_radicado(3)]
+    conn.fetchval.side_effect = [True, 3]
+    conn.fetchrow.side_effect = [{}]  # resolve_caller_clearance → PUBLICA=1 < nivel 3
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "2024-DEMO-S-CLASIF",
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
 async def test_create_request_conflict_when_open_chain_exists() -> None:
     conn = _make_conn()
-    # fetchval: [check_permission(True), existe_abierta(1=True)]
-    conn.fetchval.side_effect = [True, 1]
+    # fetchval: [check_permission(True), resolver_nivel(None→1), existe_abierta(1=True)]
+    conn.fetchval.side_effect = [True, None, 1]
+    conn.fetchrow.side_effect = [{}]  # resolve_caller_clearance → PUBLICA=1 (gate passes)
 
     _override(conn)
     try:
@@ -278,7 +308,8 @@ async def test_sign_turn_wrong_turn_returns_403() -> None:
     turno_other = _turno_row(firmante_id=FIRMANTE2)
 
     conn.fetchrow.side_effect = [
-        sol,         # get_solicitud
+        sol,         # get_or_404
+        {},          # resolve_caller_clearance (_assert_can_read) → clearance=1, nivel=1 → OK
         turno_other, # turno_activo
     ]
     # fetchval: [check_permission(True), es_firmante(1=True)]
@@ -343,10 +374,13 @@ async def test_batch_sign_partial_failure() -> None:
     sid1 = uuid.uuid4()
     sid2 = uuid.uuid4()
 
-    # get_solicitud returns sol for first call, None for second (not found)
+    # get_solicitud returns sol for first call, None for second (not found).
+    # sid1: _assert_can_read fires after get_or_404 (clearance row → clearance=1 → OK).
+    # sid2: get_or_404 returns None → 404 before _assert_can_read.
     conn.fetchrow.side_effect = [
-        sol,   # get_solicitud for sid1
-        None,  # get_solicitud for sid2 → 404
+        sol,   # sid1: get_or_404
+        {},    # sid1: resolve_caller_clearance (_assert_can_read) → clearance=1, nivel=1 → OK
+        None,  # sid2: get_or_404 → 404
     ]
     # fetchval: [check_permission(True), es_firmante_sid1(None=False)]
     conn.fetchval.side_effect = [True, None]
@@ -437,11 +471,11 @@ async def test_create_request_multi_firmantes_ordered() -> None:
     turno1 = _turno_row(orden=1, firmante_id=USER)
     turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
 
-    # fetchval: [check_permission(True), existe_abierta(None=False), audit.append→prev_hash(None)]
-    conn.fetchval.side_effect = [True, None, None]
+    # fetchval order: [check_permission, resolver_nivel(None→1), existe_abierta(None), audit_prev(None)]
+    conn.fetchval.side_effect = [True, None, None, None]
     conn.fetchrow.side_effect = [
+        {},   # resolve_caller_clearance → PUBLICA=1 (gate passes)
         sol,  # crear_solicitud RETURNING
-        sol,  # get_solicitud (inside get)
     ]
     conn.fetch.return_value = [turno1, turno2]  # list_turnos
 
@@ -612,11 +646,13 @@ async def test_sign_happy_path_not_last_turn() -> None:
     conn.fetchval.side_effect = [True, 1, None]
     conn.fetchrow.side_effect = [
         sol,       # get_or_404
+        {},        # resolve_caller_clearance (firmar._assert_can_read) → clearance=1 → OK
         turno1,    # turno_activo (early, non-locking)
         turno1,    # turno_activo_for_update (inside txn, row-lock)
         firma_ins, # FirmaRepository.insert
         turno2,    # next_active → not None → solicitud stays pendiente
         sol,       # get() get_solicitud
+        {},        # resolve_caller_clearance (get()._assert_can_read) → clearance=1 → OK
     ]
     conn.fetch.return_value = [turno1, turno2]  # list_turnos
     conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
@@ -663,11 +699,13 @@ async def test_sign_last_turn_marks_solicitud_firmado() -> None:
     conn.fetchval.side_effect = [True, 1, None]
     conn.fetchrow.side_effect = [
         sol_pendiente,  # get_or_404
+        {},             # resolve_caller_clearance (firmar._assert_can_read) → clearance=1 → OK
         turno,          # turno_activo (early, non-locking)
         turno,          # turno_activo_for_update (inside txn, row-lock)
         firma_ins,      # FirmaRepository.insert
         None,           # next_active → None → triggers actualizar_estado_solicitud
         sol_firmado,    # get() get_solicitud (updated)
+        {},             # resolve_caller_clearance (get()._assert_can_read) → clearance=1 → OK
     ]
     conn.fetch.return_value = [turno_firmado]  # list_turnos
     conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
@@ -745,9 +783,11 @@ async def test_reject_happy_path_marks_solicitud_rechazado() -> None:
     conn.fetchval.side_effect = [True, 1, None]
     conn.fetchrow.side_effect = [
         sol_pendiente,   # get_or_404
+        {},              # resolve_caller_clearance (rechazar._assert_can_read) → clearance=1 → OK
         turno,           # turno_activo (early, non-locking)
         turno,           # turno_activo_for_update (inside txn, row-lock)
         sol_rechazado,   # get() get_solicitud (after rejection)
+        {},              # resolve_caller_clearance (get()._assert_can_read) → clearance=1 → OK
     ]
     conn.fetch.return_value = [turno_rechazado]  # list_turnos
     conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
@@ -790,6 +830,7 @@ async def test_reject_wrong_turn_returns_403() -> None:
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
         sol,          # get_or_404
+        {},           # resolve_caller_clearance (rechazar._assert_can_read) → clearance=1 → OK
         turno_other,  # turno_activo (firmante_id == FIRMANTE2, not USER)
     ]
 
@@ -820,7 +861,10 @@ async def test_reject_not_firmante_returns_403() -> None:
 
     # fetchval: [check_permission(True), es_firmante(None=False)]
     conn.fetchval.side_effect = [True, None]
-    conn.fetchrow.side_effect = [sol]  # get_or_404
+    conn.fetchrow.side_effect = [
+        sol,  # get_or_404
+        {},   # resolve_caller_clearance (_assert_can_read) → clearance=1, nivel=1 → OK
+    ]
 
     _override(conn)
     try:
@@ -886,18 +930,21 @@ async def test_batch_mixed_firmado_and_omitido() -> None:
     turno2_other = _turno_row(orden=1, firmante_id=FIRMANTE2)  # not USER's turn
 
     # sid1 (firmar success, last turn) fetchrow order:
-    #   get_or_404 | turno_activo(early) | turno_activo_for_update(txn) |
-    #   firma_insert | next_active=None | get() get_solicitud
+    #   get_or_404 | _assert_can_read | turno_activo(early) | turno_activo_for_update(txn) |
+    #   firma_insert | next_active=None | get() get_solicitud | get()._assert_can_read
     # sid2 (no_es_su_turno) fetchrow order:
-    #   get_or_404 | turno_activo(early) → FIRMANTE2 != USER → 403 (before txn)
+    #   get_or_404 | _assert_can_read | turno_activo(early) → FIRMANTE2 != USER → 403
     conn.fetchrow.side_effect = [
         sol1,          # sid1: get_or_404
+        {},            # sid1: resolve_caller_clearance (_assert_can_read) → clearance=1 → OK
         turno1,        # sid1: turno_activo (early)
         turno1,        # sid1: turno_activo_for_update (inside txn)
         firma_ins,     # sid1: FirmaRepository.insert
         None,          # sid1: next_active → triggers actualizar_estado
         sol1_firmado,  # sid1: get() get_solicitud
+        {},            # sid1: resolve_caller_clearance (get()._assert_can_read) → OK
         sol2,          # sid2: get_or_404
+        {},            # sid2: resolve_caller_clearance (_assert_can_read) → clearance=1 → OK
         turno2_other,  # sid2: turno_activo (early) → FIRMANTE2 != USER → 403
     ]
     # fetchval: check_permission(True) | es_firmante_sid1(1) | audit_prev_hash(None) | es_firmante_sid2(1)
@@ -968,5 +1015,179 @@ async def test_cadena_create_requires_perm_firma() -> None:
             )
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "forbidden"
+    finally:
+        _clear()
+
+
+# ===========================================================================
+# RF-SEG-08 — no-read-up por clearance (D-15)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_create_radicado_snaps_nivel_from_radicados_table() -> None:
+    """Creating a chain for objeto_tipo='radicado' snapshots nivel from radicados table.
+
+    resolver_nivel_radicado returns 3 → INSERT is called with nivel_seguridad=3.
+    """
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=3)  # mock DB returns the stored row
+
+    # fetchval order: [check_permission, resolver_nivel(3), existe_abierta(None), audit_prev(None)]
+    conn.fetchval.side_effect = [True, 3, None, None]
+    conn.fetchrow.side_effect = [
+        {"is_root": False, "max_level": 3},  # resolve_caller_clearance → 3 (>= nivel 3, gate passes)
+        sol,                                  # crear_solicitud RETURNING
+    ]
+    conn.fetch.return_value = []        # list_turnos
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "2024-DEMO-E-000001",
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 201
+        # Verify the INSERT was called with nivel_seguridad=3 (snapshotted from radicado).
+        # call_args_list[0] is resolve_caller_clearance; [1] is crear_solicitud INSERT.
+        insert_args = conn.fetchrow.call_args_list[1].args
+        assert insert_args[-1] == 3, "nivel_seguridad snapshotted from radicados"
+        assert resp.json()["nivel_seguridad"] == 3
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_get_request_nivel3_clearance1_returns_404() -> None:
+    """GET /requests/{id}: actor with clearance 1 cannot see a nivel_seguridad=3 chain.
+
+    The 404 must be indistinguishable from 'not found' (no-read-up, RF-SEG-08, D-15).
+    """
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=3)
+    # clearance row: is_root=False, max_level=1 → clearance=1; nivel=3 → 3 > 1 → 404
+    clearance_row = {"is_root": False, "max_level": 1}
+    conn.fetchrow.side_effect = [sol, clearance_row]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/signature/requests/{SOL_ID}",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_get_request_nivel3_clearance3_returns_200() -> None:
+    """GET /requests/{id}: actor with clearance 3 can read a nivel_seguridad=3 chain."""
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=3)
+    turno = _turno_row()
+    # clearance row: max_level=3 → clearance=3; nivel=3 → 3 > 3 is False → passes
+    clearance_row = {"is_root": False, "max_level": 3}
+    conn.fetchrow.side_effect = [sol, clearance_row]
+    conn.fetch.return_value = [turno]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/signature/requests/{SOL_ID}",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        assert resp.json()["nivel_seguridad"] == 3
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_pending_max_clearance_forwarded_to_repo() -> None:
+    """GET /pending: resolve_caller_clearance result flows to pendientes_de_firmante as $4.
+
+    Verifies that the bandeja query is passed max_clearance so nivel_seguridad > clearance
+    items are silently excluded from both rows and total (RF-SEG-08, D-15).
+    """
+    conn = _make_conn()
+    # resolve_caller_clearance returns clearance=2 (RESERVADA)
+    clearance_row = {"is_root": False, "max_level": 2}
+    conn.fetchrow.return_value = clearance_row
+    conn.fetch.return_value = []  # no pending items at this clearance level
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/v1/signature/pending",
+                params={"page": "1", "size": "20"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        # $4 in the fetch call is max_clearance; args: (query, firmante_id, limit, offset, max_clearance)
+        fetch_args = conn.fetch.call_args_list[0].args
+        assert fetch_args[-1] == 2, "max_clearance=2 forwarded to pendientes_de_firmante"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_sign_nivel3_clearance1_returns_404() -> None:
+    """firmar: actor with clearance 1 against nivel_seguridad=3 chain → 404, not 403/409.
+
+    The gate fires before estado and firmante checks so the existence of the chain
+    is never revealed (no-read-up, RF-SEG-08, D-15).
+    """
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=3)
+    clearance_row = {"is_root": False, "max_level": 1}
+    # get_or_404 → sol; _assert_can_read → clearance_row (nivel 3 > clearance 1 → 404)
+    conn.fetchrow.side_effect = [sol, clearance_row]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+        # es_firmante (fetchval #2) must NOT have been reached.
+        assert conn.fetchval.call_count == 1
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_reject_nivel3_clearance1_returns_404() -> None:
+    """rechazar: actor with clearance 1 against nivel_seguridad=3 chain → 404, not 403/409."""
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=3)
+    clearance_row = {"is_root": False, "max_level": 1}
+    conn.fetchrow.side_effect = [sol, clearance_row]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/reject",
+                json={"motivo": "Intentando rechazar documento clasificado"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+        # es_firmante fetchval must NOT have been reached.
+        assert conn.fetchval.call_count == 1
     finally:
         _clear()

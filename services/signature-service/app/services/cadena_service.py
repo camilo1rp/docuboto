@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 import asyncpg
 from fastapi import HTTPException, status
 
+from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.firma_repository import FirmaRepository
@@ -73,6 +74,7 @@ def _build_response(sol: asyncpg.Record, turnos: list[asyncpg.Record]) -> Solici
         objeto_id=sol["objeto_id"],
         titulo=sol.get("titulo"),
         estado=sol["estado"],
+        nivel_seguridad=sol["nivel_seguridad"],
         items=items,
         created_at=sol["created_at"],
     )
@@ -101,6 +103,26 @@ class CadenaFirmaService:
             )
         return sol
 
+    async def _assert_can_read(
+        self, sol: asyncpg.Record, actor: uuid.UUID
+    ) -> None:
+        """Raises 404 when actor's clearance is below sol's nivel_seguridad.
+
+        Uses 404 (not 403) so under-clearance actors cannot distinguish
+        "does not exist" from "exists but classified" (no-read-up, RF-SEG-08, D-15).
+        Fail-closed: any DB/table error resolves clearance to PUBLICA=1.
+        """
+        clearance = await resolve_caller_clearance(self._conn, actor)
+        if sol["nivel_seguridad"] > clearance:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "solicitud_not_found",
+                    "detail": "Signature request not found",
+                    "status": 404,
+                },
+            )
+
     # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
@@ -113,7 +135,38 @@ class CadenaFirmaService:
 
         409 if a pending chain already exists for the same object.
         Atomically inserts solicitud + turns + audit entry.
+
+        Security-level snapshot (RF-SEG-08, D-15): when objeto_tipo='radicado', the
+        nivel_seguridad is read from radicados.nivel_seguridad (authoritative source)
+        and persisted in firma_solicitud.nivel_seguridad.  For other object types the
+        caller may declare it via payload.nivel_seguridad (defaults to 1=PUBLICA).
+        This one-time snapshot avoids cross-service joins on every subsequent read.
         """
+        # Resolve nivel snapshot first (authoritative for radicado).
+        if payload.objeto_tipo == "radicado":
+            nivel: int = (
+                await self._repo.resolver_nivel_radicado(payload.objeto_id)
+                or payload.nivel_seguridad
+                or 1
+            )
+        else:
+            nivel = payload.nivel_seguridad or 1
+
+        # No-read-up on the creation path (RF-SEG-08, D-15 #1): an actor below the
+        # object's level must not learn it exists — neither via the 201 (nivel) nor
+        # via the 409 (existe_abierta). Same neutral 404 as _assert_can_read, checked
+        # before existe_abierta so the conflict path does not leak either.
+        clearance = await resolve_caller_clearance(self._conn, actor)
+        if nivel > clearance:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "solicitud_not_found",
+                    "detail": "Signature request not found",
+                    "status": 404,
+                },
+            )
+
         if await self._repo.existe_abierta(payload.objeto_tipo, payload.objeto_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -135,6 +188,7 @@ class CadenaFirmaService:
                     "titulo": payload.titulo,
                     "payload_sha256": payload.payload_sha256,
                     "creado_por": actor,
+                    "nivel_seguridad": nivel,
                 }
             )
             await self._repo.crear_turnos(sol["id"], payload.firmantes)
@@ -150,22 +204,24 @@ class CadenaFirmaService:
                     payload={
                         "solicitud_id": str(sol["id"]),
                         "firmantes": [str(f) for f in payload.firmantes],
+                        "nivel_seguridad": nivel,
                     },
                 )
 
         turnos = await self._repo.list_turnos(sol["id"])
         return _build_response(sol, turnos)
 
-    async def get(self, solicitud_id: uuid.UUID) -> SolicitudResponse:
-        """Returns the full chain: header + items. 404 if not found."""
+    async def get(self, solicitud_id: uuid.UUID, actor: uuid.UUID) -> SolicitudResponse:
+        """Returns the full chain: header + items. 404 if not found or above clearance."""
         sol = await self._get_or_404(solicitud_id)
+        await self._assert_can_read(sol, actor)
         turnos = await self._repo.list_turnos(solicitud_id)
         return _build_response(sol, turnos)
 
     async def get_por_objeto(
-        self, objeto_tipo: str, objeto_id: str
+        self, objeto_tipo: str, objeto_id: str, actor: uuid.UUID
     ) -> SolicitudResponse:
-        """Returns the latest open chain for the given object. 404 if none."""
+        """Returns the latest open chain for the given object. 404 if none or above clearance."""
         sol = await self._repo.get_solicitud_por_objeto(objeto_tipo, objeto_id)
         if sol is None:
             raise HTTPException(
@@ -176,16 +232,23 @@ class CadenaFirmaService:
                     "status": 404,
                 },
             )
+        await self._assert_can_read(sol, actor)
         turnos = await self._repo.list_turnos(sol["id"])
         return _build_response(sol, turnos)
 
     async def pendientes(
         self, firmante_id: uuid.UUID, page: int, size: int
     ) -> tuple[list[PendienteItem], int]:
-        """Returns (items, total) for the signer's inbox (active-turn filter)."""
+        """Returns (items, total) for the signer's inbox (active-turn filter).
+
+        Resolves the actor's clearance first so that the repo query can apply
+        nivel_seguridad <= max_clearance — ensuring X-Total-Count does not leak
+        the existence of above-clearance chains (no-read-up, RF-SEG-08, D-15).
+        """
+        max_clearance = await resolve_caller_clearance(self._conn, firmante_id)
         offset = (page - 1) * size
         rows, total = await self._repo.pendientes_de_firmante(
-            firmante_id, offset=offset, limit=size
+            firmante_id, offset=offset, limit=size, max_clearance=max_clearance
         )
         items = [
             PendienteItem(
@@ -220,6 +283,9 @@ class CadenaFirmaService:
         all commit in a single transaction (RF-FIR-14 atomicity).
         """
         sol = await self._get_or_404(solicitud_id)
+        # No-read-up gate: 404 before any other guard so actor cannot infer
+        # chain existence from 409/403 response codes (RF-SEG-08, D-15).
+        await self._assert_can_read(sol, actor)
 
         if sol["estado"] != "pendiente":
             raise HTTPException(
@@ -348,7 +414,7 @@ class CadenaFirmaService:
                     },
                 )
 
-        return await self.get(solicitud_id)
+        return await self.get(solicitud_id, actor)
 
     async def rechazar(
         self,
@@ -362,6 +428,8 @@ class CadenaFirmaService:
         Same guards as firmar. motivo is mandatory.
         """
         sol = await self._get_or_404(solicitud_id)
+        # No-read-up gate before any other guard (RF-SEG-08, D-15).
+        await self._assert_can_read(sol, actor)
 
         if sol["estado"] != "pendiente":
             raise HTTPException(
@@ -446,7 +514,7 @@ class CadenaFirmaService:
                     },
                 )
 
-        return await self.get(solicitud_id)
+        return await self.get(solicitud_id, actor)
 
     async def firmar_lote(
         self,
