@@ -11,6 +11,7 @@
 
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -242,3 +243,126 @@ async def test_rebuild_idempotent_when_unchanged(client_with_conn) -> None:
     body = resp.json()
     assert body["unchanged"] is True
     assert body["version"] == 3
+
+
+# ---------------------------------------------------------------------------
+# verify — firma presente: los tres estados posibles del signature-service
+# (E15 → E06 best-effort, RF-FIR-15)
+# ---------------------------------------------------------------------------
+
+
+def _indice_row_with_firma(firma_id: uuid.UUID) -> dict:
+    """Devuelve un indice_row con firma_id no nulo para los tests de verify."""
+    row = _indice_row(version=1, num=1)
+    row["firma_id"] = firma_id
+    return row
+
+
+def _item_row(rad_id: uuid.UUID, h: str) -> dict:
+    return {
+        "document_id": rad_id,
+        "orden": 1,
+        "titulo": "2024-E-001",
+        "tipologia": None,
+        "fecha_declaracion": None,
+        "fecha_archivado": NOW,
+        "valor_huella": h,
+        "funcion_resumen": "SHA-256",
+        "formato": None,
+        "tamano_bytes": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
+    """firma_id presente y signature-service confirma → firma.valida=True, valido=True."""
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    h = "d" * 64
+    indice = _indice_row_with_firma(firma_id)
+    exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
+
+    mock_conn.fetchrow.side_effect = [indice, exp]
+    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+
+    with patch("app.clients.signature_client.verify", new=AsyncMock(return_value=True)):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify",
+            headers=TENANT_HEADERS,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma"]["presente"] is True
+    assert body["firma"]["valida"] is True
+    assert body["valido"] is True
+
+
+@pytest.mark.asyncio
+async def test_verify_with_firma_service_unreachable_reports_invalida(client_with_conn) -> None:
+    """
+    firma_id presente pero signature-service inalcanzable (devuelve None):
+    firma.valida=False, valido=False.
+
+    Comportamiento preservado: no se declara conforme lo que no se pudo verificar
+    (RF-FIR-15). El comportamiento era False antes del cambio y sigue siendo False.
+    """
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    h = "e" * 64
+    indice = _indice_row_with_firma(firma_id)
+    exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
+
+    mock_conn.fetchrow.side_effect = [indice, exp]
+    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+
+    # None simula firma_client.verify cuando el servicio está inalcanzable
+    with patch("app.clients.signature_client.verify", new=AsyncMock(return_value=None)):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify",
+            headers=TENANT_HEADERS,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma"]["presente"] is True
+    assert body["firma"]["valida"] is False
+    # valido=False porque firma_presente pero !valida (no podemos declarar conforme)
+    assert body["valido"] is False
+
+
+@pytest.mark.asyncio
+async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
+    """
+    firma_id presente y signature-service devuelve False (firma adulterada):
+    firma.valida=False, valido=False.
+    """
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    h = "f" * 64
+    indice = _indice_row_with_firma(firma_id)
+    exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
+
+    mock_conn.fetchrow.side_effect = [indice, exp]
+    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+
+    with patch("app.clients.signature_client.verify", new=AsyncMock(return_value=False)):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify",
+            headers=TENANT_HEADERS,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma"]["presente"] is True
+    assert body["firma"]["valida"] is False
+    assert body["valido"] is False

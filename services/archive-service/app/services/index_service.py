@@ -52,6 +52,7 @@ class IndexService:
     def __init__(self, conn, tenant_slug: str) -> None:
         self._index = IndexRepository(conn)
         self._archive = ArchiveRepository(conn, tenant_slug)
+        self._tenant_slug = tenant_slug
 
     # -- construcción --------------------------------------------------
 
@@ -236,8 +237,22 @@ class IndexService:
                     coincide=coincide,
                 )
             )
+        # Acoplamiento firma↔índice (E15 → E06): si hay firma, se verifica contra
+        # el signature-service recomputando el HMAC sobre el XML almacenado. Es
+        # best-effort: si el servicio no responde, `valida` queda en False (no se
+        # declara conforme lo que no se pudo verificar, RF-FIR-15).
         firma_presente = row["firma_id"] is not None
-        firma = IndiceVerifyFirma(presente=firma_presente, valida=False)
+        valida_firma = False
+        if firma_presente:
+            from app.clients import signature_client
+
+            resultado = await signature_client.verify(
+                tenant_slug=self._tenant_slug,
+                firma_id=str(row["firma_id"]),
+                payload_xml=row["xml"],
+            )
+            valida_firma = bool(resultado)
+        firma = IndiceVerifyFirma(presente=firma_presente, valida=valida_firma)
         valido = all_ok and (not firma_presente or firma.valida)
         return IndiceVerifyResponse(
             version=row["version"],

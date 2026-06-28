@@ -543,6 +543,15 @@ Proveedor pluggable (`nativa` por defecto: hash+identidad; PKI XAdES/PAdES/TSA c
 - `POST /api/v1/signature/sign-xml` `{payload_xml, objeto_tipo, objeto_id?, formato?, firmante_id?}` — firma el payload y persiste la firma; devuelve `{firma_id, payload_sha256, provider, ...}`.
 - `POST /api/v1/signature/verify` `{firma_id, payload_xml}` — recomputa y devuelve `{valida}` (detecta alteración). `404` si la firma no existe.
 
+**Cadena de firma (bandeja del firmante, RF-FIR-04).** Todas exigen `PERM_FIRMA`; el firmante se deriva del JWT (nunca del cuerpo, RF-FIR-11). El turno activo es el de menor `orden` aún pendiente.
+- `POST /api/v1/signature/requests` `{objeto_tipo, objeto_id, titulo?, payload_sha256?, firmantes:[uuid,…]}` — crea la cadena (turnos `orden` 1..N). `409 cadena_existente` si el objeto ya tiene una cadena abierta.
+- `GET /api/v1/signature/requests/{id}` — estado de la cadena: cabecera + items `{orden, firmante_id, estado, firma_id, comentario, decidido_at}`.
+- `GET /api/v1/signature/requests?objeto_tipo=&objeto_id=` — cadena abierta de un objeto (`404` si no hay).
+- `GET /api/v1/signature/pending?page=&size=` — bandeja: solicitudes cuyo **turno activo** es del usuario autenticado (`X-Total-Count`).
+- `POST /api/v1/signature/requests/{id}/sign` `{payload_xml?}` — firma el turno activo (reusa el firmante nativo HMAC); avanza la cadena y, al firmar el último turno, la solicitud pasa a `firmado`. `403 no_es_su_turno`/`no_es_firmante`; `409` si la solicitud no está pendiente o si se pierde la carrera del turno (lock `FOR UPDATE`).
+- `POST /api/v1/signature/requests/{id}/reject` `{motivo}` — rechaza el turno activo y **detiene** la cadena (solicitud `rechazado`).
+- `POST /api/v1/signature/batch` `{solicitud_ids:[…]}` — firma en lote los turnos del usuario; no aborta ante un fallo individual (`{resultados:[{solicitud_id, resultado:'firmado'|'omitido', detalle?}]}`).
+
 ### Capa MCP (E18, ADR-019) — mcp-server, puerto 8009
 Servicio separado (no detrás del gateway): expone la API como *tools* a agentes/LLM, siendo él mismo cliente del gateway. **Protocolo MCP** disponible por **stdio** (`python -m app.mcp_stdio`) y **HTTP streamable** (`POST /mcp`, contexto por cabeceras `Authorization`/`X-Tenant-Slug`/`X-User-Permissions`/`X-User-Roles`). API HTTP simple del catálogo:
 - `GET /api/v1/mcp/tools` — catálogo de tools visibles para el usuario (filtra por `X-User-Permissions`; `X-User-Roles` con `ROOT` ve todas).

@@ -1,0 +1,970 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+Smoke tests — cadena de firma (E06, ADR-016).
+
+These tests exercise the HTTP layer with mocked DB connections.
+Exhaustive integration tests are delegated to the testing-engineer.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.core.database import get_tenant_conn
+from app.core.security import get_current_user
+from app.main import app
+from tests.conftest import TENANT_HEADERS, USER, VALID_CLAIMS
+
+# Fixture IDs
+SOL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+TURNO_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+FIRMANTE2 = uuid.UUID("22222222-2222-2222-2222-222222222222")
+FIRMA_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+NOW = datetime.now(tz=UTC)
+
+
+def _sol_row(estado: str = "pendiente") -> dict:
+    return {
+        "id": SOL_ID,
+        "objeto_tipo": "radicado",
+        "objeto_id": "2024-DEMO-E-000001",
+        "titulo": "Oficio de prueba",
+        "payload_sha256": None,
+        "estado": estado,
+        "creado_por": USER,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+
+
+def _turno_row(
+    orden: int = 1,
+    firmante_id: uuid.UUID = USER,
+    estado: str = "pendiente",
+    firma_id: uuid.UUID | None = None,
+) -> dict:
+    return {
+        "id": TURNO_ID,
+        "solicitud_id": SOL_ID,
+        "orden": orden,
+        "firmante_id": firmante_id,
+        "estado": estado,
+        "firma_id": firma_id,
+        "comentario": None,
+        "decidido_at": None,
+    }
+
+
+def _exec_sig(query, *args, **kwargs):
+    """side_effect robusto para conn.execute.
+
+    Devuelve el command tag 'UPDATE 1' solo para el UPDATE de firma_cadena
+    (que marcar_turno parsea), y None para el resto de execute (advisory lock
+    de audit.append, INSERT de audit_log, UPDATE de firma_solicitud). Inmune al
+    número exacto de execute internos de audit.append.
+    """
+    if "UPDATE firma_cadena" in query:
+        return "UPDATE 1"
+    return None
+
+
+def _firma_row() -> dict:
+    return {
+        "id": FIRMA_ID,
+        "objeto_tipo": "radicado",
+        "objeto_id": "2024-DEMO-E-000001",
+        "formato_solicitado": None,
+        "firmante_id": USER,
+        "payload_sha256": "a" * 64,
+        "firma_blob": "b" * 64,
+        "provider": "nativa",
+        "sello_tiempo": NOW,
+        "created_at": NOW,
+    }
+
+
+def _make_conn() -> AsyncMock:
+    conn = AsyncMock()
+    conn.execute.return_value = None
+    conn.fetchrow.return_value = None
+    conn.fetchval.return_value = None
+    conn.fetch.return_value = []
+    tx = AsyncMock()
+    tx.__aenter__ = AsyncMock(return_value=tx)
+    tx.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=tx)
+    return conn
+
+
+def _override(conn: AsyncMock) -> None:
+    async def _conn_dep():
+        yield conn
+
+    async def _auth_dep() -> dict:
+        return VALID_CLAIMS
+
+    app.dependency_overrides[get_tenant_conn] = _conn_dep
+    app.dependency_overrides[get_current_user] = _auth_dep
+
+
+def _clear() -> None:
+    app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /requests — create chain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_request_happy_path() -> None:
+    conn = _make_conn()
+    sol = _sol_row()
+    turno = _turno_row()
+
+    # fetchrow calls order: existe_abierta (fetchval) → None (not exists),
+    # crear_solicitud → sol, get_solicitud (in get) → sol.
+    conn.fetchval.return_value = None  # existe_abierta → False
+    conn.fetchrow.side_effect = [
+        sol,   # crear_solicitud RETURNING
+        sol,   # get_solicitud (inside get)
+    ]
+    conn.fetch.return_value = [turno]  # list_turnos
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "2024-DEMO-E-000001",
+                    "titulo": "Oficio de prueba",
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["objeto_tipo"] == "radicado"
+        assert body["estado"] == "pendiente"
+        assert len(body["items"]) == 1
+        assert body["items"][0]["firmante_id"] == str(USER)
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_create_request_conflict_when_open_chain_exists() -> None:
+    conn = _make_conn()
+    conn.fetchval.return_value = 1  # existe_abierta → True
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "2024-DEMO-E-000001",
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "cadena_existente"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /requests/{id} — get by id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_request_not_found() -> None:
+    conn = _make_conn()
+    conn.fetchrow.return_value = None  # get_solicitud → 404
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/signature/requests/{SOL_ID}",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /pending — inbox
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_pending_empty() -> None:
+    conn = _make_conn()
+    conn.fetch.return_value = []  # no pending items
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/v1/signature/pending", headers=TENANT_HEADERS)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["items"] == []
+        assert body["total"] == 0
+        assert body["page"] == 1
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /requests/{id}/sign — firmar
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sign_turn_not_member_returns_403() -> None:
+    conn = _make_conn()
+    sol = _sol_row()
+    conn.fetchrow.return_value = sol   # get_solicitud
+    conn.fetchval.return_value = None  # es_firmante → False (not in chain)
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "no_es_firmante"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_sign_turn_wrong_turn_returns_403() -> None:
+    conn = _make_conn()
+    sol = _sol_row()
+    # turno with a different firmante_id (actor USER is in chain but not their turn)
+    turno_other = _turno_row(firmante_id=FIRMANTE2)
+
+    conn.fetchrow.side_effect = [
+        sol,         # get_solicitud
+        turno_other, # turno_activo
+    ]
+    conn.fetchval.return_value = 1  # es_firmante → True
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "no_es_su_turno"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /requests/{id}/reject — rechazar
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_solicitud_already_closed_returns_409() -> None:
+    conn = _make_conn()
+    sol_firmado = _sol_row(estado="firmado")
+    conn.fetchrow.return_value = sol_firmado
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/reject",
+                json={"motivo": "Documento incorrecto"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "solicitud_no_pendiente"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /batch — firmar_lote
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batch_sign_partial_failure() -> None:
+    """Batch continues even if one item fails; omitted items report the error."""
+    conn = _make_conn()
+    sol = _sol_row()
+
+    # First solicitud: actor is not in chain → 403 no_es_firmante
+    # Second solicitud: same (simulate not found → 404)
+    sid1 = uuid.uuid4()
+    sid2 = uuid.uuid4()
+
+    # get_solicitud returns sol for first call, None for second (not found)
+    conn.fetchrow.side_effect = [
+        sol,   # get_solicitud for sid1
+        None,  # get_solicitud for sid2 → 404
+    ]
+    conn.fetchval.return_value = None  # es_firmante → False
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/batch",
+                json={"solicitud_ids": [str(sid1), str(sid2)]},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        results = resp.json()["resultados"]
+        assert len(results) == 2
+        assert all(r["resultado"] == "omitido" for r in results)
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# Schema validation — SolicitudCreate
+# ---------------------------------------------------------------------------
+
+
+def test_solicitud_create_rejects_invalid_sha256() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.cadena import SolicitudCreate
+
+    with pytest.raises(ValidationError):
+        SolicitudCreate(
+            objeto_tipo="radicado",
+            objeto_id="x",
+            payload_sha256="NOTHEXA",  # not 64 hex chars
+            firmantes=[USER],
+        )
+
+
+def test_solicitud_create_accepts_valid_sha256() -> None:
+    from app.schemas.cadena import SolicitudCreate
+
+    s = SolicitudCreate(
+        objeto_tipo="radicado",
+        objeto_id="x",
+        payload_sha256="a" * 64,
+        firmantes=[USER],
+    )
+    assert s.payload_sha256 == "a" * 64
+
+
+def test_solicitud_create_rejects_empty_firmantes() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.cadena import SolicitudCreate
+
+    with pytest.raises(ValidationError):
+        SolicitudCreate(objeto_tipo="radicado", objeto_id="x", firmantes=[])
+
+
+# ===========================================================================
+# EXTENDED COVERAGE — testing-engineer (E06, RF-FIR-04/11/12/14)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Schema — FirmarRequest body cannot inject firmante_id (RF-FIR-11)
+# ---------------------------------------------------------------------------
+
+
+def test_firmar_request_schema_ignores_firmante_id() -> None:
+    """FirmarRequest has no firmante_id field — body cannot inject actor (RF-FIR-11)."""
+    from app.schemas.cadena import FirmarRequest
+
+    req = FirmarRequest(payload_xml="<x/>", firmante_id=str(uuid.uuid4()))  # type: ignore[call-arg]
+    assert not hasattr(req, "firmante_id")
+
+
+# ---------------------------------------------------------------------------
+# POST /requests — multi-firmante ordering (orden 1..N)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_request_multi_firmantes_ordered() -> None:
+    """Items appear in the same order firmantes were supplied (orden 1..N)."""
+    conn = _make_conn()
+    sol = _sol_row()
+    turno1 = _turno_row(orden=1, firmante_id=USER)
+    turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
+
+    conn.fetchval.return_value = None  # existe_abierta → False
+    conn.fetchrow.side_effect = [
+        sol,  # crear_solicitud RETURNING
+        sol,  # get_solicitud (inside get)
+    ]
+    conn.fetch.return_value = [turno1, turno2]  # list_turnos
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "2024-DEMO-E-000001",
+                    "firmantes": [str(USER), str(FIRMANTE2)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 201
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 2
+        assert items[0]["orden"] == 1
+        assert items[0]["firmante_id"] == str(USER)
+        assert items[1]["orden"] == 2
+        assert items[1]["firmante_id"] == str(FIRMANTE2)
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /requests/{id} — happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_request_by_id_happy_path() -> None:
+    """GET /requests/{id} returns full chain: header + items."""
+    conn = _make_conn()
+    sol = _sol_row()
+    turno = _turno_row()
+
+    conn.fetchrow.return_value = sol
+    conn.fetch.return_value = [turno]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/v1/signature/requests/{SOL_ID}",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["solicitud_id"] == str(SOL_ID)
+        assert body["estado"] == "pendiente"
+        assert len(body["items"]) == 1
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /requests?objeto_tipo=&objeto_id= — by object (open chain)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_request_by_object_returns_open_chain() -> None:
+    """GET /requests?objeto_tipo=&objeto_id= returns the open chain for an object."""
+    conn = _make_conn()
+    sol = _sol_row()
+    turno = _turno_row()
+
+    conn.fetchrow.return_value = sol
+    conn.fetch.return_value = [turno]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/v1/signature/requests",
+                params={"objeto_tipo": "radicado", "objeto_id": "2024-DEMO-E-000001"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["objeto_tipo"] == "radicado"
+        assert body["estado"] == "pendiente"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_get_request_by_object_not_found() -> None:
+    """GET /requests?… → 404 cadena_not_found when no open chain exists."""
+    conn = _make_conn()
+    conn.fetchrow.return_value = None
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/v1/signature/requests",
+                params={"objeto_tipo": "radicado", "objeto_id": "DOES-NOT-EXIST"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "cadena_not_found"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /pending — inbox: items present + X-Total-Count header
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_pending_with_items_and_x_total_count() -> None:
+    """Inbox returns PendienteItem rows and sets X-Total-Count from total_count column."""
+    conn = _make_conn()
+    pending_row = {
+        "solicitud_id": SOL_ID,
+        "objeto_tipo": "radicado",
+        "objeto_id": "2024-DEMO-E-000001",
+        "titulo": "Oficio de prueba",
+        "orden": 1,
+        "created_at": NOW,
+        "total_count": 3,
+    }
+    conn.fetch.return_value = [pending_row]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/v1/signature/pending",
+                params={"page": "1", "size": "20"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 3
+        assert body["page"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["solicitud_id"] == str(SOL_ID)
+        assert resp.headers["x-total-count"] == "3"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /sign — happy path (intermediate turn, solicitud stays pendiente)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sign_happy_path_not_last_turn() -> None:
+    """
+    Signing an intermediate turn updates that turn to 'firmado' but the solicitud
+    remains 'pendiente' because there is a next pending turn.
+    """
+    conn = _make_conn()
+    sol = _sol_row()
+    turno1 = _turno_row(orden=1, firmante_id=USER)
+    turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
+    firma_ins = _firma_row()
+
+    # firmar call sequence (after TOCTOU fix):
+    # fetchrow: get_or_404 | turno_activo(early) | turno_activo_for_update(txn) |
+    #           firma_insert | next_active(not None) | get() get_solicitud
+    # fetchval: es_firmante, then audit.append→prev_hash
+    # execute:  marcar_turno("UPDATE 1"), audit INSERT(None)
+    conn.fetchval.side_effect = [1, None]
+    conn.fetchrow.side_effect = [
+        sol,       # get_or_404
+        turno1,    # turno_activo (early, non-locking)
+        turno1,    # turno_activo_for_update (inside txn, row-lock)
+        firma_ins, # FirmaRepository.insert
+        turno2,    # next_active → not None → solicitud stays pendiente
+        sol,       # get() get_solicitud
+    ]
+    conn.fetch.return_value = [turno1, turno2]  # list_turnos
+    conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["estado"] == "pendiente"  # chain still open
+        # actualizar_estado_solicitud (UPDATE firma_solicitud) must NOT have been called
+        firma_sol_updates = [
+            c for c in conn.execute.call_args_list
+            if "firma_solicitud" in str(c.args[0])
+        ]
+        assert len(firma_sol_updates) == 0
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /sign — last turn marks solicitud 'firmado' (RF-FIR-14 atomicity)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sign_last_turn_marks_solicitud_firmado() -> None:
+    """
+    When the final signer acts, solicitud.estado advances to 'firmado'.
+    Verifies that actualizar_estado_solicitud is called (execute count == 2).
+    """
+    conn = _make_conn()
+    sol_pendiente = _sol_row(estado="pendiente")
+    sol_firmado = _sol_row(estado="firmado")
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+    turno_firmado = _turno_row(orden=1, firmante_id=USER, estado="firmado", firma_id=FIRMA_ID)
+    firma_ins = _firma_row()
+
+    # fetchval: es_firmante(=1), then audit.append→prev_hash(=None)
+    # execute:  marcar_turno("UPDATE 1"), actualizar_estado(None), audit INSERT(None)
+    conn.fetchval.side_effect = [1, None]
+    conn.fetchrow.side_effect = [
+        sol_pendiente,  # get_or_404
+        turno,          # turno_activo (early, non-locking)
+        turno,          # turno_activo_for_update (inside txn, row-lock)
+        firma_ins,      # FirmaRepository.insert
+        None,           # next_active → None → triggers actualizar_estado_solicitud
+        sol_firmado,    # get() get_solicitud (updated)
+    ]
+    conn.fetch.return_value = [turno_firmado]  # list_turnos
+    conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["estado"] == "firmado"
+        # actualizar_estado_solicitud (UPDATE firma_solicitud SET estado … 'firmado') must be called
+        firma_sol_updates = [
+            c for c in conn.execute.call_args_list
+            if "firma_solicitud" in str(c.args[0])
+        ]
+        assert len(firma_sol_updates) == 1
+        assert firma_sol_updates[0].args[2] == "firmado"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /sign — solicitud not pending → 409 (estado guard before es_firmante)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sign_solicitud_already_closed_returns_409() -> None:
+    """
+    Attempt to sign a solicitud that is already 'firmado' → 409.
+    Estado guard fires before es_firmante (fetchval must NOT be called).
+    """
+    conn = _make_conn()
+    sol_firmado = _sol_row(estado="firmado")
+    conn.fetchrow.return_value = sol_firmado
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "solicitud_no_pendiente"
+        # es_firmante must NOT have been reached
+        assert conn.fetchval.call_count == 0
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /reject — happy path marks solicitud 'rechazado' (chain stopped)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_happy_path_marks_solicitud_rechazado() -> None:
+    """
+    Reject active turn → both turno and solicitud move to 'rechazado'.
+    Verifies execute is called twice (marcar_turno + actualizar_estado_solicitud).
+    """
+    conn = _make_conn()
+    sol_pendiente = _sol_row(estado="pendiente")
+    sol_rechazado = _sol_row(estado="rechazado")
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+    turno_rechazado = _turno_row(orden=1, firmante_id=USER, estado="rechazado")
+
+    # fetchval: es_firmante(=1), then audit.append→prev_hash(=None)
+    # execute:  marcar_turno("UPDATE 1"), actualizar_estado(None), audit INSERT(None)
+    conn.fetchval.side_effect = [1, None]
+    conn.fetchrow.side_effect = [
+        sol_pendiente,   # get_or_404
+        turno,           # turno_activo (early, non-locking)
+        turno,           # turno_activo_for_update (inside txn, row-lock)
+        sol_rechazado,   # get() get_solicitud (after rejection)
+    ]
+    conn.fetch.return_value = [turno_rechazado]  # list_turnos
+    conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/reject",
+                json={"motivo": "Documento incorrecto — requiere corrección"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["estado"] == "rechazado"
+        # actualizar_estado_solicitud (UPDATE firma_solicitud) must be called with 'rechazado'
+        firma_sol_updates = [
+            c for c in conn.execute.call_args_list
+            if "firma_solicitud" in str(c.args[0])
+        ]
+        assert len(firma_sol_updates) == 1
+        assert firma_sol_updates[0].args[2] == "rechazado"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /reject — wrong turn → 403 no_es_su_turno
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_wrong_turn_returns_403() -> None:
+    """Actor is in the chain but active turn belongs to another signer → 403."""
+    conn = _make_conn()
+    sol = _sol_row()
+    turno_other = _turno_row(orden=1, firmante_id=FIRMANTE2)
+
+    conn.fetchval.side_effect = [1]  # es_firmante → True (actor IS in chain)
+    conn.fetchrow.side_effect = [
+        sol,          # get_or_404
+        turno_other,  # turno_activo (firmante_id == FIRMANTE2, not USER)
+    ]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/reject",
+                json={"motivo": "Rechazar por error"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "no_es_su_turno"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /reject — not in chain → 403 no_es_firmante
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_not_firmante_returns_403() -> None:
+    """Actor not in the chain at all → 403 no_es_firmante (before turn check)."""
+    conn = _make_conn()
+    sol = _sol_row()
+
+    conn.fetchval.side_effect = [None]  # es_firmante → False
+    conn.fetchrow.side_effect = [sol]  # get_or_404
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/reject",
+                json={"motivo": "Rechazar"},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "no_es_firmante"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /reject — empty motivo → 422 (Pydantic min_length=1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_empty_motivo_returns_422() -> None:
+    """motivo is mandatory with min_length=1 — empty string fails Pydantic validation."""
+    conn = _make_conn()
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/reject",
+                json={"motivo": ""},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 422
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /batch — mixed result: one firmado + one omitido (no abort on failure)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batch_mixed_firmado_and_omitido() -> None:
+    """
+    Batch signs first item (succeeds) and skips second (wrong turn).
+    The batch must NOT abort: both results are returned, in order.
+    """
+    conn = _make_conn()
+
+    sid1 = uuid.uuid4()
+    sid2 = uuid.uuid4()
+
+    sol1 = _sol_row(estado="pendiente")
+    sol1_firmado = _sol_row(estado="firmado")
+    turno1 = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+    turno1_firmado = _turno_row(
+        orden=1, firmante_id=USER, estado="firmado", firma_id=FIRMA_ID
+    )
+    firma_ins = _firma_row()
+
+    sol2 = _sol_row(estado="pendiente")
+    turno2_other = _turno_row(orden=1, firmante_id=FIRMANTE2)  # not USER's turn
+
+    # sid1 (firmar success, last turn) fetchrow order:
+    #   get_or_404 | turno_activo(early) | turno_activo_for_update(txn) |
+    #   firma_insert | next_active=None | get() get_solicitud
+    # sid2 (no_es_su_turno) fetchrow order:
+    #   get_or_404 | turno_activo(early) → FIRMANTE2 != USER → 403 (before txn)
+    conn.fetchrow.side_effect = [
+        sol1,          # sid1: get_or_404
+        turno1,        # sid1: turno_activo (early)
+        turno1,        # sid1: turno_activo_for_update (inside txn)
+        firma_ins,     # sid1: FirmaRepository.insert
+        None,          # sid1: next_active → triggers actualizar_estado
+        sol1_firmado,  # sid1: get() get_solicitud
+        sol2,          # sid2: get_or_404
+        turno2_other,  # sid2: turno_activo (early) → FIRMANTE2 != USER → 403
+    ]
+    # fetchval: sid1 es_firmante(1) + audit_prev_hash(None); sid2 es_firmante(1)
+    conn.fetchval.side_effect = [1, None, 1]
+    conn.fetch.side_effect = [[turno1_firmado]]  # sid1: list_turnos (sid2 aborts before fetch)
+    conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/batch",
+                json={"solicitud_ids": [str(sid1), str(sid2)]},
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 200
+        resultados = resp.json()["resultados"]
+        assert len(resultados) == 2
+        assert resultados[0]["resultado"] == "firmado"
+        assert resultados[1]["resultado"] == "omitido"
+        assert resultados[1]["detalle"] == "no_es_su_turno"
+    finally:
+        _clear()
+
+
+# ---------------------------------------------------------------------------
+# Authorization — 401 without token, 403 without PERM_FIRMA (RF-FIR-12)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cadena_create_requires_auth() -> None:
+    """POST /requests without Authorization header → 401 (real get_current_user)."""
+    # No dependency overrides — real get_current_user raises 401.
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post(
+            "/api/v1/signature/requests",
+            json={
+                "objeto_tipo": "radicado",
+                "objeto_id": "2024-DEMO-E-000001",
+                "firmantes": [str(USER)],
+            },
+            headers=TENANT_HEADERS,  # no Authorization header
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_cadena_create_requires_perm_firma() -> None:
+    """Valid token but PERM_FIRMA absent → 403 forbidden (RF-FIR-12)."""
+    from fastapi import HTTPException
+    from fastapi import status as fstatus
+
+    conn = _make_conn()
+
+    async def _conn_dep():
+        yield conn
+
+    async def _no_perm() -> dict:
+        raise HTTPException(
+            status_code=fstatus.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": "PERM_FIRMA permission is required to sign documents",
+                "status": 403,
+            },
+        )
+
+    app.dependency_overrides[get_tenant_conn] = _conn_dep
+    app.dependency_overrides[get_current_user] = _no_perm
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "x",
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "forbidden"
+    finally:
+        app.dependency_overrides.clear()

@@ -52,3 +52,30 @@ async def sign_xml(
     except httpx.RequestError as exc:
         logger.warning("signature-service inalcanzable al firmar índice: %s", exc)
     return None
+
+
+async def verify(
+    *,
+    tenant_slug: str,
+    firma_id: str,
+    payload_xml: str,
+) -> bool | None:
+    """Verifica una firma del índice contra el signature-service (E15 → E06).
+
+    Best-effort: devuelve ``True``/``False`` según el veredicto del servicio, o
+    ``None`` si el signature-service no está disponible (el llamador decide el
+    grado de confianza a reportar). Recomputa el HMAC del payload (RF-FIR-12).
+    """
+    body = {"firma_id": firma_id, "payload_xml": payload_xml}
+    headers = {"X-Tenant-Slug": tenant_slug}
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.signature_service_url, timeout=5.0
+        ) as client:
+            resp = await client.post("/api/v1/signature/verify", json=body, headers=headers)
+            if resp.status_code == 200:
+                return bool(resp.json().get("valida"))
+            logger.warning("signature-service → HTTP %s al verificar índice", resp.status_code)
+    except httpx.RequestError as exc:
+        logger.warning("signature-service inalcanzable al verificar índice: %s", exc)
+    return None

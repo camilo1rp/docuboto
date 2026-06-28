@@ -191,9 +191,21 @@ async def get_current_user(
             },
         )
 
-    # Tenant binding: a token issued for tenant A must not operate on tenant B.
+    # Tenant binding (fail-closed): a token issued for tenant A must not operate
+    # on tenant B, and a token without a tenant_slug claim must not act on any
+    # tenant schema. This service validates the JWT itself, so it enforces the
+    # binding strictly instead of tolerating a missing claim/header.
     token_tenant = claims.get("tenant_slug")
-    if token_tenant and x_tenant_slug and token_tenant != x_tenant_slug:
+    if not token_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": "Token carries no tenant_slug claim; cannot sign on any tenant",
+                "status": 403,
+            },
+        )
+    if x_tenant_slug and token_tenant != x_tenant_slug:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.routers.cadena import router as cadena_router
 from app.routers.health import router as health_router
 from app.routers.signature import router as signature_router
 
@@ -49,4 +50,5 @@ app = FastAPI(
 )
 
 app.include_router(signature_router)
+app.include_router(cadena_router)
 app.include_router(health_router)

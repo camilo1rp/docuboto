@@ -8,6 +8,10 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ## [Unreleased]
 
+### Añadido
+
+- `feat(signature)`: **E06 — cadena de firma (bandeja del firmante)**. Desbloquea T-12d-firma (RF-UI-17). Nuevo modelo `firma_solicitud` (cabecera por objeto, una cadena abierta por objeto) + `firma_cadena` (turnos `orden` 1..N, estado `pendiente|firmado|rechazado`), migración tenant `003_firma_cadena.sql` idempotente sin claves privadas. 7 endpoints `/api/v1/signature` (`POST /requests`, `GET /requests/{id}`, `GET /requests?objeto_tipo=&objeto_id=`, `GET /pending`, `POST /requests/{id}/sign`, `POST /requests/{id}/reject`, `POST /batch`), todos `PERM_FIRMA` con firmante del JWT (RF-FIR-11). Turno respetado (N+1 solo tras N, RF-FIR-04) con `SELECT … FOR UPDATE` + guard de estado en `marcar_turno` (cierra TOCTOU de doble firma); rechazo detiene la cadena; el último turno cierra la solicitud. Reusa el firmante nativo HMAC; cada acto se audita atómicamente (RF-FIR-12) con flag `huella_de_contenido`. Acoplamiento E15: `index_service.verify` de archive valida la firma del índice contra el signature-service (reemplaza `valida=False`, best-effort). Tenant binding del signature-service endurecido a fail-closed. Auditado por `tenant-security-auditor` y `archival-compliance-auditor` (**APTO sin bloqueantes**); PKI/XAdES/TSA/2FA/`nivel_conformidad` diferidos a F4.
+
 ### Corregido
 
 - `fix(auth)`: **D-07 — espejo RBAC de la UI roto** — `GET /auth/me` devolvía `UserInfoResponse` sin `permissions`; el frontend hacía `me.permissions ?? []` → siempre vacío → toda la UI de control por rol desactivada. `UserInfoResponse` incluye ahora `permissions: list[str]` resuelto desde la BD del tenant via `RBACService.resolve_effective_permissions` (mismo que `GET /users/{id}/permissions`). Root incluye `USUA_PERM_ROOT`. Fail-closed: `[]` sin `X-Tenant-Slug` o sin aprovisionamiento. 4 nuevos tests verdes.
