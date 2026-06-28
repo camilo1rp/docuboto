@@ -54,6 +54,33 @@ class RBACRepository:
             sub,
         )
 
+    async def upsert_user_by_keycloak_sub(
+        self,
+        *,
+        keycloak_sub: str,
+        username: str,
+        email: str,
+    ) -> asyncpg.Record:
+        """Lazy-provision a user row from Keycloak claims.
+
+        Uses ON CONFLICT (keycloak_sub) to handle concurrent first-login races
+        without a separate SELECT step. Never flips is_root — admin must set it
+        manually. Returns the full row including the internal id.
+        """
+        return await self._conn.fetchrow(
+            """
+            INSERT INTO auth_users (username, email, keycloak_sub, is_root)
+            VALUES ($1, $2, $3, false)
+            ON CONFLICT (keycloak_sub) DO UPDATE
+                SET username = EXCLUDED.username,
+                    email    = EXCLUDED.email
+            RETURNING id, username, email, keycloak_sub, is_root, is_active
+            """,
+            (username.upper() if username else "UNKNOWN"),
+            (email or None),
+            keycloak_sub,
+        )
+
     async def list_users(self, *, limit: int, offset: int) -> tuple[list[asyncpg.Record], int]:
         rows = await self._conn.fetch(
             "SELECT id, username, email, keycloak_sub, is_root, is_active "

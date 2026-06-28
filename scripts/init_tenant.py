@@ -27,16 +27,22 @@ import asyncpg
 
 BASE = Path(__file__).parent.parent
 
+# Each entry points to the service root; _sql_files() appends the sub-dir.
+# Migrations live in migrations/global/*.sql  (schema public)
+#                  and migrations/tenant/*.sql  (schema tenant_{slug}).
 GLOBAL_MIGRATIONS = [
-    BASE / "services" / "auth-service"   / "migrations",
-    BASE / "services" / "tenant-service" / "migrations",
+    BASE / "services" / "auth-service"   / "migrations" / "global",
+    BASE / "services" / "tenant-service" / "migrations" / "global",
 ]
 
 TENANT_MIGRATIONS = [
-    BASE / "services" / "document-service" / "migrations",
-    BASE / "services" / "storage-service"  / "migrations",
-    BASE / "services" / "workflow-service" / "migrations",
-    BASE / "services" / "archive-service"  / "migrations",
+    BASE / "services" / "auth-service"    / "migrations" / "tenant",
+    BASE / "services" / "document-service"  / "migrations" / "tenant",
+    BASE / "services" / "storage-service"   / "migrations" / "tenant",
+    BASE / "services" / "workflow-service"  / "migrations" / "tenant",
+    BASE / "services" / "archive-service"   / "migrations" / "tenant",
+    BASE / "services" / "signature-service" / "migrations" / "tenant",
+    BASE / "services" / "notification-service" / "migrations" / "tenant",
 ]
 
 
@@ -45,6 +51,13 @@ def _dsn(raw: str) -> str:
 
 
 def _sql_files(directory: Path) -> list[Path]:
+    """Return sorted, numerically-prefixed .sql files in *directory*.
+
+    Returns an empty list when the directory does not exist so that services
+    without a given sub-dir (e.g. no global migrations) are silently skipped.
+    """
+    if not directory.is_dir():
+        return []
     return sorted(
         f for f in directory.glob("*.sql")
         if re.match(r"^\d+_", f.name)

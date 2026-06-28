@@ -133,46 +133,48 @@ async def test_sign_xml_body_firmante_id_ignored() -> None:
 
 @pytest.mark.asyncio
 async def test_sign_xml_requires_auth() -> None:
-    """POST /sign-xml without Authorization header returns 401 (RF-FIR-11)."""
-    # No dependency override — real get_current_user sees no credentials.
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.post(
-            "/api/v1/signature/sign-xml",
-            json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
-            headers=TENANT_HEADERS,  # no Authorization header
-        )
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_sign_xml_requires_perm_firma() -> None:
-    """POST /sign-xml with valid token but no PERM_FIRMA returns 403 (RF-FIR-11).
-
-    We override get_current_user to raise the same 403 it raises when the
-    subject's roles don't include PERM_FIRMA, validating that the router
-    propagates the dependency exception correctly.
-    """
+    """POST /sign-xml without X-User-Id header returns 401 (require_permission gate, RF-FIR-11)."""
     conn = AsyncMock()
+    conn.fetchval.return_value = True
     conn.transaction = MagicMock(return_value=AsyncMock())
 
     async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
         yield conn
 
-    async def _no_perm() -> dict:
-        # Mirrors the HTTPException raised by get_current_user when PERM_FIRMA is absent.
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error": "forbidden", "detail": "PERM_FIRMA permission is required to sign documents", "status": 403},
-        )
-
     app.dependency_overrides[get_tenant_conn] = _conn_dep
-    app.dependency_overrides[get_current_user] = _no_perm
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
                 "/api/v1/signature/sign-xml",
                 json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
-                headers=TENANT_HEADERS,
+                headers={"X-Tenant-Slug": "demo"},  # X-User-Id intentionally omitted
+            )
+        assert resp.status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_sign_xml_requires_perm_firma() -> None:
+    """Valid X-User-Id but PERM_FIRMA denied in DB → 403 forbidden (RF-FIR-11 / ADR-013).
+
+    check_permission returns False (fetchval=None → user not found / no perm).
+    require_permission raises 403. The router must propagate it.
+    """
+    conn = AsyncMock()
+    conn.fetchval.return_value = None  # check_permission → denied
+    conn.transaction = MagicMock(return_value=AsyncMock())
+
+    async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    app.dependency_overrides[get_tenant_conn] = _conn_dep
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/sign-xml",
+                json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
+                headers=TENANT_HEADERS,  # includes X-User-Id
             )
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "forbidden"

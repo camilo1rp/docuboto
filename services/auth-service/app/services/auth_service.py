@@ -22,13 +22,19 @@ use its credentials to perform the password grant on behalf of the caller.
 """
 
 import logging
+import re
 
+import asyncpg
 import httpx
 from jwt import PyJWTError
 
 from app.core.config import settings
 from app.core.security import validate_token
+from app.repositories.rbac_repository import RBACRepository
 from app.schemas.auth import TokenResponse, UserInfoResponse, ValidateResponse
+
+# Tenant slug regex (same rules enforced by tenant-service).
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,98}$")
 
 logger = logging.getLogger(__name__)
 
@@ -134,14 +140,84 @@ class AuthService:
     # Token validation (used by api-gateway)
     # ------------------------------------------------------------------
 
-    async def validate(self, token: str) -> ValidateResponse:
+    async def validate(
+        self,
+        token: str,
+        conn: asyncpg.Connection | None = None,
+    ) -> ValidateResponse:
+        """Validate JWT and resolve the caller's internal auth_users.id.
+
+        When ``conn`` is provided and the token carries a ``tenant_slug`` claim,
+        the method switches the connection's ``search_path`` to the tenant schema,
+        looks up (or lazy-provisions) the ``auth_users`` row by ``keycloak_sub``,
+        and returns the internal UUID as ``user_id``.
+
+        Fallback to the raw Keycloak ``sub`` when:
+        - no ``tenant_slug`` in the token (e.g. superadmin without a tenant), or
+        - the tenant schema is not yet provisioned (``UndefinedTableError``), or
+        - any other DB error (fail-open: superadmin path is unblocked).
+        """
         try:
             claims = await validate_token(token)
+
+            keycloak_sub: str = claims["user_id"]          # raw Keycloak sub
+            username: str = claims.get("username", "")
+            email: str = claims.get("email", "")
+            tenant_slug: str | None = claims.get("tenant_slug")
+
+            # Resolve internal auth_users.id (tenant-aware, lazy provisioning).
+            user_id: str = keycloak_sub                    # default: fall back to sub
+            if tenant_slug and conn is not None and _SLUG_RE.match(tenant_slug):
+                schema = f"tenant_{tenant_slug.replace('-', '_')}"
+                try:
+                    await conn.execute(f'SET search_path = "{schema}", public')
+                    repo = RBACRepository(conn)
+                    user = await repo.get_user_by_keycloak_sub(keycloak_sub)
+                    if user is None:
+                        user = await repo.upsert_user_by_keycloak_sub(
+                            keycloak_sub=keycloak_sub,
+                            username=username,
+                            email=email,
+                        )
+                    if user is not None:
+                        user_id = str(user["id"])
+                except (asyncpg.UndefinedTableError, asyncpg.UndefinedSchemaError):
+                    # Tenant schema not provisioned yet (RBAC tables absent).
+                    # Fail-closed downstream: the raw sub matches no auth_users.id.
+                    logger.warning(
+                        "validate: tenant '%s' not provisioned (RBAC tables absent); "
+                        "falling back to keycloak_sub for user_id",
+                        tenant_slug,
+                    )
+                except asyncpg.UniqueViolationError:
+                    # Lazy provisioning hit a unique constraint other than keycloak_sub
+                    # (typically a username collision with a pre-existing local user).
+                    # Surfaced explicitly: otherwise the user is silently locked out.
+                    logger.warning(
+                        "validate: lazy provisioning conflict for sub=%s in tenant '%s' "
+                        "(likely username collision); falling back to keycloak_sub",
+                        keycloak_sub,
+                        tenant_slug,
+                    )
+                except Exception:
+                    # Unexpected error — keep auth available (fail-closed downstream)
+                    # but make it visible instead of masking it at debug level.
+                    logger.exception(
+                        "validate: unexpected error resolving internal user_id "
+                        "for tenant '%s'; falling back to keycloak_sub",
+                        tenant_slug,
+                    )
+                finally:
+                    try:
+                        await conn.execute("SET search_path = public")
+                    except Exception:
+                        pass
+
             return ValidateResponse(
                 valid=True,
-                user_id=claims["user_id"],
-                username=claims["username"],
-                tenant_slug=claims.get("tenant_slug"),
+                user_id=user_id,
+                username=username,
+                tenant_slug=tenant_slug,
                 roles=claims.get("roles", []),
             )
         except PyJWTError:

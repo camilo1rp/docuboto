@@ -12,6 +12,13 @@ Smoke tests — cadena de firma (E06, ADR-016).
 
 These tests exercise the HTTP layer with mocked DB connections.
 Exhaustive integration tests are delegated to the testing-engineer.
+
+Auth model change (RBAC identity fix):
+  - All routes now require PERM_FIRMA via require_permission (DB-based, fail-closed).
+  - Actor is read from X-User-Id header (internal auth_users.id UUID, NOT keycloak_sub).
+  - The old get_current_user (JWKS/JWT) dependency is gone.
+  - conn.fetchval call #1 in each request is the check_permission query (returns True
+    for happy-path tests via _make_conn default). Business-logic fetchval calls follow.
 """
 
 from __future__ import annotations
@@ -24,9 +31,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.database import get_tenant_conn
-from app.core.security import get_current_user
 from app.main import app
-from tests.conftest import TENANT_HEADERS, USER, VALID_CLAIMS
+from tests.conftest import TENANT_HEADERS, USER
 
 # Fixture IDs
 SOL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -100,7 +106,9 @@ def _make_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None
     conn.fetchrow.return_value = None
-    conn.fetchval.return_value = None
+    # Default True: first fetchval is check_permission (require_permission dep).
+    # Tests with specific business-logic fetchval needs use side_effect.
+    conn.fetchval.return_value = True
     conn.fetch.return_value = []
     tx = AsyncMock()
     tx.__aenter__ = AsyncMock(return_value=tx)
@@ -110,14 +118,11 @@ def _make_conn() -> AsyncMock:
 
 
 def _override(conn: AsyncMock) -> None:
+    """Override get_tenant_conn only — auth now comes from X-User-Id in TENANT_HEADERS."""
     async def _conn_dep():
         yield conn
 
-    async def _auth_dep() -> dict:
-        return VALID_CLAIMS
-
     app.dependency_overrides[get_tenant_conn] = _conn_dep
-    app.dependency_overrides[get_current_user] = _auth_dep
 
 
 def _clear() -> None:
@@ -135,9 +140,9 @@ async def test_create_request_happy_path() -> None:
     sol = _sol_row()
     turno = _turno_row()
 
-    # fetchrow calls order: existe_abierta (fetchval) → None (not exists),
-    # crear_solicitud → sol, get_solicitud (in get) → sol.
-    conn.fetchval.return_value = None  # existe_abierta → False
+    # fetchval call order:
+    #   [check_permission(True), existe_abierta(None=False), audit.append→prev_hash(None)]
+    conn.fetchval.side_effect = [True, None, None]
     conn.fetchrow.side_effect = [
         sol,   # crear_solicitud RETURNING
         sol,   # get_solicitud (inside get)
@@ -170,7 +175,8 @@ async def test_create_request_happy_path() -> None:
 @pytest.mark.asyncio
 async def test_create_request_conflict_when_open_chain_exists() -> None:
     conn = _make_conn()
-    conn.fetchval.return_value = 1  # existe_abierta → True
+    # fetchval: [check_permission(True), existe_abierta(1=True)]
+    conn.fetchval.side_effect = [True, 1]
 
     _override(conn)
     try:
@@ -199,6 +205,7 @@ async def test_create_request_conflict_when_open_chain_exists() -> None:
 async def test_get_request_not_found() -> None:
     conn = _make_conn()
     conn.fetchrow.return_value = None  # get_solicitud → 404
+    # fetchval.return_value = True (default) handles check_permission
 
     _override(conn)
     try:
@@ -222,6 +229,7 @@ async def test_get_request_not_found() -> None:
 async def test_get_pending_empty() -> None:
     conn = _make_conn()
     conn.fetch.return_value = []  # no pending items
+    # fetchval.return_value = True (default) handles check_permission
 
     _override(conn)
     try:
@@ -246,7 +254,8 @@ async def test_sign_turn_not_member_returns_403() -> None:
     conn = _make_conn()
     sol = _sol_row()
     conn.fetchrow.return_value = sol   # get_solicitud
-    conn.fetchval.return_value = None  # es_firmante → False (not in chain)
+    # fetchval: [check_permission(True), es_firmante(None=False)]
+    conn.fetchval.side_effect = [True, None]
 
     _override(conn)
     try:
@@ -272,7 +281,8 @@ async def test_sign_turn_wrong_turn_returns_403() -> None:
         sol,         # get_solicitud
         turno_other, # turno_activo
     ]
-    conn.fetchval.return_value = 1  # es_firmante → True
+    # fetchval: [check_permission(True), es_firmante(1=True)]
+    conn.fetchval.side_effect = [True, 1]
 
     _override(conn)
     try:
@@ -297,6 +307,8 @@ async def test_reject_solicitud_already_closed_returns_409() -> None:
     conn = _make_conn()
     sol_firmado = _sol_row(estado="firmado")
     conn.fetchrow.return_value = sol_firmado
+    # fetchval.return_value = True (default) → check_permission passes.
+    # Estado guard fires before es_firmante; es_firmante fetchval must NOT be called.
 
     _override(conn)
     try:
@@ -308,6 +320,9 @@ async def test_reject_solicitud_already_closed_returns_409() -> None:
             )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "solicitud_no_pendiente"
+        # check_permission called once (fetchval #1).
+        # es_firmante must NOT have been reached → total fetchval calls == 1.
+        assert conn.fetchval.call_count == 1
     finally:
         _clear()
 
@@ -333,7 +348,8 @@ async def test_batch_sign_partial_failure() -> None:
         sol,   # get_solicitud for sid1
         None,  # get_solicitud for sid2 → 404
     ]
-    conn.fetchval.return_value = None  # es_firmante → False
+    # fetchval: [check_permission(True), es_firmante_sid1(None=False)]
+    conn.fetchval.side_effect = [True, None]
 
     _override(conn)
     try:
@@ -421,7 +437,8 @@ async def test_create_request_multi_firmantes_ordered() -> None:
     turno1 = _turno_row(orden=1, firmante_id=USER)
     turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
 
-    conn.fetchval.return_value = None  # existe_abierta → False
+    # fetchval: [check_permission(True), existe_abierta(None=False), audit.append→prev_hash(None)]
+    conn.fetchval.side_effect = [True, None, None]
     conn.fetchrow.side_effect = [
         sol,  # crear_solicitud RETURNING
         sol,  # get_solicitud (inside get)
@@ -466,6 +483,7 @@ async def test_get_request_by_id_happy_path() -> None:
 
     conn.fetchrow.return_value = sol
     conn.fetch.return_value = [turno]
+    # fetchval.return_value = True (default) handles check_permission
 
     _override(conn)
     try:
@@ -590,12 +608,8 @@ async def test_sign_happy_path_not_last_turn() -> None:
     turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
     firma_ins = _firma_row()
 
-    # firmar call sequence (after TOCTOU fix):
-    # fetchrow: get_or_404 | turno_activo(early) | turno_activo_for_update(txn) |
-    #           firma_insert | next_active(not None) | get() get_solicitud
-    # fetchval: es_firmante, then audit.append→prev_hash
-    # execute:  marcar_turno("UPDATE 1"), audit INSERT(None)
-    conn.fetchval.side_effect = [1, None]
+    # fetchval order: check_permission(True) | es_firmante(1) | audit.append→prev_hash(None)
+    conn.fetchval.side_effect = [True, 1, None]
     conn.fetchrow.side_effect = [
         sol,       # get_or_404
         turno1,    # turno_activo (early, non-locking)
@@ -645,9 +659,8 @@ async def test_sign_last_turn_marks_solicitud_firmado() -> None:
     turno_firmado = _turno_row(orden=1, firmante_id=USER, estado="firmado", firma_id=FIRMA_ID)
     firma_ins = _firma_row()
 
-    # fetchval: es_firmante(=1), then audit.append→prev_hash(=None)
-    # execute:  marcar_turno("UPDATE 1"), actualizar_estado(None), audit INSERT(None)
-    conn.fetchval.side_effect = [1, None]
+    # fetchval: check_permission(True) | es_firmante(1) | audit.append→prev_hash(None)
+    conn.fetchval.side_effect = [True, 1, None]
     conn.fetchrow.side_effect = [
         sol_pendiente,  # get_or_404
         turno,          # turno_activo (early, non-locking)
@@ -689,11 +702,12 @@ async def test_sign_last_turn_marks_solicitud_firmado() -> None:
 async def test_sign_solicitud_already_closed_returns_409() -> None:
     """
     Attempt to sign a solicitud that is already 'firmado' → 409.
-    Estado guard fires before es_firmante (fetchval must NOT be called).
+    Estado guard fires before es_firmante (es_firmante fetchval must NOT be called).
     """
     conn = _make_conn()
     sol_firmado = _sol_row(estado="firmado")
     conn.fetchrow.return_value = sol_firmado
+    # fetchval.return_value = True (default) → check_permission passes (call #1).
 
     _override(conn)
     try:
@@ -704,8 +718,8 @@ async def test_sign_solicitud_already_closed_returns_409() -> None:
             )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "solicitud_no_pendiente"
-        # es_firmante must NOT have been reached
-        assert conn.fetchval.call_count == 0
+        # check_permission called once (fetchval #1); es_firmante must NOT be called.
+        assert conn.fetchval.call_count == 1
     finally:
         _clear()
 
@@ -727,9 +741,8 @@ async def test_reject_happy_path_marks_solicitud_rechazado() -> None:
     turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
     turno_rechazado = _turno_row(orden=1, firmante_id=USER, estado="rechazado")
 
-    # fetchval: es_firmante(=1), then audit.append→prev_hash(=None)
-    # execute:  marcar_turno("UPDATE 1"), actualizar_estado(None), audit INSERT(None)
-    conn.fetchval.side_effect = [1, None]
+    # fetchval: check_permission(True) | es_firmante(1) | audit.append→prev_hash(None)
+    conn.fetchval.side_effect = [True, 1, None]
     conn.fetchrow.side_effect = [
         sol_pendiente,   # get_or_404
         turno,           # turno_activo (early, non-locking)
@@ -773,7 +786,8 @@ async def test_reject_wrong_turn_returns_403() -> None:
     sol = _sol_row()
     turno_other = _turno_row(orden=1, firmante_id=FIRMANTE2)
 
-    conn.fetchval.side_effect = [1]  # es_firmante → True (actor IS in chain)
+    # fetchval: [check_permission(True), es_firmante(1=True)]
+    conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
         sol,          # get_or_404
         turno_other,  # turno_activo (firmante_id == FIRMANTE2, not USER)
@@ -804,7 +818,8 @@ async def test_reject_not_firmante_returns_403() -> None:
     conn = _make_conn()
     sol = _sol_row()
 
-    conn.fetchval.side_effect = [None]  # es_firmante → False
+    # fetchval: [check_permission(True), es_firmante(None=False)]
+    conn.fetchval.side_effect = [True, None]
     conn.fetchrow.side_effect = [sol]  # get_or_404
 
     _override(conn)
@@ -885,8 +900,8 @@ async def test_batch_mixed_firmado_and_omitido() -> None:
         sol2,          # sid2: get_or_404
         turno2_other,  # sid2: turno_activo (early) → FIRMANTE2 != USER → 403
     ]
-    # fetchval: sid1 es_firmante(1) + audit_prev_hash(None); sid2 es_firmante(1)
-    conn.fetchval.side_effect = [1, None, 1]
+    # fetchval: check_permission(True) | es_firmante_sid1(1) | audit_prev_hash(None) | es_firmante_sid2(1)
+    conn.fetchval.side_effect = [True, 1, None, 1]
     conn.fetch.side_effect = [[turno1_firmado]]  # sid1: list_turnos (sid2 aborts before fetch)
     conn.execute.side_effect = _exec_sig  # 'UPDATE 1' para firma_cadena, None resto
 
@@ -909,50 +924,37 @@ async def test_batch_mixed_firmado_and_omitido() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Authorization — 401 without token, 403 without PERM_FIRMA (RF-FIR-12)
+# Authorization — 401 without X-User-Id, 403 without PERM_FIRMA (RF-FIR-12)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_cadena_create_requires_auth() -> None:
-    """POST /requests without Authorization header → 401 (real get_current_user)."""
-    # No dependency overrides — real get_current_user raises 401.
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.post(
-            "/api/v1/signature/requests",
-            json={
-                "objeto_tipo": "radicado",
-                "objeto_id": "2024-DEMO-E-000001",
-                "firmantes": [str(USER)],
-            },
-            headers=TENANT_HEADERS,  # no Authorization header
-        )
-    assert resp.status_code == 401
+    """POST /requests without X-User-Id header → 401 (require_permission gate, RF-FIR-12)."""
+    conn = _make_conn()
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "2024-DEMO-E-000001",
+                    "firmantes": [str(USER)],
+                },
+                headers={"X-Tenant-Slug": "demo"},  # X-User-Id intentionally omitted
+            )
+        assert resp.status_code == 401
+    finally:
+        _clear()
 
 
 @pytest.mark.asyncio
 async def test_cadena_create_requires_perm_firma() -> None:
-    """Valid token but PERM_FIRMA absent → 403 forbidden (RF-FIR-12)."""
-    from fastapi import HTTPException
-    from fastapi import status as fstatus
-
+    """Valid X-User-Id but PERM_FIRMA denied in DB → 403 forbidden (RF-FIR-12)."""
     conn = _make_conn()
-
-    async def _conn_dep():
-        yield conn
-
-    async def _no_perm() -> dict:
-        raise HTTPException(
-            status_code=fstatus.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "forbidden",
-                "detail": "PERM_FIRMA permission is required to sign documents",
-                "status": 403,
-            },
-        )
-
-    app.dependency_overrides[get_tenant_conn] = _conn_dep
-    app.dependency_overrides[get_current_user] = _no_perm
+    conn.fetchval.return_value = None  # check_permission → denied (user not found / no perm)
+    _override(conn)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
@@ -962,9 +964,9 @@ async def test_cadena_create_requires_perm_firma() -> None:
                     "objeto_id": "x",
                     "firmantes": [str(USER)],
                 },
-                headers=TENANT_HEADERS,
+                headers=TENANT_HEADERS,  # includes X-User-Id
             )
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "forbidden"
     finally:
-        app.dependency_overrides.clear()
+        _clear()

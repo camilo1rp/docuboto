@@ -7,20 +7,27 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Firma de payloads (sign-xml) y verificación (E06, ADR-016, RF-FIR-11..14)."""
+"""Firma de payloads (sign-xml) y verificación (E06, ADR-016, RF-FIR-11..14).
+
+Autorización: /sign-xml requiere PERM_FIRMA verificado en la BD del tenant
+(require_permission, fail-closed). El firmante se toma de X-User-Id (auth_users.id
+interno, resuelto por auth-service /validate). Ya NO se valida el JWT aquí — el
+api-gateway lo validó y el hash de identidad es el id interno, no el keycloak_sub.
+
+/verify no requiere autenticación — es una operación de consulta pública.
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.core.clearance import get_actor, require_permission
 from app.core.config import settings
 from app.core.database import get_tenant_conn
-from app.core.security import get_current_user
 from app.repositories.firma_repository import FirmaRepository
 from app.schemas.firma import (
     FirmaResponse,
@@ -42,17 +49,23 @@ _SERVICE = "signature-service"
 router = APIRouter(prefix="/api/v1/signature", tags=["signature"])
 
 
-@router.post("/sign-xml", response_model=FirmaResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/sign-xml",
+    response_model=FirmaResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("PERM_FIRMA"))],
+)
 async def sign_xml(
     payload: SignXmlRequest,
-    claims: dict[str, Any] = Depends(get_current_user),
+    request: Request,
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> FirmaResponse:
     """
     Firma electrónica de un payload XML o hash de documento (RF-FIR-11..14).
 
-    - El firmante se toma exclusivamente del JWT validado (claims["user_id"]).
-    - Se verifica PERM_FIRMA antes de llegar aquí (ver get_current_user).
+    - El firmante se toma exclusivamente de X-User-Id (auth_users.id interno — RF-FIR-11).
+    - Se verifica PERM_FIRMA en la BD del tenant antes de llegar aquí (require_permission).
     - El sello_tiempo es generado por el servidor (no lo aporta el cliente).
     - La firma_blob es HMAC-SHA256(secret, sha256 | firmante | sello_tiempo),
       no reproducible sin conocer el secreto del servicio (RF-FIR-12).
@@ -60,8 +73,8 @@ async def sign_xml(
 
     TODO (RF-FIR-13): reto 2FA ligado al hash_documento — diferido a F4.
     """
-    firmante_id = uuid.UUID(claims["user_id"])
-    tenant_slug: str = claims.get("tenant_slug") or ""
+    firmante_id = actor
+    tenant_slug: str = request.headers.get("X-Tenant-Slug", "")
 
     # Server-generated timestamp — never from the client request.
     sello_tiempo_dt = datetime.now(timezone.utc)

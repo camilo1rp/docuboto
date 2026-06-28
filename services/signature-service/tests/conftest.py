@@ -17,49 +17,44 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.core.database import get_tenant_conn
-from app.core.security import get_current_user
 from app.main import app
 
-TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
+# X-User-Id now carries the internal auth_users.id UUID (not keycloak_sub).
+# auth-service /validate resolves keycloak_sub → auth_users.id before the gateway
+# injects the header; tests use a fixed UUID that matches the mock's user row.
 USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
-# Claims returned by the mocked get_current_user.
-# PERM_FIRMA lives in permissions[] (fine-grained ACL, ADR-013), not in roles[].
-VALID_CLAIMS: dict = {
-    "user_id": str(USER),
-    "username": "testuser",
-    "email": "test@demo.example",
-    "tenant_slug": "demo",
-    "roles": [],
-    "permissions": ["PERM_FIRMA"],
-    "exp": None,
-    "iat": None,
-}
+# Both headers are required for every authenticated request.
+# X-User-Id = internal auth_users.id (uuid); get_actor + require_permission read it.
+TENANT_HEADERS = {"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
 
 
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None
     conn.fetchrow.return_value = None
-    conn.fetchval.return_value = None  # used by audit.append (prev_hash lookup)
-    # audit.append uses `async with conn.transaction():`
+    # Default True: check_permission (require_permission dep) sees the user as authorised.
+    # Tests that need permission denied override with fetchval.return_value = None
+    # or side_effect = [None, ...].
+    conn.fetchval.return_value = True
+    # audit.append uses `async with conn.transaction():` then conn.execute (INSERT).
     conn.transaction = MagicMock(return_value=AsyncMock())
     return conn
 
 
 @pytest_asyncio.fixture
 async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
-    """Yields (client, mock_conn) with PERM_FIRMA claims and tenant conn overridden."""
+    """Yields (client, mock_conn) with PERM_FIRMA granted and tenant conn overridden.
+
+    auth is provided via X-User-Id in TENANT_HEADERS (not via get_current_user —
+    that dependency no longer exists in the signature-service routers).
+    """
     conn = _make_mock_conn()
 
     async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
         yield conn
 
-    async def _auth_dep() -> dict:
-        return VALID_CLAIMS
-
     app.dependency_overrides[get_tenant_conn] = _conn_dep
-    app.dependency_overrides[get_current_user] = _auth_dep
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac, conn
     app.dependency_overrides.clear()

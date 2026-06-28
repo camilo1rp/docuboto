@@ -167,7 +167,9 @@ async def validate(
         )
 
     audit = AuditRepository(conn)
-    result = await service.validate(credentials.credentials)
+    # Pass the connection so validate() can resolve the internal auth_users.id via
+    # lazy provisioning (uses the conn's search_path after switching to tenant schema).
+    result = await service.validate(credentials.credentials, conn)
 
     event = "token_valid" if result.valid else "token_invalid"
     await audit.log(
@@ -206,16 +208,18 @@ async def me(
     except KeycloakError as exc:
         raise _keycloak_error_to_http(exc)
 
-    # Resolve effective permissions from the tenant DB (D-07).
-    # `user_id` in the JWT claims equals the Keycloak `sub`, which is stored as
-    # `keycloak_sub` in `auth_users`. Fail-closed: empty list when:
-    #   - no tenant context (superadmin / direct call without X-Tenant-Slug), or
+    # Resolve effective permissions and the internal auth_users.id from the tenant DB.
+    # `user_info.user_id` is the raw Keycloak sub from the JWT claims.
+    # Fail-closed: empty permissions and sub as user_id when:
+    #   - no tenant context (superadmin / no X-Tenant-Slug header), or
     #   - user is not yet provisioned in the tenant.
     permissions: list[str] = []
     if conn is not None:
         repo = RBACRepository(conn)
         user = await repo.get_user_by_keycloak_sub(user_info.user_id)
         if user is not None:
+            # Replace keycloak sub with the internal id for coherence with X-User-Id.
+            user_info = user_info.model_copy(update={"user_id": str(user["id"])})
             rbac = RBACService(repo)
             # resolve_effective_permissions embeds USUA_PERM_ROOT for root users
             # (consistent with rbac.py:88 and has_permission() logic).

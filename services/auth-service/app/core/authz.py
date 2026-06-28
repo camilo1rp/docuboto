@@ -10,9 +10,10 @@
 """Gate de autorización resuelto en la BD del tenant por request (E08, ADR-013).
 
 Keycloak autentica; la BD del tenant autoriza. El api-gateway inyecta la identidad
-ya validada (`X-User-Id` = sub de Keycloak, `X-Tenant-Slug`). Aquí se resuelve el
-usuario local por `keycloak_sub`, se calculan sus permisos efectivos y se exige el
-permiso requerido. ROOT (`USUA_PERM_ROOT`) hace bypass.
+ya validada (`X-User-Id` = auth_users.id interno UUID, `X-Tenant-Slug`). Aquí se
+resuelve el usuario local por `auth_users.id` (no por keycloak_sub — que era el
+comportamiento anterior al fix RBAC), se calculan sus permisos efectivos y se exige
+el permiso requerido. ROOT (`USUA_PERM_ROOT`) hace bypass.
 """
 
 from collections.abc import Callable, Coroutine
@@ -51,26 +52,40 @@ async def get_caller(
 ) -> Caller:
     """Resuelve al llamante y sus permisos efectivos desde la BD del tenant.
 
-    Dependencia estable (sobreescribible en tests). 401 si falta la identidad; 403 si
-    el usuario no está aprovisionado en el tenant (lazy-provisioning: sin fila en
-    auth_users → sin permisos). Comparte conexión con `get_tenant_conn` (FastAPI cachea
-    la dependencia por request).
+    Dependencia estable (sobreescribible en tests). 401 si falta la identidad o si
+    X-User-Id no es un UUID válido; 403 si el usuario no está aprovisionado en el
+    tenant. Comparte la conexión con `get_tenant_conn` (FastAPI cachea la dependencia
+    por request).
+
+    X-User-Id es el ``auth_users.id`` interno (UUID), resuelto por auth-service
+    ``/validate`` con lazy provisioning. Ya NO es el ``keycloak_sub``.
     """
-    sub = request.headers.get("X-User-Id")
-    if not sub:
+    raw = request.headers.get("X-User-Id")
+    if not raw:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "unauthorized", "detail": "X-User-Id header missing", "status": 401},
         )
+    try:
+        user_id = UUID(raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "unauthorized",
+                "detail": "X-User-Id must be a valid UUID (internal auth_users.id)",
+                "status": 401,
+            },
+        )
     repo = RBACRepository(conn)
-    user = await repo.get_user_by_keycloak_sub(sub)
+    user = await repo.get_user(user_id)   # looks up by auth_users.id, not keycloak_sub
     if user is None:
         raise _forbidden("Caller is not provisioned in this tenant")
     service = RBACService(repo)
     perms = await service.resolve_effective_permissions(user["id"])
     return Caller(
         user_id=user["id"],
-        keycloak_sub=sub,
+        keycloak_sub=str(user.get("keycloak_sub") or ""),
         is_root=bool(user["is_root"]),
         permissions=perms,
     )

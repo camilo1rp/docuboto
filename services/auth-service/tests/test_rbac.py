@@ -222,15 +222,20 @@ async def test_gate_missing_user_id_is_401(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_gate_not_provisioned_is_403(client: AsyncClient) -> None:
-    """Usuario válido en Keycloak pero sin fila en auth_users → 403."""
+    """UUID válido en X-User-Id pero sin fila en auth_users → 403 (no provisionado).
+
+    X-User-Id es ahora el auth_users.id interno (UUID), NO el keycloak_sub.
+    Un UUID no encontrado en la BD significa que el usuario no está aprovisionado.
+    """
     conn = AsyncMock()
-    conn.fetchrow.return_value = None  # get_user_by_keycloak_sub → no existe
+    conn.fetchrow.return_value = None  # get_user(UUID) → no row
 
     async def _dep() -> AsyncGenerator[AsyncMock, None]:
         yield conn
 
     app.dependency_overrides[get_tenant_conn] = _dep
+    ghost_uuid = str(uuid.uuid4())   # valid UUID but not in auth_users
     resp = await client.get(
-        "/api/v1/auth/groups", headers={**TENANT_HEADERS, "X-User-Id": "kc-ghost"}
+        "/api/v1/auth/groups", headers={**TENANT_HEADERS, "X-User-Id": ghost_uuid}
     )
     assert resp.status_code == 403
