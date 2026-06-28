@@ -200,6 +200,72 @@
  */
 
 // ---------------------------------------------------------------------------
+// Firmas electrónicas (signature-service, E06, T-12d, RF-UI-17)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ítem de la bandeja del firmante: una solicitud cuyo turno activo es del usuario.
+ * Devuelto por GET /api/v1/signature/pending.
+ *
+ * @typedef {object} SignaturePendingItem
+ * @property {string} solicitud_id    — UUID de la solicitud de firma
+ * @property {string} objeto_tipo     — tipo del documento (ej. 'radicado'|'borrador'|'documento')
+ * @property {string} objeto_id       — UUID del objeto a firmar
+ * @property {string} titulo          — título descriptivo del documento
+ * @property {number} orden           — posición del turno activo en la cadena
+ * @property {string} created_at      — ISO 8601 UTC
+ */
+
+/**
+ * Un turno individual dentro de la cadena de firmas.
+ *
+ * @typedef {object} SignatureTurn
+ * @property {number}      orden         — posición en la cadena (1-based)
+ * @property {string}      firmante_id   — UUID del firmante asignado
+ * @property {'pendiente'|'firmado'|'rechazado'} estado
+ * @property {string|null} firma_id      — UUID del registro de firma (si firmado)
+ * @property {string|null} comentario    — nota o motivo de rechazo
+ * @property {string|null} decidido_at   — ISO 8601 UTC (timestamp de firma/rechazo)
+ */
+
+/**
+ * Respuesta completa del estado de una solicitud de firma (cadena).
+ * Devuelto por GET /api/v1/signature/requests/{id}.
+ *
+ * @typedef {object} SignatureRequestResponse
+ * @property {string}            solicitud_id  — UUID de la solicitud
+ * @property {string}            objeto_tipo
+ * @property {string}            objeto_id
+ * @property {string}            titulo
+ * @property {'pendiente'|'firmado'|'rechazado'} estado
+ * @property {SignatureTurn[]}   items         — turnos en orden
+ * @property {string}            created_at    — ISO 8601 UTC
+ */
+
+/**
+ * Cuerpo para rechazar una solicitud de firma.
+ *
+ * @typedef {object} SignatureRejectBody
+ * @property {string} motivo   — obligatorio, min_length 1
+ */
+
+/**
+ * Cuerpo para firma en lote.
+ *
+ * @typedef {object} SignatureBatchBody
+ * @property {string[]} solicitud_ids  — UUIDs de las solicitudes a firmar
+ */
+
+/**
+ * Resultado individual de una operación de firma en lote.
+ *
+ * @typedef {object} SignatureBatchResult
+ * @property {string}             solicitud_id
+ * @property {'firmado'|'omitido'} resultado
+ * @property {string|null}        [detalle]    razon si fue omitido
+ */
+
+// ---------------------------------------------------------------------------
 // Reportes / estadísticas (reports endpoint, E09)
 // ---------------------------------------------------------------------------
 

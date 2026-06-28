@@ -88,6 +88,13 @@
       permission: "PERM_RADI_SALIDA",
     },
     {
+      label: "Firmas",
+      href: ROUTES.firmas,
+      icon: "fas fa-signature",
+      // PERM_FIRMA: firmantes de la cadena de firma electrónica (T-12d, E06).
+      permission: "PERM_FIRMA",
+    },
+    {
       label: "Archivo físico",
       href: ROUTES.archivoFisico,
       icon: "fas fa-box-archive",
