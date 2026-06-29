@@ -30,6 +30,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 - **E15**: firma XAdES del índice al cierre (requiere signature-service criptográfico, ADR-016).
 - **E20**: integración con operadores postales (factible como consumidor de webhooks, ADR-018).
 - **E17** (menores): rótulo PDF/QR, capacidad/ocupación, custodia externa.
+- **E08** (reclasificación): el endpoint `PATCH /documents/{id}/security-level` ya reclasifica el `nivel_seguridad` con permiso `PERM_RECLASIFICAR` + no-read-up/no-write-up, auditoría inmutable (motivo + fundamento jurídico) y re-sync del *snapshot* de firma vía evento — cierra el residual de *staleness* de RF-SEG-08. Diferido: el **índice de información clasificada y reservada** publicado (Ley 1712 art.20 + Decreto 1081/2015), *outbox* transaccional del evento, y doble control de desclasificación.
 
 ---
 

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     service_port: int = 8008
     log_level: str = "info"
 
+    # Redis URL for stream consumption (document.radicado.reclassified events).
+    redis_url: str = "redis://redis:6379/0"
+
     # Server-side HMAC secret — makes firma_blob non-reproducible from public data
     # (RF-FIR-12, D-01). Must be at least 32 random bytes; rotate with a migration
     # of existing firmas if compromised. NEVER commit the real value.

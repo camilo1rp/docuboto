@@ -260,6 +260,13 @@ Obtener por número de radicado (ej: `2024-ICETEX-E-000001`). Misma acotación p
 Actualizar `subject`, `dest_dept`, `observations`, `status`, `pages`.
 `tracking_number`, `doc_type`, `year`, `sequence` son inmutables.
 
+### `PATCH /api/v1/documents/{id}/security-level`
+**Reclasificación del nivel de seguridad** de un radicado ya radicado (E08, paridad con el *Cambio Nivel de Seguridad* de Orfeo). Cambia `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) sin alterar contenido ni `tracking_number` (inmutabilidad intacta). Requiere permiso **`PERM_RECLASIFICAR`**.
+- **Body**: `nivel_seguridad` (1..3, obligatorio), `motivo` (string no vacío, **obligatorio** — el acto de reserva debe motivarse, Ley 1712 art.19/28), y opcionales `causal_reserva`, `fundamento_juridico`, `plazo_reserva_meses`.
+- **Control de acceso (RF-SEG-08)**: *no-read-up* — si el *clearance* del llamante es menor que el nivel actual del radicado responde `404` neutro (no revela existencia ni nivel); *no-write-up* — no puede fijar un nivel mayor que su propio *clearance* (`403`). Si el nivel solicitado coincide con el actual, es *no-op* idempotente (sin auditoría ni evento).
+- **Traza**: registra en el `audit_log` inmutable (`document.radicado_reclassified`) el `nivel_anterior`, `nivel_nuevo`, `motivo` y el fundamento jurídico, de forma atómica con el cambio.
+- **Propagación**: emite `document.radicado.reclassified`; el signature-service re-sincroniza el *snapshot* `nivel_seguridad` de las cadenas de firma del objeto (cierra el residual de *staleness* de RF-SEG-08).
+
 ---
 
 ## storage-service — puerto 8005

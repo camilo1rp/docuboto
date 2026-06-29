@@ -392,6 +392,25 @@ class DocumentRepository:
         )
         return _json_obj(row["disposition"]) if row is not None else None
 
+    async def get_security_context(self, document_id: uuid.UUID) -> asyncpg.Record | None:
+        """Returns id, tracking_number and nivel_seguridad for a radicado by UUID.
+
+        Does NOT apply a clearance filter — clearance enforcement is the caller's
+        responsibility (the service layer checks no-read-up before acting).
+        """
+        return await self._conn.fetchrow(
+            "SELECT id, tracking_number, nivel_seguridad FROM radicados WHERE id = $1",
+            document_id,
+        )
+
+    async def set_nivel_seguridad(self, document_id: uuid.UUID, nivel: int) -> None:
+        """Updates nivel_seguridad and bumps updated_at for the given radicado."""
+        await self._conn.execute(
+            "UPDATE radicados SET nivel_seguridad = $2, updated_at = now() WHERE id = $1",
+            document_id,
+            nivel,
+        )
+
     async def _get_anexos(self, radicado_id: uuid.UUID) -> list[Anexo]:
         rows = await self._conn.fetch(
             """

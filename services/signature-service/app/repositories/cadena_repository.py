@@ -204,6 +204,40 @@ class CadenaRepository:
         # asyncpg returns the command tag string, e.g. "UPDATE 1" or "UPDATE 0".
         return tag.split()[-1] == "1"
 
+    async def actualizar_nivel_seguridad(
+        self, objeto_tipo: str, objeto_ids: list[str], nivel: int
+    ) -> int:
+        """Syncs nivel_seguridad in firma_solicitud after a radicado reclassification.
+
+        Updates all solicitudes matching objeto_tipo and any of the provided
+        objeto_ids (typically [tracking_number, radicado_uuid_str]) whose stored
+        nivel_seguridad differs from ``nivel``.  The ``nivel_seguridad <> $1``
+        predicate makes this idempotent: redelivered events produce 0 updates.
+
+        Returns the number of rows actually updated (for audit/logging).
+
+        Tolerates asyncpg.UndefinedTableError (tenant schema without firma_solicitud)
+        by returning 0 — a legitimate no-op (ackeable): the tenant has no signature
+        chains to sync, so the event is safely consumed without re-queuing.
+        This mirrors resolver_nivel_radicado's pattern for the radicados table.
+        """
+        try:
+            tag: str = await self._conn.execute(
+                "UPDATE firma_solicitud "
+                "SET nivel_seguridad = $1, updated_at = now() "
+                "WHERE objeto_tipo = $2 AND objeto_id = ANY($3::text[]) "
+                "  AND nivel_seguridad <> $1",
+                nivel,
+                objeto_tipo,
+                objeto_ids,
+            )
+            # asyncpg returns a command tag like "UPDATE 2"; parse the row count.
+            return int(tag.split()[-1])
+        except asyncpg.UndefinedTableError:
+            # firma_solicitud table absent in this tenant schema.
+            # No signature chains to sync — treat as 0 rows updated (ackeable no-op).
+            return 0
+
     async def pendientes_de_firmante(
         self,
         firmante_id: uuid.UUID,

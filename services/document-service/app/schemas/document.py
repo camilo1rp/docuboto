@@ -114,6 +114,26 @@ class DispositionResponse(BaseModel):
     disposition: dict[str, Any]
 
 
+class ReclassifyRequest(BaseModel):
+    nivel_seguridad: int = Field(..., ge=1, le=3)
+    # Ley 1712/2014 art.19 y 28: todo acto de clasificación/reserva debe ser motivado.
+    motivo: str = Field(..., min_length=1, max_length=500)
+    # Campos opcionales de fundamentación jurídica (Ley 1712/2014 art.18-19).
+    # Se registran en audit_log (hash-chain) como soporte inmutable del acto —
+    # no crean columnas nuevas; el JSONB de audit_log es el registro legal.
+    causal_reserva: str | None = Field(default=None, max_length=200)
+    fundamento_juridico: str | None = Field(default=None, max_length=300)
+    plazo_reserva_meses: int | None = Field(default=None, ge=0, le=600)
+
+
+class ReclassifyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    tracking_number: str
+    nivel_seguridad: int
+
+
 class HealthResponse(BaseModel):
     status: str
     database: str

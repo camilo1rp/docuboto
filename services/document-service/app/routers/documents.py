@@ -34,12 +34,15 @@ from app.schemas.document import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
+    ReclassifyRequest,
+    ReclassifyResponse,
 )
 from app.services.document_service import (
     DocumentNotFoundError,
     DocumentService,
     InvalidDependenciaError,
     InvalidTenantError,
+    ReclassifyForbiddenError,
 )
 from app.services.metadata_service import MetadataValidationError
 
@@ -253,6 +256,65 @@ async def set_disposition(
             detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
         )
     return DispositionResponse(radicado_id=document_id, disposition=disp)
+
+
+@router.patch(
+    "/{document_id}/security-level",
+    response_model=ReclassifyResponse,
+    summary="Reclassify the security level of a radicado (E08, RF-SEG-08, Ley 594 art. 28)",
+    dependencies=[Depends(require_permission("PERM_RECLASIFICAR"))],
+)
+async def reclassify_security_level(
+    document_id: uuid.UUID,
+    payload: ReclassifyRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    redis: Any = Depends(get_redis),
+) -> ReclassifyResponse:
+    """Change the security level of a radicado.
+
+    Enforces RF-SEG-08 clearance rules:
+    - **no-read-up**: returns 404 (neutral) when the actor's clearance is below the
+      current level, so under-clearance users cannot distinguish "not found" from
+      "exists but classified above your level".
+    - **no-write-up**: returns 403 when nuevo_nivel exceeds the actor's own clearance.
+    - **idempotent**: 200 with the current state if the level is already at the
+      requested value — safe to retry without duplicate audit entries or events.
+
+    Audit: nivel_anterior, nivel_nuevo, and motivo are recorded in audit_log
+    (Ley 594/2000 art. 28 — trazabilidad del ciclo de vida del documento).
+    """
+    service = _build_service(conn, _tenant_slug(request), redis=redis)
+    actor = _get_registered_by(request)
+    try:
+        result = await service.reclassify(
+            document_id,
+            nuevo_nivel=payload.nivel_seguridad,
+            motivo=payload.motivo,
+            actor=actor,
+            causal_reserva=payload.causal_reserva,
+            fundamento_juridico=payload.fundamento_juridico,
+            plazo_reserva_meses=payload.plazo_reserva_meses,
+        )
+        return ReclassifyResponse(**result)
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "document_not_found",
+                "detail": f"Document '{document_id}' not found",
+                "status": 404,
+            },
+        )
+    except ReclassifyForbiddenError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "reclassify_forbidden",
+                "detail": "Cannot reclassify above your own clearance level",
+                "status": 403,
+            },
+        )
 
 
 @router.patch(

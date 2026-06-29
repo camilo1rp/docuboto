@@ -26,6 +26,7 @@ import asyncpg
 from orpycamcp_common import audit, events
 
 from app.clients.tenant_client import TenantServiceClient
+from app.core.clearance import resolve_caller_clearance
 from app.models.document import Radicado
 from app.repositories.document_repository import (
     DocumentRepository,
@@ -58,6 +59,10 @@ class InvalidTenantError(Exception):
 
 class InvalidDependenciaError(Exception):
     """El radicado referencia una dependencia inexistente o inactiva."""
+
+
+class ReclassifyForbiddenError(Exception):
+    """El llamante intenta asignar un nivel de seguridad superior a su propio clearance."""
 
 
 class DocumentService:
@@ -281,6 +286,121 @@ class DocumentService:
     async def listar_respuestas(self, antecedente_id: uuid.UUID) -> list[RespuestaItem]:
         rows = await self._repo.list_respuestas(antecedente_id)
         return [RespuestaItem(**dict(r)) for r in rows]
+
+    async def reclassify(
+        self,
+        document_id: uuid.UUID,
+        *,
+        nuevo_nivel: int,
+        motivo: str,
+        actor: uuid.UUID | None,
+        causal_reserva: str | None = None,
+        fundamento_juridico: str | None = None,
+        plazo_reserva_meses: int | None = None,
+    ) -> dict:
+        """Reclassifies the security level of a radicado (E08, RF-SEG-08).
+
+        Guards (inside a single transaction):
+        - 404 if the radicado does not exist.
+        - 404 (neutral) if the actor's clearance is below the document's current level
+          (no-read-up: existence must not be revealed to under-clearance actors).
+        - 403 if nuevo_nivel exceeds the actor's clearance (no-write-up: cannot
+          classify above own level).
+        - No-op (returns current state, no audit, no event) when nuevo_nivel equals
+          the current level (idempotent for safe retry).
+
+        The audit entry and the UPDATE are atomic. The Redis event is published
+        best-effort after the transaction commits (BD is the source of truth).
+        """
+        actor_str = str(actor) if actor else None
+
+        # Captured inside the transaction for post-commit use (Record stays valid).
+        result_id: uuid.UUID | None = None
+        result_tracking: str | None = None
+        nivel_anterior: int | None = None
+
+        async with self._conn.transaction():
+            ctx = await self._repo.get_security_context(document_id)
+            if ctx is None:
+                raise DocumentNotFoundError(str(document_id))
+
+            clearance = await resolve_caller_clearance(self._conn, actor)
+
+            # No-read-up: actor below the document's level must not learn it exists
+            # (RF-SEG-08, same neutral 404 used by firmar/rechazar in signature-service).
+            if clearance < ctx["nivel_seguridad"]:
+                raise DocumentNotFoundError(str(document_id))
+
+            # No-write-up: cannot promote a document above own classification level.
+            if nuevo_nivel > clearance:
+                raise ReclassifyForbiddenError(
+                    f"Cannot reclassify to level {nuevo_nivel}: actor clearance is {clearance}"
+                )
+
+            # Idempotent: no change needed — return current state without audit or event.
+            if nuevo_nivel == ctx["nivel_seguridad"]:
+                return {
+                    "id": ctx["id"],
+                    "tracking_number": ctx["tracking_number"],
+                    "nivel_seguridad": ctx["nivel_seguridad"],
+                }
+
+            await self._repo.set_nivel_seguridad(document_id, nuevo_nivel)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.radicado_reclassified",
+                object_type="radicado",
+                object_ref=ctx["tracking_number"],
+                actor=actor_str,
+                payload={
+                    "nivel_anterior": ctx["nivel_seguridad"],
+                    "nivel_nuevo": nuevo_nivel,
+                    "motivo": motivo,
+                    # Compliance #2 (Ley 1712/2014 art.18-19): fundamento jurídico
+                    # de la reserva/clasificación — registro inmutable en audit_log.
+                    "causal_reserva": causal_reserva,
+                    "fundamento_juridico": fundamento_juridico,
+                    "plazo_reserva_meses": plazo_reserva_meses,
+                },
+            )
+            result_id = ctx["id"]
+            result_tracking = ctx["tracking_number"]
+            nivel_anterior = ctx["nivel_seguridad"]
+
+        # Best-effort: a Redis failure does not roll back the already-committed UPDATE.
+        if self._redis is not None:
+            try:
+                await events.emit(
+                    self._redis,
+                    _STREAM,
+                    "document.radicado.reclassified",
+                    tenant_slug=self._slug,
+                    actor=actor_str,
+                    dedup_key=f"{result_tracking}:{nuevo_nivel}",
+                    payload={
+                        "id": str(result_id),
+                        "tracking_number": result_tracking,
+                        "nivel_anterior": nivel_anterior,
+                        "nivel_nuevo": nuevo_nivel,
+                        "causal_reserva": causal_reserva,
+                        "fundamento_juridico": fundamento_juridico,
+                        "plazo_reserva_meses": plazo_reserva_meses,
+                    },
+                )
+            except Exception:  # noqa: BLE001 — evento best-effort
+                logger.warning(
+                    "No se pudo publicar el evento de reclasificación %s",
+                    result_tracking,
+                    exc_info=True,
+                )
+
+        return {
+            "id": result_id,
+            "tracking_number": result_tracking,
+            "nivel_seguridad": nuevo_nivel,
+        }
 
     async def update(
         self,
