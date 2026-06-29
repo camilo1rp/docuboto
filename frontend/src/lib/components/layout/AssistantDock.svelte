@@ -24,7 +24,7 @@
   y sirve de ancla para los tests de T-05.
 -->
 <script>
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, tick } from "svelte";
 
   /** Controla si el dock está visible */
   export let open = false;
@@ -85,12 +85,11 @@
     });
   }
 
+  // La limpieza va como retorno de onMount (solo cliente): onDestroy se ejecuta
+  // también en SSR, donde `document` no existe y rompería el render del layout.
   onMount(() => {
     document.addEventListener("keydown", trapFocus);
-  });
-
-  onDestroy(() => {
-    document.removeEventListener("keydown", trapFocus);
+    return () => document.removeEventListener("keydown", trapFocus);
   });
 </script>
 

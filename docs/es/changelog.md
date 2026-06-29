@@ -15,6 +15,8 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Corregido
 
+- `fix(frontend)`: **D-16 — SSR 500 en todas las rutas `(app)` por `onDestroy` que toca `document`**. El smoke test visual de la bandeja de firmas destapó que `AppLayout`, `AssistantDock`, `Drawer` y `Modal` limpiaban su listener de teclado con `onDestroy(() => document.removeEventListener(...))`; el callback de `onDestroy` se ejecuta también en SSR, donde `document` no existe → `ReferenceError` → HTTP 500 en `/dashboard`, `/firmas` y toda ruta del layout privado. Arreglo: la limpieza pasa al retorno de `onMount` (solo cliente). Verificado en navegador real: bandeja, drawer de cadena, modal de rechazo (motivo obligatorio), selección en lote y no-read-up (radicado nivel 3 visible a clearance 3) operativos.
+
 - `fix(auth)`: **D-07 — espejo RBAC de la UI roto** — `GET /auth/me` devolvía `UserInfoResponse` sin `permissions`; el frontend hacía `me.permissions ?? []` → siempre vacío → toda la UI de control por rol desactivada. `UserInfoResponse` incluye ahora `permissions: list[str]` resuelto desde la BD del tenant via `RBACService.resolve_effective_permissions` (mismo que `GET /users/{id}/permissions`). Root incluye `USUA_PERM_ROOT`. Fail-closed: `[]` sin `X-Tenant-Slug` o sin aprovisionamiento. 4 nuevos tests verdes.
 
 ### Seguridad

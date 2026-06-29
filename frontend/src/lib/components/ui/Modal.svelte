@@ -33,7 +33,7 @@
     - Al cerrar, devuelve el foco al elemento que lo abrió
 -->
 <script>
-  import { createEventDispatcher, onMount, onDestroy, tick } from "svelte";
+  import { createEventDispatcher, onMount, tick } from "svelte";
 
   export let open = false;
   export let title = "";
@@ -112,12 +112,11 @@
     });
   }
 
+  // Limpieza como retorno de onMount (solo cliente): onDestroy corre también en
+  // SSR, donde `document` no existe y rompería el render.
   onMount(() => {
     document.addEventListener("keydown", trapFocus);
-  });
-
-  onDestroy(() => {
-    document.removeEventListener("keydown", trapFocus);
+    return () => document.removeEventListener("keydown", trapFocus);
   });
 </script>
 

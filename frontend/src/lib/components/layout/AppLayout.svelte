@@ -30,7 +30,7 @@
   - El dock del asistente ocupa toda la pantalla en móvil (<600px).
 -->
 <script>
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, tick } from "svelte";
   import SidebarNav from "./SidebarNav.svelte";
   import BreadcrumbBar from "./BreadcrumbBar.svelte";
   import AssistantDock from "./AssistantDock.svelte";
@@ -98,8 +98,13 @@
     });
   }
 
-  onMount(() => document.addEventListener("keydown", trapDrawerFocus));
-  onDestroy(() => document.removeEventListener("keydown", trapDrawerFocus));
+  // El listener se registra solo en cliente. La limpieza va como retorno de
+  // onMount (no onDestroy): onDestroy SÍ se ejecuta en SSR y `document` no
+  // existe allí, lo que rompía el render del layout (500 en rutas (app)).
+  onMount(() => {
+    document.addEventListener("keydown", trapDrawerFocus);
+    return () => document.removeEventListener("keydown", trapDrawerFocus);
+  });
 </script>
 
 <svelte:head>
