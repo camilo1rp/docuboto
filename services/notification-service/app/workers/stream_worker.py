@@ -10,12 +10,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
+
+import redis.exceptions as redis_exc
 
 from orpycamcp_common import events
 
 from app.core.redis_client import get_redis
 from app.services.event_consumer import process_document_event, process_event
+
+logger = logging.getLogger(__name__)
 
 WORKFLOW_STREAM = "orpycamcp.workflow.events"
 DOCUMENT_STREAM = "orpycamcp.document.events"
@@ -45,13 +50,19 @@ async def run() -> None:
     while True:
         try:
             messages = await redis.xreadgroup(GROUP, CONSUMER, read_spec, count=10, block=5000)
-            for stream, entries in messages or []:  # type: ignore[misc]
-                handler = _HANDLERS.get(_name(stream))
-                for msg_id, data in entries:  # type: ignore[union-attr]
-                    if handler is not None:
-                        await handler(data)
-                    await redis.xack(_name(stream), GROUP, msg_id)
         except asyncio.CancelledError:
             raise
+        except (redis_exc.TimeoutError, asyncio.TimeoutError):
+            # Normal: block= expired with no new entries — not an error; resume immediately.
+            continue
         except Exception:
+            logger.warning("Error en el bucle del worker de notificaciones", exc_info=True)
             await asyncio.sleep(5)
+            continue
+
+        for stream, entries in messages or []:  # type: ignore[misc]
+            handler = _HANDLERS.get(_name(stream))
+            for msg_id, data in entries:  # type: ignore[union-attr]
+                if handler is not None:
+                    await handler(data)
+                await redis.xack(_name(stream), GROUP, msg_id)

@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import redis.exceptions as redis_exc
+
 from orpycamcp_common import events
 
 from app.core.database import acquire_tenant
@@ -54,14 +56,20 @@ async def run() -> None:
             messages = await redis.xreadgroup(
                 GROUP, CONSUMER, {DOCUMENT_STREAM: ">"}, count=10, block=5000
             )
-            for _stream, entries in messages or []:  # type: ignore[misc]
-                for msg_id, data in entries:  # type: ignore[union-attr]
-                    try:
-                        await _handle(data)
-                    except Exception:
-                        logger.warning("Fallo distribuyendo evento", exc_info=True)
-                    await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
         except asyncio.CancelledError:
             raise
+        except (redis_exc.TimeoutError, asyncio.TimeoutError):
+            # Normal: block= expired with no new entries — not an error; resume immediately.
+            continue
         except Exception:
+            logger.warning("Error en el bucle del consumidor de workflow", exc_info=True)
             await asyncio.sleep(5)
+            continue
+
+        for _stream, entries in messages or []:  # type: ignore[misc]
+            for msg_id, data in entries:  # type: ignore[union-attr]
+                try:
+                    await _handle(data)
+                except Exception:
+                    logger.warning("Fallo distribuyendo evento", exc_info=True)
+                await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
