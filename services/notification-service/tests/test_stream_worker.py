@@ -193,6 +193,117 @@ async def test_run_reclaim_llamado_por_cada_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_trim_dlq_llamado_junto_con_retention() -> None:
+    """MVP-2: events.trim_deadletter se llama en el mismo gate diario que retention.run_once.
+
+    Verifica que ambas tareas se disparan cuando RETENTION_INTERVAL ha transcurrido,
+    y que trim_deadletter recibe DEADLETTER_STREAM y el max_age_ms correcto
+    (retention_dlq_days * 86 400 000).
+    """
+    from app.workers import stream_worker
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_reclaim = AsyncMock()
+    mock_run_once = AsyncMock()
+    mock_trim = AsyncMock(return_value=0)
+    mock_time = MagicMock()
+    mock_time.monotonic.side_effect = [0.0, stream_worker.RETENTION_INTERVAL + 1.0]
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.events.reclaim_stale", mock_reclaim),
+        patch("app.workers.stream_worker.retention.run_once", mock_run_once),
+        patch("app.workers.stream_worker.events.trim_deadletter", mock_trim),
+        patch("app.workers.stream_worker.time", mock_time),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    # Both dedup purge and DLQ trim must fire in the same gate.
+    mock_run_once.assert_awaited_once()
+    mock_trim.assert_awaited_once()
+
+    call = mock_trim.await_args
+    assert call.args[1] == stream_worker.DEADLETTER_STREAM
+    # max_age_ms = retention_dlq_days (default 30) × 86 400 000 ms/day.
+    assert call.kwargs["max_age_ms"] == 30 * 86_400_000
+
+
+@pytest.mark.asyncio
+async def test_run_trim_dlq_no_llamado_antes_del_intervalo() -> None:
+    """MVP-2: trim_deadletter NO se llama si RETENTION_INTERVAL aún no ha transcurrido."""
+    from app.workers import stream_worker
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_trim = AsyncMock(return_value=0)
+    mock_time = MagicMock()
+    mock_time.monotonic.return_value = 0.0  # never crosses the interval
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.events.trim_deadletter", mock_trim),
+        patch("app.workers.stream_worker.time", mock_time),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    mock_trim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_fallo_trim_dlq_no_tumba_el_loop() -> None:
+    """MVP-2: un error en trim_deadletter se registra como WARNING; el loop continúa.
+
+    retention.run_once completa con éxito; trim_deadletter falla; el loop sale
+    limpiamente via CancelledError.
+    """
+    from app.workers import stream_worker
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_time = MagicMock()
+    mock_time.monotonic.side_effect = [0.0, stream_worker.RETENTION_INTERVAL + 1.0]
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("app.workers.stream_worker.retention.run_once", AsyncMock()),
+        patch(
+            "app.workers.stream_worker.events.trim_deadletter",
+            AsyncMock(side_effect=RuntimeError("redis timeout")),
+        ),
+        patch("app.workers.stream_worker.time", mock_time),
+        patch.object(stream_worker, "logger") as mock_logger,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    # Loop survived.
+    assert fake_redis.xreadgroup.call_count == 2
+    warning_messages = [
+        call.args[0] for call in mock_logger.warning.call_args_list if call.args
+    ]
+    assert any("trim" in msg.lower() or "DLQ" in msg for msg in warning_messages)
+
+
+@pytest.mark.asyncio
 async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
     """Un fallo en reclaim_stale se registra como WARNING y el loop continúa."""
     from app.workers import stream_worker

@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # How often (in seconds) the worker loop triggers the retention sweep.
     retention_interval_seconds: int = 86400  # 24 h
 
+    # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
+    # How many days to keep Redis DLQ entries before XTRIM MINID pruning.
+    # The authoritative copy lives in Postgres (evento_dead_letter + audit_log),
+    # so 30 days is a very generous operational buffer.
+    retention_dlq_days: int = Field(default=30, ge=1)
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

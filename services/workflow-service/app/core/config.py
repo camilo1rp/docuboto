@@ -7,6 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +20,14 @@ class Settings(BaseSettings):
     keycloak_realm: str = "orpycamcp"
     service_port: int = 8006
     log_level: str = "info"
+
+    # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
+    # How many days to keep Redis DLQ entries before XTRIM MINID pruning.
+    # The authoritative copy lives in Postgres (evento_dead_letter + audit_log),
+    # so 30 days is a very generous operational buffer.
+    retention_dlq_days: int = Field(default=30, ge=1)
+    # How often (in seconds) the worker loop triggers the DLQ trim sweep.
+    retention_interval_seconds: int = 86400  # 24 h
 
     @property
     def database_url_asyncpg(self) -> str:

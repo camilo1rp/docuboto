@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fases 1, 2, 3 y 4-MVP-1 implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa)
+**Estado**: Aceptado — Fases 1, 2, 3 y 4-MVP-1/MVP-2 implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa; trim MINID del DLQ Redis activo)
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -171,7 +171,7 @@ Un proceso de limpieza periódica (`DELETE WHERE processed_at < now() - interval
 | 1 | signature-service | **Implementado** | Ack-solo-en-éxito (A-1); handler idempotente por guard SQL |
 | 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
 | 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document) |
-| 4 | notification-service | **MVP-1 implementado** (dedup TTL); MVP-2 y MVP-3 pendientes (ver abajo) | Purga periódica de `notification_processed_events` por TTL configurable (default 7 d) |
+| 4 | notification-service + shared | **MVP-1 implementado** (dedup TTL); **MVP-2 implementado** (XTRIM DLQ); MVP-3 pendiente (ver abajo) | MVP-1: Purga periódica de `notification_processed_events` por TTL configurable (default 7 d). MVP-2: XTRIM MINID por edad (30 d) en los tres DLQ streams; helper en `orpycamcp_common.events.trim_deadletter`; cableado en los tres workers con cadencia diaria |
 
 ---
 
@@ -213,13 +213,48 @@ de 7 días).  Un fallo de retención loguea WARNING y no tumba el loop.
 **Settings:** `retention_dedup_days: int = 7` y `retention_interval_seconds: int = 86400`
 en `app/core/config.py` (pydantic-settings, sobreescribibles por env).
 
-### MVP-2 — XTRIM del DLQ Redis (pendiente)
+### MVP-2 — XTRIM del DLQ Redis (implementado)
 
-El stream `orpycamcp.notification.deadletter` (y los equivalentes de otros servicios)
-puede crecer indefinidamente.  MVP-2 añadirá un `XTRIM MAXLEN ~N` periódico o por
-tamaño.  Requiere decisión de gobernanza: ¿qué tamaño máximo? ¿acta de eliminación?
-(Ley 594 art. 23 puede aplicar si el DLQ se considera parte del registro de actuaciones).
-**No implementado en esta fase; pendiente de ratificación.**
+**Mecanismo:** `XTRIM <stream> MINID ~ <cutoff_id>` con
+`cutoff_id = f"{cutoff_ms}-0"` y `cutoff_ms = int(now_utc_ms) - max_age_ms`.
+`approximate=True` (`~`) para eficiencia (evita rebalanceos innecesarios de
+la estructura interna de Redis).
+
+**Seguridad del recorte por MINID vs. MAXLEN ciego:** se usa MINID basado en
+edad (horizonte 30 días, configurable) en lugar de un `MAXLEN ~ N` fijo.  Un
+`MAXLEN` ciego podría descartar una entrada cuyo `on_dead_letter` aún no
+confirmó el INSERT en Postgres; bajo MINID eso no puede ocurrir porque cualquier
+entrada más vieja que el horizonte está garantizada espejada en Postgres (una
+persistencia fallida produce un nuevo `XADD` al DLQ + reintento dentro de la
+ventana de reclamación, que es de minutos, muy por debajo de los 30 días).
+
+**Helper:** `orpycamcp_common.events.trim_deadletter(redis, stream, *, max_age_ms) → int`.
+Sin dependencia de BD; devuelve el número de entradas eliminadas; propaga
+excepciones Redis al caller.
+
+**Cableado:** los tres workers con cadencia diaria (default `retention_interval_seconds = 86 400 s`):
+
+- `signature-service` — gate nuevo `_last_dlq_trim`, `DLQ_TRIM_INTERVAL` leído de
+  `settings.retention_interval_seconds`; config: `retention_dlq_days=30`, `retention_interval_seconds=86400`.
+- `workflow-service` — mismo patrón que signature.
+- `notification-service` — reusa el gate diario de MVP-1 (`_last_retention`): tras
+  `retention.run_once()`, llama `trim_deadletter` en el mismo bloque; config: añade
+  `retention_dlq_days=30`.
+
+Cada worker envuelve el trim en su propio `try/except` (CancelledError re-lanza;
+cualquier otro error loguea WARNING y no tumba el loop ni bloquea el gate).
+
+**Settings nuevos** (por servicio):
+```
+retention_dlq_days: int = 30  # configurable por env
+retention_interval_seconds: int = 86400  # solo signature y workflow; notification ya lo tenía
+```
+
+**Nota archivística:** el DLQ Redis es infraestructura operativa (buffer de replay),
+no un registro legal.  La copia autoritativa vive en Postgres.  `XTRIM MINID ~ ...`
+no requiere acta de eliminación (Ley 594 art. 23 aplica a series documentales, no a
+buffers de infraestructura).  El log estructurado de `trim_deadletter` (INFO con
+`entries_removed`) sirve como traza operativa suficiente.
 
 ### MVP-3 — Estado y retención de `evento_dead_letter` (pendiente)
 

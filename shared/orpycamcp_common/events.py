@@ -163,6 +163,35 @@ class ReclaimStats:
     dead_lettered: int = 0
 
 
+async def trim_deadletter(redis: Redis, stream: str, *, max_age_ms: int) -> int:
+    """XTRIM the DLQ buffer stream by MINID, dropping entries older than max_age_ms.
+
+    Safe because the authoritative copy of every dead-letter lives in Postgres
+    (evento_dead_letter + audit_log); a Redis entry whose persistence failed is
+    re-dead-lettered within the reclaim window (minutes), far below max_age_ms,
+    so anything older than the cutoff is guaranteed already mirrored.
+
+    Args:
+        redis:       Async Redis client.
+        stream:      DLQ stream name (e.g. ``"orpycamcp.signature.deadletter"``).
+        max_age_ms:  Horizon in milliseconds.  Entries with a Redis ID older than
+                     ``now - max_age_ms`` are eligible for removal.
+
+    Returns:
+        Number of entries removed (0 if Redis returned None or nothing to trim).
+    """
+    # Clamp to non-negative: an absurdly large max_age_ms (misconfig) would make the
+    # cutoff negative and the MINID invalid; floor at 0 → trims nothing (safe no-op).
+    cutoff_ms = max(0, int(datetime.now(UTC).timestamp() * 1000) - max_age_ms)
+    min_id = f"{cutoff_ms}-0"
+    trimmed = await redis.xtrim(stream, minid=min_id, approximate=True)
+    count = int(trimmed) if trimmed is not None else 0
+    logger.info(
+        "DLQ trim: stream=%s min_id=%s entries_removed=%d", stream, min_id, count
+    )
+    return count
+
+
 async def reclaim_stale(
     redis: Redis,
     stream: str,

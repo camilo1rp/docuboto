@@ -35,6 +35,7 @@ import redis.exceptions as redis_exc
 
 from orpycamcp_common import events
 
+from app.core.config import settings
 from app.core.database import acquire_tenant, get_pool
 from app.core.redis_client import get_redis
 from app.repositories.dead_letter_repository import DeadLetterRepository
@@ -61,6 +62,11 @@ _SERVICE = "workflow-service"
 # — ensures a healthy consumer processing a message for up to 55 s is never
 # pre-empted by this sweep.
 RECLAIM_INTERVAL = 30.0
+
+# Cadence for the DLQ Redis buffer trim (ADR-021 Fase 4 — MVP-2).
+# Read once at import time so tests can patch the module constant independently
+# of the settings singleton.
+DLQ_TRIM_INTERVAL: float = float(settings.retention_interval_seconds)
 
 
 async def _handle(data: dict) -> None:
@@ -235,11 +241,12 @@ async def run() -> None:
     redis = get_redis()
     await events.ensure_group(redis, DOCUMENT_STREAM, GROUP)
 
-    # Track last reclaim sweep time.  The cadence relationship to respect:
-    #   min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block (5 s)
-    # means stale messages are never reclaimed before a healthy consumer has
-    # had at least 55 s to finish processing them.
-    _last_reclaim = time.monotonic()
+    # Track cadence for both the PEL reclaim sweep and the DLQ buffer trim.
+    # A single time.monotonic() call initialises both: _last_reclaim = _last_dlq_trim = t0.
+    # Reclaim fires every RECLAIM_INTERVAL (30 s); DLQ trim fires every DLQ_TRIM_INTERVAL
+    # (default 86 400 s / 24 h).  Deferring the first DLQ trim avoids hitting Redis before
+    # the connection is warm; the daily window is negligible vs. the 30-day horizon.
+    _last_reclaim = _last_dlq_trim = time.monotonic()
 
     while True:
         try:
@@ -274,8 +281,10 @@ async def run() -> None:
                         exc_info=True,
                     )
 
-        # Reclaim sweep — runs on cadence, not on every iteration.
+        # Cadence gates — both share the same `now` snapshot (one monotonic call).
         now = time.monotonic()
+
+        # PEL reclaim sweep: runs every RECLAIM_INTERVAL (30 s).
         if now - _last_reclaim >= RECLAIM_INTERVAL:
             try:
                 await events.reclaim_stale(
@@ -295,3 +304,19 @@ async def run() -> None:
                 # A sweep failure must not crash the consumer loop.
                 logger.warning("Fallo en barrido de reclamación", exc_info=True)
             _last_reclaim = now
+
+        # DLQ buffer trim: runs every DLQ_TRIM_INTERVAL (default 86 400 s / 24 h).
+        # Safe: authoritative copy is in Postgres; entries older than the horizon
+        # are guaranteed already mirrored (ADR-021 Fase 4 — MVP-2).
+        if now - _last_dlq_trim >= DLQ_TRIM_INTERVAL:
+            try:
+                await events.trim_deadletter(
+                    redis,
+                    DEADLETTER_STREAM,
+                    max_age_ms=settings.retention_dlq_days * 86_400_000,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Fallo en trim del DLQ de workflow", exc_info=True)
+            _last_dlq_trim = now

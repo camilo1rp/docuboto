@@ -677,3 +677,111 @@ async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
 
     # Loop survivió: xreadgroup fue invocado dos veces (no sólo una).
     assert fake_redis.xreadgroup.call_count == 2
+
+
+# ===========================================================================
+# DLQ trim gate (ADR-021 Fase 4 — MVP-2)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
+    """events.trim_deadletter es llamado con DEADLETTER_STREAM y max_age_ms correcto
+    cuando DLQ_TRIM_INTERVAL ha transcurrido.
+    """
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_trim = AsyncMock(return_value=0)
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("app.workers.document_consumer.events.trim_deadletter", mock_trim),
+        patch("app.workers.document_consumer.time") as mock_time,
+    ):
+        # First monotonic: init _last_reclaim=_last_dlq_trim=0.0
+        # Second monotonic: now=DLQ_TRIM_INTERVAL+1 → both reclaim and DLQ trim fire
+        mock_time.monotonic.side_effect = [
+            0.0,
+            document_consumer.DLQ_TRIM_INTERVAL + 1.0,
+        ]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    mock_trim.assert_awaited_once()
+    call = mock_trim.await_args
+    assert call.args[1] == document_consumer.DEADLETTER_STREAM
+    # max_age_ms must equal retention_dlq_days (default 30) × 86 400 000 ms/day.
+    assert call.kwargs["max_age_ms"] == 30 * 86_400_000
+
+
+@pytest.mark.asyncio
+async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
+    """events.trim_deadletter NO se llama si DLQ_TRIM_INTERVAL aún no ha transcurrido."""
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_trim = AsyncMock(return_value=0)
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("app.workers.document_consumer.events.trim_deadletter", mock_trim),
+        patch("app.workers.document_consumer.time") as mock_time,
+    ):
+        # now=5.0 < DLQ_TRIM_INTERVAL (86400) → trim must NOT fire.
+        mock_time.monotonic.side_effect = [0.0, 5.0]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    mock_trim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_fallo_en_trim_dlq_no_tumba_el_loop() -> None:
+    """Un error en trim_deadletter se registra como WARNING; el loop no crashea."""
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch(
+            "app.workers.document_consumer.events.trim_deadletter",
+            AsyncMock(side_effect=RuntimeError("redis conn error")),
+        ),
+        patch("app.workers.document_consumer.time") as mock_time,
+        patch.object(document_consumer, "logger") as mock_logger,
+    ):
+        mock_time.monotonic.side_effect = [
+            0.0,
+            document_consumer.DLQ_TRIM_INTERVAL + 1.0,
+        ]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    # Loop survived (xreadgroup called twice, second CancelledError exits cleanly).
+    assert fake_redis.xreadgroup.call_count == 2
+    warning_messages = [
+        call.args[0] for call in mock_logger.warning.call_args_list if call.args
+    ]
+    assert any("trim" in msg.lower() or "DLQ" in msg for msg in warning_messages)

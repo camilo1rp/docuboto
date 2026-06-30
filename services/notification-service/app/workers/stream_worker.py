@@ -328,14 +328,32 @@ async def run() -> None:
                     )
             _last_reclaim = now
 
-        # Dedup retention job: runs every RETENTION_INTERVAL (default 86 400 s / 24 h).
-        # ADR-021 Fase 4 — MVP-1: purges notification_processed_events per tenant.
-        # A failure is logged as WARNING; it does NOT crash the consumer loop.
+        # Daily retention gate: runs every RETENTION_INTERVAL (default 86 400 s / 24 h).
+        # Two tasks share this gate so they fire on the same daily cadence:
+        #   MVP-1 — purge notification_processed_events dedup table per tenant.
+        #   MVP-2 — XTRIM the DLQ buffer stream by MINID (ADR-021 Fase 4).
+        # Each task has its own try/except so one failure never blocks the other.
         if now - _last_retention >= RETENTION_INTERVAL:
+            # MVP-1: dedup TTL purge.
             try:
                 await retention.run_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("Fallo en job de retención de dedup", exc_info=True)
+
+            # MVP-2: DLQ buffer trim.
+            # Safe: authoritative copy is in Postgres; entries older than the
+            # horizon are guaranteed already mirrored (ADR-021 Fase 4 MVP-2).
+            try:
+                await events.trim_deadletter(
+                    redis,
+                    DEADLETTER_STREAM,
+                    max_age_ms=settings.retention_dlq_days * 86_400_000,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Fallo en trim del DLQ de notificaciones", exc_info=True)
+
             _last_retention = now

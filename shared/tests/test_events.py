@@ -377,6 +377,66 @@ async def test_reclaim_stale_no_callback_xack_after_xadd() -> None:
     fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
 
 
+# ===========================================================================
+# trim_deadletter — unit tests
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_trim_deadletter_calls_xtrim_with_correct_args() -> None:
+    """trim_deadletter calls xtrim with minid derived from max_age_ms and approximate=True."""
+    import time as _time
+
+    redis = AsyncMock()
+    redis.xtrim.return_value = 3
+
+    max_age_ms = 30 * 86_400_000  # 30 days in milliseconds
+    before_ms = int(_time.time() * 1000)
+    result = await events.trim_deadletter(
+        redis, "orpycamcp.signature.deadletter", max_age_ms=max_age_ms
+    )
+    after_ms = int(_time.time() * 1000)
+
+    assert result == 3
+    redis.xtrim.assert_awaited_once()
+    call = redis.xtrim.await_args
+
+    # Positional arg 0: stream name.
+    assert call.args[0] == "orpycamcp.signature.deadletter"
+    # approximate=True maps to the Redis ~ modifier (efficient MINID trim).
+    assert call.kwargs.get("approximate") is True
+    # minid is a string "<epoch_ms>-0" representing the cutoff Redis entry ID.
+    min_id: str = call.kwargs.get("minid", "")
+    assert min_id.endswith("-0"), f"minid should end with '-0', got: {min_id!r}"
+    cutoff_ms = int(min_id[: -len("-0")])
+    # The cutoff must be within the expected window (allow ±1 s for clock skew).
+    assert before_ms - max_age_ms - 1000 <= cutoff_ms <= after_ms - max_age_ms + 1000
+
+
+@pytest.mark.asyncio
+async def test_trim_deadletter_returns_zero_when_xtrim_returns_none() -> None:
+    """When xtrim returns None (driver variation), trim_deadletter returns 0 gracefully."""
+    redis = AsyncMock()
+    redis.xtrim.return_value = None
+
+    result = await events.trim_deadletter(redis, "test.deadletter", max_age_ms=1_000)
+
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_trim_deadletter_returns_zero_when_nothing_removed() -> None:
+    """xtrim returns 0 (no entries older than horizon) → trim_deadletter returns 0."""
+    redis = AsyncMock()
+    redis.xtrim.return_value = 0
+
+    result = await events.trim_deadletter(
+        redis, "orpycamcp.workflow.deadletter", max_age_ms=7 * 86_400_000
+    )
+
+    assert result == 0
+
+
 @pytest.mark.asyncio
 async def test_reclaim_stale_returns_zero_stats_when_no_pending() -> None:
     """No pending entries → returns all-zero stats without calling any Redis command."""
