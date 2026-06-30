@@ -60,6 +60,8 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/workflows/", app_state.workflow_service_url),
         # El motor de reglas usa prefijo singular `workflow/rules` (E05); enrutarlo.
         ("/api/v1/workflow/rules/", app_state.workflow_service_url),
+        # Admin DLQ (ADR-021 Fase 5) usa prefijo singular `workflow/admin`; enrutarlo.
+        ("/api/v1/workflow/admin/", app_state.workflow_service_url),
         # notification-service
         ("/api/v1/notifications/", app_state.notification_service_url),
         ("/api/v1/webhooks/", app_state.notification_service_url),

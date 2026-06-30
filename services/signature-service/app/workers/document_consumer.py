@@ -62,6 +62,63 @@ RECLAIM_INTERVAL = 30.0
 DLQ_TRIM_INTERVAL: float = float(settings.retention_interval_seconds)
 
 
+async def apply_reclassification(
+    conn,
+    tenant_slug: str,
+    payload: dict,
+    *,
+    actor: str | None = None,
+    replayed: bool = False,
+) -> int:
+    """Core de reclasificación (H3): re-sincroniza firma_solicitud.nivel_seguridad.
+
+    ``conn`` debe llegar con el ``search_path`` ya fijado al tenant y, para la
+    atomicidad UPDATE+audit, dentro de una transacción abierta por el caller.
+    Reutilizado por el worker (``_handle``) y por el endpoint de replay
+    (admin_deadletter) — el replay marca ``replayed=True`` y atribuye el acto al
+    admin que lo dispara (``actor``).
+
+    Devuelve el número de filas actualizadas (0 = no-op idempotente o payload
+    incompleto).
+    """
+    nivel_nuevo = payload.get("nivel_nuevo")
+    if nivel_nuevo is None:
+        return 0
+
+    tracking_number: str | None = payload.get("tracking_number")
+    doc_id: str | None = payload.get("id")
+
+    # Build a deduplicated list of known identifiers for this radicado.
+    objeto_ids = list({x for x in [tracking_number, doc_id] if x is not None})
+    if not objeto_ids:
+        return 0
+
+    repo = CadenaRepository(conn)
+    n = await repo.actualizar_nivel_seguridad("radicado", objeto_ids, int(nivel_nuevo))
+
+    if n > 0 and _AUDIT_AVAILABLE:
+        audit_payload: dict = {"nivel_nuevo": nivel_nuevo, "filas": n}
+        if replayed:
+            audit_payload["replayed"] = True
+        await _audit.append(
+            conn,
+            tenant_slug=tenant_slug,
+            service=_SERVICE,
+            action="firma.solicitud_reclasificada",
+            object_type="radicado",
+            object_ref=tracking_number,
+            actor=actor,
+            payload=audit_payload,
+        )
+        logger.info(
+            "Re-synced %d firma_solicitud row(s) for radicado %s → nivel %s",
+            n,
+            tracking_number,
+            nivel_nuevo,
+        )
+    return n
+
+
 async def _handle(data: dict) -> None:
     envelope = events.parse_fields(data)
     if envelope.get("event_type") != "document.radicado.reclassified":
@@ -74,43 +131,24 @@ async def _handle(data: dict) -> None:
         logger.warning("Evento reclassified sin tenant_slug — ignorado")
         return
 
-    nivel_nuevo = payload.get("nivel_nuevo")
-    if nivel_nuevo is None:
+    if payload.get("nivel_nuevo") is None:
         logger.warning("Evento reclassified sin nivel_nuevo — ignorado")
         return
 
-    tracking_number: str | None = payload.get("tracking_number")
-    doc_id: str | None = payload.get("id")
-
-    # Build a deduplicated list of known identifiers for this radicado.
-    objeto_ids = list({x for x in [tracking_number, doc_id] if x is not None})
-    if not objeto_ids:
+    if not payload.get("tracking_number") and not payload.get("id"):
         logger.warning("Evento reclassified sin tracking_number ni id — ignorado")
         return
 
     async with acquire_tenant(tenant_slug) as conn:
-        repo = CadenaRepository(conn)
         # M-2: UPDATE and audit are atomic — both commit or both roll back.
         async with conn.transaction():
-            n = await repo.actualizar_nivel_seguridad("radicado", objeto_ids, int(nivel_nuevo))
-
-            if n > 0 and _AUDIT_AVAILABLE:
-                await _audit.append(
-                    conn,
-                    tenant_slug=tenant_slug,
-                    service=_SERVICE,
-                    action="firma.solicitud_reclasificada",
-                    object_type="radicado",
-                    object_ref=tracking_number,
-                    actor=envelope.get("actor"),
-                    payload={"nivel_nuevo": nivel_nuevo, "filas": n},
-                )
-                logger.info(
-                    "Re-synced %d firma_solicitud row(s) for radicado %s → nivel %s",
-                    n,
-                    tracking_number,
-                    nivel_nuevo,
-                )
+            await apply_reclassification(
+                conn,
+                tenant_slug,
+                payload,
+                actor=envelope.get("actor"),
+                replayed=False,
+            )
 
 
 async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:

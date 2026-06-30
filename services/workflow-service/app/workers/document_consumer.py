@@ -69,6 +69,21 @@ RECLAIM_INTERVAL = 30.0
 DLQ_TRIM_INTERVAL: float = float(settings.retention_interval_seconds)
 
 
+async def apply_distribution(conn, tenant_slug: str, payload: dict) -> str | None:
+    """Core de distribución automática (H3): evalúa reglas y autoasigna.
+
+    ``conn`` debe llegar con el ``search_path`` ya fijado al tenant. Reutilizado
+    por el worker (``_handle``) y por el endpoint de replay (admin_deadletter), de
+    modo que el reproceso corre sobre la MISMA conexión/transacción del caller.
+    ``auto_distribute`` es idempotente (guard RN-8), así que reprocesar un radicado
+    ya distribuido no genera asignación duplicada.
+
+    Devuelve la dependencia asignada, o None si no aplicaba ninguna regla / ya
+    estaba distribuido.
+    """
+    return await auto_distribute(conn, tenant_slug, payload)
+
+
 async def _handle(data: dict) -> None:
     envelope = events.parse_fields(data)
     if envelope.get("event_type") != "document.radicado.created":
@@ -78,7 +93,7 @@ async def _handle(data: dict) -> None:
     if not tenant_slug or not payload.get("id"):
         return
     async with acquire_tenant(tenant_slug) as conn:
-        await auto_distribute(conn, tenant_slug, payload)
+        await apply_distribution(conn, tenant_slug, payload)
 
 
 async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:

@@ -596,6 +596,19 @@ El workflow-service publica en `orpycamcp.workflow.events` cuando cambia el esta
 
 El notification-service consume este stream (consumer group `notification-service`) y envía email al departamento destino.
 
+### Gestión del dead-letter (Fase 5, ADR-021)
+
+Los eventos que no se pueden procesar tras `max_deliveries` reintentos quedan en la tabla `evento_dead_letter` (por tenant) con `status='pending'`. Cada servicio consumidor expone una superficie admin para inspeccionarlos y resolverlos, gateada por el permiso **`PERM_DLQ_ADMIN`** (rol de plataforma; asignación restringida). Implementado en signature-service y workflow-service (notification: pendiente, Inc. 2).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET` | `/api/v1/{signature\|workflow}/admin/deadletter?status=pending&origin_stream=&page=&size=` | Lista paginada (`X-Total-Count`). Solo cabeceras (sin payload de negocio). |
+| `GET` | `/api/v1/{signature\|workflow}/admin/deadletter/{event_id}` | Detalle (sobre íntegro + fallo). Gateado por clearance (no-read-up sobre el nivel vivo del radicado; `404` neutro si insuficiente). |
+| `POST` | `/api/v1/{signature\|workflow}/admin/deadletter/{event_id}/replay` | Reprocesa el evento (idempotente, atómico). `200` → `status='resolved'`; `409` si no está `pending`; `502` si el reproceso falla (queda `pending`); `404` si no existe o sin clearance. |
+| `POST` | `/api/v1/{signature\|workflow}/admin/deadletter/{event_id}/discard` | Cierra como `discarded`. Body `{ "reason": "..." }` (obligatorio). Mismos códigos. |
+
+Toda acción (`replay`/`discard`) se registra en el `audit_log` inmutable con el actor humano (`X-User-Id`). Los eventos malformados sin `tenant_slug` (`SYSTEM_TENANT`) no son replayables (gestión de plataforma).
+
 ---
 
 ## Batch API — document-service

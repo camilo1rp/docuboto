@@ -21,6 +21,7 @@ Política **fail-closed**: ante ausencia de identidad, usuario inexistente, tabl
 no provisionadas o cualquier duda, se devuelve PUBLICA (1) — mínimo privilegio.
 """
 
+import json
 import uuid
 
 import asyncpg
@@ -151,3 +152,71 @@ def require_permission(perm_name: str):
             )
 
     return _dep
+
+
+async def assert_can_read_deadletter(
+    conn: asyncpg.Connection,
+    caller_clearance: int,
+    row: asyncpg.Record,
+) -> None:
+    """No-read-up gate sobre un dead-letter (ADR-021 Fase 5, RF-SEG-08).
+
+    Determina el nivel de seguridad del objeto referenciado por el evento aparcado
+    de forma **fail-closed** sobre el nivel VIVO del radicado (no se confía solo en
+    el nivel embebido en el sobre, que pudo quedar obsoleto). Si el llamante no
+    alcanza ese nivel, responde **404 neutro** (no 403): no se revela ni la
+    existencia ni el nivel del objeto.
+
+    La conexión llega con ``search_path`` ya fijado al tenant (lo hace
+    ``require_permission`` sobre la misma conexión cacheada por request).
+
+    Reglas de determinación de nivel (fail-closed a CLASIFICADA=3 ante cualquier duda):
+      - Sin identificadores de radicado en el sobre → CLASIFICADA.
+      - Radicado no encontrado (o tabla ``radicados`` ausente) → CLASIFICADA.
+      - En otro caso → ``max(nivel_vivo, nivel_embebido)`` (o ``nivel_vivo`` si no
+        hay nivel embebido).
+    """
+    raw_payload = row["payload"]
+    payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
+    inner_payload = payload_data.get("payload", {}) if isinstance(payload_data, dict) else {}
+
+    tracking_number = inner_payload.get("tracking_number")
+    doc_id = inner_payload.get("id")
+    nivel_embebido = inner_payload.get("nivel_nuevo")
+    if nivel_embebido is None:
+        nivel_embebido = inner_payload.get("nivel_seguridad")
+
+    identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
+
+    if not identifiers:
+        nivel_objeto = CLASIFICADA
+    else:
+        nivel_vivo: int | None = None
+        try:
+            for ident in identifiers:
+                nivel_vivo = await conn.fetchval(
+                    "SELECT nivel_seguridad FROM radicados "
+                    "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+                    ident,
+                )
+                if nivel_vivo is not None:
+                    break
+        except asyncpg.UndefinedTableError:
+            nivel_vivo = None
+
+        if nivel_vivo is None:
+            nivel_objeto = CLASIFICADA
+        elif nivel_embebido is not None:
+            nivel_objeto = max(int(nivel_vivo), int(nivel_embebido))
+        else:
+            nivel_objeto = int(nivel_vivo)
+
+    if caller_clearance < nivel_objeto:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "not_found",
+                "detail": "Dead-letter event not found or not accessible",
+                "status": 404,
+            },
+        )

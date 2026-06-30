@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fases 1, 2, 3 y 4-MVP-1/MVP-2 implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa; trim MINID del DLQ Redis activo)
+**Estado**: Aceptado — Fases 1, 2, 3, 4-MVP-1/MVP-2 y 5 (replay/discard API) implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa; trim MINID del DLQ Redis activo; API de inspección/replay/discard con `PERM_DLQ_ADMIN`)
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -172,6 +172,7 @@ Un proceso de limpieza periódica (`DELETE WHERE processed_at < now() - interval
 | 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
 | 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document) |
 | 4 | notification-service + shared | **MVP-1 implementado** (dedup TTL); **MVP-2 implementado** (XTRIM DLQ); MVP-3 pendiente (ver abajo) | MVP-1: Purga periódica de `notification_processed_events` por TTL configurable (default 7 d). MVP-2: XTRIM MINID por edad (30 d) en los tres DLQ streams; helper en `orpycamcp_common.events.trim_deadletter`; cableado en los tres workers con cadencia diaria |
+| 5 | signature-service + workflow-service | **Implementado** | Replay/discard API con `PERM_DLQ_ADMIN`; clearance fail-closed sobre nivel vivo (404 neutro); atomicidad replay+estado+audit en una transacción; assert tenant match; concurrencia por `UPDATE … WHERE status='pending'`; columna `status` (pending/resolved/discarded) en `evento_dead_letter` |
 
 ---
 
@@ -256,18 +257,69 @@ no requiere acta de eliminación (Ley 594 art. 23 aplica a series documentales, 
 buffers de infraestructura).  El log estructurado de `trim_deadletter` (INFO con
 `entries_removed`) sirve como traza operativa suficiente.
 
-### MVP-3 — Estado y retención de `evento_dead_letter` (pendiente)
+### MVP-3 — Retención de `evento_dead_letter` (pendiente)
 
-La tabla `evento_dead_letter` también crece.  MVP-3 añade una columna `status`
-(`pending` / `resolved` / `replayed`) para habilitar flujos de inspección y replay,
-y un job de retención que elimine (o archive) filas en estado `resolved` tras un
-periodo configurable.  Requiere:
+La columna `status` (`pending` / `resolved` / `discarded`) ya está implementada
+(Fase 5, ver abajo) y habilita los flujos de inspección y replay.  Lo que queda
+pendiente de MVP-3 es el **job de retención** que elimine (o archive) filas en
+estado `resolved`/`discarded` tras un periodo configurable.  Requiere:
   1. Ratificación de la clasificación archivística por compliance: ¿son los dead-letters
      parte del registro legal de comunicaciones oficiales o solo infraestructura?
   2. Si son parte del registro: procedimiento de acta de eliminación (Ley 594 art. 23).
-  3. Columna `status` + migración.
-  4. Mecanismo de replay (lector del DLQ con filtro por tenant y rol de plataforma).
-**No implementado; pendiente de decisión de compliance.**
+**Job de retención no implementado; pendiente de decisión de compliance.**
+
+## Fase 5 — API de inspección, replay y discard (implementado)
+
+**Servicios:** signature-service y workflow-service.  notification-service
+(Incremento 2) y el job de purga (MVP-3) quedan pendientes.
+
+**Modelo de estado.**  Migración de tenant (`signature 006`, `workflow 010`) añade
+a `evento_dead_letter` las columnas `status TEXT NOT NULL DEFAULT 'pending'
+CHECK (status IN ('pending','resolved','discarded'))` y `resolved_at TIMESTAMPTZ NULL`,
+más índices parciales (`ix_edl_pending` sobre los pendientes, `ix_edl_resolved`
+sobre los cerrados).  La migración es idempotente (patrón
+`DO $$ … information_schema.columns … $$`, PG15 sin `ADD COLUMN IF NOT EXISTS`).
+
+**Permiso.**  `PERM_DLQ_ADMIN` (auth-service migración tenant `009`) protege todas
+las rutas a nivel de router (`Depends(require_permission("PERM_DLQ_ADMIN"))`).
+
+**Endpoints** (prefijo `…/admin/deadletter`):
+- `GET /` — lista resúmenes paginados (`?status=&origin_stream=&page=&size=`),
+  `X-Total-Count` por ventana `COUNT(*) OVER()`.  El resumen **no expone**
+  `payload`, `tracking_number` ni `last_error` (no filtra la existencia de objetos
+  clasificados).
+- `GET /{event_id}` — detalle completo (sobre + failure), tras gate de clearance.
+- `POST /{event_id}/replay` — reprocesa el evento.
+- `POST /{event_id}/discard` — descarta con motivo obligatorio (`reason`).
+
+**Gate de clearance fail-closed (no-read-up, RF-SEG-08).**
+`assert_can_read_deadletter` resuelve el nivel del objeto sobre el **valor VIVO**
+de `radicados.nivel_seguridad` (no confía solo en el nivel embebido en el sobre,
+que pudo quedar obsoleto): `nivel_objeto = max(nivel_vivo, nivel_embebido)`.  Ante
+cualquier duda (sin identificadores, radicado no hallado, tabla `radicados`
+ausente) **degrada a CLASIFICADA=3**, nunca a público.  Si el llamante no alcanza
+el nivel responde **404 neutro** (no 403): no revela existencia ni nivel.
+
+**Atomicidad del replay.**  Toda la operación corre en una sola `conn.transaction()`:
+`SELECT … FOR UPDATE` (predicado de tenant), assert tenant match (422 si difiere),
+gate de clearance, re-invocación del **handler-core** (`apply_reclassification` en
+signature, `apply_distribution` en workflow) sobre la MISMA conexión, transición
+`pending → resolved`, y `audit.append`.  Si el handler falla se responde **502** y
+la transacción revierte → el evento permanece `pending` (no se pierde).  El
+handler-core se extrajo del worker (`_handle`) sin cambiar su comportamiento; ambos
+caminos comparten la misma lógica.
+
+**Concurrencia.**  La transición es `UPDATE … WHERE status='pending'`: dos admins
+que reprocesen el mismo evento serializan por el `FOR UPDATE`; el segundo obtiene
+0 filas y recibe **409** (`already_resolved`).
+
+**Aislamiento de tenant.**  Toda consulta lleva predicado explícito
+`tenant_slug = $caller` además del `search_path`, defensa en profundidad contra
+fuga cross-tenant (el DLQ es por servicio y agrega todos los tenants en Redis, pero
+la tabla Postgres y la API están acotadas por tenant).
+
+**Gateway.**  Se añadió la ruta `/api/v1/workflow/admin/` al proxy
+(`signature/admin` ya estaba cubierto por `/api/v1/signature/`).
 
 ## Alternativas descartadas
 
