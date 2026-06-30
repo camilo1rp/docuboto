@@ -173,9 +173,19 @@ async def test_get_notification_not_found(client: AsyncClient, db_conn) -> None:
 async def test_process_workflow_event() -> None:
     from orpycamcp_common import events
 
+    # conn_dedup: used by event_consumer.acquire_tenant for the dedup claim.
+    # fetchrow must return a non-None record so claim() returns True (event is new).
+    conn_dedup = AsyncMock()
+    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+
+    # conn: used by notification_service.acquire_tenant for persistence.
     conn = make_db_conn()
     with (
         patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch(
+            "app.services.event_consumer.acquire_tenant",
+            return_value=_FakeAcquire(conn_dedup),
+        ),
         patch(
             "app.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(conn),
@@ -203,9 +213,16 @@ async def test_process_workflow_event() -> None:
 async def test_process_workflow_overdue_event() -> None:
     from orpycamcp_common import events
 
+    conn_dedup = AsyncMock()
+    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+
     conn = make_db_conn()
     with (
         patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch(
+            "app.services.event_consumer.acquire_tenant",
+            return_value=_FakeAcquire(conn_dedup),
+        ),
         patch(
             "app.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(conn),
@@ -234,9 +251,16 @@ async def test_process_workflow_overdue_event() -> None:
 async def test_process_document_event() -> None:
     from orpycamcp_common import events
 
+    conn_dedup = AsyncMock()
+    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+
     conn = make_db_conn()
     with (
         patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch(
+            "app.services.event_consumer.acquire_tenant",
+            return_value=_FakeAcquire(conn_dedup),
+        ),
         patch(
             "app.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(conn),
@@ -265,7 +289,16 @@ async def test_process_document_event() -> None:
 async def test_process_document_event_ignores_other_types() -> None:
     from orpycamcp_common import events
 
-    with patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send:
+    conn_dedup = AsyncMock()
+    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+
+    with (
+        patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch(
+            "app.services.event_consumer.acquire_tenant",
+            return_value=_FakeAcquire(conn_dedup),
+        ),
+    ):
         from app.services.event_consumer import process_document_event
 
         event = events.build_event("document.radicado.updated", tenant_slug="icetex", payload={})

@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fases 1 y 2 implementadas (signature-service y workflow-service, R-4 resuelto); Fase 3 pendiente
+**Estado**: Aceptado — Fases 1, 2 y 3 implementadas (signature-service, workflow-service y notification-service, R-4 resuelto)
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -142,8 +142,27 @@ una pre-emción por el barrido de reclamación.
 La idempotencia en el reproceso es **responsabilidad del handler**, no del helper.
 En signature-service `_handle` ya es idempotente: el `UPDATE ... WHERE nivel_seguridad <> $1`
 es un guard natural; una segunda ejecución con el mismo nivel no produce cambios (0 filas).
-Para servicios donde el efecto no es idempotente por naturaleza (ej. notificación de email
-en notification-service, Fase 3), se deberá añadir una tabla de deduplicación por tenant.
+Para servicios donde el efecto no es idempotente por naturaleza (notificación de email en
+notification-service), se añade una tabla de deduplicación por tenant (Fase 3 — implementado).
+
+**notification-service (Fase 3) — patrón insert-then-send:**
+
+La tabla `notification_processed_events(event_id TEXT PRIMARY KEY)` (migración tenant `004`)
+actúa como guard de deduplicación: antes de cualquier efecto externo (webhook, email), el
+handler realiza `INSERT … ON CONFLICT DO NOTHING RETURNING event_id`.
+
+- `INSERT` devuelve fila → evento nuevo → continúa con efectos externos.
+- `INSERT` devuelve `NULL` (ON CONFLICT) → ya procesado → retorno silencioso (dedup skip).
+- Error de BD en el INSERT → propaga al caller (A-1: no ack → PEL → reclaim sweep).
+
+**Trade-off insert-then-send:** si el worker muere entre el INSERT (claim) y el envío
+del email, ese correo se pierde permanentemente en el periodo de fallo. El trade-off es
+aceptado: el correo no es el registro legal; `audit_log` y el radicado en
+`document-service` son la fuente autoritativa (Ley 594/2000 art. 4 y art. 19).
+
+**Job de retención pendiente:** `notification_processed_events` crece indefinidamente.
+Un proceso de limpieza periódica (`DELETE WHERE processed_at < now() - interval '7 days'`)
+**debe** programarse como tarea separada; no está implementado en esta migración.
 
 ## Fases de implementación
 
@@ -151,7 +170,7 @@ en notification-service, Fase 3), se deberá añadir una tabla de deduplicación
 |------|----------|--------|------|
 | 1 | signature-service | **Implementado** | Ack-solo-en-éxito (A-1); handler idempotente por guard SQL |
 | 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
-| 3 | notification-service | Pendiente | Requiere tabla de dedup (envío de email no idempotente) |
+| 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document); job de retención de `notification_processed_events` pendiente (ver Idempotencia) |
 
 ## Alternativas descartadas
 

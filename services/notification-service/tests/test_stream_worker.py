@@ -7,12 +7,16 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Tests del stream worker de notification-service (E16).
+"""Tests del stream worker de notification-service (E16, ADR-021 Fase 3).
 
-Cubre el comportamiento del bucle externo de run():
-  - La expiración normal de block= (RedisTimeoutError) no loguea WARNING ni hace sleep.
-  - El bucle reanuda de inmediato tras el timeout.
-  - El xack y el despacho a handlers se mantienen intactos.
+Cubre:
+  1. Timeout silencioso de block= → no loguea WARNING ni hace sleep (comportamiento
+     de redis-py 8.x cuando el block= expira sin entradas nuevas).
+  2. A-1 (ack-only-on-success): xack se llama si el handler tiene éxito.
+  3. A-1: xack NO se llama si el handler lanza excepción; el mensaje queda en PEL.
+  4. Barrido reclaim_stale se invoca una vez por stream cuando RECLAIM_INTERVAL
+     ha transcurrido.
+  5. Un fallo en el barrido no tumba el loop (loguea WARNING y continúa).
 """
 
 from __future__ import annotations
@@ -47,9 +51,12 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
         patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.time") as mock_time,
         patch("asyncio.sleep", AsyncMock()) as mock_sleep,
         patch.object(stream_worker, "logger") as mock_logger,
     ):
+        # Prevent the reclaim sweep from firing during this test.
+        mock_time.monotonic.return_value = 0.0
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
 
@@ -65,11 +72,11 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_despacha_a_handler_y_ackea() -> None:
-    """Los mensajes recibidos se despachan al handler correcto y se ackean.
+async def test_run_xack_si_handler_tiene_exito() -> None:
+    """A-1: xack se llama cuando el handler tiene éxito (no lanza).
 
-    Verifica que el refactor del bucle externo no alteró la semántica de despacho
-    por stream ni el xack incondicional por mensaje.
+    El refactor del bucle externo mantiene la semántica de despacho por stream
+    y el xack condicional (A-1) cuando el handler completa sin excepción.
     """
     from app.workers import stream_worker
 
@@ -86,13 +93,15 @@ async def test_run_despacha_a_handler_y_ackea() -> None:
     )
     fake_redis.xack = AsyncMock()
 
-    mock_handler = AsyncMock()
+    mock_handler = AsyncMock()  # success — does not raise
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
         patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.time") as mock_time,
         patch.dict(stream_worker._HANDLERS, {stream_worker.WORKFLOW_STREAM: mock_handler}),
     ):
+        mock_time.monotonic.return_value = 0.0  # no reclaim sweep
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
 
@@ -100,3 +109,119 @@ async def test_run_despacha_a_handler_y_ackea() -> None:
     fake_redis.xack.assert_called_once_with(
         stream_worker.WORKFLOW_STREAM, stream_worker.GROUP, msg_id
     )
+
+
+@pytest.mark.asyncio
+async def test_run_xack_no_se_llama_si_handler_falla() -> None:
+    """A-1: xack NO se llama cuando el handler lanza — mensaje queda en PEL.
+
+    Semántica A-1 (ADR-021 Fase 3): un fallo del handler deja el mensaje en la
+    Pending Entries List.  El barrido reclaim_stale lo recogerá y, tras
+    max_deliveries=5, lo escalará al dead-letter stream con traza durable.
+    El loop debe continuar (no crashear) y salir limpiamente con CancelledError.
+    """
+    from app.workers import stream_worker
+
+    fake_redis = MagicMock()
+    msg_id = b"1700000000000-0"
+    msg_data: dict = {"event_id": "evt-001", "tenant_slug": "demo"}
+    stream_name = stream_worker.WORKFLOW_STREAM.encode()
+
+    fake_redis.xreadgroup = AsyncMock(
+        side_effect=[
+            [(stream_name, [(msg_id, msg_data)])],
+            asyncio.CancelledError(),
+        ]
+    )
+    fake_redis.xack = AsyncMock()
+
+    mock_handler = AsyncMock(side_effect=ValueError("dedup BD caída"))
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.time") as mock_time,
+        patch.dict(stream_worker._HANDLERS, {stream_worker.WORKFLOW_STREAM: mock_handler}),
+    ):
+        mock_time.monotonic.return_value = 0.0  # no reclaim sweep
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    # A-1: xack must NOT have been called — message stays in the PEL.
+    fake_redis.xack.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_reclaim_llamado_por_cada_stream() -> None:
+    """reclaim_stale se invoca una vez por stream cuando RECLAIM_INTERVAL ha transcurrido.
+
+    El barrido de cadencia debe llamar a events.reclaim_stale para cada uno de los
+    dos streams (WORKFLOW_STREAM y DOCUMENT_STREAM), pasando el handler correspondiente
+    y el mismo DEADLETTER_STREAM.
+    """
+    from app.workers import stream_worker
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],  # no messages in first iteration
+        asyncio.CancelledError(),
+    ]
+
+    mock_reclaim = AsyncMock(return_value=None)
+    mock_time = MagicMock()
+    # Call 1: before loop → 0.0 (_last_reclaim); Call 2: first iteration → 31.0 (triggers sweep)
+    mock_time.monotonic.side_effect = [0.0, stream_worker.RECLAIM_INTERVAL + 1.0]
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.events.reclaim_stale", mock_reclaim),
+        patch("app.workers.stream_worker.time", mock_time),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    # reclaim_stale must be called once per stream (two streams).
+    assert mock_reclaim.call_count == 2
+    called_streams = {call.args[1] for call in mock_reclaim.call_args_list}
+    assert called_streams == {stream_worker.WORKFLOW_STREAM, stream_worker.DOCUMENT_STREAM}
+
+    # Each call must pass the unified dead-letter stream.
+    for call in mock_reclaim.call_args_list:
+        assert call.kwargs.get("deadletter_stream") == stream_worker.DEADLETTER_STREAM
+        assert call.kwargs.get("on_dead_letter") is stream_worker._persist_dead_letter
+
+
+@pytest.mark.asyncio
+async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
+    """Un fallo en reclaim_stale se registra como WARNING y el loop continúa."""
+    from app.workers import stream_worker
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_time = MagicMock()
+    mock_time.monotonic.side_effect = [0.0, stream_worker.RECLAIM_INTERVAL + 1.0]
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch(
+            "app.workers.stream_worker.events.reclaim_stale",
+            AsyncMock(side_effect=RuntimeError("redis down")),
+        ),
+        patch("app.workers.stream_worker.time", mock_time),
+        patch.object(stream_worker, "logger") as mock_logger,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    # The loop survived and exited cleanly via CancelledError (not RuntimeError).
+    # A warning must have been logged for the sweep failure.
+    warning_messages = [
+        call.args[0] for call in mock_logger.warning.call_args_list if call.args
+    ]
+    assert any("barrido" in msg for msg in warning_messages)
