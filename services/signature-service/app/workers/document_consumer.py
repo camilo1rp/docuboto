@@ -23,6 +23,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import redis.exceptions as redis_exc
+
 from orpycamcp_common import events
 
 from app.core.database import acquire_tenant
@@ -106,21 +108,26 @@ async def run() -> None:
             messages = await redis.xreadgroup(
                 GROUP, CONSUMER, {DOCUMENT_STREAM: ">"}, count=10, block=5000
             )
-            for _stream, entries in messages or []:  # type: ignore[misc]
-                for msg_id, msg_data in entries:  # type: ignore[union-attr]
-                    try:
-                        await _handle(msg_data)
-                        # A-1: ack ONLY on success — a failed _handle leaves the message
-                        # in the PEL (Pending Entries List) for retry on the next consumer.
-                        await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
-                    except Exception:
-                        logger.warning(
-                            "Fallo procesando evento de reclasificación — "
-                            "mensaje permanece en PEL para reintento",
-                            exc_info=True,
-                        )
         except asyncio.CancelledError:
             raise
+        except (redis_exc.TimeoutError, asyncio.TimeoutError):
+            # Normal: block= expired with no new entries — not an error; resume immediately.
+            continue
         except Exception:
             logger.warning("Error en el bucle del consumidor de firma", exc_info=True)
             await asyncio.sleep(5)
+            continue
+
+        for _stream, entries in messages or []:  # type: ignore[misc]
+            for msg_id, msg_data in entries:  # type: ignore[union-attr]
+                try:
+                    await _handle(msg_data)
+                    # A-1: ack ONLY on success — a failed _handle leaves the message
+                    # in the PEL (Pending Entries List) for retry on the next consumer.
+                    await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
+                except Exception:
+                    logger.warning(
+                        "Fallo procesando evento de reclasificación — "
+                        "mensaje permanece en PEL para reintento",
+                        exc_info=True,
+                    )

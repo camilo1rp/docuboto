@@ -30,7 +30,7 @@
     - TODO T-08b: anular, devolver, responder, VoBo.
 -->
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
@@ -44,6 +44,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
+  import { NIVEL_OPTIONS, getNivelChip } from "$lib/utils/nivelSeguridad.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -84,6 +85,20 @@
   let modalResponder = false;
   let modalVoBo = false;
   let modalCrearCadena = false;
+
+  // ---------------------------------------------------------------------------
+  // T-RECLASIFICAR: modal de reclasificación de nivel de seguridad (RF-SEG-08)
+  // ---------------------------------------------------------------------------
+  let modalReclasificar = false;
+  let reclasificarNivel = "";
+  let reclasificarMotivo = "";
+  let reclasificarMotivoError = "";
+  let reclasificarCausal = "";
+  let reclasificarFundamento = "";
+  let reclasificarPlazo = "";
+  let reclasificarLoading = false;
+  /** @type {HTMLElement | undefined} Título de la página: destino de foco estable. */
+  let tituloEl;
 
   // Anulacion — causal (req, ≤15 chars), motivo (opt, ≤2000)
   let anulCausal = "";
@@ -533,6 +548,108 @@
   }
 
   // ---------------------------------------------------------------------------
+  // T-RECLASIFICAR: reclasificar nivel de seguridad (RF-SEG-08, Ley 1712)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Abre el modal de reclasificación para el radicado actualmente en el drawer.
+   * Cierra el drawer ANTES para no apilar focus traps (A11y — mismo patrón que firmas).
+   */
+  function openModalReclasificar() {
+    if (!selectedDoc) return;
+    // Preseleccionar el nivel actual del radicado (o "1" si no tiene)
+    reclasificarNivel = String(selectedDoc.nivel_seguridad ?? "1");
+    reclasificarMotivo = "";
+    reclasificarMotivoError = "";
+    reclasificarCausal = "";
+    reclasificarFundamento = "";
+    reclasificarPlazo = "";
+    // Cerrar drawer ANTES de abrir modal — evitar apilar focus traps (A11y)
+    drawerOpen = false;
+    modalReclasificar = true;
+  }
+
+  /**
+   * Cierra el modal de reclasificación devolviendo el foco al título de la página.
+   * El disparador ("Reclasificar nivel") vivía en el drawer ya desmontado, por lo que
+   * el retorno de foco nativo del Modal caería en <body>; lo movemos al h1 (patrón firmas).
+   */
+  function cerrarModalReclasificar() {
+    modalReclasificar = false;
+    tick().then(() => tituloEl?.focus());
+  }
+
+  /**
+   * Envía la reclasificación al proxy SSR.
+   * POST /bandeja/api/[id]/security-level → PATCH /api/v1/documents/{id}/security-level.
+   * Valida en cliente antes de enviar; traduce 404/403/422 a mensajes claros.
+   */
+  async function reclasificar() {
+    if (!selectedDoc || reclasificarLoading) return;
+
+    reclasificarMotivoError = "";
+    const nivelInt = parseInt(reclasificarNivel, 10);
+
+    if (!reclasificarNivel || ![1, 2, 3].includes(nivelInt)) {
+      notifyError("Seleccione un nivel de seguridad válido.");
+      return;
+    }
+    if (!reclasificarMotivo.trim()) {
+      reclasificarMotivoError = "El motivo de la reclasificación es obligatorio.";
+      return;
+    }
+
+    reclasificarLoading = true;
+    try {
+      /** @type {Record<string, unknown>} */
+      const reqBody = {
+        nivel_seguridad: nivelInt,
+        motivo: reclasificarMotivo.trim(),
+      };
+      // Campos opcionales solo cuando nivel >= 2 (reservada/clasificada)
+      if (nivelInt >= 2) {
+        if (reclasificarCausal.trim()) reqBody.causal_reserva = reclasificarCausal.trim();
+        if (reclasificarFundamento.trim())
+          reqBody.fundamento_juridico = reclasificarFundamento.trim();
+        if (reclasificarPlazo.trim()) {
+          const plazoInt = parseInt(reclasificarPlazo, 10);
+          if (!isNaN(plazoInt) && plazoInt >= 0) reqBody.plazo_reserva_meses = plazoInt;
+        }
+      }
+
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(selectedDoc.id)}/security-level`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reqBody),
+      });
+      const result = await res.json();
+
+      if (res.ok) {
+        notifySuccess("Nivel de seguridad reclasificado correctamente.");
+        // Actualizar el nivel en el detalle local para reflejar el cambio inmediato
+        selectedDoc = { ...selectedDoc, nivel_seguridad: /** @type {1|2|3} */ (nivelInt) };
+        cerrarModalReclasificar();
+      } else if (res.status === 403) {
+        notifyError(
+          result.detail ?? "No tiene el nivel de acceso para asignar ese nivel de seguridad.",
+        );
+        cerrarModalReclasificar();
+      } else if (res.status === 404) {
+        notifyError(
+          result.detail ?? "No fue posible reclasificar el radicado o no tiene acceso a él.",
+        );
+        cerrarModalReclasificar();
+      } else {
+        notifyError(result.detail ?? `Error ${res.status} al reclasificar el nivel de seguridad.`);
+      }
+    } catch {
+      notifyError("No se pudo conectar al servidor de documentos.");
+    } finally {
+      reclasificarLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Acciones inline (T-08 scope — sin T-08b)
   // ---------------------------------------------------------------------------
 
@@ -591,6 +708,9 @@
   // Pre-computed para evitar condiciones largas en template (printWidth)
   $: canDevolverInDrawer =
     canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
+  $: canReclasificar = $permissions.includes("PERM_RECLASIFICAR");
+  // Nivel seleccionado como entero (para mostrar/ocultar campos opcionales de reserva en template)
+  $: nivelReclasificarInt = parseInt(reclasificarNivel, 10) || 0;
 </script>
 
 <svelte:head>
@@ -602,7 +722,7 @@
     Encabezado
   ----------------------------------------------------------------------- -->
   <header class="bandeja__header">
-    <h1 class="bandeja__title">Bandeja de radicados</h1>
+    <h1 class="bandeja__title" bind:this={tituloEl} tabindex="-1">Bandeja de radicados</h1>
     <span class="bandeja__total" aria-live="polite">
       {#if !loading}
         {total.toLocaleString("es-CO")} radicado{total !== 1 ? "s" : ""}
@@ -912,6 +1032,14 @@
             <dt>Clase documental</dt>
             <dd>{selectedDoc.doc_class}</dd>
           {/if}
+
+          {#if selectedDoc.nivel_seguridad}
+            {@const nivelChip = getNivelChip(selectedDoc.nivel_seguridad)}
+            <dt>Nivel de seguridad</dt>
+            <dd>
+              <StatusChip status={nivelChip.status} label={nivelChip.label} dot />
+            </dd>
+          {/if}
         </dl>
       </section>
 
@@ -1020,6 +1148,17 @@
           Anular
         </Button>
       {/if}
+    {/if}
+    {#if selectedDoc && canReclasificar}
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={actionLoading}
+        on:click={openModalReclasificar}
+      >
+        <i class="fas fa-shield-alt" aria-hidden="true"></i>
+        Reclasificar nivel
+      </Button>
     {/if}
     <Button variant="ghost" size="sm" on:click={closeDrawer}>Cerrar</Button>
   </svelte:fragment>
@@ -1249,8 +1388,8 @@
 >
   <p class="modal-desc">
     Define la secuencia ordenada de revisores para el radicado
-    <strong>{selectedDoc?.tracking_number ?? ""}</strong>. Cada revisor da su visto bueno en
-    el orden establecido.
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong>. Cada revisor da su visto bueno en el
+    orden establecido.
   </p>
   {#if cadenaUsersLoading}
     <div class="modal-loader">
@@ -1287,6 +1426,97 @@
       size="sm"
       disabled={actionLoading}
       on:click={() => (modalCrearCadena = false)}
+    >
+      Cancelar
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- Modal: Reclasificar nivel de seguridad (RF-SEG-08, Ley 1712) -->
+<Modal
+  open={modalReclasificar}
+  title="Reclasificar nivel de seguridad"
+  size="md"
+  on:close={cerrarModalReclasificar}
+>
+  <p class="modal-desc">
+    Reclasifica el nivel de seguridad del radicado
+    <strong>{selectedDoc?.tracking_number ?? ""}</strong>. El motivo es obligatorio como acto de
+    reserva motivado (Ley 1712 de 2014).
+  </p>
+  <div class="modal-form">
+    <FormField
+      id="reclasificar-nivel"
+      label="Nivel de seguridad"
+      type="select"
+      bind:value={reclasificarNivel}
+      required={true}
+      options={NIVEL_OPTIONS}
+      hint="Al elegir Reservada o Clasificada se solicitan datos adicionales de reserva."
+    />
+    <FormField
+      id="reclasificar-motivo"
+      label="Motivo"
+      type="textarea"
+      bind:value={reclasificarMotivo}
+      required={true}
+      rows={4}
+      placeholder="Explique el acto de reserva motivado que justifica este nivel de seguridad…"
+      error={reclasificarMotivoError}
+      hint="Campo obligatorio. Registre el fundamento que justifica la clasificación."
+    />
+    <!--
+      aria-live="polite": anuncia a lectores de pantalla la aparición de los campos
+      opcionales de reserva cuando el nivel cambia a Reservada (2) o Clasificada (3).
+      WCAG 4.1.3 — los cambios de contenido dinámico deben ser perceptibles.
+    -->
+    <div aria-live="polite">
+      {#if nivelReclasificarInt >= 2}
+        <div class="modal-form">
+          <FormField
+            id="reclasificar-causal"
+            label="Causal de reserva (opcional)"
+            type="text"
+            bind:value={reclasificarCausal}
+            placeholder="Ej. Información de seguridad nacional"
+            hint="Máx. 200 caracteres."
+          />
+          <FormField
+            id="reclasificar-fundamento"
+            label="Fundamento jurídico (opcional)"
+            type="text"
+            bind:value={reclasificarFundamento}
+            placeholder="Ej. Ley 1712/2014, art. 19"
+            hint="Máx. 300 caracteres."
+          />
+          <FormField
+            id="reclasificar-plazo"
+            label="Plazo de reserva en meses (opcional)"
+            type="text"
+            bind:value={reclasificarPlazo}
+            placeholder="Ej. 60"
+            hint="Número entero entre 0 y 600 meses."
+          />
+        </div>
+      {/if}
+    </div>
+  </div>
+  <svelte:fragment slot="footer">
+    <Button
+      variant="primary"
+      size="sm"
+      loading={reclasificarLoading}
+      disabled={reclasificarLoading}
+      on:click={reclasificar}
+    >
+      <i class="fas fa-shield-alt" aria-hidden="true"></i>
+      Confirmar reclasificación
+    </Button>
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={reclasificarLoading}
+      on:click={cerrarModalReclasificar}
     >
       Cancelar
     </Button>

@@ -44,6 +44,7 @@ class Radicado:
     sender_entity: str | None
     status: str
     pages: int
+    nivel_seguridad: int
     observations: str | None
     registered_by: uuid.UUID | None
     registered_at: datetime

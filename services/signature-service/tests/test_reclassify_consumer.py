@@ -34,6 +34,8 @@ import asyncpg
 import pytest
 from orpycamcp_common import events
 
+import redis.exceptions as redis_exc
+
 from app.repositories.cadena_repository import CadenaRepository
 from app.workers.document_consumer import _handle
 
@@ -355,3 +357,42 @@ async def test_run_no_ackea_cuando_handle_lanza() -> None:
             await document_consumer.run()
 
     fake_redis.xack.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
+    """RedisTimeoutError en xreadgroup (block= expirado) no loguea WARNING ni hace sleep.
+
+    El timeout de block= 5000 ms es comportamiento normal de redis-py 8.x async cuando
+    no hay entradas nuevas en el stream.  El bucle debe continuar de inmediato, sin
+    registrar ningún mensaje de error y sin backoff innecesario.
+    """
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+
+    # Primera llamada: expiración normal del block → TimeoutError.
+    # Segunda llamada: CancelledError para salir del bucle.
+    fake_redis.xreadgroup.side_effect = [
+        redis_exc.TimeoutError("Timeout reading from redis:6379"),
+        asyncio.CancelledError(),
+    ]
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("asyncio.sleep", AsyncMock()) as mock_sleep,
+        patch.object(document_consumer, "logger") as mock_logger,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    # El bucle se reanudó: xreadgroup fue invocado dos veces.
+    assert fake_redis.xreadgroup.call_count == 2
+
+    # Ningún WARNING del bucle general fue emitido por la expiración normal.
+    for call in mock_logger.warning.call_args_list:
+        assert "Error en el bucle" not in (call.args[0] if call.args else "")
+
+    # No se aplicó backoff (asyncio.sleep no fue llamado por la rama del timeout).
+    mock_sleep.assert_not_called()

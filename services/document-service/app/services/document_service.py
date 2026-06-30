@@ -435,6 +435,7 @@ def _to_response(radicado: Radicado) -> DocumentResponse:
         sender_entity=radicado.sender_entity,
         status=radicado.status,
         pages=radicado.pages,
+        nivel_seguridad=radicado.nivel_seguridad,
         observations=radicado.observations,
         registered_by=radicado.registered_by,
         registered_at=radicado.registered_at,

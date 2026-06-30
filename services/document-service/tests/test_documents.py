@@ -675,6 +675,93 @@ async def test_update_immutable_tracking_number(
 
 
 # ---------------------------------------------------------------------------
+# nivel_seguridad exposed in all read paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_document_returns_nivel_seguridad(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """POST /documents returns nivel_seguridad in the 201 response body."""
+    client, mock_conn = client_with_conn
+    record = make_radicado_record(nivel_seguridad=2)
+    mock_conn.fetchrow.side_effect = [None, {"code": "DEMO"}, record]
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetch.return_value = []
+
+    response = await client.post(
+        "/api/v1/documents",
+        json={**_CREATE_PAYLOAD, "nivel_seguridad": 2},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["nivel_seguridad"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_document_by_id_returns_nivel_seguridad(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET /{id} includes nivel_seguridad in the response body."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    record = make_radicado_record(doc_id=doc_id, nivel_seguridad=3)
+    mock_conn.fetchrow.return_value = record
+    mock_conn.fetch.return_value = []
+
+    response = await client.get(f"/api/v1/documents/{doc_id}", headers=TENANT_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["nivel_seguridad"] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_document_by_tracking_returns_nivel_seguridad(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET /by-tracking/{tn} includes nivel_seguridad in the response body."""
+    client, mock_conn = client_with_conn
+    tracking = "2024-DEMO-I-000001"
+    record = make_radicado_record(
+        tracking_number=tracking, doc_type="I", nivel_seguridad=2
+    )
+    mock_conn.fetchrow.return_value = record
+    mock_conn.fetch.return_value = []
+
+    response = await client.get(
+        f"/api/v1/documents/by-tracking/{tracking}", headers=TENANT_HEADERS
+    )
+
+    assert response.status_code == 200
+    assert response.json()["nivel_seguridad"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_documents_returns_nivel_seguridad(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET / returns nivel_seguridad on each item in the list."""
+    client, mock_conn = client_with_conn
+    records = [
+        make_radicado_record(tracking_number="2024-DEMO-E-000001", nivel_seguridad=1),
+        make_radicado_record(
+            tracking_number="2024-DEMO-E-000002", doc_type="S", nivel_seguridad=2
+        ),
+    ]
+    mock_conn.fetchval.return_value = 2
+    mock_conn.fetch.return_value = records
+
+    response = await client.get("/api/v1/documents", headers=TENANT_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["nivel_seguridad"] == 1
+    assert body[1]["nivel_seguridad"] == 2
+
+
+# ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
 

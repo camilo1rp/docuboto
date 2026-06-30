@@ -210,6 +210,7 @@ Registra un nuevo radicado. Asigna número de radicado atómico.
   "sequence": 1,
   "subject": "Solicitud de certificado de notas",
   "status": "registered",
+  "nivel_seguridad": 1,
   "registered_at": "2024-01-15T10:30:00Z",
   "due_date": "2024-02-05",
   "dest_dept": "Registro y Control",

@@ -113,7 +113,7 @@ class DocumentRepository:
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,
                 origin_dept_code, dest_dept_code,
-                sender_name, sender_entity, status, pages, observations,
+                sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id
             """,
@@ -183,7 +183,7 @@ class DocumentRepository:
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,
                 origin_dept_code, dest_dept_code,
-                sender_name, sender_entity, status, pages, observations,
+                sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id
             FROM radicados
@@ -225,7 +225,7 @@ class DocumentRepository:
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,
                 origin_dept_code, dest_dept_code,
-                sender_name, sender_entity, status, pages, observations,
+                sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id
             FROM radicados
@@ -293,7 +293,7 @@ class DocumentRepository:
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,
                 origin_dept_code, dest_dept_code,
-                sender_name, sender_entity, status, pages, observations,
+                sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id
             FROM radicados
@@ -362,7 +362,7 @@ class DocumentRepository:
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,
                 origin_dept_code, dest_dept_code,
-                sender_name, sender_entity, status, pages, observations,
+                sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id
             """,
@@ -447,6 +447,7 @@ def _row_to_radicado(row: asyncpg.Record) -> Radicado:
         sender_entity=row["sender_entity"],
         status=row["status"],
         pages=row["pages"],
+        nivel_seguridad=row["nivel_seguridad"],
         observations=row["observations"],
         registered_by=row["registered_by"],
         registered_at=row["registered_at"],
