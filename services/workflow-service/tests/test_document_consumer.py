@@ -12,7 +12,8 @@
 Cubre el comportamiento del bucle externo de run():
   - La expiración normal de block= (RedisTimeoutError) no loguea WARNING ni hace sleep.
   - El bucle reanuda de inmediato tras el timeout.
-  - El xack incondicional (ack siempre, incluso si _handle lanza) no se altera.
+  - Semántica A-1 (R-WF1): xack ocurre SOLO si _handle tiene éxito; un fallo
+    deja el mensaje en la PEL sin ackear para que reclaim_stale lo reintente.
 """
 
 from __future__ import annotations
@@ -65,11 +66,11 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_xack_es_incondicional() -> None:
-    """xack se llama aunque _handle lance — la semántica at-most-once del workflow no cambia.
+async def test_run_xack_solo_en_exito() -> None:
+    """xack se llama cuando _handle tiene éxito — semántica A-1 (R-WF1).
 
-    El workflow-service ackea siempre (a diferencia del signature-service que ackea
-    solo en éxito).  Verificamos que el fix del bucle externo no alteró esa semántica.
+    Cuando el handler procesa el mensaje sin lanzar excepción, el bucle debe
+    acusar recibo (xack) para liberar el mensaje de la PEL.
     """
     from app.workers import document_consumer
 
@@ -89,13 +90,51 @@ async def test_run_xack_es_incondicional() -> None:
         patch.object(
             document_consumer,
             "_handle",
+            AsyncMock(),  # éxito — no lanza
+        ),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    # xack se llama exactamente una vez en el caso de éxito.
+    fake_redis.xack.assert_called_once_with(
+        document_consumer.DOCUMENT_STREAM, document_consumer.GROUP, msg_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_xack_no_se_llama_si_handle_falla() -> None:
+    """xack NO se llama cuando _handle lanza — mensaje queda en PEL para reintento.
+
+    Semántica A-1 (R-WF1 / ADR-021): un fallo del handler de distribución deja
+    el mensaje en la Pending Entries List.  El barrido reclaim_stale lo recogerá
+    y, tras max_deliveries, lo escalará al dead-letter stream con traza durable.
+    El bucle debe continuar (no crashear) y salir limpiamente con CancelledError.
+    """
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    msg_id = b"1700000000000-0"
+    msg_data: dict = {}
+
+    # Primera llamada entrega un mensaje cuyo handler fallará;
+    # la segunda detiene el bucle.
+    fake_redis.xreadgroup.side_effect = [
+        [(document_consumer.DOCUMENT_STREAM, [(msg_id, msg_data)])],
+        asyncio.CancelledError(),
+    ]
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch.object(
+            document_consumer,
+            "_handle",
             AsyncMock(side_effect=RuntimeError("fallo transitorio")),
         ),
     ):
         with pytest.raises(asyncio.CancelledError):
             await document_consumer.run()
 
-    # xack se llamó a pesar del fallo de _handle.
-    fake_redis.xack.assert_called_once_with(
-        document_consumer.DOCUMENT_STREAM, document_consumer.GROUP, msg_id
-    )
+    # xack NO debe haberse llamado — el mensaje queda en la PEL.
+    fake_redis.xack.assert_not_called()

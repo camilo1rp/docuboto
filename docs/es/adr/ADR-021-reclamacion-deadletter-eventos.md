@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fase 1 implementada (signature-service, R-4 resuelto); Fases 2 y 3 pendientes
+**Estado**: Aceptado — Fases 1 y 2 implementadas (signature-service y workflow-service, R-4 resuelto); Fase 3 pendiente
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -86,8 +86,9 @@ min_idle_ms  (60 s)  > RECLAIM_INTERVAL  (30 s)  > block timeout  (5 s)
 Un consumidor activo que tarda hasta 55 s en procesar un mensaje nunca sufrirá
 una pre-emción por el barrido de reclamación.
 
-### Cableado en signature-service
+### Cableado por servicio
 
+**signature-service (Fase 1):**
 - `DEADLETTER_STREAM = "orpycamcp.signature.deadletter"` — un stream por servicio, no uno
   global, para evitar que los dead-letters de servicios distintos interfieran entre sí.
 - `RECLAIM_INTERVAL = 30.0 s`, `min_idle_ms = 60 000`, `max_deliveries = 5`.
@@ -102,16 +103,39 @@ una pre-emción por el barrido de reclamación.
      el mensaje permanece en PEL para reintento.
   6. Evento malformado permanente (sin `tenant_slug`): loguea error, **retorna normalmente**
      → el helper puede XACK el poison pill (reintentar loop infinito no ayuda).
+  - El stream Redis `orpycamcp.signature.deadletter` es el **buffer operativo/replay**;
+    la **copia autoritativa y durable** es Postgres (`evento_dead_letter` + `audit_log`).
+
+**workflow-service (Fase 2):**
+- `DEADLETTER_STREAM = "orpycamcp.workflow.deadletter"`.
+- Mismos parámetros: `RECLAIM_INTERVAL = 30.0 s`, `min_idle_ms = 60 000`, `max_deliveries = 5`.
+- Callback `_persist_dead_letter` con la misma semántica que Fase 1, más la mejora **R1**:
+  - **R1 — evento sin `tenant_slug`**: en vez de solo loguear y retornar, se escribe una
+    entrada en `public.audit_log` bajo `SYSTEM_TENANT` (obtenida via `get_pool().acquire()`
+    sin fijar `search_path`). Si esa escritura falla por error transiente, la excepción
+    propaga → el helper no XACK → reintento. Cuando la escritura es exitosa (o el módulo
+    de auditoría no está disponible), la función retorna normalmente y el helper puede XACK.
+    Resultado: incluso el poison pill permanentemente malformado deja una traza durable
+    en `public.audit_log` (Ley 594/2000 art. 4 — trazabilidad de todo acto sobre documentos).
+- **Xack en el loop normal: ack-solo-en-éxito (A-1, cierra R-WF1)** — consistente con
+  signature-service. Un fallo del handler de distribución (`auto_distribute`) deja el
+  mensaje en la PEL sin acusarlo; el barrido `reclaim_stale` lo recogerá, lo reintentará
+  y, tras `max_deliveries=5`, lo escalará al dead-letter stream con traza durable en
+  `evento_dead_letter` + `audit_log`. Con esto los fallos de handler en vivo (el modo
+  de fallo más común de la distribución E05) ya no se descartan en silencio: fluyen al
+  PEL → reclaim → dead-letter durable (Acuerdo AGN 060/2001 art. 3, Ley 594/2000 art. 4).
+  - El reproceso es seguro: `auto_distribute` es idempotente por guard RN-8
+    (`get_next_step_number > 1 → return`); un radicado ya distribuido no genera
+    asignación duplicada si el mensaje se reintenta.
+  - `CancelledError` se re-lanza siempre para permitir el apagado limpio del worker.
+- El barrido se ejecuta en el bucle principal de `run()` con `time.monotonic()`;
+  un fallo del barrido loguea WARNING y continúa sin tumbar el loop.
+- Las propiedades R-9, R-5/R-6, R-4 aplican igual que en Fase 1:
   - **R-9** (`actor`): el acto de sistema lo ejecuta el worker, no el usuario original.
     El actor original se conserva en `payload["envelope"]["actor"]`.
   - **R-5/R-6** (`payload`): la fila de `audit_log` incluye el sobre íntegro más los
-    identificadores de negocio y el `failure_meta`. La tabla `evento_dead_letter` almacena
-    también el sobre íntegro como JSONB. Ambas filas de Postgres son **autosuficientes para
-    reconstrucción forense** (Ley 594/2000 art. 4 y art. 19).
-  - El stream Redis `orpycamcp.signature.deadletter` es el **buffer operativo/replay**;
-    la **copia autoritativa y durable** es Postgres (`evento_dead_letter` + `audit_log`).
-- El barrido se ejecuta en el bucle principal de `run()` con `time.monotonic()`;
-  un fallo del barrido loguea WARNING y continúa sin tumbar el loop.
+    identificadores de negocio y el `failure_meta`. Ambas filas de Postgres son
+    **autosuficientes para reconstrucción forense** (Ley 594/2000 art. 4 y art. 19).
 
 ### Idempotencia
 
@@ -125,8 +149,8 @@ en notification-service, Fase 3), se deberá añadir una tabla de deduplicación
 
 | Fase | Servicio | Estado | Nota |
 |------|----------|--------|------|
-| 1 | signature-service | **Implementado** | Handler idempotente por guard SQL |
-| 2 | workflow-service | Pendiente | Handler idempotente por guard SQL / `flow_events` |
+| 1 | signature-service | **Implementado** | Ack-solo-en-éxito (A-1); handler idempotente por guard SQL |
+| 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
 | 3 | notification-service | Pendiente | Requiere tabla de dedup (envío de email no idempotente) |
 
 ## Alternativas descartadas
