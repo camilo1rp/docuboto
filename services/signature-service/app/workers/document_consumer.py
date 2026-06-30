@@ -31,6 +31,7 @@ from orpycamcp_common import events
 from app.core.database import acquire_tenant
 from app.core.redis_client import get_redis
 from app.repositories.cadena_repository import CadenaRepository
+from app.repositories.dead_letter_repository import DeadLetterRepository
 
 try:
     from orpycamcp_common import audit as _audit
@@ -106,56 +107,74 @@ async def _handle(data: dict) -> None:
                 )
 
 
-async def _audit_dead_letter(envelope: dict, failure_meta: dict) -> None:
-    """Audit callback for dead-lettered events.
+async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
+    """Durable persistence callback for dead-lettered events (R-4, ADR-021).
 
-    Records the parking of an unprocessable event in the immutable audit log
-    to satisfy Ley 594/2000 traceability requirements: an event that could not
-    be delivered must leave a permanent trace rather than disappearing silently.
+    Writes the dead-letter event atomically to ``evento_dead_letter`` (Postgres)
+    and ``audit_log`` **inside a single transaction**.  The callback is passed to
+    ``reclaim_stale`` as ``on_dead_letter``; under the new R-4 contract the helper
+    gates the XACK on this callback's success: if this function raises, the message
+    stays in the PEL for the next sweep — there is no dead-letter without a durable
+    trace.
 
-    R-9: ``actor`` is set to ``"system"`` because the *worker* performs this
-    audit action, not the original user.  The original actor is preserved inside
-    ``payload["envelope"]["actor"]`` so the forensic record can trace who
-    originally triggered the event.
+    Edge case — permanently malformed event (no ``tenant_slug``):
+        Cannot be written to any tenant schema; retrying forever would create an
+        infinite loop.  We log the error and **return normally** so the helper can
+        proceed to XACK (consuming the poison pill).  The Redis DLQ entry produced
+        by the helper before calling this callback remains as the only operational
+        record of this degenerate case.
 
-    R-5/R-6: ``payload`` carries the complete original envelope (including its
-    payload dict) so the immutable Postgres row is self-sufficient for forensic
-    reconstruction (Ley 594/2000 art. 4 and art. 19) — the Redis DLQ is
-    treated as an operational buffer, not the authoritative copy.
+    Idempotency:
+        ``INSERT … ON CONFLICT (event_id) DO NOTHING RETURNING event_id`` — a
+        second call with the same ``event_id`` returns None (no row), and the
+        ``audit_log`` write is skipped.  This prevents a double-trace if XADD
+        succeeded but XACK failed (at-least-once redelivery).
 
-    The helper in events.reclaim_stale already wraps this callback in try/except
-    so an error here never blocks the xack or breaks the sweep; we are still
-    defensive because the outer wrapper only catches *callback* exceptions —
-    errors inside acquire_tenant (e.g. invalid slug) should not propagate.
+    Transient errors (DB down, pool exhausted, etc.):
+        Exceptions are **not caught** here.  They propagate to the helper which
+        logs a warning and skips the XACK — the message remains in the PEL and
+        will be retried on the next reclaim sweep.  This is what closes R-4.
+
+    R-9: ``actor`` is ``"system"`` — the worker performs this act, not the
+    original user.  The original actor is preserved in
+    ``payload["envelope"]["actor"]`` for forensic reconstruction.
+
+    R-5/R-6: ``payload`` in ``audit_log`` carries the complete original envelope
+    (including its business payload) so the immutable Postgres row is self-
+    sufficient (Ley 594/2000 art. 4 and art. 19).
     """
-    if not _AUDIT_AVAILABLE:
-        return  # pragma: no cover
+    import json
 
-    tenant_slug = envelope.get("tenant_slug")
+    event_id: str | None = envelope.get("event_id")
+    tenant_slug: str | None = envelope.get("tenant_slug")
+
     if not tenant_slug:
-        logger.warning(
-            "Cannot audit dead-letter: envelope missing tenant_slug (event_id=%s)",
-            envelope.get("event_id"),
+        # Permanently malformed: no tenant schema to write to.
+        # Log and return so the helper can XACK the poison pill — retrying
+        # an event without a tenant_slug would loop forever.
+        logger.error(
+            "Cannot persist dead-letter: envelope missing tenant_slug "
+            "(event_id=%s) — consuming poison pill",
+            event_id,
         )
         return
 
-    # Extract business identifiers from the event payload defensively —
-    # they may be absent if the event was malformed.
+    # Extract business identifiers defensively; may be absent in malformed events.
     evt_payload: dict = envelope.get("payload") or {}
     tracking_number: str | None = evt_payload.get("tracking_number")
     doc_id: str | None = evt_payload.get("id")
 
-    # Self-sufficient audit payload: failure details + complete original envelope
-    # + business identifiers extracted for quick querying without JSON traversal.
+    # Self-sufficient audit payload: failure + complete original envelope
+    # + business identifiers for fast querying without JSON traversal.
     audit_payload = {
         "failure": failure_meta,
         "envelope": {
-            "event_id": envelope.get("event_id"),
+            "event_id": event_id,
             "event_type": envelope.get("event_type"),
             "correlation_id": envelope.get("correlation_id"),
             "tenant_slug": tenant_slug,
             "occurred_at": envelope.get("occurred_at"),
-            "actor": envelope.get("actor"),  # original actor preserved
+            "actor": envelope.get("actor"),  # original actor preserved (R-9)
             "payload": evt_payload,
         },
         "business": {
@@ -164,26 +183,48 @@ async def _audit_dead_letter(envelope: dict, failure_meta: dict) -> None:
         },
     }
 
-    try:
-        async with acquire_tenant(tenant_slug) as conn:
-            await _audit.append(
-                conn,
+    # Transient errors propagate — do NOT catch here (R-4 contract).
+    async with acquire_tenant(tenant_slug) as conn:
+        repo = DeadLetterRepository(conn)
+        async with conn.transaction():
+            row = await repo.insert_if_new(
+                event_id=event_id or "",
+                event_type=envelope.get("event_type"),
+                correlation_id=envelope.get("correlation_id"),
                 tenant_slug=tenant_slug,
-                service=_SERVICE,
-                action="evento.dead_letter",
-                object_type="evento",
-                object_ref=envelope.get("event_id"),
-                actor="system",  # R-9: worker performs this system-level act
-                canal="system",
-                payload=audit_payload,
+                # Serialize the whole envelope as the canonical payload record.
+                payload_json=json.dumps(audit_payload["envelope"], default=str),
+                failure_json=json.dumps(failure_meta, default=str),
+                origin_stream=failure_meta.get("dead_letter_origin_stream"),
+                origin_group=failure_meta.get("dead_letter_group"),
             )
-    except Exception:
-        logger.warning(
-            "Failed to audit dead-letter for event_id=%s tenant=%s",
-            envelope.get("event_id"),
-            tenant_slug,
-            exc_info=True,
-        )
+            if row is not None:
+                # INSERT was real — write the immutable audit trace in the same tx.
+                if _AUDIT_AVAILABLE:
+                    await _audit.append(
+                        conn,
+                        tenant_slug=tenant_slug,
+                        service=_SERVICE,
+                        action="evento.dead_letter",
+                        object_type="evento",
+                        object_ref=event_id,
+                        actor="system",   # R-9: worker-level system act
+                        canal="system",
+                        payload=audit_payload,
+                    )
+                logger.info(
+                    "Dead-letter persisted: event_id=%s tenant=%s type=%s",
+                    event_id,
+                    tenant_slug,
+                    envelope.get("event_type"),
+                )
+            else:
+                # ON CONFLICT — already durably stored; idempotent no-op.
+                logger.debug(
+                    "Dead-letter already persisted (idempotent): event_id=%s tenant=%s",
+                    event_id,
+                    tenant_slug,
+                )
 
 
 async def run() -> None:
@@ -239,7 +280,7 @@ async def run() -> None:
                     min_idle_ms=60_000,
                     max_deliveries=5,
                     deadletter_stream=DEADLETTER_STREAM,
-                    on_dead_letter=_audit_dead_letter,
+                    on_dead_letter=_persist_dead_letter,
                 )
             except asyncio.CancelledError:
                 raise

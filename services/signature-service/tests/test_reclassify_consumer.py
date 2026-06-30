@@ -7,18 +7,21 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Tests de reclasificación en signature-service (E08, RF-SEG-08).
+"""Tests de reclasificación y dead-letter en signature-service (E08, RF-SEG-08, R-4/ADR-021).
 
 Cubre:
   1. CadenaRepository.actualizar_nivel_seguridad — repositorio puro (conn mockeado).
   2. _handle() del document_consumer — consumidor Redis Streams con
      acquire_tenant y _audit patcheados.
   3. run() — xack condicional al éxito de _handle (A-1).
+  4. _persist_dead_letter() — callback de dead-letter durable (R-4 / ADR-021):
+     insert+audit en transacción; idempotencia ON CONFLICT; error transiente propaga.
 
 Patrón de mock:
   - acquire_tenant se parchea como asynccontextmanager que devuelve un AsyncMock.
   - _audit se parchea a nivel de módulo (app.workers.document_consumer._audit)
     con un AsyncMock para .append.
+  - DeadLetterRepository se parchea o la conn.fetchrow controla el resultado del INSERT.
   - Los campos planos para _handle() se construyen con events.to_fields() +
     events.build_event() del sobre canónico.
 """
@@ -48,11 +51,19 @@ TRACKING = "2024-DEMO-E-000001"
 DOC_UUID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 
 
-def _make_conn(update_count: int = 2) -> AsyncMock:
-    """Devuelve un AsyncMock de conexión con execute que simula UPDATE <n>."""
+def _make_conn(update_count: int = 2, fetchrow_return: object = None) -> AsyncMock:
+    """Devuelve un AsyncMock de conexión.
+
+    ``update_count`` controla el tag devuelto por ``conn.execute`` ("UPDATE <n>").
+    ``fetchrow_return`` controla lo que devuelve ``conn.fetchrow``:
+      - ``{"event_id": "..."}`` → INSERT real (primera vez)
+      - ``None`` → ON CONFLICT, no-op (segunda vez, idempotente)
+      - ``asyncpg.SomeError`` como side_effect → error de BD
+    """
     conn = AsyncMock()
     conn.execute.return_value = f"UPDATE {update_count}"
     conn.transaction = MagicMock(return_value=AsyncMock())
+    conn.fetchrow.return_value = fetchrow_return
     return conn
 
 
@@ -471,18 +482,19 @@ async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
 
 
 @pytest.mark.asyncio
-async def test_audit_dead_letter_usa_system_como_actor_y_enriquece_payload() -> None:
-    """R-9/R-5/R-6: _audit_dead_letter llama audit.append con actor='system' y payload completo.
+async def test_persist_dead_letter_inserta_y_audita() -> None:
+    """R-4/ADR-021: primera llamada → INSERT real → audit.append invocado en la misma tx.
 
-    El actor del acto de auditoría es el worker ('system'), no el usuario original.
-    El actor original queda preservado en payload['envelope']['actor'].
-    El payload debe contener las claves 'failure', 'envelope' y 'business' para
-    que la fila de audit_log sea autosuficiente para reconstrucción forense
-    (Ley 594/2000 art. 4 y art. 19).
+    Verifica:
+    - DeadLetterRepository.insert_if_new es llamado (vía conn.fetchrow).
+    - Si fetchrow devuelve una fila → audit.append se llama con actor='system'.
+    - El payload de auditoría tiene las claves 'failure', 'envelope' y 'business'.
     """
-    from app.workers.document_consumer import _audit_dead_letter
+    from app.workers.document_consumer import _persist_dead_letter
 
-    conn = _make_conn()
+    # fetchrow devuelve una fila → INSERT real (primera vez).
+    row_mock = {"event_id": "eeeeeeee-0000-0000-0000-000000000001"}
+    conn = _make_conn(fetchrow_return=row_mock)
     mock_audit = AsyncMock()
 
     envelope = {
@@ -514,8 +526,12 @@ async def test_audit_dead_letter_usa_system_como_actor_y_enriquece_payload() -> 
         patch("app.workers.document_consumer._audit", mock_audit),
         patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
-        await _audit_dead_letter(envelope, failure_meta)
+        await _persist_dead_letter(envelope, failure_meta)
 
+    # INSERT fue llamado (via fetchrow en DeadLetterRepository).
+    conn.fetchrow.assert_called_once()
+
+    # audit.append fue invocado dentro de la misma transacción.
     mock_audit.append.assert_called_once()
     kw = mock_audit.append.call_args.kwargs
 
@@ -543,20 +559,90 @@ async def test_audit_dead_letter_usa_system_como_actor_y_enriquece_payload() -> 
 
 
 @pytest.mark.asyncio
-async def test_audit_dead_letter_sin_tenant_slug_no_llama_audit() -> None:
-    """Sin tenant_slug en el sobre → audit.append NO se llama (no hay schema donde anclar)."""
-    from app.workers.document_consumer import _audit_dead_letter
+async def test_persist_dead_letter_idempotente_no_audita_en_conflict() -> None:
+    """R-4 idempotencia: ON CONFLICT (event_id) → fetchrow devuelve None → audit NO se llama.
+
+    La segunda entrega del mismo evento (at-least-once, XACK falló) produce un
+    ON CONFLICT DO NOTHING.  El INSERT no devuelve fila → audit_log NO se escribe
+    de nuevo → no hay doble traza.
+    """
+    from app.workers.document_consumer import _persist_dead_letter
+
+    # fetchrow devuelve None → ON CONFLICT, no-op.
+    conn = _make_conn(fetchrow_return=None)
+    mock_audit = AsyncMock()
+
+    envelope = {
+        "event_id": "eeeeeeee-0000-0000-0000-000000000001",
+        "event_type": "document.radicado.reclassified",
+        "tenant_slug": TENANT,
+        "actor": "user-1",
+        "payload": {"tracking_number": TRACKING},
+    }
+    failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
+
+    with (
+        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("app.workers.document_consumer._audit", mock_audit),
+        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+    ):
+        await _persist_dead_letter(envelope, failure_meta)
+
+    # fetchrow fue llamado (el INSERT se intentó).
+    conn.fetchrow.assert_called_once()
+    # Pero NO se auditó (ON CONFLICT → sin fila devuelta).
+    mock_audit.append.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persist_dead_letter_error_transiente_propaga() -> None:
+    """R-4: error transitorio de BD en fetchrow → excepción propaga (no se traga).
+
+    El helper reclaim_stale interpretará la excepción como callback fallido y
+    NO ackeará → el mensaje permanece en PEL para reintento.
+    """
+    from app.workers.document_consumer import _persist_dead_letter
+
+    conn = _make_conn()
+    conn.fetchrow.side_effect = OSError("connection reset by peer")
+
+    envelope = {
+        "event_id": "eeeeeeee-0000-0000-0000-000000000002",
+        "event_type": "document.radicado.reclassified",
+        "tenant_slug": TENANT,
+        "actor": "user-1",
+        "payload": {"tracking_number": TRACKING},
+    }
+    failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
+
+    with patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)):
+        with pytest.raises(OSError, match="connection reset by peer"):
+            await _persist_dead_letter(envelope, failure_meta)
+
+
+@pytest.mark.asyncio
+async def test_persist_dead_letter_sin_tenant_slug_retorna_sin_error() -> None:
+    """Evento malformado permanente (sin tenant_slug) → retorna normalmente → XACK permitido.
+
+    No se puede escribir a ningún schema sin tenant_slug; reintentar crearía un loop
+    infinito.  La función retorna normalmente (no lanza) para que el helper pueda
+    XACK el poison pill y liberar la PEL.
+    """
+    from app.workers.document_consumer import _persist_dead_letter
 
     mock_audit = AsyncMock()
-    envelope = {"event_id": "abc", "actor": "user-1", "payload": {}}
+    envelope = {"event_id": "abc", "actor": "user-1", "payload": {}}  # sin tenant_slug
     failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
 
     with (
         patch("app.workers.document_consumer._audit", mock_audit),
         patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("app.workers.document_consumer.acquire_tenant") as mock_acq,
     ):
-        await _audit_dead_letter(envelope, failure_meta)
+        await _persist_dead_letter(envelope, failure_meta)  # no debe lanzar
 
+    # acquire_tenant nunca fue invocado — no hay schema destino.
+    mock_acq.assert_not_called()
     mock_audit.append.assert_not_called()
 
 

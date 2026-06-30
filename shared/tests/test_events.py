@@ -291,15 +291,21 @@ async def test_reclaim_stale_race_on_dead_letter_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reclaim_stale_on_dead_letter_callback_failure_does_not_block_ack() -> None:
-    """on_dead_letter callback raises → xack still called, dead_lettered=1, no exception."""
+async def test_reclaim_stale_on_dead_letter_callback_failure_blocks_ack() -> None:
+    """R-4: on_dead_letter callback raises → NO xack; message stays in PEL; dead_lettered=0.
+
+    The XADD to the dead-letter stream still happens (best-effort operational buffer)
+    but the XACK is gated on the durable-persistence callback.  If the callback
+    fails (e.g. Postgres down), the message remains in the PEL for the next sweep
+    — there is no dead-letter without a durable trace (ADR-021 R-4).
+    """
     msg_id = "1680000000005-0"
     claimed_entry = _claimed_entry(msg_id)
     fake = _make_redis(
         pending=[_pending_entry(msg_id, times_delivered=5)],
         claimed=[claimed_entry],
     )
-    failing_callback = AsyncMock(side_effect=RuntimeError("audit db down"))
+    failing_callback = AsyncMock(side_effect=RuntimeError("postgres down"))
     handler = AsyncMock()
 
     stats = await events.reclaim_stale(
@@ -311,11 +317,64 @@ async def test_reclaim_stale_on_dead_letter_callback_failure_does_not_block_ack(
         on_dead_letter=failing_callback,
     )
 
-    assert stats.dead_lettered == 1
-    # xack was called despite callback failure
-    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
-    # xadd to DL also happened before callback
+    # Callback failed → not committed → dead_lettered counter NOT incremented.
+    assert stats.dead_lettered == 0
+    # XACK must NOT have been called — message stays in PEL for retry.
+    fake.xack.assert_not_awaited()
+    # XADD to DL stream still happened (best-effort buffer, before callback).
     fake.xadd.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_on_dead_letter_callback_ok_then_xack() -> None:
+    """R-4: on_dead_letter callback succeeds → XACK occurs, dead_lettered=1."""
+    msg_id = "1680000000005b-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=5)],
+        claimed=[claimed_entry],
+    )
+    ok_callback = AsyncMock()  # succeeds
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+        on_dead_letter=ok_callback,
+    )
+
+    assert stats.dead_lettered == 1
+    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
+    fake.xadd.assert_awaited_once()
+    ok_callback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_no_callback_xack_after_xadd() -> None:
+    """When on_dead_letter is None, XACK happens immediately after XADD (backward compat)."""
+    msg_id = "1680000000005c-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=5)],
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+        # no on_dead_letter
+    )
+
+    assert stats.dead_lettered == 1
+    fake.xadd.assert_awaited_once()
+    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
 
 
 @pytest.mark.asyncio
@@ -449,3 +508,39 @@ async def test_reclaim_stale_direct_dl_has_empty_last_error() -> None:
     # Callback also receives the failure_meta with the empty last_error.
     cb_failure = callback.await_args.args[1]
     assert cb_failure["dead_letter_last_error"] == ""
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_r5b_callback_failure_blocks_ack() -> None:
+    """R-4 / R-5b: handler fails at threshold AND callback fails → NO xack; dead_lettered=0.
+
+    The XADD to the DL stream still happens (best-effort buffer) but the XACK is
+    gated on the durable callback.  reprocessed_fail is still incremented because
+    the handler did fail.
+    """
+    msg_id = "1680000000009-0"
+    claimed_entry = _claimed_entry(msg_id, tenant="demo")
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=4)],  # effective_count=5 = max
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock(side_effect=ValueError("malformed payload"))
+    failing_callback = AsyncMock(side_effect=RuntimeError("postgres down"))
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+        on_dead_letter=failing_callback,
+    )
+
+    # Handler failed and callback failed → not committed.
+    assert stats.reprocessed_fail == 1
+    assert stats.dead_lettered == 0
+    assert stats.reprocessed_ok == 0
+    # XADD happened (best-effort buffer, before callback).
+    fake.xadd.assert_awaited_once()
+    # XACK must NOT have been called — message stays in PEL.
+    fake.xack.assert_not_awaited()

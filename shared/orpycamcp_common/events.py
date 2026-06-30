@@ -208,9 +208,13 @@ async def reclaim_stale(
         deadletter_stream: Stream where poison-pills are routed.
         batch:             Maximum PEL entries to inspect per call.
         on_dead_letter:    Optional ``async (envelope: dict, failure_meta: dict)
-                           -> None`` callback, called *after* xadd+xack.  Errors
-                           are caught and logged — they never block the ack or
-                           break the sweep.
+                           -> None`` callback that durably records the dead-letter
+                           (e.g. Postgres + audit). It is awaited *after* the XADD
+                           buffer write but *before* the XACK, and its success
+                           **gates** the ack: if it raises, the original message is
+                           NOT acked (stays in the PEL for retry on the next sweep),
+                           so there is no dead-letter without a durable trace. When
+                           ``None``, the message is acked right after the XADD.
         on_reclaim:        Optional ``async (msg_id: str) -> None`` callback,
                            called after a successful XCLAIM (before handler).
                            Errors are caught and logged.
@@ -259,9 +263,8 @@ async def reclaim_stale(
                 "dead_letter_last_error": "",
             }
 
-            # Publish to dead-letter before acking, so we never lose the message.
+            # Step 1: publish to dead-letter stream (best-effort operational buffer).
             await redis.xadd(deadletter_stream, {**to_fields(envelope), **failure_meta})
-            await redis.xack(stream, group, msg_id)
 
             logger.error(
                 "Dead-lettered event after %d deliveries: event_id=%s tenant=%s "
@@ -274,17 +277,25 @@ async def reclaim_stale(
                 msg_id,
             )
 
+            # Step 2: durable persistence callback — gates the XACK (R-4).
+            # If on_dead_letter is None, fall through to XACK immediately (no
+            # durability requirement from this call site).
+            # If on_dead_letter raises, the message stays in the PEL for the
+            # next sweep: no dead-letter without a durable trace (R-4, ADR-021).
             if on_dead_letter is not None:
-                # Callback errors must never block the ack or break the sweep.
                 try:
                     await on_dead_letter(envelope, failure_meta)
                 except Exception:
                     logger.warning(
-                        "on_dead_letter callback failed for msg_id=%s — continuing",
+                        "on_dead_letter callback failed for msg_id=%s — "
+                        "message remains in PEL (R-4: no xack without durable trace)",
                         msg_id,
                         exc_info=True,
                     )
+                    continue  # skip xack; next PEL entry
 
+            # Step 3: XACK only after durable trace is confirmed.
+            await redis.xack(stream, group, msg_id)
             stats.dead_lettered += 1
 
         else:
@@ -336,11 +347,11 @@ async def reclaim_stale(
                         "dead_lettered_at": _now_iso(),
                         "dead_letter_last_error": last_error,
                     }
+                    # Step 1: publish to dead-letter stream (best-effort buffer).
                     await redis.xadd(
                         deadletter_stream,
                         {**to_fields(envelope_dl), **failure_meta_dl},
                     )
-                    await redis.xack(stream, group, msg_id)
                     logger.error(
                         "Dead-lettered event after %d deliveries (fresh attempt failed): "
                         "event_id=%s tenant=%s stream=%s group=%s msg_id=%s",
@@ -352,16 +363,25 @@ async def reclaim_stale(
                         msg_id,
                         exc_info=True,
                     )
+                    # Step 2: durable persistence callback — gates the XACK (R-4).
+                    # Same contract as the direct-DL path above: callback failure
+                    # means no XACK; the message stays in PEL for the next sweep.
+                    _dl_committed = True
                     if on_dead_letter is not None:
                         try:
                             await on_dead_letter(envelope_dl, failure_meta_dl)
                         except Exception:
                             logger.warning(
-                                "on_dead_letter callback failed for msg_id=%s — continuing",
+                                "on_dead_letter callback failed for msg_id=%s — "
+                                "message remains in PEL (R-4: no xack without durable trace)",
                                 msg_id,
                                 exc_info=True,
                             )
-                    stats.dead_lettered += 1
+                            _dl_committed = False
+                    # Step 3: XACK only after durable trace is confirmed.
+                    if _dl_committed:
+                        await redis.xack(stream, group, msg_id)
+                        stats.dead_lettered += 1
                 else:
                     logger.warning(
                         "Reprocess failed for msg_id=%s (times_delivered=%d) — "

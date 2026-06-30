@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fase 1 implementada (signature-service); Fases 2 y 3 pendientes
+**Estado**: Aceptado — Fase 1 implementada (signature-service, R-4 resuelto); Fases 2 y 3 pendientes
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -56,9 +56,11 @@ Algoritmo:
      `XCLAIM` (si vacío: carrera, saltar); construir `failure_meta` (todos str)
      incluyendo `dead_letter_last_error=""` (sin intento fresco, el error concreto no
      se conoce — limitación aceptada, ver Consecuencias negativas);
-     `XADD deadletter_stream {sobre + failure_meta}`; `XACK`; invocar
-     `on_dead_letter(envelope, failure_meta)` en try/except (un fallo del callback
-     nunca bloquea el ack); `stats.dead_lettered += 1`.
+     **Paso 1** `XADD deadletter_stream {sobre + failure_meta}` (buffer operativo, best-effort);
+     **Paso 2** `await on_dead_letter(envelope, failure_meta)` — **si lanza**: loguear warning,
+     `continue` (no XACK; el mensaje permanece en PEL para el próximo barrido; **cierra R-4**:
+     no hay dead-letter sin traza durable); si `on_dead_letter is None`: saltar al paso 3;
+     **Paso 3** `XACK`; `stats.dead_lettered += 1`.
    - Si no: **reclamar y reprocesar** —
      `XCLAIM` (si vacío: carrera, saltar); `stats.reclaimed += 1`; invocar
      `on_reclaim(msg_id)` (try/except); ejecutar `handler(fields)`:
@@ -66,9 +68,11 @@ Algoritmo:
      * Excepción (R-5b): capturar `str(exc)` como `last_error`; calcular
        `effective_count = times_delivered + 1` (XCLAIM ya incrementó el contador
        internamente); si `effective_count >= max_deliveries` → **dead-letter en el mismo
-       barrido** con `dead_letter_last_error=last_error` (xadd + xack + callback +
-       `stats.dead_lettered += 1`); si no → dejar en PEL sin ackear para el próximo
-       barrido; en ambos casos `stats.reprocessed_fail += 1`.
+       barrido** con `dead_letter_last_error=last_error`:
+       **Paso 1** `XADD deadletter_stream` (buffer); **Paso 2** `on_dead_letter` — si lanza:
+       no XACK, `stats.reprocessed_fail += 1`, seguir con el próximo mensaje (**cierra R-4**);
+       si ok: **Paso 3** `XACK`, `stats.dead_lettered += 1`; en todo caso
+       `stats.reprocessed_fail += 1`; si no → dejar en PEL sin ackear para el próximo barrido.
 
 El helper es **libre de BD**: no importa `asyncpg` ni `audit`.  La auditoría del
 dead-letter es responsabilidad del servicio a través del callback.
@@ -87,16 +91,25 @@ una pre-emción por el barrido de reclamación.
 - `DEADLETTER_STREAM = "orpycamcp.signature.deadletter"` — un stream por servicio, no uno
   global, para evitar que los dead-letters de servicios distintos interfieran entre sí.
 - `RECLAIM_INTERVAL = 30.0 s`, `min_idle_ms = 60 000`, `max_deliveries = 5`.
-- Callback `_audit_dead_letter(envelope, failure_meta)` →
-  `audit.append(..., action="evento.dead_letter", canal="system", actor="system")`:
+- Callback `_persist_dead_letter(envelope, failure_meta)` — **durable persistence (R-4)**:
+  1. Obtiene conexión al schema del tenant (`acquire_tenant(tenant_slug)`).
+  2. Abre transacción: `INSERT INTO evento_dead_letter (...) ON CONFLICT (event_id) DO NOTHING
+     RETURNING event_id`.
+  3. Si devuelve fila (INSERT real): `audit.append(...)` en la **misma transacción** →
+     ambas escrituras commitean o ambas fallan (atomicidad).
+  4. Si devuelve None (ON CONFLICT): idempotente, no audita.
+  5. Errores transientes (BD caída) **no se capturan** → propagan al helper → no XACK →
+     el mensaje permanece en PEL para reintento.
+  6. Evento malformado permanente (sin `tenant_slug`): loguea error, **retorna normalmente**
+     → el helper puede XACK el poison pill (reintentar loop infinito no ayuda).
   - **R-9** (`actor`): el acto de sistema lo ejecuta el worker, no el usuario original.
     El actor original se conserva en `payload["envelope"]["actor"]`.
-  - **R-5/R-6** (`payload`): la fila inmutable de `audit_log` incluye el sobre íntegro
-    (`event_type`, `correlation_id`, `occurred_at`, `payload` del evento) más los
-    identificadores de negocio (`tracking_number`, `doc_id`) y el `failure_meta`
-    (incluyendo `dead_letter_last_error` cuando viene de la ruta R-5b).
-    Esto hace que la fila de Postgres sea **autosuficiente para reconstrucción forense**
-    (Ley 594/2000 art. 4 y art. 19) sin depender del DLQ de Redis, que es volátil.
+  - **R-5/R-6** (`payload`): la fila de `audit_log` incluye el sobre íntegro más los
+    identificadores de negocio y el `failure_meta`. La tabla `evento_dead_letter` almacena
+    también el sobre íntegro como JSONB. Ambas filas de Postgres son **autosuficientes para
+    reconstrucción forense** (Ley 594/2000 art. 4 y art. 19).
+  - El stream Redis `orpycamcp.signature.deadletter` es el **buffer operativo/replay**;
+    la **copia autoritativa y durable** es Postgres (`evento_dead_letter` + `audit_log`).
 - El barrido se ejecuta en el bucle principal de `run()` con `time.monotonic()`;
   un fallo del barrido loguea WARNING y continúa sin tumbar el loop.
 
@@ -164,22 +177,21 @@ Descartado.
 
 **Limitaciones conocidas y trabajo futuro (diferidos):**
 
-- **R-4 — No atomicidad audit↔DLQ**: la auditoría en `audit_log` es best-effort
-  _post-XACK_: si el proceso muere entre el XACK y el `audit.append`, el evento queda
-  aparcado en el DLQ pero sin fila inmutable en Postgres.  Trabajo futuro: un job de
-  reconciliación DLQ→`audit_log` (o patrón outbox transaccional, ya en el roadmap)
-  que garantice que todo `event_id` aparcado tenga su fila inmutable.  Por ahora se
-  acepta la limitación; la probabilidad es baja y el DLQ permite detección manual.
+- **R-4 — Atomicidad audit↔DLQ**: **RESUELTO**.  El callback `_persist_dead_letter`
+  escribe `evento_dead_letter` y `audit_log` en la **misma transacción Postgres**
+  (outbox-style), y el `XACK` en Redis queda **gateado** por el éxito de esa
+  escritura: si la BD está caída, el mensaje permanece en la PEL y se reintenta en el
+  próximo barrido.  No hay ventana entre el XACK y la traza durable → no hay
+  dead-letter sin registro inmutable.
 
-- **R-6 — Redis como soporte volátil**: Redis Streams no ofrece garantías de retención
-  a largo plazo equivalentes a un soporte electrónico archivístico.  Mitigación
-  implementada: el callback `_audit_dead_letter` persiste el **sobre íntegro** del
-  evento en `public.audit_log` (Postgres, durable), convirtiendo la fila inmutable
-  en la copia autoritativa para efectos de Ley 594/2000 art. 19.  El DLQ de Redis
-  queda como buffer operativo para replay/inspección.  Trabajo futuro: definir
-  política de retención del DLQ, revisión periódica, mecanismo de replay y — si se
-  purga — acta de eliminación (Ley 594 exige acta para eliminación de documentos de
-  archivo).
+- **R-6 — Redis como soporte volátil**: **RESUELTO** (mitigación completa).  El
+  callback `_persist_dead_letter` persiste el sobre íntegro en la tabla
+  `evento_dead_letter` (Postgres, durable) y en `audit_log` dentro de la misma
+  transacción.  El stream Redis `orpycamcp.signature.deadletter` pasa a ser el
+  **buffer operativo para replay/inspección**; la **copia autoritativa** es Postgres.
+  Trabajo futuro pendiente: política de retención del DLQ Redis, mecanismo de replay,
+  acta de eliminación al purgar el stream (Ley 594 art. 23), gobernanza del lector
+  del DLQ (filtro por tenant).
 
 - **R-5b — Huérfanos sin `last_error`**: cuando un mensaje llega al umbral sin un
   intento fresco en el barrido actual (rama de dead-letter directo), `dead_letter_last_error`
