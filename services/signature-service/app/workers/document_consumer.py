@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import redis.exceptions as redis_exc
 
@@ -42,9 +43,16 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 DOCUMENT_STREAM = "orpycamcp.document.events"
+DEADLETTER_STREAM = "orpycamcp.signature.deadletter"
 GROUP = "signature-service"
 CONSUMER = "signature-service-1"
 _SERVICE = "signature-service"
+
+# Cadence for the PEL reclaim sweep (seconds).
+# Contract: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block timeout (5 s)
+# — ensures a healthy consumer processing a message for up to 55 s is never
+# pre-empted by this sweep.
+RECLAIM_INTERVAL = 30.0
 
 
 async def _handle(data: dict) -> None:
@@ -98,10 +106,96 @@ async def _handle(data: dict) -> None:
                 )
 
 
+async def _audit_dead_letter(envelope: dict, failure_meta: dict) -> None:
+    """Audit callback for dead-lettered events.
+
+    Records the parking of an unprocessable event in the immutable audit log
+    to satisfy Ley 594/2000 traceability requirements: an event that could not
+    be delivered must leave a permanent trace rather than disappearing silently.
+
+    R-9: ``actor`` is set to ``"system"`` because the *worker* performs this
+    audit action, not the original user.  The original actor is preserved inside
+    ``payload["envelope"]["actor"]`` so the forensic record can trace who
+    originally triggered the event.
+
+    R-5/R-6: ``payload`` carries the complete original envelope (including its
+    payload dict) so the immutable Postgres row is self-sufficient for forensic
+    reconstruction (Ley 594/2000 art. 4 and art. 19) — the Redis DLQ is
+    treated as an operational buffer, not the authoritative copy.
+
+    The helper in events.reclaim_stale already wraps this callback in try/except
+    so an error here never blocks the xack or breaks the sweep; we are still
+    defensive because the outer wrapper only catches *callback* exceptions —
+    errors inside acquire_tenant (e.g. invalid slug) should not propagate.
+    """
+    if not _AUDIT_AVAILABLE:
+        return  # pragma: no cover
+
+    tenant_slug = envelope.get("tenant_slug")
+    if not tenant_slug:
+        logger.warning(
+            "Cannot audit dead-letter: envelope missing tenant_slug (event_id=%s)",
+            envelope.get("event_id"),
+        )
+        return
+
+    # Extract business identifiers from the event payload defensively —
+    # they may be absent if the event was malformed.
+    evt_payload: dict = envelope.get("payload") or {}
+    tracking_number: str | None = evt_payload.get("tracking_number")
+    doc_id: str | None = evt_payload.get("id")
+
+    # Self-sufficient audit payload: failure details + complete original envelope
+    # + business identifiers extracted for quick querying without JSON traversal.
+    audit_payload = {
+        "failure": failure_meta,
+        "envelope": {
+            "event_id": envelope.get("event_id"),
+            "event_type": envelope.get("event_type"),
+            "correlation_id": envelope.get("correlation_id"),
+            "tenant_slug": tenant_slug,
+            "occurred_at": envelope.get("occurred_at"),
+            "actor": envelope.get("actor"),  # original actor preserved
+            "payload": evt_payload,
+        },
+        "business": {
+            "tracking_number": tracking_number,
+            "doc_id": doc_id,
+        },
+    }
+
+    try:
+        async with acquire_tenant(tenant_slug) as conn:
+            await _audit.append(
+                conn,
+                tenant_slug=tenant_slug,
+                service=_SERVICE,
+                action="evento.dead_letter",
+                object_type="evento",
+                object_ref=envelope.get("event_id"),
+                actor="system",  # R-9: worker performs this system-level act
+                canal="system",
+                payload=audit_payload,
+            )
+    except Exception:
+        logger.warning(
+            "Failed to audit dead-letter for event_id=%s tenant=%s",
+            envelope.get("event_id"),
+            tenant_slug,
+            exc_info=True,
+        )
+
+
 async def run() -> None:
     """Long-running consumer loop. Cancel to shut down cleanly."""
     redis = get_redis()
     await events.ensure_group(redis, DOCUMENT_STREAM, GROUP)
+
+    # Track last reclaim sweep time.  The cadence relationship to respect:
+    #   min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block (5 s)
+    # means stale messages are never reclaimed before a healthy consumer has
+    # had at least 55 s to finish processing them.
+    _last_reclaim = time.monotonic()
 
     while True:
         try:
@@ -112,11 +206,11 @@ async def run() -> None:
             raise
         except (redis_exc.TimeoutError, asyncio.TimeoutError):
             # Normal: block= expired with no new entries — not an error; resume immediately.
-            continue
+            messages = []
         except Exception:
             logger.warning("Error en el bucle del consumidor de firma", exc_info=True)
             await asyncio.sleep(5)
-            continue
+            messages = []
 
         for _stream, entries in messages or []:  # type: ignore[misc]
             for msg_id, msg_data in entries:  # type: ignore[union-attr]
@@ -131,3 +225,25 @@ async def run() -> None:
                         "mensaje permanece en PEL para reintento",
                         exc_info=True,
                     )
+
+        # Reclaim sweep — runs on cadence, not on every iteration.
+        now = time.monotonic()
+        if now - _last_reclaim >= RECLAIM_INTERVAL:
+            try:
+                await events.reclaim_stale(
+                    redis,
+                    DOCUMENT_STREAM,
+                    GROUP,
+                    CONSUMER,
+                    handler=_handle,
+                    min_idle_ms=60_000,
+                    max_deliveries=5,
+                    deadletter_stream=DEADLETTER_STREAM,
+                    on_dead_letter=_audit_dead_letter,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A sweep failure must not crash the consumer loop.
+                logger.warning("Fallo en barrido de reclamación", exc_info=True)
+            _last_reclaim = now

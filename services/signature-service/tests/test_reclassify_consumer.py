@@ -396,3 +396,198 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
 
     # No se aplicó backoff (asyncio.sleep no fue llamado por la rama del timeout).
     mock_sleep.assert_not_called()
+
+
+# ===========================================================================
+# 5. run() — reclaim sweep (Fase 1 dead-letter / reclamación)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
+    """run() llama events.reclaim_stale cuando RECLAIM_INTERVAL ha transcurrido.
+
+    Se controla time.monotonic con valores sintéticos:
+      - Primera llamada (init _last_reclaim): 0.0
+      - Segunda llamada (comprobación 'now'): 31.0  (> RECLAIM_INTERVAL = 30.0)
+
+    Primera xreadgroup: mensajes vacíos (sin procesar) → reclaim se dispara.
+    Segunda xreadgroup: CancelledError → sale del bucle.
+    """
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],                       # primera iteración: sin mensajes nuevos
+        asyncio.CancelledError(), # segunda iteración: salida limpia
+    ]
+
+    mock_reclaim = AsyncMock(return_value=events.ReclaimStats())
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("app.workers.document_consumer.time") as mock_time,
+    ):
+        # Primer monotonic → 0.0 (init _last_reclaim)
+        # Segundo monotonic → 31.0 (reclaim check — supera el intervalo de 30 s)
+        mock_time.monotonic.side_effect = [0.0, 31.0]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    mock_reclaim.assert_awaited_once()
+    call_kwargs = mock_reclaim.await_args
+    assert call_kwargs.kwargs["deadletter_stream"] == document_consumer.DEADLETTER_STREAM
+    assert call_kwargs.kwargs["max_deliveries"] == 5
+    assert call_kwargs.kwargs["min_idle_ms"] == 60_000
+
+
+@pytest.mark.asyncio
+async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
+    """run() NO invoca reclaim_stale si el intervalo aún no ha transcurrido."""
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    mock_reclaim = AsyncMock(return_value=events.ReclaimStats())
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("app.workers.document_consumer.time") as mock_time,
+    ):
+        # 0.0 → init; 5.0 → comprobación (solo 5 s < 30 s → sin barrido)
+        mock_time.monotonic.side_effect = [0.0, 5.0]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    mock_reclaim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_audit_dead_letter_usa_system_como_actor_y_enriquece_payload() -> None:
+    """R-9/R-5/R-6: _audit_dead_letter llama audit.append con actor='system' y payload completo.
+
+    El actor del acto de auditoría es el worker ('system'), no el usuario original.
+    El actor original queda preservado en payload['envelope']['actor'].
+    El payload debe contener las claves 'failure', 'envelope' y 'business' para
+    que la fila de audit_log sea autosuficiente para reconstrucción forense
+    (Ley 594/2000 art. 4 y art. 19).
+    """
+    from app.workers.document_consumer import _audit_dead_letter
+
+    conn = _make_conn()
+    mock_audit = AsyncMock()
+
+    envelope = {
+        "event_id": "eeeeeeee-0000-0000-0000-000000000001",
+        "event_type": "document.radicado.reclassified",
+        "correlation_id": "cccc-0001",
+        "tenant_slug": TENANT,
+        "occurred_at": "2026-06-29T10:00:00+00:00",
+        "actor": "user-original-42",
+        "payload": {
+            "tracking_number": TRACKING,
+            "id": DOC_UUID,
+            "nivel_nuevo": 3,
+            "nivel_anterior": 1,
+        },
+    }
+    failure_meta = {
+        "dead_letter_reason": "max_deliveries_exceeded",
+        "dead_letter_origin_stream": "orpycamcp.document.events",
+        "dead_letter_group": "signature-service",
+        "dead_letter_consumer": "signature-service-1",
+        "dead_letter_delivery_count": "5",
+        "dead_lettered_at": "2026-06-29T10:01:00+00:00",
+        "dead_letter_last_error": "connection refused",
+    }
+
+    with (
+        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("app.workers.document_consumer._audit", mock_audit),
+        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+    ):
+        await _audit_dead_letter(envelope, failure_meta)
+
+    mock_audit.append.assert_called_once()
+    kw = mock_audit.append.call_args.kwargs
+
+    # R-9: el actor del acto es "system" (el worker), no el usuario original.
+    assert kw["actor"] == "system"
+    assert kw["canal"] == "system"
+    assert kw["action"] == "evento.dead_letter"
+    assert kw["object_ref"] == "eeeeeeee-0000-0000-0000-000000000001"
+
+    payload = kw["payload"]
+
+    # "failure" contiene el failure_meta completo (incluyendo last_error).
+    assert payload["failure"]["dead_letter_last_error"] == "connection refused"
+    assert payload["failure"]["dead_letter_delivery_count"] == "5"
+
+    # "envelope" preserva el sobre íntegro, incluyendo el actor original.
+    assert payload["envelope"]["actor"] == "user-original-42"
+    assert payload["envelope"]["event_type"] == "document.radicado.reclassified"
+    assert payload["envelope"]["correlation_id"] == "cccc-0001"
+    assert payload["envelope"]["payload"]["tracking_number"] == TRACKING
+
+    # "business" expone los identificadores de negocio para consultas rápidas.
+    assert payload["business"]["tracking_number"] == TRACKING
+    assert payload["business"]["doc_id"] == DOC_UUID
+
+
+@pytest.mark.asyncio
+async def test_audit_dead_letter_sin_tenant_slug_no_llama_audit() -> None:
+    """Sin tenant_slug en el sobre → audit.append NO se llama (no hay schema donde anclar)."""
+    from app.workers.document_consumer import _audit_dead_letter
+
+    mock_audit = AsyncMock()
+    envelope = {"event_id": "abc", "actor": "user-1", "payload": {}}
+    failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
+
+    with (
+        patch("app.workers.document_consumer._audit", mock_audit),
+        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+    ):
+        await _audit_dead_letter(envelope, failure_meta)
+
+    mock_audit.append.assert_not_called()
+
+
+# ===========================================================================
+# 5. run() — reclaim sweep (Fase 1 dead-letter / reclamación)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
+    """Un error en reclaim_stale no termina el loop; el bucle continúa y finaliza limpiamente."""
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch(
+            "app.workers.document_consumer.events.reclaim_stale",
+            AsyncMock(side_effect=RuntimeError("sweep db error")),
+        ),
+        patch("app.workers.document_consumer.time") as mock_time,
+    ):
+        mock_time.monotonic.side_effect = [0.0, 31.0]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    # Loop survivió: xreadgroup fue invocado dos veces (no sólo una).
+    assert fake_redis.xreadgroup.call_count == 2

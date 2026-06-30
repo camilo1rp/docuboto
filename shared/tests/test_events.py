@@ -9,7 +9,7 @@
 
 """Tests de orpycamcp_common.events (sobre canónico; sin Redis real)."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from orpycamcp_common import events
@@ -109,3 +109,343 @@ async def test_ensure_group_raises_other_errors() -> None:
     redis.xgroup_create.side_effect = Exception("WRONGTYPE")
     with pytest.raises(Exception, match="WRONGTYPE"):
         await events.ensure_group(redis, "s", "g")
+
+
+# ===========================================================================
+# reclaim_stale — unit tests with a fake-minimal Redis double
+# ===========================================================================
+#
+# redis-py 8.x xpending_range returns list[dict] with keys:
+#   message_id, consumer, time_since_delivered, times_delivered
+# xclaim returns list[StreamEntry] = list[tuple[str|bytes, dict[str,str]|None]]
+# When decode_responses=True all str; the helper uses parse_fields which
+# tolerates both bytes and str.
+
+
+def _make_redis(
+    pending: list[dict],
+    claimed: list,  # return value for xclaim
+) -> AsyncMock:
+    """Build a minimal Redis double for reclaim_stale tests."""
+    fake = AsyncMock()
+    fake.xpending_range.return_value = pending
+    fake.xclaim.return_value = claimed
+    fake.xadd.return_value = "1-0"
+    fake.xack.return_value = 1
+    return fake
+
+
+def _pending_entry(msg_id: str, times_delivered: int) -> dict:
+    return {
+        "message_id": msg_id,
+        "consumer": "old-consumer",
+        "time_since_delivered": 65_000,
+        "times_delivered": times_delivered,
+    }
+
+
+def _claimed_entry(msg_id: str, tenant: str = "demo") -> tuple:
+    """A StreamEntry tuple as returned by redis-py xclaim."""
+    ev = events.build_event("x.y", tenant_slug=tenant, payload={"k": "v"})
+    fields = events.to_fields(ev)
+    return (msg_id, fields)
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_reprocesses_orphan_under_threshold() -> None:
+    """Orphan with times_delivered < max_deliveries → claimed, handler called, XACK."""
+    msg_id = "1680000000000-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=2)],
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats.reclaimed == 1
+    assert stats.reprocessed_ok == 1
+    assert stats.reprocessed_fail == 0
+    assert stats.dead_lettered == 0
+
+    handler.assert_awaited_once()
+    # xack called once (on success)
+    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
+    # NOT routed to dead-letter
+    fake.xadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_dead_letters_poison_pill() -> None:
+    """Poison pill with times_delivered >= max_deliveries → DL xadd, xack, handler NOT called."""
+    msg_id = "1680000000001-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=5)],
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats.dead_lettered == 1
+    assert stats.reclaimed == 0
+    assert stats.reprocessed_ok == 0
+
+    handler.assert_not_awaited()
+    # Dead-letter stream received the event
+    fake.xadd.assert_awaited_once()
+    xadd_args = fake.xadd.await_args
+    assert xadd_args.args[0] == "dl"
+    dl_payload = xadd_args.args[1]
+    assert dl_payload["dead_letter_reason"] == "max_deliveries_exceeded"
+    assert dl_payload["dead_letter_delivery_count"] == "5"
+    # Original stream acked after DL
+    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_failed_reprocess_does_not_ack() -> None:
+    """handler raises → NO xack; message stays in PEL; reprocessed_fail=1."""
+    msg_id = "1680000000002-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=1)],
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock(side_effect=RuntimeError("transient db error"))
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats.reprocessed_fail == 1
+    assert stats.reprocessed_ok == 0
+    fake.xack.assert_not_awaited()
+    fake.xadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_skips_when_xclaim_returns_empty() -> None:
+    """Race: xclaim returns [] (already acked elsewhere) → silently ignored."""
+    msg_id = "1680000000003-0"
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=3)],
+        claimed=[],  # race: nothing to claim
+    )
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats.reclaimed == 0
+    assert stats.reprocessed_ok == 0
+    assert stats.dead_lettered == 0
+    handler.assert_not_awaited()
+    fake.xack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_race_on_dead_letter_path() -> None:
+    """xclaim returns [] on the dead-letter path (another consumer acked first) → skipped."""
+    msg_id = "1680000000004-0"
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=10)],  # above threshold
+        claimed=[],
+    )
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats.dead_lettered == 0
+    fake.xadd.assert_not_awaited()
+    fake.xack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_on_dead_letter_callback_failure_does_not_block_ack() -> None:
+    """on_dead_letter callback raises → xack still called, dead_lettered=1, no exception."""
+    msg_id = "1680000000005-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=5)],
+        claimed=[claimed_entry],
+    )
+    failing_callback = AsyncMock(side_effect=RuntimeError("audit db down"))
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+        on_dead_letter=failing_callback,
+    )
+
+    assert stats.dead_lettered == 1
+    # xack was called despite callback failure
+    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
+    # xadd to DL also happened before callback
+    fake.xadd.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_returns_zero_stats_when_no_pending() -> None:
+    """No pending entries → returns all-zero stats without calling any Redis command."""
+    fake = _make_redis(pending=[], claimed=[])
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats == events.ReclaimStats()
+    fake.xclaim.assert_not_awaited()
+    fake.xack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_failed_reprocess_at_threshold_dead_letters_with_last_error() -> None:
+    """R-5b: handler fails and times_delivered+1 >= max_deliveries → DL in same sweep with last_error.
+
+    XCLAIM increments the delivery counter internally.  When a fresh attempt
+    fails and the effective count (times_delivered + 1) reaches the threshold,
+    the message is dead-lettered immediately — capturing the concrete last_error
+    rather than waiting for the next XPENDING scan (which would land on the
+    direct-DL branch with dead_letter_last_error="").
+    """
+    msg_id = "1680000000006-0"
+    claimed_entry = _claimed_entry(msg_id, tenant="demo")
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=4)],  # one below max
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock(side_effect=ValueError("malformed payload — cannot decode nivel_nuevo"))
+    callback = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+        on_dead_letter=callback,
+    )
+
+    # Reclaimed (XCLAIM attempted), reprocess failed, then dead-lettered.
+    assert stats.reclaimed == 1
+    assert stats.reprocessed_fail == 1
+    assert stats.dead_lettered == 1
+    assert stats.reprocessed_ok == 0
+
+    # The message was routed to the dead-letter stream with the concrete error.
+    fake.xadd.assert_awaited_once()
+    dl_stream, dl_payload = fake.xadd.await_args.args
+    assert dl_stream == "dl"
+    assert dl_payload["dead_letter_reason"] == "max_deliveries_exceeded"
+    assert dl_payload["dead_letter_delivery_count"] == "5"  # times_delivered + 1
+    assert dl_payload["dead_letter_last_error"] == "malformed payload — cannot decode nivel_nuevo"
+
+    # The message was acked after being published to the DL stream.
+    fake.xack.assert_awaited_once_with("stream", "grp", msg_id)
+
+    # The on_dead_letter callback was invoked with the enriched failure_meta.
+    callback.assert_awaited_once()
+    cb_envelope, cb_failure = callback.await_args.args
+    assert cb_failure["dead_letter_last_error"] == "malformed payload — cannot decode nivel_nuevo"
+    assert cb_failure["dead_letter_delivery_count"] == "5"
+    assert cb_envelope.get("tenant_slug") == "demo"
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_failed_reprocess_below_threshold_stays_in_pel() -> None:
+    """R-5b: handler fails but times_delivered+1 < max_deliveries → NO DL, stays in PEL.
+
+    Confirms the boundary: only when effective_count >= max_deliveries do we
+    dead-letter in the same sweep.
+    """
+    msg_id = "1680000000007-0"
+    claimed_entry = _claimed_entry(msg_id, tenant="demo")
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=3)],  # effective_count=4 < 5
+        claimed=[claimed_entry],
+    )
+    handler = AsyncMock(side_effect=RuntimeError("transient error"))
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+    )
+
+    assert stats.reprocessed_fail == 1
+    assert stats.dead_lettered == 0
+    assert stats.reprocessed_ok == 0
+    # Message stays in PEL — neither acked nor routed to DL.
+    fake.xack.assert_not_awaited()
+    fake.xadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_direct_dl_has_empty_last_error() -> None:
+    """Direct-DL branch (orphan, no fresh attempt) → dead_letter_last_error is "" in failure_meta."""
+    msg_id = "1680000000008-0"
+    claimed_entry = _claimed_entry(msg_id)
+    fake = _make_redis(
+        pending=[_pending_entry(msg_id, times_delivered=5)],
+        claimed=[claimed_entry],
+    )
+    callback = AsyncMock()
+    handler = AsyncMock()
+
+    stats = await events.reclaim_stale(
+        fake, "stream", "grp", "consumer",
+        handler=handler,
+        min_idle_ms=60_000,
+        max_deliveries=5,
+        deadletter_stream="dl",
+        on_dead_letter=callback,
+    )
+
+    assert stats.dead_lettered == 1
+    dl_payload = fake.xadd.await_args.args[1]
+    # Direct-DL path: no fresh attempt → last_error is explicitly empty string.
+    assert dl_payload["dead_letter_last_error"] == ""
+    # Callback also receives the failure_meta with the empty last_error.
+    cb_failure = callback.await_args.args[1]
+    assert cb_failure["dead_letter_last_error"] == ""
