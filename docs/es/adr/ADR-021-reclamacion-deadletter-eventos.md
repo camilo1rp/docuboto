@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fases 1, 2 y 3 implementadas (signature-service, workflow-service y notification-service, R-4 resuelto)
+**Estado**: Aceptado — Fases 1, 2, 3 y 4-MVP-1 implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa)
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -170,7 +170,69 @@ Un proceso de limpieza periódica (`DELETE WHERE processed_at < now() - interval
 |------|----------|--------|------|
 | 1 | signature-service | **Implementado** | Ack-solo-en-éxito (A-1); handler idempotente por guard SQL |
 | 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
-| 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document); job de retención de `notification_processed_events` pendiente (ver Idempotencia) |
+| 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document) |
+| 4 | notification-service | **MVP-1 implementado** (dedup TTL); MVP-2 y MVP-3 pendientes (ver abajo) | Purga periódica de `notification_processed_events` por TTL configurable (default 7 d) |
+
+---
+
+## Fase 4 — Retención y ciclo de vida
+
+### Clasificación archivística
+
+`notification_processed_events` es una tabla **operacional** (no documental): su
+único propósito es evitar efectos externos duplicados durante el procesamiento de
+eventos.  No registra actos sobre documentos oficiales; no requiere acta de
+eliminación (Ley 594/2000 art. 23 aplica a series documentales, no a datos de
+infraestructura de deduplicación).  Basta con un log estructurado del conteo de
+filas eliminadas por tenant.
+
+### MVP-1 — Purga TTL de `notification_processed_events` (implementado)
+
+**Mecanismo:** `DELETE FROM notification_processed_events WHERE processed_at < now() - make_interval(days => $1)`.
+El placeholder `$1` recibe el TTL en días (default 7); la fecha no se interpola en el SQL.
+
+**TTL de 7 días:** la ventana real de redelivery/reclamación es de minutos
+(RECLAIM_INTERVAL 30 s × max_deliveries 5 = 2,5 min en el peor caso con mensajes
+bloqueados).  7 días es un margen holgado que permite debugging y no tiene riesgo
+de eliminar entradas aún necesarias para deduplicación.
+
+**Multi-tenant:** `app/jobs/retention.py` lista los tenants activos desde
+`public.tenants WHERE status='active' AND provisioning_status='active'` y purga
+cada uno con `acquire_tenant(slug)` (search_path por tenant).  Un fallo en un
+tenant se loguea como WARNING y no aborta los demás.
+
+**Cadencia:** enganchado al loop de `stream_worker.run()` con gate `time.monotonic()`
+(igual patrón que `reclaim_stale`), intervalo configurable `retention_interval_seconds`
+(default 86 400 s / 24 h).  La primera ejecución ocurre tras el primer intervalo completo
+desde el arranque (deja que el pool esté caliente; el margen es irrelevante frente al TTL
+de 7 días).  Un fallo de retención loguea WARNING y no tumba el loop.
+
+**Modo standalone:** `python -m app.jobs.retention` inicializa el pool, ejecuta
+`run_once()`, cierra el pool.  Útil para cron externo o ejecución manual.
+
+**Settings:** `retention_dedup_days: int = 7` y `retention_interval_seconds: int = 86400`
+en `app/core/config.py` (pydantic-settings, sobreescribibles por env).
+
+### MVP-2 — XTRIM del DLQ Redis (pendiente)
+
+El stream `orpycamcp.notification.deadletter` (y los equivalentes de otros servicios)
+puede crecer indefinidamente.  MVP-2 añadirá un `XTRIM MAXLEN ~N` periódico o por
+tamaño.  Requiere decisión de gobernanza: ¿qué tamaño máximo? ¿acta de eliminación?
+(Ley 594 art. 23 puede aplicar si el DLQ se considera parte del registro de actuaciones).
+**No implementado en esta fase; pendiente de ratificación.**
+
+### MVP-3 — Estado y retención de `evento_dead_letter` (pendiente)
+
+La tabla `evento_dead_letter` también crece.  MVP-3 añade una columna `status`
+(`pending` / `resolved` / `replayed`) para habilitar flujos de inspección y replay,
+y un job de retención que elimine (o archive) filas en estado `resolved` tras un
+periodo configurable.  Requiere:
+  1. Ratificación de la clasificación archivística por compliance: ¿son los dead-letters
+     parte del registro legal de comunicaciones oficiales o solo infraestructura?
+  2. Si son parte del registro: procedimiento de acta de eliminación (Ley 594 art. 23).
+  3. Columna `status` + migración.
+  4. Mecanismo de replay (lector del DLQ con filtro por tenant y rol de plataforma).
+**No implementado; pendiente de decisión de compliance.**
 
 ## Alternativas descartadas
 

@@ -28,6 +28,28 @@ class ProcessedEventsRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
         self._conn = conn
 
+    async def purge_older_than(self, days: int) -> int:
+        """Delete dedup rows older than `days` days; return the number of rows deleted.
+
+        Uses ``make_interval(days => $1)`` so the TTL is fully parametrised — no
+        string interpolation of ``days`` into the SQL.  The status tag returned by
+        ``conn.execute`` has the form ``"DELETE N"``; we parse the last token.
+
+        Guards ``days >= 1`` (fail-closed): a misconfigured ``0`` or negative TTL
+        would otherwise widen the predicate and purge in-flight/recent dedup markers
+        (reopening the double-send window). This is the last line of defence before
+        the DELETE, independent of where ``days`` was sourced.
+        """
+        if days < 1:
+            raise ValueError(f"retention days must be >= 1, got {days}")
+        result: str = await self._conn.execute(
+            "DELETE FROM notification_processed_events "
+            "WHERE processed_at < now() - make_interval(days => $1)",
+            days,
+        )
+        # asyncpg returns "DELETE N" as the command tag — parse row count.
+        return int(result.split()[-1])
+
     async def claim(self, event_id: str) -> bool:
         """Claim event_id atomically; return True if claimed (new event), False if duplicate.
 

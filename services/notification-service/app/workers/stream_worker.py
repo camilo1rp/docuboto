@@ -41,8 +41,10 @@ import redis.exceptions as redis_exc
 
 from orpycamcp_common import events
 
+from app.core.config import settings
 from app.core.database import acquire_tenant, get_pool
 from app.core.redis_client import get_redis
+from app.jobs import retention
 from app.repositories.dead_letter_repository import DeadLetterRepository
 from app.services.event_consumer import process_document_event, process_event
 
@@ -68,6 +70,11 @@ _SERVICE = "notification-service"
 # — ensures a healthy consumer processing a message for up to 55 s is never
 # pre-empted by this sweep.
 RECLAIM_INTERVAL = 30.0
+
+# Cadence for the dedup retention job (ADR-021 Fase 4 — MVP-1).
+# Read once at import time so tests can patch the module constant independently
+# of the settings singleton.
+RETENTION_INTERVAL: float = float(settings.retention_interval_seconds)
 
 # Each stream routes to its own handler.  The workflow stream uses the legacy
 # flat format; the document stream uses the canonical orpycamcp_common envelope.
@@ -244,8 +251,14 @@ async def run() -> None:
 
     read_spec = {stream: ">" for stream in _HANDLERS}
 
-    # Track last reclaim sweep time.
-    _last_reclaim = time.monotonic()
+    # Track cadence for both the PEL reclaim sweep and the retention job.
+    # A single time.monotonic() call initialises both: _last_reclaim = _last_retention = t0.
+    # This preserves the exact monotonic call count that existing tests rely on
+    # (one call before the loop, one inside per iteration).
+    # Retention first fires after RETENTION_INTERVAL seconds (≈24 h).  Deferring
+    # the first run avoids hitting the DB before the pool is warm; the daily window
+    # is negligible compared to the 7-day TTL.
+    _last_reclaim = _last_retention = time.monotonic()
 
     while True:
         try:
@@ -287,9 +300,11 @@ async def run() -> None:
                         exc_info=True,
                     )
 
-        # Reclaim sweep — runs on cadence, not on every iteration.
-        # Called once per stream so each PEL is inspected independently.
+        # Cadence gates — both share the same `now` snapshot (one monotonic call).
         now = time.monotonic()
+
+        # PEL reclaim sweep: runs every RECLAIM_INTERVAL (30 s).
+        # Called once per stream so each PEL is inspected independently.
         if now - _last_reclaim >= RECLAIM_INTERVAL:
             for stream_name, handler in _HANDLERS.items():
                 try:
@@ -312,3 +327,15 @@ async def run() -> None:
                         "Fallo en barrido de reclamación (stream=%s)", stream_name, exc_info=True
                     )
             _last_reclaim = now
+
+        # Dedup retention job: runs every RETENTION_INTERVAL (default 86 400 s / 24 h).
+        # ADR-021 Fase 4 — MVP-1: purges notification_processed_events per tenant.
+        # A failure is logged as WARNING; it does NOT crash the consumer loop.
+        if now - _last_retention >= RETENTION_INTERVAL:
+            try:
+                await retention.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Fallo en job de retención de dedup", exc_info=True)
+            _last_retention = now

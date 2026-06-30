@@ -7,6 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,14 @@ class Settings(BaseSettings):
     smtp_retry_backoff_seconds: float = 1.0
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
+
+    # Retention job (ADR-021 Fase 4 — MVP-1)
+    # How many days to keep rows in notification_processed_events before purging.
+    # 7 days is generous: the actual redelivery / reclaim window is minutes.
+    # ge=1 guards against a misconfigured 0/negative TTL purging in-flight markers.
+    retention_dedup_days: int = Field(default=7, ge=1)
+    # How often (in seconds) the worker loop triggers the retention sweep.
+    retention_interval_seconds: int = 86400  # 24 h
 
     @property
     def database_url_asyncpg(self) -> str:
