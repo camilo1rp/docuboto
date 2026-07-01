@@ -55,6 +55,8 @@ pytest==9.1.1
     #   pytest-asyncio
 pytest-asyncio==1.4.0
     # via -r services/api-gateway/requirements.txt
+pytest-timeout==2.4.0
+    # via -r services/api-gateway/requirements.txt
 python-dotenv==1.2.2
     # via
     #   pydantic-settings
