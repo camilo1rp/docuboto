@@ -29,10 +29,12 @@ import redis.exceptions as redis_exc
 from orpycamcp_common import events
 
 from app.core.config import settings
+from app.core.constants import DLQ_GROUP
 from app.core.database import acquire_tenant
 from app.core.redis_client import get_redis
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.dead_letter_repository import DeadLetterRepository
+from app.jobs import deadletter_retention
 
 try:
     from orpycamcp_common import audit as _audit
@@ -46,7 +48,10 @@ logger = logging.getLogger(__name__)
 
 DOCUMENT_STREAM = "orpycamcp.document.events"
 DEADLETTER_STREAM = "orpycamcp.signature.deadletter"
-GROUP = "signature-service"
+# Sourced from app.core.constants (single source of truth shared with
+# app/jobs/deadletter_retention.py and app/routers/admin_deadletter.py) — see
+# the docstring there for why this can't just be a local literal.
+GROUP = DLQ_GROUP
 CONSUMER = "signature-service-1"
 _SERVICE = "signature-service"
 
@@ -350,4 +355,17 @@ async def run() -> None:
                 raise
             except Exception:
                 logger.warning("Fallo en trim del DLQ de firma", exc_info=True)
+            # Purge terminal Postgres dead-letters on the same daily cadence as the
+            # Redis trim (ADR-021 Fase 4 — MVP-3).  Shares the gate to avoid a second
+            # monotonic variable; both are daily housekeeping with no strict ordering
+            # requirement between them.  A failure must not crash the loop or block the
+            # gate (the next daily cycle will retry).
+            try:
+                await deadletter_retention.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Fallo en retención de dead-letters de firma", exc_info=True
+                )
             _last_dlq_trim = now

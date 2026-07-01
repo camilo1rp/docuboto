@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     retention_dlq_days: int = Field(default=30, ge=1)
     # How often (in seconds) the worker loop triggers the DLQ trim sweep.
     retention_interval_seconds: int = 86400  # 24 h
+    # Dead-letter Postgres retention (ADR-021 Fase 4 — MVP-3).
+    # Grace period (in days) after which rows with status 'resolved' or 'discarded'
+    # are eligible for deletion from evento_dead_letter.  'pending' rows are NEVER
+    # purged — they represent unresolved failures awaiting human decision.
+    # 90 days gives forensic slack; legal copy lives in audit_log (immutable).
+    retention_deadletter_days: int = Field(default=90, ge=1)
 
 
 settings = Settings()

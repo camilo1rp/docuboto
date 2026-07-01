@@ -1,6 +1,6 @@
 # ADR-021: Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams
 
-**Estado**: Aceptado — Fases 1, 2, 3, 4-MVP-1/MVP-2 y 5 (replay/discard API) implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa; trim MINID del DLQ Redis activo; API de inspección/replay/discard con `PERM_DLQ_ADMIN`)
+**Estado**: Aceptado — Fases 1, 2, 3, 4-MVP-1/MVP-2/MVP-3 y 5 (replay/discard API) implementadas (signature-service, workflow-service, notification-service; R-4 resuelto; retención operacional de dedup activa; trim MINID del DLQ Redis activo; purga de dead-letters terminales activa en signature+workflow; API de inspección/replay/discard con `PERM_DLQ_ADMIN`; toda consulta sobre la tabla compartida `evento_dead_letter` acotada por `origin_group`, 2026-06-30)
 **Fecha**: 2026-06-29
 **Autores**: Giampiero (mantenedor principal)
 
@@ -171,7 +171,7 @@ Un proceso de limpieza periódica (`DELETE WHERE processed_at < now() - interval
 | 1 | signature-service | **Implementado** | Ack-solo-en-éxito (A-1); handler idempotente por guard SQL |
 | 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
 | 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document) |
-| 4 | notification-service + shared | **MVP-1 implementado** (dedup TTL); **MVP-2 implementado** (XTRIM DLQ); MVP-3 pendiente (ver abajo) | MVP-1: Purga periódica de `notification_processed_events` por TTL configurable (default 7 d). MVP-2: XTRIM MINID por edad (30 d) en los tres DLQ streams; helper en `orpycamcp_common.events.trim_deadletter`; cableado en los tres workers con cadencia diaria |
+| 4 | notification-service + shared | **MVP-1 implementado** (dedup TTL); **MVP-2 implementado** (XTRIM DLQ); **MVP-3 implementado** para signature+workflow (ver abajo); notification queda acoplado al Inc. 2 | MVP-1: Purga periódica de `notification_processed_events` por TTL configurable (default 7 d). MVP-2: XTRIM MINID por edad (30 d) en los tres DLQ streams; helper en `orpycamcp_common.events.trim_deadletter`; cableado en los tres workers con cadencia diaria. MVP-3: Purga de dead-letters terminales (resolved/discarded) con gracia de 90 d; `pending` NUNCA se purga |
 | 5 | signature-service + workflow-service | **Implementado** | Replay/discard API con `PERM_DLQ_ADMIN`; clearance fail-closed sobre nivel vivo (404 neutro); atomicidad replay+estado+audit en una transacción; assert tenant match; concurrencia por `UPDATE … WHERE status='pending'`; columna `status` (pending/resolved/discarded) en `evento_dead_letter` |
 
 ---
@@ -257,21 +257,125 @@ no requiere acta de eliminación (Ley 594 art. 23 aplica a series documentales, 
 buffers de infraestructura).  El log estructurado de `trim_deadletter` (INFO con
 `entries_removed`) sirve como traza operativa suficiente.
 
-### MVP-3 — Retención de `evento_dead_letter` (pendiente)
+### MVP-3 — Retención de `evento_dead_letter` (implementado para signature+workflow)
 
-La columna `status` (`pending` / `resolved` / `discarded`) ya está implementada
-(Fase 5, ver abajo) y habilita los flujos de inspección y replay.  Lo que queda
-pendiente de MVP-3 es el **job de retención** que elimine (o archive) filas en
-estado `resolved`/`discarded` tras un periodo configurable.  Requiere:
-  1. Ratificación de la clasificación archivística por compliance: ¿son los dead-letters
-     parte del registro legal de comunicaciones oficiales o solo infraestructura?
-  2. Si son parte del registro: procedimiento de acta de eliminación (Ley 594 art. 23).
-**Job de retención no implementado; pendiente de decisión de compliance.**
+**Estado:** Implementado en signature-service y workflow-service.  notification-service
+queda acoplado al Incremento 2 (su `status`+purga son interdependientes con la API de
+inspección/discard que aún no existe para ese servicio).
+
+**Clasificación archivística (ratificación del archival-compliance-auditor):**
+`evento_dead_letter` es infraestructura operacional de cola de mensajes, no una
+serie documental bajo Ley 594/2000 art. 23.  La copia legal de cada dead-letter vive
+en `audit_log` (inmutable, escrita atómicamente en la inserción por `_persist_dead_letter`
+y actualizada en la resolución/descarte por los endpoints de Fase 5).  La purga no
+elimina la traza legal — elimina la fila operacional cuyo uso ya concluyó.  No se
+requiere acta de eliminación (art. 23 aplica a series documentales, no a colas de
+infraestructura).  Basta con log estructurado del conteo por tenant.
+
+**Mecanismo:**
+```sql
+DELETE FROM evento_dead_letter
+WHERE status IN ('resolved', 'discarded')
+AND tenant_slug = $1 AND origin_group = $2
+AND resolved_at < now() - make_interval(days => $3)
+```
+`$3` recibe el TTL en días (default 90); el intervalo nunca se interpola como texto.
+`'pending'` NUNCA aparece en el WHERE — las filas sin resolución humana no se purgan.
+
+**Guardia fail-closed:** `DeadLetterRepository.purge_terminal(days, tenant_slug,
+origin_group)` lanza `ValueError` si `days < 1`; un valor 0 o negativo haría que
+`make_interval(days => 0)` borrase TODAS las filas terminales (del tenant y
+origin_group dados) independientemente de la edad (ventana ilimitada).  La guardia
+cierra ese riesgo antes del `execute`.  Invariante en el que se apoya el `WHERE`:
+un estado terminal (`resolved`/`discarded`) siempre implica `resolved_at IS NOT
+NULL`, porque `transition_status` fija ambos campos en la MISMA `UPDATE` — una
+fila que violara esa invariante simplemente nunca cumpliría `resolved_at <
+now() - interval` (`NULL` nunca es `< algo` en SQL), o sea fail-closed, no
+fail-open, ante cualquier dato corrupto.
+
+**TTL de 90 días:** la ventana de reclamación activa es de minutos
+(`RECLAIM_INTERVAL 30 s × max_deliveries 5 = 2,5 min` en el peor caso).  90 días es
+un margen holgado que permite auditorías, debugging extendido y rollback sin riesgo
+de eliminar filas aún útiles operativamente.
+
+**Multi-tenant:** `app/jobs/deadletter_retention.py` lista los tenants activos desde
+`public.tenants WHERE status='active' AND provisioning_status='active'` y purga
+cada uno con `acquire_tenant(slug)` (search_path por tenant) **y** con `DLQ_GROUP`
+de `app/core/constants.py` (ver subsección siguiente).  Un fallo en un tenant se
+loguea como WARNING y no aborta los demás.
+
+**`evento_dead_letter` es una tabla física COMPARTIDA — aislamiento por
+`origin_group`.**  Tanto signature-service como workflow-service crean la misma
+tabla (`CREATE TABLE IF NOT EXISTS`) en el MISMO schema `tenant_{slug}` de la
+misma base de datos: las filas de ambos servicios conviven en una sola tabla y se
+distinguen por la columna `origin_group` (el `GROUP` del consumer Redis que las
+generó — `"signature-service"` / `"workflow-service"`; `reclaim_stale` la
+propaga vía `failure_meta["dead_letter_group"]`).  Antes de esta corrección
+**ninguna** consulta del repositorio llevaba el predicado `origin_group`, lo que
+producía dos fallos reales (mismo tenant, no fuga cross-tenant, pero handler
+incorrecto):
+  - `purge_terminal` de un servicio borraba también los dead-letters terminales
+    del OTRO servicio, acoplando sus ventanas de retención.
+  - Los endpoints `/admin/deadletter` de un servicio veían, listaban, reproducían
+    y descartaban los dead-letters del OTRO servicio — un replay de
+    signature-service sobre un evento de workflow-service invocaría
+    `apply_reclassification` sobre un payload de distribución (handler
+    equivocado).
+
+Corrección: **toda** consulta de `DeadLetterRepository` (`list_pending`,
+`get_by_event_id`, `get_for_update`, `transition_status`, `purge_terminal`) recibe
+ahora un parámetro `origin_group` obligatorio y lo añade al `WHERE`.  La fuente
+única del valor es `app/core/constants.py` (`DLQ_GROUP`), consumida por
+`document_consumer.py` (como `GROUP`, para no romper el nombre usado en el resto
+del worker), por `app/routers/admin_deadletter.py` y por
+`app/jobs/deadletter_retention.py` — está en su propio módulo (no en
+`document_consumer.py`, donde vivía antes) precisamente porque
+`document_consumer.py` importa `app.jobs.deadletter_retention` a nivel de módulo
+*antes* de que `GROUP` quedara definido; importarlo de vuelta desde
+`document_consumer` habría creado un ciclo de imports.
+
+**Cadencia:** enganchado al gate diario ya existente `_last_dlq_trim` en
+`document_consumer.run()` — tras el `events.trim_deadletter` del DLQ Redis, se
+invoca `await deadletter_retention.run_once()` en su propio `try/except`.  Ambas
+son tareas diarias de housekeeping sin dependencia de orden; compartir el gate evita
+una segunda variable monotónica.  `CancelledError` re-lanza; cualquier otro error
+loguea WARNING y no tumba el loop ni bloquea el gate.
+
+**Modo standalone:** `python -m app.jobs.deadletter_retention` inicializa el pool,
+ejecuta `run_once()`, cierra el pool.  Útil para cron externo o ejecución manual.
+
+**Settings nuevos** (signature-service y workflow-service):
+```
+retention_deadletter_days: int = 90  # gracia post-cierre; sobreescribible por env
+```
+
+**Nota:** `pending` nunca se purga.  La tabla `evento_dead_letter` existe precisamente
+para conservar esas filas hasta que un admin tome una decisión; borrarlas antes de eso
+violaría el principio de trazabilidad (Ley 594/2000 art. 4).
+
+**Corrección de tests de cadencia (2026-06-30):** los dos tests de
+`test_worker_calls_run_once_after_interval` y `test_worker_run_once_failure_does_not_crash_loop`
+en `workflow-service/tests/test_deadletter_retention.py` colgaban indefinidamente
+(OOM/exit 137) porque conducían el worker con
+`redis_mock.xreadgroup.return_value = []` (un `AsyncMock` que retorna al instante,
+sin ceder el control real al loop) más `asyncio.create_task(run()) +
+asyncio.wait_for(..., timeout=N) + task.cancel()`.  Como el `while True` de
+`document_consumer.run()` no tiene ningún `await` real que ceda en su camino feliz,
+un mock que retorna instantáneo hace *busy-spin* y nunca le da una vuelta al loop de
+eventos: el timer de `wait_for` jamás se dispara y `task.cancel()` nunca gana la
+carrera — cuelgue infinito más historial de llamadas del `AsyncMock` creciendo sin
+límite (la causa del OOM).  La corrección, ya usada en
+`signature-service/tests/test_deadletter_retention.py`, usa un `side_effect`
+**finito** —`redis_mock.xreadgroup.side_effect = [[], asyncio.CancelledError()]`—
+y conduce el worker con `await document_consumer.run()` directo bajo
+`pytest.raises(asyncio.CancelledError)`, sin `create_task`/`wait_for`/`cancel`.
+Ambos servicios quedan simétricos.
 
 ## Fase 5 — API de inspección, replay y discard (implementado)
 
 **Servicios:** signature-service y workflow-service.  notification-service
-(Incremento 2) y el job de purga (MVP-3) quedan pendientes.
+(Incremento 2) queda pendiente.  El job de purga (MVP-3) ya está implementado —
+ver sección anterior.
 
 **Modelo de estado.**  Migración de tenant (`signature 006`, `workflow 010`) añade
 a `evento_dead_letter` las columnas `status TEXT NOT NULL DEFAULT 'pending'
@@ -317,6 +421,14 @@ que reprocesen el mismo evento serializan por el `FOR UPDATE`; el segundo obtien
 `tenant_slug = $caller` además del `search_path`, defensa en profundidad contra
 fuga cross-tenant (el DLQ es por servicio y agrega todos los tenants en Redis, pero
 la tabla Postgres y la API están acotadas por tenant).
+
+**Aislamiento por `origin_group` (tabla compartida).**  `evento_dead_letter` la
+crean signature-service y workflow-service en el MISMO schema de tenant (ver
+detalle en MVP-3 arriba); toda consulta de este router pasa además
+`origin_group = GROUP` (constante propia del servicio, `app/core/constants.py`)
+de modo que `list`, `detail`, `replay` y `discard` solo ven/operan sobre los
+dead-letters generados por ESTE servicio, nunca los del otro consumidor de la
+misma tabla.
 
 **Gateway.**  Se añadió la ruta `/api/v1/workflow/admin/` al proxy
 (`signature/admin` ya estaba cubierto por `/api/v1/signature/`).

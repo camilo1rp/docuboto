@@ -41,7 +41,7 @@ from app.schemas.dead_letter import (
     DeadLetterSummary,
     DiscardRequest,
 )
-from app.workers.document_consumer import apply_reclassification
+from app.workers.document_consumer import GROUP, apply_reclassification
 
 try:
     from orpycamcp_common import audit as _audit
@@ -85,6 +85,7 @@ async def list_dead_letters(
     offset = (page - 1) * size
     rows, total = await repo.list_pending(
         caller_slug,
+        GROUP,
         status=status_filter,
         origin_stream=origin_stream,
         offset=offset,
@@ -104,7 +105,7 @@ async def get_dead_letter(
     """Detalle completo de un dead-letter (payload + failure), tras gate de clearance."""
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
-    row = await repo.get_by_event_id(event_id, caller_slug)
+    row = await repo.get_by_event_id(event_id, caller_slug, GROUP)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -142,7 +143,7 @@ async def replay_dead_letter(
     async with conn.transaction():
         repo = DeadLetterRepository(conn)
         # H7: SELECT FOR UPDATE con predicado de tenant.
-        row = await repo.get_for_update(event_id, caller_slug)
+        row = await repo.get_for_update(event_id, caller_slug, GROUP)
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -195,7 +196,7 @@ async def replay_dead_letter(
             ) from exc
 
         # H5: transición pending → resolved (0 filas = ya cerrado por otro admin).
-        rows_affected = await repo.transition_status(event_id, caller_slug, "resolved")
+        rows_affected = await repo.transition_status(event_id, caller_slug, "resolved", GROUP)
         if rows_affected == 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -249,7 +250,7 @@ async def discard_dead_letter(
     async with conn.transaction():
         repo = DeadLetterRepository(conn)
         # SELECT FOR UPDATE: symmetric with replay; prevents concurrent discard/replay race.
-        row = await repo.get_for_update(event_id, caller_slug)
+        row = await repo.get_for_update(event_id, caller_slug, GROUP)
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -261,7 +262,7 @@ async def discard_dead_letter(
         await assert_can_read_deadletter(conn, caller_clearance, row)
 
         previous_status = row["status"]
-        rows_affected = await repo.transition_status(event_id, caller_slug, "discarded")
+        rows_affected = await repo.transition_status(event_id, caller_slug, "discarded", GROUP)
         if rows_affected == 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
