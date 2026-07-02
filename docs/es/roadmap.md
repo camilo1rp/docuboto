@@ -67,7 +67,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 ## Más allá del specDrive 📋 Planeado
 
 - [ ] App móvil nativa (iOS/Android)
-- [x] ~~Firma de documentos~~ — firma electrónica nativa + **cadena de firma / bandeja del firmante** hechas (E06: turno ordenado, `GET /pending`, sign/reject/batch); **XAdES-B del índice electrónico + sello institucional** hecho (Inc.1, ADR-016 addendum); **XAdES-T/LT/LTA (TSA, CRL/OCSP) y CA acreditada ONAC** pendientes (signature-service)
+- [x] ~~Firma de documentos~~ — firma electrónica nativa + **cadena de firma / bandeja del firmante** hechas (E06: turno ordenado, `GET /pending`, sign/reject/batch); **XAdES-B del índice electrónico + sello institucional** hecho (Inc.1, ADR-016 addendum); **2FA por OTP-correo en la firma personal** hecho (Inc.2, RF-FIR-13); **XAdES-T/LT/LTA (TSA, CRL/OCSP), CA acreditada ONAC y 2FA de mayor aseguramiento (TOTP/WebAuthn)** pendientes (signature-service)
 - [ ] Integración SSO corporativo (Entra ID, Okta, LDAP)
 - [x] Frontend — scaffold SvelteKit en `frontend/` (ADR-011); UI completa pendiente
 - [x] ~~API de webhooks~~ — webhooks salientes firmados hechos (E11)

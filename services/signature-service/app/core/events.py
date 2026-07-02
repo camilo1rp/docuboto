@@ -33,6 +33,38 @@ from orpycamcp_common import events
 STREAM = "orpycamcp.signature.events"
 
 
+async def publish_challenge_emitido(
+    redis: Any,
+    *,
+    tenant_slug: str,
+    actor: str | None,
+    challenge_id: str,
+    solicitud_id: str,
+    expira_at: str,
+) -> None:
+    """Emite ``firma.challenge.emitido`` (E06 Inc.2, RF-FIR-13, idempotente por challenge_id).
+
+    Best-effort — igual criterio que ``publish_indice_firmado``: el challenge ya
+    quedó persistido en Postgres y el correo ya se envió antes de llamar aquí; un
+    fallo de Redis no debe deshacer ninguna de las dos cosas. NUNCA incluye el OTP
+    ni su hash (invariante rector del Inc.2).
+    """
+    await events.emit(
+        redis,
+        STREAM,
+        "firma.challenge.emitido",
+        tenant_slug=tenant_slug,
+        actor=actor,
+        dedup_key=challenge_id,
+        payload={
+            "challenge_id": challenge_id,
+            "solicitud_id": solicitud_id,
+            "factor_tipo": "otp_email",
+            "expira_at": expira_at,
+        },
+    )
+
+
 async def publish_indice_firmado(
     redis: Any,
     *,

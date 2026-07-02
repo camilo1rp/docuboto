@@ -100,3 +100,36 @@ En el Incremento 1 **no hay CA acreditada ONAC** integrada: toda firma XAdES-B s
 - Acuerdo AGN 001/2024 art. 4.3.2.4 — firma del índice al cierre, obligatoria para transferencia.
 - Ley 527/1999 art. 16.3 — sello de persona jurídica.
 - [ADR-021](ADR-021-reclamacion-deadletter-eventos.md) — el evento `firma.indice.firmado` se publica best-effort en `orpycamcp.signature.events`.
+
+---
+
+## Addendum — Incremento 2 (2026-07-02): 2FA por OTP-correo en la firma personal (RF-FIR-13)
+
+**Estado**: Aceptado — realiza el segundo factor en el **acto de firma** para la firma **personal** (cadena de firma). Complementario al Inc.1: el sello institucional del índice (actuación automatizada, RF-FIR-14) queda **EXENTO** del 2FA.
+
+### Contexto adicional
+
+RF-FIR-13 (Ley 527/1999 art. 7; DUR 1074/2015 Cap. 47 arts. 47.4.1/47.6/47.8/47.9): toda firma personal de actos de fondo debe exigir un **segundo factor verificado en el acto de firma** (no solo en el login), ligado por un `challenge_id` de un solo uso al `hash_documento`, para asegurar el vínculo **firmante ↔ voluntad ↔ documento**. La auditoría conserva tipo de factor, `challenge_id`, momento y resultado — **nunca el OTP**.
+
+### Decisión
+
+Segundo factor = **OTP de un solo uso enviado por correo** (decisión del usuario). signature-service es el **dueño del challenge**. NO TOTP/WebAuthn/step-up de Keycloak (diferidos a un incremento de mayor aseguramiento).
+
+- **Tabla `firma_challenge`** (migración tenant `011`) por tenant: liga `(solicitud_id, firmante_id, hash_documento)`, persiste **solo el HMAC-SHA256 del OTP** (con `signature_secret`, nunca el OTP en claro), `estado` (`pendiente→verificado→consumido` | `expirado`/`bloqueado`), `intentos`/`max_intentos`, `expira_at`, `canal_masked`. Índice único parcial impide dos challenges activos por acto+documento.
+- **`POST /api/v1/signature/requests/{id}/challenge`** — solo el firmante del turno activo emite su reto (403 si no; 404 neutro si la solicitud no es visible; **422 `payload_no_fijado`** si la solicitud no tiene `payload_sha256` estable — Q1). Genera OTP de 6 dígitos (CSPRNG), lo envía por correo (auth-service `/me` → email; notification-service `/send`), **fail-closed** (canal caído → 503 + rollback, sin challenge huérfano). Cooldown de reenvío 30s (429).
+- **`POST /requests/{id}/sign`** exige `challenge_id`+`otp`; **sin challenge verificado → 409 `2fa_requerido`**. Verificación con `hmac.compare_digest` en la **misma transacción** del lock de turno; el consumo del challenge y el avance del turno son atómicos (anti-replay/anti-TOCTOU). OTP incorrecto → 401 con `intentos_restantes` (el contador se persiste de forma durable); al agotar `max_intentos` (5) → `bloqueado`.
+- **`POST /batch`** (BREAKING, Q2): `items:[{solicitud_id, challenge_id, otp}]` — un OTP por documento (no reutilizable entre documentos); por-ítem no aborta el lote.
+
+### Seguridad y conformidad declarada (RF-FIR-15: no sobre-declarar)
+
+El OTP **nunca** se persiste/loguea/audita/devuelve en claro. Fuerza bruta cerrada por HMAC (secreto del servidor) + cap de intentos + TTL 5 min. `hash_documento` cierra reuso cross-documento; el check `solicitud_id` cierra reuso cross-acto (mismo payload en dos solicitudes). El 2FA es **no desactivable** para actos sobre información **RESERVADA/CLASIFICADA** (`nivel_seguridad ≥ 2`), aunque el flag global `firma_2fa_required` esté en `False` (solo conmutable para PUBLICA/tests). El factor `otp_email` es de **posesión de canal** — más débil que TOTP/WebAuthn — y se declara tal cual: es firma **electrónica** (Ley 527 art. 7), no digital/cualificada. La auditoría del acto (`firma.turno.firmado`) es autocontenida: liga firmante + `hash_documento` + `challenge_id` consumido + `consumido_at`.
+
+### Consecuencias
+
+**Positivas**: vínculo firmante↔voluntad↔documento verificable y auditado; contrato de la firma nativa/XAdES intacto; el gate vive por frontera de endpoint (el sello del índice no lo toca). **Negativas / límites (roadmap declarado)**: OTP-correo depende de un canal externo (el OTP viaja en el cuerpo del correo hacia notification-service — residual documentado); factores de mayor aseguramiento (TOTP/WebAuthn/step-up OIDC) diferidos; el 2FA exige que la solicitud tenga `payload_sha256` estable (documentos con hash dinámico no son firmables por la vía personal hasta fijarlo).
+
+### Relacionados (Inc.2)
+
+- RF-FIR-13 (spec E06 §12) — 2FA en el acto de firma; RF-FIR-11 (atribución del JWT) y RF-FIR-12 (PERM_FIRMA + auditoría) que lo condicionan.
+- [ADR-013](ADR-013-autorizacion-resuelta-en-bd.md) — el firmante se deriva del JWT validado, nunca del cuerpo.
+- Servicios consumidos sin cambios: auth-service `/me` (email), notification-service `/send` (correo).

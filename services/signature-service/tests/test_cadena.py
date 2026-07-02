@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.core.config import settings
 from app.core.database import get_tenant_conn
 from app.main import app
 from tests.conftest import TENANT_HEADERS, USER
@@ -365,7 +366,13 @@ async def test_reject_solicitud_already_closed_returns_409() -> None:
 
 @pytest.mark.asyncio
 async def test_batch_sign_partial_failure() -> None:
-    """Batch continues even if one item fails; omitted items report the error."""
+    """Batch continues even if one item fails; omitted items report the error.
+
+    Both items fail BEFORE the 2FA gate (es_firmante / get_or_404), so the
+    outcome is independent of settings.firma_2fa_required. The payload still
+    carries a syntactically valid challenge_id/otp per item — LoteItem requires
+    them structurally regardless of the config flag (BREAKING contract, Q2).
+    """
     conn = _make_conn()
     sol = _sol_row()
 
@@ -390,7 +397,12 @@ async def test_batch_sign_partial_failure() -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
                 "/api/v1/signature/batch",
-                json={"solicitud_ids": [str(sid1), str(sid2)]},
+                json={
+                    "items": [
+                        {"solicitud_id": str(sid1), "challenge_id": str(uuid.uuid4()), "otp": "000000"},
+                        {"solicitud_id": str(sid2), "challenge_id": str(uuid.uuid4()), "otp": "000000"},
+                    ]
+                },
                 headers=TENANT_HEADERS,
             )
         assert resp.status_code == 200
@@ -631,11 +643,15 @@ async def test_get_pending_with_items_and_x_total_count() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sign_happy_path_not_last_turn() -> None:
+async def test_sign_happy_path_not_last_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Signing an intermediate turn updates that turn to 'firmado' but the solicitud
     remains 'pendiente' because there is a next pending turn.
+
+    2FA disabled (E06 Inc.2, RF-FIR-13): this test targets the turn-order state
+    machine, not the OTP gate — see test_cadena_2fa.py for challenge/OTP coverage.
     """
+    monkeypatch.setattr(settings, "firma_2fa_required", False)
     conn = _make_conn()
     sol = _sol_row()
     turno1 = _turno_row(orden=1, firmante_id=USER)
@@ -683,11 +699,14 @@ async def test_sign_happy_path_not_last_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sign_last_turn_marks_solicitud_firmado() -> None:
+async def test_sign_last_turn_marks_solicitud_firmado(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     When the final signer acts, solicitud.estado advances to 'firmado'.
     Verifies that actualizar_estado_solicitud is called (execute count == 2).
+
+    2FA disabled (E06 Inc.2, RF-FIR-13) — see test_cadena_2fa.py for OTP coverage.
     """
+    monkeypatch.setattr(settings, "firma_2fa_required", False)
     conn = _make_conn()
     sol_pendiente = _sol_row(estado="pendiente")
     sol_firmado = _sol_row(estado="firmado")
@@ -908,11 +927,16 @@ async def test_reject_empty_motivo_returns_422() -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_mixed_firmado_and_omitido() -> None:
+async def test_batch_mixed_firmado_and_omitido(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Batch signs first item (succeeds) and skips second (wrong turn).
     The batch must NOT abort: both results are returned, in order.
+
+    2FA disabled (E06 Inc.2, RF-FIR-13): sid1 reaches the happy-path sign, which
+    would otherwise require a mocked challenge lookup — see test_cadena_2fa.py
+    for per-item OTP coverage of the batch endpoint.
     """
+    monkeypatch.setattr(settings, "firma_2fa_required", False)
     conn = _make_conn()
 
     sid1 = uuid.uuid4()
@@ -957,7 +981,12 @@ async def test_batch_mixed_firmado_and_omitido() -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
                 "/api/v1/signature/batch",
-                json={"solicitud_ids": [str(sid1), str(sid2)]},
+                json={
+                    "items": [
+                        {"solicitud_id": str(sid1), "challenge_id": str(uuid.uuid4()), "otp": "000000"},
+                        {"solicitud_id": str(sid2), "challenge_id": str(uuid.uuid4()), "otp": "000000"},
+                    ]
+                },
                 headers=TENANT_HEADERS,
             )
         assert resp.status_code == 200

@@ -76,5 +76,33 @@ class Settings(BaseSettings):
     # 90 days gives forensic slack; legal copy lives in audit_log (immutable).
     retention_deadletter_days: int = Field(default=90, ge=1)
 
+    # --- 2FA por OTP-correo en la firma personal (E06 Inc.2, RF-FIR-13) ---
+    # Kill-switch: True (default) exige challenge_id+otp en POST /sign y POST
+    # /batch para la firma personal de la cadena (app/services/cadena_service.py
+    # CadenaFirmaService.firmar). El sello institucional del índice (/sign-xml,
+    # RF-FIR-14, Inc.1) NO pasa por este gate — vive en otro router y no invoca
+    # CadenaFirmaService.firmar, así que queda exento por frontera de endpoint.
+    # NOTA: este flag deja de ser un kill-switch total desde CadenaFirmaService
+    # .firmar() — cuando la solicitud es RESERVADA/CLASIFICADA (nivel_seguridad
+    # >= 2) el gate 2FA se exige SIEMPRE, sin importar este valor; el flag solo
+    # sigue siendo un interruptor real para PUBLICA (nivel_seguridad=1) o en
+    # entornos de prueba.
+    firma_2fa_required: bool = True
+    # Vigencia del OTP desde su emisión (POST /requests/{id}/challenge).
+    otp_ttl_seconds: int = Field(default=300, ge=1)
+    # Máximo de verificaciones fallidas antes de bloquear el challenge.
+    otp_max_intentos: int = Field(default=5, ge=1)
+    # Longitud del OTP numérico (zero-padded, generado con secrets — CSPRNG).
+    # app/schemas/cadena.py deriva su regex de validación de ESTE mismo valor
+    # (no un literal "6"), para que emisión y verificación nunca diverjan.
+    otp_longitud: int = Field(default=6, ge=4, le=10)
+    # Ventana mínima entre reemisiones de OTP para el mismo (solicitud,
+    # firmante, documento) — evita el reenvío-como-bombardeo de correos.
+    otp_reenvio_cooldown_seconds: int = Field(default=30, ge=0)
+    # Llamadas DIRECTAS servicio-a-servicio (Q3, mismo patrón que Inc.1
+    # storage_client.py) — NO a través del api-gateway.
+    notification_service_url: str = "http://notification-service:8007"
+    auth_service_url: str = "http://auth-service:8001"
+
 
 settings = Settings()

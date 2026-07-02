@@ -77,6 +77,18 @@ class CadenaRepository:
             solicitud_id,
         )
 
+    async def get_solicitud_for_update(self, solicitud_id: uuid.UUID) -> asyncpg.Record | None:
+        """Same as get_solicitud but with a row lock (E06 Inc.2, RF-FIR-13).
+
+        Used by CadenaFirmaService.emitir_challenge to hold the solicitud stable
+        for the duration of the challenge-emission transaction (TOCTOU guard,
+        same pattern as turno_activo_for_update).
+        """
+        return await self._conn.fetchrow(
+            f"SELECT {_SOL_COLS} FROM firma_solicitud WHERE id = $1 FOR UPDATE",
+            solicitud_id,
+        )
+
     async def get_solicitud_por_objeto(
         self,
         objeto_tipo: str,

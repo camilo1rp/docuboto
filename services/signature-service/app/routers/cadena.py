@@ -14,6 +14,13 @@ Prefix: /api/v1/signature  (same prefix as signature.py — no route conflicts).
 All routes require PERM_FIRMA (enforced by require_permission at router level, RF-FIR-12).
 Firmante identity comes exclusively from X-User-Id header (RF-FIR-11) — the internal
 auth_users.id UUID resolved by auth-service /validate with lazy provisioning.
+
+2FA por OTP-correo (E06 Inc.2, RF-FIR-13): POST /requests/{id}/challenge emits a
+one-time OTP delivered by email; POST /requests/{id}/sign and POST /batch then
+require challenge_id+otp (gated in CadenaFirmaService, only for the PERSONAL
+signature of the chain — the institutional seal of the index, /sign-xml in
+signature.py, is a different router and never calls CadenaFirmaService.firmar,
+so it is out of scope for this gate by construction).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from app.core.clearance import get_actor, require_permission
 from app.core.database import get_tenant_conn
 from app.schemas.cadena import (
+    ChallengeResponse,
     FirmarRequest,
     LoteRequest,
     LoteResponse,
@@ -131,6 +139,28 @@ async def get_pending(
 
 
 # ---------------------------------------------------------------------------
+# Emit 2FA challenge (E06 Inc.2, RF-FIR-13)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/requests/{solicitud_id}/challenge",
+    response_model=ChallengeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Emit a one-time OTP-by-email 2FA challenge for the caller's active turn",
+)
+async def create_challenge(
+    solicitud_id: uuid.UUID,
+    request: Request,
+    actor: uuid.UUID = Depends(get_actor),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> ChallengeResponse:
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    authorization = request.headers.get("Authorization")
+    return await _service(conn, tenant_slug).emitir_challenge(solicitud_id, actor, authorization)
+
+
+# ---------------------------------------------------------------------------
 # Sign active turn
 # ---------------------------------------------------------------------------
 
@@ -189,4 +219,4 @@ async def batch_sign(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> LoteResponse:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    return await _service(conn, tenant_slug).firmar_lote(body.solicitud_ids, actor)
+    return await _service(conn, tenant_slug).firmar_lote(body.items, actor)

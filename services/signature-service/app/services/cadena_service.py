@@ -16,23 +16,42 @@ pendiente) y la comprobación firmante_id == actor antes de cualquier escritura.
 
 El firmante se obtiene SIEMPRE del JWT validado (RF-FIR-11); nunca del body.
 Cada acto de escritura queda en audit_log (RF-FIR-14).
+
+2FA por OTP-correo (E06 Inc.2, RF-FIR-13): cuando settings.firma_2fa_required
+es True, firmar() exige un challenge_id+otp válidos (emitidos por
+emitir_challenge) antes de producir la firma — ver _gate_2fa. El gate es
+además OBLIGATORIO (no desactivable por el flag) cuando la solicitud es
+RESERVADA/CLASIFICADA (nivel_seguridad >= 2) — ver firmar(). El sello
+institucional del índice (/sign-xml, otro router) NO pasa por este gate.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 from fastapi import HTTPException, status
 
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
+from app.core.events import publish_challenge_emitido
+from app.core.http_clients import (
+    OtpEmailDeliveryError,
+    SignerEmailError,
+    get_signer_email,
+    send_otp_email,
+)
+from app.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
+from app.core.redis_client import get_redis
 from app.repositories.cadena_repository import CadenaRepository
+from app.repositories.challenge_repository import ChallengeRepository
 from app.repositories.firma_repository import FirmaRepository
 from app.schemas.cadena import (
+    ChallengeResponse,
     FirmarRequest,
+    LoteItem,
     LoteResponse,
     PendienteItem,
     ResultadoLoteItem,
@@ -42,8 +61,7 @@ from app.schemas.cadena import (
 )
 from app.services import signer
 
-if TYPE_CHECKING:
-    pass
+logger = logging.getLogger("signature.cadena")
 
 try:
     from orpycamcp_common import audit as _audit
@@ -263,6 +281,214 @@ class CadenaFirmaService:
         ]
         return items, total
 
+    async def emitir_challenge(
+        self,
+        solicitud_id: uuid.UUID,
+        actor: uuid.UUID,
+        authorization: str | None,
+    ) -> ChallengeResponse:
+        """
+        Emits a one-time OTP-by-email 2FA challenge for the caller's active turn
+        (E06 Inc.2, RF-FIR-13).
+
+        Guards (in order, all under the FOR UPDATE lock of solicitud+turno so a
+        concurrent challenge/sign cannot race this check):
+        1. 404 solicitud_no_encontrada — solicitud missing OR below the actor's
+           clearance (no-read-up, RF-SEG-08 — same neutral 404 as get_solicitud).
+        2. 403 no_es_su_turno — no active turn, or it belongs to someone else.
+        3. 422 payload_no_fijado — payload_sha256 must be fixed before a 2FA
+           challenge can be issued (Q1): the challenge is bound to a stable hash.
+
+        Idempotent reissue: a live challenge (pendiente|verificado) for the same
+        (solicitud, firmante, hash_documento) is expired before inserting the
+        new one, unless it was created less than otp_reenvio_cooldown_seconds
+        ago (429 challenge_cooldown).
+
+        FAIL-CLOSED on the outbound calls (auth-service /me, notification-service
+        /send): any failure raises 503 canal_2fa_no_disponible from *inside* the
+        transaction, so anything already written (INSERT, expired-replacement)
+        rolls back — no orphaned challenge whose OTP was never delivered.
+        """
+        async with self._conn.transaction():
+            sol = await self._repo.get_solicitud_for_update(solicitud_id)
+            if sol is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "solicitud_no_encontrada",
+                        "detail": "Signature request not found",
+                        "status": 404,
+                    },
+                )
+            # No-read-up gate (RF-SEG-08, D-15): below-clearance actors get the
+            # same neutral 404 as a missing solicitud (anti-enumeration).
+            clearance = await resolve_caller_clearance(self._conn, actor)
+            if sol["nivel_seguridad"] > clearance:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "solicitud_no_encontrada",
+                        "detail": "Signature request not found",
+                        "status": 404,
+                    },
+                )
+
+            # A closed chain (firmado/rechazado) must not accept a new challenge:
+            # rechazar() only resolves the active turn, leaving later turns
+            # 'pendiente' — turno_activo_for_update below would still return one
+            # of them. Without this guard, a signer further down an already
+            # rejected/completed chain could trigger a real OTP email for a
+            # challenge that firmar() will unconditionally reject afterwards
+            # (409 solicitud_no_pendiente, same check there) — wasted OTP,
+            # email noise and a misleading firma.challenge.emitido audit entry.
+            if sol["estado"] != "pendiente":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "solicitud_no_pendiente",
+                        "detail": f"Signature request {solicitud_id} is already '{sol['estado']}'",
+                        "status": 409,
+                    },
+                )
+
+            turno = await self._repo.turno_activo_for_update(solicitud_id)
+            if turno is None or turno["firmante_id"] != actor:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "error": "no_es_su_turno",
+                        "detail": "It is not this actor's turn in the signature chain (RF-FIR-04)",
+                        "status": 403,
+                    },
+                )
+
+            hash_documento = sol["payload_sha256"]
+            if not hash_documento:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "payload_no_fijado",
+                        "detail": (
+                            "firma_solicitud.payload_sha256 must be set before a 2FA "
+                            "challenge can be issued (RF-FIR-13)"
+                        ),
+                        "status": 422,
+                    },
+                )
+
+            challenge_repo = ChallengeRepository(self._conn)
+            now = datetime.now(timezone.utc)
+            activo = await challenge_repo.get_activo(solicitud_id, actor, hash_documento)
+            if activo is not None:
+                cooldown_hasta = activo["creado_at"] + timedelta(
+                    seconds=settings.otp_reenvio_cooldown_seconds
+                )
+                if now < cooldown_hasta:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail={
+                            "error": "challenge_cooldown",
+                            "detail": "A challenge was issued too recently; wait before retrying",
+                            "status": 429,
+                        },
+                    )
+                # Idempotent replacement (Q1) — the new INSERT below must not
+                # collide with uq_firma_challenge_activo.
+                await challenge_repo.expirar(activo["challenge_id"])
+
+            try:
+                email = await get_signer_email(authorization)
+            except SignerEmailError:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": "canal_2fa_no_disponible",
+                        "detail": "Could not resolve the signer's email (auth-service)",
+                        "status": 503,
+                    },
+                ) from None
+
+            canal_masked = mask_email(email)
+            otp = generate_otp(settings.otp_longitud)
+            otp_hash = hmac_otp(otp, settings.signature_secret)
+            expira_at = now + timedelta(seconds=settings.otp_ttl_seconds)
+
+            challenge = await challenge_repo.crear(
+                solicitud_id=solicitud_id,
+                firmante_id=actor,
+                hash_documento=hash_documento,
+                otp_hash=otp_hash,
+                max_intentos=settings.otp_max_intentos,
+                expira_at=expira_at,
+                canal_masked=canal_masked,
+                tenant_slug=self._tenant_slug,
+            )
+
+            try:
+                await send_otp_email(
+                    recipient_email=email,
+                    tenant_slug=self._tenant_slug,
+                    objeto_tipo=sol["objeto_tipo"],
+                    solicitud_id=solicitud_id,
+                    otp=otp,
+                    ttl_seconds=settings.otp_ttl_seconds,
+                )
+            except OtpEmailDeliveryError:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": "canal_2fa_no_disponible",
+                        "detail": "Could not deliver the OTP email (notification-service)",
+                        "status": 503,
+                    },
+                ) from None
+
+            if _AUDIT_AVAILABLE:
+                await _audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="firma.challenge.emitido",
+                    object_type=sol["objeto_tipo"],
+                    object_ref=sol["objeto_id"],
+                    actor=str(actor),
+                    payload={
+                        "challenge_id": str(challenge["challenge_id"]),
+                        "factor_tipo": "otp_email",
+                        "solicitud_id": str(solicitud_id),
+                        "firmante_id": str(actor),
+                        "hash_documento": hash_documento,
+                        "expira_at": expira_at.isoformat(),
+                        "canal_masked": canal_masked,
+                    },
+                )
+
+        # Best-effort event — the challenge is already persisted and the email
+        # already sent; a Redis failure must not undo either (same criterion as
+        # publish_indice_firmado, app/core/events.py).
+        try:
+            await publish_challenge_emitido(
+                get_redis(),
+                tenant_slug=self._tenant_slug,
+                actor=str(actor),
+                challenge_id=str(challenge["challenge_id"]),
+                solicitud_id=str(solicitud_id),
+                expira_at=expira_at.isoformat(),
+            )
+        except Exception:
+            logger.warning(
+                "No se pudo publicar firma.challenge.emitido para challenge_id=%s",
+                challenge["challenge_id"],
+                exc_info=True,
+            )
+
+        return ChallengeResponse(
+            challenge_id=challenge["challenge_id"],
+            factor_tipo="otp_email",
+            canal=canal_masked,
+            expira_at=expira_at,
+        )
+
     async def firmar(
         self,
         solicitud_id: uuid.UUID,
@@ -329,27 +555,8 @@ class CadenaFirmaService:
                 },
             )
 
-        # Server-generated timestamp — never from the client (RF-FIR-12).
-        sello_dt = datetime.now(timezone.utc)
-        sello_iso = sello_dt.isoformat()
-
-        # Payload priority: solicitud.payload_sha256 > request.payload_xml > identifier fallback.
-        # huella_de_contenido=False marca el caso de "sellado de identificador": se firma
-        # "objeto_tipo:objeto_id", NO el contenido → no detecta alteración del documento
-        # (DUR 1074/2015 art. 2.2.2.47.4.2). Se audita el flag para trazar el grado de prueba.
-        if sol["payload_sha256"]:
-            payload_bytes = sol["payload_sha256"].encode()
-            huella_de_contenido = True
-        elif payload_opcional and payload_opcional.payload_xml:
-            payload_bytes = payload_opcional.payload_xml.encode()
-            huella_de_contenido = True
-        else:
-            payload_bytes = f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
-            huella_de_contenido = False
-
-        sign_result = signer.firmar(
-            payload_bytes, str(actor), sello_iso, settings.signature_secret
-        )
+        otp_fail: HTTPException | None = None
+        consumed_challenge: dict | None = None
 
         async with self._conn.transaction():
             # Authoritative turn read under a row lock (TOCTOU guard, RF-FIR-04): a
@@ -366,55 +573,319 @@ class CadenaFirmaService:
                     },
                 )
 
-            firma_row = await FirmaRepository(self._conn).insert(
-                {
-                    "objeto_tipo": sol["objeto_tipo"],
-                    "objeto_id": sol["objeto_id"],
-                    "formato_solicitado": None,
-                    "firmante_id": actor,
-                    "payload_sha256": sign_result["payload_sha256"],
-                    "firma_blob": sign_result["firma_blob"],
-                    "provider": sign_result["provider"],
-                    "sello_tiempo": sello_dt,
-                }
-            )
-            firma_id: uuid.UUID = firma_row["id"]
-
-            ok = await self._repo.marcar_turno(turno["id"], "firmado", firma_id=firma_id)
-            if not ok:
-                # Lost the race: the turn was already resolved by a concurrent commit.
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "error": "solicitud_no_pendiente",
-                        "detail": "This turn was already resolved by another request",
-                        "status": 409,
-                    },
+            # 2FA gate (E06 Inc.2, RF-FIR-13) — must run BEFORE signer.firmar().
+            # On failure, _gate_2fa RETURNS (never raises) so any durable state
+            # change it already made (attempt counter, expirado/bloqueado
+            # transitions) survives the commit below — even though the signature
+            # itself is skipped. See _gate_2fa docstring for why raising here
+            # would be wrong (it would roll back those changes too).
+            #
+            # Mandatory (not disable-able via firma_2fa_required) once the
+            # object is above PUBLICA (nivel_seguridad >= 2): a global
+            # kill-switch must not be able to silently drop the second factor
+            # for RESERVADA/CLASIFICADA acts (DUR 1074/2015 Cap. 47 — grado de
+            # confiabilidad apropiado a las circunstancias). The flag remains
+            # a real switch only at PUBLICA / for test environments.
+            if settings.firma_2fa_required or sol["nivel_seguridad"] >= 2:
+                otp_fail, consumed_challenge = await self._gate_2fa(
+                    solicitud_id, actor, sol, payload_opcional
                 )
 
-            # Promote solicitud to 'firmado' when no more pending turns exist.
-            next_active = await self._repo.turno_activo(solicitud_id)
-            if next_active is None:
-                await self._repo.actualizar_estado_solicitud(solicitud_id, "firmado")
+            if otp_fail is None:
+                # Server-generated timestamp — never from the client (RF-FIR-12).
+                sello_dt = datetime.now(timezone.utc)
+                sello_iso = sello_dt.isoformat()
 
+                # Payload priority: solicitud.payload_sha256 > request.payload_xml > identifier fallback.
+                # huella_de_contenido=False marca el caso de "sellado de identificador": se firma
+                # "objeto_tipo:objeto_id", NO el contenido → no detecta alteración del documento
+                # (DUR 1074/2015 art. 2.2.2.47.4.2). Se audita el flag para trazar el grado de prueba.
+                if sol["payload_sha256"]:
+                    payload_bytes = sol["payload_sha256"].encode()
+                    huella_de_contenido = True
+                elif payload_opcional and payload_opcional.payload_xml:
+                    payload_bytes = payload_opcional.payload_xml.encode()
+                    huella_de_contenido = True
+                else:
+                    payload_bytes = f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
+                    huella_de_contenido = False
+
+                sign_result = signer.firmar(
+                    payload_bytes, str(actor), sello_iso, settings.signature_secret
+                )
+
+                firma_row = await FirmaRepository(self._conn).insert(
+                    {
+                        "objeto_tipo": sol["objeto_tipo"],
+                        "objeto_id": sol["objeto_id"],
+                        "formato_solicitado": None,
+                        "firmante_id": actor,
+                        "payload_sha256": sign_result["payload_sha256"],
+                        "firma_blob": sign_result["firma_blob"],
+                        "provider": sign_result["provider"],
+                        "sello_tiempo": sello_dt,
+                    }
+                )
+                firma_id: uuid.UUID = firma_row["id"]
+
+                ok = await self._repo.marcar_turno(turno["id"], "firmado", firma_id=firma_id)
+                if not ok:
+                    # Lost the race: the turn was already resolved by a concurrent commit.
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "solicitud_no_pendiente",
+                            "detail": "This turn was already resolved by another request",
+                            "status": 409,
+                        },
+                    )
+
+                # Promote solicitud to 'firmado' when no more pending turns exist.
+                next_active = await self._repo.turno_activo(solicitud_id)
+                if next_active is None:
+                    await self._repo.actualizar_estado_solicitud(solicitud_id, "firmado")
+
+                if _AUDIT_AVAILABLE:
+                    await _audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="firma.turno_firmado",
+                        object_type=sol["objeto_tipo"],
+                        object_ref=sol["objeto_id"],
+                        actor=str(actor),
+                        payload={
+                            "solicitud_id": str(solicitud_id),
+                            "orden": turno["orden"],
+                            "firma_id": str(firma_id),
+                            "huella_de_contenido": huella_de_contenido,
+                            # Effective hash bound to this act — ties the audit
+                            # entry to the exact document without needing to
+                            # cross-reference firma_challenge (RF-FIR-13/14).
+                            "hash_documento": sign_result["payload_sha256"],
+                            # Derived from the challenge row actually
+                            # verified-and-consumed by _gate_2fa (never from
+                            # settings.firma_2fa_required nor from the
+                            # client-supplied body) so the audit reflects what
+                            # really happened, not configuration intent.
+                            "factor_tipo": (
+                                consumed_challenge["factor_tipo"]
+                                if consumed_challenge
+                                else None
+                            ),
+                            "challenge_id": (
+                                str(consumed_challenge["challenge_id"])
+                                if consumed_challenge
+                                else None
+                            ),
+                            "resultado_2fa": (
+                                "verificado" if consumed_challenge else None
+                            ),
+                            "consumido_at": (
+                                consumed_challenge["consumido_at"].isoformat()
+                                if consumed_challenge
+                                else None
+                            ),
+                        },
+                    )
+        # The `async with` block above commits unless one of the two genuine
+        # concurrency-conflict branches raised (harmless rollback — nothing had
+        # been written yet at those points). Crucially, the otp_fail branch never
+        # raises inside the block, so any durable challenge state change it made
+        # commits normally along with everything else.
+
+        if otp_fail is not None:
+            raise otp_fail
+
+        return await self.get(solicitud_id, actor)
+
+    async def _gate_2fa(
+        self,
+        solicitud_id: uuid.UUID,
+        actor: uuid.UUID,
+        sol: asyncpg.Record,
+        body: FirmarRequest | None,
+    ) -> tuple[HTTPException | None, dict | None]:
+        """
+        Verifies and consumes the 2FA challenge for a personal-signature turn
+        (E06 Inc.2, RF-FIR-13). MUST run inside the caller's ambient transaction
+        (the same one holding the turno FOR UPDATE lock) — see firmar().
+
+        Returns (None, consumed) on success: the challenge row is marked
+        'consumido' here, atomically with the marcar_turno() that follows in
+        the same ambient transaction (anti-TOCTOU/replay, step d of the
+        contract). ``consumed`` carries the authoritative challenge_id,
+        factor_tipo and consumido_at — the values firmar() embeds verbatim
+        into the firma.turno_firmado audit entry, never the client-supplied
+        challenge_id from ``body`` nor a value inferred from configuration
+        (defense-in-depth: the audited evidence always reflects the row that
+        was actually verified-and-consumed under FOR UPDATE).
+
+        Returns (HTTPException, None) (never raises) on failure — the caller
+        raises it AFTER the ambient transaction has committed. This is
+        deliberate: some failure branches here mutate firma_challenge (attempt
+        counter, 'expirado'/'bloqueado' transitions) and that state MUST
+        survive even though the overall sign attempt is aborted. Raising
+        immediately here would propagate out of firmar()'s
+        `async with self._conn.transaction():` and roll back the whole
+        ambient transaction — silently undoing those durable state changes
+        along with it.
+        """
+        challenge_repo = ChallengeRepository(self._conn)
+
+        challenge_id = body.challenge_id if body else None
+        otp = body.otp if body else None
+        if challenge_id is None or otp is None:
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "2fa_requerido",
+                    "detail": "challenge_id and otp are required (RF-FIR-13)",
+                    "status": 409,
+                },
+            ), None
+
+        challenge = await challenge_repo.get_for_update(challenge_id)
+        if challenge is None:
+            # Intentionally indistinguishable in status/shape from the
+            # "belongs to someone else" branch below only in spirit, not in
+            # code: both are 4xx with a 'challenge_*' error code, per the
+            # contract (step b). challenge_id is an unguessable UUID v4,
+            # tenant-scoped, so this does not meaningfully aid enumeration —
+            # kept as two distinct codes for operator/troubleshooting clarity.
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_invalido",
+                    "detail": "Challenge not found",
+                    "status": 409,
+                },
+            ), None
+        if challenge["firmante_id"] != actor:
+            return HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "challenge_ajeno",
+                    "detail": "Challenge does not belong to this actor",
+                    "status": 403,
+                },
+            ), None
+        if challenge["solicitud_id"] != solicitud_id:
+            # A challenge is bound at emission to the (solicitud, firmante,
+            # hash_documento) triple (Q1/Q2). Two distinct solicitudes can
+            # legitimately share an identical payload_sha256 (the same
+            # document attached to two radicados/objects) with the same
+            # active signer on both — without this check, an OTP emitted for
+            # act A could be consumed to sign act B. One-time consumption
+            # already limits the blast radius to a single substitution, but
+            # this closes the gap outright and keeps the audit entry (which
+            # names "this" solicitud_id) truthful.
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_acto_distinto",
+                    "detail": "Challenge was issued for a different signature request",
+                    "status": 409,
+                },
+            ), None
+        if challenge["hash_documento"] != sol["payload_sha256"]:
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_documento_distinto",
+                    "detail": "Challenge was issued for a different document",
+                    "status": 409,
+                },
+            ), None
+        if challenge["estado"] == "consumido":
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_consumido",
+                    "detail": "Challenge was already used",
+                    "status": 409,
+                },
+            ), None
+        if challenge["estado"] == "bloqueado":
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_bloqueado",
+                    "detail": "Challenge is blocked (too many failed attempts)",
+                    "status": 409,
+                },
+            ), None
+
+        now = datetime.now(timezone.utc)
+        if now >= challenge["expira_at"]:
+            await challenge_repo.marcar_estado(challenge["challenge_id"], "expirado")
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_expirado",
+                    "detail": "Challenge has expired",
+                    "status": 409,
+                },
+            ), None
+        if challenge["intentos"] >= challenge["max_intentos"]:
+            await challenge_repo.marcar_estado(challenge["challenge_id"], "bloqueado")
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "challenge_bloqueado",
+                    "detail": "Challenge is blocked (too many failed attempts)",
+                    "status": 409,
+                },
+            ), None
+
+        if not verify_otp(otp, challenge["otp_hash"], settings.signature_secret):
+            nuevos_intentos = challenge["intentos"] + 1
+            bloqueado = nuevos_intentos >= challenge["max_intentos"]
+            nuevo_estado = "bloqueado" if bloqueado else "pendiente"
+            await challenge_repo.registrar_intento_fallido(
+                challenge["challenge_id"], intentos=nuevos_intentos, estado=nuevo_estado
+            )
+            intentos_restantes = max(challenge["max_intentos"] - nuevos_intentos, 0)
             if _AUDIT_AVAILABLE:
                 await _audit.append(
                     self._conn,
                     tenant_slug=self._tenant_slug,
                     service=_SERVICE,
-                    action="firma.turno_firmado",
+                    action="firma.challenge.fallido",
                     object_type=sol["objeto_tipo"],
                     object_ref=sol["objeto_id"],
                     actor=str(actor),
                     payload={
+                        "challenge_id": str(challenge["challenge_id"]),
                         "solicitud_id": str(solicitud_id),
-                        "orden": turno["orden"],
-                        "firma_id": str(firma_id),
-                        "huella_de_contenido": huella_de_contenido,
+                        "intentos": nuevos_intentos,
+                        "intentos_restantes": intentos_restantes,
+                        "motivo": "otp_incorrecto",
                     },
                 )
+            return HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error": "otp_incorrecto",
+                    "detail": "The provided OTP is incorrect",
+                    "intentos_restantes": intentos_restantes,
+                    "status": 401,
+                },
+            ), None
 
-        return await self.get(solicitud_id, actor)
+        # Success — consume now, atomically with marcar_turno() in the same
+        # ambient transaction (anti-TOCTOU/replay, RF-FIR-13 step d). `now`
+        # (already computed above for the expiry check) becomes consumido_at,
+        # shared verbatim between the DB row and the audit payload the caller
+        # builds from the returned dict.
+        await challenge_repo.consumir(challenge["challenge_id"], now)
+        consumed = {
+            "challenge_id": challenge["challenge_id"],
+            "factor_tipo": challenge["factor_tipo"],
+            "hash_documento": challenge["hash_documento"],
+            "consumido_at": now,
+        }
+        return None, consumed
 
     async def rechazar(
         self,
@@ -518,21 +989,25 @@ class CadenaFirmaService:
 
     async def firmar_lote(
         self,
-        solicitud_ids: list[uuid.UUID],
+        items: list[LoteItem],
         actor: uuid.UUID,
     ) -> LoteResponse:
         """
-        Batch sign: attempts firmar() for each solicitud_id.
+        Batch sign: attempts firmar() for each item, each with its OWN 2FA
+        credential (Q2, E06 Inc.2 — one OTP per document, never reused across
+        items even when several turns belong to the same actor).
 
         A failure on one item does NOT abort the rest. Each result carries
-        'firmado' on success or 'omitido' with an error detail.
+        'firmado' on success or 'omitido' with the error code as detalle
+        (includes 2FA failures: 2fa_requerido, otp_incorrecto, challenge_*).
         """
         resultados: list[ResultadoLoteItem] = []
-        for sid in solicitud_ids:
+        for item in items:
             try:
-                await self.firmar(sid, actor)
+                body = FirmarRequest(challenge_id=item.challenge_id, otp=item.otp)
+                await self.firmar(item.solicitud_id, actor, body)
                 resultados.append(
-                    ResultadoLoteItem(solicitud_id=sid, resultado="firmado")
+                    ResultadoLoteItem(solicitud_id=item.solicitud_id, resultado="firmado")
                 )
             except HTTPException as exc:
                 detail = exc.detail
@@ -543,7 +1018,7 @@ class CadenaFirmaService:
                 )
                 resultados.append(
                     ResultadoLoteItem(
-                        solicitud_id=sid, resultado="omitido", detalle=detalle
+                        solicitud_id=item.solicitud_id, resultado="omitido", detalle=detalle
                     )
                 )
         return LoteResponse(resultados=resultados)
