@@ -20,7 +20,7 @@ import uuid
 
 import asyncpg
 
-from app.services.index_builder import IndiceItemData
+from app.services.index_builder import XSD_VERSION, IndiceItemData
 
 _INDICE_COLS = (
     "id, expediente_id, version, xml, xml_sha256, content_hash, algoritmo, "
@@ -109,7 +109,8 @@ class IndexRepository:
         return list(
             await self._conn.fetch(
                 "SELECT document_id, orden, titulo, tipologia, fecha_declaracion, "
-                "fecha_archivado, valor_huella, funcion_resumen, formato, tamano_bytes "
+                "fecha_archivado, valor_huella, funcion_resumen, formato, tamano_bytes, "
+                "folios "
                 "FROM expediente_indice_item WHERE indice_id = $1 ORDER BY orden ASC",
                 indice_id,
             )
@@ -132,8 +133,8 @@ class IndexRepository:
                 f"""
                 INSERT INTO expediente_indice
                     (expediente_id, version, xml, xml_sha256, content_hash,
-                     num_documentos, generado_por)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     num_documentos, generado_por, xsd_version)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING {_INDICE_COLS}
                 """,
                 expediente_id,
@@ -143,6 +144,7 @@ class IndexRepository:
                 content_hash,
                 num_documentos,
                 generado_por,
+                XSD_VERSION,  # explícito: NO confiar en el DEFAULT 'v1' de la tabla
             )
             assert indice is not None
             for it in items:
@@ -150,8 +152,9 @@ class IndexRepository:
                     """
                     INSERT INTO expediente_indice_item
                         (indice_id, document_id, orden, titulo, tipologia,
-                         fecha_archivado, valor_huella, funcion_resumen)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                         fecha_archivado, valor_huella, funcion_resumen,
+                         formato, tamano_bytes, folios)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     """,
                     indice["id"],
                     uuid.UUID(it.document_id),
@@ -161,5 +164,8 @@ class IndexRepository:
                     it.fecha_archivado,
                     it.valor_huella,
                     it.funcion_resumen,
+                    it.formato,
+                    it.tamano_bytes,
+                    it.folios,
                 )
         return indice

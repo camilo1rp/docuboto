@@ -39,6 +39,10 @@ class ExpedienteRadicado:
     tracking_number: str
     added_at: datetime
     content_hash: str | None = None
+    # Metadatos RT-15 del índice electrónico (E15 Inc.3): aportados al vincular.
+    formato: str | None = None
+    tamano_bytes: int | None = None
+    folios: int | None = None
 
 
 @dataclass

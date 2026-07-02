@@ -41,6 +41,12 @@ class RadicadoLink(BaseModel):
     tracking_number: str = Field(..., min_length=1, max_length=50)
     # SHA-256 del documento (E15 T-08): se materializa como valor_huella del índice.
     content_hash: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    # Metadatos RT-15 del índice electrónico (E15 Inc.3, Acuerdo AGN 001/2024
+    # art. 4.3.2.3): aportados por quien vincula (Opción A), todos opcionales —
+    # NULL/ausente = no declarado, se omite del <documento> del índice v2.
+    formato: str | None = Field(default=None, max_length=150)
+    tamano_bytes: int | None = Field(default=None, ge=0)
+    folios: int | None = Field(default=None, ge=0)
 
 
 class BatchLinkRequest(BaseModel):
@@ -158,9 +164,16 @@ class IndiceItemResponse(BaseModel):
     orden: int
     titulo: str | None = None
     tipologia: str | None = None
-    fecha_archivado: datetime | None = None
+    # Nombrado para alinear con <fechaIncorporacion> del XML v2 (E15 Inc.3,
+    # RT-15 art. 4.3.2.3) — mismo valor que `fecha_archivado`/`added_at`
+    # internos, renombrado solo en la vista consultable.
+    fecha_incorporacion: datetime | None = None
     valor_huella: str | None = None
     funcion_resumen: str = "SHA-256"
+    # Metadatos RT-15 (E15 Inc.3); NULL = no declarado al vincular.
+    formato: str | None = None
+    tamano_bytes: int | None = None
+    folios: int | None = None
 
 
 class IndiceResponse(BaseModel):
@@ -190,6 +203,11 @@ class RebuildResult(BaseModel):
     xml_sha256: str
     num_documentos: int
     unchanged: bool = False
+    # xsdVersion de la versión devuelta (la nueva si se regeneró, o la ya
+    # persistida si `unchanged`) — fuente para que el llamador (p. ej. el
+    # asiento de auditoría del cierre) no asuma ciegamente la constante del
+    # módulo cuando `regenerate` no creó versión nueva.
+    xsd_version: str | None = None
 
 
 class IndiceVerifyDoc(BaseModel):
@@ -214,6 +232,10 @@ class IndiceVerifyFirma(BaseModel):
 class IndiceVerifyResponse(BaseModel):
     version: int
     valido: bool
+    # Fixity del XML del índice en sí (re-hash de la columna `xml` almacenada
+    # vs `xml_sha256` persistido) — distinto de `documentos[].coincide`, que
+    # solo contrasta la huella de cada documento referenciado.
+    huella_indice_ok: bool = True
     documentos: list[IndiceVerifyDoc]
     firma: IndiceVerifyFirma
     fecha_verificacion: datetime

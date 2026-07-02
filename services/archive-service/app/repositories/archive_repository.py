@@ -291,19 +291,26 @@ class ArchiveRepository:
         radicado_id: uuid.UUID,
         tracking_number: str,
         content_hash: str | None = None,
+        formato: str | None = None,
+        tamano_bytes: int | None = None,
+        folios: int | None = None,
     ) -> ExpedienteRadicado:
         await self._set_search_path()
         row = await self._conn.fetchrow(
             """
             INSERT INTO expediente_radicados
-                (expediente_id, radicado_id, tracking_number, content_hash)
-            VALUES ($1, $2, $3, $4)
+                (expediente_id, radicado_id, tracking_number, content_hash,
+                 formato, tamano_bytes, folios)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
             """,
             expediente_id,
             radicado_id,
             tracking_number,
             content_hash,
+            formato,
+            tamano_bytes,
+            folios,
         )
         return _row_to_radicado(row)
 
@@ -663,6 +670,9 @@ def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
         tracking_number=row["tracking_number"],
         content_hash=row["content_hash"],
         added_at=row["added_at"],
+        formato=row["formato"],
+        tamano_bytes=row["tamano_bytes"],
+        folios=row["folios"],
     )
 
 

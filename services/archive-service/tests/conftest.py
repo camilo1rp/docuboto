@@ -80,6 +80,9 @@ def make_radicado_link_record(
     tracking_number: str = TRACKING_NUMBER,
     added_at: datetime | None = None,
     content_hash: str | None = None,
+    formato: str | None = None,
+    tamano_bytes: int | None = None,
+    folios: int | None = None,
 ) -> dict:
     return {
         "expediente_id": expediente_id or EXPEDIENTE_ID,
@@ -87,6 +90,11 @@ def make_radicado_link_record(
         "tracking_number": tracking_number,
         "added_at": added_at or NOW,
         "content_hash": content_hash,
+        # Metadatos RT-15 del índice electrónico (E15 Inc.3); NULL por defecto
+        # = no declarado al vincular.
+        "formato": formato,
+        "tamano_bytes": tamano_bytes,
+        "folios": folios,
     }
 
 

@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, status
+from orpycamcp_common import audit
 
 from app.models.archive import Expediente
 from app.repositories.archive_repository import ArchiveRepository
@@ -43,6 +44,7 @@ from app.schemas.archive import (
     RebuildResult,
 )
 from app.services.index_builder import (
+    XSD_VERSION,
     IndiceData,
     IndiceItemData,
     build_xml,
@@ -53,9 +55,12 @@ from app.services.index_builder import (
 if TYPE_CHECKING:
     from app.clients.signature_client import SignedIndice
 
+_SERVICE = "archive-service"
+
 
 class IndexService:
     def __init__(self, conn, tenant_slug: str) -> None:
+        self._conn = conn
         self._index = IndexRepository(conn)
         self._archive = ArchiveRepository(conn, tenant_slug)
         self._tenant_slug = tenant_slug
@@ -68,8 +73,13 @@ class IndexService:
                 document_id=str(r.radicado_id),
                 orden=i,
                 titulo=r.tracking_number,
-                fecha_archivado=r.added_at,
+                fecha_archivado=r.added_at,  # -> <fechaIncorporacion> en v2
                 valor_huella=r.content_hash,  # SHA-256 aportado al vincular (T-08)
+                # Metadatos RT-15 (E15 Inc.3), aportados al vincular (Opción A);
+                # NULL = no declarado -> se omiten del <documento> del índice.
+                formato=r.formato,
+                tamano_bytes=r.tamano_bytes,
+                folios=r.folios,
             )
             for i, r in enumerate(exp.radicados, start=1)
         ]
@@ -101,7 +111,22 @@ class IndexService:
             items=items,
         )
 
-    async def regenerate(self, expediente_id: uuid.UUID, *, generado_por: str) -> RebuildResult:
+    async def regenerate(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        generado_por: str,
+        assert_open: bool = True,
+    ) -> RebuildResult:
+        """Regenera (append-only) el índice si el conjunto documental cambió.
+
+        `assert_open` (por defecto True) rechaza con 409 la regeneración de un
+        expediente que no está 'open' — evita que un rebuild ad-hoc posterior
+        al cierre dispare version+1 sobre un conjunto documental ya congelado.
+        `close_expediente` pasa `assert_open=False`: ES la regeneración final
+        legítima, invocada justo después de transicionar el expediente a
+        'closed' (por eso su propio `exp.status` ya no es 'open' en ese punto).
+        """
         exp = await self._archive.get_expediente_by_id(expediente_id)
         if exp is None:
             raise HTTPException(
@@ -110,6 +135,15 @@ class IndexService:
                     "error": "expediente_not_found",
                     "detail": str(expediente_id),
                     "status": 404,
+                },
+            )
+        if assert_open and exp.status != "open":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "expediente_not_open",
+                    "detail": f"Expediente en estado '{exp.status}': no admite regeneración del índice",
+                    "status": 409,
                 },
             )
         current = await self._index.get_current(expediente_id)
@@ -130,6 +164,7 @@ class IndexService:
                 xml_sha256=current["xml_sha256"],
                 num_documentos=current["num_documentos"],
                 unchanged=True,
+                xsd_version=current["xsd_version"],
             )
         version = (current["version"] + 1) if current is not None else 0
         xml = build_xml(self._data(exp, items))
@@ -143,7 +178,30 @@ class IndexService:
             generado_por=generado_por,
             items=items,
         )
-        return RebuildResult(version=version, xml_sha256=xml_sha256(xml), num_documentos=len(items))
+        # Trazabilidad del salto v1->v2 (E15 Inc.3, RT-15, ADR-010): TODO
+        # disparador de regeneración (rebuild admin, link/unlink/batch, cierre)
+        # deja aquí su propio asiento — antes solo `close_expediente` auditaba,
+        # dejando el camino rebuild/link invisible en la auditoría inmutable.
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="archive.indice_regenerated",
+            object_type="expediente_indice",
+            object_ref=exp.code,
+            actor=generado_por,
+            payload={
+                "expediente_id": str(expediente_id),
+                "version": version,
+                "xsd_version": XSD_VERSION,
+            },
+        )
+        return RebuildResult(
+            version=version,
+            xml_sha256=xml_sha256(xml),
+            num_documentos=len(items),
+            xsd_version=XSD_VERSION,
+        )
 
     # -- consultas -----------------------------------------------------
 
@@ -165,9 +223,18 @@ class IndexService:
                     orden=it["orden"],
                     titulo=it["titulo"],
                     tipologia=it["tipologia"],
-                    fecha_archivado=it["fecha_archivado"],
+                    # Alineado con <fechaIncorporacion> del XML v2 (RT-15 art.
+                    # 4.3.2.3, mismo valor que `added_at`/`fecha_archivado`
+                    # internos) para no divergir entre el artefacto probatorio
+                    # y la vista consultable.
+                    fecha_incorporacion=it["fecha_archivado"],
                     valor_huella=it["valor_huella"],
                     funcion_resumen=it["funcion_resumen"],
+                    # Metadatos RT-15 (E15 Inc.3): `.get` tolera filas que no
+                    # los proyecten (tests unitarios con dicts recortados).
+                    formato=it.get("formato"),
+                    tamano_bytes=it.get("tamano_bytes"),
+                    folios=it.get("folios"),
                 )
                 for it in items
             ],
@@ -348,10 +415,18 @@ class IndexService:
             acreditado=acreditado,
             motivo=motivo,
         )
-        valido = all_ok and (not firma_presente or firma.valida)
+        # Fixity del XML del índice en sí (no solo de los documentos que
+        # referencia): re-hashea la columna `xml` almacenada y la contrasta
+        # con `xml_sha256` persistido. Sin esto, una alteración directa del
+        # XML de un índice 'vigente'/'pendiente_firma' (aún no sellado) queda
+        # indetectada — el sellado XAdES solo protege la COPIA firmada en
+        # MinIO, no la fila en BD (Acuerdo AGN 001/2024, E15).
+        huella_indice_ok = xml_sha256(row["xml"]) == row["xml_sha256"]
+        valido = all_ok and huella_indice_ok and (not firma_presente or firma.valida)
         return IndiceVerifyResponse(
             version=row["version"],
             valido=valido,
+            huella_indice_ok=huella_indice_ok,
             documentos=docs,
             firma=firma,
             fecha_verificacion=datetime.now(tz=UTC),

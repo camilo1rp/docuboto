@@ -242,8 +242,13 @@ class ArchiveService:
         # El resultado (`signed`) se captura para dejar traza del estado del
         # índice en el audit_log de cierre — best-effort: un sellado fallido
         # NUNCA bloquea el cierre (RT-16), pero debe quedar auditado.
+        # `assert_open=False`: en este punto el expediente YA transicionó a
+        # 'closed' (arriba) — esta ES la regeneración final legítima que el
+        # guard de `regenerate` rechazaría por defecto.
         index = IndexService(self._conn, self._tenant_slug)
-        await index.regenerate(expediente_id, generado_por=firmante or "system")
+        rebuild_result = await index.regenerate(
+            expediente_id, generado_por=firmante or "system", assert_open=False
+        )
         signed = await index.firmar_indice(
             expediente_id, tenant_slug=self._tenant_slug, actor_id=actor_id
         )
@@ -265,6 +270,11 @@ class ArchiveService:
             payload={
                 "indice_estado": indice_estado,
                 "firma_id": str(signed.firma_id) if signed is not None else None,
+                # Trazabilidad del salto v1->v2 (E15 Inc.3, RT-15): xsd_version
+                # real de la versión que `regenerate` acaba de devolver (NO la
+                # constante del módulo) — no afirma "v2" si `regenerate`
+                # resultó `unchanged` sobre una versión persistida distinta.
+                "xsd_version": rebuild_result.xsd_version,
             },
         )
         if signed is None:
@@ -415,6 +425,9 @@ class ArchiveService:
             payload.radicado_id,
             payload.tracking_number,
             content_hash=payload.content_hash.lower() if payload.content_hash else None,
+            formato=payload.formato,
+            tamano_bytes=payload.tamano_bytes,
+            folios=payload.folios,
         )
         await self._regenerate_index(expediente_id)
         await self._repo.insert_expediente_evento(
@@ -454,6 +467,9 @@ class ArchiveService:
                 it.radicado_id,
                 it.tracking_number,
                 content_hash=it.content_hash.lower() if it.content_hash else None,
+                formato=it.formato,
+                tamano_bytes=it.tamano_bytes,
+                folios=it.folios,
             )
             vinculados += 1
         if vinculados:
