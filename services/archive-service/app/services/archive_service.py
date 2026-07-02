@@ -512,7 +512,9 @@ class ArchiveService:
     # TRD series
     # ------------------------------------------------------------------
 
-    async def create_trd_serie(self, payload: TrdSerieCreate) -> TrdSerieResponse:
+    async def create_trd_serie(
+        self, payload: TrdSerieCreate, actor: uuid.UUID | None = None
+    ) -> TrdSerieResponse:
         serie = await self._repo.create_trd_serie(
             code=payload.code,
             name=payload.name,
@@ -523,6 +525,19 @@ class ArchiveService:
             parent_id=payload.parent_id,
             archivo_gestion_years=payload.archivo_gestion_years,
             archivo_central_years=payload.archivo_central_years,
+        )
+        # Auditoría forense transversal (E08 §9, Canal A): la TRD gobierna
+        # retención y disposición final (Ley 594/2000 art. 24) — su alta debe
+        # quedar trazada igual que la de un expediente.
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="archive.trd_serie_created",
+            object_type="trd_serie",
+            object_ref=serie.code,
+            actor=str(actor) if actor else None,
+            payload={"id": str(serie.id)},
         )
         return _to_trd_response(serie)
 
@@ -583,7 +598,10 @@ class ArchiveService:
         return _to_trd_response(serie)
 
     async def update_trd_serie(
-        self, serie_id: uuid.UUID, payload: TrdSerieUpdate
+        self,
+        serie_id: uuid.UUID,
+        payload: TrdSerieUpdate,
+        actor: uuid.UUID | None = None,
     ) -> TrdSerieResponse:
         existing = await self._repo.get_trd_serie_by_id(serie_id)
         if existing is None:
@@ -603,6 +621,22 @@ class ArchiveService:
             total_retention=payload.total_retention,
             disposition=payload.disposition,
             is_active=payload.is_active,
+        )
+        # Auditoría forense transversal (E08 §9, Canal A): mutar la TRD es un
+        # acto administrativo sobre el instrumento archivístico (Ley 594/2000
+        # art. 24) — debe quedar quién cambió qué, igual que en expedientes.
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="archive.trd_serie_updated",
+            object_type="trd_serie",
+            object_ref=existing.code,
+            actor=str(actor) if actor else None,
+            payload={
+                "id": str(serie_id),
+                "changes": payload.model_dump(exclude_unset=True),
+            },
         )
         return _to_trd_response(updated)  # type: ignore[arg-type]
 

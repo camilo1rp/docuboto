@@ -22,9 +22,12 @@ from typing import Any
 
 import asyncpg
 import jsonschema
+from orpycamcp_common import audit
 
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.metadata import ExpedienteTemplateCreate, ExpedienteTemplateResponse
+
+_SERVICE = "archive-service"
 
 
 class MetadataValidationError(Exception):
@@ -58,9 +61,13 @@ def _to_response(row: asyncpg.Record) -> ExpedienteTemplateResponse:
 
 class ExpedienteTemplateService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+        self._conn = conn
+        self._tenant_slug = tenant_slug
         self._repo = MetadataRepository(conn, tenant_slug)
 
-    async def create(self, payload: ExpedienteTemplateCreate) -> ExpedienteTemplateResponse:
+    async def create(
+        self, payload: ExpedienteTemplateCreate, actor: uuid.UUID | None = None
+    ) -> ExpedienteTemplateResponse:
         try:
             jsonschema.Draft202012Validator.check_schema(payload.json_schema)
         except jsonschema.SchemaError as exc:
@@ -71,6 +78,19 @@ class ExpedienteTemplateService:
             version=payload.version,
             json_schema=payload.json_schema,
             activo=payload.activo,
+        )
+        # Auditoría forense transversal (E08 §9, Canal A): la plantilla rige la
+        # validación de metadatos del expediente (E03, ADR-007) — su alta debe
+        # quedar trazada igual que la de una serie TRD.
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="archive.metadata_template_created",
+            object_type="metadata_template",
+            object_ref=f"{row['trd_serie_id']}:v{row['version']}",
+            actor=str(actor) if actor else None,
+            payload={"id": str(row["id"])},
         )
         return _to_response(row)
 

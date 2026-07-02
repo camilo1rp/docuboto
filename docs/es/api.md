@@ -469,7 +469,8 @@ Define la plantilla de metadatos (JSON Schema) de una serie TRD. Una sola activa
 - **FUID (RF-ARF-10)**: `GET /api/v1/fuid` — inventario documental (expediente↔unidad↔signatura↔serie) en JSON con orden consecutivo y campos AGN 042/2002; filtros `?ubicacion_id=&trd_serie_id=`. `GET /api/v1/fuid.xml` exporta en XML.
 
 #### TRD/CCD (E04, ADR-015)
-- `POST/GET/PATCH /api/v1/trd` — series y **subseries** documentales. Campos: `code`, `name`, `parent_id` (subserie), `archivo_gestion_years`/`archivo_central_years` (retención en dos fases), `disposition` (AGN: `CT`/`E`/`S`/`M`), `version`, `valid_from`.
+> **Control de acceso (config archivística):** las **mutaciones** de config (`POST/PATCH /api/v1/trd`, `POST/PATCH/DELETE /api/v1/tipos-documentales`, `POST /api/v1/expediente-metadata/templates`) requieren **`USUA_PERM_TRD`** (fail-closed: `403` sin tenant/user-id/permiso) y dejan asiento en `audit_log`. Las **lecturas** GET quedan **abiertas** (solo tenant): alimentan la clasificación en radicación (dropdowns de TRD/tipos) y la validación de plantillas — consultarlas es uso del instrumento, no acto de configuración.
+- `POST/GET/PATCH /api/v1/trd` — series y **subseries** documentales. Campos: `code`, `name`, `parent_id` (subserie), `archivo_gestion_years`/`archivo_central_years` (retención en dos fases), `disposition` (AGN: `CT`/`E`/`S`/`M`), `version`, `valid_from`. (POST/PATCH exigen `USUA_PERM_TRD`.)
 - `GET /api/v1/trd/{serie_id}/retention?closed_at=YYYY-MM-DD` — **calendario de retención**: `fin_archivo_gestion`, `fin_archivo_central` y disposición final (`disposition_code`/`disposition_label`) derivados de la serie y la fecha de cierre.
 
 #### `POST /api/v1/expedientes/{id}/radicados/batch` (inclusión masiva)

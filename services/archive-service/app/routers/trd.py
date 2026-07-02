@@ -15,6 +15,7 @@ from datetime import date
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
     RetentionSchedule,
@@ -40,19 +41,37 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
+def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
+    if not x_user_id:
+        return None
+    try:
+        return uuid.UUID(x_user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_user_id",
+                "detail": "X-User-Id must be a valid UUID",
+                "status": 400,
+            },
+        )
+
+
 @router.post(
     "",
     response_model=TrdSerieResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create a TRD documentary series",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
 )
 async def create_trd_serie(
     payload: TrdSerieCreate,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TrdSerieResponse:
     service = ArchiveService(conn, tenant_slug)
-    return await service.create_trd_serie(payload)
+    return await service.create_trd_serie(payload, actor)
 
 
 @router.get(
@@ -107,12 +126,14 @@ async def get_trd_serie(
     "/{serie_id}",
     response_model=TrdSerieResponse,
     summary="Update TRD serie (code is immutable)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
 )
 async def update_trd_serie(
     serie_id: uuid.UUID,
     payload: TrdSerieUpdate,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TrdSerieResponse:
     service = ArchiveService(conn, tenant_slug)
-    return await service.update_trd_serie(serie_id, payload)
+    return await service.update_trd_serie(serie_id, payload, actor)

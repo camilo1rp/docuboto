@@ -388,6 +388,7 @@ async def test_create_trd_serie(
     client_with_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # USUA_PERM_TRD granted (gate)
     serie_record = make_trd_serie_record(serie_id=SERIE_ID)
     mock_conn.fetchrow.return_value = serie_record
 
