@@ -18,7 +18,8 @@ Both handlers implement the insert-then-send idempotency pattern (ADR-021 Fase 3
   3. Claim event_id in ``notification_processed_events`` via an atomic INSERT.
      • BD failure propagates (not caught) → A-1 no-ack → PEL → reclaim sweep.
   4. If already claimed (ON CONFLICT) → return silently (dedup skip, not loss).
-  5. Only after a successful claim: dispatch webhooks (E11) + send notification.
+  5. Only after a successful claim: dispatch webhooks (E11) + send notification(s)
+     built from the envelope by the pure builders below.
 
 Trade-off: if the worker dies between step 3 (claim) and step 5 (send), that
 email is permanently lost.  Accepted: email is not the legal record; audit_log
@@ -29,6 +30,22 @@ is already handled by their own retry mechanisms.  They must NOT raise exception
 that would propagate to stream_worker and trigger a no-ack for an event that has
 already been claimed — that would cause infinite PEL churn (the dedup would block
 reprocessing anyway).
+
+Consequence for the dead-letter admin replay (ADR-021 Fase 5 Inc.2): because
+dispatch_webhooks and send_notification never raise, a message that made it past
+the claim step (3) essentially never fails afterwards — so in practice almost
+every dead-lettered notification event never reached the claim at all (the claim
+itself raised, e.g. a transient DB error, and the message stayed in the PEL until
+max_deliveries). The DLQ replay endpoint (app/routers/admin_deadletter.py) still
+clears any stale claim defensively via ProcessedEventsRepository.delete_one before
+resending, in case this invariant changes in the future.
+
+``build_workflow_notifications`` and ``build_document_notifications`` are PURE
+(no DB, no SMTP, no side effects): they map an envelope to zero or more
+``NotificationSend`` objects. Both the live consumer below and the DLQ replay
+endpoint call the SAME builder for a given origin stream, so the two paths can
+never diverge on what gets sent (mirrors signature-service's shared
+``apply_reclassification`` handler-core).
 """
 
 from __future__ import annotations
@@ -44,6 +61,94 @@ from app.services.notification_service import send_notification
 from app.services.webhook_service import dispatch as dispatch_webhooks
 
 logger = logging.getLogger(__name__)
+
+
+def build_workflow_notifications(envelope: dict) -> list[NotificationSend]:
+    """Pure builder: maps a workflow-stream envelope to its NotificationSend(s).
+
+    Mirrors the routing rules previously inlined in ``process_event``:
+      - ``workflow.step.created`` with ``payload.action == "assign"`` → assignment email.
+      - ``workflow.step.overdue`` → overdue-alert email.
+      - anything else → no email (empty list); webhooks still fire independently
+        in the caller, not here.
+    """
+    tenant_slug = envelope.get("tenant_slug")
+    event_type = envelope.get("event_type")
+    payload_data = envelope.get("payload") or {}
+
+    if event_type == "workflow.step.created" and payload_data.get("action") == "assign":
+        tracking_number = payload_data.get("tracking_number", "N/A")
+        to_dept = payload_data.get("to_dept", "unknown")
+        return [
+            NotificationSend(
+                recipient_email=f"{to_dept}@orpycamcp.local",
+                subject=f"[OrpycaMCP] Nuevo radicado asignado: {tracking_number}",
+                body=(
+                    f"Se ha asignado un nuevo radicado a su dependencia.\n\n"
+                    f"Número de radicado: {tracking_number}\n"
+                    f"Dependencia destino: {to_dept}\n"
+                    f"Inquilino: {tenant_slug}\n"
+                ),
+                tenant_slug=tenant_slug,
+            )
+        ]
+
+    if event_type == "workflow.step.overdue":
+        tracking_number = payload_data.get("tracking_number", "N/A")
+        to_dept = payload_data.get("to_dept", "unknown")
+        due_at = payload_data.get("due_at")
+        return [
+            NotificationSend(
+                recipient_email=f"{to_dept}@orpycamcp.local",
+                subject=f"[OrpycaMCP] Trámite VENCIDO: {tracking_number}",
+                body=(
+                    f"El trámite del radicado {tracking_number} está vencido.\n\n"
+                    f"Dependencia responsable: {to_dept}\n"
+                    f"Fecha límite: {due_at or 'N/A'}\n"
+                    f"Inquilino: {tenant_slug}\n"
+                ),
+                tenant_slug=tenant_slug,
+            )
+        ]
+
+    return []
+
+
+def build_document_notifications(envelope: dict) -> list[NotificationSend]:
+    """Pure builder: maps a document-stream envelope to its NotificationSend(s).
+
+    Mirrors the routing rules previously inlined in ``process_document_event``:
+    only ``document.radicado.created`` produces an email; any other event_type
+    returns an empty list (webhooks still fire independently in the caller).
+    """
+    tenant_slug = envelope.get("tenant_slug")
+    if envelope.get("event_type") != "document.radicado.created":
+        return []
+
+    payload_data = envelope.get("payload") or {}
+    tracking_number = payload_data.get("tracking_number", "N/A")
+    dest_dept_code = payload_data.get("dest_dept_code")
+
+    recipient = (
+        f"dependencia-{dest_dept_code}@orpycamcp.local"
+        if dest_dept_code is not None
+        else "ventanilla@orpycamcp.local"
+    )
+
+    return [
+        NotificationSend(
+            recipient_email=recipient,
+            subject=f"[OrpycaMCP] Documento radicado: {tracking_number}",
+            body=(
+                f"Se ha radicado un nuevo documento.\n\n"
+                f"Número de radicado: {tracking_number}\n"
+                f"Dependencia destino: "
+                f"{dest_dept_code if dest_dept_code is not None else 'sin asignar'}\n"
+                f"Inquilino: {tenant_slug}\n"
+            ),
+            tenant_slug=tenant_slug,
+        )
+    ]
 
 
 async def process_event(data: dict[str, str]) -> None:
@@ -77,50 +182,12 @@ async def process_event(data: dict[str, str]) -> None:
         )
         return
 
-    event_type = envelope.get("event_type")
-    payload_data = envelope.get("payload") or {}
-
     # Interoperabilidad (E11): best-effort webhook delivery; dispatch swallows all errors.
     await dispatch_webhooks(envelope)
 
-    if event_type == "workflow.step.created" and payload_data.get("action") == "assign":
-        tracking_number = payload_data.get("tracking_number", "N/A")
-        to_dept = payload_data.get("to_dept", "unknown")
-
-        await send_notification(
-            NotificationSend(
-                recipient_email=f"{to_dept}@orpycamcp.local",
-                subject=f"[OrpycaMCP] Nuevo radicado asignado: {tracking_number}",
-                body=(
-                    f"Se ha asignado un nuevo radicado a su dependencia.\n\n"
-                    f"Número de radicado: {tracking_number}\n"
-                    f"Dependencia destino: {to_dept}\n"
-                    f"Inquilino: {tenant_slug}\n"
-                ),
-                tenant_slug=tenant_slug,
-            ),
-            event_type=event_type,
-        )
-
-    elif event_type == "workflow.step.overdue":
-        tracking_number = payload_data.get("tracking_number", "N/A")
-        to_dept = payload_data.get("to_dept", "unknown")
-        due_at = payload_data.get("due_at")
-
-        await send_notification(
-            NotificationSend(
-                recipient_email=f"{to_dept}@orpycamcp.local",
-                subject=f"[OrpycaMCP] Trámite VENCIDO: {tracking_number}",
-                body=(
-                    f"El trámite del radicado {tracking_number} está vencido.\n\n"
-                    f"Dependencia responsable: {to_dept}\n"
-                    f"Fecha límite: {due_at or 'N/A'}\n"
-                    f"Inquilino: {tenant_slug}\n"
-                ),
-                tenant_slug=tenant_slug,
-            ),
-            event_type=event_type,
-        )
+    event_type = envelope.get("event_type")
+    for send in build_workflow_notifications(envelope):
+        await send_notification(send, event_type=event_type)
 
 
 async def process_document_event(data: dict[str, str]) -> None:
@@ -154,31 +221,6 @@ async def process_document_event(data: dict[str, str]) -> None:
     # Interoperabilidad (E11): best-effort webhook delivery for all event types.
     await dispatch_webhooks(envelope)
 
-    if envelope.get("event_type") != "document.radicado.created":
-        return
-
-    payload_data = envelope.get("payload") or {}
-    tracking_number = payload_data.get("tracking_number", "N/A")
-    dest_dept_code = payload_data.get("dest_dept_code")
-
-    recipient = (
-        f"dependencia-{dest_dept_code}@orpycamcp.local"
-        if dest_dept_code is not None
-        else "ventanilla@orpycamcp.local"
-    )
-
-    await send_notification(
-        NotificationSend(
-            recipient_email=recipient,
-            subject=f"[OrpycaMCP] Documento radicado: {tracking_number}",
-            body=(
-                f"Se ha radicado un nuevo documento.\n\n"
-                f"Número de radicado: {tracking_number}\n"
-                f"Dependencia destino: "
-                f"{dest_dept_code if dest_dept_code is not None else 'sin asignar'}\n"
-                f"Inquilino: {tenant_slug}\n"
-            ),
-            tenant_slug=tenant_slug,
-        ),
-        event_type=envelope.get("event_type"),
-    )
+    event_type = envelope.get("event_type")
+    for send in build_document_notifications(envelope):
+        await send_notification(send, event_type=event_type)

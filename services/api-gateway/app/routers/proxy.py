@@ -65,6 +65,8 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # notification-service
         ("/api/v1/notifications/", app_state.notification_service_url),
         ("/api/v1/webhooks/", app_state.notification_service_url),
+        # Admin DLQ (ADR-021 Fase 5 Inc.2) usa prefijo singular `notification/admin`; enrutarlo.
+        ("/api/v1/notification/admin/", app_state.notification_service_url),
         # signature-service
         ("/api/v1/signature/", app_state.signature_service_url),
     ]

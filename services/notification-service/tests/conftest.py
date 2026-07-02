@@ -26,6 +26,11 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+# X-User-Id carries the internal auth_users.id UUID (not keycloak_sub).
+# auth-service /validate resolves keycloak_sub → auth_users.id before the gateway
+# injects the header; tests use a fixed UUID that matches the mock's user row.
+USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
 
 def make_redis_mock() -> MagicMock:
     mock = MagicMock()
@@ -131,4 +136,40 @@ def make_db_row(
     }
 
 
-TENANT_HEADERS = {"X-Tenant-Slug": "icetex"}
+TENANT_HEADERS = {"X-Tenant-Slug": "icetex", "X-User-Id": str(USER)}
+
+
+def _make_mock_conn() -> AsyncMock:
+    """Mock asyncpg connection for admin DLQ router tests (ADR-021 Fase 5 Inc.2)."""
+    conn = AsyncMock()
+    conn.execute.return_value = None
+    conn.fetchrow.return_value = None
+    # Default True: check_permission (require_permission dep) sees the user as authorised.
+    # Tests that need permission denied override with fetchval.return_value = None.
+    conn.fetchval.return_value = True
+    # audit.append uses `async with conn.transaction():` then conn.execute (INSERT);
+    # replay/discard also use `async with conn.transaction():` around the whole handler.
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    return conn
+
+
+@pytest_asyncio.fixture
+async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
+    """Yields (client, mock_conn) with PERM_DLQ_ADMIN granted and tenant conn overridden.
+
+    Mirrors signature-service's fixture of the same name. Used by the admin DLQ
+    router tests, which need direct control over conn.fetchrow/fetch/execute
+    without the notification/webhook-specific patches in app_with_mocks.
+    """
+    from app.core.database import get_tenant_conn
+    from app.main import app
+
+    conn = _make_mock_conn()
+
+    async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    app.dependency_overrides[get_tenant_conn] = _conn_dep
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, conn
+    app.dependency_overrides.clear()

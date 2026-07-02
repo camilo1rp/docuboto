@@ -72,3 +72,23 @@ class ProcessedEventsRepository:
             event_id,
         )
         return row is not None
+
+    async def delete_one(self, event_id: str) -> int:
+        """Delete the dedup row for `event_id`; return the number of rows removed.
+
+        Used by the DLQ replay endpoint (ADR-021 Fase 5 Inc.2) to clear the claim
+        before re-sending: if a prior delivery reached the claim step for this
+        event_id (unusual — see the module note in app/services/event_consumer.py
+        on why most notification dead-letters never reach the claim), the stale
+        claim would otherwise block re-processing forever.
+
+        Must be called INSIDE the same transaction as the replay's SMTP attempt
+        and status transition: if the send fails and the transaction rolls back,
+        this DELETE rolls back too, restoring the dedup row so the event stays
+        consistently claimed (dedup state and dead-letter status never diverge).
+        """
+        tag: str = await self._conn.execute(
+            "DELETE FROM notification_processed_events WHERE event_id = $1",
+            event_id,
+        )
+        return int(tag.split()[-1])

@@ -598,16 +598,16 @@ El notification-service consume este stream (consumer group `notification-servic
 
 ### Gestión del dead-letter (Fase 5, ADR-021)
 
-Los eventos que no se pueden procesar tras `max_deliveries` reintentos quedan en la tabla `evento_dead_letter` (por tenant) con `status='pending'`. Cada servicio consumidor expone una superficie admin para inspeccionarlos y resolverlos, gateada por el permiso **`PERM_DLQ_ADMIN`** (rol de plataforma; asignación restringida). Implementado en signature-service y workflow-service (notification: pendiente, Inc. 2).
+Los eventos que no se pueden procesar tras `max_deliveries` reintentos quedan en la tabla `evento_dead_letter` (por tenant) con `status='pending'`. Cada servicio consumidor expone una superficie admin para inspeccionarlos y resolverlos, gateada por el permiso **`PERM_DLQ_ADMIN`** (rol de plataforma; asignación restringida). Implementado en **signature-service, workflow-service y notification-service** (roadmap ADR-021 completo). `evento_dead_letter` es una **tabla física compartida**: cada servicio filtra por su `origin_group` para no operar sobre los dead-letters de otro.
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| `GET` | `/api/v1/{signature\|workflow}/admin/deadletter?status=pending&origin_stream=&page=&size=` | Lista paginada (`X-Total-Count`). Solo cabeceras (sin payload de negocio). |
-| `GET` | `/api/v1/{signature\|workflow}/admin/deadletter/{event_id}` | Detalle (sobre íntegro + fallo). Gateado por clearance (no-read-up sobre el nivel vivo del radicado; `404` neutro si insuficiente). |
-| `POST` | `/api/v1/{signature\|workflow}/admin/deadletter/{event_id}/replay` | Reprocesa el evento (idempotente, atómico). `200` → `status='resolved'`; `409` si no está `pending`; `502` si el reproceso falla (queda `pending`); `404` si no existe o sin clearance. |
-| `POST` | `/api/v1/{signature\|workflow}/admin/deadletter/{event_id}/discard` | Cierra como `discarded`. Body `{ "reason": "..." }` (obligatorio). Mismos códigos. |
+| `GET` | `/api/v1/{signature\|workflow\|notifications}/admin/deadletter?status=pending&origin_stream=&page=&size=` | Lista paginada (`X-Total-Count`). Solo cabeceras (sin payload de negocio). |
+| `GET` | `/api/v1/{signature\|workflow\|notifications}/admin/deadletter/{event_id}` | Detalle (sobre íntegro + fallo). Gateado por clearance (no-read-up sobre el nivel vivo del radicado; `404` **neutro** si insuficiente o inexistente —cuerpo byte-idéntico—). |
+| `POST` | `/api/v1/{signature\|workflow\|notifications}/admin/deadletter/{event_id}/replay` | Reprocesa el evento. `200` → `status='resolved'`; `409` si no está `pending`; `404` si no existe o sin clearance. **signature/workflow**: reproceso idempotente y atómico; `502` si falla (queda `pending`). **notification** (correo no transaccional): *best-effort claim-then-send* —limpia el dedup y reenvía—; `422` si el `origin_stream` es desconocido o el tenant no cuadra, `502` si el envío falla (queda `pending`). |
+| `POST` | `/api/v1/{signature\|workflow\|notifications}/admin/deadletter/{event_id}/discard` | Cierra como `discarded`. Body `{ "reason": "..." }` (obligatorio, ≥10 caracteres tras `strip`). Mismos códigos. |
 
-Toda acción (`replay`/`discard`) se registra en el `audit_log` inmutable con el actor humano (`X-User-Id`). Los eventos malformados sin `tenant_slug` (`SYSTEM_TENANT`) no son replayables (gestión de plataforma).
+Toda acción (`replay`/`discard`) se registra en el `audit_log` inmutable con el actor humano (`X-User-Id`). En notification la **auditoría es dependencia dura** de la disposición: si el módulo de auditoría no está disponible, `replay`/`discard` responden `503` **antes** de transicionar (no se dispone sin dejar traza legal). Los eventos malformados sin `tenant_slug` (`SYSTEM_TENANT`) no son replayables (gestión de plataforma).
 
 ---
 

@@ -149,6 +149,28 @@ async def test_persist_dead_letter_error_transitorio_propaga() -> None:
 
 
 @pytest.mark.asyncio
+async def test_persist_dead_letter_insert_real_sin_audit_disponible_propaga() -> None:
+    """FIX 2(b): INSERT real + _AUDIT_AVAILABLE=False → propaga (no XACK, no
+    persistido sin traza) en lugar de comitear el INSERT sin fila de auditoría."""
+    from app.workers import stream_worker
+
+    conn = _make_conn(fetchrow_return={"event_id": EVENT_ID})  # INSERT real
+    mock_audit = AsyncMock()
+
+    with (
+        patch.object(stream_worker, "acquire_tenant", _fake_acquire_tenant(conn)),
+        patch.object(stream_worker, "_audit", mock_audit),
+        patch.object(stream_worker, "_AUDIT_AVAILABLE", False),
+    ):
+        with pytest.raises(RuntimeError, match="audit"):
+            await stream_worker._persist_dead_letter(
+                _make_envelope(), _make_failure_meta()
+            )
+
+    mock_audit.append.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_persist_dead_letter_r1_sin_tenant_slug_audita_bajo_system_tenant() -> None:
     """R1: envelope sin tenant_slug → audit bajo SYSTEM_TENANT (tenant_slug=None) en public pool.
 

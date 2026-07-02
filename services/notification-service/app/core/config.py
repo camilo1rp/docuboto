@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # so 30 days is a very generous operational buffer.
     retention_dlq_days: int = Field(default=30, ge=1)
 
+    # evento_dead_letter terminal-row retention (ADR-021 Fase 4 — MVP-3, Fase 5 Inc.2).
+    # Grace period (days) after resolved_at before a resolved/discarded dead-letter
+    # row is purged. 'pending' rows are NEVER purged regardless of age (they await
+    # a human decision). ge=1 guards against a misconfigured 0/negative TTL that
+    # would widen the purge window to include very recent closures.
+    retention_deadletter_days: int = Field(default=90, ge=1)
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

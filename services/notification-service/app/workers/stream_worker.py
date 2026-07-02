@@ -42,9 +42,10 @@ import redis.exceptions as redis_exc
 from orpycamcp_common import events
 
 from app.core.config import settings
+from app.core.constants import DLQ_GROUP
 from app.core.database import acquire_tenant, get_pool
 from app.core.redis_client import get_redis
-from app.jobs import retention
+from app.jobs import deadletter_retention, retention
 from app.repositories.dead_letter_repository import DeadLetterRepository
 from app.services.event_consumer import process_document_event, process_event
 
@@ -61,7 +62,11 @@ logger = logging.getLogger(__name__)
 WORKFLOW_STREAM = "orpycamcp.workflow.events"
 DOCUMENT_STREAM = "orpycamcp.document.events"
 DEADLETTER_STREAM = "orpycamcp.notification.deadletter"
-GROUP = "notification-service"
+# GROUP doubles as the origin_group written to (and filtered on) the shared
+# evento_dead_letter table (ADR-021 Fase 5 Inc.2) — sourced from
+# app.core.constants so the worker, the admin router, and the retention job can
+# never drift apart. See the module docstring in app/core/constants.py.
+GROUP = DLQ_GROUP
 CONSUMER = "notification-service-1"
 _SERVICE = "notification-service"
 
@@ -196,18 +201,31 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
             )
             if row is not None:
                 # INSERT was real — write the immutable audit trace in the same tx.
-                if _AUDIT_AVAILABLE:
-                    await _audit.append(
-                        conn,
-                        tenant_slug=tenant_slug,
-                        service=_SERVICE,
-                        action="evento.dead_letter",
-                        object_type="evento",
-                        object_ref=event_id,
-                        actor="system",  # R-9: worker-level system act
-                        canal="system",
-                        payload=audit_payload,
+                # FIX 2(b): fail-closed — without the audit module, committing
+                # this INSERT would leave evento_dead_letter as the ONLY record
+                # of the event, and purge_terminal would eventually delete it,
+                # erasing all trace. Raise inside the open transaction so the
+                # INSERT rolls back too; the exception then propagates out of
+                # this callback, which under the R-4/on_dead_letter contract
+                # makes the caller skip the XACK — the message stays in the PEL
+                # and is retried by the next reclaim sweep instead of being
+                # silently persisted (or acked) without a durable audit trace.
+                if not _AUDIT_AVAILABLE:
+                    raise RuntimeError(
+                        "orpycamcp_common.audit unavailable; refusing to "
+                        "persist dead-letter without a durable audit trace"
                     )
+                await _audit.append(
+                    conn,
+                    tenant_slug=tenant_slug,
+                    service=_SERVICE,
+                    action="evento.dead_letter",
+                    object_type="evento",
+                    object_ref=event_id,
+                    actor="system",  # R-9: worker-level system act
+                    canal="system",
+                    payload=audit_payload,
+                )
                 logger.info(
                     "Dead-letter persisted: event_id=%s tenant=%s type=%s",
                     event_id,
@@ -329,10 +347,12 @@ async def run() -> None:
             _last_reclaim = now
 
         # Daily retention gate: runs every RETENTION_INTERVAL (default 86 400 s / 24 h).
-        # Two tasks share this gate so they fire on the same daily cadence:
+        # Three tasks share this gate so they fire on the same daily cadence:
         #   MVP-1 — purge notification_processed_events dedup table per tenant.
         #   MVP-2 — XTRIM the DLQ buffer stream by MINID (ADR-021 Fase 4).
-        # Each task has its own try/except so one failure never blocks the other.
+        #   MVP-3 — purge terminal (resolved/discarded) evento_dead_letter rows
+        #           past their grace period (ADR-021 Fase 5 Inc.2).
+        # Each task has its own try/except so one failure never blocks the others.
         if now - _last_retention >= RETENTION_INTERVAL:
             # MVP-1: dedup TTL purge.
             try:
@@ -355,5 +375,18 @@ async def run() -> None:
                 raise
             except Exception:
                 logger.warning("Fallo en trim del DLQ de notificaciones", exc_info=True)
+
+            # MVP-3: evento_dead_letter terminal-row purge (ADR-021 Fase 5 Inc.2).
+            # 'pending' rows are never touched — this only prunes resolved/discarded
+            # rows past their grace period; independent of the two tasks above so a
+            # failure here never blocks (nor is blocked by) dedup purge or DLQ trim.
+            try:
+                await deadletter_retention.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Fallo en job de retención del dead-letter durable", exc_info=True
+                )
 
             _last_retention = now

@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from app.core.config import settings
 from app.core.database import close_pool, init_pool
 from app.core.redis_client import close_redis, init_redis
-from app.routers import health, notifications, webhooks
+from app.routers import admin_deadletter, health, notifications, webhooks
 from app.workers import stream_worker
 
 
@@ -47,3 +47,4 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(notifications.router)
 app.include_router(webhooks.router)
+app.include_router(admin_deadletter.router)
