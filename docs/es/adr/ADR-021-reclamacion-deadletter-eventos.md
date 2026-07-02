@@ -525,6 +525,24 @@ autorizada (una vista bloqueada no audita), y la migración
 compartido `ix_edl_tenant_group_status`, idempotente sobre la tabla física
 común). 121 tests verdes en Docker.
 
+### Pulido de seguimientos Baja del listado (los 3 servicios, 2026-07-01)
+
+Tres observaciones Baja de la auditoría sobre el listado admin se pulieron en los
+tres servicios: (1) **cap señalizado** — `list_scoped_for_clearance` acota a
+`DEADLETTER_CANDIDATE_CAP=1000` candidatas antes del filtro de clearance; al
+alcanzarlo el listado deja de truncar en silencio y emite `logger.warning` + el
+header `X-Truncated: true`. (2) **resolución de nivel en lote** — nuevo
+`resolve_deadletter_levels(conn, rows)` que resuelve el nivel de todas las
+candidatas con una sola consulta a `radicados` (`= ANY($1)`), byte-idéntico
+fila-a-fila al `resolve_deadletter_level` per-row (intacto para el gate del
+detalle), preservando las cuatro ramas fail-closed a CLASIFICADA. (3) **contrato
+de identidad** — el listado de workflow pasa a `get_actor` (401 si falta
+`X-User-Id`), en paridad con signature/notification. Auditado APTO/APTO.
+Seguimiento Baja restante: `X-Truncated` se evalúa sobre el conjunto pre-filtro de
+clearance y tiene un falso positivo en el borde exacto `len==cap`; keyset
+pagination si el volumen creciera; unificar `get_actor` también en
+detail/replay/discard de workflow.
+
 ## Alternativas descartadas
 
 **XAUTOCLAIM como decisor del dead-letter.**

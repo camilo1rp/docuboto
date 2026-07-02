@@ -28,15 +28,17 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.clearance import (
-    CLASIFICADA,
     assert_can_read_deadletter,
     get_actor,
     require_permission,
     resolve_caller_clearance,
-    resolve_deadletter_level,
+    resolve_deadletter_levels,
 )
 from app.core.database import get_tenant_conn
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from app.repositories.dead_letter_repository import (
+    DEADLETTER_CANDIDATE_CAP,
+    DeadLetterRepository,
+)
 from app.schemas.dead_letter import (
     DeadLetterActionResult,
     DeadLetterDetail,
@@ -84,17 +86,24 @@ async def list_dead_letters(
 ) -> list[DeadLetterSummary]:
     """Lista resúmenes de dead-letters del tenant, filtrados por clearance (no-read-up).
 
-    ADR-021 Fase 5 (seguimiento): el listado aplica la MISMA resolución de nivel
-    que el detalle (:func:`resolve_deadletter_level`), fila por fila, sobre el
-    nivel VIVO del radicado referenciado. Una fila cuyo objeto excede el
-    clearance del llamante se OMITE del todo (no aparece ni cuenta en
-    ``X-Total-Count``) — consistente con el 404 neutro del detalle: nunca se
-    revela existencia ni conteo de dead-letters sobre objetos clasificados a un
-    admin sin el nivel suficiente.
+    ADR-021 Fase 5 (seguimiento): el listado aplica la MISMA semántica fail-closed
+    que el gate del detalle (:func:`resolve_deadletter_level`) sobre el nivel VIVO
+    del radicado referenciado, pero resuelta EN LOTE — ver más abajo. Una fila
+    cuyo objeto excede el clearance del llamante se OMITE del todo (no aparece
+    ni cuenta en ``X-Total-Count``) — consistente con el 404 neutro del
+    detalle: nunca se revela existencia ni conteo de dead-letters sobre
+    objetos clasificados a un admin sin el nivel suficiente.
 
     La paginación se aplica en la capa de aplicación (no en SQL) porque el
     tamaño del conjunto visible solo se conoce tras filtrar por clearance; ver
     :meth:`DeadLetterRepository.list_scoped_for_clearance`.
+
+    ADR-021 seguimiento Baja [1]/[2]: la resolución de nivel se hace EN LOTE
+    (:func:`resolve_deadletter_levels`, una sola consulta a ``radicados``) en
+    vez de fila-a-fila (elimina el N+1); y si el número de candidatas alcanza
+    el tope de seguridad del repositorio (``DEADLETTER_CANDIDATE_CAP``), la
+    respuesta lo señala vía log y el header ``X-Truncated`` en vez de
+    sub-reportar ``X-Total-Count`` en silencio.
     """
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
@@ -107,14 +116,24 @@ async def list_dead_letters(
         origin_stream=origin_stream,
     )
 
-    visible: list[dict] = []
-    for row in candidates:
-        try:
-            nivel = await resolve_deadletter_level(conn, row)
-        except Exception:  # noqa: BLE001 — fail-closed: cualquier error de resolución oculta la fila
-            nivel = CLASIFICADA
-        if caller_clearance >= nivel:
-            visible.append(dict(row))
+    if len(candidates) >= DEADLETTER_CANDIDATE_CAP:
+        # El tope se evalúa sobre el conjunto PRE-filtro de clearance (donde
+        # aplica el LIMIT del SQL): las filas más antiguas más allá del tope
+        # quedan invisibles y X-Total-Count (post-filtro) puede sub-reportar.
+        logger.warning(
+            "DLQ candidate cap reached: tenant=%s origin_group=%s status=%s "
+            "cap=%d — oldest pending rows are invisible; consider keyset pagination",
+            caller_slug,
+            GROUP,
+            status_filter,
+            DEADLETTER_CANDIDATE_CAP,
+        )
+        response.headers["X-Truncated"] = "true"
+
+    levels = await resolve_deadletter_levels(conn, candidates)
+    visible: list[dict] = [
+        dict(row) for row in candidates if caller_clearance >= levels[row["event_id"]]
+    ]
 
     total = len(visible)
     offset = (page - 1) * size

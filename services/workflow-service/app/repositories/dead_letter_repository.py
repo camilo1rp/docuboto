@@ -18,6 +18,12 @@ from __future__ import annotations
 
 import asyncpg
 
+# Tope de seguridad del conjunto candidato de `list_scoped_for_clearance` (ver
+# docstring del método). Promovido a constante de módulo (en vez de literal
+# embebido en la firma) para que el router pueda comparar `len(candidates) >=
+# DEADLETTER_CANDIDATE_CAP` sin duplicar el valor (ADR-021, pulido Fase 5 "Baja").
+DEADLETTER_CANDIDATE_CAP = 1000
+
 
 class DeadLetterRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
@@ -127,7 +133,7 @@ class DeadLetterRepository:
         *,
         status: str = "pending",
         origin_stream: str | None = None,
-        cap: int = 1000,
+        cap: int = DEADLETTER_CANDIDATE_CAP,
     ) -> list[asyncpg.Record]:
         """Candidatas para el filtro por-fila de clearance del listado (ADR-021,
         seguimiento no-bloqueante Fase 5).
@@ -137,9 +143,14 @@ class DeadLetterRepository:
         ``LIMIT``/``OFFSET`` de paginación en SQL: la paginación se hace en la capa
         de aplicación DESPUÉS de descartar las filas por encima del clearance del
         llamante (si paginara aquí, una página podría quedar vacía o incompleta
-        tras el filtro). Lleva en cambio un ``cap`` de seguridad para acotar la
-        memoria del conjunto candidato — proporcionado porque los dead-letters son,
-        por diseño, de bajo volumen (Fase 5, no un flujo de alto tráfico).
+        tras el filtro). Lleva en cambio un ``cap`` de seguridad (por defecto
+        :data:`DEADLETTER_CANDIDATE_CAP`) para acotar la memoria del conjunto
+        candidato — proporcionado porque los dead-letters son, por diseño, de bajo
+        volumen (Fase 5, no un flujo de alto tráfico). Si el conjunto real alcanza
+        el cap, las filas más antiguas quedan fuera del ``ORDER BY ... LIMIT`` sin
+        que este método lo señale — es responsabilidad del CALLER (router) detectar
+        `len(resultado) >= cap` y avisar (log + header ``X-Truncated``, ADR-021
+        pulido Fase 5 "Baja").
 
         El caller (router) es responsable de NO serializar ``payload`` al cliente:
         este método existe solo para permitir la resolución de nivel, no para

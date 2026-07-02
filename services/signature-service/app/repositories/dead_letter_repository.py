@@ -18,6 +18,13 @@ from __future__ import annotations
 
 import asyncpg
 
+# Tope de seguridad (no tamaño de página) para las candidatas de
+# list_scoped_for_clearance — ver docstring del método. Promovido a constante
+# de módulo (ADR-021, seguimiento Baja [1]) para que el router pueda comparar
+# ``len(candidates) >= DEADLETTER_CANDIDATE_CAP`` y señalar el truncamiento en
+# vez de dejarlo silencioso.
+DEADLETTER_CANDIDATE_CAP = 1000
+
 
 class DeadLetterRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
@@ -127,7 +134,7 @@ class DeadLetterRepository:
         *,
         status: str = "pending",
         origin_stream: str | None = None,
-        cap: int = 1000,
+        cap: int = DEADLETTER_CANDIDATE_CAP,
     ) -> list[asyncpg.Record]:
         """Candidatas para el filtrado por-clearance del listado (ADR-021, seguimiento).
 

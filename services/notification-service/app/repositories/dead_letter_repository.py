@@ -24,6 +24,13 @@ from __future__ import annotations
 
 import asyncpg
 
+# ADR-021 (seguimiento no-bloqueante Fase 5, FIX 1): tope de filas candidatas que
+# ``list_scoped_for_clearance`` puede traer para el filtrado por-clearance del
+# listado. Promovido a constante de módulo (antes literal 1000 embebido en la
+# firma) para que el router pueda comparar ``len(candidates) >= cap`` sin
+# duplicar el número mágico — ver admin_deadletter.list_dead_letters.
+DEADLETTER_CANDIDATE_CAP = 1000
+
 
 class DeadLetterRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
@@ -141,13 +148,13 @@ class DeadLetterRepository:
         *,
         status: str = "pending",
         origin_stream: str | None = None,
-        cap: int = 1000,
+        cap: int = DEADLETTER_CANDIDATE_CAP,
     ) -> list[asyncpg.Record]:
         """Filas candidatas (con ``payload``) para el filtrado por-clearance del listado.
 
         A diferencia de :meth:`list_pending`, esta consulta SÍ incluye ``payload``:
         el llamante (router) necesita el sobre completo para resolver el nivel de
-        seguridad de cada fila vía ``resolve_deadletter_level`` (ADR-021, seguimiento
+        seguridad de cada fila vía ``resolve_deadletter_levels`` (ADR-021, seguimiento
         no-bloqueante Fase 5) ANTES de decidir si esa fila es visible para el admin.
         El router descarta ``payload`` al construir ``DeadLetterSummary`` — nunca se
         serializa en la respuesta.
@@ -157,6 +164,10 @@ class DeadLetterRepository:
         antes de saber cuántas filas serán visibles). ``cap`` es un tope de
         seguridad para acotar memoria en tenants con un volumen anómalo de
         dead-letters pendientes; los dead-letters son, por diseño, un evento raro.
+        FIX 1: cuando el número de candidatas devueltas alcanza ``cap``, el LIMIT
+        pudo haber recortado filas más antiguas de forma silenciosa — el router
+        compara ``len(candidates) >= DEADLETTER_CANDIDATE_CAP`` y lo señala
+        (log.warning + header ``X-Truncated``) en vez de dejarlo pasar sin aviso.
 
         Mismo predicado de tenant + origin_group + status (+ origin_stream opcional)
         que :meth:`list_pending`; ver la nota de módulo sobre la tabla compartida.

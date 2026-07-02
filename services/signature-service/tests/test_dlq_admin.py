@@ -23,9 +23,16 @@ import asyncpg
 import pytest
 from fastapi import HTTPException, status
 
-from app.core.clearance import assert_can_read_deadletter, resolve_deadletter_level
+from app.core.clearance import (
+    assert_can_read_deadletter,
+    resolve_deadletter_level,
+    resolve_deadletter_levels,
+)
 from app.core.constants import DLQ_GROUP
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from app.repositories.dead_letter_repository import (
+    DEADLETTER_CANDIDATE_CAP,
+    DeadLetterRepository,
+)
 from tests.conftest import TENANT_HEADERS, USER
 
 BASE = "/api/v1/signature/admin/deadletter"
@@ -112,8 +119,8 @@ async def test_list_returns_summaries(client_with_conn) -> None:
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level",
-              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={EVT: 1})),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -130,8 +137,8 @@ async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> No
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level",
-              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={EVT: 1})),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     item = resp.json()[0]
@@ -151,13 +158,13 @@ async def test_list_excludes_row_above_caller_clearance(client_with_conn) -> Non
     hidden_row = _candidate_row("eeeeeeee-0000-0000-0000-000000000002")
     conn.fetch.return_value = [hidden_row, visible_row]
 
-    async def _level(_conn, row):
-        return 3 if row["event_id"] == hidden_row["event_id"] else 1
+    levels = {hidden_row["event_id"]: 3, visible_row["event_id"]: 1}
 
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=1)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level", _level),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value=levels)),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -169,19 +176,17 @@ async def test_list_excludes_row_above_caller_clearance(client_with_conn) -> Non
 
 @pytest.mark.asyncio
 async def test_list_fail_closed_on_level_resolution_error(client_with_conn) -> None:
-    """Un error al resolver el nivel de una fila la trata como CLASIFICADA
-    (fail-closed) — un admin sub-clearance NO la ve; nunca se deja pasar una
-    fila por un fallo de resolución."""
+    """Una fila que el batch no pudo resolver con certeza vuelve marcada
+    CLASIFICADA (fail-closed, ver test de equivalencia del batch más abajo):
+    un admin sub-clearance NO la ve."""
     client, conn = client_with_conn
     conn.fetch.return_value = [_candidate_row()]
-
-    async def _raise(_conn, _row):
-        raise RuntimeError("boom")
 
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=1)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level", _raise),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={EVT: 3})),  # CLASIFICADA
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -196,13 +201,11 @@ async def test_list_fail_closed_error_still_visible_to_top_clearance(client_with
     client, conn = client_with_conn
     conn.fetch.return_value = [_candidate_row()]
 
-    async def _raise(_conn, _row):
-        raise RuntimeError("boom")
-
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level", _raise),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={EVT: 3})),  # CLASIFICADA
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -220,14 +223,55 @@ async def test_list_pagination_applied_after_clearance_filter(client_with_conn) 
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level",
-              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={r["event_id"]: 1 for r in rows})),
     ):
         resp = await client.get(f"{BASE}/?page=2&size=2", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
     assert [item["event_id"] for item in data] == [rows[2]["event_id"], rows[3]["event_id"]]
     assert resp.headers["X-Total-Count"] == "5"
+
+
+# ------------------------------------------------ list: cap signaling (ADR-021, Baja [1])
+@pytest.mark.asyncio
+async def test_list_sets_x_truncated_header_when_cap_reached(client_with_conn) -> None:
+    """Cuando el número de candidatas alcanza el tope del repositorio, la
+    respuesta señala el truncamiento vía X-Truncated en vez de sub-reportar
+    X-Total-Count en silencio (las filas más antiguas más allá del tope quedan
+    invisibles)."""
+    client, conn = client_with_conn
+    rows = [
+        _candidate_row(f"eeeeeeee-0000-0000-0000-{i:012d}")
+        for i in range(DEADLETTER_CANDIDATE_CAP)
+    ]
+    conn.fetch.return_value = rows
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={r["event_id"]: 1 for r in rows})),
+    ):
+        resp = await client.get(f"{BASE}/?size=1", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.headers["X-Truncated"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_list_no_x_truncated_header_under_cap(client_with_conn) -> None:
+    """Bajo el tope, la respuesta NO fija X-Truncated (ausencia = no truncado,
+    nunca se emite 'false')."""
+    client, conn = client_with_conn
+    conn.fetch.return_value = [_candidate_row()]
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={EVT: 1})),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert "X-Truncated" not in resp.headers
 
 
 # --------------------------------------------------------------------------- detail
@@ -541,8 +585,8 @@ async def test_list_passes_own_origin_group_to_repo(client_with_conn) -> None:
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_level",
-              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_levels",
+              AsyncMock(return_value={EVT: 1})),
     ):
         await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     params = conn.fetch.call_args[0][1:]
@@ -712,6 +756,103 @@ async def test_resolve_deadletter_level_undefined_table_fail_closed() -> None:
     row = {"payload": {"payload": {"tracking_number": TRACKING}}}
     nivel = await resolve_deadletter_level(conn, row)
     assert nivel == 3  # CLASIFICADA — tabla radicados ausente en el tenant
+
+
+# --------------------------------------- resolve_deadletter_levels (unit, ADR-021 Baja [2])
+#
+# El batch debe ser byte-a-byte equivalente al per-row: para toda fila `r`,
+# resolve_deadletter_levels([r])[r["event_id"]] == (resolve_deadletter_level(r),
+# capturando cualquier excepción como CLASIFICADA). Estos tests cubren las 5
+# ramas relevantes con UNA sola consulta simulada en lote (``FakeConn.fetch``)
+# y comparan contra el resultado real del per-row (``FakeConn.fetchval``) fila
+# a fila, en vez de solo fijar valores esperados a mano.
+class _FakeRadicadosConn:
+    """Doble mínimo de asyncpg.Connection: sirve tanto al per-row (fetchval,
+    una fila por identificador) como al batch (fetch, un único IN/ANY)."""
+
+    def __init__(self, levels_by_ident: dict[str, int]) -> None:
+        self._levels = levels_by_ident
+
+    async def fetchval(self, _sql, ident):
+        return self._levels.get(ident)
+
+    async def fetch(self, _sql, idents):
+        return [
+            {"nivel_seguridad": nivel, "tracking_number": ident, "id": f"radicado-{ident}"}
+            for ident, nivel in self._levels.items()
+            if ident in idents
+        ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_deadletter_levels_matches_per_row_for_various_cases() -> None:
+    """Contrato de equivalencia con las 5 ramas: hallado, embebido eleva un
+    nivel ya hallado, no-hallado, sin-identificador, y payload corrupto."""
+    hallado_row = {
+        "event_id": "row-hallado",
+        "payload": {"payload": {"tracking_number": TRACKING}},
+    }
+    embebido_row = {
+        "event_id": "row-embebido",
+        "payload": {
+            "payload": {"tracking_number": "2024-DEMO-E-000002", "nivel_nuevo": 3}
+        },
+    }
+    no_hallado_row = {
+        "event_id": "row-no-hallado",
+        "payload": {"payload": {"tracking_number": "2024-DEMO-E-999999"}},
+    }
+    sin_id_row = {
+        "event_id": "row-sin-id",
+        "payload": {"payload": {}},
+    }
+    corrupto_row = {
+        "event_id": "row-corrupto",
+        "payload": "not-valid-json{{{",
+    }
+    rows = [hallado_row, embebido_row, no_hallado_row, sin_id_row, corrupto_row]
+
+    # nivel_vivo por identificador; "2024-DEMO-E-999999" deliberadamente ausente
+    # (radicado no hallado).
+    conn = _FakeRadicadosConn({TRACKING: 2, "2024-DEMO-E-000002": 1})
+
+    batch_levels = await resolve_deadletter_levels(conn, rows)
+
+    for row in rows:
+        try:
+            expected = await resolve_deadletter_level(conn, row)
+        except Exception:  # noqa: BLE001 — payload corrupto: el per-row lanza, el batch no
+            expected = 3  # CLASIFICADA
+        assert batch_levels[row["event_id"]] == expected, row["event_id"]
+
+    # Ancla explícita de valores (no solo auto-consistencia con el per-row).
+    assert batch_levels["row-hallado"] == 2
+    assert batch_levels["row-embebido"] == 3  # max(nivel_vivo=1, nivel_embebido=3)
+    assert batch_levels["row-no-hallado"] == 3  # CLASIFICADA
+    assert batch_levels["row-sin-id"] == 3  # CLASIFICADA
+    assert batch_levels["row-corrupto"] == 3  # CLASIFICADA
+
+
+@pytest.mark.asyncio
+async def test_resolve_deadletter_levels_undefined_table_fail_closed() -> None:
+    """Tabla ``radicados`` ausente (UndefinedTableError) en la consulta en lote
+    → todas las filas parseables caen a no-hallado → CLASIFICADA, igual que el
+    per-row (:func:`test_resolve_deadletter_level_undefined_table_fail_closed`)."""
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(side_effect=asyncpg.UndefinedTableError())
+    row = {"event_id": EVT, "payload": {"payload": {"tracking_number": TRACKING}}}
+
+    levels = await resolve_deadletter_levels(conn, [row])
+    assert levels[EVT] == 3  # CLASIFICADA
+
+
+@pytest.mark.asyncio
+async def test_resolve_deadletter_levels_empty_rows_skips_query() -> None:
+    """Sin candidatas, el batch no debe emitir la consulta en lote."""
+    conn = AsyncMock()
+    levels = await resolve_deadletter_levels(conn, [])
+    assert levels == {}
+    conn.fetch.assert_not_called()
 
 
 # ------------------------------------------------ list_scoped_for_clearance (repo unit)

@@ -42,15 +42,18 @@ from fastapi import (
 )
 
 from app.core.clearance import (
-    CLASIFICADA,
     assert_can_read_deadletter,
+    get_actor,
     require_permission,
     resolve_caller_clearance,
-    resolve_deadletter_level,
+    resolve_deadletter_levels,
 )
 from app.core.constants import DLQ_GROUP as GROUP
 from app.core.database import get_db_conn
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from app.repositories.dead_letter_repository import (
+    DEADLETTER_CANDIDATE_CAP,
+    DeadLetterRepository,
+)
 from app.schemas.dead_letter import (
     DeadLetterActionResult,
     DeadLetterDetail,
@@ -103,7 +106,7 @@ async def list_dead_letters(
     origin_stream: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
-    actor: uuid.UUID | None = Depends(_actor),
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[DeadLetterSummary]:
     """Lista resúmenes de dead-letters del tenant (sin payload ni last_error).
@@ -112,12 +115,30 @@ async def list_dead_letters(
     con clearance insuficiente para el objeto referenciado por una fila no debe ver
     ni siquiera su EXISTENCIA/conteo aquí — de lo contrario el listado filtraría
     información que el detalle (``GET /{event_id}``) ya oculta tras el gate de
-    clearance (404 neutro). Filtro por-fila reutilizando ``resolve_deadletter_level``
-    (single source of truth con el gate del detalle, ver ``app/core/clearance.py``):
-    se resuelve el nivel del objeto vivo para cada candidata y se descartan las que
-    superan el clearance del llamante ANTES de paginar, de modo que ``X-Total-Count``
-    y la página devuelta ya reflejan el conjunto visible. Fail-closed: cualquier
-    error al resolver el nivel de una fila la excluye (se trata como CLASIFICADA).
+    clearance (404 neutro). El nivel de TODAS las candidatas se resuelve EN LOTE
+    con ``resolve_deadletter_levels`` (ADR-021, pulido Fase 5 "Baja" [2]: una sola
+    consulta a ``radicados`` en vez de N; equivalente fila a fila a llamar
+    ``resolve_deadletter_level`` por cada una — single source of truth compartida
+    con el gate del detalle, ver ``app/core/clearance.py``) y se descartan las
+    filas que superan el clearance del llamante ANTES de paginar, de modo que
+    ``X-Total-Count`` y la página devuelta ya reflejan el conjunto visible.
+    Fail-closed: cualquier duda al resolver el nivel de una fila la excluye (se
+    trata como CLASIFICADA).
+
+    Identidad (ADR-021, pulido Fase 5 "Baja" [3]): a diferencia de detail/replay/
+    discard (que siguen usando el ``_actor`` local, opcional), el listado exige
+    ``X-User-Id`` vía ``get_actor`` (401 si falta/ inválido) — unifica la fuente
+    de identidad con signature-service/notification-service. En la práctica el
+    gate ``require_permission`` (dependencia de router, se resuelve antes) ya
+    garantiza un ``X-User-Id`` válido con permiso, así que esta rama 401 no es
+    observable hoy en las rutas ya protegidas — ver docstring de ``get_actor``.
+
+    Cap de candidatas (ADR-021, pulido Fase 5 "Baja" [1]): ``list_scoped_for_clearance``
+    acota el conjunto candidato a ``DEADLETTER_CANDIDATE_CAP`` filas (LIMIT en SQL,
+    antes del filtro de clearance). Si se alcanza el cap, las filas pendientes más
+    antiguas por encima de ese tope quedan invisibles y ``X-Total-Count`` puede
+    sub-reportar — se señala con un ``log.warning`` y el header de respuesta
+    ``X-Truncated: true`` (ausente cuando no se trunca).
     """
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
@@ -130,14 +151,19 @@ async def list_dead_letters(
         origin_stream=origin_stream,
     )
 
-    visible: list[asyncpg.Record] = []
-    for row in candidates:
-        try:
-            nivel = await resolve_deadletter_level(conn, row)
-        except Exception:  # noqa: BLE001 — fail-closed: cualquier duda excluye la fila.
-            nivel = CLASIFICADA
-        if caller_clearance >= nivel:
-            visible.append(row)
+    if len(candidates) >= DEADLETTER_CANDIDATE_CAP:
+        logger.warning(
+            "DLQ candidate cap reached: tenant=%s origin_group=%s status=%s "
+            "cap=%d — oldest pending rows are invisible; consider keyset pagination",
+            caller_slug,
+            GROUP,
+            status_filter,
+            DEADLETTER_CANDIDATE_CAP,
+        )
+        response.headers["X-Truncated"] = "true"
+
+    levels = await resolve_deadletter_levels(conn, candidates)
+    visible = [row for row in candidates if caller_clearance >= levels[row["event_id"]]]
 
     total = len(visible)
     offset = (page - 1) * size

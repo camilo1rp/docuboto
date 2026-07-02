@@ -18,14 +18,23 @@ tenant mismatch (422).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 from fastapi import HTTPException, status
 
-from app.core.clearance import assert_can_read_deadletter
+from app.core.clearance import (
+    assert_can_read_deadletter,
+    get_actor,
+    resolve_deadletter_level,
+    resolve_deadletter_levels,
+)
 from app.core.constants import DLQ_GROUP
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from app.repositories.dead_letter_repository import (
+    DEADLETTER_CANDIDATE_CAP,
+    DeadLetterRepository,
+)
 from tests.conftest import TENANT_HEADERS, USER_ID
 
 BASE = "/api/v1/workflow/admin/deadletter"
@@ -125,16 +134,25 @@ async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> No
 async def test_list_excludes_row_above_caller_clearance(client_with_conn) -> None:
     """No-read-up en el listado (ADR-021, seguimiento Fase 5): una fila cuyo
     radicado vivo es CLASIFICADA(3) no debe aparecer -ni contar- para un admin
-    con clearance insuficiente, igual que el detalle la 404-ea."""
+    con clearance insuficiente, igual que el detalle la 404-ea.
+
+    El nivel ahora se resuelve EN LOTE (``resolve_deadletter_levels``, pulido
+    Fase 5 "Baja" [2]); se mockea directamente el resultado del batch en vez de
+    encadenar ``conn.fetchval`` (que ya no lo consulta la resolución per-row en
+    este flujo — ver el test de equivalencia más abajo para la query real)."""
     client, conn, _redis = client_with_conn
     row = _summary_row(payload={"payload": {"tracking_number": TRACKING}})
     conn.fetch.return_value = [row]
-    # 1ª llamada a fetchval: check_permission (truthy = permiso concedido).
-    # 2ª llamada: resolve_deadletter_level → nivel_vivo del radicado (CLASIFICADA).
-    conn.fetchval.side_effect = [1, 3]
-    with patch(
-        "app.routers.admin_deadletter.resolve_caller_clearance",
-        AsyncMock(return_value=1),
+    conn.fetchval.return_value = 1  # check_permission (truthy = permiso concedido).
+    with (
+        patch(
+            "app.routers.admin_deadletter.resolve_caller_clearance",
+            AsyncMock(return_value=1),
+        ),
+        patch(
+            "app.routers.admin_deadletter.resolve_deadletter_levels",
+            AsyncMock(return_value={EVT: 3}),  # nivel_vivo=CLASIFICADA
+        ),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -149,10 +167,16 @@ async def test_list_includes_row_within_caller_clearance(client_with_conn) -> No
     client, conn, _redis = client_with_conn
     row = _summary_row(payload={"payload": {"tracking_number": TRACKING}})
     conn.fetch.return_value = [row]
-    conn.fetchval.side_effect = [1, 2]  # permiso OK, nivel_vivo=2 (RESTRINGIDA)
-    with patch(
-        "app.routers.admin_deadletter.resolve_caller_clearance",
-        AsyncMock(return_value=2),
+    conn.fetchval.return_value = 1  # check_permission (truthy = permiso concedido).
+    with (
+        patch(
+            "app.routers.admin_deadletter.resolve_caller_clearance",
+            AsyncMock(return_value=2),
+        ),
+        patch(
+            "app.routers.admin_deadletter.resolve_deadletter_levels",
+            AsyncMock(return_value={EVT: 2}),  # nivel_vivo=2 (RESTRINGIDA)
+        ),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -179,6 +203,196 @@ async def test_list_filter_fail_closed_on_resolution_error(client_with_conn) -> 
     assert resp.status_code == 200
     assert resp.json() == []
     assert resp.headers["X-Total-Count"] == "0"
+
+
+# --------------------------------------------------------- list: cap signaling [1]
+@pytest.mark.asyncio
+async def test_list_sets_truncated_header_when_cap_reached(client_with_conn) -> None:
+    """ADR-021, pulido Fase 5 "Baja" [1]: cuando el conjunto candidato alcanza
+    ``DEADLETTER_CANDIDATE_CAP``, el listado deja de ser silencioso — señala el
+    truncamiento con el header ``X-Truncated: true`` (además del log.warning, no
+    verificable aquí sin capturar logs)."""
+    client, conn, _redis = client_with_conn
+    conn.fetch.return_value = [_summary_row() for _ in range(DEADLETTER_CANDIDATE_CAP)]
+    with (
+        patch(
+            "app.routers.admin_deadletter.resolve_caller_clearance",
+            AsyncMock(return_value=3),
+        ),
+        patch(
+            "app.routers.admin_deadletter.resolve_deadletter_levels",
+            AsyncMock(return_value={EVT: 3}),
+        ),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.headers["X-Truncated"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_list_no_truncated_header_under_cap(client_with_conn) -> None:
+    """Contraparte: por debajo del cap el header está AUSENTE (no se emite
+    ``X-Truncated: false`` — la ausencia es la señal de "no truncado")."""
+    client, conn, _redis = client_with_conn
+    conn.fetch.return_value = [_summary_row()]
+    with (
+        patch(
+            "app.routers.admin_deadletter.resolve_caller_clearance",
+            AsyncMock(return_value=3),
+        ),
+        patch(
+            "app.routers.admin_deadletter.resolve_deadletter_levels",
+            AsyncMock(return_value={EVT: 3}),
+        ),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert "X-Truncated" not in resp.headers
+
+
+# ---------------------------------------------------------- list: identidad [3]
+@pytest.mark.asyncio
+async def test_list_missing_user_id_returns_403(client_with_conn) -> None:
+    """ADR-021, pulido Fase 5 "Baja" [3]: el listado unifica su extracción de
+    identidad a ``get_actor`` (401 si falta ``X-User-Id``), pero en workflow
+    ``require_permission`` es dependencia de ROUTER y se resuelve ANTES —
+    ante ``X-User-Id`` ausente, ``check_permission`` recibe ``user_id=None`` y
+    deniega con 403 (no 401): la rama 401 de ``get_actor`` queda ensombrecida
+    en esta ruta ya protegida (ver docstring de ``get_actor``). No se espera
+    401 aquí — ver ``test_get_actor_missing_header_raises_401`` para la rama
+    401 real, en aislamiento."""
+    client, conn, _redis = client_with_conn
+    conn.fetchval.return_value = None  # check_permission → denegado (user_id=None)
+    headers = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
+    resp = await client.get(f"{BASE}/", headers=headers)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_actor_missing_header_raises_401() -> None:
+    """``get_actor`` en aislamiento: sin X-User-Id, 401 explícito (la rama que
+    en el listado queda ensombrecida por el 403 de ``require_permission``)."""
+    request = MagicMock()
+    request.headers = {}
+    with pytest.raises(HTTPException) as exc:
+        await get_actor(request)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_actor_invalid_uuid_raises_401() -> None:
+    request = MagicMock()
+    request.headers = {"X-User-Id": "not-a-uuid"}
+    with pytest.raises(HTTPException) as exc:
+        await get_actor(request)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_actor_valid_uuid_returns_it() -> None:
+    request = MagicMock()
+    request.headers = {"X-User-Id": str(USER_ID)}
+    assert await get_actor(request) == USER_ID
+
+
+# ------------------------------------------- resolve_deadletter_levels (batch) [2]
+@pytest.mark.asyncio
+async def test_resolve_deadletter_levels_equivalent_to_per_row() -> None:
+    """Contrato de equivalencia (ADR-021, pulido Fase 5 "Baja" [2]): para cada
+    fila, el resultado del batch debe coincidir EXACTAMENTE con el de invocar
+    ``resolve_deadletter_level`` fila a fila (capturando cualquier excepción
+    como CLASIFICADA, igual que hacía el router antes del batch). Cubre las 5
+    ramas fail-closed: hallado sin embebido, hallado con embebido (max),
+    no-hallado, sin-identificador, payload corrupto."""
+    hallado_id = "eeeeeeee-0000-0000-0000-000000000010"
+    hallado_embebido_id = "eeeeeeee-0000-0000-0000-000000000011"
+    no_hallado_id = "eeeeeeee-0000-0000-0000-000000000012"
+    sin_id_id = "eeeeeeee-0000-0000-0000-000000000013"
+    corrupto_id = "eeeeeeee-0000-0000-0000-000000000014"
+
+    rows: dict[str, dict] = {
+        hallado_id: {
+            "event_id": hallado_id,
+            "payload": {"payload": {"tracking_number": "TRK-1"}},
+        },
+        hallado_embebido_id: {
+            "event_id": hallado_embebido_id,
+            "payload": {
+                "payload": {"tracking_number": "TRK-2", "nivel_nuevo": 3}
+            },
+        },
+        no_hallado_id: {
+            "event_id": no_hallado_id,
+            "payload": {"payload": {"tracking_number": "TRK-UNKNOWN"}},
+        },
+        sin_id_id: {
+            "event_id": sin_id_id,
+            "payload": {"payload": {}},
+        },
+        corrupto_id: {
+            "event_id": corrupto_id,
+            "payload": "not-valid-json{{{",
+        },
+    }
+
+    radicados_by_tracking = {"TRK-1": 2, "TRK-2": 1}  # nivel_seguridad vivo
+
+    def make_conn() -> AsyncMock:
+        conn = AsyncMock()
+
+        async def fake_fetch(_sql, idents):
+            return [
+                {"nivel_seguridad": nivel, "tracking_number": tn, "id": None}
+                for tn, nivel in radicados_by_tracking.items()
+                if tn in idents
+            ]
+
+        conn.fetch = fake_fetch
+
+        async def fake_fetchval(_sql, ident):
+            return radicados_by_tracking.get(ident)
+
+        conn.fetchval = fake_fetchval
+        return conn
+
+    # --- batch ---
+    batch_conn = make_conn()
+    batch_levels = await resolve_deadletter_levels(batch_conn, list(rows.values()))
+
+    # --- per-row (mismo fallback fail-closed que usaba el router antes del batch) ---
+    per_row_levels: dict[str, int] = {}
+    for event_id, row in rows.items():
+        conn = make_conn()
+        try:
+            per_row_levels[event_id] = await resolve_deadletter_level(conn, row)
+        except Exception:  # noqa: BLE001
+            per_row_levels[event_id] = 3  # CLASIFICADA
+
+    assert batch_levels == per_row_levels
+    assert batch_levels[hallado_id] == 2
+    assert batch_levels[hallado_embebido_id] == 3  # max(1, nivel_embebido=3)
+    assert batch_levels[no_hallado_id] == 3
+    assert batch_levels[sin_id_id] == 3
+    assert batch_levels[corrupto_id] == 3
+
+
+@pytest.mark.asyncio
+async def test_resolve_deadletter_levels_missing_radicados_table() -> None:
+    """Espejo del caso "tabla ausente" del per-row: ``UndefinedTableError`` en
+    la consulta en lote deja el mapa vacío → todas las filas parseables caen a
+    no-hallado → CLASIFICADA (equivalente al caso de notification-service)."""
+    row = {
+        "event_id": EVT,
+        "payload": {"payload": {"tracking_number": TRACKING}},
+    }
+    conn = AsyncMock()
+
+    async def raise_undefined_table(*_args, **_kwargs):
+        raise asyncpg.UndefinedTableError()
+
+    conn.fetch = raise_undefined_table
+    levels = await resolve_deadletter_levels(conn, [row])
+    assert levels[EVT] == 3  # CLASIFICADA
 
 
 # --------------------------------------------------------------------------- detail

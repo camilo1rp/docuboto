@@ -25,12 +25,16 @@ El api-gateway inyecta:
 ``resolve_deadletter_level`` (ADR-021, seguimiento no-bloqueante Fase 5) determina el nivel del
                               objeto referenciado por un dead-letter, sin lanzar — single source
                               of truth compartida por el gate de detalle y el filtro del listado.
+``resolve_deadletter_levels`` (FIX 2, mismo seguimiento) resuelve el nivel de VARIAS filas con
+                              una sola consulta batch — misma semántica fail-closed, solo para
+                              el listado (el gate de detalle sigue usando la versión per-row).
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 
 import asyncpg
 from fastapi import Depends, HTTPException, Request, status
@@ -182,6 +186,32 @@ async def get_actor(request: Request) -> uuid.UUID:
         )
 
 
+def _extract_ref(row: asyncpg.Record) -> tuple[list[str], int | None]:
+    """Parses ``row["payload"]`` into ``(identifiers, nivel_embebido)``.
+
+    Shared by :func:`resolve_deadletter_level` (per-row) and
+    :func:`resolve_deadletter_levels` (batch) so both stay byte-identical by
+    construction instead of by discipline — a future edit to the extraction
+    logic only has one place to happen. ``identifiers`` is ordered
+    ``[tracking_number, id]`` (only the non-``None`` ones), matching the
+    lookup order used by the live ``SELECT ... WHERE tracking_number = $1 OR
+    id::text = $1`` query below. May raise (invalid JSON, non-dict payload);
+    callers are responsible for the fail-closed wrapping.
+    """
+    raw_payload = row["payload"]
+    payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
+    inner_payload = payload_data.get("payload", {}) if isinstance(payload_data, dict) else {}
+
+    tracking_number = inner_payload.get("tracking_number")
+    doc_id = inner_payload.get("id")
+    nivel_embebido = inner_payload.get("nivel_nuevo")
+    if nivel_embebido is None:
+        nivel_embebido = inner_payload.get("nivel_seguridad")
+
+    identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
+    return identifiers, nivel_embebido
+
+
 async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record) -> int:
     """Resuelve el nivel de seguridad (1..3) del objeto referenciado por un dead-letter.
 
@@ -210,17 +240,7 @@ async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record
     radicación) — ninguno de los eventos actuales de notification embebe un nivel,
     por lo que en la práctica esto casi siempre recurre al nivel vivo del radicado.
     """
-    raw_payload = row["payload"]
-    payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
-    inner_payload = payload_data.get("payload", {}) if isinstance(payload_data, dict) else {}
-
-    tracking_number = inner_payload.get("tracking_number")
-    doc_id = inner_payload.get("id")
-    nivel_embebido = inner_payload.get("nivel_nuevo")
-    if nivel_embebido is None:
-        nivel_embebido = inner_payload.get("nivel_seguridad")
-
-    identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
+    identifiers, nivel_embebido = _extract_ref(row)
 
     if not identifiers:
         # No hay manera de resolver el radicado → fail-closed.
@@ -253,6 +273,90 @@ async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record
         except (ValueError, TypeError):
             return CLASIFICADA
     return int(nivel_vivo)
+
+
+async def resolve_deadletter_levels(
+    conn: asyncpg.Connection,
+    rows: Sequence[asyncpg.Record],
+) -> dict[str, int]:
+    """Resuelve el nivel de seguridad de VARIAS filas dead-letter con UNA sola query.
+
+    FIX 2 (ADR-021, seguimiento no-bloqueante Fase 5): :func:`resolve_deadletter_level`
+    hace un ``SELECT`` a ``radicados`` por fila — O(N) round-trips en el listado. Esta
+    función resuelve el mismo resultado para un lote de filas con un único ``SELECT
+    ... WHERE tracking_number = ANY($1) OR id::text = ANY($1)``.
+
+    **Contrato de equivalencia** (byte-idéntico, fila a fila): para toda fila ``r``,
+    ``resolve_deadletter_levels(conn, [r])[r["event_id"]]`` es exactamente el valor
+    que devolvería (o CLASIFICADA si lanzara) ``resolve_deadletter_level(conn, r)``.
+    :func:`resolve_deadletter_level` sigue siendo la fuente de verdad del gate de
+    DETALLE (:func:`assert_can_read_deadletter`); esta función es su contraparte de
+    SOLO LISTADO — nunca lanza, cualquier fila cuyo nivel no pueda determinarse con
+    certeza cae a CLASIFICADA (fail-closed), igual que el 404 neutro del detalle.
+
+    Devuelve ``{event_id: nivel}`` para TODAS las filas de entrada (una entrada por
+    fila, incluidas las fail-closed).
+    """
+    # Fase 1: parseo por fila. Cualquier fila cuyo payload no se pueda parsear, o
+    # que no traiga identificador alguno, se resuelve aquí mismo a CLASIFICADA y no
+    # participa en la consulta batch (no aporta identificadores que buscar).
+    per_row_refs: dict[str, tuple[list[str], int | None]] = {}
+    levels: dict[str, int] = {}
+    all_identifiers: set[str] = set()
+    for row in rows:
+        event_id = row["event_id"]
+        try:
+            identifiers, nivel_embebido = _extract_ref(row)
+        except Exception:  # noqa: BLE001 — fail-closed: unparseable envelope.
+            levels[event_id] = CLASIFICADA
+            continue
+        if not identifiers:
+            # Sin identificador de radicado en el sobre → fail-closed.
+            levels[event_id] = CLASIFICADA
+            continue
+        per_row_refs[event_id] = (identifiers, nivel_embebido)
+        all_identifiers.update(identifiers)
+
+    # Fase 2: UNA consulta para todos los identificadores acumulados. Tabla ausente
+    # (notification-service no tiene `radicados`) se trata como "nada hallado" —
+    # exactamente lo mismo que el UndefinedTableError capturado en el bucle per-row.
+    level_by_ident: dict[str, int] = {}
+    if all_identifiers:
+        try:
+            recs = await conn.fetch(
+                "SELECT nivel_seguridad, tracking_number, id FROM radicados "
+                "WHERE tracking_number = ANY($1::text[]) OR id::text = ANY($1::text[])",
+                list(all_identifiers),
+            )
+        except asyncpg.UndefinedTableError:
+            recs = []
+        for rec in recs:
+            level_by_ident[rec["tracking_number"]] = rec["nivel_seguridad"]
+            level_by_ident[str(rec["id"])] = rec["nivel_seguridad"]
+
+    # Fase 3: resolver cada fila parseable contra el mapa batch, preservando
+    # exactamente la misma semántica fail-closed que resolve_deadletter_level.
+    for event_id, (identifiers, nivel_embebido) in per_row_refs.items():
+        try:
+            nivel_vivo: int | None = None
+            for ident in identifiers:
+                if ident in level_by_ident:
+                    nivel_vivo = level_by_ident[ident]
+                    break
+            if nivel_vivo is None:
+                # Radicado no hallado → nunca degradar a público.
+                levels[event_id] = CLASIFICADA
+                continue
+            if nivel_embebido is not None:
+                # nivel_embebido no tipado puede no ser interpretable como entero
+                # (envelope corrupto) → fail-closed, coherente con el per-row.
+                levels[event_id] = max(int(nivel_vivo), int(nivel_embebido))
+            else:
+                levels[event_id] = int(nivel_vivo)
+        except Exception:  # noqa: BLE001 — fail-closed: any per-row resolution error.
+            levels[event_id] = CLASIFICADA
+
+    return levels
 
 
 async def assert_can_read_deadletter(

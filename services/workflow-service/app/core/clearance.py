@@ -23,9 +23,10 @@ no provisionadas o cualquier duda, se devuelve PUBLICA (1) — mínimo privilegi
 
 import json
 import uuid
+from collections.abc import Sequence
 
 import asyncpg
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.core.database import get_db_conn, tenant_schema
 
@@ -154,14 +155,90 @@ def require_permission(perm_name: str):
     return _dep
 
 
+async def get_actor(request: Request) -> uuid.UUID:
+    """Extrae el UUID interno del llamante desde X-User-Id (401 si ausente/inválido).
+
+    Espejo exacto de ``get_actor`` en signature-service/notification-service
+    (ADR-021, pulido Fase 5 "Baja" [3]: unificación de identidad en el LISTADO
+    de workflow-service, que hasta ahora usaba el ``_actor`` local — OPCIONAL,
+    ``None`` en silencio ante header ausente/ inválido). Nunca toca la BD: la
+    identidad ya fue validada por auth-service en ``/validate``.
+
+    NOTA de comportamiento observable en workflow: el LISTADO sigue protegido
+    por ``require_permission(...)`` como dependencia de ROUTER (se resuelve
+    ANTES que esta), y ese gate NO delega en ``get_actor`` — ante X-User-Id
+    ausente/inválido devuelve 403 (no 401) porque ``check_permission`` falla con
+    ``user_id=None``. La rama 401 de aquí queda por tanto ensombrecida en la
+    práctica en las rutas ya protegidas por ``require_permission``; el valor de
+    unificar es tener una única fuente de extracción de identidad con tipo
+    NO-opcional (``uuid.UUID``, ya no ``uuid.UUID | None``), no un cambio de
+    código HTTP observable. Las rutas de detail/replay/discard de este router
+    siguen usando el ``_actor`` local (opcional) — fuera de alcance de este
+    pulido, ver ADR-021.
+    """
+    raw = request.headers.get("X-User-Id")
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "unauthorized",
+                "detail": "X-User-Id header missing",
+                "status": 401,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return uuid.UUID(raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "unauthorized",
+                "detail": "X-User-Id must be a valid UUID (internal auth_users.id)",
+                "status": 401,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _extract_ref(row: asyncpg.Record) -> tuple[list[str], int | None]:
+    """Parsea el sobre de un dead-letter y extrae ``(identifiers, nivel_embebido)``.
+
+    Factorizado fuera de :func:`resolve_deadletter_level` para que la resolución
+    EN LOTE (:func:`resolve_deadletter_levels`, listado) use exactamente la misma
+    lógica de parseo que la resolución por-fila (gate del detalle) — evita que
+    ambas implementaciones diverjan con el tiempo (ADR-021, pulido Fase 5 "Baja").
+
+    ``identifiers`` va en orden ``[tracking_number, id]`` (el orden importa: al
+    resolver el nivel se prueba cada identificador en ese orden y el primero que
+    exista en el lookup gana). Puede propagar ``json.loads`` si ``row["payload"]``
+    es una cadena mal formada — el llamante decide cómo tratar ese caso (ambos lo
+    tratan como fail-closed a CLASIFICADA).
+    """
+    raw_payload = row["payload"]
+    payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
+    inner_payload = payload_data.get("payload", {}) if isinstance(payload_data, dict) else {}
+
+    tracking_number = inner_payload.get("tracking_number")
+    doc_id = inner_payload.get("id")
+    nivel_embebido = inner_payload.get("nivel_nuevo")
+    if nivel_embebido is None:
+        nivel_embebido = inner_payload.get("nivel_seguridad")
+
+    identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
+    return identifiers, nivel_embebido
+
+
 async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record) -> int:
     """Determina el nivel de seguridad del objeto referenciado por un dead-letter.
 
-    *Single source of truth* del nivel de un evento aparcado: la usan tanto el gate
-    de detalle (:func:`assert_can_read_deadletter`) como el filtro por-fila del
-    listado (``GET /admin/deadletter/``, ADR-021 seguimiento Fase 5), de modo que
-    ambos endpoints son consistentes entre sí (lo que el listado muestra, el
-    detalle lo deja abrir; lo que el listado oculta, el detalle lo 404-ea).
+    *Single source of truth* del nivel de un evento aparcado (resolución POR
+    FILA): la usa el gate de detalle (:func:`assert_can_read_deadletter`) y,
+    fuera de este módulo, cualquier ruta que necesite el nivel de UNA fila
+    concreta. Para el LISTADO (N filas) usar en su lugar la contraparte en lote
+    :func:`resolve_deadletter_levels`, que debe producir, fila a fila, el mismo
+    resultado que llamar a esta función N veces — ver su docstring para el
+    contrato de equivalencia.
 
     Resuelve sobre el nivel **VIVO** del radicado (no se confía solo en el nivel
     embebido en el sobre, que pudo quedar obsoleto tras una reclasificación).
@@ -175,17 +252,7 @@ async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record
       - En otro caso → ``max(nivel_vivo, nivel_embebido)`` (o ``nivel_vivo`` si no
         hay nivel embebido).
     """
-    raw_payload = row["payload"]
-    payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
-    inner_payload = payload_data.get("payload", {}) if isinstance(payload_data, dict) else {}
-
-    tracking_number = inner_payload.get("tracking_number")
-    doc_id = inner_payload.get("id")
-    nivel_embebido = inner_payload.get("nivel_nuevo")
-    if nivel_embebido is None:
-        nivel_embebido = inner_payload.get("nivel_seguridad")
-
-    identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
+    identifiers, nivel_embebido = _extract_ref(row)
 
     if not identifiers:
         return CLASIFICADA
@@ -208,6 +275,90 @@ async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record
     if nivel_embebido is not None:
         return max(int(nivel_vivo), int(nivel_embebido))
     return int(nivel_vivo)
+
+
+async def resolve_deadletter_levels(
+    conn: asyncpg.Connection,
+    rows: Sequence[asyncpg.Record],
+) -> dict[str, int]:
+    """Resuelve el nivel de seguridad de VARIAS filas de dead-letter con UNA sola
+    consulta a ``radicados`` (ADR-021, pulido Fase 5 "Baja": elimina el N+1 del
+    listado, donde antes se llamaba :func:`resolve_deadletter_level` por fila).
+
+    Devuelve ``{event_id: nivel}``. **Nunca lanza** (fail-closed por fila, igual
+    que la versión per-row). Contrato de equivalencia: para toda fila ``r``,
+    ``resolve_deadletter_levels(conn, [r])[r["event_id"]]`` es IDÉNTICO al
+    resultado de llamar ``resolve_deadletter_level(conn, r)`` (capturando
+    cualquier excepción como CLASIFICADA, tal como hace hoy el router). El
+    filtro por-fila del gate de DETALLE sigue usando :func:`resolve_deadletter_level`
+    intacta; esta función es solo para el LISTADO.
+
+    Algoritmo (3 fases, ver ADR-021 pulido Fase 5 para el detalle):
+      1. Parseo por fila con :func:`_extract_ref` (misma lógica que el per-row).
+         Fallos de parseo o ausencia de identificadores → CLASIFICADA de inmediato
+         (sin consultar la BD para esa fila).
+      2. UNA consulta ``WHERE tracking_number = ANY($1) OR id::text = ANY($1)``
+         sobre la unión de todos los identificadores de las filas parseables;
+         construye un mapa ``identificador -> nivel_seguridad``. Si la tabla
+         ``radicados`` no existe (p. ej. servicios sin ese dominio) el mapa queda
+         vacío — todas las filas parseables caen entonces a "no hallado".
+      3. Resolución por fila contra el mapa en memoria, con la MISMA regla que
+         el per-row: primer identificador (en orden ``[tracking_number, id]``)
+         presente en el mapa gana; no-hallado → CLASIFICADA; hallado + nivel
+         embebido → ``max(nivel_vivo, nivel_embebido)``; hallado sin embebido →
+         ``nivel_vivo``. Envuelta en try/except por fila (fail-closed).
+    """
+    parsed: dict[str, tuple[list[str], int | None]] = {}
+    levels: dict[str, int] = {}
+    all_idents: set[str] = set()
+
+    for row in rows:
+        event_id = row["event_id"]
+        try:
+            identifiers, nivel_embebido = _extract_ref(row)
+        except Exception:  # noqa: BLE001 — payload corrupto → fail-closed.
+            levels[event_id] = CLASIFICADA
+            continue
+        if not identifiers:
+            levels[event_id] = CLASIFICADA
+            continue
+        parsed[event_id] = (identifiers, nivel_embebido)
+        all_idents.update(identifiers)
+
+    level_by_ident: dict[str, int] = {}
+    if all_idents:
+        try:
+            recs = await conn.fetch(
+                "SELECT nivel_seguridad, tracking_number, id FROM radicados "
+                "WHERE tracking_number = ANY($1::text[]) OR id::text = ANY($1::text[])",
+                list(all_idents),
+            )
+        except asyncpg.UndefinedTableError:
+            recs = []
+        for rec in recs:
+            nivel = rec["nivel_seguridad"]
+            if rec["tracking_number"] is not None:
+                level_by_ident[rec["tracking_number"]] = nivel
+            if rec["id"] is not None:
+                level_by_ident[str(rec["id"])] = nivel
+
+    for event_id, (identifiers, nivel_embebido) in parsed.items():
+        try:
+            nivel_vivo: int | None = None
+            for ident in identifiers:
+                if ident in level_by_ident:
+                    nivel_vivo = level_by_ident[ident]
+                    break
+            if nivel_vivo is None:
+                levels[event_id] = CLASIFICADA
+            elif nivel_embebido is not None:
+                levels[event_id] = max(int(nivel_vivo), int(nivel_embebido))
+            else:
+                levels[event_id] = int(nivel_vivo)
+        except Exception:  # noqa: BLE001 — fail-closed: cualquier duda excluye la fila.
+            levels[event_id] = CLASIFICADA
+
+    return levels
 
 
 async def assert_can_read_deadletter(
