@@ -90,9 +90,11 @@ async def test_enviar_then_recibir_freezes_expediente(client_with_conn) -> None:
     assert env.status_code == 200
     assert env.json()["estado"] == "enviada"
 
-    # recibir: get(enviada) → update(recibida) → transition_expediente(transferred)
+    # recibir: get(enviada) → get_current(índice firmado) → update(recibida) →
+    # transition_expediente(transferred)
     mock_conn.fetchrow.side_effect = [
         _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
+        {"id": uuid.uuid4(), "estado": "firmado"},
         _transfer_row(id=tid, expediente_id=exp_id, estado="recibida", recibida_at=NOW),
         make_expediente_record(exp_id=exp_id, exp_status="transferred"),
     ]
@@ -103,6 +105,26 @@ async def test_enviar_then_recibir_freezes_expediente(client_with_conn) -> None:
     )
     assert rec.status_code == 200
     assert rec.json()["estado"] == "recibida"
+
+
+@pytest.mark.asyncio
+async def test_recibir_sin_indice_firmado_409(client_with_conn) -> None:
+    """E06 Inc.1 / Acuerdo AGN 001/2024 art. 4.3.2.4: la transferencia NO puede
+    congelar (`transferred`) un expediente cuyo índice quedó 'pendiente_firma'."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
+        {"id": uuid.uuid4(), "estado": "pendiente_firma"},
+    ]
+    resp = await client.post(
+        f"/api/v1/transferencias/{tid}/recibir",
+        headers={**TENANT_HEADERS, "X-Username": "jefe"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "indice_no_firmado"
 
 
 @pytest.mark.asyncio

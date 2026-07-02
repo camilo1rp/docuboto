@@ -17,8 +17,8 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 |---|---|---|
 | **F1 — Fundamentos** | librería común (ADR-010), migraciones por tenant (ADR-012), E14 administración, E08 seguridad (RBAC + auditoría + URD + clasificación), E01 radicación, E03 metadatos, E07 anexos, E16 notificaciones, E05 flujos | ✅ |
 | **F2 — Consulta** | E09 búsqueda avanzada + reportes + búsqueda de expedientes, E13 consulta pública por código de verificación, E19 ingesta de correo IMAP | ✅ |
-| **F3 — Ciclo de vida** | E04 TRD/CCD (jerarquía + retención en dos fases + disposición AGN), E02 expedientes (cierre/transferencia/foliado), E06 firma electrónica (hash+identidad) | ✅ |
-| **F4 — Conformidad** | E15 índice electrónico (XML versionado append-only + huella por documento + verificación) | ✅ núcleo |
+| **F3 — Ciclo de vida** | E04 TRD/CCD (jerarquía + retención en dos fases + disposición AGN), E02 expedientes (cierre/transferencia/foliado), E06 firma electrónica (hash+identidad + **XAdES-B del índice**, Inc.1) | ✅ |
+| **F4 — Conformidad** | E15 índice electrónico (XML versionado append-only + huella por documento + verificación) + **firma XAdES-B del índice al cierre con sello institucional** (E06 Inc.1, ADR-016) | ✅ núcleo |
 | **F5 — Preservación / físico** | E17 archivo físico (ubicaciones, unidades, signatura, préstamos, historial, **FUID**), E12 transferencias primarias/secundarias, E11 interoperabilidad (webhooks firmados), E10 preservación (plan + eventos PREMIS) | ✅ núcleo |
 | **F6 — Inteligencia** | E18 mcp-server (catálogo de tools sobre el gateway), E21 knowledge-service (pgvector + recuperación semántica con pre-filtrado ACL) | ✅ núcleo |
 
@@ -27,7 +27,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 - **E18**: binding del SDK MCP oficial (stdio / HTTP-streamable, `initialize`/capabilities).
 - **E21**: ingesta event-driven, RAG anclado con citas, proveedor de embeddings/LLM real (hoy stub local determinista).
 - **E10**: empaquetado AIP/BagIt, Object Lock/WORM real en MinIO, validación PDF/A con veraPDF.
-- **E15**: firma XAdES del índice al cierre (requiere signature-service criptográfico, ADR-016).
+- **E15/E06**: firma **XAdES-B** del índice al cierre ✅ (Inc.1, ADR-016 addendum). Pendiente: **XAdES-T** (sello de tiempo TSA RFC 3161), **XAdES-LT/LTA** (CRL/OCSP), **CA acreditada ONAC** (hoy todo `no_acreditado`), y metadatos RT-15 del índice (formato/tamaño/foliación).
 - **E20**: integración con operadores postales (factible como consumidor de webhooks, ADR-018).
 - **E17** (menores): rótulo PDF/QR, capacidad/ocupación, custodia externa.
 - **E08** (reclasificación): el endpoint `PATCH /documents/{id}/security-level` ya reclasifica el `nivel_seguridad` con permiso `PERM_RECLASIFICAR` + no-read-up/no-write-up, auditoría inmutable (motivo + fundamento jurídico) y re-sync del *snapshot* de firma vía evento — cierra el residual de *staleness* de RF-SEG-08. **La UI ya está hecha**: chip de nivel + modal de reclasificación gateado por `PERM_RECLASIFICAR` en el drawer de la bandeja (con `nivel_seguridad` expuesto en el read path de radicados). Diferido: el **índice de información clasificada y reservada** publicado (Ley 1712 art.20 + Decreto 1081/2015), *outbox* transaccional del evento, y doble control de desclasificación.
@@ -67,7 +67,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 ## Más allá del specDrive 📋 Planeado
 
 - [ ] App móvil nativa (iOS/Android)
-- [x] ~~Firma de documentos~~ — firma electrónica nativa + **cadena de firma / bandeja del firmante** hechas (E06: turno ordenado, `GET /pending`, sign/reject/batch); **firma digital PKI/XAdES** pendiente (signature-service)
+- [x] ~~Firma de documentos~~ — firma electrónica nativa + **cadena de firma / bandeja del firmante** hechas (E06: turno ordenado, `GET /pending`, sign/reject/batch); **XAdES-B del índice electrónico + sello institucional** hecho (Inc.1, ADR-016 addendum); **XAdES-T/LT/LTA (TSA, CRL/OCSP) y CA acreditada ONAC** pendientes (signature-service)
 - [ ] Integración SSO corporativo (Entra ID, Okta, LDAP)
 - [x] Frontend — scaffold SvelteKit en `frontend/` (ADR-011); UI completa pendiente
 - [x] ~~API de webhooks~~ — webhooks salientes firmados hechos (E11)

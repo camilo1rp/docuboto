@@ -24,6 +24,7 @@ import asyncpg
 from fastapi import HTTPException, status
 
 from app.repositories.archive_repository import ArchiveRepository
+from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
@@ -49,6 +50,7 @@ class TransferenciaService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._repo = TransferenciaRepository(conn, tenant_slug)
         self._archive = ArchiveRepository(conn, tenant_slug)
+        self._index_repo = IndexRepository(conn)
         self._conn = conn
         self._tenant = tenant_slug
 
@@ -120,6 +122,24 @@ class TransferenciaService:
         self, transferencia_id: uuid.UUID, decidida_por: str | None
     ) -> TransferenciaResponse:
         existing = await self._require(transferencia_id, "recibida")
+        # El índice electrónico firmado es el instrumento que da fe de
+        # integridad del expediente para su transferencia (Acuerdo AGN
+        # 001/2024 art. 4.3.2.4) — recibir la transferencia congela el
+        # expediente (`transferred`), así que exige el mismo requisito que
+        # `ArchiveService.transfer_expediente` (E06 Inc.1).
+        current_indice = await self._index_repo.get_current(existing["expediente_id"])
+        if current_indice is None or current_indice["estado"] != "firmado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "indice_no_firmado",
+                    "detail": (
+                        "El expediente no puede transferirse sin índice electrónico "
+                        "firmado (Acuerdo AGN 001/2024 art. 4.3.2.4)"
+                    ),
+                    "status": 409,
+                },
+            )
         row = await self._repo.update_estado(
             transferencia_id,
             {

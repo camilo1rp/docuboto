@@ -202,6 +202,13 @@ class IndiceVerifyDoc(BaseModel):
 class IndiceVerifyFirma(BaseModel):
     presente: bool
     valida: bool
+    # E06 Inc.1 (RF-FIR-15): SIEMPRE False en este incremento — no hay CA
+    # acreditada ONAC; ningún response debe sugerir firma cualificada.
+    nivel_conformidad: str | None = None
+    acreditado: bool = False
+    # Explica por qué `valida=False` (p. ej. "signed_xml_unavailable",
+    # "certificado_fuera_de_vigencia", "fingerprint_no_coincide_sello_tenant").
+    motivo: str | None = None
 
 
 class IndiceVerifyResponse(BaseModel):
@@ -210,6 +217,17 @@ class IndiceVerifyResponse(BaseModel):
     documentos: list[IndiceVerifyDoc]
     firma: IndiceVerifyFirma
     fecha_verificacion: datetime
+
+
+class IndiceFirmarResult(BaseModel):
+    """Resultado del sellado (o reintento) XAdES-B del índice (E06 Inc.1, RT-16)."""
+
+    firma_id: uuid.UUID
+    estado: str = "firmado"
+    minio_key_firmado: str | None = None
+    nivel_conformidad: str | None = None
+    xades_level: str | None = None
+    acreditado: bool = False
 
 
 class RetentionSchedule(BaseModel):

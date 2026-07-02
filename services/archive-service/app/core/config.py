@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     keycloak_realm: str = "orpycamcp"
     # Firma del índice al cierre (E15-F3): llamada a signature-service (E06).
     signature_service_url: str = "http://signature-service:8008"
+    # Descarga del índice YA FIRMADO (MinIO, vía storage-service) para la
+    # verificación XAdES-B real (E06 Inc.1) — signature_client.verify recibe
+    # el XML firmado, no el XML en claro (ver app/clients/storage_client.py).
+    storage_service_url: str = "http://storage-service:8005"
     service_port: int = 8004
     log_level: str = "info"
 

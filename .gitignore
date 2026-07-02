@@ -8,6 +8,9 @@ memory/
 .env
 .env.*
 !.env.example
+# Sellos de firma XAdES-B generados por scripts/gen-dev-signing-cert.sh
+# (E06, ADR-016, Inc.1) — material de clave privada, nunca se commitea.
+secrets/
 
 # ─── Python build artifacts ─────────────────────────────────────────────────────
 __pycache__/

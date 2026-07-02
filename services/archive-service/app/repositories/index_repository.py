@@ -64,12 +64,45 @@ class IndexRepository:
         )
         return list(rows), total or 0
 
-    async def mark_signed(self, indice_id: uuid.UUID, firma_id: uuid.UUID) -> None:
-        """Marca la versión del índice como firmada e inmutable (E15-F3)."""
+    async def mark_signed(
+        self,
+        indice_id: uuid.UUID,
+        firma_id: uuid.UUID,
+        minio_key_firmado: str | None = None,
+    ) -> None:
+        """Marca la versión del índice como firmada e inmutable (E06 Inc.1).
+
+        Defensa en profundidad: el `WHERE` excluye explícitamente filas ya
+        `'firmado'` — un índice sellado es inmutable y no debe re-escribirse
+        (aunque `IndexService.firmar_indice` ya evita llamar aquí dos veces
+        sobre el mismo índice, esta cláusula lo garantiza también a nivel BD).
+        """
         await self._conn.execute(
-            "UPDATE expediente_indice SET estado='firmado', firma_id=$2 WHERE id=$1",
+            "UPDATE expediente_indice SET estado='firmado', firma_id=$2, "
+            "minio_key_firmado=$3 WHERE id=$1 AND estado <> 'firmado'",
             indice_id,
             firma_id,
+            minio_key_firmado,
+        )
+
+    async def mark_pendiente(self, indice_id: uuid.UUID) -> None:
+        """Marca la versión como 'pendiente_firma' (E06 Inc.1, RT-16).
+
+        Decisión del usuario: si el sellado XAdES-B falla, el índice queda en
+        este estado (en vez de 'vigente' silencioso, que ocultaba el fallo) y
+        el cierre del expediente NO se bloquea. Reintentable e idempotente vía
+        `POST /expedientes/{id}/indice/firmar`.
+
+        Defensa en profundidad: el `WHERE` excluye explícitamente filas ya
+        `'firmado'` — un índice sellado es inmutable y NUNCA debe degradarse
+        a `'pendiente_firma'` (protege la misma invariante que la migración
+        015 / `regenerate`, aunque los llamadores actuales solo invocan esto
+        sobre índices no firmados).
+        """
+        await self._conn.execute(
+            "UPDATE expediente_indice SET estado='pendiente_firma' WHERE id=$1 "
+            "AND estado <> 'firmado'",
+            indice_id,
         )
 
     async def get_items(self, indice_id: uuid.UUID) -> list[asyncpg.Record]:

@@ -15,15 +15,18 @@ Servicio del índice electrónico del expediente (E15, Acuerdo AGN 001/2024).
   documento+huella+orden no cambió, no crea versión).
 - consultas: vigente, por versión, XML, historial de versiones.
 
-El `valor_huella` por documento se poblará desde storage-service (fixity, E15 T-08);
-la firma XAdES al cierre es E15 F3 (depende de signature-service). La validación XSD
-estricta (lxml) queda como evolutivo.
+El `valor_huella` por documento se poblará desde storage-service (fixity, E15 T-08).
+La firma XAdES-B real al cierre (E06 Inc.1, RT-16) vive en `firmar_indice` /
+`firmar_indice_retry`: best-effort — si falla, el índice queda 'pendiente_firma'
+(no bloquea el cierre) y es reintentable. La validación XSD estricta (lxml)
+queda como evolutivo.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, status
 
@@ -46,6 +49,9 @@ from app.services.index_builder import (
     content_hash,
     xml_sha256,
 )
+
+if TYPE_CHECKING:
+    from app.clients.signature_client import SignedIndice
 
 
 class IndexService:
@@ -190,27 +196,88 @@ class IndexService:
         return (await self._row_or_404(expediente_id, version))["xml"]
 
     async def firmar_indice(
-        self, expediente_id: uuid.UUID, *, tenant_slug: str, firmante_id: str | None
-    ) -> uuid.UUID | None:
-        """Firma la versión vigente del índice vía signature-service (E15-F3, E06).
-        Best-effort: si la firma no se obtiene, el índice queda vigente (no firmado)."""
-        import uuid as _uuid
+        self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
+    ) -> SignedIndice | None:
+        """Sella XAdES-B la versión vigente del índice vía signature-service (E06 Inc.1, RT-16).
 
+        Decisión del usuario: best-effort. Si la firma no se obtiene por
+        cualquier motivo (sin `actor_id`, sello del tenant no aprovisionado,
+        servicio inalcanzable...) el índice queda 'pendiente_firma' — el
+        cierre del expediente NO se bloquea — y es reintentable vía
+        `firmar_indice_retry` / `POST /indice/firmar`.
+
+        `actor_id` es el X-User-Id (UUID interno de `auth_users.id`) de quien
+        cierra el expediente: signature-service lo exige para atribuir el
+        sello (RF-FIR-11/12/14) y responde 401 sin él, por lo que aquí se
+        cortocircuita a 'pendiente_firma' sin siquiera intentar la llamada.
+        """
         from app.clients import signature_client
 
         current = await self._index.get_current(expediente_id)
         if current is None or current["estado"] == "firmado":
             return None
-        firma_id = await signature_client.sign_xml(
+        if not actor_id:
+            await self._index.mark_pendiente(current["id"])
+            return None
+        signed = await signature_client.sign_xml(
             tenant_slug=tenant_slug,
+            actor_id=actor_id,
             payload_xml=current["xml"],
             objeto_id=str(expediente_id),
-            firmante_id=firmante_id,
+            indice_id=str(current["id"]),
+            version=current["version"],
         )
-        if firma_id:
-            await self._index.mark_signed(current["id"], _uuid.UUID(firma_id))
-            return _uuid.UUID(firma_id)
-        return None
+        if signed is None:
+            await self._index.mark_pendiente(current["id"])
+            return None
+        await self._index.mark_signed(current["id"], signed.firma_id, signed.minio_key_firmado)
+        return signed
+
+    async def firmar_indice_retry(
+        self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
+    ) -> SignedIndice:
+        """Reintento explícito del sellado del índice (E06 Inc.1, RT-16).
+
+        A diferencia de `firmar_indice` (best-effort, invocado silenciosamente
+        al cierre), este método SÍ reporta el resultado al llamador — pensado
+        para `POST /expedientes/{id}/indice/firmar`:
+        - 404 si el expediente no tiene índice.
+        - 409 si el índice vigente ya está firmado (inmutable) — idempotente:
+          reintentar sobre un índice ya sellado no es un error de negocio, es
+          un no-op reportado explícitamente.
+        - 503 si la firma sigue sin poder obtenerse (el índice permanece o
+          vuelve a 'pendiente_firma', reintentable de nuevo más tarde).
+        """
+        current = await self._index.get_current(expediente_id)
+        if current is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_indice_not_found",
+                    "detail": str(expediente_id),
+                    "status": 404,
+                },
+            )
+        if current["estado"] == "firmado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "indice_ya_firmado",
+                    "detail": "El índice vigente ya está firmado (inmutable)",
+                    "status": 409,
+                },
+            )
+        signed = await self.firmar_indice(expediente_id, tenant_slug=tenant_slug, actor_id=actor_id)
+        if signed is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "index_signing_failed",
+                    "detail": "signature-service no pudo sellar el índice; queda pendiente_firma",
+                    "status": 503,
+                },
+            )
+        return signed
 
     async def verify(self, expediente_id: uuid.UUID, version: int | None) -> IndiceVerifyResponse:
         """Contrasta el valor_huella del índice con el hash actual de cada documento
@@ -237,22 +304,50 @@ class IndexService:
                     coincide=coincide,
                 )
             )
-        # Acoplamiento firma↔índice (E15 → E06): si hay firma, se verifica contra
-        # el signature-service recomputando el HMAC sobre el XML almacenado. Es
-        # best-effort: si el servicio no responde, `valida` queda en False (no se
+        # Acoplamiento firma↔índice (E06 Inc.1): si hay firma, se descarga el
+        # XML YA FIRMADO desde MinIO (vía storage-service) y se verifica la
+        # firma XAdES-B real contra ESE contenido — nunca contra `row["xml"]`
+        # en claro (la canonicalización C14N 2.0 de exhibición no coincide con
+        # el digest exc-c14n de XAdES, ver `app.clients.storage_client`). Es
+        # best-effort en cada tramo: si el XML firmado no se puede obtener, o
+        # el signature-service no responde, `valida` queda en False (no se
         # declara conforme lo que no se pudo verificar, RF-FIR-15).
         firma_presente = row["firma_id"] is not None
         valida_firma = False
+        nivel_conformidad: str | None = None
+        acreditado = False
+        motivo: str | None = None
         if firma_presente:
-            from app.clients import signature_client
+            from app.clients import signature_client, storage_client
 
-            resultado = await signature_client.verify(
-                tenant_slug=self._tenant_slug,
-                firma_id=str(row["firma_id"]),
-                payload_xml=row["xml"],
-            )
-            valida_firma = bool(resultado)
-        firma = IndiceVerifyFirma(presente=firma_presente, valida=valida_firma)
+            signed_xml: str | None = None
+            if row["minio_key_firmado"]:
+                signed_xml = await storage_client.download_signed_xml(
+                    tenant_slug=self._tenant_slug,
+                    minio_key_firmado=row["minio_key_firmado"],
+                )
+            if signed_xml is None:
+                motivo = "signed_xml_unavailable"
+            else:
+                resultado = await signature_client.verify(
+                    tenant_slug=self._tenant_slug,
+                    firma_id=str(row["firma_id"]),
+                    payload_xml=signed_xml,
+                )
+                if resultado is None:
+                    motivo = "signature_service_unreachable"
+                else:
+                    valida_firma = resultado.valida
+                    nivel_conformidad = resultado.nivel_conformidad
+                    acreditado = resultado.acreditado
+                    motivo = resultado.motivo
+        firma = IndiceVerifyFirma(
+            presente=firma_presente,
+            valida=valida_firma,
+            nivel_conformidad=nivel_conformidad,
+            acreditado=acreditado,
+            motivo=motivo,
+        )
         valido = all_ok and (not firma_presente or firma.valida)
         return IndiceVerifyResponse(
             version=row["version"],

@@ -149,7 +149,9 @@ services:
     memswap_limit: 2g
 
   signature-service:
-    # Firma electrónica (E06, ADR-016): sign-xml + verify; proveedor pluggable.
+    # Firma electrónica (E06, ADR-016): sign-xml + verify; proveedor pluggable
+    # ('xades_local' = XAdES-B real del índice con el sello institucional del
+    # tenant, Inc.1; 'nativa' = HMAC de servicio, resto de objetos).
     # Contexto raíz para acceder a shared/orpycamcp_common (ADR-010, RF-FIR-14).
     build:
       context: .
@@ -159,6 +161,7 @@ services:
       - "19008:8008"
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
       # Corrige puerto interno de Keycloak (era 8180, inexistente en la red) → 8080.
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
@@ -166,10 +169,26 @@ services:
       # directamente para PERM_FIRMA — D-01).
       - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
       - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
+      # Sello institucional XAdES-B (RT-16, Inc.1) — ver el volumen más abajo
+      # y scripts/gen-dev-signing-cert.sh para generar el par de desarrollo.
+      - SIGNER_PROVIDER=${SIGNER_PROVIDER:-xades_local}
+      - SIGNER_CERT_DIR=/run/secrets/signing
+      # Dev-only: ./secrets/signing solo provisiona el par compartido _dev/
+      # (gen-dev-signing-cert.sh), así que este entorno lo activa explícitamente.
+      # NUNCA en true en producción (app/core/keys.py::load_seal) — sin esto,
+      # un tenant sin sello propio falla cerrado (503) en vez de firmar con
+      # una clave compartida entre tenants.
+      - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
+      - STORAGE_SERVICE_URL=http://storage-service:8005
+    volumes:
+      # Solo lectura: signature-service nunca escribe en el sello montado.
+      - ./secrets/signing:/run/secrets/signing:ro
     networks:
       - orpycamcp-net
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: "no"
     mem_limit: 2g

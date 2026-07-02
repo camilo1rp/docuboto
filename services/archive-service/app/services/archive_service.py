@@ -19,6 +19,7 @@ from orpycamcp_common import audit
 
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
+from app.repositories.index_repository import IndexRepository
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.archive import (
     BatchLinkResult,
@@ -51,6 +52,7 @@ class ArchiveService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._repo = ArchiveRepository(conn, tenant_slug)
         self._metadata_repo = MetadataRepository(conn, tenant_slug)
+        self._index_repo = IndexRepository(conn)
         self._conn = conn
         self._tenant_slug = tenant_slug
 
@@ -164,6 +166,13 @@ class ArchiveService:
                         "status": 422,
                     },
                 )
+            # Este PATCH genérico es una ruta alterna a `transfer_expediente` para la
+            # misma transición closed→transferred: aplica la MISMA guarda de índice
+            # firmado (Acuerdo AGN 001/2024 art. 4.3.2.4) — de lo contrario un
+            # llamador podría transferir un expediente sin índice sellado rodeando
+            # el endpoint dedicado `POST /{id}/transfer`.
+            if payload.status == "transferred":
+                await self._assert_indice_firmado(expediente_id)
 
         updated = await self._repo.update_expediente(
             expediente_id,
@@ -203,10 +212,21 @@ class ArchiveService:
             )
 
     async def close_expediente(
-        self, expediente_id: uuid.UUID, firmante: str | None = None
+        self,
+        expediente_id: uuid.UUID,
+        firmante: str | None = None,
+        actor_id: str | None = None,
     ) -> ExpedienteResponse:
         """Cierra el expediente: materializa la disposición TRD, genera la versión
-        final del índice y la firma (E15-F3, best-effort) dejándola inmutable."""
+        final del índice y sella XAdES-B el índice (E06 Inc.1, best-effort).
+
+        `firmante` es el valor mostrado en la hoja de ruta/auditoría (puede
+        caer a X-Username si no hay X-User-Id). `actor_id` es estrictamente el
+        X-User-Id (UUID de `auth_users.id`) que signature-service exige para
+        atribuir el sello (RF-FIR-11/12): si falta o la firma falla, el índice
+        queda 'pendiente_firma' (decisión del usuario, RT-16) — el cierre del
+        expediente NUNCA se bloquea por esto.
+        """
         from app.services.index_service import IndexService
 
         exp = await self._expediente_or_404(expediente_id)
@@ -218,12 +238,16 @@ class ArchiveService:
         await self._repo.transition_expediente(
             expediente_id, status="closed", disposition=disposition
         )
-        # Índice electrónico: versión final + firma al cierre (RF-EXP-06).
+        # Índice electrónico: versión final + sello XAdES-B al cierre (RF-EXP-06).
+        # El resultado (`signed`) se captura para dejar traza del estado del
+        # índice en el audit_log de cierre — best-effort: un sellado fallido
+        # NUNCA bloquea el cierre (RT-16), pero debe quedar auditado.
         index = IndexService(self._conn, self._tenant_slug)
         await index.regenerate(expediente_id, generado_por=firmante or "system")
-        await index.firmar_indice(
-            expediente_id, tenant_slug=self._tenant_slug, firmante_id=firmante
+        signed = await index.firmar_indice(
+            expediente_id, tenant_slug=self._tenant_slug, actor_id=actor_id
         )
+        indice_estado = "firmado" if signed is not None else "pendiente_firma"
         await self._repo.insert_expediente_evento(
             expediente_id,
             numero_expediente=exp.code,
@@ -238,13 +262,63 @@ class ArchiveService:
             object_type="expediente",
             object_ref=exp.code,
             actor=firmante,
+            payload={
+                "indice_estado": indice_estado,
+                "firma_id": str(signed.firma_id) if signed is not None else None,
+            },
         )
+        if signed is None:
+            # Contraparte de 'firma.creada' (signature-service): deja traza
+            # explícita de que el índice electrónico de este expediente cerró
+            # SIN sellar (ADR-010, trazabilidad de no-conformidad).
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.indice_firma_pendiente",
+                object_type="expediente_indice",
+                object_ref=exp.code,
+                actor=firmante,
+                payload={
+                    "expediente_id": str(expediente_id),
+                    "motivo": "sellado_xades_no_obtenido_al_cierre",
+                },
+            )
         return await self.get_expediente(expediente_id)
 
+    async def _assert_indice_firmado(self, expediente_id: uuid.UUID) -> None:
+        """Exige índice electrónico 'firmado' antes de transferir.
+
+        El índice firmado es el instrumento que da fe de integridad del
+        expediente electrónico para la transferencia primaria/secundaria y su
+        FUID (Acuerdo AGN 001/2024 art. 4.3.2.4). Un índice 'pendiente_firma'
+        (sellado no obtenido al cierre, o cierre sin índice del todo) NO
+        bloquea el cierre (RT-16, best-effort) pero SÍ bloquea la
+        transferencia — es una condición distinta y posterior.
+        """
+        current = await self._index_repo.get_current(expediente_id)
+        if current is None or current["estado"] != "firmado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "indice_no_firmado",
+                    "detail": (
+                        "El expediente no puede transferirse sin índice electrónico "
+                        "firmado (Acuerdo AGN 001/2024 art. 4.3.2.4)"
+                    ),
+                    "status": 409,
+                },
+            )
+
     async def transfer_expediente(self, expediente_id: uuid.UUID) -> ExpedienteResponse:
-        """Transfiere el expediente (closed → transferred)."""
+        """Transfiere el expediente (closed → transferred).
+
+        Bloqueante: exige índice electrónico 'firmado' — ver
+        `_assert_indice_firmado` (Acuerdo AGN 001/2024 art. 4.3.2.4).
+        """
         exp = await self._expediente_or_404(expediente_id)
         self._assert_transition(exp.status, "transferred")
+        await self._assert_indice_firmado(expediente_id)
         await self._repo.transition_expediente(expediente_id, status="transferred")
         await self._repo.insert_expediente_evento(
             expediente_id, numero_expediente=exp.code, accion="transferido"

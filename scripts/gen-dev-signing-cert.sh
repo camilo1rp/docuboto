@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# gen-dev-signing-cert.sh — Genera un sello de firma XAdES-B de DESARROLLO
+# (RSA-2048, auto-firmado, NO ACREDITADO) para signature-service (E06, ADR-016,
+# RT-16, Inc.1).
+#
+# El resultado NUNCA es válido para producción: es un certificado auto-firmado
+# sin CA acreditada ONAC — signature-service SIEMPRE reporta
+# nivel_conformidad='xades_b_no_acreditado' / acreditado=false para cualquier
+# firma producida con este par (ver app/core/keys.py::load_seal).
+#
+# Uso:
+#   ./scripts/gen-dev-signing-cert.sh [tenant-slug] [output-dir]
+#
+#   tenant-slug   Slug del tenant (ej: demo). Por defecto: _dev (el fallback
+#                 que app/core/keys.py usa cuando un tenant no tiene sello
+#                 propio montado — cubre TODOS los tenants sin necesidad de
+#                 generar un par por cada uno).
+#   output-dir    Directorio raíz de sellos. Por defecto: ./secrets/signing
+#                 (montado por docker-compose.yml en
+#                 /run/secrets/signing:ro dentro de signature-service).
+#
+# Ejemplos:
+#   ./scripts/gen-dev-signing-cert.sh                  # _dev/  (fallback global)
+#   ./scripts/gen-dev-signing-cert.sh demo              # demo/  (sello propio del tenant demo)
+#   ./scripts/gen-dev-signing-cert.sh _dev /tmp/signing  # útil para fixtures de test
+#
+# Requiere: openssl.
+
+set -euo pipefail
+
+SLUG="${1:-_dev}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+OUTPUT_ROOT="${2:-$PROJECT_ROOT/secrets/signing}"
+
+TARGET_DIR="$OUTPUT_ROOT/$SLUG"
+CERT_PATH="$TARGET_DIR/seal.crt"
+KEY_PATH="$TARGET_DIR/seal.key"
+
+mkdir -p "$TARGET_DIR"
+
+echo ""
+echo "Generando sello de firma DEV (NO ACREDITADO) para tenant: $SLUG"
+echo "  Directorio: $TARGET_DIR"
+echo ""
+
+openssl req \
+    -x509 \
+    -newkey rsa:2048 \
+    -sha256 \
+    -days 3650 \
+    -nodes \
+    -keyout "$KEY_PATH" \
+    -out "$CERT_PATH" \
+    -subj "/CN=OrpycaMCP DEV Seal (NO ACREDITADO)/O=$SLUG"
+
+chmod 600 "$KEY_PATH"
+chmod 644 "$CERT_PATH"
+
+echo "  OK  $CERT_PATH"
+echo "  OK  $KEY_PATH"
+echo ""
+echo "Recuerda: este par es SOLO para desarrollo/pruebas. NO lo commitees."
+echo "El .gitignore de la raíz debe excluir secrets/ — verifícalo si es la"
+echo "primera vez que corres este script en el repo."

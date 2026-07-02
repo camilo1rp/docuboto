@@ -97,13 +97,22 @@ def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
 
 @pytest.mark.asyncio
 async def test_sign_xml_happy_path(client_with_conn) -> None:
-    """POST /sign-xml with valid X-User-Id (PERM_FIRMA granted) creates a firma record."""
+    """POST /sign-xml with valid X-User-Id (PERM_FIRMA granted) creates a firma record.
+
+    Uses objeto_tipo="radicado" (not "indice") on purpose: since Inc.1 (E06,
+    ADR-016) objeto_tipo="indice" with the default settings.signer_provider=
+    "xades_local" routes to the REAL XAdES-B provider (app.providers.local),
+    which needs a mounted seal — see tests/test_sign_xml_xades.py for that
+    coverage. This test keeps exercising the preexisting HMAC 'nativa' path
+    end-to-end through the router, which any objeto_tipo other than "indice"
+    still selects (app.routers.signature._select_provider_name).
+    """
     client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)
 
     resp = await client.post(
         "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"},
+        json={"payload_xml": "<indice/>", "objeto_tipo": "radicado", "objeto_id": "exp-1"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 201

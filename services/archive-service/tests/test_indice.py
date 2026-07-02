@@ -164,6 +164,7 @@ async def test_link_to_closed_expediente_rejected(client_with_conn) -> None:
 async def test_verify_intact(client_with_conn) -> None:
     """Si la huella del índice coincide con la actual del documento → válido."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     h = "d" * 64
@@ -198,6 +199,7 @@ async def test_verify_intact(client_with_conn) -> None:
 async def test_verify_tampered(client_with_conn) -> None:
     """Si el documento cambió (hash distinto al del índice) → inválido."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     item = {
@@ -227,6 +229,7 @@ async def test_verify_tampered(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_rebuild_idempotent_when_unchanged(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     # content_hash del único documento (orden 1, sin huella) que el índice ya tiene.
@@ -251,10 +254,11 @@ async def test_rebuild_idempotent_when_unchanged(client_with_conn) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _indice_row_with_firma(firma_id: uuid.UUID) -> dict:
+def _indice_row_with_firma(firma_id: uuid.UUID, *, minio_key_firmado: str | None = "file-id/indice.xml") -> dict:
     """Devuelve un indice_row con firma_id no nulo para los tests de verify."""
     row = _indice_row(version=1, num=1)
     row["firma_id"] = firma_id
+    row["minio_key_firmado"] = minio_key_firmado
     return row
 
 
@@ -275,8 +279,10 @@ def _item_row(rad_id: uuid.UUID, h: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
-    """firma_id presente y signature-service confirma → firma.valida=True, valido=True."""
+    """firma_id presente, XML firmado descargable y signature-service confirma →
+    firma.valida=True, valido=True."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     firma_id = uuid.uuid4()
@@ -288,7 +294,22 @@ async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [indice, exp]
     mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
 
-    with patch("app.clients.signature_client.verify", new=AsyncMock(return_value=True)):
+    from app.clients.signature_client import VerifyResult
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<indice-firmado/>"),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
+                )
+            ),
+        ),
+    ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
             headers=TENANT_HEADERS,
@@ -304,13 +325,14 @@ async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_verify_with_firma_service_unreachable_reports_invalida(client_with_conn) -> None:
     """
-    firma_id presente pero signature-service inalcanzable (devuelve None):
-    firma.valida=False, valido=False.
+    firma_id presente, XML firmado descargable, pero signature-service
+    inalcanzable (verify → None): firma.valida=False, valido=False.
 
     Comportamiento preservado: no se declara conforme lo que no se pudo verificar
     (RF-FIR-15). El comportamiento era False antes del cambio y sigue siendo False.
     """
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     firma_id = uuid.uuid4()
@@ -323,7 +345,13 @@ async def test_verify_with_firma_service_unreachable_reports_invalida(client_wit
     mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
 
     # None simula firma_client.verify cuando el servicio está inalcanzable
-    with patch("app.clients.signature_client.verify", new=AsyncMock(return_value=None)):
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<indice-firmado/>"),
+        ),
+        patch("app.clients.signature_client.verify", new=AsyncMock(return_value=None)),
+    ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
             headers=TENANT_HEADERS,
@@ -333,6 +361,7 @@ async def test_verify_with_firma_service_unreachable_reports_invalida(client_wit
     body = resp.json()
     assert body["firma"]["presente"] is True
     assert body["firma"]["valida"] is False
+    assert body["firma"]["motivo"] == "signature_service_unreachable"
     # valido=False porque firma_presente pero !valida (no podemos declarar conforme)
     assert body["valido"] is False
 
@@ -340,10 +369,11 @@ async def test_verify_with_firma_service_unreachable_reports_invalida(client_wit
 @pytest.mark.asyncio
 async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
     """
-    firma_id presente y signature-service devuelve False (firma adulterada):
-    firma.valida=False, valido=False.
+    firma_id presente, XML firmado descargable, signature-service confirma
+    que la firma NO es válida (adulterada): firma.valida=False, valido=False.
     """
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     firma_id = uuid.uuid4()
@@ -355,7 +385,22 @@ async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [indice, exp]
     mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
 
-    with patch("app.clients.signature_client.verify", new=AsyncMock(return_value=False)):
+    from app.clients.signature_client import VerifyResult
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<indice-firmado/>"),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=False, nivel_conformidad=None, acreditado=False, motivo="firma_adulterada"
+                )
+            ),
+        ),
+    ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
             headers=TENANT_HEADERS,
@@ -366,3 +411,239 @@ async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
     assert body["firma"]["presente"] is True
     assert body["firma"]["valida"] is False
     assert body["valido"] is False
+
+
+@pytest.mark.asyncio
+async def test_verify_with_firma_but_minio_key_null_reports_unavailable(client_with_conn) -> None:
+    """firma_id presente pero minio_key_firmado NULL (firma antigua/legado o
+    fallo previo al persistir): no se intenta descargar ni verificar — se
+    reporta 'signed_xml_unavailable' sin declarar conforme (RF-FIR-15)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    h = "1" * 64
+    indice = _indice_row_with_firma(firma_id, minio_key_firmado=None)
+    exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
+
+    mock_conn.fetchrow.side_effect = [indice, exp]
+    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml", new=AsyncMock()
+        ) as mock_download,
+        patch("app.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
+    ):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify",
+            headers=TENANT_HEADERS,
+        )
+
+    mock_download.assert_not_called()
+    mock_verify.assert_not_called()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma"]["presente"] is True
+    assert body["firma"]["valida"] is False
+    assert body["firma"]["motivo"] == "signed_xml_unavailable"
+    assert body["valido"] is False
+
+
+@pytest.mark.asyncio
+async def test_verify_with_firma_storage_download_fails_reports_unavailable(client_with_conn) -> None:
+    """minio_key_firmado presente pero storage-service no pudo servir el XML
+    firmado (best-effort → None): 'signed_xml_unavailable', no se llega a
+    llamar a signature_client.verify."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    h = "2" * 64
+    indice = _indice_row_with_firma(firma_id)
+    exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
+
+    mock_conn.fetchrow.side_effect = [indice, exp]
+    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=None)
+        ),
+        patch("app.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
+    ):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify",
+            headers=TENANT_HEADERS,
+        )
+
+    mock_verify.assert_not_called()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma"]["presente"] is True
+    assert body["firma"]["valida"] is False
+    assert body["firma"]["motivo"] == "signed_xml_unavailable"
+    assert body["valido"] is False
+
+
+# ---------------------------------------------------------------------------
+# firmar_indice_retry — reintento explícito (E06 Inc.1, RT-16)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_firmar_indice_retry_404_sin_indice(client_with_conn) -> None:
+    client, mock_conn = client_with_conn  # noqa: F841
+    from app.services.index_service import IndexService
+
+    exp_id = uuid.uuid4()
+    svc = IndexService(mock_conn, "demo")
+    mock_conn.fetchrow.return_value = None  # get_current → sin índice
+
+    with pytest.raises(Exception) as exc_info:
+        await svc.firmar_indice_retry(exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4()))
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_firmar_indice_retry_409_ya_firmado_no_reintenta(client_with_conn) -> None:
+    """Idempotente: si el índice vigente ya está 'firmado', 409 SIN llamar a
+    signature-service (inmutable, no es un error de negocio)."""
+    client, mock_conn = client_with_conn  # noqa: F841
+    from app.services.index_service import IndexService
+
+    exp_id = uuid.uuid4()
+    svc = IndexService(mock_conn, "demo")
+    mock_conn.fetchrow.return_value = {
+        "id": uuid.uuid4(),
+        "estado": "firmado",
+        "xml": "<indice/>",
+    }
+
+    from app.clients import signature_client
+
+    with patch.object(signature_client, "sign_xml", new=AsyncMock()) as mock_sign:
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_indice_retry(exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4()))
+    assert exc_info.value.status_code == 409
+    mock_sign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_firmar_indice_retry_503_si_firma_sigue_fallando(client_with_conn) -> None:
+    client, mock_conn = client_with_conn  # noqa: F841
+    from app.services.index_service import IndexService
+
+    exp_id = uuid.uuid4()
+    svc = IndexService(mock_conn, "demo")
+    row = {"id": uuid.uuid4(), "estado": "pendiente_firma", "xml": "<indice/>", "version": 1}
+    mock_conn.fetchrow.side_effect = [row, row]  # check + get_current dentro de firmar_indice
+
+    from app.clients import signature_client
+
+    with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=None)):
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_indice_retry(
+                exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4())
+            )
+    assert exc_info.value.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# POST /{expediente_id}/indice/firmar — endpoint de reintento
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_firmar_endpoint_sin_x_user_id_responde_403(client_with_conn) -> None:
+    """D-08 (hardening): `require_permission` es fail-closed sobre la IDENTIDAD
+    del llamante, no solo el permiso — sin X-User-Id no hay forma de resolver
+    PERM_FIRMA/USUA_PERM_EXPEDIENTE, así que la petición se rechaza en el gate
+    de autorización (403) ANTES de llegar a `_actor_id`/al servicio. Antes de
+    este hardening, un llamador SIN identidad alguna llegaba hasta
+    `IndexService.firmar_indice`, que solo respondía 503 tras mutar el índice
+    a 'pendiente_firma' (ver hallazgo Media — indice.py sin require_permission)."""
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{exp_id}/indice/firmar",
+        headers={"X-Tenant-Slug": "demo"},  # sin X-User-Id
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_firmar_endpoint_x_user_id_malformado_responde_403(client_with_conn) -> None:
+    """Un X-User-Id malformado tampoco resuelve identidad para `require_permission`
+    (fail-closed a `user_id=None` dentro del propio gate) → 403, antes de que
+    `_actor_id` tenga oportunidad de devolver su propio 400."""
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{exp_id}/indice/firmar",
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": "no-es-un-uuid"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_firmar_endpoint_ya_firmado_responde_409(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE + PERM_FIRMA granted
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.return_value = {
+        "id": uuid.uuid4(),
+        "estado": "firmado",
+        "xml": "<indice/>",
+    }
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{exp_id}/indice/firmar",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "indice_ya_firmado"
+
+
+@pytest.mark.asyncio
+async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE + PERM_FIRMA granted
+    exp_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    row = {"id": uuid.uuid4(), "estado": "pendiente_firma", "xml": "<indice/>", "version": 1}
+    mock_conn.fetchrow.side_effect = [row, row]
+
+    from app.clients.signature_client import SignedIndice
+
+    signed = SignedIndice(
+        firma_id=firma_id,
+        minio_key_firmado="file-id/indice.xml",
+        nivel_conformidad="xades_b_no_acreditado",
+        xades_level="XAdES-B",
+        tipo_firma="sello_sistema",
+        acreditado=False,
+        certificado_fingerprint="ab:cd",
+    )
+
+    with patch(
+        "app.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)
+    ):
+        resp = await client.post(
+            f"/api/v1/expedientes/{exp_id}/indice/firmar",
+            headers=TENANT_HEADERS,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma_id"] == str(firma_id)
+    assert body["minio_key_firmado"] == "file-id/indice.xml"
+    assert body["acreditado"] is False

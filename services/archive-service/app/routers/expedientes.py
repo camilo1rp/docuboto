@@ -175,7 +175,13 @@ async def close_expediente(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteResponse:
     firmante = x_user_id or x_username
-    return await ArchiveService(conn, tenant_slug).close_expediente(expediente_id, firmante)
+    # `actor_id` es estrictamente X-User-Id (UUID de auth_users.id): es lo que
+    # signature-service exige para sellar el índice (E06 Inc.1, RF-FIR-11/12).
+    # Sin él la firma no se intenta y el índice queda 'pendiente_firma' — el
+    # cierre no se bloquea (decisión del usuario, RT-16).
+    return await ArchiveService(conn, tenant_slug).close_expediente(
+        expediente_id, firmante, actor_id=x_user_id
+    )
 
 
 @router.post(
