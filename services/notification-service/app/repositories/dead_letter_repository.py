@@ -13,9 +13,11 @@
 INSERT must be called inside an open transaction so that the audit_log row is
 written atomically together with the dead-letter row.
 
-The remaining five methods (list_pending, get_by_event_id, get_for_update,
-transition_status, purge_terminal) back the admin inspection/replay/discard
-router and the MVP-3 retention job (ADR-021 Fase 5 Inc.2).
+The remaining methods (list_pending, list_scoped_for_clearance, get_by_event_id,
+get_for_update, transition_status, purge_terminal) back the admin
+inspection/replay/discard router and the MVP-3 retention job (ADR-021 Fase 5
+Inc.2). ``list_scoped_for_clearance`` additionally backs the per-row clearance
+filter of the listing endpoint (ADR-021, seguimiento no-bloqueante Fase 5).
 """
 
 from __future__ import annotations
@@ -131,6 +133,51 @@ class DeadLetterRepository:
         rows = await self._conn.fetch(sql, *params)
         total = int(rows[0]["total_count"]) if rows else 0
         return list(rows), total
+
+    async def list_scoped_for_clearance(
+        self,
+        caller_slug: str,
+        origin_group: str,
+        *,
+        status: str = "pending",
+        origin_stream: str | None = None,
+        cap: int = 1000,
+    ) -> list[asyncpg.Record]:
+        """Filas candidatas (con ``payload``) para el filtrado por-clearance del listado.
+
+        A diferencia de :meth:`list_pending`, esta consulta SÍ incluye ``payload``:
+        el llamante (router) necesita el sobre completo para resolver el nivel de
+        seguridad de cada fila vía ``resolve_deadletter_level`` (ADR-021, seguimiento
+        no-bloqueante Fase 5) ANTES de decidir si esa fila es visible para el admin.
+        El router descarta ``payload`` al construir ``DeadLetterSummary`` — nunca se
+        serializa en la respuesta.
+
+        Sin ``LIMIT``/``OFFSET`` de BD: la paginación se aplica en la capa de
+        aplicación DESPUÉS del filtro por-clearance (no se puede paginar en SQL
+        antes de saber cuántas filas serán visibles). ``cap`` es un tope de
+        seguridad para acotar memoria en tenants con un volumen anómalo de
+        dead-letters pendientes; los dead-letters son, por diseño, un evento raro.
+
+        Mismo predicado de tenant + origin_group + status (+ origin_stream opcional)
+        que :meth:`list_pending`; ver la nota de módulo sobre la tabla compartida.
+        """
+        params: list[object] = [caller_slug, status, origin_group]
+        extra = ""
+        if origin_stream is not None:
+            params.append(origin_stream)
+            extra = f" AND origin_stream = ${len(params)}"
+        limit_ph = len(params) + 1
+        params.append(cap)
+        sql = (
+            "SELECT event_id, event_type, origin_stream, origin_group, status, "
+            "       dead_lettered_at, resolved_at, payload "
+            "FROM evento_dead_letter "
+            "WHERE tenant_slug = $1 AND status = $2 AND origin_group = $3"
+            f"{extra} "
+            "ORDER BY dead_lettered_at DESC "
+            f"LIMIT ${limit_ph}"
+        )
+        return list(await self._conn.fetch(sql, *params))
 
     async def get_by_event_id(
         self, event_id: str, caller_slug: str, origin_group: str

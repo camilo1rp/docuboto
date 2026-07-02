@@ -154,21 +154,20 @@ def require_permission(perm_name: str):
     return _dep
 
 
-async def assert_can_read_deadletter(
-    conn: asyncpg.Connection,
-    caller_clearance: int,
-    row: asyncpg.Record,
-) -> None:
-    """No-read-up gate sobre un dead-letter (ADR-021 Fase 5, RF-SEG-08).
+async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record) -> int:
+    """Determina el nivel de seguridad del objeto referenciado por un dead-letter.
 
-    Determina el nivel de seguridad del objeto referenciado por el evento aparcado
-    de forma **fail-closed** sobre el nivel VIVO del radicado (no se confía solo en
-    el nivel embebido en el sobre, que pudo quedar obsoleto). Si el llamante no
-    alcanza ese nivel, responde **404 neutro** (no 403): no se revela ni la
-    existencia ni el nivel del objeto.
+    *Single source of truth* del nivel de un evento aparcado: la usan tanto el gate
+    de detalle (:func:`assert_can_read_deadletter`) como el filtro por-fila del
+    listado (``GET /admin/deadletter/``, ADR-021 seguimiento Fase 5), de modo que
+    ambos endpoints son consistentes entre sí (lo que el listado muestra, el
+    detalle lo deja abrir; lo que el listado oculta, el detalle lo 404-ea).
 
-    La conexión llega con ``search_path`` ya fijado al tenant (lo hace
-    ``require_permission`` sobre la misma conexión cacheada por request).
+    Resuelve sobre el nivel **VIVO** del radicado (no se confía solo en el nivel
+    embebido en el sobre, que pudo quedar obsoleto tras una reclasificación).
+    **No lanza**: cualquier caso dudoso resuelve a CLASIFICADA=3 (fail-closed); el
+    llamante decide qué hacer con el nivel devuelto (404 en el detalle, exclusión
+    silenciosa en el listado).
 
     Reglas de determinación de nivel (fail-closed a CLASIFICADA=3 ante cualquier duda):
       - Sin identificadores de radicado en el sobre → CLASIFICADA.
@@ -189,28 +188,44 @@ async def assert_can_read_deadletter(
     identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
 
     if not identifiers:
-        nivel_objeto = CLASIFICADA
-    else:
-        nivel_vivo: int | None = None
-        try:
-            for ident in identifiers:
-                nivel_vivo = await conn.fetchval(
-                    "SELECT nivel_seguridad FROM radicados "
-                    "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
-                    ident,
-                )
-                if nivel_vivo is not None:
-                    break
-        except asyncpg.UndefinedTableError:
-            nivel_vivo = None
+        return CLASIFICADA
 
-        if nivel_vivo is None:
-            nivel_objeto = CLASIFICADA
-        elif nivel_embebido is not None:
-            nivel_objeto = max(int(nivel_vivo), int(nivel_embebido))
-        else:
-            nivel_objeto = int(nivel_vivo)
+    nivel_vivo: int | None = None
+    try:
+        for ident in identifiers:
+            nivel_vivo = await conn.fetchval(
+                "SELECT nivel_seguridad FROM radicados "
+                "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+                ident,
+            )
+            if nivel_vivo is not None:
+                break
+    except asyncpg.UndefinedTableError:
+        nivel_vivo = None
 
+    if nivel_vivo is None:
+        return CLASIFICADA
+    if nivel_embebido is not None:
+        return max(int(nivel_vivo), int(nivel_embebido))
+    return int(nivel_vivo)
+
+
+async def assert_can_read_deadletter(
+    conn: asyncpg.Connection,
+    caller_clearance: int,
+    row: asyncpg.Record,
+) -> None:
+    """No-read-up gate sobre un dead-letter (ADR-021 Fase 5, RF-SEG-08).
+
+    Delega la determinación de nivel en :func:`resolve_deadletter_level` (single
+    source of truth, compartida con el filtro del listado). Si el llamante no
+    alcanza ese nivel, responde **404 neutro** (no 403): no se revela ni la
+    existencia ni el nivel del objeto.
+
+    La conexión llega con ``search_path`` ya fijado al tenant (lo hace
+    ``require_permission`` sobre la misma conexión cacheada por request).
+    """
+    nivel_objeto = await resolve_deadletter_level(conn, row)
     if caller_clearance < nivel_objeto:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

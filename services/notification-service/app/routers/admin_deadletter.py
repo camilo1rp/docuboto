@@ -14,6 +14,13 @@ notification-service. Todas las rutas exigen ``PERM_DLQ_ADMIN`` (gate a nivel de
 router) y aplican el no-read-up por clearance sobre el radicado referenciado
 (404 neutro).
 
+ADR-021 (seguimiento no-bloqueante Fase 5): el LISTADO también filtra por
+clearance, fila a fila, reutilizando ``resolve_deadletter_level`` (misma
+resolución que el gate de detalle) — un admin sub-clearance no ve ni la
+existencia ni el conteo de dead-letters sobre objetos clasificados. El DETALLE
+(GET /{event_id}), tras superar el gate, deja un asiento de auditoría
+``evento.dead_letter.viewed`` (una vista bloqueada devuelve 404 y NO audita).
+
 Diferencia clave frente a signature/workflow: el efecto de notification es enviar
 un EMAIL (SMTP, externo, NO transaccional), por lo que el replay no puede ser
 atómico como ``apply_reclassification`` (handler + estado + audit en una sola tx
@@ -37,10 +44,12 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.clearance import (
+    CLASIFICADA,
     assert_can_read_deadletter,
     get_actor,
     require_permission,
     resolve_caller_clearance,
+    resolve_deadletter_level,
 )
 from app.core.constants import DLQ_GROUP
 from app.core.database import get_tenant_conn
@@ -105,22 +114,58 @@ async def list_dead_letters(
     origin_stream: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[DeadLetterSummary]:
-    """Lista resúmenes de dead-letters del tenant (sin payload ni last_error)."""
+    """Lista resúmenes de dead-letters del tenant, filtrados por clearance del llamante.
+
+    ADR-021 (seguimiento no-bloqueante Fase 5): resolución de nivel POR-FILA sobre
+    el nivel VIVO del radicado referenciado, reutilizando exactamente la misma
+    función que el gate de detalle (:func:`resolve_deadletter_level`) — así el
+    listado nunca revela la existencia (ni el conteo) de un dead-letter que el
+    detalle negaría con 404. Fail-closed: cualquier error al resolver el nivel de
+    una fila la excluye (se trata como CLASIFICADA).
+
+    La paginación se aplica EN APP sobre el conjunto ya filtrado: no se puede
+    paginar en SQL antes de saber cuántas filas son visibles para este llamante.
+    ``X-Total-Count`` refleja el total POST-filtro, no el total crudo de la tabla.
+    """
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
-    offset = (page - 1) * size
-    rows, total = await repo.list_pending(
+    caller_clearance = await resolve_caller_clearance(conn, actor)
+
+    candidates = await repo.list_scoped_for_clearance(
         caller_slug,
         DLQ_GROUP,
         status=status_filter,
         origin_stream=origin_stream,
-        offset=offset,
-        limit=size,
     )
+
+    visible: list[asyncpg.Record] = []
+    for row in candidates:
+        try:
+            nivel = await resolve_deadletter_level(conn, row)
+        except Exception:  # noqa: BLE001 — fail-closed: any resolution error hides the row.
+            logger.warning(
+                "resolve_deadletter_level failed for event_id=%s; excluding from listing "
+                "(fail-closed)",
+                row["event_id"],
+                exc_info=True,
+            )
+            nivel = CLASIFICADA
+        if caller_clearance >= nivel:
+            visible.append(row)
+
+    total = len(visible)
+    offset = (page - 1) * size
+    page_rows = visible[offset : offset + size]
     response.headers["X-Total-Count"] = str(total)
-    return [DeadLetterSummary.model_validate(dict(r)) for r in rows]
+    return [
+        DeadLetterSummary.model_validate(
+            {k: v for k, v in dict(r).items() if k != "payload"}
+        )
+        for r in page_rows
+    ]
 
 
 @router.get("/{event_id}", response_model=DeadLetterDetail)
@@ -149,6 +194,29 @@ async def get_dead_letter(
 
     caller_clearance = await resolve_caller_clearance(conn, actor)
     await assert_can_read_deadletter(conn, caller_clearance, row)
+
+    # ADR-021 (seguimiento no-bloqueante Fase 5): traza de acceso a detalle.
+    # Solo se audita DESPUÉS del gate — una vista bloqueada devuelve 404 y NO
+    # audita, para no confirmar la existencia del evento a quien no tiene
+    # clearance. Payload MÍNIMO (sin payload/failure de negocio) para no filtrar
+    # contenido clasificado a través del propio audit_log.
+    if _AUDIT_AVAILABLE:
+        async with conn.transaction():
+            await _audit.append(
+                conn,
+                tenant_slug=caller_slug,
+                service=_SERVICE,
+                action="evento.dead_letter.viewed",
+                object_type="evento",
+                object_ref=event_id,
+                actor=str(actor),
+                canal="api",
+                payload={
+                    "previous_status": row["status"],
+                    "event_type": row["event_type"],
+                    "origin_stream": row["origin_stream"],
+                },
+            )
 
     return DeadLetterDetail(
         event_id=row["event_id"],

@@ -19,13 +19,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
 from fastapi import HTTPException, status
 
-from app.core.clearance import assert_can_read_deadletter
+from app.core.clearance import assert_can_read_deadletter, resolve_deadletter_level
 from app.core.constants import DLQ_GROUP
 from app.repositories.dead_letter_repository import DeadLetterRepository
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, USER
 
 BASE = "/api/v1/signature/admin/deadletter"
 EVT = "eeeeeeee-0000-0000-0000-000000000001"
@@ -44,6 +45,29 @@ def _summary_row() -> dict:
         "dead_lettered_at": NOW,
         "resolved_at": None,
         "total_count": 1,
+    }
+
+
+def _candidate_row(event_id: str = EVT) -> dict:
+    """Fila devuelta por ``list_scoped_for_clearance`` — INCLUYE payload/correlation_id/
+    tenant_slug (a diferencia de ``_summary_row``), necesarios para que el router
+    resuelva el nivel de seguridad con ``resolve_deadletter_level`` y para que el
+    strip de ``payload``/``failure`` antes de serializar tenga algo que descartar."""
+    return {
+        "event_id": event_id,
+        "event_type": "document.radicado.reclassified",
+        "correlation_id": "cccc-0001",
+        "tenant_slug": "demo",
+        "origin_stream": "orpycamcp.document.events",
+        "origin_group": "signature-service",
+        "status": "pending",
+        "dead_lettered_at": NOW,
+        "resolved_at": None,
+        "payload": {
+            "event_id": event_id,
+            "tenant_slug": "demo",
+            "payload": {"tracking_number": TRACKING},
+        },
     }
 
 
@@ -84,8 +108,14 @@ async def test_list_requires_perm_dlq_admin(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_list_returns_summaries(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    conn.fetch.return_value = [_candidate_row()]
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level",
+              AsyncMock(return_value=1)),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
@@ -96,13 +126,108 @@ async def test_list_returns_summaries(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    conn.fetch.return_value = [_candidate_row()]
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level",
+              AsyncMock(return_value=1)),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     item = resp.json()[0]
     assert "payload" not in item
     assert "tracking_number" not in item
     assert "last_error" not in item
     assert "failure" not in item
+
+
+# ---------------------------------------- list: filtering by clearance (ADR-021, seguimiento)
+@pytest.mark.asyncio
+async def test_list_excludes_row_above_caller_clearance(client_with_conn) -> None:
+    """Admin con clearance=1 no ve una fila cuyo objeto resuelve a nivel=3; el
+    conteo (X-Total-Count) refleja el conjunto YA filtrado (no revela la fila oculta)."""
+    client, conn = client_with_conn
+    visible_row = _candidate_row("eeeeeeee-0000-0000-0000-000000000001")
+    hidden_row = _candidate_row("eeeeeeee-0000-0000-0000-000000000002")
+    conn.fetch.return_value = [hidden_row, visible_row]
+
+    async def _level(_conn, row):
+        return 3 if row["event_id"] == hidden_row["event_id"] else 1
+
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level", _level),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["event_id"] == visible_row["event_id"]
+    assert resp.headers["X-Total-Count"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_list_fail_closed_on_level_resolution_error(client_with_conn) -> None:
+    """Un error al resolver el nivel de una fila la trata como CLASIFICADA
+    (fail-closed) — un admin sub-clearance NO la ve; nunca se deja pasar una
+    fila por un fallo de resolución."""
+    client, conn = client_with_conn
+    conn.fetch.return_value = [_candidate_row()]
+
+    async def _raise(_conn, _row):
+        raise RuntimeError("boom")
+
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level", _raise),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert resp.headers["X-Total-Count"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_list_fail_closed_error_still_visible_to_top_clearance(client_with_conn) -> None:
+    """Fail-closed trata la fila como CLASIFICADA=3, no como 'siempre oculta': un
+    admin CLASIFICADA (que ya puede ver nivel 3) SÍ la ve."""
+    client, conn = client_with_conn
+    conn.fetch.return_value = [_candidate_row()]
+
+    async def _raise(_conn, _row):
+        raise RuntimeError("boom")
+
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level", _raise),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_pagination_applied_after_clearance_filter(client_with_conn) -> None:
+    """La paginación (page/size) se aplica sobre el conjunto YA filtrado por
+    clearance, no sobre las filas crudas devueltas por el repositorio."""
+    client, conn = client_with_conn
+    rows = [_candidate_row(f"eeeeeeee-0000-0000-0000-{i:012d}") for i in range(5)]
+    conn.fetch.return_value = rows
+
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level",
+              AsyncMock(return_value=1)),
+    ):
+        resp = await client.get(f"{BASE}/?page=2&size=2", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [item["event_id"] for item in data] == [rows[2]["event_id"], rows[3]["event_id"]]
+    assert resp.headers["X-Total-Count"] == "5"
 
 
 # --------------------------------------------------------------------------- detail
@@ -144,11 +269,14 @@ async def test_detail_clearance_denied(client_with_conn) -> None:
 async def test_detail_success(client_with_conn) -> None:
     client, conn = client_with_conn
     conn.fetchrow.return_value = _full_row()
+    mock_audit = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
         patch("app.routers.admin_deadletter.assert_can_read_deadletter",
               AsyncMock(return_value=None)),
+        patch("app.routers.admin_deadletter._audit", mock_audit),
+        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -156,6 +284,56 @@ async def test_detail_success(client_with_conn) -> None:
     assert body["event_id"] == EVT
     assert body["payload"]["tenant_slug"] == "demo"
     assert "failure" in body
+
+
+@pytest.mark.asyncio
+async def test_detail_success_writes_viewed_audit(client_with_conn) -> None:
+    """Un GET autorizado deja asiento ``evento.dead_letter.viewed`` con actor humano
+    y un payload mínimo (sin filtrar contenido de negocio/clasificado, ADR-021 seguimiento)."""
+    client, conn = client_with_conn
+    conn.fetchrow.return_value = _full_row()
+    mock_audit = AsyncMock()
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.assert_can_read_deadletter",
+              AsyncMock(return_value=None)),
+        patch("app.routers.admin_deadletter._audit", mock_audit),
+        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+    ):
+        resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    mock_audit.append.assert_called_once()
+    kwargs = mock_audit.append.call_args.kwargs
+    assert kwargs["action"] == "evento.dead_letter.viewed"
+    assert kwargs["object_type"] == "evento"
+    assert kwargs["object_ref"] == EVT
+    assert kwargs["actor"] == str(USER)
+    assert set(kwargs["payload"]) == {"previous_status", "event_type", "origin_stream"}
+
+
+@pytest.mark.asyncio
+async def test_detail_blocked_by_clearance_does_not_write_audit(client_with_conn) -> None:
+    """Una vista bloqueada (404 neutro) NO deja rastro en audit_log — de lo
+    contrario confirmaría la existencia del evento a un admin sin clearance."""
+    client, conn = client_with_conn
+    conn.fetchrow.return_value = _full_row()
+    denial = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"error": "not_found", "status": 404},
+    )
+    mock_audit = AsyncMock()
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=1)),
+        patch("app.routers.admin_deadletter.assert_can_read_deadletter",
+              AsyncMock(side_effect=denial)),
+        patch("app.routers.admin_deadletter._audit", mock_audit),
+        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+    ):
+        resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    mock_audit.append.assert_not_called()
 
 
 # --------------------------------------------------------------------------- replay
@@ -359,8 +537,14 @@ async def test_discard_not_found_returns_404(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_list_passes_own_origin_group_to_repo(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    conn.fetch.return_value = [_candidate_row()]
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.resolve_deadletter_level",
+              AsyncMock(return_value=1)),
+    ):
+        await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     params = conn.fetch.call_args[0][1:]
     assert DLQ_GROUP in params
     assert OTHER_GROUP not in params
@@ -491,3 +675,81 @@ async def test_fail_closed_nivel_max_clearance_passes() -> None:
     row = {"payload": {"payload": {"tracking_number": TRACKING}}}
     # No debe lanzar.
     await assert_can_read_deadletter(conn, caller_clearance=3, row=row)
+
+
+# ------------------------------------- resolve_deadletter_level (unit, ADR-021 seguimiento)
+@pytest.mark.asyncio
+async def test_resolve_deadletter_level_matches_assert_can_read_gate() -> None:
+    """Misma fuente de verdad: el nivel que resuelve la función usada por el
+    listado es EXACTAMENTE el que usa el gate 404 del detalle (consistencia
+    listado↔detalle exigida por el contrato)."""
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=2)  # nivel_vivo del radicado
+    row = {"payload": {"payload": {"tracking_number": TRACKING}}}
+
+    nivel = await resolve_deadletter_level(conn, row)
+    assert nivel == 2
+
+    # El gate debe bloquear exactamente cuando clearance < nivel resuelto arriba.
+    with pytest.raises(HTTPException):
+        await assert_can_read_deadletter(conn, caller_clearance=1, row=row)
+    await assert_can_read_deadletter(conn, caller_clearance=2, row=row)  # no lanza
+
+
+@pytest.mark.asyncio
+async def test_resolve_deadletter_level_no_identifiers_fail_closed() -> None:
+    conn = AsyncMock()
+    row = {"payload": {"payload": {}}}
+    nivel = await resolve_deadletter_level(conn, row)
+    assert nivel == 3  # CLASIFICADA
+    conn.fetchval.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_deadletter_level_undefined_table_fail_closed() -> None:
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(side_effect=asyncpg.UndefinedTableError())
+    row = {"payload": {"payload": {"tracking_number": TRACKING}}}
+    nivel = await resolve_deadletter_level(conn, row)
+    assert nivel == 3  # CLASIFICADA — tabla radicados ausente en el tenant
+
+
+# ------------------------------------------------ list_scoped_for_clearance (repo unit)
+@pytest.mark.asyncio
+async def test_repo_list_scoped_for_clearance_includes_payload_no_pagination_params() -> None:
+    """A diferencia de list_pending, esta consulta lleva payload (necesario para
+    resolver nivel) y NO recibe offset/limit de paginación — solo un tope (cap)."""
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[_candidate_row()])
+    repo = DeadLetterRepository(conn)
+
+    rows = await repo.list_scoped_for_clearance("demo", DLQ_GROUP, status="pending")
+
+    assert rows == [_candidate_row()]
+    sql, *params = conn.fetch.call_args[0]
+    assert "payload" in sql
+    assert "OFFSET" not in sql
+    assert params == ["demo", "pending", DLQ_GROUP, 1000]  # cap por defecto
+
+
+@pytest.mark.asyncio
+async def test_repo_list_scoped_for_clearance_filters_by_origin_group() -> None:
+    """Predicado de origin_group también en la consulta usada por el filtrado de
+    clearance — la tabla es compartida con el otro consumidor (ver nota de módulo)."""
+    table = {
+        ("demo", "pending", DLQ_GROUP): [_candidate_row("own-event")],
+        ("demo", "pending", OTHER_GROUP): [_candidate_row("other-event")],
+    }
+
+    async def fake_fetch(_sql, caller_slug, status_value, origin_group, _cap):
+        return table.get((caller_slug, status_value, origin_group), [])
+
+    conn = AsyncMock()
+    conn.fetch = fake_fetch
+    repo = DeadLetterRepository(conn)
+
+    own_rows = await repo.list_scoped_for_clearance("demo", DLQ_GROUP, status="pending")
+    assert [r["event_id"] for r in own_rows] == ["own-event"]
+
+    other_rows = await repo.list_scoped_for_clearance("demo", OTHER_GROUP, status="pending")
+    assert [r["event_id"] for r in other_rows] == ["other-event"]

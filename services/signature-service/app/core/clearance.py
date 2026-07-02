@@ -19,6 +19,10 @@ El api-gateway inyecta:
 ``require_permission``       verifica el permiso en las tablas RBAC del tenant (fail-closed).
 ``get_actor``                extrae el UUID del llamante desde X-User-Id (401 si ausente/inválido).
 ``resolve_caller_clearance`` resuelve el nivel de seguridad máximo del actor (1..3, fail-closed a 1).
+``resolve_deadletter_level`` resuelve (sin lanzar) el nivel del objeto referenciado por un
+                              dead-letter; usado tanto por el gate del detalle como por el
+                              filtrado por-fila del listado (ADR-021 Fase 5, seguimiento).
+``assert_can_read_deadletter`` gate 404-neutro del detalle, delega en ``resolve_deadletter_level``.
 """
 
 from __future__ import annotations
@@ -176,24 +180,23 @@ async def get_actor(request: Request) -> uuid.UUID:
         )
 
 
-async def assert_can_read_deadletter(
-    conn: asyncpg.Connection,
-    caller_clearance: int,
-    row: asyncpg.Record,
-) -> None:
-    """No-read-up gate sobre un dead-letter (ADR-021 Fase 5, RF-SEG-08).
+async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record) -> int:
+    """Resuelve el nivel de seguridad del objeto referenciado por un dead-letter.
 
-    Determina el nivel de seguridad del objeto referenciado por el evento aparcado
-    de forma **fail-closed** sobre el nivel VIVO del radicado (no se confía solo en
-    el nivel embebido en el sobre, que pudo quedar obsoleto). Si el llamante no
-    alcanza ese nivel, responde **404 neutro** (no 403): no se revela ni la
-    existencia ni el nivel del objeto.
+    Single source of truth de la resolución de nivel: usada tanto por
+    :func:`assert_can_read_deadletter` (gate del detalle) como por el filtrado
+    por-fila del listado, de modo que ambos permanecen consistentes (una fila
+    visible en el listado siempre es abrible en el detalle y viceversa).
 
-    Reglas de determinación de nivel (fail-closed a CLASIFICADA=3 ante cualquier duda):
+    **Fail-closed a CLASIFICADA=3** ante cualquier duda (no se lanza; el llamante
+    decide qué hacer con el nivel devuelto):
       - Sin identificadores de radicado en el sobre → CLASIFICADA.
       - Radicado no encontrado (o tabla ``radicados`` ausente) → CLASIFICADA.
       - En otro caso → ``max(nivel_vivo, nivel_embebido)`` (o ``nivel_vivo`` si no
-        hay nivel embebido).
+        hay nivel embebido). El nivel VIVO del radicado siempre se consulta (no
+        basta el nivel embebido en el sobre, que pudo quedar obsoleto: un
+        radicado reclasificado hacia arriba tras el dead-letter debe ocultarse
+        de inmediato).
     """
     raw_payload = row["payload"]
     payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
@@ -209,29 +212,42 @@ async def assert_can_read_deadletter(
 
     if not identifiers:
         # No hay manera de resolver el radicado → fail-closed.
-        nivel_objeto = CLASIFICADA
-    else:
-        nivel_vivo: int | None = None
-        try:
-            for ident in identifiers:
-                nivel_vivo = await conn.fetchval(
-                    "SELECT nivel_seguridad FROM radicados "
-                    "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
-                    ident,
-                )
-                if nivel_vivo is not None:
-                    break
-        except asyncpg.UndefinedTableError:
-            nivel_vivo = None
+        return CLASIFICADA
 
-        if nivel_vivo is None:
-            # Radicado no hallado → nunca degradar a público.
-            nivel_objeto = CLASIFICADA
-        elif nivel_embebido is not None:
-            nivel_objeto = max(int(nivel_vivo), int(nivel_embebido))
-        else:
-            nivel_objeto = int(nivel_vivo)
+    nivel_vivo: int | None = None
+    try:
+        for ident in identifiers:
+            nivel_vivo = await conn.fetchval(
+                "SELECT nivel_seguridad FROM radicados "
+                "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+                ident,
+            )
+            if nivel_vivo is not None:
+                break
+    except asyncpg.UndefinedTableError:
+        nivel_vivo = None
 
+    if nivel_vivo is None:
+        # Radicado no hallado → nunca degradar a público.
+        return CLASIFICADA
+    if nivel_embebido is not None:
+        return max(int(nivel_vivo), int(nivel_embebido))
+    return int(nivel_vivo)
+
+
+async def assert_can_read_deadletter(
+    conn: asyncpg.Connection,
+    caller_clearance: int,
+    row: asyncpg.Record,
+) -> None:
+    """No-read-up gate sobre un dead-letter (ADR-021 Fase 5, RF-SEG-08).
+
+    Delega la determinación de nivel en :func:`resolve_deadletter_level` (misma
+    resolución que usa el filtrado del listado). Si el llamante no alcanza ese
+    nivel, responde **404 neutro** (no 403): no se revela ni la existencia ni el
+    nivel del objeto.
+    """
+    nivel_objeto = await resolve_deadletter_level(conn, row)
     if caller_clearance < nivel_objeto:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -433,6 +433,98 @@ misma tabla.
 **Gateway.**  Se añadió la ruta `/api/v1/workflow/admin/` al proxy
 (`signature/admin` ya estaba cubierto por `/api/v1/signature/`).
 
+### Cierre de seguimientos no bloqueantes (signature-service, 2026-07-01)
+
+Al cerrar la Fase 5 quedaron documentados tres seguimientos no bloqueantes en
+signature-service (el listado no filtraba por clearance, el detalle no dejaba
+rastro de auditoría, y `origin_group` era nullable sin índice compuesto).  Los
+tres se cerraron en esta iteración:
+
+1. **Filtro de clearance en el listado.**  `assert_can_read_deadletter` se
+   refactorizó para delegar en una función no-lanzadora
+   `resolve_deadletter_level(conn, row) -> int` (single source of truth de la
+   resolución de nivel).  El listado (`GET /`) usa ahora
+   `DeadLetterRepository.list_scoped_for_clearance` (candidatas acotadas por
+   tenant+group+status, **incluye** `payload`, sin `LIMIT`/`OFFSET` de BD pero
+   con tope de seguridad `cap=1000`) y filtra fila-a-fila con la misma función
+   de nivel que el detalle: una fila cuyo objeto excede el clearance del
+   llamante se omite por completo (no aparece ni cuenta en `X-Total-Count`),
+   fail-closed a CLASIFICADA ante cualquier error de resolución.  La
+   paginación (`page`/`size`) se aplica en la capa de aplicación **después**
+   del filtrado, porque el tamaño del conjunto visible solo se conoce tras
+   evaluar cada fila.  Se descartó materializar un nivel-columna o snapshot en
+   `evento_dead_letter`: el gate usa deliberadamente el nivel **vivo** del
+   radicado (una reclasificación hacia arriba tras el dead-letter debe
+   ocultarse de inmediato), y el volumen de dead-letters es bajo por diseño
+   (fallos excepcionales tras agotar reintentos), así que la resolución
+   por-fila es proporcionada.
+2. **Auditoría de vista.**  `GET /{event_id}` autorizado (tras el gate) deja
+   un asiento `evento.dead_letter.viewed` en `audit_log` con actor humano y
+   payload mínimo (`previous_status`, `event_type`, `origin_stream` — sin
+   contenido de negocio ni `failure`, para no filtrar detalle clasificado vía
+   auditoría).  Una vista bloqueada (404 neutro) **no** audita, de lo
+   contrario confirmaría la existencia del evento a un admin sin clearance.
+3. **Migración `007_deadletter_origin_group_notnull_index.sql`.**
+   `origin_group SET NOT NULL` (segura sin backfill: los tres consumidores
+   nunca insertan `NULL`) + `CREATE INDEX IF NOT EXISTS
+   ix_edl_tenant_group_status ON evento_dead_letter (tenant_slug,
+   origin_group, status)`.  El nombre del índice es único y **compartido**
+   entre signature/workflow/notification sobre la misma tabla física:
+   idempotente por diseño (`SET NOT NULL` es no-op si ya lo es en PG15,
+   `CREATE INDEX IF NOT EXISTS` lo crea el primer servicio que corra, los
+   demás no-op).  Validado en un Postgres 15 desechable antes de integrar
+   (re-ejecución sin error, `INSERT` con `origin_group=NULL` rechazado,
+   índice creado una sola vez).
+
+### Cierre de seguimientos no bloqueantes (notification-service, 2026-07-01)
+
+Los mismos tres seguimientos no bloqueantes quedaban abiertos en
+notification-service (documentados al estrenar su superficie admin en el
+Incremento 2, § Fase 5). Se cerraron con el mismo diseño aplicado en
+signature-service:
+
+1. **Filtro de clearance en el listado.** `assert_can_read_deadletter` delega
+   en `resolve_deadletter_level(conn, row) -> int` (no-lanzadora, single
+   source of truth compartida con el gate de detalle). `GET
+   /api/v1/notification/admin/deadletter` usa
+   `DeadLetterRepository.list_scoped_for_clearance` (candidatas acotadas por
+   tenant+`origin_group="notification-service"`+status, con `payload`, sin
+   `LIMIT`/`OFFSET` de BD, tope de seguridad `cap=1000`) y filtra fila-a-fila
+   con la misma resolución de nivel que el detalle: fila excluida
+   (no aparece ni cuenta en `X-Total-Count`) si su objeto excede el clearance
+   del llamante, fail-closed a CLASIFICADA ante cualquier error de resolución
+   (incluida la ausencia de la tabla `radicados`, el caso más frecuente en
+   notification: fail-closed a CLASIFICADA para todas las filas hasta que el
+   admin tenga clearance 3 — mismo comportamiento que el gate de detalle ya
+   tenía, el listado lo replica en vez de divergir). Paginación aplicada en
+   app **después** del filtrado. Mismas razones que signature-service para
+   descartar una columna/snapshot de nivel materializado (nivel vivo, volumen
+   bajo de dead-letters).
+2. **Auditoría de vista.** `GET /{event_id}` autorizado deja un asiento
+   `evento.dead_letter.viewed` en `audit_log` (actor humano, payload mínimo
+   `previous_status`/`event_type`/`origin_stream`, dentro de una transacción
+   para su durabilidad). Una vista bloqueada (404 neutro) no audita.
+3. **Migración `007_deadletter_origin_group_notnull_index.sql`.** Idéntica en
+   contenido y nombre de índice (`ix_edl_tenant_group_status`) a la de
+   signature/workflow sobre la misma tabla física compartida; idempotente por
+   diseño. Validado en un Postgres 15 desechable (re-ejecución sin error,
+   `INSERT` con `origin_group=NULL` rechazado, índice creado una sola vez).
+
+13 tests nuevos/actualizados, 113 verdes en Docker.
+
+### Cierre de seguimientos no bloqueantes (workflow-service, 2026-07-01)
+
+Los mismos tres seguimientos se cerraron en workflow-service con el diseño
+idéntico al de signature-service: filtro de clearance fila-a-fila en el listado
+(`resolve_deadletter_level` como single source of truth compartida con el gate de
+detalle, `DeadLetterRepository.list_scoped_for_clearance` con tope `cap=1000`,
+paginación en la capa de aplicación después del filtrado, fail-closed a
+CLASIFICADA), asiento `evento.dead_letter.viewed` en la vista de detalle
+autorizada (una vista bloqueada no audita), y la migración
+`011_deadletter_origin_group_notnull.sql` (`origin_group SET NOT NULL` + índice
+compartido `ix_edl_tenant_group_status`, idempotente sobre la tabla física
+común). 121 tests verdes en Docker.
+
 ## Alternativas descartadas
 
 **XAUTOCLAIM como decisor del dead-letter.**

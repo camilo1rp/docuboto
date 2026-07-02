@@ -120,6 +120,47 @@ class DeadLetterRepository:
         total = int(rows[0]["total_count"]) if rows else 0
         return list(rows), total
 
+    async def list_scoped_for_clearance(
+        self,
+        caller_slug: str,
+        origin_group: str,
+        *,
+        status: str = "pending",
+        origin_stream: str | None = None,
+        cap: int = 1000,
+    ) -> list[asyncpg.Record]:
+        """Candidatas para el filtrado por-clearance del listado (ADR-021, seguimiento).
+
+        A diferencia de :meth:`list_pending`, INCLUYE ``payload`` (necesario para que
+        el router resuelva el nivel de seguridad de cada fila vía
+        ``resolve_deadletter_level``) y NO aplica ``LIMIT``/``OFFSET`` de paginación:
+        la paginación se aplica en la capa de aplicación **después** de filtrar por
+        clearance (ver nota de diseño en el router), porque el número de filas
+        visibles solo se conoce tras evaluar el nivel de cada una.
+
+        ``cap`` acota la memoria/latencia del peor caso (tope de seguridad, no un
+        tamaño de página): los dead-letters son de volumen bajo por diseño (fallos
+        excepcionales tras agotar reintentos), así que un tope generoso no afecta
+        el uso normal. El resumen expuesto al cliente sigue sin exponer ``payload``
+        ni ``failure`` — el router los descarta antes de serializar.
+        """
+        params: list[object] = [caller_slug, status, origin_group]
+        extra = ""
+        if origin_stream is not None:
+            params.append(origin_stream)
+            extra = f" AND origin_stream = ${len(params)}"
+        params.append(cap)
+        sql = (
+            "SELECT event_id, event_type, correlation_id, tenant_slug, origin_stream, "
+            "       origin_group, status, dead_lettered_at, resolved_at, payload "
+            "FROM evento_dead_letter "
+            "WHERE tenant_slug = $1 AND status = $2 AND origin_group = $3"
+            f"{extra} "
+            "ORDER BY dead_lettered_at DESC "
+            f"LIMIT ${len(params)}"
+        )
+        return list(await self._conn.fetch(sql, *params))
+
     async def get_by_event_id(
         self, event_id: str, caller_slug: str, origin_group: str
     ) -> asyncpg.Record | None:

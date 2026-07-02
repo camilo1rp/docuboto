@@ -26,7 +26,7 @@ from fastapi import HTTPException, status
 from app.core.clearance import assert_can_read_deadletter
 from app.core.constants import DLQ_GROUP
 from app.repositories.dead_letter_repository import DeadLetterRepository
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, USER_ID
 
 BASE = "/api/v1/workflow/admin/deadletter"
 EVT = "eeeeeeee-0000-0000-0000-000000000001"
@@ -35,7 +35,13 @@ TRACKING = "2024-DEMO-E-000001"
 OTHER_GROUP = "signature-service"  # the other consumer sharing evento_dead_letter
 
 
-def _summary_row() -> dict:
+def _summary_row(*, payload: dict | None = None) -> dict:
+    """Fila candidata tal como la devuelve ahora ``list_scoped_for_clearance``:
+    incluye ``payload`` (el router lo usa para resolver el nivel de clearance por
+    fila y lo descarta antes de construir el ``DeadLetterSummary``). Por defecto
+    trae un payload SIN identificadores de radicado, lo que resuelve a
+    CLASIFICADA=3 (fail-closed) vía ``resolve_deadletter_level`` — los tests que
+    esperan ver la fila deben otorgar clearance=3 al llamante."""
     return {
         "event_id": EVT,
         "event_type": "document.radicado.created",
@@ -44,7 +50,7 @@ def _summary_row() -> dict:
         "status": "pending",
         "dead_lettered_at": NOW,
         "resolved_at": None,
-        "total_count": 1,
+        "payload": payload if payload is not None else {"payload": {}},
     }
 
 
@@ -86,7 +92,11 @@ async def test_list_requires_perm_dlq_admin(client_with_conn) -> None:
 async def test_list_returns_summaries(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetch.return_value = [_summary_row()]
-    resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    with patch(
+        "app.routers.admin_deadletter.resolve_caller_clearance",
+        AsyncMock(return_value=3),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
@@ -98,12 +108,77 @@ async def test_list_returns_summaries(client_with_conn) -> None:
 async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetch.return_value = [_summary_row()]
-    resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    with patch(
+        "app.routers.admin_deadletter.resolve_caller_clearance",
+        AsyncMock(return_value=3),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     item = resp.json()[0]
     assert "payload" not in item
     assert "tracking_number" not in item
     assert "last_error" not in item
     assert "failure" not in item
+
+
+# ---------------------------------------------- list: filtro por-fila de clearance
+@pytest.mark.asyncio
+async def test_list_excludes_row_above_caller_clearance(client_with_conn) -> None:
+    """No-read-up en el listado (ADR-021, seguimiento Fase 5): una fila cuyo
+    radicado vivo es CLASIFICADA(3) no debe aparecer -ni contar- para un admin
+    con clearance insuficiente, igual que el detalle la 404-ea."""
+    client, conn, _redis = client_with_conn
+    row = _summary_row(payload={"payload": {"tracking_number": TRACKING}})
+    conn.fetch.return_value = [row]
+    # 1ª llamada a fetchval: check_permission (truthy = permiso concedido).
+    # 2ª llamada: resolve_deadletter_level → nivel_vivo del radicado (CLASIFICADA).
+    conn.fetchval.side_effect = [1, 3]
+    with patch(
+        "app.routers.admin_deadletter.resolve_caller_clearance",
+        AsyncMock(return_value=1),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert resp.headers["X-Total-Count"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_list_includes_row_within_caller_clearance(client_with_conn) -> None:
+    """Contraparte: un admin con clearance suficiente SÍ ve la fila y el conteo
+    la refleja — confirma que el filtro no excluye de más."""
+    client, conn, _redis = client_with_conn
+    row = _summary_row(payload={"payload": {"tracking_number": TRACKING}})
+    conn.fetch.return_value = [row]
+    conn.fetchval.side_effect = [1, 2]  # permiso OK, nivel_vivo=2 (RESTRINGIDA)
+    with patch(
+        "app.routers.admin_deadletter.resolve_caller_clearance",
+        AsyncMock(return_value=2),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["event_id"] == EVT
+    assert resp.headers["X-Total-Count"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_list_filter_fail_closed_on_resolution_error(client_with_conn) -> None:
+    """Si resolver el nivel de una fila lanza (payload corrupto, etc.) la fila se
+    trata como CLASIFICADA(3) — un admin por debajo de ese clearance no debe verla
+    (fail-closed: nunca se deja pasar una fila por error de resolución)."""
+    client, conn, _redis = client_with_conn
+    row = _summary_row()
+    row["payload"] = "not-valid-json{{{"  # fuerza json.loads a lanzar
+    conn.fetch.return_value = [row]
+    with patch(
+        "app.routers.admin_deadletter.resolve_caller_clearance",
+        AsyncMock(return_value=2),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert resp.headers["X-Total-Count"] == "0"
 
 
 # --------------------------------------------------------------------------- detail
@@ -131,14 +206,20 @@ async def test_detail_clearance_denied(client_with_conn) -> None:
         status_code=status.HTTP_404_NOT_FOUND,
         detail={"error": "not_found", "status": 404},
     )
+    mock_audit = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=1)),
         patch("app.routers.admin_deadletter.assert_can_read_deadletter",
               AsyncMock(side_effect=denial)),
+        patch("app.routers.admin_deadletter._audit", mock_audit),
+        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 404
+    # Un GET bloqueado por clearance no debe dejar rastro en audit_log — de lo
+    # contrario confirmaría la existencia del objeto clasificado.
+    mock_audit.append.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -157,6 +238,35 @@ async def test_detail_success(client_with_conn) -> None:
     assert body["event_id"] == EVT
     assert body["payload"]["tenant_slug"] == "demo"
     assert "failure" in body
+
+
+@pytest.mark.asyncio
+async def test_detail_view_writes_audit_log(client_with_conn) -> None:
+    """Un GET autorizado (tras el gate de clearance) deja un asiento
+    ``evento.dead_letter.viewed`` en audit_log con el actor humano (ADR-021,
+    seguimiento no-bloqueante Fase 5)."""
+    client, conn, _redis = client_with_conn
+    conn.fetchrow.return_value = _full_row()
+    mock_audit = AsyncMock()
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+              AsyncMock(return_value=3)),
+        patch("app.routers.admin_deadletter.assert_can_read_deadletter",
+              AsyncMock(return_value=None)),
+        patch("app.routers.admin_deadletter._audit", mock_audit),
+        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+    ):
+        resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    mock_audit.append.assert_called_once()
+    call_kwargs = mock_audit.append.call_args.kwargs
+    assert call_kwargs["action"] == "evento.dead_letter.viewed"
+    assert call_kwargs["object_type"] == "evento"
+    assert call_kwargs["object_ref"] == EVT
+    assert call_kwargs["actor"] == str(USER_ID)
+    assert set(call_kwargs["payload"].keys()) == {
+        "previous_status", "event_type", "origin_stream",
+    }
 
 
 # --------------------------------------------------------------------------- replay
@@ -490,3 +600,38 @@ async def test_fail_closed_nivel_max_clearance_passes() -> None:
     conn.fetchval = AsyncMock(return_value=None)
     row = {"payload": {"payload": {"tracking_number": TRACKING}}}
     await assert_can_read_deadletter(conn, caller_clearance=3, row=row)
+
+
+# ------------------------------------------- repo.list_scoped_for_clearance (unit)
+@pytest.mark.asyncio
+async def test_repo_list_scoped_for_clearance_includes_payload_and_caps() -> None:
+    """A diferencia de list_pending, list_scoped_for_clearance debe (a) incluir
+    ``payload`` en la proyección (el router lo necesita para resolver el nivel de
+    clearance por fila) y (b) pasar el ``cap`` de seguridad como LIMIT en SQL
+    (no paginación de usuario: la paginación ocurre en app tras el filtro)."""
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[])
+    repo = DeadLetterRepository(conn)
+
+    await repo.list_scoped_for_clearance("demo", DLQ_GROUP, status="pending", cap=1000)
+
+    sql, *params = conn.fetch.call_args[0]
+    assert "payload" in sql
+    assert "LIMIT" in sql
+    assert "OFFSET" not in sql  # sin paginación SQL — se pagina en app tras filtrar
+    assert params == ["demo", "pending", DLQ_GROUP, 1000]
+
+
+@pytest.mark.asyncio
+async def test_repo_list_scoped_for_clearance_filters_origin_stream() -> None:
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[])
+    repo = DeadLetterRepository(conn)
+
+    await repo.list_scoped_for_clearance(
+        "demo", DLQ_GROUP, status="pending", origin_stream="orpycamcp.document.events"
+    )
+
+    sql, *params = conn.fetch.call_args[0]
+    assert "origin_stream" in sql
+    assert "orpycamcp.document.events" in params

@@ -42,9 +42,11 @@ from fastapi import (
 )
 
 from app.core.clearance import (
+    CLASIFICADA,
     assert_can_read_deadletter,
     require_permission,
     resolve_caller_clearance,
+    resolve_deadletter_level,
 )
 from app.core.constants import DLQ_GROUP as GROUP
 from app.core.database import get_db_conn
@@ -101,22 +103,53 @@ async def list_dead_letters(
     origin_stream: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
+    actor: uuid.UUID | None = Depends(_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[DeadLetterSummary]:
-    """Lista resúmenes de dead-letters del tenant (sin payload ni last_error)."""
+    """Lista resúmenes de dead-letters del tenant (sin payload ni last_error).
+
+    No-read-up (ADR-021, seguimiento no-bloqueante Fase 5): un admin PERM_DLQ_ADMIN
+    con clearance insuficiente para el objeto referenciado por una fila no debe ver
+    ni siquiera su EXISTENCIA/conteo aquí — de lo contrario el listado filtraría
+    información que el detalle (``GET /{event_id}``) ya oculta tras el gate de
+    clearance (404 neutro). Filtro por-fila reutilizando ``resolve_deadletter_level``
+    (single source of truth con el gate del detalle, ver ``app/core/clearance.py``):
+    se resuelve el nivel del objeto vivo para cada candidata y se descartan las que
+    superan el clearance del llamante ANTES de paginar, de modo que ``X-Total-Count``
+    y la página devuelta ya reflejan el conjunto visible. Fail-closed: cualquier
+    error al resolver el nivel de una fila la excluye (se trata como CLASIFICADA).
+    """
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
-    offset = (page - 1) * size
-    rows, total = await repo.list_pending(
+    caller_clearance = await resolve_caller_clearance(conn, actor)
+
+    candidates = await repo.list_scoped_for_clearance(
         caller_slug,
         GROUP,
         status=status_filter,
         origin_stream=origin_stream,
-        offset=offset,
-        limit=size,
     )
+
+    visible: list[asyncpg.Record] = []
+    for row in candidates:
+        try:
+            nivel = await resolve_deadletter_level(conn, row)
+        except Exception:  # noqa: BLE001 — fail-closed: cualquier duda excluye la fila.
+            nivel = CLASIFICADA
+        if caller_clearance >= nivel:
+            visible.append(row)
+
+    total = len(visible)
+    offset = (page - 1) * size
+    page_rows = visible[offset : offset + size]
+
     response.headers["X-Total-Count"] = str(total)
-    return [DeadLetterSummary.model_validate(dict(r)) for r in rows]
+    summaries = []
+    for row in page_rows:
+        summary_data = dict(row)
+        summary_data.pop("payload", None)  # nunca serializar el sobre en el resumen
+        summaries.append(DeadLetterSummary.model_validate(summary_data))
+    return summaries
 
 
 @router.get("/{event_id}", response_model=DeadLetterDetail)
@@ -138,6 +171,29 @@ async def get_dead_letter(
 
     caller_clearance = await resolve_caller_clearance(conn, actor)
     await assert_can_read_deadletter(conn, caller_clearance, row)
+
+    # Auditoría de vista (ADR-021, seguimiento no-bloqueante Fase 5): solo se
+    # audita DESPUÉS del gate, es decir, solo vistas AUTORIZADAS — una vista
+    # bloqueada devuelve 404 y no debe dejar rastro que confirme la existencia
+    # del objeto clasificado. Transacción propia porque el GET no abre una (a
+    # diferencia de replay/discard, que sí envuelven su INSERT de auditoría).
+    if _AUDIT_AVAILABLE:
+        async with conn.transaction():
+            await _audit.append(
+                conn,
+                tenant_slug=caller_slug,
+                service=_SERVICE,
+                action="evento.dead_letter.viewed",
+                object_type="evento",
+                object_ref=event_id,
+                actor=str(actor) if actor else None,
+                canal="api",
+                payload={
+                    "previous_status": row["status"],
+                    "event_type": row["event_type"],
+                    "origin_stream": row["origin_stream"],
+                },
+            )
 
     return DeadLetterDetail(
         event_id=row["event_id"],
