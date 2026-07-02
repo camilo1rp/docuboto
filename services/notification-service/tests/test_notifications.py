@@ -62,6 +62,68 @@ async def test_send_notification_failed_email_is_persisted(client: AsyncClient, 
     db_conn.execute.assert_awaited_once()
 
 
+# --- RF-FIR-13: cierre de fuga de OTP (sensible=True nunca se persiste) ----
+@pytest.mark.asyncio
+async def test_sensible_notification_sends_real_body_but_persists_redacted(
+    client: AsyncClient, db_conn
+) -> None:
+    """El SMTP recibe el OTP real; la fila persistida lleva el placeholder.
+
+    Reproduce RF-FIR-13 (E06 Inc.2): signature-service manda el OTP en el
+    body y marca `sensible=True`. `send_email()` debe ver el body real
+    (inherente al 2FA por correo); `notifications.body`, en cambio, NUNCA
+    debe contener el código.
+    """
+    otp_body = "Código: 123456\n\nVálido por 5 minutos."
+    with patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send:
+        response = await client.post(
+            "/api/v1/notifications/send",
+            json={
+                "recipient_email": "firmante@example.com",
+                "subject": "Código de verificación para su firma electrónica",
+                "body": otp_body,
+                "tenant_slug": "icetex",
+                "sensible": True,
+            },
+        )
+    assert response.status_code == 202
+
+    # El envío SMTP SÍ recibió el OTP real.
+    assert mock_send.call_args.kwargs["body"] == otp_body
+
+    # Lo persistido NUNCA es el OTP real.
+    db_conn.execute.assert_awaited_once()
+    persisted_args = db_conn.execute.call_args.args
+    persisted_body = persisted_args[4]  # INSERT ... VALUES ($1..$4=body,...)
+    persisted_sensible = persisted_args[10]  # último parámetro ($10=sensible)
+    assert persisted_body != otp_body
+    assert "123456" not in persisted_body
+    assert persisted_body == "[contenido sensible omitido]"
+    assert persisted_sensible is True
+
+
+@pytest.mark.asyncio
+async def test_non_sensible_notification_persists_real_body(
+    client: AsyncClient, db_conn
+) -> None:
+    """Retrocompatibilidad: `sensible` ausente/False -> body real persistido (como hoy)."""
+    with patch("app.services.notification_service.send_email", new=AsyncMock()):
+        response = await client.post(
+            "/api/v1/notifications/send",
+            json={
+                "recipient_email": "u@x.co",
+                "subject": "S",
+                "body": "Cuerpo normal, no sensible",
+                "tenant_slug": "icetex",
+            },
+        )
+    assert response.status_code == 202
+
+    persisted_args = db_conn.execute.call_args.args
+    assert persisted_args[4] == "Cuerpo normal, no sensible"
+    assert persisted_args[10] is False
+
+
 # --- reintentos SMTP (unitario) --------------------------------------------
 @pytest.mark.asyncio
 async def test_send_with_retries_succeeds_first_try() -> None:

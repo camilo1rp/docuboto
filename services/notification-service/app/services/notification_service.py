@@ -25,6 +25,18 @@ from app.schemas.notification import NotificationResponse, NotificationSend
 
 logger = logging.getLogger(__name__)
 
+# RF-FIR-13 (cierre de fuga de OTP, seguimiento de seguridad de E06 Inc.2):
+# placeholder que reemplaza `body` en la copia PERSISTIDA/hasheada de un
+# envío marcado `sensible=True` (p. ej. el correo con el código OTP del 2FA
+# por correo). El envío SMTP real (`_send_with_retries`) SIEMPRE usa
+# `payload.body` sin tocar — la redacción aplica solo aquí, nunca antes de
+# `send_email()`.
+REDACTED_BODY = "[contenido sensible omitido]"
+# Motivo genérico que reemplaza `last_error` en la copia persistida de un envío
+# sensible fallido (ver `send_notification`). El detalle real solo se registra en
+# el log de warning, nunca en la fila del historial.
+REDACTED_ERROR = "error de envío (detalle omitido por sensibilidad)"
+
 
 async def _send_with_retries(
     payload: NotificationSend,
@@ -66,19 +78,32 @@ async def send_notification(
     event_type: str | None = None,
 ) -> Notification:
     notification_id = str(uuid.uuid4())
+    # El envío SMTP siempre usa `payload.body` real, sensible o no — la
+    # redacción de abajo solo afecta a lo que se PERSISTE.
     status, attempts, last_error = await _send_with_retries(payload)
 
+    persisted_body = REDACTED_BODY if payload.sensible else payload.body
+    # Defensa en profundidad (hallazgo de auditoría Baja): en un envío sensible
+    # que falla, no persistir el `str(exc)` crudo. Las excepciones de aiosmtplib
+    # transportan códigos/respuesta del servidor SMTP (no el cuerpo), pero para
+    # que el invariante "nada sensible se persiste" sea hermético, la fila guarda
+    # un motivo genérico; el detalle real queda solo en el `logger.warning` de
+    # `_send_with_retries` (que tampoco incluye el body).
+    persisted_error = (
+        REDACTED_ERROR if (payload.sensible and last_error is not None) else last_error
+    )
     notification = Notification(
         id=notification_id,
         recipient_email=payload.recipient_email,
         subject=payload.subject,
-        body=payload.body,
+        body=persisted_body,
         status=status,
         sent_at=datetime.now(UTC).isoformat(),
         event_type=event_type,
         tenant_slug=payload.tenant_slug,
         attempts=attempts,
-        last_error=last_error,
+        last_error=persisted_error,
+        sensible=payload.sensible,
     )
 
     await _persist(notification)

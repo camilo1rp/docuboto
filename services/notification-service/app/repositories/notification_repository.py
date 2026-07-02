@@ -23,7 +23,10 @@ import asyncpg
 
 from app.models.notification import Notification
 
-_COLS = "id, recipient_email, subject, body, status, event_type, sent_at, " "attempts, last_error"
+_COLS = (
+    "id, recipient_email, subject, body, status, event_type, sent_at, "
+    "attempts, last_error, sensible"
+)
 
 
 class NotificationRepository:
@@ -31,12 +34,15 @@ class NotificationRepository:
         self._conn = conn
 
     async def insert(self, notification: Notification) -> None:
+        # `notification.body` llega YA REDACTADO cuando `sensible` es True
+        # (ver notification_service.send_notification) — este repositorio
+        # solo persiste lo que recibe, no redacta por sí mismo.
         await self._conn.execute(
             """
             INSERT INTO notifications
                 (id, recipient_email, subject, body, status, event_type, sent_at,
-                 attempts, last_error)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 attempts, last_error, sensible)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             """,
             uuid.UUID(notification.id),
             notification.recipient_email,
@@ -47,6 +53,7 @@ class NotificationRepository:
             datetime.fromisoformat(notification.sent_at),
             notification.attempts,
             notification.last_error,
+            notification.sensible,
         )
 
     async def get_by_id(self, notification_id: uuid.UUID) -> asyncpg.Record | None:

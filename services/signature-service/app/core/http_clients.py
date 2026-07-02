@@ -95,16 +95,17 @@ async def send_otp_email(
     un prefijo corto del solicitud_id) y el código — NUNCA el
     ``payload_sha256``/``hash_documento`` del documento que se firma.
 
-    RIESGO RESIDUAL ACEPTADO (fuera del alcance de este incremento, Q3 —
-    no tocar notification-service): dentro de signature-service el OTP en
-    claro NUNCA se persiste/loguea/audita (ver app/core/otp.py), pero una vez
-    que este payload cruza la red hacia notification-service, ese servicio
-    podría loguear/persistir el ``body`` de las notificaciones que procesa
-    como parte de su propio pipeline genérico — algo que este servicio no
-    controla ni puede verificar desde aquí. Requiere confirmación por
-    separado en notification-service (o enmascarar/excluir este tráfico de
-    su logging) antes de considerar el invariante "OTP nunca persistido"
-    end-to-end.
+    RIESGO RESIDUAL — CERRADO (seguimiento de seguridad de E06 Inc.2,
+    RF-FIR-13): el body con el OTP en claro sigue viajando por SMTP (es
+    inherente al 2FA por correo) y notification-service sigue viéndolo para
+    poder enviarlo, pero ya no lo persiste — ``payload["sensible"] = True``
+    hace que notification-service envíe el body real y solo guarde en su
+    tabla ``notifications`` un placeholder redactado (ver notification-service
+    ``app/services/notification_service.py::REDACTED_BODY`` y su migración
+    ``008_notification_sensible.sql``). Con esto el invariante "el OTP en
+    claro NUNCA se persiste" (dentro de signature-service, ver
+    ``app/core/otp.py``) se sostiene también en notification-service, de
+    punta a punta.
     """
     solicitud_corta = str(solicitud_id).split("-")[0]
     minutos = max(ttl_seconds // 60, 1)
@@ -121,6 +122,9 @@ async def send_otp_email(
         "subject": subject,
         "body": body,
         "tenant_slug": tenant_slug,
+        # RF-FIR-13: el body lleva el OTP en claro — notification-service lo
+        # envía por SMTP igual, pero NO lo persiste (ver docstring arriba).
+        "sensible": True,
     }
     try:
         async with httpx.AsyncClient(

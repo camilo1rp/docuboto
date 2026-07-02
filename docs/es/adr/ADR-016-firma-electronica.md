@@ -126,7 +126,11 @@ El OTP **nunca** se persiste/loguea/audita/devuelve en claro. Fuerza bruta cerra
 
 ### Consecuencias
 
-**Positivas**: vínculo firmante↔voluntad↔documento verificable y auditado; contrato de la firma nativa/XAdES intacto; el gate vive por frontera de endpoint (el sello del índice no lo toca). **Negativas / límites (roadmap declarado)**: OTP-correo depende de un canal externo (el OTP viaja en el cuerpo del correo hacia notification-service — residual documentado); factores de mayor aseguramiento (TOTP/WebAuthn/step-up OIDC) diferidos; el 2FA exige que la solicitud tenga `payload_sha256` estable (documentos con hash dinámico no son firmables por la vía personal hasta fijarlo).
+**Positivas**: vínculo firmante↔voluntad↔documento verificable y auditado; contrato de la firma nativa/XAdES intacto; el gate vive por frontera de endpoint (el sello del índice no lo toca). **Negativas / límites (roadmap declarado)**: OTP-correo depende de un canal externo (el OTP viaja por SMTP, inherente al 2FA por correo); factores de mayor aseguramiento (TOTP/WebAuthn/step-up OIDC) diferidos; el 2FA exige que la solicitud tenga `payload_sha256` estable (documentos con hash dinámico no son firmables por la vía personal hasta fijarlo).
+
+### Seguimiento cerrado — fuga del OTP en notification-service (2026-07-02)
+
+El residual detectado en Inc.2 (el OTP viajaba en el cuerpo del correo y notification-service **persistía** ese cuerpo en la tabla `notifications`, exponiéndolo en BD/backups durante la ventana de validez) quedó **cerrado**: `NotificationSend` estrena un flag `sensible` (default `False`, retrocompatible); cuando es `True`, el correo se **envía por SMTP con el body real** pero se **persiste redactado** (`[contenido sensible omitido]`, y `last_error` genérico si el envío falla) en la fila, en el hash Redis y en el historial (migración notification `008` añade la columna `sensible`). signature-service marca el envío del OTP como `sensible=True`. Con esto el invariante «el OTP en claro nunca se persiste» se sostiene **end-to-end**: la única copia persistente sigue siendo el HMAC en `firma_challenge`.
 
 ### Relacionados (Inc.2)
 

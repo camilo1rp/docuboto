@@ -122,6 +122,7 @@ def make_db_row(
     sent_at: datetime | None = None,
     attempts: int = 1,
     last_error: str | None = None,
+    sensible: bool = False,
 ) -> dict:
     return {
         "id": nid or uuid.uuid4(),
@@ -133,6 +134,7 @@ def make_db_row(
         "sent_at": sent_at or datetime.now(tz=UTC),
         "attempts": attempts,
         "last_error": last_error,
+        "sensible": sensible,
     }
 
 

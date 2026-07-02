@@ -25,6 +25,12 @@ class Notification:
     tenant_slug: str | None = None
     attempts: int = 1
     last_error: str | None = None
+    # RF-FIR-13: True cuando `body` ya llegó redactado (ver
+    # notification_service.REDACTED_BODY) porque el envío original era
+    # sensible (p. ej. OTP de 2FA, E06 Inc.2). El envío SMTP real siempre usó
+    # el body sin redactar; este flag documenta que ESTA instancia es la
+    # copia destinada a persistencia, no el correo enviado.
+    sensible: bool = False
 
     def to_redis_hash(self) -> dict[str, str]:
         return {
@@ -36,6 +42,7 @@ class Notification:
             "sent_at": self.sent_at,
             "event_type": self.event_type or "",
             "tenant_slug": self.tenant_slug or "",
+            "sensible": "1" if self.sensible else "",
         }
 
     @classmethod
@@ -49,4 +56,5 @@ class Notification:
             sent_at=data["sent_at"],
             event_type=data.get("event_type") or None,
             tenant_slug=data.get("tenant_slug") or None,
+            sensible=bool(data.get("sensible")),
         )
