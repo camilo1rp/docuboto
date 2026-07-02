@@ -127,13 +127,17 @@ async def test_create_expediente(
 
 @pytest.mark.asyncio
 async def test_create_expediente_missing_tenant(client: AsyncClient) -> None:
+    """Sin X-Tenant-Slug, el gate RBAC (`require_permission`, dependency del
+    decorador) corta la petición con 403 antes de que `_require_tenant` (Depends
+    del handler) pueda emitir su propio 400 — `require_permission` exige el
+    tenant para poder resolver el permiso y responde fail-closed (D-08)."""
     response = await client.post(
         "/api/v1/expedientes",
         json=_CREATE_EXP_PAYLOAD,
         headers={"X-User-Id": str(USER_ID)},
     )
-    assert response.status_code == 400
-    assert response.json()["detail"]["error"] == "missing_tenant"
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +182,7 @@ async def test_get_expediente_by_id(
     client, mock_conn = client_with_conn
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
     rad_record = make_radicado_link_record(expediente_id=EXPEDIENTE_ID, radicado_id=RADICADO_ID)
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = exp_record
     mock_conn.fetch.return_value = [rad_record]
 
@@ -201,6 +206,7 @@ async def test_get_expediente_by_id_is_clearance_scoped(
     """RF-SEG-08: el GET de detalle de expediente acota por clasificación — la
     consulta filtra `nivel_seguridad <= clearance`."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = make_expediente_record(exp_id=EXPEDIENTE_ID)
     mock_conn.fetch.return_value = []
 
@@ -217,6 +223,7 @@ async def test_list_expediente_eventos_is_clearance_scoped(
     """E02 §9 / RF-SEG-08: la hoja de ruta del expediente se acota por la visibilidad del
     objeto para el clearance del llamante (Canal B), NO por permiso de admin."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = None  # usuario sin clearance → PUBLICA (1)
     mock_conn.fetch.return_value = []
 
@@ -240,6 +247,7 @@ async def test_get_expediente_not_found(
     client_with_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = None
 
     response = await client.get(
@@ -264,6 +272,7 @@ async def test_update_expediente_status(
     open_record = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
     closed_record = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed")
 
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # First fetchrow → get_expediente_by_id (current state check)
     # Second fetchrow → update_expediente RETURNING
     mock_conn.fetchrow.side_effect = [open_record, closed_record]
@@ -299,8 +308,9 @@ async def test_link_radicado(
     mock_conn.fetchrow.side_effect = [exp_record, link_record, exp_record, None, exp_record]
     # fetch → radicados (empty during get_expediente check)
     mock_conn.fetch.return_value = []
-    # fetchval → COUNT(*) for duplicate check → 0 (not a duplicate)
-    mock_conn.fetchval.return_value = 0
+    # fetchval: [0]=D-08 gate (USUA_PERM_EXPEDIENTE granted), [1]=COUNT(*) duplicate check → 0,
+    # [2]=audit.append prev_hash lookup (regenerate_index → índice E15, ADR-010)
+    mock_conn.fetchval.side_effect = [True, 0, None]
 
     response = await client.post(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
@@ -351,6 +361,7 @@ async def test_unlink_radicado(
     client_with_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # execute returns "DELETE 1" to indicate one row was removed
     mock_conn.execute.return_value = "DELETE 1"
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
@@ -464,8 +475,9 @@ async def test_link_radicados_batch(
         exp,  # regenerate (get_exp, get_current, insert)
     ]
     mock_conn.fetch.return_value = []
-    # radicado_link_exists → 0 (ninguno vinculado aún)
-    mock_conn.fetchval.return_value = 0
+    # fetchval: [0]=D-08 gate, [1]/[2]=radicado_link_exists por r1/r2 → 0 (ninguno vinculado
+    # aún), [3]=audit.append prev_hash lookup (regenerate_index, 1 sola vez tras el batch)
+    mock_conn.fetchval.side_effect = [True, 0, 0, None]
 
     resp = await client.post(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
@@ -480,3 +492,90 @@ async def test_link_radicados_batch(
     assert resp.status_code == 200
     body = resp.json()
     assert body["vinculados"] == 2 and body["omitidos"] == 0 and body["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# RBAC gate (D-08): USUA_PERM_EXPEDIENTE en los 12 endpoints de expedientes.py
+# (Alineación completa con indice.py/fisico.py/transferencias.py — cierre del
+# gap: antes, cualquier usuario autenticado del tenant podía operar sobre
+# expedientes sin el permiso, mutaciones y lecturas por igual.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_forbidden_without_permission(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Mutación representativa: sin USUA_PERM_EXPEDIENTE, `require_permission`
+    corta con 403 antes de tocar la lógica de negocio (no se genera secuencia)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False  # D-08: permiso denegado
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json=_CREATE_EXP_PAYLOAD,
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_expediente_forbidden_without_permission(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Lectura representativa: sin USUA_PERM_EXPEDIENTE, GET también es 403 —
+    D-08 es alineación completa, las lecturas no quedan exentas del gate."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False  # D-08: permiso denegado
+
+    response = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_forbidden_without_user_id(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """`require_permission` es fail-closed sobre la IDENTIDAD: sin X-User-Id no
+    hay usuario que resolver → 403, sin necesidad de que la BD deniegue nada
+    (check_permission ni siquiera consulta con user_id=None)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # aunque "hubiera" permiso, sin identidad no aplica
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json=_CREATE_EXP_PAYLOAD,
+        headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_expediente_forbidden_without_user_id(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Misma conducta fail-closed para una lectura: sin X-User-Id, 403 antes de
+    consultar el expediente."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+
+    response = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetchrow.assert_not_called()

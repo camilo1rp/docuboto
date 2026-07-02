@@ -340,7 +340,7 @@ async def test_link_to_closed_expediente_rejected(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.return_value = make_expediente_record(exp_status="closed")
     mock_conn.fetch.return_value = []
-    mock_conn.fetchval.return_value = 0
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
 
     resp = await client.post(
         f"/api/v1/expedientes/{uuid.uuid4()}/radicados",

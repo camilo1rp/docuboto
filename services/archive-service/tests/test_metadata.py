@@ -107,6 +107,7 @@ async def test_create_expediente_invalid_metadata_is_422(
     client, mock_conn = client_with_conn
     template_id = uuid.uuid4()
     serie_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # Falta 'contrato_num' (requerido) → falla la validación antes de crear.
     mock_conn.fetchrow.side_effect = [_template_row(template_id, serie_id)]
 

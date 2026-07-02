@@ -430,6 +430,8 @@ Marca un paso como completado.
 
 ### Expedientes
 
+> **Control de acceso:** **todos** los endpoints de expedientes (12: create/list/search/get/foliado/eventos/close/transfer/update/link/batch/unlink) y los de `batch.py` (`POST /api/v1/batch/expedientes`, `GET /api/v1/batch/{job_id}/status`) requieren `USUA_PERM_EXPEDIENTE` (fail-closed: `403` sin `X-Tenant-Slug`, sin `X-User-Id`, o sin el permiso). En `get`/`eventos`/`search` la **clearance (RF-SEG-08, no read-up)** filtra **además** lo visible por nivel de seguridad. El permiso se resuelve en la BD del tenant (el api-gateway no gatea por ruta).
+
 #### `POST /api/v1/expedientes`
 Crea expediente. Genera código automático `EXP-{AÑO}-{SEQ:04d}`.
 

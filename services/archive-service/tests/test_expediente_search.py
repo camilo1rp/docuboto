@@ -51,7 +51,8 @@ async def test_search_expedientes_with_text(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_search_expedientes_filters_only(client_with_conn) -> None:
     client, mock_conn = client_with_conn
-    mock_conn.fetchval.return_value = 0
+    # [0]=D-08 gate (USUA_PERM_EXPEDIENTE granted), [1]=COUNT(*) de la búsqueda → 0
+    mock_conn.fetchval.side_effect = [True, 0]
     mock_conn.fetch.return_value = []
 
     resp = await client.get("/api/v1/expedientes/search?meta.area=juridica", headers=TENANT_HEADERS)
@@ -82,6 +83,10 @@ async def test_search_expedientes_always_filters_by_clearance(client_with_conn) 
 
 @pytest.mark.asyncio
 async def test_search_expedientes_requires_tenant(client_with_conn) -> None:
+    """Sin X-Tenant-Slug, el gate RBAC (`require_permission`) responde 403
+    (fail-closed) antes de que `_require_tenant` del handler emita su 400 —
+    ver `test_create_expediente_missing_tenant` en test_archive.py."""
     client, _ = client_with_conn
     resp = await client.get("/api/v1/expedientes/search?q=algo")
-    assert resp.status_code == 400
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"

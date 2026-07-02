@@ -24,6 +24,7 @@ from fastapi import (
     status,
 )
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
@@ -79,6 +80,7 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
     response_model=ExpedienteResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create an expediente",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def create_expediente(
     payload: ExpedienteCreate,
@@ -104,6 +106,7 @@ async def create_expediente(
     "",
     response_model=list[ExpedienteResponse],
     summary="List expedientes",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def list_expedientes(
     response: Response,
@@ -123,6 +126,7 @@ async def list_expedientes(
     "/search",
     response_model=ExpedienteSearchResponse,
     summary="Full-text search of expedientes (E09, ADR-014)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def search_expedientes(
     request: Request,
@@ -166,6 +170,7 @@ async def search_expedientes(
     "/{expediente_id}/close",
     response_model=ExpedienteResponse,
     summary="Close expediente and materialize TRD disposition (E02)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def close_expediente(
     expediente_id: uuid.UUID,
@@ -188,6 +193,7 @@ async def close_expediente(
     "/{expediente_id}/transfer",
     response_model=ExpedienteResponse,
     summary="Transfer expediente (closed → transferred) (E02)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def transfer_expediente(
     expediente_id: uuid.UUID,
@@ -201,6 +207,7 @@ async def transfer_expediente(
     "/{expediente_id}/foliado",
     response_model=ExpedienteIndice,
     summary="Expediente foliation (ordered radicados) (E02)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def get_foliado(
     expediente_id: uuid.UUID,
@@ -214,6 +221,7 @@ async def get_foliado(
     "/{expediente_id}",
     response_model=ExpedienteResponse,
     summary="Get expediente by ID (includes linked radicados)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def get_expediente(
     expediente_id: uuid.UUID,
@@ -229,6 +237,7 @@ async def get_expediente(
     "/{expediente_id}/eventos",
     response_model=list[ExpedienteEventoResponse],
     summary="Hoja de ruta append-only del expediente (E02 §9, RF-EXP-09)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def list_expediente_eventos(
     expediente_id: uuid.UUID,
@@ -246,6 +255,7 @@ async def list_expediente_eventos(
     "/{expediente_id}",
     response_model=ExpedienteResponse,
     summary="Update expediente fields or transition status",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def update_expediente(
     expediente_id: uuid.UUID,
@@ -262,6 +272,7 @@ async def update_expediente(
     response_model=ExpedienteRadicadoResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Link a radicado to an expediente",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def link_radicado(
     expediente_id: uuid.UUID,
@@ -277,6 +288,7 @@ async def link_radicado(
     "/{expediente_id}/radicados/batch",
     response_model=BatchLinkResult,
     summary="Inclusión masiva de radicados a un expediente (paridad legado)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def link_radicados_batch(
     expediente_id: uuid.UUID,
@@ -293,6 +305,7 @@ async def link_radicados_batch(
     "/{expediente_id}/radicados/{radicado_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Unlink a radicado from an expediente",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def unlink_radicado(
     expediente_id: uuid.UUID,

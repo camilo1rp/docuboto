@@ -38,6 +38,7 @@ async def test_close_applies_trd_disposition(client_with_conn) -> None:
         exp_status="closed",
         disposition={"disposition_code": "CT", "disposition_label": "Conservación Total"},
     )
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # fetchrow: exp(open) → trd → exp(closed update) → exp(reload).
     # El índice (regenerar+firmar) se aísla parcheando IndexService.
     mock_conn.fetchrow.side_effect = [exp_open, trd, exp_closed, exp_closed]
@@ -65,6 +66,7 @@ async def test_close_forwards_x_user_id_as_actor_id(client_with_conn) -> None:
     exp_id = uuid.uuid4()
     exp_open = make_expediente_record(exp_id=exp_id, exp_status="open")
     exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
@@ -90,6 +92,7 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn) -> None
     exp_id = uuid.uuid4()
     exp_open = make_expediente_record(exp_id=exp_id, exp_status="open")
     exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
@@ -191,6 +194,7 @@ async def test_firmar_indice_signature_service_inalcanzable_no_bloquea(client_wi
 @pytest.mark.asyncio
 async def test_close_invalid_state(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = make_expediente_record(exp_status="closed")
     mock_conn.fetch.return_value = []
 
@@ -205,6 +209,7 @@ async def test_transfer_from_closed(client_with_conn) -> None:
     exp_id = uuid.uuid4()
     closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
     transferred = make_expediente_record(exp_id=exp_id, exp_status="transferred")
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # _expediente_or_404 → _assert_indice_firmado(get_current) → transition_expediente → reload.
     mock_conn.fetchrow.side_effect = [
         closed,
@@ -227,6 +232,7 @@ async def test_transfer_sin_indice_firmado_409(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     exp_id = uuid.uuid4()
     closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.side_effect = [
         closed,
         {"id": uuid.uuid4(), "estado": "pendiente_firma"},
@@ -242,6 +248,7 @@ async def test_transfer_sin_indice_firmado_409(client_with_conn) -> None:
 async def test_indice_foliation(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     exp_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.fetchrow.return_value = make_expediente_record(exp_id=exp_id)
     mock_conn.fetch.return_value = [
         make_radicado_link_record(radicado_id=uuid.uuid4(), tracking_number="2024-A-001"),

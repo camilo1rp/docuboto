@@ -9,6 +9,7 @@
 
 import re
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import HTTPException, Request, status
@@ -56,6 +57,13 @@ async def close_pool() -> None:
         _pool = None
 
 
+def get_pool() -> asyncpg.Pool:
+    """Acceso al pool fuera del ciclo de vida de un request (jobs/tareas detached)."""
+    if _pool is None:
+        raise RuntimeError("DB pool not initialised")
+    return _pool
+
+
 async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
@@ -65,4 +73,25 @@ async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, No
             # Defensa en profundidad: la conexión vuelve al pool con search_path
             # neutro (no hereda el schema del último tenant). Cada consumidor lo
             # fija explícitamente vía tenant_schema antes de consultar.
+            await conn.execute("SET search_path = public")
+
+
+@asynccontextmanager
+async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión propia con search_path al tenant, para tareas detached de un request
+    (p.ej. `asyncio.create_task` tras un 202 — ver `routers/batch.py::_run_batch_job`).
+
+    NUNCA reutilizar la conexión request-scoped de `get_db_conn`/`Depends(get_db_conn)`
+    en una tarea que sigue viva tras enviar la respuesta: su `finally` resetea
+    `search_path` a `public` y devuelve la conexión al pool en cuanto el generador se
+    cierra (justo después de responder), y el pool puede reasignarla a otro request
+    de OTRO tenant mientras la tarea de fondo aún la usa — contaminación cross-tenant
+    y uso concurrente de una misma conexión asyncpg (hallazgo D-0x, batch.py).
+    """
+    schema = tenant_schema(tenant_slug)
+    async with get_pool().acquire() as conn:
+        await conn.execute(f'SET search_path = "{schema}", public')
+        try:
+            yield conn
+        finally:
             await conn.execute("SET search_path = public")
