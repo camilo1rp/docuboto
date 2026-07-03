@@ -137,3 +137,36 @@ El residual detectado en Inc.2 (el OTP viajaba en el cuerpo del correo y notific
 - RF-FIR-13 (spec E06 §12) — 2FA en el acto de firma; RF-FIR-11 (atribución del JWT) y RF-FIR-12 (PERM_FIRMA + auditoría) que lo condicionan.
 - [ADR-013](ADR-013-autorizacion-resuelta-en-bd.md) — el firmante se deriva del JWT validado, nunca del cuerpo.
 - Servicios consumidos sin cambios: auth-service `/me` (email), notification-service `/send` (correo).
+
+---
+
+## Addendum — Incremento 4 (2026-07-02): XAdES-T — sello de tiempo RFC 3161 del índice
+
+**Estado**: Aceptado — eleva el XAdES-B del índice (Inc.1) a **XAdES-T** añadiendo un sello de tiempo verificable sobre la firma.
+
+### Contexto adicional
+
+El XAdES-B de Inc.1 usa `SigningTime` del **reloj del servidor**, que no es oponible por sí solo frente a terceros. Un **sello de tiempo RFC 3161** de una autoridad de sellado (TSA) da **trazabilidad temporal verificable** de que la firma existía en un instante dado.
+
+### Decisión
+
+**Añadir un `xades:SignatureTimeStamp` (token RFC 3161) sobre el `ds:SignatureValue`, firmado por una TSA local in-process; `signxml` no lo soporta nativo, así que se post-procesa el XML firmado.**
+
+- **Post-proceso** (`providers/local.py`): tras firmar XAdES-B con `XAdESSigner`, se canonicaliza el `ds:SignatureValue` (exc-c14n 1.0), se sella con la TSA y se inserta `<xades:UnsignedProperties>/<UnsignedSignatureProperties>/<SignatureTimeStamp>/<EncapsulatedTimeStamp>` con el token DER en base64. Es una propiedad **NO firmada** → **no invalida** el XAdES-B subyacente (no toca `SignedInfo`/`SignedProperties`).
+- **TSA local in-process** (`core/tsa.py` + `core/keys.py::load_tsa_seal`): par auto-firmado con **EKU `id-kp-timeStamping`** (crítico, RFC 3161), montado como secreto Docker read-only (patrón idéntico al sello institucional de Inc.1; una TSA **única del despliegue**, no per-tenant). El token `TimeStampToken` (CMS `SignedData`, `eContentType=id-ct-TSTInfo`) se construye con `asn1crypto` (`tsp`+`cms`) y se firma RSA-SHA256 con `cryptography`. La clave privada de la TSA **nunca** se persiste/loguea. `scripts/gen-dev-tsa-cert.sh` genera el par dev.
+- **Config**: `signer_timestamp_enabled` (default `True`), `tsa_url` (vacío → TSA local; puesto → **cliente remoto RFC 3161, stub delgado que falla explícito** con `TsaUnavailableError` — seguimiento para prod), `tsa_cert_dir`, `tsa_allow_dev_seal`. **Fail-closed**: con timestamp habilitado y sin TSA disponible, la firma falla (503 `timestamp_authority_unavailable` → el índice queda `pendiente_firma`, consistente con Inc.1); kill-switch `signer_timestamp_enabled=False` produce XAdES-B como antes.
+- **Persistencia**: migración tenant `012` añade `tsa_token`, `tsa_timestamp`, `tsa_cert_fingerprint`, `tsa_acreditado` a `firma` (el token TSA es **público**, no secreto). El CHECK de `xades_level` ya reservaba `'XAdES-T'`.
+- **Verificación** (`verify_xades` + `/verify`): si hay `SignatureTimeStamp`, valida que el `messageImprint` del `TSTInfo` cubre el `ds:SignatureValue` actual, la firma CMS del token, la EKU/vigencia del cert TSA, **y ata el cert TSA al `firma.tsa_cert_fingerprint` persistido** (pinning — sin él un cert auto-firmado arbitrario con EKU timeStamping se reportaría válido). Expone `sello_tiempo_valido`/`tsa_timestamp` en `VerifyResponse`.
+
+### Conformidad declarada (RF-FIR-15: no sobre-declarar)
+
+`xades_level="XAdES-T"` pero **`acreditado=False`** y `nivel_conformidad="xades_b_no_acreditado"`: la TSA local **no es acreditada ONAC**, así que da **fecha cierta verificable, no acreditada/cualificada**. No se rotula "sellado de tiempo acreditado" ni "fecha cierta oponible" en respuestas/UI/docs.
+
+### Consecuencias
+
+**Positivas**: trazabilidad temporal verificable (mejora sobre el `SigningTime` del reloj de Inc.1); XAdES-B intacto (propiedad no firmada); verify ata el sello a la `firma_id` y a la TSA registrada; self-contained en dev (sin red). **Negativas / límites (roadmap)**: TSA local **no acreditada** → no cualificada (XAdES-T acreditado requiere una TSA ONAC vía `TSA_URL`, cliente remoto diferido); **XAdES-LT/LTA** (CRL/OCSP, archivado a largo plazo) siguen diferidos. Seguimiento (Baja): endurecer el parser del fragmento `SignatureTimeStamp` en verify; incluir los detalles del sello (`tsa_timestamp`/`tsa_acreditado`) en el audit del acto y en `FirmaResponse`; coherencia temporal `genTime`↔ventana de vigencia del sello institucional.
+
+### Relacionados (Inc.4)
+
+- RFC 3161 (Time-Stamp Protocol); ETSI EN 319 132 (perfil XAdES-T).
+- E06 tasks T-08 (cliente TSA) — realizado el modo local; el cliente remoto `TSA_URL` queda como stub para prod.

@@ -43,6 +43,7 @@ from app.core.database import get_tenant_conn
 from app.core.events import publish_indice_firmado
 from app.core.keys import SealNotFoundError, load_seal
 from app.core.redis_client import get_redis
+from app.core.tsa import TsaUnavailableError
 from app.providers import get_provider
 from app.providers.base import SignerRef
 from app.providers.local import verify_xades
@@ -155,6 +156,21 @@ async def sign_xml(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "payload_xml_invalido", "detail": str(exc), "status": 400},
         ) from exc
+    except TsaUnavailableError as exc:
+        # Fallo de infraestructura (Inc.4, RT-16): con
+        # settings.signer_timestamp_enabled=True (default) la ausencia de TSA
+        # (local sin par montado, o remota configurada sin cliente
+        # implementado) tumba la firma completa — fail-closed, mismo trato
+        # que SealNotFoundError arriba. El índice queda 'pendiente_firma'
+        # aguas arriba (llamador best-effort).
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "timestamp_authority_unavailable",
+                "detail": str(exc),
+                "status": 503,
+            },
+        ) from exc
 
     minio_key_firmado: str | None = None
     if provider_name == "xades_local":
@@ -187,6 +203,13 @@ async def sign_xml(
         hashlib.sha256(signed.signed_xml).hexdigest() if provider_name == "xades_local" else None
     )
 
+    # XAdES-T (Inc.4) — `signed.extra` solo trae estas claves cuando
+    # LocalSigner realmente selló con TSA (`SignatureFormat.XADES_T`); para
+    # 'nativa' o XAdES-B "puro" (kill-switch signer_timestamp_enabled=False)
+    # `extra` está vacío y todo queda None/False (columnas nullable, migración 012).
+    tsa_timestamp_iso = signed.extra.get("tsa_timestamp")
+    tsa_timestamp_dt = datetime.fromisoformat(tsa_timestamp_iso) if tsa_timestamp_iso else None
+
     row = await FirmaRepository(conn).insert(
         {
             "objeto_tipo": payload.objeto_tipo,
@@ -204,6 +227,10 @@ async def sign_xml(
             "tipo_firma": signer_ref.tipo_firma,
             "certificado_fingerprint": signed.certificado_fingerprint,
             "signed_xml_sha256": signed_xml_sha256,
+            "tsa_token": signed.extra.get("tsa_token"),
+            "tsa_timestamp": tsa_timestamp_dt,
+            "tsa_cert_fingerprint": signed.extra.get("tsa_cert_fingerprint"),
+            "tsa_acreditado": signed.extra.get("tsa_acreditado", False),
         }
     )
 
@@ -227,6 +254,17 @@ async def sign_xml(
                 "certificado_fingerprint": signed.certificado_fingerprint,
                 "indice_id": payload.indice_id,
                 "version": payload.version,
+                # (Inc.4, XAdES-T) Presentes solo cuando LocalSigner selló con
+                # TSA (`signed.extra` viene vacío para 'nativa' o XAdES-B
+                # "puro" — kill-switch `signer_timestamp_enabled=False`); el
+                # hecho del sellado queda en la traza inmutable, no solo en
+                # `firma` (append-only por convención, no el registro
+                # inmutable). `tsa_acreditado` se fija explícitamente en
+                # False para que la traza nunca sobre-declare conformidad
+                # (RF-FIR-15) aunque `signed.extra` llegara incompleto.
+                "tsa_timestamp": signed.extra.get("tsa_timestamp"),
+                "tsa_cert_fingerprint": signed.extra.get("tsa_cert_fingerprint"),
+                "tsa_acreditado": False,
             },
         )
 
@@ -286,6 +324,8 @@ async def sign_xml(
         tipo_firma=d.get("tipo_firma"),
         certificado_fingerprint=d.get("certificado_fingerprint"),
         acreditado=signer_ref.acreditado,
+        tsa_timestamp=d.get("tsa_timestamp"),
+        tsa_acreditado=d.get("tsa_acreditado", False),
     )
 
 
@@ -304,10 +344,13 @@ async def verify(
       ``signed_xml`` de OTRO índice firmado con el mismo sello institucional
       del tenant se reporte válido para un ``firma_id`` ajeno); luego valida
       la firma XAdES-B REAL sobre ``payload_xml`` (que debe ser el XML
-      **firmado** completo) — ver ``app.providers.local.verify_xades`` para
-      el detalle de las 4 comprobaciones restantes (criptografía, cobertura
-      de la referencia, vigencia del certificado, huella contra el sello
-      registrado al firmar).
+      **firmado** completo), pasando ``row["tsa_cert_fingerprint"]`` como
+      ancla del sello de tiempo — ver ``app.providers.local.verify_xades``
+      para el detalle de las comprobaciones restantes (criptografía,
+      cobertura de la referencia, vigencia del certificado, huella contra el
+      sello registrado al firmar y, si hay ``SignatureTimeStamp``, huella del
+      certificado de la TSA contra el ``tsa_cert_fingerprint`` persistido —
+      Inc.4, fail-closed cuando la fila no lo tiene registrado).
     - Firmas ``provider='nativa'``: recomputa el HMAC con firmante_id y
       sello_tiempo almacenados en BD y lo compara con la firma_blob
       registrada (comportamiento sin cambios desde antes del Incremento 1).
@@ -350,7 +393,11 @@ async def verify(
                 acreditado=False,
                 motivo="documento_no_corresponde_a_firma_id",
             )
-        outcome = verify_xades(payload.payload_xml.encode(), fingerprint)
+        outcome = verify_xades(
+            payload.payload_xml.encode(),
+            fingerprint,
+            expected_tsa_fingerprint=row.get("tsa_cert_fingerprint"),
+        )
         return VerifyResponse(
             firma_id=row["id"],
             valida=outcome.valida,
@@ -359,6 +406,10 @@ async def verify(
             nivel_conformidad=row.get("nivel_conformidad"),
             acreditado=outcome.acreditado,
             motivo=outcome.motivo,
+            # (Inc.4) None cuando la firma no lleva SignatureTimeStamp (no
+            # aplica, no es un fallo) — ver app.providers.local.VerifyOutcome.
+            sello_tiempo_valido=outcome.sello_tiempo_valido,
+            tsa_timestamp=outcome.tsa_timestamp,
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
@@ -427,4 +478,6 @@ async def get_firma(
         tipo_firma=d.get("tipo_firma"),
         certificado_fingerprint=d.get("certificado_fingerprint"),
         acreditado=False,
+        tsa_timestamp=d.get("tsa_timestamp"),
+        tsa_acreditado=d.get("tsa_acreditado", False),
     )

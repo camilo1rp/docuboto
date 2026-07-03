@@ -30,17 +30,19 @@ from typing import Protocol
 class SignatureFormat(str, Enum):
     """Nivel XAdES del formato de firma producido.
 
-    Solo :attr:`XADES_B` se implementa en el Incremento 1 (firma "baseline",
-    sin sello de tiempo ni material de validación a largo plazo incrustado).
-    :attr:`XADES_T` (sello de tiempo, RFC 3161/TSA) y :attr:`XADES_LTA`
-    (validación a largo plazo, requiere CRL/OCSP) quedan RESERVADOS — ver
-    "FUERA DE ALCANCE" en el contrato del incremento; no tienen productor ni
-    consumidor en este código, solo se nombran aquí para que el siguiente
-    incremento no tenga que introducir un nuevo enum ni migrar `xades_level`.
+    :attr:`XADES_B` (Incremento 1, firma "baseline") y :attr:`XADES_T`
+    (Incremento 4 — sello de tiempo RFC 3161/TSA sobre ``ds:SignatureValue``,
+    ver ``app.core.tsa``) están implementados. ``xades_local`` produce
+    XAdES-T por defecto (``settings.signer_timestamp_enabled=True``); con el
+    kill-switch en ``False``, o sin TSA local/remota disponible tratada como
+    fallo de infraestructura, degrada a XAdES-B (ver
+    ``app.providers.local.LocalSigner.sign``). :attr:`XADES_LTA` (validación
+    a largo plazo, requiere CRL/OCSP) queda RESERVADO — no tiene productor ni
+    consumidor en este código.
     """
 
     XADES_B = "XAdES-B"
-    XADES_T = "XAdES-T"  # reservado — TSA/RFC 3161, no implementado
+    XADES_T = "XAdES-T"  # Inc.4 — sello de tiempo RFC 3161/TSA (app.core.tsa)
     XADES_LTA = "XAdES-LTA"  # reservado — CRL/OCSP, no implementado
 
 

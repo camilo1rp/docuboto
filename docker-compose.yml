@@ -150,8 +150,9 @@ services:
 
   signature-service:
     # Firma electrónica (E06, ADR-016): sign-xml + verify; proveedor pluggable
-    # ('xades_local' = XAdES-B real del índice con el sello institucional del
-    # tenant, Inc.1; 'nativa' = HMAC de servicio, resto de objetos).
+    # ('xades_local' = XAdES-B/-T real del índice con el sello institucional
+    # del tenant [Inc.1] + sello de tiempo RFC 3161 de una TSA local propia
+    # del despliegue [Inc.4]; 'nativa' = HMAC de servicio, resto de objetos).
     # Contexto raíz para acceder a shared/orpycamcp_common (ADR-010, RF-FIR-14).
     build:
       context: .
@@ -180,9 +181,21 @@ services:
       # una clave compartida entre tenants.
       - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
       - STORAGE_SERVICE_URL=http://storage-service:8005
+      # Sello de tiempo XAdES-T (RT-16, Inc.4) — ver el volumen más abajo y
+      # scripts/gen-dev-tsa-cert.sh para generar el par de desarrollo.
+      - SIGNER_TIMESTAMP_ENABLED=${SIGNER_TIMESTAMP_ENABLED:-true}
+      - TSA_URL=${TSA_URL:-}
+      - TSA_CERT_DIR=/run/secrets/tsa
+      # Dev-only: ./secrets/tsa solo provisiona el par _dev/ (gen-dev-tsa-cert.sh),
+      # así que este entorno lo activa explícitamente. NUNCA en true en
+      # producción (app/core/keys.py::load_tsa_seal) — sin esto, la ausencia
+      # de una TSA principal montada falla cerrado (503) en vez de sellar con
+      # el par de pruebas.
+      - TSA_ALLOW_DEV_SEAL=${TSA_ALLOW_DEV_SEAL:-true}
     volumes:
-      # Solo lectura: signature-service nunca escribe en el sello montado.
+      # Solo lectura: signature-service nunca escribe en los sellos montados.
       - ./secrets/signing:/run/secrets/signing:ro
+      - ./secrets/tsa:/run/secrets/tsa:ro
     networks:
       - orpycamcp-net
     depends_on:

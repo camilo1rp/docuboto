@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""LocalSigner — proveedor XAdES-B enveloped local, vía ``signxml`` (E06, Inc.1).
+"""LocalSigner — proveedor XAdES-B/-T enveloped local, vía ``signxml`` (E06, Inc.1/4).
 
 Produce una firma XAdES-B REAL (XML-DSig elevada a XAdES con
 ``xades:QualifyingProperties``/``SignedProperties``: sello de tiempo del
@@ -60,12 +60,28 @@ explícitamente al mismo algoritmo exclusivo usado al firmar — así los
 `DigestValue` de esas referencias se recalculan con el algoritmo correcto.
 Verificado con un script de humo end-to-end (firma + verificación + alteración
 + fingerprint distinto + certificado caducado) antes de fijar este diseño.
+
+--- XAdES-T (E06, Inc.4, RT-16) ---
+Con ``settings.signer_timestamp_enabled=True`` (default), tras
+``XAdESSigner.sign`` se sella el ``ds:SignatureValue`` recién producido con un
+token RFC 3161 (``app.core.tsa.build_timestamp_token``, canonicalizado con el
+MISMO algoritmo exclusivo ``_C14N_ALG``) y se incrusta como
+``xades:UnsignedProperties/xades:UnsignedSignatureProperties/
+xades:SignatureTimeStamp`` — una propiedad NO FIRMADA (no cubierta por
+ninguna ``ds:Reference`` de ``SignedInfo``), así que insertarla DESPUÉS de que
+``signxml`` ya calculó y firmó todas las referencias no invalida la firma
+XAdES-B subyacente. ``SignedDoc.xades_level`` sube a ``"XAdES-T"``. Con el
+kill-switch en ``False``, o si ninguna TSA está disponible, ver
+:func:`LocalSigner.sign` — este último caso hace FALLAR la firma completa
+(fail-closed, igual que la ausencia de sello institucional en Inc.1), NO
+degrada en silencio a XAdES-B.
 """
 
 from __future__ import annotations
 
 import hashlib
-from base64 import b64decode
+import uuid
+from base64 import b64decode, b64encode
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -75,6 +91,8 @@ from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
 
+from app.core import tsa
+from app.core.config import settings
 from app.core.keys import cert_fingerprint
 from app.providers.base import PreparedDoc, SignatureFormat, SignedDoc, SignerRef
 
@@ -82,6 +100,8 @@ _SIGN_ALG = SignatureMethod.RSA_SHA256
 _DIGEST_ALG = DigestAlgorithm.SHA256
 _C14N_ALG = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 _DS_NS = {"ds": "http://www.w3.org/2000/09/xmldsig#"}
+_XADES_NS_URI = "http://uri.etsi.org/01903/v1.3.2#"
+_XADES_NS = {"xades": _XADES_NS_URI}
 
 
 def _safe_parser() -> etree.XMLParser:
@@ -141,6 +161,56 @@ class VerifyOutcome:
     valida: bool
     acreditado: bool
     motivo: str | None = None
+    # --- XAdES-T (Inc.4) — None cuando la firma no lleva SignatureTimeStamp
+    # (XAdES-B "puro", p. ej. kill-switch signer_timestamp_enabled=False en
+    # el momento de firmar). ``sello_tiempo_valido`` solo se evalúa cuando la
+    # firma XAdES-B de base ya validó (``valida=True``) — ver verify_xades.
+    sello_tiempo_valido: bool | None = None
+    tsa_timestamp: datetime | None = None
+
+
+def _c14n_element(el: etree._Element) -> bytes:
+    """Canonicaliza UN elemento (exc-c14n 1.0) — usado para sellar/verificar
+    ``ds:SignatureValue`` (Inc.4, ``app.core.tsa``). Determinista: lxml
+    reconstruye las declaraciones de namespace "visiblemente utilizadas" por
+    el subárbol (incluidas las heredadas de ancestros), así que el resultado
+    es el mismo tanto sobre el árbol en memoria recién firmado como sobre un
+    XML re-parseado desde bytes."""
+    return etree.tostring(el, method="c14n", exclusive=True)
+
+
+def _insert_signature_timestamp(signed_root: etree._Element, token: tsa.TimestampToken) -> None:
+    """Incrusta ``xades:UnsignedProperties/.../xades:SignatureTimeStamp``.
+
+    Propiedad NO FIRMADA (RT-16, ver nota de módulo "XAdES-T"): se añade como
+    HERMANA de ``xades:SignedProperties``, dentro de la MISMA
+    ``xades:QualifyingProperties`` que ``signxml`` ya produjo — nunca toca
+    ``ds:SignedInfo`` ni ninguna ``ds:Reference``, así que no invalida la
+    firma XAdES-B de base.
+    """
+    qp = signed_root.find(".//xades:QualifyingProperties", namespaces=_XADES_NS)
+    if qp is None:  # pragma: no cover — signxml siempre produce QualifyingProperties
+        raise ValueError("qualifying_properties_no_encontrado")
+
+    ts_id = f"SignXMLTimeStamp{uuid.uuid4().hex[:8].upper()}"
+    token_b64 = b64encode(token.token_der).decode("ascii")
+
+    # Construido vía la API de elementos de lxml (no etree.fromstring sobre un
+    # fragmento interpolado por f-string): aunque hoy todo el contenido
+    # interpolado lo produce el propio servidor (base64 del token + uuid hex +
+    # literales, nunca markup ajeno), usar la misma postura endurecida
+    # (_safe_parser) que el resto del módulo evita depender de esa garantía
+    # como único control — defensa en profundidad uniforme.
+    unsigned_props = etree.SubElement(qp, f"{{{_XADES_NS_URI}}}UnsignedProperties")
+    unsigned_sig_props = etree.SubElement(
+        unsigned_props, f"{{{_XADES_NS_URI}}}UnsignedSignatureProperties"
+    )
+    sig_ts = etree.SubElement(unsigned_sig_props, f"{{{_XADES_NS_URI}}}SignatureTimeStamp")
+    sig_ts.set("Id", ts_id)
+    c14n_method = etree.SubElement(sig_ts, f"{{{_DS_NS['ds']}}}CanonicalizationMethod")
+    c14n_method.set("Algorithm", _C14N_ALG.value)
+    encapsulated_ts = etree.SubElement(sig_ts, f"{{{_XADES_NS_URI}}}EncapsulatedTimeStamp")
+    encapsulated_ts.text = token_b64
 
 
 class LocalSigner:
@@ -179,20 +249,41 @@ class LocalSigner:
             passphrase=signer.key_password,
             cert=signer.cert_pem,
         )
-        signed_xml = etree.tostring(signed_root, xml_declaration=False, encoding="UTF-8")
 
         sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
         signature_value_b64 = (sig_value_el.text or "") if sig_value_el is not None else ""
+
+        xades_level = SignatureFormat.XADES_B.value
+        extra: dict = {}
+        if settings.signer_timestamp_enabled and sig_value_el is not None:
+            # Fail-closed (RT-16, mismo patrón que la ausencia de sello
+            # institucional en Inc.1): si el kill-switch está en True, un
+            # error de TSA (tsa.TsaUnavailableError) DEBE tumbar la firma
+            # completa, no degradar en silencio a XAdES-B — se propaga tal
+            # cual al llamador (app.routers.signature lo traduce a 503).
+            token = tsa.build_timestamp_token(_c14n_element(sig_value_el))
+            _insert_signature_timestamp(signed_root, token)
+            xades_level = SignatureFormat.XADES_T.value
+            extra = {
+                "tsa_token": b64encode(token.token_der).decode("ascii"),
+                "tsa_timestamp": token.gen_time.isoformat(),
+                "tsa_cert_fingerprint": token.tsa_cert_fingerprint,
+                # RF-FIR-15: TSA local sin CA acreditada ONAC — nunca True.
+                "tsa_acreditado": False,
+            }
+
+        signed_xml = etree.tostring(signed_root, xml_declaration=False, encoding="UTF-8")
 
         return SignedDoc(
             signed_xml=signed_xml,
             payload_sha256=payload_sha256,
             signature_value_b64=signature_value_b64,
             certificado_pem=signer.cert_pem.decode(),
-            xades_level=SignatureFormat.XADES_B.value,
+            xades_level=xades_level,
             nivel_conformidad=signer.nivel_conformidad,
             provider="xades_local",
             certificado_fingerprint=cert_fingerprint(signer.cert_pem),
+            extra=extra,
         )
 
     async def check_status(self, ref: str) -> str:
@@ -206,7 +297,9 @@ class LocalSigner:
         )
 
 
-def verify_xades(signed_xml: bytes, expected_fingerprint: str) -> VerifyOutcome:
+def verify_xades(
+    signed_xml: bytes, expected_fingerprint: str, expected_tsa_fingerprint: str | None = None
+) -> VerifyOutcome:
     """Verifica una firma XAdES-B enveloped (E06, Inc.1, RF-FIR-15).
 
     Valida, en orden (fail-closed: cualquier fallo devuelve ``valida=False``
@@ -228,6 +321,24 @@ def verify_xades(signed_xml: bytes, expected_fingerprint: str) -> VerifyOutcome:
     fuera de alcance del Incremento 1 — RT-16): por eso ``acreditado`` es
     siempre ``False`` en el resultado, incluso cuando la firma es
     criptográficamente válida (RF-FIR-15: no sobre-declarar conformidad).
+
+    (Inc.4, XAdES-T) SI las comprobaciones 1-4 anteriores pasan Y la firma
+    lleva ``xades:SignatureTimeStamp``, además verifica el sello de tiempo
+    (``app.core.tsa.verify_timestamp_token``) y lo refleja en
+    ``VerifyOutcome.sello_tiempo_valido``/``tsa_timestamp``. Una firma
+    XAdES-B "pura" (sin SignatureTimeStamp, p. ej. firmada con el kill-switch
+    ``signer_timestamp_enabled=False``) deja ``sello_tiempo_valido=None`` —
+    no aplica, no es un fallo.
+
+    ``expected_tsa_fingerprint`` es ``firma.tsa_cert_fingerprint`` (migración
+    012), la ancla de confianza del sello — ``SignatureTimeStamp`` es una
+    propiedad NO FIRMADA (ver módulo, sección "XAdES-T"), así que sin cotejar
+    contra este valor persistido, cualquiera con un XML XAdES-B genuino del
+    tenant podría anexarle un token sellado con su propia TSA autofirmada y
+    reportarlo válido con un ``genTime`` arbitrario. Si la firma lleva
+    ``SignatureTimeStamp`` pero ``expected_tsa_fingerprint`` es ``None``
+    (fila anterior a la migración 012, sin la columna poblada), el sello se
+    reporta inválido — fail-closed, nunca se omite la comprobación.
     """
     try:
         root = _parse_no_doctype(signed_xml)
@@ -269,4 +380,34 @@ def verify_xades(signed_xml: bytes, expected_fingerprint: str) -> VerifyOutcome:
     if not covers_root:
         return VerifyOutcome(False, False, "referencia_no_cubre_raiz")
 
-    return VerifyOutcome(True, False, None)
+    # (Inc.4) Sello de tiempo, si lo hay — ver docstring "XAdES-T" arriba.
+    # Se recalcula sobre el ds:SignatureValue TAL COMO llega en este
+    # `signed_xml` (no el de la fila BD), así que una alteración posterior al
+    # sellado se detecta aquí igual que la detectaría el propio TSTInfo.
+    encapsulated_ts = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
+        "/xades:SignatureTimeStamp/xades:EncapsulatedTimeStamp",
+        namespaces=_XADES_NS,
+    )
+    if encapsulated_ts is None or not (encapsulated_ts.text or "").strip():
+        return VerifyOutcome(True, False, None)
+
+    sig_value_el = root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
+    if sig_value_el is None:  # pragma: no cover — imposible si la firma XAdES-B ya validó
+        return VerifyOutcome(True, False, None, sello_tiempo_valido=False)
+
+    try:
+        token_der = b64decode(encapsulated_ts.text.strip())
+    except Exception:  # noqa: BLE001 — base64 corrupto, fail-closed
+        return VerifyOutcome(True, False, None, sello_tiempo_valido=False)
+
+    ts_outcome = tsa.verify_timestamp_token(
+        token_der, _c14n_element(sig_value_el), expected_tsa_fingerprint=expected_tsa_fingerprint
+    )
+    return VerifyOutcome(
+        True,
+        False,
+        None,
+        sello_tiempo_valido=ts_outcome.valido,
+        tsa_timestamp=ts_outcome.gen_time if ts_outcome.valido else None,
+    )

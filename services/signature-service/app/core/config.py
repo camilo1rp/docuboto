@@ -104,5 +104,38 @@ class Settings(BaseSettings):
     notification_service_url: str = "http://notification-service:8007"
     auth_service_url: str = "http://auth-service:8001"
 
+    # --- XAdES-T: sello de tiempo RFC 3161 del índice (E06 Inc.4, RT-16) ---
+    # Kill-switch: True (default) exige un SignatureTimeStamp válido para toda
+    # firma xades_local — sin TSA disponible, /sign-xml falla (503), igual que
+    # `signer_allow_dev_seal=False` hace fallar cerrado la ausencia de sello
+    # institucional (ver app/providers/local.py::LocalSigner.sign). En False,
+    # /sign-xml produce XAdES-B sin sello de tiempo, como antes del Inc.4
+    # (entornos sin TSA montada).
+    signer_timestamp_enabled: bool = True
+    # URL de una TSA remota RFC 3161 (cliente HTTP, FUERA DE ALCANCE del
+    # Inc.4 — ver app/core/tsa.py). Vacío (default) = TSA LOCAL in-process
+    # (app/core/tsa.py::_build_local_timestamp_token). Con este valor puesto,
+    # sign-xml intenta el cliente remoto, que hoy es un stub que falla
+    # explícitamente (TsaUnavailableError, seguimiento) — NUNCA cae en
+    # silencio a la TSA local si el operador fijó una URL.
+    tsa_url: str = ""
+    # --- Sello de la TSA local (app/core/keys.py::load_tsa_seal, Inc.4) ---
+    # Directorio raíz montado como secreto/volumen Docker de solo lectura.
+    # A diferencia del sello institucional (por tenant), la TSA es ÚNICA del
+    # despliegue (no per-tenant): par principal en <tsa_cert_dir>/tsa.{crt,key},
+    # con fallback de desarrollo en <tsa_cert_dir>/_dev/tsa.{crt,key}
+    # (scripts/gen-dev-tsa-cert.sh) — mismo patrón de dos niveles que
+    # `signer_cert_dir`, solo que aquí el nivel "principal" no está scopeado
+    # por slug de tenant.
+    tsa_cert_dir: str = "/run/secrets/tsa"
+    # Passphrase opcional de la clave privada de la TSA (vacío = sin cifrar).
+    tsa_key_password: str = ""
+    # Kill-switch del fallback de TSA de DESARROLLO `_dev/` — análogo a
+    # `signer_allow_dev_seal` (False por defecto, fail-closed en producción:
+    # sin par principal montado, `load_tsa_seal` lanza `TsaSealNotFoundError`
+    # en vez de caer al par de pruebas). El `docker-compose.yml` de desarrollo
+    # lo activa explícitamente porque solo provisiona `secrets/tsa/_dev/`.
+    tsa_allow_dev_seal: bool = False
+
 
 settings = Settings()

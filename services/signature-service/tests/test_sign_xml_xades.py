@@ -7,25 +7,38 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Cobertura XAdES-B enveloped real de /sign-xml y /verify (E06, ADR-016, Inc.1).
+"""Cobertura XAdES-B/-T enveloped real de /sign-xml y /verify (E06, ADR-016, Inc.1/4).
 
 Complementa ``tests/test_signature.py`` (que cubre el flujo HMAC 'nativa'
 preexistente) con el camino nuevo del Incremento 1: ``objeto_tipo="indice"``
 con ``settings.signer_provider="xades_local"`` (el default) produce una firma
-XAdES-B REAL vía ``app.providers.local.LocalSigner``.
+XAdES-B REAL vía ``app.providers.local.LocalSigner``. Desde el Incremento 4
+(``settings.signer_timestamp_enabled=True``, default), esa misma firma sube a
+XAdES-T con un sello de tiempo RFC 3161 de la TSA local (``app.core.tsa``) —
+ver la sección "XAdES-T" más abajo para los tests dedicados.
 
-No se toca el filesystem ni se depende de ``scripts/gen-dev-signing-cert.sh``:
-cada test genera su propio par de claves RSA-2048 efímero (``cryptography``) y
-parchea ``app.routers.signature.load_seal`` directamente — el mismo patrón que
-documenta la memoria del proyecto para pruebas de este proveedor. El upload a
-storage-service también se mockea (``app.clients.storage_client.upload_signed_xml``)
-para no requerir un storage-service real en la suite unitaria.
+No se toca el filesystem ni se depende de ``scripts/gen-dev-signing-cert.sh``
+ni ``scripts/gen-dev-tsa-cert.sh``: cada test genera su propio par de claves
+RSA-2048 efímero (``cryptography``) y parchea ``app.routers.signature.load_seal``
+(sello institucional) / ``app.core.tsa.load_tsa_seal`` (TSA) directamente — el
+mismo patrón que documenta la memoria del proyecto para pruebas de este
+proveedor. El upload a storage-service también se mockea
+(``app.clients.storage_client.upload_signed_xml``) para no requerir un
+storage-service real en la suite unitaria.
+
+``signature_env`` instala, por defecto, TANTO un sello institucional COMO un
+sello de TSA (ambos ephemeral, EKU timeStamping crítico en el de la TSA) —
+así que TODOS los tests preexistentes de este archivo (Inc.1) ahora firman en
+XAdES-T por defecto, reflejando el comportamiento real de producción. Los
+tests que necesitan simular la AUSENCIA de TSA (kill-switch, 503) usan
+``install_tsa_seal(None)`` para desinstalar el default.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from base64 import b64decode
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -33,10 +46,13 @@ import pytest_asyncio
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from lxml import etree
 
 from app.clients import storage_client
-from app.core.keys import SealNotFoundError, cert_fingerprint
+from app.core import tsa as tsa_module
+from app.core.config import settings
+from app.core.keys import SealNotFoundError, TsaSealNotFoundError, cert_fingerprint
 from app.providers.base import SignerRef
 from tests.conftest import TENANT_HEADERS, USER
 
@@ -87,6 +103,54 @@ def _signer_ref(cert_pem: bytes, key_pem: bytes) -> SignerRef:
     )
 
 
+def _generate_tsa_cert(
+    cn: str = "orpycamcp-dev-tsa",
+    *,
+    not_before: datetime | None = None,
+    not_after: datetime | None = None,
+    with_eku: bool = True,
+    eku_critical: bool = True,
+) -> tuple[bytes, bytes]:
+    """Genera un par (cert_pem, key_pem) RSA-2048 autofirmado para la TSA (Inc.4).
+
+    Por defecto lleva EKU ``id-kp-timeStamping`` CRÍTICO (requisito RFC 3161
+    §2.3 — ver ``app.core.tsa._assert_timestamping_eku``). ``with_eku=False``/
+    ``eku_critical=False`` producen certificados deliberadamente inválidos
+    para las pruebas de rechazo.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    nb = not_before if not_before is not None else now - timedelta(days=1)
+    na = not_after if not_after is not None else now + timedelta(days=365)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(nb)
+        .not_valid_after(na)
+    )
+    if with_eku:
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=eku_critical
+        )
+    cert = builder.sign(key, hashes.SHA256())
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem
+
+
+def _tsa_signer_ref(cert_pem: bytes, key_pem: bytes) -> SignerRef:
+    """``load_tsa_seal`` real solo llena cert_pem/key_pem/key_password (ver keys.py)."""
+    return SignerRef(cert_pem=cert_pem, key_pem=key_pem, key_password=None)
+
+
 INDICE_XML = (
     b'<indice xmlns="urn:orpyca:indice">'
     b'<expediente id="exp-1">Contenido original</expediente>'
@@ -125,6 +189,10 @@ class _FakeFirmaTable:
                 tipo_firma,
                 certificado_fingerprint,
                 signed_xml_sha256,
+                tsa_token,
+                tsa_timestamp,
+                tsa_cert_fingerprint,
+                tsa_acreditado,
             ) = args
             row = {
                 "id": uuid.uuid4(),
@@ -144,6 +212,10 @@ class _FakeFirmaTable:
                 "tipo_firma": tipo_firma,
                 "certificado_fingerprint": certificado_fingerprint,
                 "signed_xml_sha256": signed_xml_sha256,
+                "tsa_token": tsa_token,
+                "tsa_timestamp": tsa_timestamp,
+                "tsa_cert_fingerprint": tsa_cert_fingerprint,
+                "tsa_acreditado": tsa_acreditado,
             }
             self.rows[str(row["id"])] = row
             return row
@@ -155,13 +227,24 @@ class _FakeFirmaTable:
 
 @pytest_asyncio.fixture
 async def signature_env(client_with_conn, monkeypatch):
-    """(client, conn, table, uploads, install_seal) listos para probar xades_local.
+    """(client, conn, table, uploads, install_seal, install_tsa_seal) para probar xades_local.
 
     ``install_seal(ref_or_dict)`` acepta un `SignerRef` único (usado para
     cualquier tenant) o un `dict[str, SignerRef]` para simular sellos
     distintos por tenant (aislamiento, test 11). Un slug sin entrada en el
     dict levanta `SealNotFoundError`, igual que `app.core.keys.load_seal` con
     el filesystem real cuando no hay sello ni fallback `_dev/`.
+
+    ``install_tsa_seal(ref_or_none)`` (Inc.4) instala el par de la TSA local
+    parcheando ``app.core.tsa.load_tsa_seal`` (ÚNICA del despliegue, sin
+    scoping por tenant — a diferencia del sello institucional).
+    ``install_tsa_seal(None)`` simula la AUSENCIA de TSA (levanta
+    ``TsaSealNotFoundError``, igual que el filesystem real sin par montado
+    ni fallback ``_dev/``). Por defecto (sin llamar a ``install_tsa_seal``),
+    la fixture YA instala un par de TSA efímero válido (EKU timeStamping
+    crítico) — así que TODO test que solo llame a ``install_seal(...)``
+    sigue produciendo una firma XAdES-T completa, reflejando el
+    comportamiento real por defecto de producción.
     """
     client, conn = client_with_conn
     table = _FakeFirmaTable()
@@ -196,7 +279,19 @@ async def signature_env(client_with_conn, monkeypatch):
 
             monkeypatch.setattr("app.routers.signature.load_seal", _dispatch)
 
-    return client, conn, table, uploads, _install_seal
+    def _install_tsa_seal(seal):
+        if seal is None:
+
+            def _raise() -> SignerRef:
+                raise TsaSealNotFoundError("no TSA montada (test)")
+
+            monkeypatch.setattr("app.core.tsa.load_tsa_seal", _raise)
+        else:
+            monkeypatch.setattr("app.core.tsa.load_tsa_seal", lambda: seal)
+
+    _install_tsa_seal(_tsa_signer_ref(*_generate_tsa_cert()))
+
+    return client, conn, table, uploads, _install_seal, _install_tsa_seal
 
 
 async def _sign_indice(client, *, headers=None, xml: bytes = INDICE_XML):
@@ -214,13 +309,17 @@ async def _sign_indice(client, *, headers=None, xml: bytes = INDICE_XML):
 
 
 # ---------------------------------------------------------------------------
-# 1) Round-trip XAdES-B: sign-xml -> verify=true, sin sobre-declarar (7)
+# 1) Round-trip XAdES-T (default, Inc.4): sign-xml -> verify=true, sin sobre-declarar (7)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_sign_xml_xades_round_trip(signature_env) -> None:
-    client, conn, table, uploads, install_seal = signature_env
+    """Default de producción desde Inc.4: xades_local firma en XAdES-T (con
+    sello de tiempo), no XAdES-B "puro" — ver test_xades_t_* más abajo para
+    los casos específicos del sello de tiempo (kill-switch, TSA caída,
+    alteración post-sellado)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -229,7 +328,7 @@ async def test_sign_xml_xades_round_trip(signature_env) -> None:
     body = resp.json()
 
     assert body["provider"] == "xades_local"
-    assert body["xades_level"] == "XAdES-B"
+    assert body["xades_level"] == "XAdES-T"
     assert body["tipo_firma"] == "sello_sistema"
     assert body["nivel_conformidad"] == "xades_b_no_acreditado"
     # RF-FIR-15 — nunca sobre-declarar conformidad (7).
@@ -239,10 +338,23 @@ async def test_sign_xml_xades_round_trip(signature_env) -> None:
     assert body["minio_key_firmado"] == uploads[0]["object_key"]
     # firmante_id atribuido por X-User-Id (RF-FIR-11), no por el sello institucional.
     assert body["firmante_id"] == str(USER)
+    # (Baja, hallazgo de revisión Inc.4) tsa_acreditado viaja SIEMPRE junto a
+    # xades_level para que un consumidor no lea "XAdES-T" como sello
+    # acreditado/cualificado — ver app.schemas.firma.FirmaResponse.
+    assert body["tsa_acreditado"] is False
+    assert body["tsa_timestamp"] is not None
 
     firma_id = body["firma_id"]
     signed_xml = uploads[0]["content"]
     assert b"<ds:Signature" in signed_xml or b":Signature" in signed_xml
+    assert b"SignatureTimeStamp" in signed_xml
+
+    get_resp = await client.get(f"/api/v1/signature/firmas/{firma_id}")
+    assert get_resp.status_code == 200
+    get_body = get_resp.json()
+    assert get_body["xades_level"] == "XAdES-T"
+    assert get_body["tsa_acreditado"] is False
+    assert get_body["tsa_timestamp"] == body["tsa_timestamp"]
 
     verify_resp = await client.post(
         "/api/v1/signature/verify",
@@ -253,9 +365,11 @@ async def test_sign_xml_xades_round_trip(signature_env) -> None:
     vbody = verify_resp.json()
     assert vbody["valida"] is True
     assert vbody["provider"] == "xades_local"
-    assert vbody["xades_level"] == "XAdES-B"
+    assert vbody["xades_level"] == "XAdES-T"
     assert vbody["acreditado"] is False
     assert vbody["motivo"] is None
+    assert vbody["sello_tiempo_valido"] is True
+    assert vbody["tsa_timestamp"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +384,7 @@ async def test_sign_xml_xades_tamper_detected(signature_env) -> None:
     llegar a la verificación criptográfica (ver también
     `test_verify_tamper_detected_by_signature_when_hash_binding_absent` para
     la detección puramente criptográfica en filas anteriores a la migración)."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -297,7 +411,7 @@ async def test_verify_tamper_detected_by_signature_when_hash_binding_absent(sign
     """Retro-compatibilidad (migración 010): en una fila SIN `signed_xml_sha256`
     (firma anterior a la migración), /verify degrada al comportamiento previo
     — la alteración se detecta por la verificación criptográfica XAdES."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -324,7 +438,7 @@ async def test_verify_rejects_different_valid_document_same_firma_id(signature_e
     """El hallazgo original (Media): el `signed_xml` de OTRO índice, firmado con
     el MISMO sello institucional del tenant, NO debe reportarse `valida=True`
     para un `firma_id` ajeno — aunque sea criptográficamente válido en sí mismo."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -362,7 +476,7 @@ async def test_verify_rejects_doctype_billion_laughs(signature_env) -> None:
     Sin `signed_xml_sha256` (fila anterior a la migración 010) para que el
     binding a la firma_id (que ya rechazaría este payload por no coincidir el
     hash) no enmascare la comprobación de DOCTYPE que se quiere probar aquí."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -394,7 +508,7 @@ async def test_verify_rejects_doctype_billion_laughs(signature_env) -> None:
 async def test_sign_xml_xades_rejects_doctype_payload(signature_env) -> None:
     """El mismo hardening aplica a /sign-xml (mitigado también por PERM_FIRMA,
     pero el parser debe rechazar el DOCTYPE en vez de intentar resolverlo)."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -416,7 +530,7 @@ async def test_sign_xml_xades_rejects_doctype_payload(signature_env) -> None:
 
 @pytest.mark.asyncio
 async def test_sign_xml_xades_fingerprint_mismatch(signature_env) -> None:
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -448,7 +562,7 @@ async def test_sign_xml_xades_fingerprint_mismatch(signature_env) -> None:
 
 @pytest.mark.asyncio
 async def test_sign_xml_xades_expired_cert_detected(signature_env) -> None:
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     now = datetime.now(UTC)
     cert_pem, key_pem = _generate_cert(
         "orpycamcp-dev-expired",
@@ -479,7 +593,7 @@ async def test_sign_xml_xades_expired_cert_detected(signature_env) -> None:
 
 @pytest.mark.asyncio
 async def test_sign_xml_xades_attribution_and_audit(signature_env) -> None:
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -499,7 +613,7 @@ async def test_sign_xml_xades_attribution_and_audit(signature_env) -> None:
     payload = json.loads(call_args[8])
     assert payload["tipo_firma"] == "sello_sistema"
     assert payload["provider"] == "xades_local"
-    assert payload["xades_level"] == "XAdES-B"
+    assert payload["xades_level"] == "XAdES-T"
     assert payload["nivel_conformidad"] == "xades_b_no_acreditado"
     assert payload["certificado_fingerprint"] == cert_fingerprint(cert_pem)
 
@@ -577,7 +691,7 @@ async def test_sign_xml_xades_requires_perm_firma() -> None:
 
 @pytest.mark.asyncio
 async def test_sign_xml_xades_seal_isolated_per_tenant(signature_env) -> None:
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_a, key_a = _generate_cert("tenant-a")
     cert_b, key_b = _generate_cert("tenant-b")
     install_seal(
@@ -604,7 +718,7 @@ async def test_sign_xml_xades_seal_isolated_per_tenant(signature_env) -> None:
 async def test_sign_xml_xades_seal_unavailable_returns_503(signature_env) -> None:
     """Ningún sello montado (ni de tenant ni _dev) -> 503 signing_seal_unavailable,
     tratado como fallo de infraestructura best-effort por el llamador (RT-16)."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     install_seal({})  # ningún tenant tiene sello
 
     resp = await _sign_indice(client)
@@ -616,7 +730,7 @@ async def test_sign_xml_xades_seal_unavailable_returns_503(signature_env) -> Non
 async def test_sign_xml_xades_storage_upload_failure_returns_503(signature_env, monkeypatch) -> None:
     """storage-service no acepta la subida -> 503 signed_index_upload_failed,
     la fila `firma` no llega a persistirse (fetchrow del INSERT nunca se llama)."""
-    client, conn, table, uploads, install_seal = signature_env
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
@@ -629,3 +743,324 @@ async def test_sign_xml_xades_storage_upload_failure_returns_503(signature_env, 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "signed_index_upload_failed"
     assert table.rows == {}
+
+
+# ---------------------------------------------------------------------------
+# XAdES-T (E06, Inc.4, RT-16) — sello de tiempo RFC 3161 sobre el índice
+# ---------------------------------------------------------------------------
+#
+# El round-trip básico (sign produce SignatureTimeStamp, verify lo valida,
+# xades_level=="XAdES-T", acreditado=False) ya está cubierto por
+# `test_sign_xml_xades_round_trip` de la sección 1 — la fixture instala una
+# TSA por defecto, así que ESE test YA ejercita el caso (a) del contrato del
+# incremento. Aquí van los casos específicos del sello de tiempo: binding al
+# SignatureValue, kill-switch, TSA caída y certificado TSA mal formado.
+
+
+@pytest.mark.asyncio
+async def test_xades_t_signature_timestamp_structure(signature_env) -> None:
+    """(a) El XML firmado lleva xades:UnsignedProperties/.../SignatureTimeStamp
+    con un EncapsulatedTimeStamp base64 decodificable, como HERMANO (no
+    reemplazo) de xades:SignedProperties — la firma XAdES-B de base sigue
+    intacta (ver también el round-trip de la sección 1, que ya prueba que
+    /verify valida ambas capas)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    signed_xml = uploads[0]["content"]
+
+    root = etree.fromstring(signed_xml)
+    ns = {
+        "ds": "http://www.w3.org/2000/09/xmldsig#",
+        "xades": "http://uri.etsi.org/01903/v1.3.2#",
+    }
+    qp = root.find(".//xades:QualifyingProperties", namespaces=ns)
+    assert qp is not None
+    assert qp.find("xades:SignedProperties", namespaces=ns) is not None
+    ts_el = qp.find(
+        "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:SignatureTimeStamp",
+        namespaces=ns,
+    )
+    assert ts_el is not None
+    encapsulated = ts_el.find("xades:EncapsulatedTimeStamp", namespaces=ns)
+    assert encapsulated is not None and encapsulated.text
+    token_der = b64decode(encapsulated.text.strip())
+    assert len(token_der) > 0
+    c14n_method = ts_el.find("ds:CanonicalizationMethod", namespaces=ns)
+    assert c14n_method.get("Algorithm") == "http://www.w3.org/2001/10/xml-exc-c14n#"
+
+
+@pytest.mark.asyncio
+async def test_xades_t_token_binds_to_signature_value(signature_env) -> None:
+    """(b) El messageImprint del TimeStampToken cubre `ds:SignatureValue`:
+    alterar ese valor DESPUÉS de sellado invalida el sello. Verificado a
+    nivel de `app.core.tsa` directamente (no vía /verify HTTP) porque
+    alterar `ds:SignatureValue` en el XML COMPLETO también rompe la firma
+    XAdES-B de base — /verify nunca llega a evaluar el sello de tiempo en
+    ese caso (ver `test_xades_t_altered_signature_value_fails_base_xades`
+    para ese escenario end-to-end)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    tsa_cert, tsa_key = _generate_tsa_cert()
+    install_tsa_seal(_tsa_signer_ref(tsa_cert, tsa_key))
+
+    original_el = etree.fromstring(
+        b'<ds:SignatureValue xmlns:ds="http://www.w3.org/2000/09/xmldsig#">QUJD</ds:SignatureValue>'
+    )
+    original_c14n = etree.tostring(original_el, method="c14n", exclusive=True)
+
+    expected_fp = cert_fingerprint(tsa_cert)
+    token = tsa_module.build_timestamp_token(original_c14n)
+    outcome_ok = tsa_module.verify_timestamp_token(
+        token.token_der, original_c14n, expected_tsa_fingerprint=expected_fp
+    )
+    assert outcome_ok.valido is True
+    assert outcome_ok.gen_time is not None
+
+    tampered_el = etree.fromstring(
+        b'<ds:SignatureValue xmlns:ds="http://www.w3.org/2000/09/xmldsig#">WFla</ds:SignatureValue>'
+    )
+    tampered_c14n = etree.tostring(tampered_el, method="c14n", exclusive=True)
+    outcome_bad = tsa_module.verify_timestamp_token(
+        token.token_der, tampered_c14n, expected_tsa_fingerprint=expected_fp
+    )
+    assert outcome_bad.valido is False
+    assert outcome_bad.motivo == "message_imprint_no_coincide"
+
+
+@pytest.mark.asyncio
+async def test_xades_t_altered_signature_value_fails_base_xades(signature_env) -> None:
+    """Escenario end-to-end complementario a (b): alterar `ds:SignatureValue`
+    en el XML COMPLETO tras sellado invalida la firma XAdES-B de base — la
+    respuesta es `valida=False` por la criptografía XMLDSig, con
+    `sello_tiempo_valido=None` (nunca se llega a evaluar, ver
+    `app.providers.local.verify_xades`)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    root = etree.fromstring(signed_xml)
+    sig_value_el = root.find(
+        ".//{http://www.w3.org/2000/09/xmldsig#}Signature"
+        "/{http://www.w3.org/2000/09/xmldsig#}SignatureValue"
+    )
+    sig_value_el.text = "QUJDdGFtcGVyZWQ="
+    tampered_xml = etree.tostring(root)
+
+    table.rows[firma_id]["signed_xml_sha256"] = None  # aísla la comprobación criptográfica
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": tampered_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is False
+    assert vbody["sello_tiempo_valido"] is None
+
+
+@pytest.mark.asyncio
+async def test_xades_t_kill_switch_produces_xades_b(signature_env, monkeypatch) -> None:
+    """(c) `signer_timestamp_enabled=False` -> XAdES-B sin SignatureTimeStamp,
+    exactamente el comportamiento previo al Incremento 4."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+    monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["xades_level"] == "XAdES-B"
+    signed_xml = uploads[0]["content"]
+    assert b"SignatureTimeStamp" not in signed_xml
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": body["firma_id"], "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    vbody = verify_resp.json()
+    assert vbody["valida"] is True
+    assert vbody["xades_level"] == "XAdES-B"
+    # Sin SignatureTimeStamp — no aplica, NO es un fallo (None, no False).
+    assert vbody["sello_tiempo_valido"] is None
+
+
+@pytest.mark.asyncio
+async def test_xades_t_tsa_unavailable_returns_503(signature_env) -> None:
+    """(d) TSA no disponible + kill-switch en True (default) -> /sign-xml
+    falla con 503, fail-closed (mismo trato que la ausencia de sello
+    institucional en Inc.1) — nunca degrada en silencio a XAdES-B."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+    install_tsa_seal(None)
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "timestamp_authority_unavailable"
+    assert table.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_xades_t_remote_tsa_url_configured_fails_explicit(signature_env, monkeypatch) -> None:
+    """`settings.tsa_url` puesto -> intenta el cliente remoto (stub, Inc.4) y
+    falla explícito — NUNCA cae en silencio a la TSA local aunque esté
+    montada y disponible (ver app.core.tsa._request_remote_timestamp)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+    monkeypatch.setattr(settings, "tsa_url", "https://tsa.example.test/timestamp")
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "timestamp_authority_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_xades_t_tsa_cert_without_critical_eku_rejected(signature_env) -> None:
+    """RFC 3161 §2.3: un certificado de TSA sin EKU timeStamping CRÍTICO se
+    rechaza al sellar (fail-closed) — no se emite un token con un cert mal
+    emitido."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+
+    bad_tsa_cert, bad_tsa_key = _generate_tsa_cert(eku_critical=False)
+    install_tsa_seal(_tsa_signer_ref(bad_tsa_cert, bad_tsa_key))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "timestamp_authority_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_xades_t_verify_detects_tsa_cert_without_eku() -> None:
+    """`_assert_timestamping_eku` (el mismo guardado que usan tanto
+    `_build_local_timestamp_token` al sellar como `verify_timestamp_token`
+    al verificar, RFC 3161 §2.3) rechaza un certificado sin EKU timeStamping
+    crítico y acepta uno correctamente emitido."""
+    good_cert_pem, _ = _generate_tsa_cert()
+    good_cert = x509.load_pem_x509_certificate(good_cert_pem)
+    tsa_module._assert_timestamping_eku(good_cert)  # no debe lanzar
+
+    bad_cert_pem, _ = _generate_tsa_cert(with_eku=False)
+    bad_cert = x509.load_pem_x509_certificate(bad_cert_pem)
+    with pytest.raises(tsa_module.TsaUnavailableError, match="eku_timestamping"):
+        tsa_module._assert_timestamping_eku(bad_cert)
+
+
+# ---------------------------------------------------------------------------
+# 8) Pinning del certificado de la TSA contra firma.tsa_cert_fingerprint
+#    (Media, hallazgo de revisión post-Inc.4 — SignatureTimeStamp es una
+#    propiedad NO FIRMADA, así que sin este pinning cualquier cert
+#    autofirmado con EKU timeStamping produce un sello que /verify reporta
+#    válido con un genTime arbitrario).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_xades_t_verify_timestamp_token_pins_tsa_fingerprint(signature_env) -> None:
+    """`verify_timestamp_token` sin `expected_tsa_fingerprint` (fila legacy
+    sin la columna poblada) o con uno que no coincide con el certificado
+    embebido en el token debe fallar-cerrado — nunca `valido=True` por
+    omitir o descartar la comprobación."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    tsa_cert, tsa_key = _generate_tsa_cert()
+    install_tsa_seal(_tsa_signer_ref(tsa_cert, tsa_key))
+
+    sig_value_el = etree.fromstring(
+        b'<ds:SignatureValue xmlns:ds="http://www.w3.org/2000/09/xmldsig#">QUJD</ds:SignatureValue>'
+    )
+    sig_value_c14n = etree.tostring(sig_value_el, method="c14n", exclusive=True)
+    token = tsa_module.build_timestamp_token(sig_value_c14n)
+    correct_fp = cert_fingerprint(tsa_cert)
+
+    outcome_ok = tsa_module.verify_timestamp_token(
+        token.token_der, sig_value_c14n, expected_tsa_fingerprint=correct_fp
+    )
+    assert outcome_ok.valido is True
+
+    outcome_missing = tsa_module.verify_timestamp_token(
+        token.token_der, sig_value_c14n, expected_tsa_fingerprint=None
+    )
+    assert outcome_missing.valido is False
+    assert outcome_missing.motivo == "tsa_fingerprint_no_registrado"
+
+    foreign_cert, _ = _generate_tsa_cert(cn="otra-tsa")
+    outcome_mismatch = tsa_module.verify_timestamp_token(
+        token.token_der, sig_value_c14n, expected_tsa_fingerprint=cert_fingerprint(foreign_cert)
+    )
+    assert outcome_mismatch.valido is False
+    assert outcome_mismatch.motivo == "tsa_cert_fingerprint_no_coincide"
+
+
+@pytest.mark.asyncio
+async def test_xades_t_verify_rejects_forged_timestamp_from_foreign_tsa(
+    signature_env, monkeypatch
+) -> None:
+    """Escenario end-to-end del hallazgo: un atacante con un XML XAdES-B
+    GENUINO de este tenant (fila legacy, sin sello de tiempo — `tsa_token`/
+    `tsa_cert_fingerprint` en NULL) le anexa su PROPIO `xades:
+    SignatureTimeStamp`, sellado con SU PROPIA TSA (par autofirmado, EKU
+    timeStamping crítico) sobre el `ds:SignatureValue` REAL. Como esa
+    propiedad no está firmada, la firma XAdES-B de base sigue validando —
+    pero `/verify` debe reportar `sello_tiempo_valido=False`, nunca `True`
+    con el `genTime` que eligió el atacante."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+    # Firma XAdES-B "pura" (sin TSA legítima) — reproduce la fila legacy del
+    # hallazgo, donde tsa_cert_fingerprint nunca se llegó a poblar.
+    monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+    assert b"SignatureTimeStamp" not in signed_xml
+    assert table.rows[firma_id]["tsa_cert_fingerprint"] is None
+
+    # El atacante monta su propia TSA y sella el ds:SignatureValue real.
+    attacker_cert, attacker_key = _generate_tsa_cert(cn="atacante-tsa")
+    monkeypatch.setattr(
+        tsa_module, "load_tsa_seal", lambda: _tsa_signer_ref(attacker_cert, attacker_key)
+    )
+
+    root = etree.fromstring(signed_xml)
+    ds_ns = {"ds": "http://www.w3.org/2000/09/xmldsig#"}
+    sig_value_el = root.find(".//ds:Signature/ds:SignatureValue", namespaces=ds_ns)
+    assert sig_value_el is not None
+    sig_value_c14n = etree.tostring(sig_value_el, method="c14n", exclusive=True)
+    forged_token = tsa_module.build_timestamp_token(sig_value_c14n)
+
+    from app.providers.local import _insert_signature_timestamp
+
+    _insert_signature_timestamp(root, forged_token)
+    forged_xml = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
+    assert b"SignatureTimeStamp" in forged_xml
+
+    # También legacy en `signed_xml_sha256`: si no, el hash del documento
+    # completo ya no coincidiría tras la inyección y /verify fallaría por esa
+    # comprobación PREVIA, sin llegar siquiera a evaluar el sello forjado.
+    table.rows[firma_id]["signed_xml_sha256"] = None
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": forged_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    # La firma XAdES-B de base sigue siendo válida (SignatureTimeStamp es una
+    # propiedad NO FIRMADA) — lo único que debe fallar es el sello forjado.
+    assert vbody["valida"] is True
+    assert vbody["sello_tiempo_valido"] is False
+    assert vbody["tsa_timestamp"] is None

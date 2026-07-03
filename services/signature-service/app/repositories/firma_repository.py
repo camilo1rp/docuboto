@@ -19,7 +19,8 @@ _COLS = (
     "id, objeto_tipo, objeto_id, formato_solicitado, firmante_id, "
     "payload_sha256, firma_blob, provider, sello_tiempo, created_at, "
     "certificado_pem, minio_key_firmado, nivel_conformidad, xades_level, "
-    "tipo_firma, certificado_fingerprint, signed_xml_sha256"
+    "tipo_firma, certificado_fingerprint, signed_xml_sha256, "
+    "tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado"
 )
 
 
@@ -39,13 +40,24 @@ class FirmaRepository:
         migración 002 por compatibilidad histórica. ``signed_xml_sha256``
         (migración 010) ata ``/verify`` a esta firma_id concreta — ``None``
         para ``nativa``.
+
+        Los campos TSA (``tsa_token``, ``tsa_timestamp``,
+        ``tsa_cert_fingerprint``; migración 012, E06 Inc.4) son ``None`` para
+        firmas ``nativa`` o para ``xades_local`` sin sello de tiempo
+        (kill-switch ``signer_timestamp_enabled=False``). ``tsa_token`` es el
+        ``TimeStampToken`` DER en base64 — es material PÚBLICO (ver
+        ``app.core.tsa``), no un secreto, así que persistirlo es correcto.
+        ``tsa_acreditado`` es NOT NULL (default ``False`` en la migración):
+        se pasa siempre ``False`` explícito (RF-FIR-15) salvo que el
+        llamador indique lo contrario.
         """
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma (objeto_tipo, objeto_id, formato_solicitado,
                 firmante_id, payload_sha256, firma_blob, provider, sello_tiempo,
                 certificado_pem, minio_key_firmado, nivel_conformidad, xades_level,
-                tipo_firma, certificado_fingerprint, signed_xml_sha256)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                tipo_firma, certificado_fingerprint, signed_xml_sha256,
+                tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                 RETURNING {_COLS}""",
             data["objeto_tipo"],
             data.get("objeto_id"),
@@ -62,6 +74,10 @@ class FirmaRepository:
             data.get("tipo_firma"),
             data.get("certificado_fingerprint"),
             data.get("signed_xml_sha256"),
+            data.get("tsa_token"),
+            data.get("tsa_timestamp"),
+            data.get("tsa_cert_fingerprint"),
+            data.get("tsa_acreditado", False),
         )
         assert row is not None
         return row

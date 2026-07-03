@@ -61,6 +61,18 @@ class FirmaResponse(BaseModel):
     # False — no hay ningún camino en este servicio que produzca True todavía.
     acreditado: bool = False
 
+    # --- Sello de tiempo XAdES-T (Inc.4, RF-FIR-15) ---
+    # `tsa_timestamp` es el genTime declarado por la TSA local (None cuando
+    # xades_level != "XAdES-T"). `tsa_acreditado` viaja SIEMPRE junto a
+    # `xades_level` — regla para consumidores (UI/reportes/eventos): "XAdES-T"
+    # nunca se renderiza sin `tsa_acreditado`, y jamás se rotula como "sello
+    # de tiempo acreditado"/"fecha cierta cualificada" mientras sea False (la
+    # TSA local no está acreditada ante ONAC — camino a TSA acreditada real
+    # vía `settings.tsa_url` queda como roadmap explícito, no implementado en
+    # este incremento).
+    tsa_timestamp: datetime | None = None
+    tsa_acreditado: bool = False
+
 
 class VerifyRequest(BaseModel):
     """``payload_xml`` es el XML de entrada a verificar.
@@ -86,3 +98,11 @@ class VerifyResponse(BaseModel):
     nivel_conformidad: str | None = None
     acreditado: bool = False
     motivo: str | None = None
+
+    # --- Sello de tiempo XAdES-T (Inc.4, RF-FIR-15) ---
+    # None: la firma no lleva xades:SignatureTimeStamp (XAdES-B "puro" o
+    # 'nativa') — no aplica, NO es un fallo. True/False: el sello SÍ se
+    # evaluó (ver app.core.tsa.verify_timestamp_token). `tsa_timestamp` es el
+    # genTime declarado por la TSA, solo presente cuando el sello es válido.
+    sello_tiempo_valido: bool | None = None
+    tsa_timestamp: datetime | None = None

@@ -54,15 +54,25 @@ class SealNotFoundError(RuntimeError):
     """No hay sello (ni de tenant ni de desarrollo) disponible para firmar."""
 
 
+class TsaSealNotFoundError(RuntimeError):
+    """No hay par de la TSA local (ni principal ni de desarrollo) para sellar (Inc.4)."""
+
+
 def _validate_slug(tenant_slug: str) -> str:
     if not tenant_slug or not _SLUG_RE.match(tenant_slug):
         raise ValueError(f"Invalid tenant slug: {tenant_slug!r}")
     return tenant_slug
 
 
-def _read_pair(dir_path: Path) -> tuple[bytes, bytes] | None:
-    cert_path = dir_path / "seal.crt"
-    key_path = dir_path / "seal.key"
+def _read_pair(dir_path: Path, *, stem: str = "seal") -> tuple[bytes, bytes] | None:
+    """Lee ``<dir_path>/<stem>.crt`` + ``<dir_path>/<stem>.key`` si ambos existen.
+
+    ``stem`` generaliza este helper para :func:`load_seal` (``"seal"``, el
+    caso original) y :func:`load_tsa_seal` (``"tsa"``, Inc.4) sin duplicar la
+    lectura de disco.
+    """
+    cert_path = dir_path / f"{stem}.crt"
+    key_path = dir_path / f"{stem}.key"
     if not cert_path.is_file() or not key_path.is_file():
         return None
     cert_pem = cert_path.read_bytes()
@@ -117,6 +127,48 @@ def load_seal(tenant_slug: str) -> SignerRef:
         tipo_firma="sello_sistema",
         nivel_conformidad="xades_b_no_acreditado",
         acreditado=False,
+    )
+
+
+def load_tsa_seal() -> SignerRef:
+    """Resuelve el par de la TSA local (E06 Inc.4, RT-16).
+
+    A diferencia de :func:`load_seal`, la TSA es ÚNICA del despliegue — NO hay
+    scoping por tenant: el par principal vive directamente en
+    ``<tsa_cert_dir>/tsa.{crt,key}`` (sin subcarpeta), con un único fallback
+    de DESARROLLO en ``<tsa_cert_dir>/_dev/tsa.{crt,key}`` (generado por
+    ``scripts/gen-dev-tsa-cert.sh``), gobernado por el mismo tipo de
+    kill-switch (``settings.tsa_allow_dev_seal``, ``False`` por defecto).
+
+    Reutiliza el dataclass ``SignerRef`` (mismo campo ``cert_pem``/``key_pem``
+    que :func:`load_seal`) para que :mod:`app.core.tsa` no necesite un tipo
+    de retorno distinto — aquí ``tipo_firma``/``nivel_conformidad``/
+    ``acreditado`` no se usan (la TSA no firma un acto de negocio, sella un
+    ``ds:SignatureValue``), se dejan en sus valores por defecto.
+
+    La clave privada NUNCA se retiene ni se loguea — misma REGLA no-fuga que
+    :func:`load_seal`: se entrega al llamador (que la pasa a ``cryptography``
+    para firmar el token CMS y la descarta) y no se cachea aquí.
+
+    Raises:
+        TsaSealNotFoundError: ni el par principal ni (si
+            ``tsa_allow_dev_seal=True``) el de desarrollo están montados.
+    """
+    base = Path(settings.tsa_cert_dir)
+
+    pair = _read_pair(base, stem="tsa")
+    if pair is None and settings.tsa_allow_dev_seal:
+        pair = _read_pair(base / "_dev", stem="tsa")
+    if pair is None:
+        raise TsaSealNotFoundError(
+            f"No se encontró sello de TSA bajo {base} "
+            f"(fallback _dev {'deshabilitado' if not settings.tsa_allow_dev_seal else 'sin par montado'})"
+        )
+    cert_pem, key_pem = pair
+    return SignerRef(
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        key_password=settings.tsa_key_password.encode() if settings.tsa_key_password else None,
     )
 
 
