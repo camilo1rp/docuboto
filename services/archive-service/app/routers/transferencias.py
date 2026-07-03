@@ -50,7 +50,7 @@ def _actor(request: Request) -> str | None:
     "",
     response_model=TransferenciaResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def create_transferencia(
     payload: TransferenciaCreate,
@@ -91,7 +91,7 @@ async def get_transferencia(
 @router.post(
     "/{transferencia_id}/enviar",
     response_model=TransferenciaResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def enviar(
     transferencia_id: uuid.UUID,
@@ -104,7 +104,7 @@ async def enviar(
 @router.post(
     "/{transferencia_id}/recibir",
     response_model=TransferenciaResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def recibir(
     transferencia_id: uuid.UUID,
@@ -118,7 +118,7 @@ async def recibir(
 @router.post(
     "/{transferencia_id}/rechazar",
     response_model=TransferenciaResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def rechazar(
     transferencia_id: uuid.UUID,

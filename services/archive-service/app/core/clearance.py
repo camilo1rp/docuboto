@@ -65,13 +65,23 @@ async def resolve_caller_clearance(
 
 
 async def check_permission(
-    conn: asyncpg.Connection, user_id: uuid.UUID | None, perm_name: str
+    conn: asyncpg.Connection,
+    user_id: uuid.UUID | None,
+    perm_name: str,
+    min_crud: int = 1,
 ) -> bool:
     """Devuelve ``True`` si ``user_id`` tiene el permiso ``perm_name`` en el tenant.
 
     La conexión debe tener ``search_path`` fijado al schema del tenant. Fail-closed
     a ``False`` en todos los casos dudosos: usuario ausente, tablas RBAC no
     provisionadas, ``user_id`` nulo.
+
+    ``min_crud`` es el nivel mínimo exigido en ``auth_group_permissions.crud`` (escala
+    0..5, RF-SEG-03). El default ``1`` (Leer) es retrocompatible con el comportamiento
+    previo ``crud > 0``, ya que ``crud`` nunca es negativo. Operaciones de disposición
+    (cerrar/transferir/desvincular expediente, transferencias FUID, retención TRD,
+    borrado de tipo documental) elevan este umbral a ``3`` (Crear/Borrar), en línea con
+    Ley 594/2000 arts. 22-24 y Acuerdo AGN 001/2024.
 
     Usa ``fetchval`` (query booleana) para no interferir con el pool de ``fetchrow``
     de la lógica de negocio en tests unitarios.
@@ -90,7 +100,7 @@ async def check_permission(
                     JOIN auth_permissions p ON p.id = gp.permission_id
                     WHERE m.user_id = u.id
                       AND p.nombre = $2
-                      AND gp.crud > 0
+                      AND gp.crud >= $3
                 )
             )
             FROM auth_users u
@@ -98,6 +108,7 @@ async def check_permission(
             """,
             user_id,
             perm_name,
+            min_crud,
         )
     except asyncpg.UndefinedTableError:
         # Tablas RBAC del tenant ausentes (entorno aislado / no provisionado).
@@ -106,8 +117,11 @@ async def check_permission(
     return bool(allowed) if allowed is not None else False
 
 
-def require_permission(perm_name: str):
+def require_permission(perm_name: str, min_crud: int = 1):
     """FastAPI dependency factory: eleva 403 si el llamante carece de ``perm_name``.
+
+    ``min_crud`` (default ``1``, retrocompatible) exige un nivel mínimo en la escala
+    crud 0..5 (RF-SEG-03); ver :func:`check_permission`.
 
     A diferencia de document-service (que usa ``get_tenant_conn`` con search_path
     automático), archive-service usa ``get_db_conn``; esta dependencia fija el
@@ -145,7 +159,7 @@ def require_permission(perm_name: str):
             )
         schema = tenant_schema(x_tenant_slug)  # valida + normaliza (fail-closed 400)
         await conn.execute(f'SET search_path TO "{schema}", public')
-        if not await check_permission(conn, user_id, perm_name):
+        if not await check_permission(conn, user_id, perm_name, min_crud):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={

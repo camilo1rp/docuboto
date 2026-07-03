@@ -109,3 +109,33 @@ async def test_check_permission_fail_closed_when_rbac_absent() -> None:
     conn = AsyncMock()
     conn.fetchval.side_effect = asyncpg.UndefinedTableError("relation does not exist")
     assert await check_permission(conn, uuid.uuid4(), "USUA_PERM_EXPEDIENTE") is False
+
+
+# ---------------------------------------------------------------------------
+# Umbral de nivel crud (mínimo privilegio, RF-SEG-03; escala 0..5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_permission_default_min_crud_is_1() -> None:
+    """Por defecto exige crud>=1 (Leer) — retrocompatible con el previo crud>0."""
+    conn = AsyncMock()
+    conn.fetchval.return_value = True
+    uid = uuid.uuid4()
+    await check_permission(conn, uid, "USUA_PERM_EXPEDIENTE")
+    args = conn.fetchval.call_args.args
+    # fetchval(query, $1=user_id, $2=perm_name, $3=min_crud)
+    assert args[1] == uid
+    assert args[2] == "USUA_PERM_EXPEDIENTE"
+    assert args[3] == 1
+    assert "gp.crud >= $3" in args[0]  # umbral parametrizado, comparación escalar >=
+
+
+@pytest.mark.asyncio
+async def test_check_permission_threads_min_crud_3() -> None:
+    """Las operaciones de disposición exigen crud>=3 (Crear/Borrar): el umbral
+    se pasa parametrizado como $3 al fetchval, no interpolado."""
+    conn = AsyncMock()
+    conn.fetchval.return_value = True
+    await check_permission(conn, uuid.uuid4(), "USUA_PERM_TRD", min_crud=3)
+    assert conn.fetchval.call_args.args[3] == 3

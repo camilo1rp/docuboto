@@ -290,6 +290,32 @@ async def test_update_expediente_status(
     assert body["status"] == "closed"
 
 
+@pytest.mark.asyncio
+async def test_update_expediente_disposition_requires_crud_3(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El PATCH que transiciona a closed/transferred es DISPOSICIÓN y exige
+    crud>=3 (Crear/Borrar), igual que /close y /transfer — cierra la ruta alterna
+    que evadía el umbral reforzado (Ley 594/2000 arts. 22-24). Con el permiso solo
+    a nivel Leer (gate del decorador pasa con crud>=1, el check condicional de
+    disposición no), responde 403 sin ejecutar la transición."""
+    client, mock_conn = client_with_conn
+    # 1.º fetchval = gate del decorador (min_crud=1) → True (tiene el permiso).
+    # 2.º fetchval = check condicional de disposición (min_crud=3) → False.
+    mock_conn.fetchval.side_effect = [True, False]
+
+    response = await client.patch(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        json={"status": "transferred"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    # El 403 corta ANTES del servicio: la transición no se ejecutó.
+    mock_conn.fetchrow.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/expedientes/{expediente_id}/radicados — link radicado
 # ---------------------------------------------------------------------------

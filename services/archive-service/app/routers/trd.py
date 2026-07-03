@@ -126,7 +126,7 @@ async def get_trd_serie(
     "/{serie_id}",
     response_model=TrdSerieResponse,
     summary="Update TRD serie (code is immutable)",
-    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
 )
 async def update_trd_serie(
     serie_id: uuid.UUID,

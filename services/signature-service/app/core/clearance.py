@@ -80,12 +80,17 @@ async def check_permission(
     conn: asyncpg.Connection,
     user_id: uuid.UUID | None,
     perm_name: str,
+    min_crud: int = 1,
 ) -> bool:
     """Returns True if user_id has perm_name in the tenant (fail-closed).
 
     Uses a single fetchval query that checks is_root (full bypass) or membership
-    in a group that holds the permission with crud > 0.  Returns False on any
-    doubt: None user_id, user not found, RBAC tables absent (UndefinedTableError).
+    in a group that holds the permission with crud >= min_crud.  Returns False on
+    any doubt: None user_id, user not found, RBAC tables absent (UndefinedTableError).
+
+    ``min_crud`` is the minimum level required on ``auth_group_permissions.crud``
+    (0..5 scale, RF-SEG-03). The default ``1`` (Leer) is backward-compatible with
+    the previous ``crud > 0`` behavior, since ``crud`` is never negative.
     """
     if user_id is None:
         return False
@@ -101,7 +106,7 @@ async def check_permission(
                     JOIN auth_permissions p ON p.id = gp.permission_id
                     WHERE m.user_id = u.id
                       AND p.nombre = $2
-                      AND gp.crud > 0
+                      AND gp.crud >= $3
                 )
             )
             FROM auth_users u
@@ -109,6 +114,7 @@ async def check_permission(
             """,
             user_id,
             perm_name,
+            min_crud,
         )
     except asyncpg.UndefinedTableError:
         # RBAC tables absent — tenant not provisioned yet.
@@ -117,12 +123,15 @@ async def check_permission(
     return bool(allowed) if allowed is not None else False
 
 
-def require_permission(perm_name: str):
+def require_permission(perm_name: str, min_crud: int = 1):
     """FastAPI dependency factory: raises 401/403 when caller lacks ``perm_name``.
 
     Reads actor UUID from X-User-Id header (injected by api-gateway after auth-service
     /validate resolved the internal id).  Raises 401 when the header is absent or not
     a valid UUID; 403 when permission is denied or user not found (fail-closed).
+
+    ``min_crud`` (default ``1``, backward-compatible) requires a minimum level on the
+    0..5 crud scale (RF-SEG-03); see :func:`check_permission`.
 
     Usage at endpoint level::
 
@@ -137,7 +146,7 @@ def require_permission(perm_name: str):
         actor: uuid.UUID = Depends(get_actor),
         conn: asyncpg.Connection = Depends(get_tenant_conn),
     ) -> None:
-        if not await check_permission(conn, actor, perm_name):
+        if not await check_permission(conn, actor, perm_name, min_crud):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={

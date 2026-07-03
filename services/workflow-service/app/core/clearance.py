@@ -68,7 +68,10 @@ async def resolve_caller_clearance(
 
 
 async def check_permission(
-    conn: asyncpg.Connection, user_id: uuid.UUID | None, perm_name: str
+    conn: asyncpg.Connection,
+    user_id: uuid.UUID | None,
+    perm_name: str,
+    min_crud: int = 1,
 ) -> bool:
     """Devuelve ``True`` si ``user_id`` tiene el permiso ``perm_name`` en el tenant.
 
@@ -76,6 +79,10 @@ async def check_permission(
     La conexión debe tener ``search_path`` fijado al schema del tenant. Fail-closed a
     ``False`` en todos los casos dudosos: usuario ausente, tablas RBAC no provisionadas,
     ``user_id`` nulo.
+
+    ``min_crud`` es el nivel mínimo exigido en ``auth_group_permissions.crud`` (escala
+    0..5, RF-SEG-03). El default ``1`` (Leer) es retrocompatible con el comportamiento
+    previo ``crud > 0``, ya que ``crud`` nunca es negativo.
     """
     if user_id is None:
         return False
@@ -91,7 +98,7 @@ async def check_permission(
                     JOIN auth_permissions p ON p.id = gp.permission_id
                     WHERE m.user_id = u.id
                       AND p.nombre = $2
-                      AND gp.crud > 0
+                      AND gp.crud >= $3
                 )
             )
             FROM auth_users u
@@ -99,6 +106,7 @@ async def check_permission(
             """,
             user_id,
             perm_name,
+            min_crud,
         )
     except asyncpg.UndefinedTableError:
         # Tablas RBAC del tenant ausentes (entorno aislado / no provisionado).
@@ -106,8 +114,11 @@ async def check_permission(
     return bool(allowed) if allowed is not None else False
 
 
-def require_permission(perm_name: str):
+def require_permission(perm_name: str, min_crud: int = 1):
     """FastAPI dependency factory: eleva 403 si el llamante carece de ``perm_name``.
+
+    ``min_crud`` (default ``1``, retrocompatible) exige un nivel mínimo en la escala
+    crud 0..5 (RF-SEG-03); ver :func:`check_permission`.
 
     D-09: el workflow-service usa ``get_db_conn`` (sin search_path automático); esta
     dependencia fija el search_path al tenant antes de consultar las tablas RBAC.
@@ -142,7 +153,7 @@ def require_permission(perm_name: str):
             )
         schema = tenant_schema(x_tenant_slug)  # valida + normaliza (fail-closed 400)
         await conn.execute(f'SET search_path TO "{schema}", public')
-        if not await check_permission(conn, user_id, perm_name):
+        if not await check_permission(conn, user_id, perm_name, min_crud):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={

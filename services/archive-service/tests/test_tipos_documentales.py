@@ -289,6 +289,57 @@ async def test_delete_tipo_writes_audit_entry(client_with_conn) -> None:
     assert audit_calls[0][7] == str(tid)
 
 
+# ---------------------------------------------------------------------------
+# Mínimo privilegio (RF-SEG-03): la disposición (delete_tipo) exige crud>=3
+# (Crear/Borrar); las mutaciones no-disposición (create) quedan en el default 1.
+# El umbral viaja como $3 al fetchval del gate (dentro del SQL mockeado).
+# ---------------------------------------------------------------------------
+
+
+def _gate_min_crud(mock_conn) -> int:
+    """Extrae el min_crud ($3) del fetchval del gate RBAC de entre todas las
+    llamadas a fetchval (audit.append hace su propio fetchval de prev_hash, así
+    que no basta con `call_args`; se filtra por la query del gate)."""
+    gate_calls = [
+        c.args
+        for c in mock_conn.fetchval.call_args_list
+        if isinstance(c.args[0], str) and "gp.crud >= $3" in c.args[0]
+    ]
+    assert len(gate_calls) == 1, f"esperaba 1 fetchval del gate, hubo {len(gate_calls)}"
+    return gate_calls[0][3]
+
+
+@pytest.mark.asyncio
+async def test_delete_tipo_threads_min_crud_3(client_with_conn) -> None:
+    """delete_tipo es disposición: el gate exige crud>=3 → el fetchval del
+    permiso recibe min_crud=3 como 4.º argumento posicional ($3)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso concedido
+    mock_conn.execute.return_value = "DELETE 1"
+
+    resp = await client.delete(
+        f"/api/v1/tipos-documentales/{uuid.uuid4()}", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 204
+    assert _gate_min_crud(mock_conn) == 3
+
+
+@pytest.mark.asyncio
+async def test_create_tipo_threads_default_min_crud_1(client_with_conn) -> None:
+    """create_tipo NO es disposición: usa el default min_crud=1 (sin elevar)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _tipo_row(uuid.uuid4())
+
+    resp = await client.post(
+        "/api/v1/tipos-documentales",
+        json={"code": "RES", "nombre": "Resolución"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    assert _gate_min_crud(mock_conn) == 1
+
+
 @pytest.mark.asyncio
 async def test_list_tipos_open_read_no_user_id_needed(client_with_conn) -> None:
     """Confirma que la lectura sigue ABIERTA (solo `_require_tenant`): sin

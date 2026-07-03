@@ -24,7 +24,7 @@ from fastapi import (
     status,
 )
 
-from app.core.clearance import require_permission
+from app.core.clearance import check_permission, require_permission
 from app.core.database import get_db_conn
 from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
@@ -170,7 +170,7 @@ async def search_expedientes(
     "/{expediente_id}/close",
     response_model=ExpedienteResponse,
     summary="Close expediente and materialize TRD disposition (E02)",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def close_expediente(
     expediente_id: uuid.UUID,
@@ -193,7 +193,7 @@ async def close_expediente(
     "/{expediente_id}/transfer",
     response_model=ExpedienteResponse,
     summary="Transfer expediente (closed → transferred) (E02)",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def transfer_expediente(
     expediente_id: uuid.UUID,
@@ -261,8 +261,28 @@ async def update_expediente(
     expediente_id: uuid.UUID,
     payload: ExpedienteUpdate,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteResponse:
+    # El PATCH genérico puede transicionar el ciclo de vida (open→closed→
+    # transferred), las MISMAS transiciones que /close y /transfer, que exigen
+    # autoridad de disposición (crud>=3). Sin este gate condicional, el PATCH
+    # sería una ruta alterna que evade el umbral reforzado (Ley 594/2000 arts.
+    # 22-24; Acuerdo AGN 001/2024). El decorador exige USUA_PERM_EXPEDIENTE con
+    # el default crud>=1 (basta para editar nombre/descr/serie); solo la
+    # transición de disposición eleva a crud>=3. `require_permission` ya fijó el
+    # search_path del tenant, así que `check_permission` consulta el schema correcto.
+    if payload.status in ("closed", "transferred") and not await check_permission(
+        conn, actor, "USUA_PERM_EXPEDIENTE", min_crud=3
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": "La disposición del expediente (cierre/transferencia) "
+                "requiere USUA_PERM_EXPEDIENTE con nivel crud>=3.",
+            },
+        )
     service = ArchiveService(conn, tenant_slug)
     return await service.update_expediente(expediente_id, payload)
 
@@ -305,7 +325,7 @@ async def link_radicados_batch(
     "/{expediente_id}/radicados/{radicado_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Unlink a radicado from an expediente",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def unlink_radicado(
     expediente_id: uuid.UUID,

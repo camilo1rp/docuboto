@@ -140,7 +140,7 @@ async def update_tipo(
 @router.delete(
     "/{tipo_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
 )
 async def delete_tipo(
     tipo_id: uuid.UUID,
