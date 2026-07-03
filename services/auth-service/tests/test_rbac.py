@@ -11,7 +11,7 @@
 
 import uuid
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
@@ -22,6 +22,16 @@ from app.main import app
 from app.services.rbac_service import has_permission
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
+
+
+class _FakeTx:
+    """Context manager async no-op para simular conn.transaction()."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
 # El llamante de las pruebas administra RBAC (USUA_PERM_ADMIN); el gate (ADR-013) se
 # resuelve normalmente vía BD, pero aquí se sobreescribe para aislar el endpoint.
 _ADMIN_CALLER = Caller(
@@ -172,6 +182,7 @@ async def test_list_pickable_users_perm_radi(client: AsyncClient) -> None:
 async def test_list_pickable_users_denies_without_perm_radi(client: AsyncClient) -> None:
     """Sin PERM_RADI (ni root), el endpoint pickable responde 403."""
     conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=_FakeTx())  # append_denial() best-effort
     _override_caller(
         conn,
         Caller(
@@ -193,6 +204,7 @@ async def test_list_pickable_users_denies_without_perm_radi(client: AsyncClient)
 async def test_gate_denies_without_admin(client: AsyncClient) -> None:
     """Un llamante sin USUA_PERM_ADMIN (ni root) recibe 403."""
     conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=_FakeTx())  # append_denial() best-effort
     _override_conn(conn)
     # Sobreescribe el llamante con uno sin permiso de administración.
     app.dependency_overrides[get_caller] = lambda: Caller(
@@ -228,6 +240,7 @@ async def test_gate_not_provisioned_is_403(client: AsyncClient) -> None:
     Un UUID no encontrado en la BD significa que el usuario no está aprovisionado.
     """
     conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=_FakeTx())  # append_denial() best-effort
     conn.fetchrow.return_value = None  # get_user(UUID) → no row
 
     async def _dep() -> AsyncGenerator[AsyncMock, None]:

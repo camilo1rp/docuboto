@@ -41,9 +41,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 # Cuando un evento no pertenece a ningún tenant (p. ej. refresh/logout de auth),
 # se ancla en una cadena de sistema dedicada en vez de violar el NOT NULL.
@@ -175,6 +178,73 @@ async def append(
             row_hash,
         )
     return row_hash
+
+
+async def append_denial(
+    conn: asyncpg.Connection,
+    *,
+    tenant_slug: str | None,
+    service: str,
+    actor: str | None,
+    perm_name: str,
+    min_crud: int = 1,
+    canal: str = "api",
+    motivo: str = "permiso_insuficiente",
+) -> None:
+    """Deja traza de un intento de acceso DENEGADO por el gate RBAC (RF-SEG / MoReq).
+
+    ``require_permission`` levanta el 403 **antes** de llegar al handler del
+    servicio, así que ninguna de las llamadas a :func:`append` que hace la lógica
+    de negocio se ejecuta para una denegación — sin este helper, la denegación
+    no deja traza alguna en ``audit_log``. Pensado para invocarse justo antes del
+    ``raise HTTPException(403)`` en la rama de permiso insuficiente de cada gate.
+
+    Escribe ``action="acceso.denegado"``, ``object_type="rbac"`` (constante:
+    ``object_type`` es ``NOT NULL`` y el objeto denegado siempre es "un permiso",
+    no un recurso de negocio concreto), ``object_ref=perm_name``.
+
+    ``motivo`` distingue la causa probatoria del asiento en ``payload.motivo``.
+    Por defecto ``"permiso_insuficiente"`` (el caso normal: el llamante SÍ está
+    aprovisionado pero no tiene el permiso/crud exigido). Pásese un valor
+    distinto (p. ej. ``"usuario_no_aprovisionado"``) cuando la denegación no
+    proviene de una verificación de permiso concreta, para que un analista que
+    filtre ``audit_log`` por ``payload.motivo`` no clasifique mal el evento.
+
+    **Best-effort**: envuelta en su propio ``try/except`` que nunca relanza — una
+    denegación de acceso jamás debe degradar a un 500 por un fallo de auditoría
+    (BD caída, tabla no provisionada, etc.). Ante fallo, deja un ``warning`` en el
+    log del servicio en vez de propagar.
+
+    Nota de llamador: como esta función nunca lanza, un test que quiera simular
+    un fallo de auditoría típicamente sustituye la función entera (mock/monkeypatch)
+    en vez de forzar una excepción interna — en ese caso el ``try/except`` de aquí
+    no aplica y el llamador (el gate) es responsable de no dejar que ese mock
+    reviente el flujo 403 (ver ``require_permission`` en cada ``clearance.py``).
+    """
+    try:
+        await append(
+            conn,
+            tenant_slug=tenant_slug,
+            service=service,
+            action="acceso.denegado",
+            object_type="rbac",
+            object_ref=perm_name,
+            actor=actor,
+            canal=canal,
+            payload={
+                "perm": perm_name,
+                "min_crud": min_crud,
+                "motivo": motivo,
+            },
+        )
+    except Exception:  # noqa: BLE001 — best-effort: nunca convertir un 403 en 500.
+        logger.warning(
+            "audit.append_denial failed (service=%s tenant=%s perm=%s)",
+            service,
+            tenant_slug,
+            perm_name,
+            exc_info=True,
+        )
 
 
 async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool, int | None]:

@@ -23,12 +23,23 @@ no provisionadas o cualquier duda, se devuelve PUBLICA (1) — el mínimo privil
 Igual para ``check_permission``: ante cualquier duda devuelve ``False``.
 """
 
+import logging
 import uuid
 
 import asyncpg
 from fastapi import Depends, Header, HTTPException, status
 
 from app.core.database import get_tenant_conn
+
+try:
+    from orpycamcp_common import audit
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover — common not installed in some test envs
+    audit = None  # type: ignore[assignment]
+    _AUDIT_AVAILABLE = False
+
+_SERVICE = "document-service"
+logger = logging.getLogger(__name__)
 
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
@@ -135,6 +146,7 @@ def require_permission(perm_name: str, min_crud: int = 1):
 
     async def _dep(
         x_user_id: str | None = Header(default=None),
+        x_tenant_slug: str | None = Header(default=None),
         conn: asyncpg.Connection = Depends(get_tenant_conn),
     ) -> None:
         try:
@@ -142,6 +154,22 @@ def require_permission(perm_name: str, min_crud: int = 1):
         except ValueError:
             user_id = None
         if not await check_permission(conn, user_id, perm_name, min_crud):
+            # Traza best-effort del acceso denegado (RF-SEG / MoReq). Solo para un
+            # usuario IDENTIFICADO (user_id no nulo); las sondas anónimas (sin
+            # X-User-Id válido) no se auditan para no contaminar la cadena de hash
+            # con ruido de escaneo (el rate-limiter ya las mitiga).
+            if _AUDIT_AVAILABLE and user_id is not None:
+                try:
+                    await audit.append_denial(
+                        conn,
+                        tenant_slug=x_tenant_slug,
+                        service=_SERVICE,
+                        actor=str(user_id),
+                        perm_name=perm_name,
+                        min_crud=min_crud,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                    logger.warning("audit.append_denial failed", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={

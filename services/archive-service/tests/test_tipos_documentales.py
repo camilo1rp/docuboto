@@ -181,9 +181,15 @@ async def test_delete_tipo_forbidden_without_permission(client_with_conn) -> Non
 
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
-    # `require_permission` sí llama `execute` (SET search_path) antes de
-    # denegar; solo debe haberse llamado esa vez, no el DELETE de negocio.
-    mock_conn.execute.assert_called_once()
+    # `require_permission` llama `execute` para SET search_path y, al ser un
+    # usuario IDENTIFICADO, también dos veces más para la traza best-effort del
+    # acceso denegado (advisory lock + INSERT audit_log, RF-SEG/MoReq) — nunca
+    # para el DELETE de negocio, que no se ejecuta.
+    assert mock_conn.execute.call_count == 3
+    delete_calls = [
+        c for c in mock_conn.execute.call_args_list if "DELETE FROM" in c.args[0]
+    ]
+    assert delete_calls == []
 
 
 @pytest.mark.asyncio

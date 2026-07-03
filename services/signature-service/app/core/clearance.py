@@ -28,13 +28,24 @@ El api-gateway inyecta:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Sequence
 
 import asyncpg
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.core.database import get_tenant_conn
+
+try:
+    from orpycamcp_common import audit
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover — common not installed in some test envs
+    audit = None  # type: ignore[assignment]
+    _AUDIT_AVAILABLE = False
+
+_SERVICE = "signature-service"
+logger = logging.getLogger(__name__)
 
 # Security level constants (mirrors document-service, security_levels table).
 PUBLICA = 1
@@ -144,9 +155,26 @@ def require_permission(perm_name: str, min_crud: int = 1):
 
     async def _dep(
         actor: uuid.UUID = Depends(get_actor),
+        x_tenant_slug: str | None = Header(default=None),
         conn: asyncpg.Connection = Depends(get_tenant_conn),
     ) -> None:
         if not await check_permission(conn, actor, perm_name, min_crud):
+            # Traza best-effort del acceso denegado (RF-SEG / MoReq). ``actor``
+            # aquí SIEMPRE está identificado — ``get_actor`` ya devolvió 401 si
+            # faltaba/era inválido X-User-Id — así que no hay caso anónimo que
+            # excluir (a diferencia de document/archive/workflow).
+            if _AUDIT_AVAILABLE:
+                try:
+                    await audit.append_denial(
+                        conn,
+                        tenant_slug=x_tenant_slug,
+                        service=_SERVICE,
+                        actor=str(actor),
+                        perm_name=perm_name,
+                        min_crud=min_crud,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                    logger.warning("audit.append_denial failed", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={

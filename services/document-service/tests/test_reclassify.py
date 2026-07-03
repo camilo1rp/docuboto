@@ -71,8 +71,10 @@ async def test_reclassify_forbidden_without_permission(client_with_conn) -> None
 
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
-    # Solo check_permission consumió fetchval (1 llamada).
-    assert mock_conn.fetchval.call_count == 1
+    # check_permission consumió 1 fetchval; el usuario está IDENTIFICADO, así que
+    # la traza best-effort del acceso denegado (RF-SEG/MoReq) consume una segunda
+    # (prev_hash de audit_log) — nunca llega a la lógica de negocio del endpoint.
+    assert mock_conn.fetchval.call_count == 2
 
 
 # ---------------------------------------------------------------------------

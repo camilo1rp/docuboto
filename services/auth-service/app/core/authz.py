@@ -16,6 +16,7 @@ comportamiento anterior al fix RBAC), se calculan sus permisos efectivos y se ex
 el permiso requerido. ROOT (`USUA_PERM_ROOT`) hace bypass.
 """
 
+import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -27,6 +28,16 @@ from fastapi import Depends, HTTPException, Request, status
 from app.core.database import get_tenant_conn
 from app.repositories.rbac_repository import RBACRepository
 from app.services.rbac_service import RBACService, has_permission
+
+try:
+    from orpycamcp_common import audit
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover — common not installed in some test envs
+    audit = None  # type: ignore[assignment]
+    _AUDIT_AVAILABLE = False
+
+_SERVICE = "auth-service"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -80,6 +91,26 @@ async def get_caller(
     repo = RBACRepository(conn)
     user = await repo.get_user(user_id)   # looks up by auth_users.id, not keycloak_sub
     if user is None:
+        # Traza best-effort (opcional, RF-SEG / MoReq): el llamante SÍ mandó un
+        # X-User-Id identificable (UUID válido), simplemente no está aprovisionado
+        # en este tenant — no es una sonda anónima, así que sí vale la pena dejar
+        # rastro. ``perm_name`` no aplica aquí (no hay permiso concreto en juego);
+        # se usa un marcador de object_ref distinto al de denegación por permiso,
+        # y ``motivo`` explícito para que el asiento no se confunda con una
+        # denegación por permiso insuficiente al filtrar por payload.motivo.
+        if _AUDIT_AVAILABLE:
+            try:
+                await audit.append_denial(
+                    conn,
+                    tenant_slug=request.headers.get("X-Tenant-Slug"),
+                    service=_SERVICE,
+                    actor=str(user_id),
+                    perm_name="__not_provisioned__",
+                    min_crud=0,
+                    motivo="usuario_no_aprovisionado",
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning("audit.append_denial failed", exc_info=True)
         raise _forbidden("Caller is not provisioned in this tenant")
     service = RBACService(repo)
     perms = await service.resolve_effective_permissions(user["id"])
@@ -94,8 +125,28 @@ async def get_caller(
 def require_permission(name: str, min_crud: int = 1) -> Callable[..., Coroutine[Any, Any, Caller]]:
     """Dependencia FastAPI que exige ``name`` con al menos ``min_crud`` (ROOT bypass)."""
 
-    async def dependency(caller: Caller = Depends(get_caller)) -> Caller:
+    async def dependency(
+        request: Request,
+        caller: Caller = Depends(get_caller),
+        conn: asyncpg.Connection = Depends(get_tenant_conn),
+    ) -> Caller:
         if not has_permission(caller.permissions, name, min_crud):
+            # Traza best-effort del acceso denegado (RF-SEG / MoReq). ``caller``
+            # aquí SIEMPRE está identificado — ``get_caller`` ya devolvió 401/403
+            # si faltaba/era inválido X-User-Id o si no estaba aprovisionado — así
+            # que no hay caso anónimo que excluir.
+            if _AUDIT_AVAILABLE:
+                try:
+                    await audit.append_denial(
+                        conn,
+                        tenant_slug=request.headers.get("X-Tenant-Slug"),
+                        service=_SERVICE,
+                        actor=str(caller.user_id),
+                        perm_name=name,
+                        min_crud=min_crud,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                    logger.warning("audit.append_denial failed", exc_info=True)
             raise _forbidden(f"Requires permission '{name}' (crud>={min_crud})")
         return caller
 

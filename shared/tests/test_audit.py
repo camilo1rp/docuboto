@@ -9,6 +9,7 @@
 
 """Tests de orpycamcp_common.audit (lógica de hash; sin BD real)."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -156,3 +157,59 @@ async def test_append_accepts_mcp_canal() -> None:
     insert_call = conn.execute.await_args_list[-1]
     # canal is the 4th positional arg ($4) after tenant, service, actor
     assert insert_call.args[4] == "mcp"
+
+
+# ---------------------------------------------------------------------------
+# append_denial: motivo del asiento (RBAC denial audit)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_append_denial_defaults_motivo_permiso_insuficiente() -> None:
+    conn = _mock_conn()
+    await audit.append_denial(
+        conn,
+        tenant_slug="icetex",
+        service="document-service",
+        actor="user-1",
+        perm_name="PERM_RADI",
+        min_crud=2,
+    )
+    insert_call = conn.execute.await_args_list[-1]
+    payload = json.loads(insert_call.args[8])
+    assert payload["motivo"] == "permiso_insuficiente"
+    assert payload["perm"] == "PERM_RADI"
+    assert payload["min_crud"] == 2
+
+
+@pytest.mark.asyncio
+async def test_append_denial_accepts_custom_motivo() -> None:
+    """La rama "no aprovisionado" de auth-service pasa un motivo distinto para
+    no confundirse con una denegación por permiso insuficiente al filtrar
+    audit_log por payload.motivo."""
+    conn = _mock_conn()
+    await audit.append_denial(
+        conn,
+        tenant_slug="icetex",
+        service="auth-service",
+        actor="user-1",
+        perm_name="__not_provisioned__",
+        min_crud=0,
+        motivo="usuario_no_aprovisionado",
+    )
+    insert_call = conn.execute.await_args_list[-1]
+    payload = json.loads(insert_call.args[8])
+    assert payload["motivo"] == "usuario_no_aprovisionado"
+
+
+@pytest.mark.asyncio
+async def test_append_denial_is_best_effort_on_failure() -> None:
+    conn = _mock_conn()
+    conn.execute.side_effect = RuntimeError("db down")
+    # Must not raise — best-effort, never turns a 403 into a 500.
+    await audit.append_denial(
+        conn,
+        tenant_slug="icetex",
+        service="document-service",
+        actor="user-1",
+        perm_name="PERM_RADI",
+    )

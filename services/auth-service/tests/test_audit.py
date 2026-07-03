@@ -11,7 +11,7 @@
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
@@ -22,6 +22,16 @@ from app.core.database import get_tenant_conn
 from app.main import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
+
+
+class _FakeTx:
+    """Context manager async no-op para simular conn.transaction()."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
 _ADMIN = Caller(
     user_id=uuid.uuid4(),
     keycloak_sub="kc-admin",
@@ -113,6 +123,7 @@ async def test_verify_broken(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_audit_gate_denies_without_admin(client: AsyncClient) -> None:
     conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=_FakeTx())  # append_denial() best-effort
     _override(
         conn,
         Caller(

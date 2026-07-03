@@ -22,6 +22,7 @@ no provisionadas o cualquier duda, se devuelve PUBLICA (1) — mínimo privilegi
 """
 
 import json
+import logging
 import uuid
 from collections.abc import Sequence
 
@@ -29,6 +30,16 @@ import asyncpg
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.core.database import get_db_conn, tenant_schema
+
+try:
+    from orpycamcp_common import audit
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover — common not installed in some test envs
+    audit = None  # type: ignore[assignment]
+    _AUDIT_AVAILABLE = False
+
+_SERVICE = "workflow-service"
+logger = logging.getLogger(__name__)
 
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
@@ -154,6 +165,23 @@ def require_permission(perm_name: str, min_crud: int = 1):
         schema = tenant_schema(x_tenant_slug)  # valida + normaliza (fail-closed 400)
         await conn.execute(f'SET search_path TO "{schema}", public')
         if not await check_permission(conn, user_id, perm_name, min_crud):
+            # Traza best-effort del acceso denegado (RF-SEG / MoReq). Solo para un
+            # usuario IDENTIFICADO (user_id no nulo) — la rama sin X-Tenant-Slug ya
+            # devolvió 403 arriba y NO llega aquí; las sondas anónimas (sin
+            # X-User-Id válido) no se auditan para no contaminar la cadena de hash
+            # con ruido de escaneo (el rate-limiter ya las mitiga).
+            if _AUDIT_AVAILABLE and user_id is not None:
+                try:
+                    await audit.append_denial(
+                        conn,
+                        tenant_slug=x_tenant_slug,
+                        service=_SERVICE,
+                        actor=str(user_id),
+                        perm_name=perm_name,
+                        min_crud=min_crud,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                    logger.warning("audit.append_denial failed", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
