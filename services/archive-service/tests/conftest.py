@@ -91,6 +91,8 @@ def make_radicado_link_record(
     estado: str = "vinculado",
     excluido_at: datetime | None = None,
     excluido_causal: str | None = None,
+    dependencia_productora_codigo: int | None = None,
+    dependencia_productora_nombre: str | None = None,
 ) -> dict:
     return {
         "expediente_id": expediente_id or EXPEDIENTE_ID,
@@ -110,6 +112,11 @@ def make_radicado_link_record(
         "estado": estado,
         "excluido_at": excluido_at,
         "excluido_causal": excluido_causal,
+        # E15 perfil v4 (R1, migración 019): dependencia productora del
+        # documento, aportada al vincular (Opción A); NULL por defecto = no
+        # declarada. Ambos campos van juntos o ninguno (CHECK de pareja + Pydantic).
+        "dependencia_productora_codigo": dependencia_productora_codigo,
+        "dependencia_productora_nombre": dependencia_productora_nombre,
     }
 
 

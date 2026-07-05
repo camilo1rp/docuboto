@@ -64,9 +64,8 @@ def _indice_row(*, version=1, estado="vigente", content="x" * 64, num=1, xsd_ver
 
 
 def test_build_xml_has_normative_fields() -> None:
-    """E15 finalización RT-15 (perfil v3 "conforme extendido"): el índice se
-    emite en el namespace v3 — `xsdVersion="v3"` en la raíz — actualizado tras
-    el salto v2->v3."""
+    """E15 perfil v4 "conforme completo": el índice se emite en el namespace
+    v4 — `xsdVersion="v4"` en la raíz — actualizado tras el salto v3->v4."""
     data = IndiceData(
         expediente_id=str(uuid.uuid4()),
         code="EXP-2024-0001",
@@ -76,20 +75,34 @@ def test_build_xml_has_normative_fields() -> None:
         items=[IndiceItemData(document_id=str(uuid.uuid4()), orden=1, titulo="2024-E-001")],
     )
     xml = build_xml(data)
-    assert NS == "urn:orpycamcp:indice:v3"
-    assert XSD_VERSION == "v3"
+    assert NS == "urn:orpycamcp:indice:v4"
+    assert XSD_VERSION == "v4"
     assert NS in xml
-    assert 'xsdVersion="v3"' in xml
+    assert 'xsdVersion="v4"' in xml
     assert "identificadorSistema" in xml
     assert "valorHuella" in xml and "funcionResumen" in xml
     assert "<" in xml and "documento" in xml
 
 
-def test_content_hash_is_order_sensitive() -> None:
+def test_build_xml_is_order_insensitive_and_content_hash_reflects_xml() -> None:
+    """v4: `build_xml` siempre serializa por `orden_documental` ESTABLE, así
+    que el orden de ENTRADA de `items` en la lista Python no afecta el XML
+    resultante — a diferencia de v1-v3, donde el canon de `content_hash` (una
+    concatenación de campos) SÍ dependía del orden de entrada. `content_hash`
+    (v4) ahora es literalmente el hash del XML ya construido: mismo XML ->
+    mismo hash; un conjunto documental distinto -> hash distinto."""
+    common = dict(expediente_id=str(uuid.uuid4()), code="EXP-2024-0001", name="Contrato", serie_id=None, fecha_creacion=NOW)
     a = IndiceItemData(document_id="11111111-1111-1111-1111-111111111111", orden=1)
     b = IndiceItemData(document_id="22222222-2222-2222-2222-222222222222", orden=2)
-    assert content_hash([a, b]) != content_hash([b, a])
-    assert content_hash([a, b]) == content_hash([a, b])  # determinista
+    xml_ab = build_xml(IndiceData(**common, items=[a, b]))
+    xml_ba = build_xml(IndiceData(**common, items=[b, a]))
+    assert xml_ab == xml_ba
+    assert content_hash(xml_ab) == content_hash(xml_ba)
+    assert content_hash(xml_ab) == content_hash(xml_ab)  # determinista
+
+    c = IndiceItemData(document_id="33333333-3333-3333-3333-333333333333", orden=1)
+    xml_c = build_xml(IndiceData(**common, items=[c]))
+    assert content_hash(xml_c) != content_hash(xml_ab)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +113,9 @@ def test_content_hash_is_order_sensitive() -> None:
 def test_build_xml_v2_emits_formato_tamano_folios_fecha_incorporacion() -> None:
     """(a) Cuando el vínculo declaró formato/tamaño/folios, el XML los emite
     junto con <fechaIncorporacion> (renombre de fechaArchivado, heredado de
-    v2), ahora en el namespace urn:orpycamcp:indice:v3 con xsdVersion="v3"."""
+    v2) y <fechaDeclaracion> (v4, R2 — mismo valor, equivalencia
+    declaracion==incorporacion), ahora en el namespace urn:orpycamcp:indice:v4
+    con xsdVersion="v4"."""
     fecha = NOW
     data = IndiceData(
         expediente_id=str(uuid.uuid4()),
@@ -123,11 +138,15 @@ def test_build_xml_v2_emits_formato_tamano_folios_fecha_incorporacion() -> None:
     )
     xml = build_xml(data)
     assert NS in xml
-    assert 'xsdVersion="v3"' in xml
+    assert 'xsdVersion="v4"' in xml
     assert "formato" in xml and "application/pdf" in xml
     assert "tamano" in xml and ">204800<" in xml
     assert "folios" in xml and ">12<" in xml
     assert "fechaIncorporacion" in xml and fecha.isoformat() in xml
+    assert "fechaDeclaracion" in xml
+    root = ET.fromstring(xml)
+    doc = root.find("idx:documentos/idx:documento", _IDX_NS)
+    assert doc.findtext("idx:fechaDeclaracion", namespaces=_IDX_NS) == fecha.isoformat()
     # Campos core siempre presentes, con o sin RT-15.
     assert "identificador" in xml
     assert "valorHuella" in xml
@@ -168,19 +187,25 @@ def test_build_xml_v2_omits_rt15_fields_when_not_declared() -> None:
 
 
 def test_content_hash_is_sensitive_to_rt15_metadata() -> None:
-    """(d, canon unitario) Mismo documento/huella/orden pero folios distinto
-    (uno sin declarar) produce content_hash distinto — declarar/corregir un
-    metadato RT-15 en un expediente abierto dispara versión nueva."""
+    """(d) Mismo documento/huella/orden pero folios distinto (uno sin
+    declarar) produce un XML — y por tanto un content_hash — distinto:
+    declarar/corregir un metadato RT-15 en un expediente abierto dispara
+    versión nueva (v4: el hash cubre el XML completo, ver
+    `test_build_xml_is_order_insensitive_and_content_hash_reflects_xml`)."""
     base = dict(
         document_id="33333333-3333-3333-3333-333333333333",
         orden=1,
         valor_huella="a" * 64,
     )
+    common = dict(expediente_id=str(uuid.uuid4()), code="EXP-2024-0001", name="Contrato", serie_id=None, fecha_creacion=NOW)
     sin_folios = IndiceItemData(**base)
     con_folios = IndiceItemData(**base, folios=10)
-    assert content_hash([sin_folios]) != content_hash([con_folios])
-    # Idempotencia: mismos metadatos -> mismo hash.
-    assert content_hash([con_folios]) == content_hash([IndiceItemData(**base, folios=10)])
+    xml_sin = build_xml(IndiceData(**common, items=[sin_folios]))
+    xml_con = build_xml(IndiceData(**common, items=[con_folios]))
+    assert content_hash(xml_sin) != content_hash(xml_con)
+    # Idempotencia: mismos metadatos -> mismo XML -> mismo hash.
+    xml_con_2 = build_xml(IndiceData(**common, items=[IndiceItemData(**base, folios=10)]))
+    assert content_hash(xml_con) == content_hash(xml_con_2)
 
 
 def test_xml_sha256_rehash_matches_stored_v1_hash() -> None:
@@ -199,8 +224,8 @@ def test_xml_sha256_rehash_matches_stored_v1_hash() -> None:
 
 
 @pytest.mark.asyncio
-async def test_insert_version_persists_xsd_version_v3() -> None:
-    """(e) Toda versión nueva del índice persiste xsd_version='v3' de forma
+async def test_insert_version_persists_xsd_version_v4() -> None:
+    """(e) Toda versión nueva del índice persiste xsd_version='v4' de forma
     explícita — el repositorio NO confía en el DEFAULT 'v1' de la columna
     (migración 015)."""
     from app.repositories.index_repository import IndexRepository
@@ -222,7 +247,7 @@ async def test_insert_version_persists_xsd_version_v3() -> None:
     )
 
     args, _kwargs = mock_conn.fetchrow.call_args
-    assert args[-1] == "v3"
+    assert args[-1] == "v4"
     assert args[-1] == XSD_VERSION
 
 
@@ -282,6 +307,50 @@ async def test_get_indice_current(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_indice_current_exposes_dependencia_productora(client_with_conn) -> None:
+    """(v4, R1) La vista JSON consultable expone `dependencia_productora_codigo`/
+    `_nombre` por item — antes `IndexService._to_response` los omitía aunque
+    `IndexRepository.get_items` ya proyectaba las columnas (regresión: el
+    dato quedaba solo en el XML probatorio, no en la vista consultable)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        None,
+        make_expediente_record(exp_id=exp_id),
+        _indice_row(version=1, num=1),
+    ]
+    mock_conn.fetch.side_effect = [
+        [],
+        [
+            {
+                "document_id": uuid.uuid4(),
+                "orden": 1,
+                "titulo": "2024-E-001",
+                "tipologia": None,
+                "fecha_declaracion": None,
+                "fecha_archivado": NOW,
+                "valor_huella": None,
+                "funcion_resumen": "SHA-256",
+                "formato": None,
+                "tamano_bytes": None,
+                "folios": None,
+                "orden_documental": 1,
+                "nivel_seguridad_snapshot": 1,
+                "estado": "vinculado",
+                "dependencia_productora_codigo": 100,
+                "dependencia_productora_nombre": "Secretaría General",
+            },
+        ],
+    ]
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["dependencia_productora_codigo"] == 100
+    assert item["dependencia_productora_nombre"] == "Secretaría General"
+
+
+@pytest.mark.asyncio
 async def test_get_indice_item_tolerates_missing_rt15_keys(client_with_conn) -> None:
     """Filas de item sin formato/tamano_bytes/folios proyectados (legado) no
     rompen la respuesta — se omiten como None."""
@@ -314,6 +383,8 @@ async def test_get_indice_item_tolerates_missing_rt15_keys(client_with_conn) -> 
     assert item["formato"] is None
     assert item["tamano_bytes"] is None
     assert item["folios"] is None
+    assert item["dependencia_productora_codigo"] is None
+    assert item["dependencia_productora_nombre"] is None
     assert item["estado"] is None
     assert item["nivel_seguridad"] is None
 
@@ -590,6 +661,27 @@ async def test_verify_detects_indice_xml_tampering(client_with_conn) -> None:
     assert body["documentos"][0]["coincide"] is True
 
 
+async def _expected_rebuild_hash(exp_row: dict, link_rows: list[dict]) -> str:
+    """Computa el content_hash (v4) que produciría `IndexService.rebuild_index`
+    para este par (expediente, vínculos) — reutiliza las MISMAS piezas del
+    servicio bajo prueba (`_items_from`/`_data`/`build_xml`/`content_hash`),
+    no una reimplementación manual del canon. v4 hashea el XML COMPLETO
+    (cabecera incluida), así que el "expected" ya no puede construirse a mano
+    a partir de un solo `IndiceItemData` como en v1-v3 — debe pasar por
+    `_data` (nivel_seguridad, productora_presente, pista_acceso_desde,
+    contexto TRD) igual que el código real."""
+    from app.models.archive import Expediente
+    from app.repositories.archive_repository import _row_to_expediente, _row_to_radicado
+    from app.services.index_service import IndexService
+
+    exp: Expediente = _row_to_expediente(exp_row)
+    exp.radicados = [_row_to_radicado(r) for r in link_rows]
+    svc = IndexService.__new__(IndexService)
+    items = svc._items_from(exp)
+    data = await svc._data(exp, items)
+    return content_hash(build_xml(data))
+
+
 @pytest.mark.asyncio
 async def test_rebuild_idempotent_when_unchanged(client_with_conn) -> None:
     client, mock_conn = client_with_conn
@@ -597,18 +689,15 @@ async def test_rebuild_idempotent_when_unchanged(client_with_conn) -> None:
     exp_id = uuid.uuid4()
     rad_id = uuid.uuid4()
     added_at = NOW
-    # content_hash del único documento (orden 1, sin huella) que el índice ya
-    # tiene — `content_hash` (RT-15) también depende de `fecha_archivado`, así
-    # que debe coincidir con el `added_at` del vínculo mockeado abajo.
-    expected_ch = content_hash(
-        [IndiceItemData(document_id=str(rad_id), orden=1, fecha_archivado=added_at)]
-    )
     exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, tracking_number="2024-E-001", added_at=added_at)
+    # content_hash del único documento (orden 1, sin huella) que el índice ya
+    # tiene — v4: el hash cubre el XML completo (cabecera incluida), así que
+    # se computa con las mismas piezas del servicio bajo prueba.
+    expected_ch = await _expected_rebuild_hash(exp, [link])
     # get_expediente_by_id: fetchrow(exp) + fetch(radicados); get_current: fetchrow(indice)
     mock_conn.fetchrow.side_effect = [exp, _indice_row(version=3, content=expected_ch)]
-    mock_conn.fetch.return_value = [
-        make_radicado_link_record(radicado_id=rad_id, tracking_number="2024-E-001", added_at=added_at)
-    ]
+    mock_conn.fetch.return_value = [link]
 
     resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -628,31 +717,18 @@ async def test_rebuild_idempotent_when_rt15_metadata_unchanged(client_with_conn)
     rad_id = uuid.uuid4()
     h = "7" * 64
     added_at = NOW
-    expected_ch = content_hash(
-        [
-            IndiceItemData(
-                document_id=str(rad_id),
-                orden=1,
-                valor_huella=h,
-                formato="application/pdf",
-                tamano_bytes=1024,
-                folios=5,
-                fecha_archivado=added_at,
-            )
-        ]
-    )
     exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(
+        radicado_id=rad_id,
+        content_hash=h,
+        formato="application/pdf",
+        tamano_bytes=1024,
+        folios=5,
+        added_at=added_at,
+    )
+    expected_ch = await _expected_rebuild_hash(exp, [link])
     mock_conn.fetchrow.side_effect = [exp, _indice_row(version=1, content=expected_ch)]
-    mock_conn.fetch.return_value = [
-        make_radicado_link_record(
-            radicado_id=rad_id,
-            content_hash=h,
-            formato="application/pdf",
-            tamano_bytes=1024,
-            folios=5,
-            added_at=added_at,
-        )
-    ]
+    mock_conn.fetch.return_value = [link]
 
     resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -672,11 +748,10 @@ async def test_rebuild_creates_new_version_when_only_folios_changed(client_with_
     rad_id = uuid.uuid4()
     h = "9" * 64
     added_at = NOW
-    # El índice vigente (version=3) fue generado ANTES de declarar folios.
-    ch_sin_folios = content_hash(
-        [IndiceItemData(document_id=str(rad_id), orden=1, valor_huella=h, fecha_archivado=added_at)]
-    )
     exp = make_expediente_record(exp_id=exp_id)
+    # El índice vigente (version=3) fue generado ANTES de declarar folios.
+    link_sin_folios = make_radicado_link_record(radicado_id=rad_id, content_hash=h, added_at=added_at)
+    ch_sin_folios = await _expected_rebuild_hash(exp, [link_sin_folios])
     # get_expediente_by_id, get_current, e insert_version (RETURNING) — en ese orden.
     mock_conn.fetchrow.side_effect = [
         exp,
@@ -693,7 +768,7 @@ async def test_rebuild_creates_new_version_when_only_folios_changed(client_with_
     body = resp.json()
     assert body["unchanged"] is False
     assert body["version"] == 4
-    assert body["xsd_version"] == "v3"
+    assert body["xsd_version"] == "v4"
 
     # ADR-010: toda regeneración real (rebuild/link/unlink/batch) deja su
     # propio asiento en audit_log — antes solo `close_expediente` lo hacía.
@@ -706,7 +781,7 @@ async def test_rebuild_creates_new_version_when_only_folios_changed(client_with_
     assert any(a[5] == "archive.indice_regenerated" for a in audit_calls)
     regen_payload = next(a[8] for a in audit_calls if a[5] == "archive.indice_regenerated")
     assert '"version": 4' in regen_payload
-    assert '"xsd_version": "v3"' in regen_payload
+    assert '"xsd_version": "v4"' in regen_payload
 
 
 @pytest.mark.asyncio
@@ -1439,27 +1514,94 @@ async def test_verify_clearance_scoped_returns_404(client_with_conn) -> None:
     assert resp.json()["detail"]["error"] == "expediente_not_found"
 
 
-def test_build_xml_v3_lista_control_acceso_reflects_expediente_nivel() -> None:
-    """(d) <listaControlAcceso> por documento hereda el NIVEL de SEGURIDAD del
-    EXPEDIENTE (no hay clasificación por documento) — 2=RESERVADA."""
+def test_build_xml_v4_lista_control_acceso_moves_to_cabecera() -> None:
+    """(v4, R4) <listaControlAcceso> se emite UNA sola vez en la CABECERA
+    (nivel del EXPEDIENTE) — ya NO por-documento (duplicado N veces sin
+    necesidad, v3). `<politicaAcceso>` acompaña con el modelo/permiso/
+    clearance mínimo ESTABLE (misma fuente que `nivelSeguridad`, contrato R4:
+    no se deriva aparte)."""
     data = IndiceData(
         expediente_id=str(uuid.uuid4()),
         code="EXP-2026-0001",
         name="Contrato",
         serie_id=None,
         fecha_creacion=NOW,
-        items=[
-            IndiceItemData(
-                document_id=str(uuid.uuid4()), orden=1, titulo="A", nivel_seguridad=2
-            )
-        ],
+        items=[IndiceItemData(document_id=str(uuid.uuid4()), orden=1, titulo="A")],
+        nivel_seguridad=2,
     )
     xml = build_xml(data)
-    doc = _documento_elements(xml)[0]
-    nivel_el = doc.find("idx:listaControlAcceso/idx:nivelSeguridad", _IDX_NS)
-    assert nivel_el is not None
+    root = ET.fromstring(xml)
+    lca = root.find("idx:cabecera/idx:listaControlAcceso", _IDX_NS)
+    assert lca is not None
+    nivel_el = lca.find("idx:nivelSeguridad", _IDX_NS)
     assert nivel_el.get("codigo") == "2"
     assert nivel_el.text == "RESERVADA"
+    politica_el = lca.find("idx:politicaAcceso", _IDX_NS)
+    assert politica_el is not None
+    assert politica_el.get("modelo") == "no-read-up"
+    assert politica_el.get("requiere") == "USUA_PERM_EXPEDIENTE"
+    assert politica_el.get("clearanceMinimo") == "2"  # misma fuente que nivelSeguridad
+    # Ya NO se duplica por-documento (v3 -> v4).
+    doc = _documento_elements(xml)[0]
+    assert doc.find("idx:listaControlAcceso", _IDX_NS) is None
+
+
+def test_build_xml_v4_pista_auditoria_and_conformidad_markers() -> None:
+    """(v4, R3) `<pistaAuditoria>` atesta (referencia estable, sin contenido
+    mutable) que el historial de acceso es verificable vía `public.audit_log`
+    — NUNCA incrusta timestamps/conteos que romperían la idempotencia del
+    hash. `<conformidad>` es el marcador HONESTO per-instancia (RF-FIR-15):
+    refleja los valores que le pasó `IndexService._data`, no una constante."""
+    from datetime import date
+
+    data = IndiceData(
+        expediente_id=str(uuid.uuid4()),
+        code="EXP-2026-0001",
+        name="Contrato",
+        serie_id=None,
+        fecha_creacion=NOW,
+        items=[],
+        productora_presente=False,
+        pista_acceso_desde=date(2026, 1, 1),
+    )
+    xml = build_xml(data)
+    root = ET.fromstring(xml)
+    pista_el = root.find("idx:cabecera/idx:pistaAuditoria", _IDX_NS)
+    assert pista_el is not None
+    assert pista_el.get("disponible") == "true"
+    assert pista_el.get("registro") == "public.audit_log"
+    assert pista_el.get("objetoRef") == "EXP-2026-0001"
+    conformidad_el = root.find("idx:cabecera/idx:conformidad", _IDX_NS)
+    assert conformidad_el is not None
+    assert conformidad_el.get("perfil") == "v4"
+    assert conformidad_el.get("productoraPresente") == "false"
+    assert conformidad_el.get("pistaAccesoDesde") == "2026-01-01"
+
+
+def test_build_xml_v4_dependencia_productora_emitted_only_when_both_present() -> None:
+    """(v4, R1) `<dependenciaProductora>` solo se emite cuando AMBOS
+    codigo/nombre están declarados — sin centinela para filas legacy con solo
+    uno de los dos (que en la práctica no puede ocurrir, CHECK de pareja en
+    BD, pero el builder no debe asumirlo)."""
+    common = dict(expediente_id=str(uuid.uuid4()), code="EXP-2026-0001", name="Contrato", serie_id=None, fecha_creacion=NOW)
+    con_productora = IndiceItemData(
+        document_id=str(uuid.uuid4()),
+        orden=1,
+        dependencia_productora_codigo=100,
+        dependencia_productora_nombre="Secretaría General",
+    )
+    sin_productora = IndiceItemData(document_id=str(uuid.uuid4()), orden=1)
+
+    xml_con = build_xml(IndiceData(**common, items=[con_productora]))
+    doc_con = _documento_elements(xml_con)[0]
+    dep_el = doc_con.find("idx:dependenciaProductora", _IDX_NS)
+    assert dep_el is not None
+    assert dep_el.get("codigo") == "100"
+    assert dep_el.text == "Secretaría General"
+
+    xml_sin = build_xml(IndiceData(**common, items=[sin_productora]))
+    doc_sin = _documento_elements(xml_sin)[0]
+    assert doc_sin.find("idx:dependenciaProductora", _IDX_NS) is None
 
 
 def test_build_xml_v3_contexto_with_serie_subserie_and_fecha_primer_uso() -> None:
@@ -1574,6 +1716,41 @@ async def test_contexto_series_top_level_has_no_subserie() -> None:
 
 
 @pytest.mark.asyncio
+async def test_data_productora_presente_false_sin_documentos_vigentes() -> None:
+    """(hallazgo Baja, cierre v4) Un expediente SIN documentos vigentes
+    (versión 0 recién creada, o todos excluidos) debe emitir
+    `productoraPresente="false"` — `all()` sobre una lista vacía da
+    vacuamente `True`, lo que proyectaría conformidad positiva sobre un
+    conjunto documental inexistente. Solo debe ser `True` cuando hay AL MENOS
+    UN vigente y todos declararon productora."""
+    from app.models.archive import Expediente
+    from app.services.index_service import IndexService
+
+    exp = Expediente(
+        id=uuid.uuid4(),
+        code="EXP-2026-0001",
+        name="Contrato",
+        description=None,
+        trd_serie_id=None,
+        status="open",
+        opened_by=None,
+        opened_at=NOW,
+        closed_at=None,
+        updated_at=NOW,
+        radicados=[],
+    )
+    svc = IndexService.__new__(IndexService)
+
+    data = await svc._data(exp, items=[])
+    assert data.productora_presente is False
+
+    xml = build_xml(data)
+    root = ET.fromstring(xml)
+    conformidad_el = root.find("idx:cabecera/idx:conformidad", _IDX_NS)
+    assert conformidad_el.get("productoraPresente") == "false"
+
+
+@pytest.mark.asyncio
 async def test_verify_v2_indice_firmado_sigue_verificando_ok(client_with_conn) -> None:
     """(g) Retrocompat: un índice legado con xsd_version='v2' (creado antes
     del salto a v3, E15 finalización RT-15) y ya firmado sigue verificando OK
@@ -1625,3 +1802,96 @@ async def test_verify_v2_indice_firmado_sigue_verificando_ok(client_with_conn) -
     assert body["firma"]["presente"] is True
     assert body["firma"]["valida"] is True
     assert body["valido"] is True
+
+
+# ---------------------------------------------------------------------------
+# Pista de acceso (E15 perfil v4, R3-a) — GET /indice y GET /indice.xml dejan
+# traza en audit_log SOLO para canales de un usuario real; 'system' (default,
+# canal ausente) no audita una consulta.
+# ---------------------------------------------------------------------------
+
+
+def _audit_inserts(mock_conn, action: str) -> list:
+    return [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str)
+        and "INSERT INTO public.audit_log" in c.args[0]
+        and c.args[5] == action
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canal", ["api", "ui", "mcp"])
+async def test_get_indice_audits_read_access_for_user_channels(client_with_conn, canal) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 + advisory lock/prev_hash de audit.append
+    exp_id = uuid.uuid4()
+    exp = make_expediente_record(exp_id=exp_id)
+    mock_conn.fetchrow.side_effect = [None, exp, _indice_row(version=1, num=0)]
+    mock_conn.fetch.side_effect = [[], []]
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{exp_id}/indice",
+        headers={**TENANT_HEADERS, "X-Canal": canal},
+    )
+    assert resp.status_code == 200
+    calls = _audit_inserts(mock_conn, "archive.indice_consultado")
+    assert len(calls) == 1
+    assert calls[0][6] == "expediente_indice"  # object_type
+    assert calls[0][7] == exp["code"]  # object_ref
+
+
+@pytest.mark.asyncio
+async def test_get_indice_does_not_audit_system_channel(client_with_conn) -> None:
+    """Sin `X-Canal` (o `system` explícito) — regeneración/verificación
+    interna — no debe dejar pista de acceso: no es una lectura de un usuario
+    real (evita amplificar cada rebuild/verify como si alguien "leyera" el
+    índice, ver `IndexService._audit_read_access`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id = uuid.uuid4()
+    exp = make_expediente_record(exp_id=exp_id)
+    mock_conn.fetchrow.side_effect = [None, exp, _indice_row(version=1, num=0)]
+    mock_conn.fetch.side_effect = [[], []]
+
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert _audit_inserts(mock_conn, "archive.indice_consultado") == []
+
+
+@pytest.mark.asyncio
+async def test_get_indice_xml_audits_read_access(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id = uuid.uuid4()
+    exp = make_expediente_record(exp_id=exp_id)
+    mock_conn.fetchrow.side_effect = [None, exp, _indice_row(version=1, num=0)]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{exp_id}/indice.xml",
+        headers={**TENANT_HEADERS, "X-Canal": "api"},
+    )
+    assert resp.status_code == 200
+    assert len(_audit_inserts(mock_conn, "archive.indice_consultado")) == 1
+
+
+@pytest.mark.asyncio
+async def test_index_service_audit_read_access_does_not_write_without_user_id() -> None:
+    """(hallazgo Baja, cierre v4) `IndexService._audit_read_access` con canal
+    'api' pero `user_id=None` NO escribe `audit_log` — espejo de
+    `ArchiveService._audit_read_access` (R3-a exige un actor identificado, no
+    `actor=None`). Se prueba el método directamente: en el router
+    (`indice.py`) este estado es inalcanzable vía HTTP porque
+    `require_permission("USUA_PERM_EXPEDIENTE")` ya exige un `X-User-Id`
+    resoluble (fail-closed en `check_permission`); la guarda debe sostenerse
+    igual si `IndexService` se invoca directamente."""
+    from app.services.index_service import IndexService
+
+    mock_conn = AsyncMock()
+    svc = IndexService(mock_conn, "demo")
+
+    await svc._audit_read_access("EXP-2024-0001", version=1, user_id=None, canal="api")
+
+    mock_conn.execute.assert_not_called()

@@ -58,6 +58,12 @@ class ExpedienteRadicado:
     estado: str = "vinculado"
     excluido_at: datetime | None = None
     excluido_causal: str | None = None
+    # E15 perfil v4 (R1, migración 019): dependencia productora del documento,
+    # aportada por quien vincula (Opción A, igual que formato/tamano_bytes/
+    # folios) — grano por-radicado, sin llamada HTTP a document-service. Ambos
+    # campos van juntos o ninguno (CHECK de pareja en BD + validador Pydantic).
+    dependencia_productora_codigo: int | None = None
+    dependencia_productora_nombre: str | None = None
 
 
 @dataclass

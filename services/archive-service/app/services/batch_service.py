@@ -128,22 +128,39 @@ class BatchArchiveService:
                     zip(exp.radicado_ids, exp.tracking_numbers or [], strict=False)
                 ):
                     tn_val = tn if i < len(exp.tracking_numbers) else str(rid)
+                    # E15 perfil v4 (R1): dependencia productora alineada por
+                    # ÍNDICE con `radicado_ids` (listas paralelas opcionales,
+                    # igual que `tracking_numbers`); fuera de rango o ausente
+                    # -> None (no declarada para ese radicado).
+                    dep_codigo = (
+                        exp.dependencia_productora_codigos[i]
+                        if i < len(exp.dependencia_productora_codigos)
+                        else None
+                    )
+                    dep_nombre = (
+                        exp.dependencia_productora_nombres[i]
+                        if i < len(exp.dependencia_productora_nombres)
+                        else None
+                    )
                     await self.conn.execute(
                         """
                         INSERT INTO expediente_radicados
                             (expediente_id, radicado_id, tracking_number,
-                             orden_documental, estado)
+                             orden_documental, estado,
+                             dependencia_productora_codigo, dependencia_productora_nombre)
                         VALUES (
                             $1, $2, $3,
                             (SELECT COALESCE(MAX(orden_documental), 0) + 1
                                FROM expediente_radicados WHERE expediente_id = $1),
-                            'vinculado'
+                            'vinculado', $4, $5
                         )
                         ON CONFLICT DO NOTHING
                         """,
                         exp_id,
                         rid,
                         tn_val,
+                        dep_codigo,
+                        dep_nombre,
                     )
 
                 await self.conn.execute(

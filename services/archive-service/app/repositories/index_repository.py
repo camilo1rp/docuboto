@@ -110,7 +110,8 @@ class IndexRepository:
             await self._conn.fetch(
                 "SELECT document_id, orden, titulo, tipologia, fecha_declaracion, "
                 "fecha_archivado, valor_huella, funcion_resumen, formato, tamano_bytes, "
-                "folios, orden_documental, nivel_seguridad_snapshot, estado "
+                "folios, orden_documental, nivel_seguridad_snapshot, estado, "
+                "dependencia_productora_codigo, dependencia_productora_nombre "
                 "FROM expediente_indice_item WHERE indice_id = $1 ORDER BY orden ASC",
                 indice_id,
             )
@@ -154,8 +155,9 @@ class IndexRepository:
                         (indice_id, document_id, orden, titulo, tipologia,
                          fecha_archivado, valor_huella, funcion_resumen,
                          formato, tamano_bytes, folios,
-                         orden_documental, nivel_seguridad_snapshot, estado)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                         orden_documental, nivel_seguridad_snapshot, estado,
+                         dependencia_productora_codigo, dependencia_productora_nombre)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                     """,
                     indice["id"],
                     uuid.UUID(it.document_id),
@@ -177,5 +179,9 @@ class IndexRepository:
                     it.orden,
                     it.nivel_seguridad,
                     it.estado,
+                    # v4 (E15 perfil v4, R1): snapshot de la dependencia
+                    # productora — NULL si no se declaró al vincular.
+                    it.dependencia_productora_codigo,
+                    it.dependencia_productora_nombre,
                 )
         return indice

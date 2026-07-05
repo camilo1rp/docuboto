@@ -13,7 +13,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ExpedienteCreate(BaseModel):
@@ -47,6 +47,25 @@ class RadicadoLink(BaseModel):
     formato: str | None = Field(default=None, max_length=150)
     tamano_bytes: int | None = Field(default=None, ge=0)
     folios: int | None = Field(default=None, ge=0)
+    # E15 perfil v4 (R1, Acuerdo AGN 001/2024 art. 4.3.2.3): dependencia
+    # productora del documento, aportada al vincular (Opción A) — grano
+    # por-radicado, sin llamada a document-service. Ambos campos son
+    # OPCIONALES pero deben aportarse JUNTOS o NINGUNO (ver validador abajo +
+    # CHECK de pareja en BD, migración 019) — el índice solo emite
+    # <dependenciaProductora> cuando los dos existen.
+    dependencia_productora_codigo: int | None = Field(default=None, ge=0)
+    dependencia_productora_nombre: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def _productora_codigo_y_nombre_van_juntos(self) -> "RadicadoLink":
+        has_codigo = self.dependencia_productora_codigo is not None
+        has_nombre = self.dependencia_productora_nombre is not None
+        if has_codigo != has_nombre:
+            raise ValueError(
+                "dependencia_productora_codigo y dependencia_productora_nombre "
+                "deben aportarse juntos o ninguno (E15 perfil v4, R1)"
+            )
+        return self
 
 
 class BatchLinkRequest(BaseModel):
@@ -183,6 +202,11 @@ class IndiceItemResponse(BaseModel):
     # v3, que no capturaban estos campos por item.
     estado: str | None = None
     nivel_seguridad: int | None = None
+    # E15 perfil v4 (R1): snapshot de la dependencia productora en esta
+    # versión del índice; NULL si no se declaró al vincular o en versiones
+    # anteriores a v4 (columna no proyectada, ver `.get` tolerante).
+    dependencia_productora_codigo: int | None = None
+    dependencia_productora_nombre: str | None = None
 
 
 class IndiceResponse(BaseModel):
@@ -323,3 +347,35 @@ class ExpedienteSearchResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     database: str
+
+
+class HistorialAccesoEntry(BaseModel):
+    """Entrada de `public.audit_log` filtrada por expediente (E15 perfil v4, R3-b).
+
+    Contrato ESTABLE de solo-lectura (ADR-010): mismas columnas que
+    `auth-service`'s `AuditEntry` (mismo storage), sin exponer `id`/`prev_hash`/
+    `hash` internos de la cadena — el consumidor de este endpoint quiere el
+    HECHO auditado, no la mecánica de verificación de la cadena.
+    """
+
+    tenant_slug: str
+    ts: datetime
+    service: str
+    actor: str | None = None
+    canal: str
+    action: str
+    object_type: str
+    object_ref: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class RolAutorizado(BaseModel):
+    """Snapshot VIVO (no firmado) de qué grupos pueden leer el expediente ahora
+    (E15 perfil v4, R4-b) — deliberadamente FUERA del índice firmado: la matriz
+    RBAC cambia con el tiempo y no debe congelarse en un artefacto probatorio."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    grupo: str
+    clearance_max: int = Field(alias="clearanceMax")
+    crud: int

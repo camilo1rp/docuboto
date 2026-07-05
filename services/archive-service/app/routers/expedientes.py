@@ -38,7 +38,9 @@ from app.schemas.archive import (
     ExpedienteSearchHit,
     ExpedienteSearchResponse,
     ExpedienteUpdate,
+    HistorialAccesoEntry,
     RadicadoLink,
+    RolAutorizado,
 )
 from app.services.archive_service import ArchiveService
 from app.services.metadata_service import MetadataValidationError
@@ -73,6 +75,13 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
                 "status": 400,
             },
         )
+
+
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Gemelo de `indice.py::_optional_canal` (E15 perfil v4, R3-a): canal de
+    origen (X-Canal, inyectado server-side por el gateway, D-03). Ausente =>
+    'system' (no se audita como consulta de un usuario real)."""
+    return x_canal or "system"
 
 
 @router.post(
@@ -228,10 +237,58 @@ async def get_expediente(
     expediente_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteResponse:
     service = ArchiveService(conn, tenant_slug)
-    return await service.get_expediente(expediente_id, user_id)
+    return await service.get_expediente(expediente_id, user_id, canal=canal)
+
+
+@router.get(
+    "/{expediente_id}/historial-acceso",
+    response_model=list[HistorialAccesoEntry],
+    summary="Historial de acceso (lecturas) al expediente/índice (E15 perfil v4, R3-b)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def get_historial_acceso(
+    expediente_id: uuid.UUID,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[HistorialAccesoEntry]:
+    # Atestado en el índice firmado como `<pistaAuditoria>` (referencia
+    # estable, sin contenido) — este endpoint es la consulta real, filtrada
+    # por tenant + object_ref y paginada, con no-read-up (404 si el expediente
+    # supera el clearance del llamante, ANTES de tocar audit_log).
+    service = ArchiveService(conn, tenant_slug)
+    items, total = await service.get_historial_acceso(
+        expediente_id, user_id, page=page, size=size
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+@router.get(
+    "/{expediente_id}/roles-autorizados",
+    response_model=list[RolAutorizado],
+    summary="Snapshot vivo de grupos autorizados a leer el expediente (E15 perfil v4, R4-b)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def get_roles_autorizados(
+    expediente_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[RolAutorizado]:
+    # Deliberadamente NO firmado / NO incrustado en el índice (la matriz RBAC
+    # cambia con el tiempo) — el índice solo referencia la POLÍTICA estable
+    # (`<politicaAcceso clearanceMinimo=…>`), este endpoint expone la matriz
+    # VIVA (grupos concretos) fuera de la firma.
+    service = ArchiveService(conn, tenant_slug)
+    return await service.get_roles_autorizados(expediente_id, user_id)
 
 
 @router.get(

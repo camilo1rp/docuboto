@@ -24,6 +24,7 @@ queda como evolutivo.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -44,6 +45,7 @@ from app.schemas.archive import (
     RebuildResult,
 )
 from app.services.index_builder import (
+    PISTA_ACCESO_INSTRUMENTACION_DATE,
     XSD_VERSION,
     IndiceData,
     IndiceItemData,
@@ -56,7 +58,13 @@ from app.services.index_builder import (
 if TYPE_CHECKING:
     from app.clients.signature_client import SignedIndice
 
+logger = logging.getLogger(__name__)
+
 _SERVICE = "archive-service"
+# Canales que representan una consulta real de un usuario (gateway/mcp-server,
+# ADR-019/D-03) — 'system' (jobs/regeneraciones internas) queda excluido: no
+# ensucia la pista de acceso ni amplifica escrituras (E15 perfil v4, R3-a).
+_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
 
 
 class IndexService:
@@ -94,6 +102,9 @@ class IndexService:
                 estado=r.estado,
                 fecha_exclusion=r.excluido_at,
                 causal_exclusion=r.excluido_causal,
+                # v4 (R1): dependencia productora aportada al vincular.
+                dependencia_productora_codigo=r.dependencia_productora_codigo,
+                dependencia_productora_nombre=r.dependencia_productora_nombre,
             )
             for r in exp.radicados
         ]
@@ -126,6 +137,23 @@ class IndexService:
         # no cuenta como "uso" activo del expediente).
         vinculados = [r.added_at for r in exp.radicados if r.estado == "vinculado"]
         fecha_primer_uso = min(vinculados) if vinculados else None
+        # v4 (R1 + <conformidad>): productoraPresente=true SOLO si hay AL MENOS
+        # UN documento VIGENTE (no excluido) Y TODOS declararon dependencia
+        # productora. Un expediente SIN vigentes (recién creado, versión 0)
+        # es 'false' — `all()` sobre una lista vacía da vacuamente `True`, lo
+        # que proyectaría conformidad positiva sobre un conjunto documental
+        # inexistente (hallazgo Baja, cierre v4).
+        vigentes = [it for it in items if it.estado == "vinculado"]
+        productora_presente = bool(vigentes) and all(
+            it.dependencia_productora_codigo is not None and it.dependencia_productora_nombre is not None
+            for it in vigentes
+        )
+        # v4 (R3 + <conformidad>): determinista — NUNCA datetime.now() aquí.
+        # El mayor entre la fecha de instrumentación del historial de acceso
+        # (constante) y la fecha de creación del expediente (dato ya
+        # disponible): antes de instrumentar, ningún expediente tenía pista de
+        # acceso verificable, sin importar cuán antiguo fuera.
+        pista_acceso_desde = max(PISTA_ACCESO_INSTRUMENTACION_DATE, exp.opened_at.date())
         return IndiceData(
             expediente_id=str(exp.id),
             code=exp.code,
@@ -136,6 +164,9 @@ class IndexService:
             serie_nombre=serie_nombre,
             subserie_nombre=subserie_nombre,
             fecha_primer_uso=fecha_primer_uso,
+            nivel_seguridad=exp.nivel_seguridad,
+            productora_presente=productora_presente,
+            pista_acceso_desde=pista_acceso_desde,
         )
 
     # -- creación / regeneración --------------------------------------
@@ -149,7 +180,7 @@ class IndexService:
             version=0,
             xml=xml,
             xml_sha256=xml_sha256(xml),
-            content_hash=content_hash(items),
+            content_hash=content_hash(xml),
             num_documentos=0,
             generado_por="system",
             items=items,
@@ -201,7 +232,15 @@ class IndexService:
                 },
             )
         items = self._items_from(exp)
-        ch = content_hash(items)
+        # v4: `content_hash` cubre TODO el documento canónico (PRINCIPIO
+        # RECTOR) — hay que construir el XML completo ANTES de poder decidir
+        # si "unchanged" (a diferencia de v1-v3, donde el hash por-item se
+        # calculaba sin tocar `build_xml`). Coste aceptado: una regeneración
+        # idempotente ahora también resuelve `<contexto>` (TRD) igual que una
+        # que sí cambia.
+        data = await self._data(exp, items)
+        xml = build_xml(data)
+        ch = content_hash(xml)
         if current is not None and current["content_hash"] == ch:
             return RebuildResult(
                 version=current["version"],
@@ -211,15 +250,15 @@ class IndexService:
                 xsd_version=current["xsd_version"],
             )
         version = (current["version"] + 1) if current is not None else 0
-        xml = build_xml(await self._data(exp, items))
         # num_documentos = solo VIGENTES (perfil v3): un excluido sigue en el
         # XML como hueco trazable pero no cuenta en el total documental.
         num_documentos = count_vigentes(items)
+        xh = xml_sha256(xml)
         await self._index.insert_version(
             expediente_id=expediente_id,
             version=version,
             xml=xml,
-            xml_sha256=xml_sha256(xml),
+            xml_sha256=xh,
             content_hash=ch,
             num_documentos=num_documentos,
             generado_por=generado_por,
@@ -245,7 +284,7 @@ class IndexService:
         )
         return RebuildResult(
             version=version,
-            xml_sha256=xml_sha256(xml),
+            xml_sha256=xh,
             num_documentos=num_documentos,
             xsd_version=XSD_VERSION,
         )
@@ -284,6 +323,11 @@ class IndexService:
                     folios=it.get("folios"),
                     estado=it.get("estado"),
                     nivel_seguridad=it.get("nivel_seguridad_snapshot"),
+                    # v4 (E15 perfil v4, R1): snapshot de la dependencia
+                    # productora; `.get` tolera filas anteriores a v4 que no
+                    # proyectan estas columnas.
+                    dependencia_productora_codigo=it.get("dependencia_productora_codigo"),
+                    dependencia_productora_nombre=it.get("dependencia_productora_nombre"),
                 )
                 for it in items
             ],
@@ -305,7 +349,7 @@ class IndexService:
             )
         return row
 
-    async def _assert_visible(self, expediente_id: uuid.UUID, max_clearance: int) -> None:
+    async def _assert_visible(self, expediente_id: uuid.UUID, max_clearance: int) -> Expediente:
         """No-read-up (RF-SEG-08): 404 si el expediente no existe o su
         `nivel_seguridad` supera el clearance del llamante, ANTES de servir
         cualquier lectura del índice electrónico. Sin este guard, un usuario
@@ -313,7 +357,8 @@ class IndexService:
         índice XML completo — incl. `<listaControlAcceso>` y documentos
         excluidos — de un expediente CLASIFICADA (mismo criterio que
         `ArchiveService.get_expediente`, replicado aquí porque las lecturas de
-        índice NO pasan por `ArchiveService`)."""
+        índice NO pasan por `ArchiveService`). Devuelve el `Expediente` (su
+        `code` es el `object_ref` que necesita la pista de acceso, R3-a)."""
         exp = await self._archive.get_expediente_by_id(expediente_id, max_clearance)
         if exp is None:
             raise HTTPException(
@@ -324,26 +369,83 @@ class IndexService:
                     "status": 404,
                 },
             )
+        return exp
+
+    async def _audit_read_access(
+        self,
+        code: str,
+        *,
+        version: int,
+        user_id: uuid.UUID | None,
+        canal: str,
+    ) -> None:
+        """Pista de acceso (E15 perfil v4, R3-a): una lectura EXITOSA del
+        índice deja traza en `audit_log` con el actor real y el canal de
+        origen — atestada (sin contenido) en `<pistaAuditoria>` del XML
+        (`index_builder.build_xml`) y consultable vía
+        `GET /expedientes/{id}/historial-acceso`.
+
+        Solo para canales de un usuario real (`_CANALES_AUDITABLES`) — 'system'
+        (regeneración/rebuild, verificación de fixity) NO escribe pista: no es
+        una consulta de contenido por un usuario, y amplificaría cada
+        rebuild/verify como si alguien hubiera "leído" el índice.
+
+        Best-effort: envuelto en su propio `try/except` (mismo patrón que
+        `audit.append_denial` en `core/clearance.py`) — un fallo al auditar
+        NUNCA debe degradar una lectura exitosa a 500.
+
+        `user_id is None` también descarta el registro: el contrato R3-a exige
+        un actor REAL en la pista de acceso — sin `user_id` (p. ej. canal 'api'
+        sin `X-User-Id`) no hay a quién atribuir la lectura, y escribir
+        `actor=None` en `audit_log` dejaría una traza sin valor forense.
+        """
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.indice_consultado",
+                object_type="expediente_indice",
+                object_ref=code,
+                actor=str(user_id) if user_id else None,
+                canal=canal,
+                payload={"version": version},
+            )
+        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+            logger.warning("audit.append (indice_consultado) failed", exc_info=True)
 
     async def get_indice(
         self,
         expediente_id: uuid.UUID,
         version: int | None,
         user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> IndiceResponse:
         max_clearance = await self._archive.caller_clearance(user_id)
-        await self._assert_visible(expediente_id, max_clearance)
-        return await self._to_response(await self._row_or_404(expediente_id, version))
+        exp = await self._assert_visible(expediente_id, max_clearance)
+        row = await self._row_or_404(expediente_id, version)
+        response = await self._to_response(row)
+        await self._audit_read_access(
+            exp.code, version=row["version"], user_id=user_id, canal=canal
+        )
+        return response
 
     async def get_xml(
         self,
         expediente_id: uuid.UUID,
         version: int | None,
         user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> str:
         max_clearance = await self._archive.caller_clearance(user_id)
-        await self._assert_visible(expediente_id, max_clearance)
-        return (await self._row_or_404(expediente_id, version))["xml"]
+        exp = await self._assert_visible(expediente_id, max_clearance)
+        row = await self._row_or_404(expediente_id, version)
+        await self._audit_read_access(
+            exp.code, version=row["version"], user_id=user_id, canal=canal
+        )
+        return row["xml"]
 
     async def firmar_indice(
         self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None

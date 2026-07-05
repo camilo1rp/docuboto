@@ -128,6 +128,33 @@ class ArchiveRepository:
         await self._set_search_path()
         return await resolve_caller_clearance(self._conn, user_id)
 
+    async def list_roles_autorizados(self, nivel_seguridad: int) -> list[asyncpg.Record]:
+        """Snapshot VIVO (E15 perfil v4, R4-b) de qué grupos pueden LEER un
+        expediente de este `nivel_seguridad` AHORA MISMO — misma condición que
+        `require_permission("USUA_PERM_EXPEDIENTE")` + no-read-up: el grupo
+        necesita `crud>=1` sobre USUA_PERM_EXPEDIENTE y un `role_clearance.max_level`
+        que alcance el nivel del expediente. Deliberadamente NO se firma ni se
+        incrusta en el índice — es la matriz RBAC viva, que cambia con el
+        tiempo (corrección del arquitecto sobre el residual "control de acceso
+        por roles", v3 → v4)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT g.name AS grupo, rc.max_level AS clearance_max, gp.crud AS crud
+                FROM auth_group_permissions gp
+                JOIN auth_permissions p ON p.id = gp.permission_id
+                JOIN auth_groups g ON g.id = gp.group_id
+                JOIN role_clearance rc ON rc.group_id = gp.group_id
+                WHERE p.nombre = 'USUA_PERM_EXPEDIENTE'
+                  AND gp.crud >= 1
+                  AND rc.max_level >= $1
+                ORDER BY g.name ASC
+                """,
+                nivel_seguridad,
+            )
+        )
+
     async def insert_expediente_evento(
         self,
         expediente_id: uuid.UUID,
@@ -303,6 +330,8 @@ class ArchiveRepository:
         formato: str | None = None,
         tamano_bytes: int | None = None,
         folios: int | None = None,
+        dependencia_productora_codigo: int | None = None,
+        dependencia_productora_nombre: str | None = None,
     ) -> ExpedienteRadicado:
         """Vincula un radicado al expediente, asignándole orden_documental ESTABLE.
 
@@ -347,8 +376,9 @@ class ArchiveRepository:
                 """
                 INSERT INTO expediente_radicados
                     (expediente_id, radicado_id, tracking_number, content_hash,
-                     formato, tamano_bytes, folios, orden_documental, estado)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vinculado')
+                     formato, tamano_bytes, folios, orden_documental, estado,
+                     dependencia_productora_codigo, dependencia_productora_nombre)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vinculado', $9, $10)
                 ON CONFLICT (expediente_id, radicado_id) DO UPDATE SET
                     tracking_number  = EXCLUDED.tracking_number,
                     content_hash     = EXCLUDED.content_hash,
@@ -359,7 +389,9 @@ class ArchiveRepository:
                     estado           = 'vinculado',
                     excluido_at      = NULL,
                     excluido_causal  = NULL,
-                    added_at         = now()
+                    added_at         = now(),
+                    dependencia_productora_codigo = EXCLUDED.dependencia_productora_codigo,
+                    dependencia_productora_nombre  = EXCLUDED.dependencia_productora_nombre
                  WHERE expediente_radicados.estado = 'excluido'
                 RETURNING *
                 """,
@@ -371,6 +403,8 @@ class ArchiveRepository:
                 tamano_bytes,
                 folios,
                 next_orden,
+                dependencia_productora_codigo,
+                dependencia_productora_nombre,
             )
             if row is None:
                 # El único camino normal a un conflicto es reactivar un vínculo
@@ -772,6 +806,8 @@ def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
         estado=row["estado"],
         excluido_at=row["excluido_at"],
         excluido_causal=row["excluido_causal"],
+        dependencia_productora_codigo=row["dependencia_productora_codigo"],
+        dependencia_productora_nombre=row["dependencia_productora_nombre"],
     )
 
 

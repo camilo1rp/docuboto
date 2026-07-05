@@ -80,6 +80,15 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
         )
 
 
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Canal de origen de la petición (X-Canal, inyectado server-side por el
+    gateway — D-03, nunca confiado de un cliente directo) — decide si esta
+    lectura del índice deja pista de acceso (E15 perfil v4, R3-a). Ausente
+    (llamada sin pasar por el gateway, o tests que no lo declaran) => 'system':
+    no se audita como consulta de un usuario real."""
+    return x_canal or "system"
+
+
 def _actor_id(x_user_id: str | None = Header(default=None)) -> str | None:
     """X-User-Id crudo (str) para reenviar tal cual a signature-service.
 
@@ -112,9 +121,12 @@ async def get_indice(
     version: int | None = Query(default=None, ge=0),
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> IndiceResponse:
-    return await IndexService(conn, tenant_slug).get_indice(expediente_id, version, user_id=user_id)
+    return await IndexService(conn, tenant_slug).get_indice(
+        expediente_id, version, user_id=user_id, canal=canal
+    )
 
 
 @router.get(
@@ -127,9 +139,12 @@ async def get_indice_xml(
     version: int | None = Query(default=None, ge=0),
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> Response:
-    xml = await IndexService(conn, tenant_slug).get_xml(expediente_id, version, user_id=user_id)
+    xml = await IndexService(conn, tenant_slug).get_xml(
+        expediente_id, version, user_id=user_id, canal=canal
+    )
     return Response(content=xml, media_type="application/xml")
 
 

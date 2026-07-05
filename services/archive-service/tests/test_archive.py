@@ -68,6 +68,7 @@ from httpx import AsyncClient
 
 from tests.conftest import (
     EXPEDIENTE_ID,
+    NOW,
     RADICADO_ID,
     SERIE_ID,
     TENANT_HEADERS,
@@ -655,3 +656,218 @@ async def test_get_expediente_forbidden_without_user_id(
     assert response.status_code == 403
     assert response.json()["detail"]["error"] == "forbidden"
     mock_conn.fetchrow.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# E15 perfil v4 (RT-15, Acuerdo AGN 001/2024 art. 4.3.2.3) — residuales R3/R4
+# cerrados: pista de acceso auditada + snapshot vivo de roles autorizados.
+# ---------------------------------------------------------------------------
+
+
+def _audit_inserts(mock_conn, action: str) -> list:
+    return [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str)
+        and "INSERT INTO public.audit_log" in c.args[0]
+        and c.args[5] == action
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canal", ["api", "ui", "mcp"])
+async def test_get_expediente_audits_read_access_for_user_channels(
+    client_with_conn: tuple[AsyncClient, AsyncMock], canal: str
+) -> None:
+    """(v4, R3-a) Una lectura EXITOSA de `GET /expedientes/{id}` deja pista de
+    acceso en `audit_log` — atestada (sin contenido) en `<pistaAuditoria>`
+    del índice y consultable vía `GET /historial-acceso`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 + advisory lock/prev_hash de audit.append
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetchrow.return_value = exp_record
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        headers={**TENANT_HEADERS, "X-Canal": canal},
+    )
+    assert resp.status_code == 200
+    calls = _audit_inserts(mock_conn, "archive.expediente_consultado")
+    assert len(calls) == 1
+    assert calls[0][6] == "expediente"  # object_type
+    assert calls[0][7] == exp_record["code"]  # object_ref
+
+
+@pytest.mark.asyncio
+async def test_get_expediente_does_not_audit_system_channel(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Sin `X-Canal` (llamada interna/sin pasar por el gateway) => 'system' —
+    no deja pista de acceso (evita ensuciar el historial con llamadas que no
+    son consultas de un usuario real)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(f"/api/v1/expedientes/{EXPEDIENTE_ID}", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert _audit_inserts(mock_conn, "archive.expediente_consultado") == []
+
+
+@pytest.mark.asyncio
+async def test_audit_read_access_does_not_write_without_user_id() -> None:
+    """(hallazgo Baja, cierre v4) `_audit_read_access` con canal de usuario
+    real ('api') pero `user_id=None` NO escribe `audit_log` — el contrato
+    R3-a exige un ACTOR real en la pista de acceso; sin él, `actor=None`
+    dejaría una traza sin valor forense. Se prueba el método directamente
+    (no vía HTTP): `require_permission` en el router ya exige `X-User-Id`
+    resoluble para conceder `USUA_PERM_EXPEDIENTE` (fail-closed en
+    `check_permission`), así que este estado — canal auditable + actor
+    ausente — solo es alcanzable si `ArchiveService` se invoca directamente
+    (otro router, MCP, un futuro llamador interno); la guarda debe sostenerse
+    igual en ese caso."""
+    from app.services.archive_service import ArchiveService
+
+    mock_conn = AsyncMock()
+    svc = ArchiveService(mock_conn, "demo")
+
+    await svc._audit_read_access("EXP-2024-0001", user_id=None, canal="api")
+
+    mock_conn.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_roles_autorizados_requires_permission(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False  # permiso denegado
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/roles-autorizados", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_roles_autorizados_clearance_scoped_returns_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """No-read-up (RF-SEG-08): mismo criterio 404 que el resto de lecturas del
+    expediente — ANTES de tocar la matriz RBAC."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso concedido
+    # resolve_caller_clearance (None -> PUBLICA) + get_expediente_by_id (None:
+    # nivel_seguridad del expediente supera la clearance del llamante).
+    mock_conn.fetchrow.side_effect = [None, None]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/roles-autorizados", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+
+@pytest.mark.asyncio
+async def test_roles_autorizados_returns_live_matrix(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """(v4, R4-b) Snapshot VIVO — no firmado — de qué grupos pueden LEER el
+    expediente ahora mismo: `crud>=1` sobre USUA_PERM_EXPEDIENTE y
+    `role_clearance.max_level` que alcance el `nivel_seguridad`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=2)
+    mock_conn.fetchrow.side_effect = [None, exp_record]
+    mock_conn.fetch.side_effect = [
+        [],  # radicados
+        [
+            {"grupo": "archivistas", "clearance_max": 3, "crud": 4},
+            {"grupo": "gestores", "clearance_max": 2, "crud": 1},
+        ],
+    ]
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/roles-autorizados", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 2
+    assert body[0]["grupo"] == "archivistas"
+    assert body[0]["crud"] == 4
+    # `nivel_seguridad` del expediente (no clearance del llamante) decide el filtro.
+    sql, nivel = mock_conn.fetch.call_args_list[-1].args
+    assert nivel == 2
+
+
+@pytest.mark.asyncio
+async def test_historial_acceso_requires_permission(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/historial-acceso", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_historial_acceso_clearance_scoped_returns_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [None, None]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/historial-acceso", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+
+@pytest.mark.asyncio
+async def test_historial_acceso_lists_paginated_and_scoped_by_tenant(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """(v4, R3-b) Consulta de `public.audit_log` filtrada por expediente,
+    paginada — el consumidor de esta vista NO ve `id`/`prev_hash`/`hash`
+    internos de la cadena, solo el hecho auditado."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    # fetchval: check_permission, luego COUNT(*) de AuditReadRepository.
+    mock_conn.fetchval.side_effect = [True, 3]
+    mock_conn.fetchrow.side_effect = [None, exp_record]
+    entry = {
+        "tenant_slug": TENANT_HEADERS["X-Tenant-Slug"],
+        "ts": NOW,
+        "service": "archive-service",
+        "actor": str(USER_ID),
+        "canal": "api",
+        "action": "archive.expediente_consultado",
+        "object_type": "expediente",
+        "object_ref": exp_record["code"],
+        "payload": {},
+    }
+    mock_conn.fetch.side_effect = [[], [entry]]
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/historial-acceso?page=1&size=20",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.headers["X-Total-Count"] == "3"
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["action"] == "archive.expediente_consultado"
+    assert body[0]["object_ref"] == exp_record["code"]
+    assert "id" not in body[0]
+    assert "hash" not in body[0]
+    # Tenant scoping: la SQL de conteo/list filtra por tenant_slug + object_ref.
+    count_sql, tenant_arg, code_arg, _types = mock_conn.fetchval.call_args_list[-1].args
+    assert tenant_arg == TENANT_HEADERS["X-Tenant-Slug"]
+    assert code_arg == exp_record["code"]

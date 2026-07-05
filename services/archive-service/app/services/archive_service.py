@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, date, datetime
 
@@ -19,6 +20,7 @@ from orpycamcp_common import audit
 
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
+from app.repositories.audit_read import AuditReadRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.archive import (
@@ -29,16 +31,27 @@ from app.schemas.archive import (
     ExpedienteRadicadoResponse,
     ExpedienteResponse,
     ExpedienteUpdate,
+    HistorialAccesoEntry,
     IndiceItem,
     RadicadoLink,
     RetentionSchedule,
+    RolAutorizado,
     TrdSerieCreate,
     TrdSerieResponse,
     TrdSerieUpdate,
 )
 from app.services.metadata_service import validate_metadata
 
+logger = logging.getLogger(__name__)
+
 _SERVICE = "archive-service"
+
+# Canales que representan una consulta real de un usuario (gateway/mcp-server,
+# ADR-019/D-03) — 'system' (jobs/regeneraciones internas, o llamadas internas
+# que reutilizan `get_expediente` tras una mutación ya auditada aparte) queda
+# excluido: no ensucia la pista de acceso ni la duplica (E15 perfil v4, R3-a).
+# Espejo de `index_service._CANALES_AUDITABLES`.
+_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
 
 # Valid state transitions — re-opening a closed expediente is not permitted.
 _VALID_TRANSITIONS: dict[str, set[str]] = {
@@ -53,6 +66,7 @@ class ArchiveService:
         self._repo = ArchiveRepository(conn, tenant_slug)
         self._metadata_repo = MetadataRepository(conn, tenant_slug)
         self._index_repo = IndexRepository(conn)
+        self._audit_read = AuditReadRepository(conn)
         self._conn = conn
         self._tenant_slug = tenant_slug
 
@@ -124,7 +138,10 @@ class ArchiveService:
         return [_to_expediente_response(e) for e in expedientes], total
 
     async def get_expediente(
-        self, expediente_id: uuid.UUID, user_id: uuid.UUID | None = None
+        self,
+        expediente_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> ExpedienteResponse:
         max_clearance = await self._repo.caller_clearance(user_id)
         expediente = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
@@ -137,7 +154,38 @@ class ArchiveService:
                     "status": 404,
                 },
             )
+        await self._audit_read_access(expediente.code, user_id=user_id, canal=canal)
         return _to_expediente_response(expediente)
+
+    async def _audit_read_access(
+        self, code: str, *, user_id: uuid.UUID | None, canal: str
+    ) -> None:
+        """Pista de acceso (E15 perfil v4, R3-a) — gemelo de
+        `IndexService._audit_read_access`: una lectura exitosa de `GET
+        /expedientes/{id}` deja traza en `audit_log` con el actor real y el
+        canal de origen; 'system' (llamadas internas tras una mutación ya
+        auditada, p. ej. `close_expediente`/`transfer_expediente` devolviendo
+        su propio resultado) NO escribe pista. Best-effort: nunca degrada la
+        lectura a 500 por un fallo de auditoría.
+
+        `user_id is None` también descarta el registro (espejo de
+        `IndexService._audit_read_access`): sin actor real no hay a quién
+        atribuir la lectura (R3-a exige un actor real, no `actor=None`)."""
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.expediente_consultado",
+                object_type="expediente",
+                object_ref=code,
+                actor=str(user_id) if user_id else None,
+                canal=canal,
+            )
+        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+            logger.warning("audit.append (expediente_consultado) failed", exc_info=True)
 
     async def update_expediente(
         self, expediente_id: uuid.UUID, payload: ExpedienteUpdate
@@ -391,6 +439,61 @@ class ArchiveService:
             expediente_id=exp.id, code=exp.code, total_folios=len(items), items=items
         )
 
+    async def get_historial_acceso(
+        self,
+        expediente_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[HistorialAccesoEntry], int]:
+        """Historial de acceso (lecturas) al expediente/índice (E15 perfil v4,
+        R3-b) — consulta `public.audit_log` filtrada por `object_ref = code`.
+
+        No-read-up (RF-SEG-08): mismo criterio 404-vs-403 que el resto de
+        lecturas del expediente — un expediente por encima del clearance del
+        llamante es 404 (no revela su existencia), ANTES de tocar audit_log."""
+        max_clearance = await self._repo.caller_clearance(user_id)
+        exp = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {expediente_id} not found",
+                    "status": 404,
+                },
+            )
+        offset = (page - 1) * size
+        total = await self._audit_read.count_for_expediente(self._tenant_slug, exp.code)
+        rows = await self._audit_read.list_for_expediente(
+            self._tenant_slug, exp.code, offset=offset, limit=size
+        )
+        return [_to_historial_entry(r) for r in rows], total
+
+    async def get_roles_autorizados(
+        self, expediente_id: uuid.UUID, user_id: uuid.UUID | None = None
+    ) -> list[RolAutorizado]:
+        """Snapshot VIVO de qué grupos pueden leer este expediente AHORA (E15
+        perfil v4, R4-b) — deliberadamente NO firmado (la matriz RBAC cambia
+        con el tiempo). Mismo gate no-read-up que el resto de lecturas."""
+        max_clearance = await self._repo.caller_clearance(user_id)
+        exp = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {expediente_id} not found",
+                    "status": 404,
+                },
+            )
+        rows = await self._repo.list_roles_autorizados(exp.nivel_seguridad)
+        return [
+            RolAutorizado(grupo=r["grupo"], clearance_max=r["clearance_max"], crud=r["crud"])
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------
     # Radicado associations
     # ------------------------------------------------------------------
@@ -450,6 +553,8 @@ class ArchiveService:
             formato=payload.formato,
             tamano_bytes=payload.tamano_bytes,
             folios=payload.folios,
+            dependencia_productora_codigo=payload.dependencia_productora_codigo,
+            dependencia_productora_nombre=payload.dependencia_productora_nombre,
         )
         await self._regenerate_index(expediente_id)
         await self._repo.insert_expediente_evento(
@@ -492,6 +597,8 @@ class ArchiveService:
                 formato=it.formato,
                 tamano_bytes=it.tamano_bytes,
                 folios=it.folios,
+                dependencia_productora_codigo=it.dependencia_productora_codigo,
+                dependencia_productora_nombre=it.dependencia_productora_nombre,
             )
             vinculados += 1
         if vinculados:
@@ -729,6 +836,23 @@ def _to_radicado_response(r: ExpedienteRadicado) -> ExpedienteRadicadoResponse:
         radicado_id=r.radicado_id,
         tracking_number=r.tracking_number,
         added_at=r.added_at,
+    )
+
+
+def _to_historial_entry(r: asyncpg.Record) -> HistorialAccesoEntry:
+    payload = r["payload"]
+    if isinstance(payload, str):  # asyncpg devuelve JSONB como texto
+        payload = json.loads(payload) if payload else {}
+    return HistorialAccesoEntry(
+        tenant_slug=r["tenant_slug"],
+        ts=r["ts"],
+        service=r["service"],
+        actor=r["actor"],
+        canal=r["canal"],
+        action=r["action"],
+        object_type=r["object_type"],
+        object_ref=r["object_ref"],
+        payload=payload or {},
     )
 
 

@@ -138,3 +138,63 @@ async def test_get_batch_status_not_found_404(client_with_conn) -> None:
     mock_conn.fetchrow.return_value = None  # job ausente
     resp = await client.get(f"/api/v1/batch/{JOB_ID}/status", headers=TENANT_HEADERS)
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# BatchExpedienteCreate — pareja parcial dependencia productora (hallazgo Baja,
+# cierre E15 perfil v4): debe rechazarse con 422 a nivel Pydantic, ANTES de
+# tocar la BD, en vez de dejar que lo ataje el CHECK de la migración 019.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_batch_expedientes_productora_pareja_parcial_422(
+    client_with_conn,
+) -> None:
+    """`dependencia_productora_codigos[i]` sin su `dependencia_productora_nombres[i]`
+    (o viceversa) es un 422 de VALIDACIÓN Pydantic — el permiso se concede
+    (`require_permission` pasa, único `fetchval`), pero el cuerpo inválido
+    nunca llega al handler: ningún INSERT de `batch_jobs` se dispara (mismo
+    espejo que `RadicadoLink`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: solo el gate de require_permission
+    rid = uuid.uuid4()
+    payload = {
+        "expedientes": [
+            {
+                "name": "Expediente batch productora parcial",
+                "radicado_ids": [str(rid)],
+                "dependencia_productora_codigos": [100],
+                "dependencia_productora_nombres": [None],
+            }
+        ]
+    }
+    resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
+    assert resp.status_code == 422
+    # Un único fetchval (el gate) — el INSERT INTO batch_jobs (también
+    # fetchval, RETURNING id) nunca se ejecuta: la validación cortó ANTES.
+    assert mock_conn.fetchval.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_batch_expedientes_productora_longitud_inconsistente_422(
+    client_with_conn,
+) -> None:
+    """Una lista de productora no vacía cuya longitud no coincide con
+    `radicado_ids` (listas paralelas por índice) también es 422."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    rid = uuid.uuid4()
+    payload = {
+        "expedientes": [
+            {
+                "name": "Expediente batch productora longitud",
+                "radicado_ids": [str(rid)],
+                "dependencia_productora_codigos": [100, 200],
+                "dependencia_productora_nombres": ["Secretaría General", "Otra"],
+            }
+        ]
+    }
+    resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
+    assert resp.status_code == 422
+    assert mock_conn.fetchval.call_count == 1

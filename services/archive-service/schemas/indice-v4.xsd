@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+  Contacto: aurigadl@gmail.com
+
+  Software libre: este archivo se distribuye bajo la Licencia Pública General
+  Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+  conservando los términos de la GPL del Orfeo original del que deriva. Se
+  entrega SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y
+  <https://www.gnu.org/licenses/>.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:idx="urn:orpycamcp:indice:v4"
+           targetNamespace="urn:orpycamcp:indice:v4"
+           elementFormDefault="qualified">
+
+  <xs:annotation>
+    <xs:documentation xml:lang="es">
+      Índice electrónico del expediente — perfil "CONFORME COMPLETO" v4 (E15
+      cierre de RT-15, Acuerdo AGN 001/2024 art. 4.3.2.3).
+
+      Este XSD es un artefacto de CONTRATO/documentación normativa del XML
+      producido por `app/services/index_builder.py::build_xml`. NO es un gate
+      de runtime: la validación estricta contra XSD (lxml) sigue siendo
+      evolutiva — ver el docstring del módulo `index_builder`. El orden de los
+      elementos hijos aquí declarado reproduce EXACTAMENTE el orden de
+      serialización de `build_xml`, que es el que entra a la canonicalización
+      C14N (`ET.canonicalize`) — cualquier cambio de orden en el builder debe
+      reflejarse aquí en el mismo commit.
+
+      CONFORME COMPLETO — perfil v4, aplicabilidad prospectiva: este perfil
+      cierra, a nivel de CAPACIDAD del sistema, los 4 residuales dejados
+      abiertos por v3 (historial de acceso, fecha de declaración, control de
+      acceso por roles/políticas y dependencia productora). La completitud es
+      per-instancia (ver `conformidad` más abajo): expedientes/documentos
+      creados ANTES de este incremento pueden no tener `dependenciaProductora`
+      declarada (campo OPCIONAL, "legacy") ni pista de acceso verificable
+      desde su fecha de creación — la aplicabilidad de "completo" es, por
+      tanto, PROSPECTIVA y no retroactiva.
+
+      Respecto a v3 (namespace urn:orpycamcp:indice:v3):
+        1. Historial de acceso: YA NO se incrusta en el índice — se ATESTA en
+           la cabecera con `pistaAuditoria` (referencia ESTABLE a
+           `public.audit_log`, sin contenido mutable) y se consulta por
+           endpoint fuera de la firma (`GET /expedientes/{id}/historial-acceso`).
+        2. Fecha de declaración: `fechaDeclaracion` por documento. Equivale
+           SIEMPRE a `fechaIncorporacion` del mismo documento (equivalencia
+           declaracion == incorporacion; Orfeo SGD_EXP_FECH vs fech_radi) — no
+           es una fuente de datos independiente.
+        3. Control de acceso por roles/dependencias: `listaControlAcceso` se
+           MUEVE de por-documento (v3, duplicado N veces sin necesidad) a la
+           CABECERA (una sola vez, el nivel es del EXPEDIENTE) y gana
+           `politicaAcceso` (modelo + permiso + clearance mínimo ESTABLE).
+           La matriz RBAC VIVA (qué grupos concretos, que cambia con el
+           tiempo) NO se incrusta — se consulta por
+           `GET /expedientes/{id}/roles-autorizados`, fuera de la firma.
+        4. Dependencia productora: `dependenciaProductora` por documento
+           (grano por-radicado, aportada al vincular — Opción A), OPCIONAL
+           (minOccurs="0"): ausente en vínculos legacy anteriores a este
+           incremento o cuando no fue declarada. Aplicabilidad prospectiva.
+
+      El elemento `conformidad` (atributos perfil="v4", productoraPresente,
+      pistaAccesoDesde) es un marcador HONESTO per-instancia (RF-FIR-15, no
+      sobre-declarar): productoraPresente="false" cuando algún documento
+      vigente del expediente no declaró dependencia productora, O cuando el
+      expediente NO TIENE NINGÚN documento vigente (versión 0 recién creada,
+      o todos sus vínculos excluidos) — un conjunto vacío nunca proyecta
+      conformidad positiva por vacuidad; solo es "true" si hay al menos un
+      vigente y todos declararon productora. pistaAccesoDesde es la fecha
+      desde la que existe pista de acceso verificable para ESE expediente
+      concreto (nunca anterior a la instrumentación del historial).
+    </xs:documentation>
+  </xs:annotation>
+
+  <xs:element name="indice">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="idx:cabecera"/>
+        <xs:element ref="idx:documentos"/>
+      </xs:sequence>
+      <xs:attribute name="xsdVersion" type="xs:string" use="required" fixed="v4"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="cabecera">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="identificadorSistema" type="xs:string"/>
+        <xs:element name="fechaCreacion" type="xs:dateTime"/>
+        <xs:element ref="idx:expediente"/>
+        <xs:element ref="idx:contexto" minOccurs="0"/>
+        <xs:element ref="idx:listaControlAcceso"/>
+        <xs:element ref="idx:pistaAuditoria"/>
+        <xs:element ref="idx:conformidad"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="expediente">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="identificador" type="xs:string"/>
+        <xs:element name="numero" type="xs:string"/>
+        <xs:element name="nombre" type="xs:string"/>
+        <xs:element name="serie" type="xs:string" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Bloque contextual (RT-15 art. 4.3.2.3, v3, sin cambios en v4): nombres
+       legibles de serie/subserie (el UUID identificador ya va en
+       <expediente><serie>) y la fecha de la primera incorporación VIGENTE al
+       expediente. Se omite por completo si no hay ningún dato disponible. -->
+  <xs:element name="contexto">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="serie" type="xs:string" minOccurs="0"/>
+        <xs:element name="subserie" type="xs:string" minOccurs="0"/>
+        <xs:element name="fechaPrimerUso" type="xs:dateTime" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- v4: control de acceso a nivel de EXPEDIENTE (antes por-documento, v3),
+       UNA SOLA VEZ en cabecera — el nivel es del expediente, no del
+       documento. Gana <politicaAcceso> (modelo/permiso/clearance mínimo
+       ESTABLE); la matriz RBAC VIVA queda fuera de la firma (residual 3
+       cerrado a nivel de capacidad, ver <conformidad>). -->
+  <xs:element name="listaControlAcceso">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="nivelSeguridad">
+          <xs:complexType>
+            <xs:simpleContent>
+              <xs:extension base="xs:string">
+                <!-- 1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA
+                     (expedientes.nivel_seguridad / security_levels.code). -->
+                <xs:attribute name="codigo" type="xs:positiveInteger" use="required"/>
+              </xs:extension>
+            </xs:simpleContent>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="politicaAcceso">
+          <xs:complexType>
+            <!-- Elemento vacío: la política se expresa íntegramente en sus
+                 atributos, ESTABLE por expediente (no la matriz RBAC viva). -->
+            <xs:attribute name="modelo" type="xs:string" use="required"/>
+            <xs:attribute name="requiere" type="xs:string" use="required"/>
+            <!-- MISMO valor que nivelSeguridad/@codigo (contrato R4, no se
+                 deriva aparte). -->
+            <xs:attribute name="clearanceMinimo" type="xs:positiveInteger" use="required"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- v4 (R3): atestación ESTABLE del historial de acceso — una referencia
+       fija a dónde verificarlo (public.audit_log), NUNCA su contenido mutable
+       (residual 1 cerrado a nivel de capacidad: sin timestamps/conteos por-
+       generación, para no romper la idempotencia del content_hash). El
+       historial en sí se consulta por `GET /expedientes/{id}/historial-acceso`,
+       fuera de la firma. -->
+  <xs:element name="pistaAuditoria">
+    <xs:complexType>
+      <xs:attribute name="disponible" type="xs:boolean" use="required"/>
+      <xs:attribute name="registro" type="xs:string" use="required"/>
+      <xs:attribute name="objetoTipo" type="xs:string" use="required"/>
+      <xs:attribute name="objetoRef" type="xs:string" use="required"/>
+      <xs:attribute name="cadenaVerificable" type="xs:boolean" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- v4: marcador de conformidad PER-INSTANCIA (RF-FIR-15, no sobre-declarar).
+       "CONFORME COMPLETO" es una afirmación de CAPACIDAD del sistema; la
+       completitud real de un expediente concreto depende de si TODOS sus
+       documentos vigentes declararon productora y desde cuándo existe pista
+       de acceso verificable para él — de ahí la aplicabilidad prospectiva.
+       productoraPresente="false" tanto si falta la declaración en algún
+       vigente COMO si no hay ningún vigente (conjunto vacío no es
+       vacuamente conforme). -->
+  <xs:element name="conformidad">
+    <xs:complexType>
+      <xs:attribute name="perfil" type="xs:string" use="required" fixed="v4"/>
+      <xs:attribute name="productoraPresente" type="xs:boolean" use="required"/>
+      <xs:attribute name="pistaAccesoDesde" type="xs:date" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="documentos">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="idx:documento" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="documento">
+    <xs:complexType>
+      <xs:sequence>
+        <!-- Campos core: siempre presentes (cadena vacía si el dato es NULL
+             en origen — ver `IndexBuilder._sub`). -->
+        <xs:element name="identificador" type="xs:string"/>
+        <xs:element name="titulo" type="xs:string"/>
+        <xs:element name="tipologia" type="xs:string"/>
+
+        <!-- Metadatos RT-15 (E15 Inc.3): OPCIONALES, aportados al vincular
+             (Opción A). Ausentes = no declarado, no "cero"/"desconocido". -->
+        <xs:element name="formato" type="xs:string" minOccurs="0"/>
+        <xs:element name="tamano" type="xs:nonNegativeInteger" minOccurs="0"/>
+        <xs:element name="folios" type="xs:nonNegativeInteger" minOccurs="0"/>
+
+        <!-- v4 (R1, residual 4): dependencia productora del documento, grano
+             por-radicado, aportada al vincular (Opción A, sin llamada HTTP a
+             document-service). OPCIONAL — ausente en vínculos legacy
+             anteriores a este incremento o cuando no fue declarada
+             (aplicabilidad prospectiva); solo se emite cuando AMBOS
+             codigo/nombre están presentes en origen, nunca uno solo. -->
+        <xs:element name="dependenciaProductora" minOccurs="0">
+          <xs:complexType>
+            <xs:simpleContent>
+              <xs:extension base="xs:string">
+                <xs:attribute name="codigo" type="xs:positiveInteger" use="required"/>
+              </xs:extension>
+            </xs:simpleContent>
+          </xs:complexType>
+        </xs:element>
+
+        <xs:element name="fechaIncorporacion" type="xs:dateTime" minOccurs="0"/>
+
+        <!-- v4 (R2, residual 2): fecha de declaración. Equivalencia
+             declaracion == incorporacion (Orfeo SGD_EXP_FECH vs fech_radi) —
+             mismo valor que <fechaIncorporacion>, no una fuente de datos
+             independiente; misma cardinalidad OPCIONAL (ausente cuando
+             fechaIncorporacion también lo está). -->
+        <xs:element name="fechaDeclaracion" type="xs:dateTime" minOccurs="0"/>
+
+        <!-- Integridad (E15 T-08/T-14): siempre presentes. -->
+        <xs:element name="valorHuella" type="xs:string"/>
+        <xs:element name="funcionResumen" type="xs:string"/>
+
+        <!-- orden_documental ESTABLE (v3, sin cambios en v4): asignado una
+             sola vez al vincular, inmutable — nunca se renumera ni se
+             reutiliza, ni siquiera cuando el documento se excluye. -->
+        <xs:element name="orden" type="xs:positiveInteger"/>
+
+        <!-- Solo presentes cuando @excluido="true" (soft-delete, v3, sin
+             cambios en v4). -->
+        <xs:element name="fechaExclusion" type="xs:dateTime" minOccurs="0"/>
+        <xs:element name="causalExclusion" type="xs:string" minOccurs="0"/>
+      </xs:sequence>
+      <!-- true cuando el vínculo fue excluido del expediente (soft-delete);
+           ausente (no "false") en el caso normal vigente. -->
+      <xs:attribute name="excluido" type="xs:boolean" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
