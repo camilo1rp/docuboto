@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+  Contacto: aurigadl@gmail.com
+
+  Software libre: este archivo se distribuye bajo la Licencia Pública General
+  Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+  conservando los términos de la GPL del Orfeo original del que deriva. Se
+  entrega SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y
+  <https://www.gnu.org/licenses/>.
+-->
+<!--
+  Índice electrónico del expediente — perfil "CONFORME EXTENDIDO" v3 (E15
+  finalización RT-15, Acuerdo AGN 001/2024 art. 4.3.2.3).
+
+  Este XSD es un artefacto de CONTRATO/documentación normativa del XML
+  producido por `app/services/index_builder.py::build_xml`. NO es un gate de
+  runtime: la validación estricta contra XSD (lxml) sigue siendo evolutiva —
+  ver el docstring del módulo `index_builder`.
+
+  Respecto a v2 (namespace urn:orpycamcp:indice:v2):
+    - `<documento>/orden` deja de ser un ordinal temporal (enumerate en el
+      momento de generar el índice) y pasa a ser `orden_documental`:
+      asignado UNA sola vez al vincular el radicado (MAX+1 por expediente,
+      atómico), INMUTABLE — nunca se renumera ni se reutiliza.
+    - `<documento>` gana el atributo OPCIONAL `excluido="true"` cuando el
+      vínculo fue excluido del expediente (soft-delete, `unlink`). Un
+      documento excluido CONSERVA su `orden`, para que el hueco quede
+      trazable, y añade `fechaExclusion`/`causalExclusion`.
+    - `<documento>` gana `<listaControlAcceso>`: el nivel de seguridad
+      heredado del EXPEDIENTE (no hay clasificación por documento).
+    - `<cabecera>` gana el bloque OPCIONAL `<contexto>`: nombres de
+      serie/subserie (resueltos por TRD) y `fechaPrimerUso` (primera
+      incorporación VIGENTE).
+
+  Perfil "CONFORME EXTENDIDO" (RF-FIR-15, crítico): este incremento NO
+  alcanza "conforme completo". Quedan 4 residuales SIN fuente de datos en
+  archive-service — no representados en este XSD ni en ningún lado como
+  resueltos:
+    1. historial de acceso por documento.
+    2. fecha de declaración.
+    3. control de acceso por roles/dependencias (solo se emite el NIVEL).
+    4. dependencia productora.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:idx="urn:orpycamcp:indice:v3"
+           targetNamespace="urn:orpycamcp:indice:v3"
+           elementFormDefault="qualified">
+
+  <xs:element name="indice">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="idx:cabecera"/>
+        <xs:element ref="idx:documentos"/>
+      </xs:sequence>
+      <xs:attribute name="xsdVersion" type="xs:string" use="required" fixed="v3"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="cabecera">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="identificadorSistema" type="xs:string"/>
+        <xs:element name="fechaCreacion" type="xs:dateTime"/>
+        <xs:element ref="idx:expediente"/>
+        <xs:element ref="idx:contexto" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="expediente">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="identificador" type="xs:string"/>
+        <xs:element name="numero" type="xs:string"/>
+        <xs:element name="nombre" type="xs:string"/>
+        <xs:element name="serie" type="xs:string" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Bloque contextual (RT-15 art. 4.3.2.3): nombres legibles de
+       serie/subserie (el UUID identificador ya va en <expediente><serie>) y
+       la fecha de la primera incorporación VIGENTE al expediente. Se omite
+       por completo si no hay ningún dato disponible. -->
+  <xs:element name="contexto">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="serie" type="xs:string" minOccurs="0"/>
+        <xs:element name="subserie" type="xs:string" minOccurs="0"/>
+        <xs:element name="fechaPrimerUso" type="xs:dateTime" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="documentos">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="idx:documento" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="documento">
+    <xs:complexType>
+      <xs:sequence>
+        <!-- Campos core: siempre presentes (cadena vacía si el dato es NULL
+             en origen — ver `IndexBuilder._sub`). -->
+        <xs:element name="identificador" type="xs:string"/>
+        <xs:element name="titulo" type="xs:string"/>
+        <xs:element name="tipologia" type="xs:string"/>
+
+        <!-- Metadatos RT-15 (E15 Inc.3): OPCIONALES, aportados al vincular
+             (Opción A). Ausentes = no declarado, no "cero"/"desconocido". -->
+        <xs:element name="formato" type="xs:string" minOccurs="0"/>
+        <xs:element name="tamano" type="xs:nonNegativeInteger" minOccurs="0"/>
+        <xs:element name="folios" type="xs:nonNegativeInteger" minOccurs="0"/>
+        <xs:element name="fechaIncorporacion" type="xs:dateTime" minOccurs="0"/>
+
+        <!-- Integridad (E15 T-08/T-14): siempre presentes. -->
+        <xs:element name="valorHuella" type="xs:string"/>
+        <xs:element name="funcionResumen" type="xs:string"/>
+
+        <!-- orden_documental ESTABLE (v3): asignado una sola vez al
+             vincular, inmutable — nunca se renumera ni se reutiliza, ni
+             siquiera cuando el documento se excluye. -->
+        <xs:element name="orden" type="xs:positiveInteger"/>
+
+        <!-- Solo presentes cuando @excluido="true" (soft-delete, v3). -->
+        <xs:element name="fechaExclusion" type="xs:dateTime" minOccurs="0"/>
+        <xs:element name="causalExclusion" type="xs:string" minOccurs="0"/>
+
+        <!-- v3: control de acceso — heredado del NIVEL del expediente. NO es
+             "conforme completo": no hay control de acceso por roles ni por
+             dependencia (residuales 3/4, ver docstring de `index_builder`). -->
+        <xs:element ref="idx:listaControlAcceso"/>
+      </xs:sequence>
+      <!-- true cuando el vínculo fue excluido del expediente (soft-delete);
+           ausente (no "false") en el caso normal vigente. -->
+      <xs:attribute name="excluido" type="xs:boolean" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="listaControlAcceso">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="nivelSeguridad">
+          <xs:complexType>
+            <xs:simpleContent>
+              <xs:extension base="xs:string">
+                <!-- 1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA
+                     (expedientes.nivel_seguridad / security_levels.code). -->
+                <xs:attribute name="codigo" type="xs:positiveInteger" use="required"/>
+              </xs:extension>
+            </xs:simpleContent>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

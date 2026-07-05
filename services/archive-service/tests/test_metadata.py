@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import TENANT_HEADERS, make_expediente_record
+from tests.conftest import TENANT_HEADERS, make_expediente_record, make_trd_serie_record
 
 _SCHEMA = {
     "type": "object",
@@ -181,8 +181,15 @@ async def test_create_expediente_valid_metadata(
     exp_record = make_expediente_record(
         trd_serie_id=serie_id, metadata=metadata, metadata_template_id=template_id
     )
-    # 1) plantilla activa, 2) INSERT expediente, 3) INSERT índice v0 (E15)
-    mock_conn.fetchrow.side_effect = [_template_row(template_id, serie_id), exp_record, exp_record]
+    # 1) plantilla activa, 2) INSERT expediente, 3) lookup TRD serie (E15 v3,
+    # <contexto> del índice v0 — el expediente tiene trd_serie_id), 4) INSERT
+    # índice v0 (E15)
+    mock_conn.fetchrow.side_effect = [
+        _template_row(template_id, serie_id),
+        exp_record,
+        make_trd_serie_record(serie_id=serie_id),
+        exp_record,
+    ]
     mock_conn.fetchval.return_value = 1
 
     resp = await client.post(

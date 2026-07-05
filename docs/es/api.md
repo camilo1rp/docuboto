@@ -484,7 +484,7 @@ Vincula varios radicados de una vez `{radicados:[{radicado_id, tracking_number, 
 - `GET /api/v1/expedientes/{id}/foliado` — foliado: radicados ordenados con `folio` secuencial (`{expediente_id, code, total_folios, items[]}`). (El **índice electrónico** normativo es E15, abajo.)
 
 #### Índice electrónico (E15, Acuerdo AGN 001/2024)
-> **Perfil v2 (E15/E06 Inc.3, [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md)):** los índices nuevos se generan en `urn:orpycamcp:indice:v2` (`xsdVersion="v2"`) con metadatos RT-15 por documento (`<formato>`, `<tamano>`, `<folios>`, `<fechaIncorporacion>`; `NULL → elemento omitido`). Los índices **v1 ya firmados quedan inmutables**. v2 = perfil "ampliado (RT-15 parcial)", **no** "conforme completo" (faltan `orden_documental`/ACL/`<contexto>`).
+> **Perfil v3 "conforme extendido" (E15, [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md)):** los índices nuevos se generan en `urn:orpycamcp:indice:v3` con, por documento: metadatos RT-15 (`<formato>`/`<tamano>`/`<folios>`/`<fechaIncorporacion>`), **`<orden>` = orden documental ESTABLE** (asignado al vincular, inmutable, nunca renumerado), **`<listaControlAcceso>`** (nivel de seguridad del expediente) y, en cabecera, **`<contexto>`** (`fechaPrimerUso` + serie/subserie por nombre). La **exclusión de un radicado** (`DELETE .../radicados/{id}`) es **soft-delete** (`estado='excluido'`): el índice emite el excluido como `<documento excluido="true">` con su ordinal + `<fechaExclusion>`/`<causalExclusion>` → **hueco trazable** (AGN 001/2024 art. 4.3.2.3). Los índices v1/v2/v3 **ya firmados quedan inmutables**. v3 = **"conforme extendido"**, **no** "conforme completo": faltan historial de acceso, fecha de declaración, ACL por roles y dependencia productora (RF-FIR-15). **Todas** las lecturas del índice exigen `USUA_PERM_EXPEDIENTE` + clearance (no-read-up, RF-SEG-08).
 - `GET /api/v1/expedientes/{id}/indice` (`?version=N`) — índice vigente o por versión: `{version, estado, num_documentos, xml_sha256, algoritmo, items[]}`. Cada item incluye `formato`, `tamano_bytes`, `folios`, `fecha_incorporacion` (nulos si no se declararon al vincular).
 - `GET /api/v1/expedientes/{id}/indice.xml` (`?version=N`) — cuerpo XML (`application/xml`, namespace `urn:orpycamcp:indice:v2` en índices nuevos; `v1` en los ya firmados).
 - `GET /api/v1/expedientes/{id}/indice/versions` — historial de versiones (append-only) con `X-Total-Count`.
@@ -514,8 +514,8 @@ Vincular radicado al expediente.
 { "radicado_id": "uuid", "tracking_number": "2024-ICETEX-E-000001" }
 ```
 
-#### `DELETE /api/v1/expedientes/{id}/radicados/{radicado_id}`
-Desvincular radicado. `204`.
+#### `DELETE /api/v1/expedientes/{id}/radicados/{radicado_id}` (`?causal=…`)
+Excluir (desvincular) radicado. Es **soft-delete** (E15 v3): marca `estado='excluido'` (+ `excluido_at`, `excluido_causal` del query param opcional) — **no** borra la fila; el `orden_documental` no se reutiliza y el índice deja el hueco trazable. `204`. Exige `USUA_PERM_EXPEDIENTE` con `crud≥3` (disposición). `404` si no estaba vinculado.
 
 ### TRD
 

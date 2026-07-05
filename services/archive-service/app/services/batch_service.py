@@ -99,7 +99,31 @@ class BatchArchiveService:
                     trd_id,
                 )
 
-                # Link radicados if provided
+                # Link radicados if provided. Este INSERT es independiente del
+                # de `ArchiveRepository.link_radicado` (creación por lote de
+                # expedientes NUEVOS, no vínculo a uno existente) pero escribe
+                # la MISMA tabla — debe asignar `orden_documental` ESTABLE
+                # igual que el camino normal (E15 perfil v3, RT-15 art.
+                # 4.3.2.3), si no el índice electrónico emitiría <orden>
+                # vacío/None para estos vínculos. Como el bucle es secuencial
+                # sobre una única conexión (sin transacción explícita
+                # alrededor, autocommit por statement), el MAX+1 de cada
+                # iteración ya ve los INSERT anteriores del mismo expediente.
+                #
+                # Decisión (hallazgo Baja, cierre RT-15): a diferencia de
+                # `ArchiveRepository.link_radicado`, este MAX+1 NO usa
+                # `pg_advisory_xact_lock` — se omite deliberadamente porque
+                # `exp_id` es un expediente RECIÉN creado en esta misma
+                # transacción/lote (único escritor secuencial, nadie más
+                # puede referenciarlo todavía). El índice único parcial
+                # `ux_exp_rad_orden` (migración 018) sigue siendo la red de
+                # seguridad: si de todos modos hubiera colisión, el INSERT de
+                # abajo fallaría y el ítem del lote quedaría 'failed' (no se
+                # asignaría un orden duplicado). Si en el futuro se permite
+                # vincular por lote a expedientes YA existentes (no creados en
+                # este mismo job), este bloque deja de ser seguro y debe
+                # adoptar el mismo lock, o delegar en
+                # `ArchiveRepository.link_radicado`.
                 for i, (rid, tn) in enumerate(
                     zip(exp.radicado_ids, exp.tracking_numbers or [], strict=False)
                 ):
@@ -107,8 +131,14 @@ class BatchArchiveService:
                     await self.conn.execute(
                         """
                         INSERT INTO expediente_radicados
-                            (expediente_id, radicado_id, tracking_number)
-                        VALUES ($1, $2, $3)
+                            (expediente_id, radicado_id, tracking_number,
+                             orden_documental, estado)
+                        VALUES (
+                            $1, $2, $3,
+                            (SELECT COALESCE(MAX(orden_documental), 0) + 1
+                               FROM expediente_radicados WHERE expediente_id = $1),
+                            'vinculado'
+                        )
                         ON CONFLICT DO NOTHING
                         """,
                         exp_id,

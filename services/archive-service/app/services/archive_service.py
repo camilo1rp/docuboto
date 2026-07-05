@@ -353,9 +353,31 @@ class ArchiveService:
         rows = await self._repo.list_expediente_eventos(expediente_id, max_clearance)
         return [_to_evento_response(r) for r in rows]
 
-    async def get_indice(self, expediente_id: uuid.UUID) -> ExpedienteIndice:
-        """Índice/foliado del expediente: radicados ordenados con folio secuencial."""
-        exp = await self._expediente_or_404(expediente_id)
+    async def get_indice(
+        self, expediente_id: uuid.UUID, user_id: uuid.UUID | None = None
+    ) -> ExpedienteIndice:
+        """Índice/foliado del expediente: radicados VIGENTES ordenados con folio
+        secuencial. `exp.radicados` trae vinculados Y excluidos (soft-delete,
+        E15 perfil v3) — un excluido no es documental vigente y no debe
+        contar folio (filtra estado='vinculado', igual que la respuesta
+        general del expediente en `_to_expediente_response`).
+
+        No-read-up (RF-SEG-08): resuelve el clearance real del llamante (igual
+        que `get_expediente`) — antes usaba `_expediente_or_404` con el
+        default sin restricción, dejando el foliado como una ruta alterna
+        para leer un expediente CLASIFICADA sin la clearance debida."""
+        max_clearance = await self._repo.caller_clearance(user_id)
+        exp = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {expediente_id} not found",
+                    "status": 404,
+                },
+            )
+        vigentes = [r for r in exp.radicados if r.estado == "vinculado"]
         items = [
             IndiceItem(
                 folio=i,
@@ -363,7 +385,7 @@ class ArchiveService:
                 tracking_number=r.tracking_number,
                 added_at=r.added_at,
             )
-            for i, r in enumerate(exp.radicados, start=1)
+            for i, r in enumerate(vigentes, start=1)
         ]
         return ExpedienteIndice(
             expediente_id=exp.id, code=exp.code, total_folios=len(items), items=items
@@ -476,7 +498,24 @@ class ArchiveService:
             await self._regenerate_index(expediente_id)
         return BatchLinkResult(vinculados=vinculados, omitidos=omitidos, total=len(items))
 
-    async def unlink_radicado(self, expediente_id: uuid.UUID, radicado_id: uuid.UUID) -> None:
+    async def unlink_radicado(
+        self,
+        expediente_id: uuid.UUID,
+        radicado_id: uuid.UUID,
+        causal: str | None = None,
+        actor: uuid.UUID | None = None,
+    ) -> None:
+        """Excluye el radicado del expediente por SOFT-DELETE (E15 perfil v3,
+        RT-15 art. 4.3.2.3): la fila permanece (estado='excluido') para que el
+        índice electrónico muestre el hueco trazable en el orden documental —
+        ya no hay DELETE físico. `causal` es opcional (motivo de la exclusión).
+
+        `actor` es el X-User-Id de quien excluye: la exclusión es una
+        intervención documental sobre el orden original (análoga a un acta de
+        retiro) — la trazabilidad completa (Ley 594/2000; Ac. AGN 001/2024
+        art. 4.3.2.3) exige identificar al agente responsable, no solo cuándo
+        y por qué. Queda tanto en la hoja de ruta del expediente
+        (`expediente_eventos`) como en el `audit_log` inmutable (Canal A)."""
         existing = await self._repo.get_expediente_by_id(expediente_id)
         if existing is None:
             raise HTTPException(
@@ -488,8 +527,8 @@ class ArchiveService:
                 },
             )
         self._assert_open(existing)
-        deleted = await self._repo.unlink_radicado(expediente_id, radicado_id)
-        if not deleted:
+        excluded = await self._repo.unlink_radicado(expediente_id, radicado_id, causal=causal)
+        if not excluded:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
@@ -505,7 +544,23 @@ class ArchiveService:
             expediente_id,
             numero_expediente=existing.code,
             accion="radicado_excluido",
-            detalles={"radicado_id": str(radicado_id)},
+            actor=actor,
+            detalles={"radicado_id": str(radicado_id), "causal": causal},
+        )
+        # Auditoría forense inmutable (E08 §9, Canal A): la exclusión es una
+        # acción de disposición reforzada (crud>=3, ver el decorador del
+        # router) — antes solo dejaba rastro en `expediente_eventos` (schema
+        # del tenant) y el asiento genérico `archive.indice_regenerated`;
+        # ahora tiene su propio asiento con actor y causal en `audit_log`.
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="archive.radicado_excluido",
+            object_type="expediente",
+            object_ref=existing.code,
+            actor=str(actor) if actor else None,
+            payload={"radicado_id": str(radicado_id), "causal": causal},
         )
 
     # ------------------------------------------------------------------
@@ -660,7 +715,12 @@ def _to_expediente_response(exp: Expediente) -> ExpedienteResponse:
         updated_at=exp.updated_at,
         metadata=exp.metadata,
         disposition=exp.disposition,
-        radicados=[_to_radicado_response(r) for r in exp.radicados],
+        # "Documentos vigentes" del expediente: `exp.radicados` trae
+        # vinculados Y excluidos (soft-delete, E15 perfil v3) porque el
+        # índice electrónico necesita ver ambos — un excluido no debe
+        # colarse en esta vista de conjunto ACTIVO (ver
+        # `ArchiveRepository._get_radicados`).
+        radicados=[_to_radicado_response(r) for r in exp.radicados if r.estado == "vinculado"],
     )
 
 

@@ -49,6 +49,7 @@ from app.services.index_builder import (
     IndiceItemData,
     build_xml,
     content_hash,
+    count_vigentes,
     xml_sha256,
 )
 
@@ -68,10 +69,16 @@ class IndexService:
     # -- construcción --------------------------------------------------
 
     def _items_from(self, exp: Expediente) -> list[IndiceItemData]:
+        """Construye los items del índice a partir de TODOS los vínculos del
+        expediente — VINCULADOS y EXCLUIDOS (soft-delete, `exp.radicados` ya
+        trae ambos, ver `ArchiveRepository._get_radicados`). El orden ya NO es
+        un enumerate temporal: es `orden_documental`, asignado UNA vez al
+        vincular e inmutable (E15 perfil v3, RT-15 art. 4.3.2.3) — un excluido
+        conserva el suyo para que el índice muestre el hueco trazable."""
         return [
             IndiceItemData(
                 document_id=str(r.radicado_id),
-                orden=i,
+                orden=r.orden_documental if r.orden_documental is not None else 0,
                 titulo=r.tracking_number,
                 fecha_archivado=r.added_at,  # -> <fechaIncorporacion> en v2
                 valor_huella=r.content_hash,  # SHA-256 aportado al vincular (T-08)
@@ -80,11 +87,45 @@ class IndexService:
                 formato=r.formato,
                 tamano_bytes=r.tamano_bytes,
                 folios=r.folios,
+                # v3: <listaControlAcceso> hereda el nivel del EXPEDIENTE (no
+                # hay clasificación por documento); `estado` decide si se
+                # emite <documento excluido="true">.
+                nivel_seguridad=exp.nivel_seguridad,
+                estado=r.estado,
+                fecha_exclusion=r.excluido_at,
+                causal_exclusion=r.excluido_causal,
             )
-            for i, r in enumerate(exp.radicados, start=1)
+            for r in exp.radicados
         ]
 
-    def _data(self, exp: Expediente, items: list[IndiceItemData]) -> IndiceData:
+    async def _contexto_series(
+        self, trd_serie_id: uuid.UUID | None
+    ) -> tuple[str | None, str | None]:
+        """Nombres de serie/subserie para el bloque <contexto> (v3, RT-15).
+
+        Si la serie TRD del expediente tiene padre (`parent_id`), es una
+        subserie: `serie` = nombre del PADRE, `subserie` = nombre de la serie
+        propia. Si es de primer nivel, solo `serie`. El UUID se sigue
+        emitiendo aparte (`<expediente><serie>`) como identificador — esto
+        solo resuelve los NOMBRES legibles.
+        """
+        if trd_serie_id is None:
+            return None, None
+        serie = await self._archive.get_trd_serie_by_id(trd_serie_id)
+        if serie is None:
+            return None, None
+        if serie.parent_id is not None:
+            parent = await self._archive.get_trd_serie_by_id(serie.parent_id)
+            if parent is not None:
+                return parent.name, serie.name
+        return serie.name, None
+
+    async def _data(self, exp: Expediente, items: list[IndiceItemData]) -> IndiceData:
+        serie_nombre, subserie_nombre = await self._contexto_series(exp.trd_serie_id)
+        # fechaPrimerUso: primera incorporación VIGENTE (un documento excluido
+        # no cuenta como "uso" activo del expediente).
+        vinculados = [r.added_at for r in exp.radicados if r.estado == "vinculado"]
+        fecha_primer_uso = min(vinculados) if vinculados else None
         return IndiceData(
             expediente_id=str(exp.id),
             code=exp.code,
@@ -92,6 +133,9 @@ class IndexService:
             serie_id=str(exp.trd_serie_id) if exp.trd_serie_id else None,
             fecha_creacion=exp.opened_at,
             items=items,
+            serie_nombre=serie_nombre,
+            subserie_nombre=subserie_nombre,
+            fecha_primer_uso=fecha_primer_uso,
         )
 
     # -- creación / regeneración --------------------------------------
@@ -99,7 +143,7 @@ class IndexService:
     async def create_version_zero(self, exp: Expediente) -> None:
         """Índice versión 0 (sin documentos) al crear el expediente."""
         items: list[IndiceItemData] = []
-        xml = build_xml(self._data(exp, items))
+        xml = build_xml(await self._data(exp, items))
         await self._index.insert_version(
             expediente_id=exp.id,
             version=0,
@@ -167,14 +211,17 @@ class IndexService:
                 xsd_version=current["xsd_version"],
             )
         version = (current["version"] + 1) if current is not None else 0
-        xml = build_xml(self._data(exp, items))
+        xml = build_xml(await self._data(exp, items))
+        # num_documentos = solo VIGENTES (perfil v3): un excluido sigue en el
+        # XML como hueco trazable pero no cuenta en el total documental.
+        num_documentos = count_vigentes(items)
         await self._index.insert_version(
             expediente_id=expediente_id,
             version=version,
             xml=xml,
             xml_sha256=xml_sha256(xml),
             content_hash=ch,
-            num_documentos=len(items),
+            num_documentos=num_documentos,
             generado_por=generado_por,
             items=items,
         )
@@ -199,7 +246,7 @@ class IndexService:
         return RebuildResult(
             version=version,
             xml_sha256=xml_sha256(xml),
-            num_documentos=len(items),
+            num_documentos=num_documentos,
             xsd_version=XSD_VERSION,
         )
 
@@ -235,6 +282,8 @@ class IndexService:
                     formato=it.get("formato"),
                     tamano_bytes=it.get("tamano_bytes"),
                     folios=it.get("folios"),
+                    estado=it.get("estado"),
+                    nivel_seguridad=it.get("nivel_seguridad_snapshot"),
                 )
                 for it in items
             ],
@@ -256,10 +305,44 @@ class IndexService:
             )
         return row
 
-    async def get_indice(self, expediente_id: uuid.UUID, version: int | None) -> IndiceResponse:
+    async def _assert_visible(self, expediente_id: uuid.UUID, max_clearance: int) -> None:
+        """No-read-up (RF-SEG-08): 404 si el expediente no existe o su
+        `nivel_seguridad` supera el clearance del llamante, ANTES de servir
+        cualquier lectura del índice electrónico. Sin este guard, un usuario
+        con solo USUA_PERM_EXPEDIENTE (sin clearance suficiente) podía leer el
+        índice XML completo — incl. `<listaControlAcceso>` y documentos
+        excluidos — de un expediente CLASIFICADA (mismo criterio que
+        `ArchiveService.get_expediente`, replicado aquí porque las lecturas de
+        índice NO pasan por `ArchiveService`)."""
+        exp = await self._archive.get_expediente_by_id(expediente_id, max_clearance)
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": str(expediente_id),
+                    "status": 404,
+                },
+            )
+
+    async def get_indice(
+        self,
+        expediente_id: uuid.UUID,
+        version: int | None,
+        user_id: uuid.UUID | None = None,
+    ) -> IndiceResponse:
+        max_clearance = await self._archive.caller_clearance(user_id)
+        await self._assert_visible(expediente_id, max_clearance)
         return await self._to_response(await self._row_or_404(expediente_id, version))
 
-    async def get_xml(self, expediente_id: uuid.UUID, version: int | None) -> str:
+    async def get_xml(
+        self,
+        expediente_id: uuid.UUID,
+        version: int | None,
+        user_id: uuid.UUID | None = None,
+    ) -> str:
+        max_clearance = await self._archive.caller_clearance(user_id)
+        await self._assert_visible(expediente_id, max_clearance)
         return (await self._row_or_404(expediente_id, version))["xml"]
 
     async def firmar_indice(
@@ -346,15 +429,34 @@ class IndexService:
             )
         return signed
 
-    async def verify(self, expediente_id: uuid.UUID, version: int | None) -> IndiceVerifyResponse:
+    async def verify(
+        self,
+        expediente_id: uuid.UUID,
+        version: int | None,
+        user_id: uuid.UUID | None = None,
+    ) -> IndiceVerifyResponse:
         """Contrasta el valor_huella del índice con el hash actual de cada documento
-        (detección de alteración) e informa el estado de la firma (E15 T-14)."""
+        (detección de alteración) e informa el estado de la firma (E15 T-14).
+
+        No-read-up (RF-SEG-08): resuelve el expediente con el clearance real
+        del llamante ANTES de exponer nada del índice — antes se consultaba
+        con el default sin restricción, dejando esta ruta como un camino
+        alterno para leer un expediente CLASIFICADA sin la clearance debida
+        (aunque `GET /{id}` ya lo negara con 404)."""
+        max_clearance = await self._archive.caller_clearance(user_id)
+        exp = await self._archive.get_expediente_by_id(expediente_id, max_clearance)
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": str(expediente_id),
+                    "status": 404,
+                },
+            )
         row = await self._row_or_404(expediente_id, version)
         items = await self._index.get_items(row["id"])
-        exp = await self._archive.get_expediente_by_id(expediente_id)
-        current = {
-            str(r.radicado_id): r.content_hash for r in (exp.radicados if exp is not None else [])
-        }
+        current = {str(r.radicado_id): r.content_hash for r in exp.radicados}
         docs: list[IndiceVerifyDoc] = []
         all_ok = True
         for it in items:
@@ -433,8 +535,15 @@ class IndexService:
         )
 
     async def list_versions(
-        self, expediente_id: uuid.UUID, *, page: int, size: int
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        page: int,
+        size: int,
+        user_id: uuid.UUID | None = None,
     ) -> tuple[list[IndiceVersionSummary], int]:
+        max_clearance = await self._archive.caller_clearance(user_id)
+        await self._assert_visible(expediente_id, max_clearance)
         rows, total = await self._index.list_versions(
             expediente_id, offset=(page - 1) * size, limit=size
         )

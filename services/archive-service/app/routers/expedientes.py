@@ -212,9 +212,10 @@ async def transfer_expediente(
 async def get_foliado(
     expediente_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteIndice:
-    return await ArchiveService(conn, tenant_slug).get_indice(expediente_id)
+    return await ArchiveService(conn, tenant_slug).get_indice(expediente_id, user_id)
 
 
 @router.get(
@@ -324,14 +325,21 @@ async def link_radicados_batch(
 @router.delete(
     "/{expediente_id}/radicados/{radicado_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Unlink a radicado from an expediente",
+    summary="Excluir (soft-delete) un radicado del expediente",
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def unlink_radicado(
     expediente_id: uuid.UUID,
     radicado_id: uuid.UUID,
+    causal: str | None = Query(default=None, max_length=500),
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> None:
+    # E15 perfil v3 (RT-15 art. 4.3.2.3): la exclusión es SOFT-DELETE — el
+    # vínculo permanece marcado 'excluido' para que el índice muestre el
+    # hueco trazable, en vez de un DELETE físico. `actor` (X-User-Id de quien
+    # excluye) se propaga a la hoja de ruta + audit_log (trazabilidad del
+    # agente responsable, Ley 594/2000; Ac. AGN 001/2024 art. 4.3.2.3).
     service = ArchiveService(conn, tenant_slug)
-    await service.unlink_radicado(expediente_id, radicado_id)
+    await service.unlink_radicado(expediente_id, radicado_id, causal=causal, actor=actor)

@@ -18,7 +18,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 | **F1 — Fundamentos** | librería común (ADR-010), migraciones por tenant (ADR-012), E14 administración, E08 seguridad (RBAC + auditoría + URD + clasificación), E01 radicación, E03 metadatos, E07 anexos, E16 notificaciones, E05 flujos | ✅ |
 | **F2 — Consulta** | E09 búsqueda avanzada + reportes + búsqueda de expedientes, E13 consulta pública por código de verificación, E19 ingesta de correo IMAP | ✅ |
 | **F3 — Ciclo de vida** | E04 TRD/CCD (jerarquía + retención en dos fases + disposición AGN), E02 expedientes (cierre/transferencia/foliado), E06 firma electrónica (hash+identidad + **XAdES-B del índice**, Inc.1) | ✅ |
-| **F4 — Conformidad** | E15 índice electrónico (XML versionado append-only + huella por documento + verificación) + **firma XAdES-B del índice al cierre con sello institucional** (E06 Inc.1, ADR-016) + **metadatos RT-15 por documento, perfil v2** (Inc.3, ADR-022) | ✅ núcleo |
+| **F4 — Conformidad** | E15 índice electrónico (XML versionado append-only + huella por documento + verificación) + **firma XAdES-B/XAdES-T del índice al cierre con sello institucional + sello de tiempo** (E06 Inc.1/4, ADR-016) + **RT-15 perfil v3 "conforme extendido"** (orden documental estable + exclusión trazable + ACL + contexto, ADR-022) | ✅ núcleo |
 | **F5 — Preservación / físico** | E17 archivo físico (ubicaciones, unidades, signatura, préstamos, historial, **FUID**), E12 transferencias primarias/secundarias, E11 interoperabilidad (webhooks firmados), E10 preservación (plan + eventos PREMIS) | ✅ núcleo |
 | **F6 — Inteligencia** | E18 mcp-server (catálogo de tools sobre el gateway), E21 knowledge-service (pgvector + recuperación semántica con pre-filtrado ACL) | ✅ núcleo |
 

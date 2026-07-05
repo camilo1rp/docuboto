@@ -30,6 +30,11 @@ class Expediente:
     metadata_template_id: uuid.UUID | None = None
     disposition: dict | None = None
     radicados: list[ExpedienteRadicado] = field(default_factory=list)
+    # Nivel de seguridad (RF-SEG-08, 013_expediente_security_level.sql): hasta
+    # el perfil v3 del índice (E15) era write-only aquí — se persistía pero
+    # nunca se leía de vuelta al dataclass. El índice electrónico lo necesita
+    # para <listaControlAcceso> por documento (heredado del expediente).
+    nivel_seguridad: int = 1
 
 
 @dataclass
@@ -43,6 +48,16 @@ class ExpedienteRadicado:
     formato: str | None = None
     tamano_bytes: int | None = None
     folios: int | None = None
+    # E15 finalización RT-15 (perfil v3, migración 018): orden_documental
+    # ESTABLE asignado UNA vez al vincular (MAX+1 por expediente, atómico) —
+    # inmutable, nunca se renumera ni se reutiliza. `estado` distingue el
+    # vínculo vigente ('vinculado') del excluido por soft-delete
+    # ('excluido'); la fila permanece para que el índice muestre el hueco
+    # trazable (Acuerdo AGN 001/2024 art. 4.3.2.3).
+    orden_documental: int | None = None
+    estado: str = "vinculado"
+    excluido_at: datetime | None = None
+    excluido_causal: str | None = None
 
 
 @dataclass

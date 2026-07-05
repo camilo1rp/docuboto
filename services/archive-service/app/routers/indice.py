@@ -13,6 +13,13 @@
 Lectura del índice vigente / por versión / XML / historial, `rebuild` (admin) y
 el reintento del sellado XAdES-B (`POST /indice/firmar`, E06 Inc.1, RT-16). La
 verificación de fixity contra storage (T-14) ya contrasta la firma real.
+
+Todas las rutas de LECTURA exigen `USUA_PERM_EXPEDIENTE` (`require_permission`,
+que además fija el search_path del tenant) y aplican no-read-up (RF-SEG-08):
+`IndexService` resuelve el clearance real del llamante y devuelve 404 si el
+expediente supera su nivel de seguridad, ANTES de servir el índice — cierre de
+un gap donde `/indice`, `/indice.xml` y `/indice/versions` no tenían gate
+alguno, y `/indice/verify` sí exigía el permiso pero no contrastaba clearance.
 """
 
 from __future__ import annotations
@@ -50,6 +57,29 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
+def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
+    """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
+
+    Gemelo de `expedientes.py::_optional_user`: usado en las lecturas del
+    índice (indice, indice.xml, versions, verify) — a diferencia de
+    `_actor_id` (str crudo, reenviado a signature-service), aquí se necesita
+    el UUID para `ArchiveRepository.caller_clearance`.
+    """
+    if not x_user_id:
+        return None
+    try:
+        return uuid.UUID(x_user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_user_id",
+                "detail": "X-User-Id must be a valid UUID",
+                "status": 400,
+            },
+        )
+
+
 def _actor_id(x_user_id: str | None = Header(default=None)) -> str | None:
     """X-User-Id crudo (str) para reenviar tal cual a signature-service.
 
@@ -72,38 +102,53 @@ def _actor_id(x_user_id: str | None = Header(default=None)) -> str | None:
     return x_user_id
 
 
-@router.get("/{expediente_id}/indice", response_model=IndiceResponse)
+@router.get(
+    "/{expediente_id}/indice",
+    response_model=IndiceResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def get_indice(
     expediente_id: uuid.UUID,
     version: int | None = Query(default=None, ge=0),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> IndiceResponse:
-    return await IndexService(conn, tenant_slug).get_indice(expediente_id, version)
+    return await IndexService(conn, tenant_slug).get_indice(expediente_id, version, user_id=user_id)
 
 
-@router.get("/{expediente_id}/indice.xml", response_class=PlainTextResponse)
+@router.get(
+    "/{expediente_id}/indice.xml",
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def get_indice_xml(
     expediente_id: uuid.UUID,
     version: int | None = Query(default=None, ge=0),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> Response:
-    xml = await IndexService(conn, tenant_slug).get_xml(expediente_id, version)
+    xml = await IndexService(conn, tenant_slug).get_xml(expediente_id, version, user_id=user_id)
     return Response(content=xml, media_type="application/xml")
 
 
-@router.get("/{expediente_id}/indice/versions", response_model=list[IndiceVersionSummary])
+@router.get(
+    "/{expediente_id}/indice/versions",
+    response_model=list[IndiceVersionSummary],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
 async def list_indice_versions(
     expediente_id: uuid.UUID,
     response: Response,
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[IndiceVersionSummary]:
     items, total = await IndexService(conn, tenant_slug).list_versions(
-        expediente_id, page=page, size=size
+        expediente_id, page=page, size=size, user_id=user_id
     )
     response.headers["X-Total-Count"] = str(total)
     return items
@@ -118,9 +163,10 @@ async def verify_indice(
     expediente_id: uuid.UUID,
     version: int | None = Query(default=None, ge=0),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> IndiceVerifyResponse:
-    return await IndexService(conn, tenant_slug).verify(expediente_id, version)
+    return await IndexService(conn, tenant_slug).verify(expediente_id, version, user_id=user_id)
 
 
 @router.post(

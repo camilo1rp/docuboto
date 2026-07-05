@@ -174,6 +174,15 @@ class IndiceItemResponse(BaseModel):
     formato: str | None = None
     tamano_bytes: int | None = None
     folios: int | None = None
+    # v3 (E15 finalización RT-15): visibilidad del hueco trazable + ACL en la
+    # vista consultable JSON — antes solo el XML probatorio los mostraba, y
+    # `num_documentos` (solo vigentes) quedaba sin explicación frente a
+    # `len(items)` (vigentes + excluidos). `estado`/`nivel_seguridad` vienen
+    # del snapshot ya proyectado por `IndexRepository.get_items`
+    # (`estado`/`nivel_seguridad_snapshot`); NULL en versiones anteriores a
+    # v3, que no capturaban estos campos por item.
+    estado: str | None = None
+    nivel_seguridad: int | None = None
 
 
 class IndiceResponse(BaseModel):

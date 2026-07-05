@@ -37,13 +37,15 @@ LINK RADICADO (link_radicado calls get+exists+insert):
   fetchrow — SELECT expediente
   fetch    — SELECT radicados (empty)
   execute  — SET search_path (exists)
-  fetchval — COUNT(*) for duplicate check  → 0
+  fetchval — COUNT(*) for duplicate check (estado='vinculado')  → 0
   execute  — SET search_path (link)
-  fetchrow — INSERT expediente_radicados RETURNING
+  execute  — pg_advisory_xact_lock (orden_documental atómico, E15 perfil v3)
+  fetchval — COALESCE(MAX(orden_documental),0)+1
+  fetchrow — INSERT ... ON CONFLICT DO UPDATE expediente_radicados RETURNING
 
-UNLINK RADICADO:
+UNLINK RADICADO (E15 perfil v3, RT-15 art. 4.3.2.3 — SOFT-DELETE, ya NO DELETE físico):
   execute  — SET search_path
-  execute  — DELETE FROM expediente_radicados  (returns "DELETE 1")
+  execute  — UPDATE expediente_radicados SET estado='excluido' ...  (returns "UPDATE 1")
 
 CREATE TRD SERIE:
   execute  — SET search_path
@@ -329,14 +331,16 @@ async def test_link_radicado(
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
     link_record = make_radicado_link_record(expediente_id=EXPEDIENTE_ID, radicado_id=RADICADO_ID)
 
-    # fetchrow: get_expediente, link INSERT, [regenerate: get_expediente,
-    # get_current(None), insert_version índice]
+    # fetchrow: get_expediente, link INSERT..ON CONFLICT RETURNING, [regenerate:
+    # get_expediente, get_current(None), insert_version índice]
     mock_conn.fetchrow.side_effect = [exp_record, link_record, exp_record, None, exp_record]
     # fetch → radicados (empty during get_expediente check)
     mock_conn.fetch.return_value = []
-    # fetchval: [0]=D-08 gate (USUA_PERM_EXPEDIENTE granted), [1]=COUNT(*) duplicate check → 0,
-    # [2]=audit.append prev_hash lookup (regenerate_index → índice E15, ADR-010)
-    mock_conn.fetchval.side_effect = [True, 0, None]
+    # fetchval: [0]=D-08 gate (USUA_PERM_EXPEDIENTE granted), [1]=COUNT(*) duplicate
+    # check (estado='vinculado') → 0, [2]=MAX(orden_documental)+1 (E15 perfil v3,
+    # asignación atómica del orden ESTABLE), [3]=audit.append prev_hash lookup
+    # (regenerate_index → índice E15, ADR-010)
+    mock_conn.fetchval.side_effect = [True, 0, 1, None]
 
     response = await client.post(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
@@ -388,8 +392,9 @@ async def test_unlink_radicado(
 ) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
-    # execute returns "DELETE 1" to indicate one row was removed
-    mock_conn.execute.return_value = "DELETE 1"
+    # E15 perfil v3 (RT-15 art. 4.3.2.3): exclusión = SOFT-DELETE — el UPDATE
+    # devuelve "UPDATE 1" (ya no un DELETE físico).
+    mock_conn.execute.return_value = "UPDATE 1"
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
     # fetchrow: get_expediente (guard), [regenerate: get_expediente,
     # get_current(None), insert_version índice]
@@ -402,6 +407,49 @@ async def test_unlink_radicado(
     )
 
     assert response.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_audits_actor_and_causal(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """(Media, cierre RT-15) La exclusión (soft-delete) deja su propio asiento
+    en `audit_log` (action='archive.radicado_excluido') con el actor
+    (X-User-Id de quien excluye) y el causal — antes solo quedaba en
+    `expediente_eventos` con actor=None, sin identificar al agente
+    responsable (Ley 594/2000; Ac. AGN 001/2024 art. 4.3.2.3)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    mock_conn.execute.return_value = "UPDATE 1"
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetchrow.side_effect = [exp_record, exp_record, None, exp_record]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        params={"causal": "error de captura"},
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 204
+
+    # 1) el evento append-only de la hoja de ruta lleva el actor.
+    evento_call = next(
+        c
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_eventos" in c.args[0]
+    )
+    assert evento_call.args[4] == USER_ID  # (expediente_id, numero, accion, actor, ...)
+
+    # 2) el audit_log inmutable (Canal A) también lleva actor + causal.
+    audit_calls = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    # args: (sql, tenant, service, actor, canal, action, object_type, object_ref, payload, prev_hash, hash)
+    radicado_excluido = next(a for a in audit_calls if a[5] == "archive.radicado_excluido")
+    assert radicado_excluido[3] == str(USER_ID)
+    assert "error de captura" in radicado_excluido[8]
 
 
 # ---------------------------------------------------------------------------
@@ -495,16 +543,17 @@ async def test_link_radicados_batch(
     # al final regenerate: get_expediente_by_id (fetchrow exp), get_current (None), insert índice
     mock_conn.fetchrow.side_effect = [
         exp,  # _expediente_or_404
-        make_radicado_link_record(radicado_id=r1),  # link r1
-        make_radicado_link_record(radicado_id=r2),  # link r2
+        make_radicado_link_record(radicado_id=r1),  # link r1 INSERT..ON CONFLICT RETURNING
+        make_radicado_link_record(radicado_id=r2),  # link r2 INSERT..ON CONFLICT RETURNING
         exp,
         None,
         exp,  # regenerate (get_exp, get_current, insert)
     ]
     mock_conn.fetch.return_value = []
-    # fetchval: [0]=D-08 gate, [1]/[2]=radicado_link_exists por r1/r2 → 0 (ninguno vinculado
-    # aún), [3]=audit.append prev_hash lookup (regenerate_index, 1 sola vez tras el batch)
-    mock_conn.fetchval.side_effect = [True, 0, 0, None]
+    # fetchval: [0]=D-08 gate, [1]=radicado_link_exists r1 → 0, [2]=MAX(orden_documental)+1
+    # para r1 (E15 perfil v3), [3]=radicado_link_exists r2 → 0, [4]=MAX(orden_documental)+1
+    # para r2, [5]=audit.append prev_hash lookup (regenerate_index, 1 sola vez tras el batch)
+    mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None]
 
     resp = await client.post(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",

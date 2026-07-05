@@ -55,6 +55,7 @@ def make_expediente_record(
     metadata: dict | None = None,
     metadata_template_id: uuid.UUID | None = None,
     disposition: dict | None = None,
+    nivel_seguridad: int = 1,
 ) -> dict:
     return {
         "id": exp_id or EXPEDIENTE_ID,
@@ -70,6 +71,9 @@ def make_expediente_record(
         "metadata": metadata if metadata is not None else {},
         "metadata_template_id": metadata_template_id,
         "disposition": disposition,
+        # E15 perfil v3 (RT-15 art. 4.3.2.3): <listaControlAcceso> hereda este
+        # nivel. 1=PUBLICA (default), 2=RESERVADA, 3=CLASIFICADA.
+        "nivel_seguridad": nivel_seguridad,
     }
 
 
@@ -83,6 +87,10 @@ def make_radicado_link_record(
     formato: str | None = None,
     tamano_bytes: int | None = None,
     folios: int | None = None,
+    orden_documental: int | None = 1,
+    estado: str = "vinculado",
+    excluido_at: datetime | None = None,
+    excluido_causal: str | None = None,
 ) -> dict:
     return {
         "expediente_id": expediente_id or EXPEDIENTE_ID,
@@ -95,6 +103,13 @@ def make_radicado_link_record(
         "formato": formato,
         "tamano_bytes": tamano_bytes,
         "folios": folios,
+        # E15 perfil v3 (RT-15 art. 4.3.2.3, migración 018): orden_documental
+        # ESTABLE (default 1 = primer/único vínculo del expediente en la
+        # mayoría de los tests) + estado del vínculo (soft-delete).
+        "orden_documental": orden_documental,
+        "estado": estado,
+        "excluido_at": excluido_at,
+        "excluido_causal": excluido_causal,
     }
 
 

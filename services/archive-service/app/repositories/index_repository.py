@@ -110,7 +110,7 @@ class IndexRepository:
             await self._conn.fetch(
                 "SELECT document_id, orden, titulo, tipologia, fecha_declaracion, "
                 "fecha_archivado, valor_huella, funcion_resumen, formato, tamano_bytes, "
-                "folios "
+                "folios, orden_documental, nivel_seguridad_snapshot, estado "
                 "FROM expediente_indice_item WHERE indice_id = $1 ORDER BY orden ASC",
                 indice_id,
             )
@@ -153,8 +153,9 @@ class IndexRepository:
                     INSERT INTO expediente_indice_item
                         (indice_id, document_id, orden, titulo, tipologia,
                          fecha_archivado, valor_huella, funcion_resumen,
-                         formato, tamano_bytes, folios)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                         formato, tamano_bytes, folios,
+                         orden_documental, nivel_seguridad_snapshot, estado)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     """,
                     indice["id"],
                     uuid.UUID(it.document_id),
@@ -167,5 +168,14 @@ class IndexRepository:
                     it.formato,
                     it.tamano_bytes,
                     it.folios,
+                    # v3 (E15 finalización RT-15): snapshot inmutable del
+                    # orden_documental ESTABLE, el nivel de seguridad heredado
+                    # del expediente y el estado del vínculo EN el momento de
+                    # esta versión — permiten reconstruir el hueco trazable de
+                    # versiones históricas sin depender del estado actual de
+                    # `expediente_radicados`.
+                    it.orden,
+                    it.nivel_seguridad,
+                    it.estado,
                 )
         return indice

@@ -196,8 +196,17 @@ class ArchiveRepository:
         return expediente
 
     async def _get_radicados(self, expediente_id: uuid.UUID) -> list[ExpedienteRadicado]:
+        """Todos los vínculos del expediente: VINCULADOS y EXCLUIDOS (soft-delete).
+
+        El índice electrónico (E15 perfil v3) necesita ver ambos para poder
+        mostrar el hueco trazable de un documento excluido. Los consumidores
+        que representan "documentos vigentes" (respuesta del expediente,
+        foliado) filtran `estado == 'vinculado'` en `archive_service.py` —
+        aquí NO se filtra para no duplicar la query.
+        """
         rows = await self._conn.fetch(
-            "SELECT * FROM expediente_radicados WHERE expediente_id = $1 ORDER BY added_at ASC",
+            "SELECT * FROM expediente_radicados WHERE expediente_id = $1 "
+            "ORDER BY orden_documental ASC NULLS LAST, added_at ASC",
             expediente_id,
         )
         return [_row_to_radicado(r) for r in rows]
@@ -295,50 +304,135 @@ class ArchiveRepository:
         tamano_bytes: int | None = None,
         folios: int | None = None,
     ) -> ExpedienteRadicado:
+        """Vincula un radicado al expediente, asignándole orden_documental ESTABLE.
+
+        El orden se calcula MAX(orden_documental)+1 por expediente de forma
+        ATÓMICA: `pg_advisory_xact_lock` serializa dos vínculos concurrentes
+        al MISMO expediente (se libera al cerrar la transacción) antes de leer
+        el máximo, así nunca colisionan de ordinal. Es inmutable: nunca se
+        recalcula por posición ni se reutiliza tras una exclusión (E15 perfil
+        v3, RT-15 art. 4.3.2.3).
+
+        Si el radicado YA tenía un vínculo EXCLUIDO (soft-delete) con este
+        expediente, re-vincularlo NO reactiva el ordinal anterior — asigna uno
+        NUEVO (se trata como una nueva incorporación); el hueco del ordinal
+        excluido queda trazado en las versiones ya generadas del índice. La
+        fila física es la MISMA (PK compuesta expediente_id+radicado_id), de
+        ahí el `ON CONFLICT ... DO UPDATE` en vez de un segundo INSERT.
+
+        Compromiso de trazabilidad conocido (hallazgo Baja, cierre RT-15): el
+        `DO UPDATE` sobrescribe `orden_documental` de esa MISMA fila física
+        con el nuevo ordinal — el hueco del ordinal EXCLUIDO anterior deja de
+        ser visible en el índice VIGENTE/actual (`expediente_radicados` ya no
+        lo conserva); solo persiste en las versiones YA GENERADAS del índice
+        (`expediente_indice_item`, snapshot inmutable) y en `expediente_eventos`
+        / `audit_log`. Es una decisión aceptada del usuario, no un defecto:
+        `unlink_radicado` siempre regenera una versión antes de retornar, así
+        que el hueco queda congelado en al menos una versión histórica. Si se
+        necesitara conservarlo también en el artefacto VIGENTE, habría que
+        modelar filas históricas de exclusión — fuera del alcance de este
+        incremento.
+        """
         await self._set_search_path()
-        row = await self._conn.fetchrow(
-            """
-            INSERT INTO expediente_radicados
-                (expediente_id, radicado_id, tracking_number, content_hash,
-                 formato, tamano_bytes, folios)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING *
-            """,
-            expediente_id,
-            radicado_id,
-            tracking_number,
-            content_hash,
-            formato,
-            tamano_bytes,
-            folios,
-        )
+        async with self._conn.transaction():
+            await self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1::text))", str(expediente_id)
+            )
+            next_orden: int = await self._conn.fetchval(
+                "SELECT COALESCE(MAX(orden_documental), 0) + 1 "
+                "FROM expediente_radicados WHERE expediente_id = $1",
+                expediente_id,
+            )
+            row = await self._conn.fetchrow(
+                """
+                INSERT INTO expediente_radicados
+                    (expediente_id, radicado_id, tracking_number, content_hash,
+                     formato, tamano_bytes, folios, orden_documental, estado)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vinculado')
+                ON CONFLICT (expediente_id, radicado_id) DO UPDATE SET
+                    tracking_number  = EXCLUDED.tracking_number,
+                    content_hash     = EXCLUDED.content_hash,
+                    formato          = EXCLUDED.formato,
+                    tamano_bytes     = EXCLUDED.tamano_bytes,
+                    folios           = EXCLUDED.folios,
+                    orden_documental = EXCLUDED.orden_documental,
+                    estado           = 'vinculado',
+                    excluido_at      = NULL,
+                    excluido_causal  = NULL,
+                    added_at         = now()
+                 WHERE expediente_radicados.estado = 'excluido'
+                RETURNING *
+                """,
+                expediente_id,
+                radicado_id,
+                tracking_number,
+                content_hash,
+                formato,
+                tamano_bytes,
+                folios,
+                next_orden,
+            )
+            if row is None:
+                # El único camino normal a un conflicto es reactivar un vínculo
+                # EXCLUIDO (arriba). Si de todos modos no hay fila (carrera con
+                # otro request que ya lo re-vinculó, o ya estaba 'vinculado' —
+                # que `radicado_link_exists` debería haber bloqueado con 409
+                # antes de llegar aquí), se devuelve el estado actual sin
+                # reasignar orden.
+                row = await self._conn.fetchrow(
+                    "SELECT * FROM expediente_radicados "
+                    "WHERE expediente_id = $1 AND radicado_id = $2",
+                    expediente_id,
+                    radicado_id,
+                )
         return _row_to_radicado(row)
 
     async def radicado_link_exists(self, expediente_id: uuid.UUID, radicado_id: uuid.UUID) -> bool:
+        """True solo si hay un vínculo VIGENTE ('vinculado'). Un vínculo EXCLUIDO
+        (soft-delete) no bloquea re-vincular — `link_radicado` lo reactiva con un
+        orden_documental NUEVO en vez de tratarlo como duplicado."""
         await self._set_search_path()
         val = await self._conn.fetchval(
             """
             SELECT COUNT(*) FROM expediente_radicados
-             WHERE expediente_id = $1 AND radicado_id = $2
+             WHERE expediente_id = $1 AND radicado_id = $2 AND estado = 'vinculado'
             """,
             expediente_id,
             radicado_id,
         )
         return bool(val)
 
-    async def unlink_radicado(self, expediente_id: uuid.UUID, radicado_id: uuid.UUID) -> bool:
+    async def unlink_radicado(
+        self,
+        expediente_id: uuid.UUID,
+        radicado_id: uuid.UUID,
+        causal: str | None = None,
+    ) -> bool:
+        """Excluye el vínculo por SOFT-DELETE (E15 perfil v3, RT-15 art. 4.3.2.3).
+
+        Ya NO borra la fila físicamente: la marca estado='excluido' (+
+        excluido_at/excluido_causal) para que el índice electrónico muestre el
+        hueco trazable en el orden documental — paridad con el Orfeo legado
+        (estado=2, sin DELETE físico). `orden_documental` NUNCA se renumera ni
+        se reutiliza. El `WHERE estado = 'vinculado'` hace la operación
+        idempotente: excluir dos veces el mismo vínculo devuelve 0 filas la
+        segunda vez (el llamador lo traduce a 404, igual que con el DELETE
+        físico anterior).
+        """
         await self._set_search_path()
         result: str = await self._conn.execute(
             """
-            DELETE FROM expediente_radicados
-             WHERE expediente_id = $1 AND radicado_id = $2
+            UPDATE expediente_radicados
+               SET estado = 'excluido', excluido_at = now(), excluido_causal = $3
+             WHERE expediente_id = $1 AND radicado_id = $2 AND estado = 'vinculado'
             """,
             expediente_id,
             radicado_id,
+            causal,
         )
-        # asyncpg returns "DELETE <n>" as the command tag
-        deleted = int(result.split()[-1])
-        return deleted > 0
+        # asyncpg returns "UPDATE <n>" as the command tag
+        updated = int(result.split()[-1])
+        return updated > 0
 
     # ------------------------------------------------------------------
     # TRD series CRUD
@@ -660,6 +754,7 @@ def _row_to_expediente(row: asyncpg.Record) -> Expediente:
         metadata=_json_obj(row["metadata"]),
         metadata_template_id=row["metadata_template_id"],
         disposition=(_json_obj(row["disposition"]) if row["disposition"] is not None else None),
+        nivel_seguridad=row["nivel_seguridad"],
     )
 
 
@@ -673,6 +768,10 @@ def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
         formato=row["formato"],
         tamano_bytes=row["tamano_bytes"],
         folios=row["folios"],
+        orden_documental=row["orden_documental"],
+        estado=row["estado"],
+        excluido_at=row["excluido_at"],
+        excluido_causal=row["excluido_causal"],
     )
 
 

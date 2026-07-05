@@ -11,6 +11,7 @@
 
 import hashlib
 import uuid
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,9 +24,16 @@ from app.services.index_builder import (
     IndiceItemData,
     build_xml,
     content_hash,
+    count_vigentes,
     xml_sha256,
 )
-from tests.conftest import TENANT_HEADERS, make_expediente_record, make_radicado_link_record
+from tests.conftest import (
+    EXPEDIENTE_ID,
+    RADICADO_ID,
+    TENANT_HEADERS,
+    make_expediente_record,
+    make_radicado_link_record,
+)
 
 NOW = datetime.now(tz=UTC)
 
@@ -56,8 +64,9 @@ def _indice_row(*, version=1, estado="vigente", content="x" * 64, num=1, xsd_ver
 
 
 def test_build_xml_has_normative_fields() -> None:
-    """E15 Inc.3 (RT-15): el índice se emite en el namespace v2 —
-    `xsdVersion="v2"` en la raíz — actualizado tras el salto v1->v2."""
+    """E15 finalización RT-15 (perfil v3 "conforme extendido"): el índice se
+    emite en el namespace v3 — `xsdVersion="v3"` en la raíz — actualizado tras
+    el salto v2->v3."""
     data = IndiceData(
         expediente_id=str(uuid.uuid4()),
         code="EXP-2024-0001",
@@ -67,10 +76,10 @@ def test_build_xml_has_normative_fields() -> None:
         items=[IndiceItemData(document_id=str(uuid.uuid4()), orden=1, titulo="2024-E-001")],
     )
     xml = build_xml(data)
-    assert NS == "urn:orpycamcp:indice:v2"
-    assert XSD_VERSION == "v2"
+    assert NS == "urn:orpycamcp:indice:v3"
+    assert XSD_VERSION == "v3"
     assert NS in xml
-    assert 'xsdVersion="v2"' in xml
+    assert 'xsdVersion="v3"' in xml
     assert "identificadorSistema" in xml
     assert "valorHuella" in xml and "funcionResumen" in xml
     assert "<" in xml and "documento" in xml
@@ -89,9 +98,9 @@ def test_content_hash_is_order_sensitive() -> None:
 
 
 def test_build_xml_v2_emits_formato_tamano_folios_fecha_incorporacion() -> None:
-    """(a) Cuando el vínculo declaró formato/tamaño/folios, el XML v2 los
-    emite junto con <fechaIncorporacion> (renombre de fechaArchivado), en el
-    namespace urn:orpycamcp:indice:v2 con xsdVersion="v2"."""
+    """(a) Cuando el vínculo declaró formato/tamaño/folios, el XML los emite
+    junto con <fechaIncorporacion> (renombre de fechaArchivado, heredado de
+    v2), ahora en el namespace urn:orpycamcp:indice:v3 con xsdVersion="v3"."""
     fecha = NOW
     data = IndiceData(
         expediente_id=str(uuid.uuid4()),
@@ -114,7 +123,7 @@ def test_build_xml_v2_emits_formato_tamano_folios_fecha_incorporacion() -> None:
     )
     xml = build_xml(data)
     assert NS in xml
-    assert 'xsdVersion="v2"' in xml
+    assert 'xsdVersion="v3"' in xml
     assert "formato" in xml and "application/pdf" in xml
     assert "tamano" in xml and ">204800<" in xml
     assert "folios" in xml and ">12<" in xml
@@ -190,8 +199,8 @@ def test_xml_sha256_rehash_matches_stored_v1_hash() -> None:
 
 
 @pytest.mark.asyncio
-async def test_insert_version_persists_xsd_version_v2() -> None:
-    """(e) Toda versión nueva del índice persiste xsd_version='v2' de forma
+async def test_insert_version_persists_xsd_version_v3() -> None:
+    """(e) Toda versión nueva del índice persiste xsd_version='v3' de forma
     explícita — el repositorio NO confía en el DEFAULT 'v1' de la columna
     (migración 015)."""
     from app.repositories.index_repository import IndexRepository
@@ -213,7 +222,7 @@ async def test_insert_version_persists_xsd_version_v2() -> None:
     )
 
     args, _kwargs = mock_conn.fetchrow.call_args
-    assert args[-1] == "v2"
+    assert args[-1] == "v3"
     assert args[-1] == XSD_VERSION
 
 
@@ -226,23 +235,37 @@ async def test_get_indice_current(client_with_conn) -> None:
     y renombra la fecha a `fecha_incorporacion` — alineado con <fechaIncorporacion>
     del XML v2 (antes el response schema los descartaba)."""
     client, mock_conn = client_with_conn
-    mock_conn.fetchrow.return_value = _indice_row(version=2, num=1)
-    mock_conn.fetch.return_value = [
-        {
-            "document_id": uuid.uuid4(),
-            "orden": 1,
-            "titulo": "2024-E-001",
-            "tipologia": None,
-            "fecha_declaracion": None,
-            "fecha_archivado": NOW,
-            "valor_huella": None,
-            "funcion_resumen": "SHA-256",
-            "formato": "application/pdf",
-            "tamano_bytes": 2048,
-            "folios": 3,
-        },
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    # fetchrow: resolve_caller_clearance (None -> PUBLICA), get_expediente_by_id
+    # (no-read-up, cierre RT-15), get_current(indice); fetch: radicados, items.
+    mock_conn.fetchrow.side_effect = [
+        None,
+        make_expediente_record(exp_id=exp_id),
+        _indice_row(version=2, num=1),
     ]
-    resp = await client.get(f"/api/v1/expedientes/{uuid.uuid4()}/indice", headers=TENANT_HEADERS)
+    mock_conn.fetch.side_effect = [
+        [],
+        [
+            {
+                "document_id": uuid.uuid4(),
+                "orden": 1,
+                "titulo": "2024-E-001",
+                "tipologia": None,
+                "fecha_declaracion": None,
+                "fecha_archivado": NOW,
+                "valor_huella": None,
+                "funcion_resumen": "SHA-256",
+                "formato": "application/pdf",
+                "tamano_bytes": 2048,
+                "folios": 3,
+                "orden_documental": 1,
+                "nivel_seguridad_snapshot": 1,
+                "estado": "vinculado",
+            },
+        ],
+    ]
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     body = resp.json()
     assert body["version"] == 2
@@ -252,6 +275,10 @@ async def test_get_indice_current(client_with_conn) -> None:
     assert item["tamano_bytes"] == 2048
     assert item["folios"] == 3
     assert item["fecha_incorporacion"] is not None
+    # (Media, cierre RT-15) `estado`/`nivel_seguridad` ahora visibles en la
+    # vista consultable JSON, no solo en el XML probatorio.
+    assert item["estado"] == "vinculado"
+    assert item["nivel_seguridad"] == 1
 
 
 @pytest.mark.asyncio
@@ -259,43 +286,146 @@ async def test_get_indice_item_tolerates_missing_rt15_keys(client_with_conn) -> 
     """Filas de item sin formato/tamano_bytes/folios proyectados (legado) no
     rompen la respuesta — se omiten como None."""
     client, mock_conn = client_with_conn
-    mock_conn.fetchrow.return_value = _indice_row(version=1, num=1)
-    mock_conn.fetch.return_value = [
-        {
-            "document_id": uuid.uuid4(),
-            "orden": 1,
-            "titulo": "2024-E-001",
-            "tipologia": None,
-            "fecha_declaracion": None,
-            "fecha_archivado": NOW,
-            "valor_huella": None,
-            "funcion_resumen": "SHA-256",
-        },
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        None,
+        make_expediente_record(exp_id=exp_id),
+        _indice_row(version=1, num=1),
     ]
-    resp = await client.get(f"/api/v1/expedientes/{uuid.uuid4()}/indice", headers=TENANT_HEADERS)
+    mock_conn.fetch.side_effect = [
+        [],
+        [
+            {
+                "document_id": uuid.uuid4(),
+                "orden": 1,
+                "titulo": "2024-E-001",
+                "tipologia": None,
+                "fecha_declaracion": None,
+                "fecha_archivado": NOW,
+                "valor_huella": None,
+                "funcion_resumen": "SHA-256",
+            },
+        ],
+    ]
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     item = resp.json()["items"][0]
     assert item["formato"] is None
     assert item["tamano_bytes"] is None
     assert item["folios"] is None
+    assert item["estado"] is None
+    assert item["nivel_seguridad"] is None
 
 
 @pytest.mark.asyncio
 async def test_get_indice_not_found(client_with_conn) -> None:
+    """Expediente existe y es visible, pero aún no tiene índice generado → 404
+    'expediente_indice_not_found' — distinto del 404 'expediente_not_found'
+    que dispara el guard de no-read-up (ver `test_get_indice_clearance_scoped_returns_404`)."""
     client, mock_conn = client_with_conn
-    mock_conn.fetchrow.return_value = None
-    resp = await client.get(f"/api/v1/expedientes/{uuid.uuid4()}/indice", headers=TENANT_HEADERS)
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), None]
+    mock_conn.fetch.return_value = []
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice", headers=TENANT_HEADERS)
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "expediente_indice_not_found"
+
+
+@pytest.mark.asyncio
+async def test_get_indice_requires_permission(client_with_conn) -> None:
+    """(Alta, cierre RT-15) `GET /indice` ahora exige USUA_PERM_EXPEDIENTE —
+    antes cualquier llamante autenticado del tenant, sin el permiso, podía
+    leer el índice XML completo de cualquier expediente (incl. CLASIFICADA)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False  # permiso denegado
+    resp = await client.get(f"/api/v1/expedientes/{uuid.uuid4()}/indice", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_indice_clearance_scoped_returns_404(client_with_conn) -> None:
+    """(Alta, cierre RT-15) No-read-up (RF-SEG-08): aunque el permiso esté
+    concedido, un expediente cuyo `nivel_seguridad` supere el clearance del
+    llamante no es visible — 404 'expediente_not_found' ANTES de servir nada
+    del índice (mismo criterio que `GET /{id}`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso concedido
+    exp_id = uuid.uuid4()
+    # resolve_caller_clearance: sin fila RBAC -> PUBLICA(1); get_expediente_by_id
+    # con nivel_seguridad > clearance no matchea el predicado -> None.
+    mock_conn.fetchrow.side_effect = [None, None]
+    mock_conn.fetch.return_value = []
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+
+@pytest.mark.asyncio
+async def test_indice_xml_requires_permission(client_with_conn) -> None:
+    """(Alta, cierre RT-15) `GET /indice.xml` ahora exige USUA_PERM_EXPEDIENTE."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False
+    resp = await client.get(
+        f"/api/v1/expedientes/{uuid.uuid4()}/indice.xml", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_indice_xml_returns_xml_when_visible(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        None,
+        make_expediente_record(exp_id=exp_id),
+        _indice_row(version=1, num=0),
+    ]
+    mock_conn.fetch.return_value = []
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice.xml", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/xml")
+
+
+@pytest.mark.asyncio
+async def test_indice_versions_requires_permission(client_with_conn) -> None:
+    """(Alta, cierre RT-15) `GET /indice/versions` ahora exige USUA_PERM_EXPEDIENTE."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = False
+    resp = await client.get(
+        f"/api/v1/expedientes/{uuid.uuid4()}/indice/versions", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_indice_versions_lists_when_visible(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    # fetchval: check_permission, luego COUNT(*) dentro de list_versions.
+    mock_conn.fetchval.side_effect = [True, 1]
+    mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id)]
+    mock_conn.fetch.side_effect = [[], [_indice_row(version=1, num=0)]]
+    resp = await client.get(
+        f"/api/v1/expedientes/{exp_id}/indice/versions", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.headers["X-Total-Count"] == "1"
+    assert len(resp.json()) == 1
 
 
 def test_item_valor_huella_from_link_hash() -> None:
     """El content_hash del vínculo se usa como valor_huella del item del índice.
 
     (RT-15, E15 Inc.3) `_items_from` también lee formato/tamano_bytes/folios
-    del vínculo — el objeto de dominio debe exponerlos, aunque sea NULL.
+    del vínculo — el objeto de dominio debe exponerlos, aunque sea NULL. (E15
+    perfil v3) también hereda nivel_seguridad del EXPEDIENTE y el estado del
+    vínculo — se usa el dataclass real `ExpedienteRadicado` (no un stub
+    dinámico) para que la prueba no quede desalineada de sus campos.
     """
-    from app.models.archive import Expediente
+    from app.models.archive import Expediente, ExpedienteRadicado
     from app.services.index_service import IndexService
 
     h = "c" * 64
@@ -311,20 +441,20 @@ def test_item_valor_huella_from_link_hash() -> None:
         opened_at=NOW,
         closed_at=None,
         updated_at=NOW,
+        nivel_seguridad=2,
         radicados=[
-            type(
-                "R",
-                (),
-                {
-                    "radicado_id": rad["radicado_id"],
-                    "tracking_number": rad["tracking_number"],
-                    "added_at": NOW,
-                    "content_hash": h,
-                    "formato": None,
-                    "tamano_bytes": None,
-                    "folios": None,
-                },
-            )()
+            ExpedienteRadicado(
+                expediente_id=rad["expediente_id"],
+                radicado_id=rad["radicado_id"],
+                tracking_number=rad["tracking_number"],
+                added_at=NOW,
+                content_hash=h,
+                formato=None,
+                tamano_bytes=None,
+                folios=None,
+                orden_documental=1,
+                estado="vinculado",
+            )
         ],
     )
     items = IndexService.__new__(IndexService)._items_from(exp)
@@ -332,6 +462,8 @@ def test_item_valor_huella_from_link_hash() -> None:
     assert items[0].formato is None
     assert items[0].tamano_bytes is None
     assert items[0].folios is None
+    assert items[0].nivel_seguridad == 2
+    assert items[0].estado == "vinculado"
 
 
 @pytest.mark.asyncio
@@ -374,9 +506,11 @@ async def test_verify_intact(client_with_conn) -> None:
     }
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
-    # fetchrow: get_current(indice), get_expediente(exp); fetch: items, radicados
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[item], [link]]
+    # fetchrow: resolve_caller_clearance (None -> PUBLICA), get_expediente(exp),
+    # get_current(indice); fetch: radicados, items — cierre RT-15: `verify`
+    # ahora resuelve clearance + expediente ANTES del índice (no-read-up).
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [item]]
 
     resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -407,8 +541,8 @@ async def test_verify_tampered(client_with_conn) -> None:
     }
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash="e" * 64)
-    mock_conn.fetchrow.side_effect = [_indice_row(version=2, num=1), exp]
-    mock_conn.fetch.side_effect = [[item], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, _indice_row(version=2, num=1)]
+    mock_conn.fetch.side_effect = [[link], [item]]
 
     resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -444,8 +578,8 @@ async def test_verify_detects_indice_xml_tampering(client_with_conn) -> None:
     }
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[item], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [item]]
 
     resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -559,7 +693,7 @@ async def test_rebuild_creates_new_version_when_only_folios_changed(client_with_
     body = resp.json()
     assert body["unchanged"] is False
     assert body["version"] == 4
-    assert body["xsd_version"] == "v2"
+    assert body["xsd_version"] == "v3"
 
     # ADR-010: toda regeneración real (rebuild/link/unlink/batch) deja su
     # propio asiento en audit_log — antes solo `close_expediente` lo hacía.
@@ -572,7 +706,7 @@ async def test_rebuild_creates_new_version_when_only_folios_changed(client_with_
     assert any(a[5] == "archive.indice_regenerated" for a in audit_calls)
     regen_payload = next(a[8] for a in audit_calls if a[5] == "archive.indice_regenerated")
     assert '"version": 4' in regen_payload
-    assert '"xsd_version": "v2"' in regen_payload
+    assert '"xsd_version": "v3"' in regen_payload
 
 
 @pytest.mark.asyncio
@@ -647,8 +781,8 @@ async def test_verify_v1_indice_firmado_sigue_verificando_ok(client_with_conn) -
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
 
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
     from app.clients.signature_client import VerifyResult
 
@@ -692,8 +826,8 @@ async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
 
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
     from app.clients.signature_client import VerifyResult
 
@@ -742,8 +876,8 @@ async def test_verify_with_firma_service_unreachable_reports_invalida(client_wit
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
 
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
     # None simula firma_client.verify cuando el servicio está inalcanzable
     with (
@@ -783,8 +917,8 @@ async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
 
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
     from app.clients.signature_client import VerifyResult
 
@@ -829,8 +963,8 @@ async def test_verify_with_firma_but_minio_key_null_reports_unavailable(client_w
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
 
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
     with (
         patch(
@@ -868,8 +1002,8 @@ async def test_verify_with_firma_storage_download_fails_reports_unavailable(clie
     exp = make_expediente_record(exp_id=exp_id)
     link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
 
-    mock_conn.fetchrow.side_effect = [indice, exp]
-    mock_conn.fetch.side_effect = [[_item_row(rad_id, h)], [link]]
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
     with (
         patch(
@@ -1048,3 +1182,446 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     assert body["firma_id"] == str(firma_id)
     assert body["minio_key_firmado"] == "file-id/indice.xml"
     assert body["acreditado"] is False
+
+
+# ---------------------------------------------------------------------------
+# E15 finalización RT-15 — perfil v3 "CONFORME EXTENDIDO"
+# (orden_documental estable + soft-delete + listaControlAcceso + <contexto>)
+# ---------------------------------------------------------------------------
+
+_IDX_NS = {"idx": NS}
+
+
+def _documento_elements(xml: str) -> list:
+    """Parsea el XML y devuelve los <documento> en el orden en que quedaron
+    serializados (equivalente a como los vería un consumidor externo)."""
+    root = ET.fromstring(xml)
+    return root.findall("idx:documentos/idx:documento", _IDX_NS)
+
+
+def test_build_xml_v3_excluded_document_preserves_orden_and_emits_hole() -> None:
+    """(a) Vincular A,B,C -> orden 1,2,3; excluir B (soft-delete) NO renumera
+    a C (sigue en orden=3) ni comprime el hueco de B — B se emite como
+    <documento excluido="true"> conservando su orden_documental original, con
+    <fechaExclusion>/<causalExclusion>. El orden de EMISIÓN es por ordinal,
+    no por el orden en que llegaron los items a `build_xml` (aquí, a propósito,
+    fuera de orden: C, B, A)."""
+    fecha_exclusion = NOW
+    id_a, id_b, id_c = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    items = [
+        IndiceItemData(document_id=id_c, orden=3, titulo="C"),
+        IndiceItemData(
+            document_id=id_b,
+            orden=2,
+            titulo="B",
+            estado="excluido",
+            fecha_exclusion=fecha_exclusion,
+            causal_exclusion="error de captura",
+        ),
+        IndiceItemData(document_id=id_a, orden=1, titulo="A"),
+    ]
+    data = IndiceData(
+        expediente_id=str(uuid.uuid4()),
+        code="EXP-2026-0001",
+        name="Contrato",
+        serie_id=None,
+        fecha_creacion=NOW,
+        items=items,
+    )
+    xml = build_xml(data)
+    docs = _documento_elements(xml)
+    identificadores = [d.findtext("idx:identificador", namespaces=_IDX_NS) for d in docs]
+    assert identificadores == [id_a, id_b, id_c]  # por ordinal, no por orden de entrada
+    ordenes = [d.findtext("idx:orden", namespaces=_IDX_NS) for d in docs]
+    assert ordenes == ["1", "2", "3"]  # C NO se renumera a 2
+    excluido_attrs = [d.get("excluido") for d in docs]
+    assert excluido_attrs == [None, "true", None]  # ausente en vigentes, "true" solo en B
+    doc_b = docs[1]
+    assert doc_b.findtext("idx:causalExclusion", namespaces=_IDX_NS) == "error de captura"
+    assert doc_b.findtext("idx:fechaExclusion", namespaces=_IDX_NS) == fecha_exclusion.isoformat()
+    # Los vigentes no llevan fechaExclusion/causalExclusion.
+    assert docs[0].findtext("idx:fechaExclusion", namespaces=_IDX_NS) is None
+    assert count_vigentes(items) == 2  # num_documentos solo cuenta A y C
+
+
+def test_items_from_preserves_stable_orden_after_exclusion() -> None:
+    """(a) `_items_from` usa orden_documental ESTABLE de cada vínculo — no un
+    enumerate temporal — así que un documento excluido en medio de la lista
+    NO desplaza el orden de los que le siguen."""
+    from app.models.archive import Expediente, ExpedienteRadicado
+    from app.services.index_service import IndexService
+
+    a_id, b_id, c_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    exp = Expediente(
+        id=uuid.uuid4(),
+        code="EXP",
+        name="x",
+        description=None,
+        trd_serie_id=None,
+        status="open",
+        opened_by=None,
+        opened_at=NOW,
+        closed_at=None,
+        updated_at=NOW,
+        nivel_seguridad=1,
+        radicados=[
+            ExpedienteRadicado(
+                expediente_id=uuid.uuid4(),
+                radicado_id=a_id,
+                tracking_number="A",
+                added_at=NOW,
+                orden_documental=1,
+                estado="vinculado",
+            ),
+            ExpedienteRadicado(
+                expediente_id=uuid.uuid4(),
+                radicado_id=b_id,
+                tracking_number="B",
+                added_at=NOW,
+                orden_documental=2,
+                estado="excluido",
+                excluido_at=NOW,
+                excluido_causal="duplicado",
+            ),
+            ExpedienteRadicado(
+                expediente_id=uuid.uuid4(),
+                radicado_id=c_id,
+                tracking_number="C",
+                added_at=NOW,
+                orden_documental=3,
+                estado="vinculado",
+            ),
+        ],
+    )
+    items = IndexService.__new__(IndexService)._items_from(exp)
+    by_id = {it.document_id: it for it in items}
+    assert by_id[str(a_id)].orden == 1
+    assert by_id[str(b_id)].orden == 2
+    assert by_id[str(b_id)].estado == "excluido"
+    assert by_id[str(b_id)].causal_exclusion == "duplicado"
+    assert by_id[str(c_id)].orden == 3  # NO renumerado a 2 tras excluir B
+    assert count_vigentes(items) == 2
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_repo_soft_deletes_not_deletes() -> None:
+    """(b) `ArchiveRepository.unlink_radicado` es un UPDATE (soft-delete) — ya
+    NO un DELETE físico — y persiste el causal opcional aportado por quien
+    excluye (Acuerdo AGN 001/2024 art. 4.3.2.3)."""
+    from app.repositories.archive_repository import ArchiveRepository
+
+    mock_conn = AsyncMock()
+    mock_conn.execute.return_value = "UPDATE 1"
+    repo = ArchiveRepository(mock_conn, "demo")
+
+    result = await repo.unlink_radicado(uuid.uuid4(), uuid.uuid4(), causal="error de captura")
+
+    assert result is True
+    sql, *params = mock_conn.execute.call_args_list[-1].args
+    assert "UPDATE expediente_radicados" in sql
+    assert "SET estado = 'excluido'" in sql
+    assert "DELETE" not in sql
+    assert params[-1] == "error de captura"
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_repo_already_excluded_is_noop(client_with_conn) -> None:
+    """Idempotente: excluir dos veces el mismo vínculo devuelve 0 filas la
+    segunda vez (el `WHERE estado = 'vinculado'` no matchea nada) — el
+    servicio lo traduce a 404, igual que el DELETE físico anterior."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    mock_conn.execute.return_value = "UPDATE 0"
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetchrow.return_value = exp_record
+    mock_conn.fetch.return_value = []
+
+    resp = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "radicado_link_not_found"
+
+
+@pytest.mark.asyncio
+async def test_expediente_response_excludes_soft_deleted_radicados(client_with_conn) -> None:
+    """(c) `GET /expedientes/{id}` solo lista los radicados VIGENTES — un
+    excluido (soft-delete) no debe aparecer en la vista de conjunto ACTIVO,
+    aunque el repositorio traiga ambos para que el índice pueda ver el hueco."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    exp_id = uuid.uuid4()
+    vinculado_id = uuid.uuid4()
+    vinculado = make_radicado_link_record(
+        expediente_id=exp_id, radicado_id=vinculado_id, orden_documental=1, estado="vinculado"
+    )
+    excluido = make_radicado_link_record(
+        expediente_id=exp_id,
+        radicado_id=uuid.uuid4(),
+        orden_documental=2,
+        estado="excluido",
+        excluido_at=NOW,
+        excluido_causal="duplicado",
+    )
+    mock_conn.fetchrow.return_value = make_expediente_record(exp_id=exp_id)
+    mock_conn.fetch.return_value = [vinculado, excluido]
+
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["radicados"]) == 1
+    assert body["radicados"][0]["radicado_id"] == str(vinculado_id)
+
+
+@pytest.mark.asyncio
+async def test_foliado_excludes_soft_deleted_radicados(client_with_conn) -> None:
+    """(c) `GET /expedientes/{id}/foliado` tampoco cuenta folio a un radicado
+    excluido — solo los VIGENTES entran en la foliación (E02)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    exp_id = uuid.uuid4()
+    vinculado_id = uuid.uuid4()
+    vinculado = make_radicado_link_record(
+        expediente_id=exp_id, radicado_id=vinculado_id, orden_documental=1, estado="vinculado"
+    )
+    excluido = make_radicado_link_record(
+        expediente_id=exp_id, radicado_id=uuid.uuid4(), orden_documental=2, estado="excluido"
+    )
+    mock_conn.fetchrow.return_value = make_expediente_record(exp_id=exp_id)
+    mock_conn.fetch.return_value = [vinculado, excluido]
+
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/foliado", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_folios"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["radicado_id"] == str(vinculado_id)
+    assert body["items"][0]["folio"] == 1
+
+
+@pytest.mark.asyncio
+async def test_foliado_clearance_scoped_returns_404(client_with_conn) -> None:
+    """(Alta, cierre RT-15) No-read-up (RF-SEG-08): `GET /foliado` ya exigía
+    USUA_PERM_EXPEDIENTE, pero no contrastaba el clearance del llamante contra
+    `nivel_seguridad` — un expediente por encima del clearance debe ser 404,
+    igual que `GET /{id}`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso concedido
+    exp_id = uuid.uuid4()
+    # resolve_caller_clearance (None -> PUBLICA) + get_expediente_by_id (None:
+    # nivel_seguridad del expediente supera la clearance del llamante).
+    mock_conn.fetchrow.side_effect = [None, None]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(f"/api/v1/expedientes/{exp_id}/foliado", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+
+@pytest.mark.asyncio
+async def test_verify_clearance_scoped_returns_404(client_with_conn) -> None:
+    """(Alta, cierre RT-15) No-read-up (RF-SEG-08): `GET /indice/verify` ya
+    exigía USUA_PERM_EXPEDIENTE, pero resolvía el expediente sin restricción
+    de clearance — una ruta alterna para leer (indirectamente, vía
+    huellas/estado de firma) un expediente CLASIFICADA sin la clearance
+    debida."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso concedido
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [None, None]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(
+        f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+
+def test_build_xml_v3_lista_control_acceso_reflects_expediente_nivel() -> None:
+    """(d) <listaControlAcceso> por documento hereda el NIVEL de SEGURIDAD del
+    EXPEDIENTE (no hay clasificación por documento) — 2=RESERVADA."""
+    data = IndiceData(
+        expediente_id=str(uuid.uuid4()),
+        code="EXP-2026-0001",
+        name="Contrato",
+        serie_id=None,
+        fecha_creacion=NOW,
+        items=[
+            IndiceItemData(
+                document_id=str(uuid.uuid4()), orden=1, titulo="A", nivel_seguridad=2
+            )
+        ],
+    )
+    xml = build_xml(data)
+    doc = _documento_elements(xml)[0]
+    nivel_el = doc.find("idx:listaControlAcceso/idx:nivelSeguridad", _IDX_NS)
+    assert nivel_el is not None
+    assert nivel_el.get("codigo") == "2"
+    assert nivel_el.text == "RESERVADA"
+
+
+def test_build_xml_v3_contexto_with_serie_subserie_and_fecha_primer_uso() -> None:
+    """(e) <contexto> emite serie/subserie por NOMBRE (no el UUID, que sigue
+    en <expediente><serie>) y fechaPrimerUso."""
+    fecha = NOW
+    data = IndiceData(
+        expediente_id=str(uuid.uuid4()),
+        code="EXP-2026-0001",
+        name="Contrato",
+        serie_id=str(uuid.uuid4()),
+        fecha_creacion=NOW,
+        items=[],
+        serie_nombre="Contratos",
+        subserie_nombre="Prestación de servicios",
+        fecha_primer_uso=fecha,
+    )
+    xml = build_xml(data)
+    root = ET.fromstring(xml)
+    ctx = root.find("idx:cabecera/idx:contexto", _IDX_NS)
+    assert ctx is not None
+    assert ctx.findtext("idx:serie", namespaces=_IDX_NS) == "Contratos"
+    assert ctx.findtext("idx:subserie", namespaces=_IDX_NS) == "Prestación de servicios"
+    assert ctx.findtext("idx:fechaPrimerUso", namespaces=_IDX_NS) == fecha.isoformat()
+
+
+def test_build_xml_v3_contexto_omitted_when_no_data() -> None:
+    """(e) Sin serie TRD asignada ni documentos vinculados aún, <contexto> se
+    omite por completo — no sugerir un contexto vacío declarado."""
+    data = IndiceData(
+        expediente_id=str(uuid.uuid4()),
+        code="EXP-2026-0001",
+        name="Contrato",
+        serie_id=None,
+        fecha_creacion=NOW,
+        items=[],
+    )
+    xml = build_xml(data)
+    root = ET.fromstring(xml)
+    assert root.find("idx:cabecera/idx:contexto", _IDX_NS) is None
+
+
+@pytest.mark.asyncio
+async def test_contexto_series_resolves_parent_as_serie_and_own_as_subserie() -> None:
+    """(e) Si la serie TRD del expediente tiene padre (`parent_id`), el
+    expediente está clasificado en una SUBSERIE: `serie` = nombre del padre,
+    `subserie` = nombre propio."""
+    from app.models.archive import TrdSerie
+    from app.services.index_service import IndexService
+
+    parent = TrdSerie(
+        id=uuid.uuid4(),
+        code="100",
+        name="Contratos",
+        description=None,
+        retention_years=5,
+        total_retention=10,
+        disposition="CT",
+        is_active=True,
+        created_at=NOW,
+        parent_id=None,
+    )
+    child = TrdSerie(
+        id=uuid.uuid4(),
+        code="100.1",
+        name="Prestación de servicios",
+        description=None,
+        retention_years=5,
+        total_retention=10,
+        disposition="CT",
+        is_active=True,
+        created_at=NOW,
+        parent_id=parent.id,
+    )
+    svc = IndexService.__new__(IndexService)
+    svc._archive = AsyncMock()
+    svc._archive.get_trd_serie_by_id.side_effect = lambda sid: (
+        child if sid == child.id else parent if sid == parent.id else None
+    )
+
+    serie_nombre, subserie_nombre = await svc._contexto_series(child.id)
+    assert serie_nombre == "Contratos"
+    assert subserie_nombre == "Prestación de servicios"
+
+
+@pytest.mark.asyncio
+async def test_contexto_series_top_level_has_no_subserie() -> None:
+    """(e) Una serie TRD de primer nivel (sin `parent_id`) solo aporta
+    `serie` — `subserie` queda None (se omite del XML)."""
+    from app.models.archive import TrdSerie
+    from app.services.index_service import IndexService
+
+    serie = TrdSerie(
+        id=uuid.uuid4(),
+        code="100",
+        name="Contratos",
+        description=None,
+        retention_years=5,
+        total_retention=10,
+        disposition="CT",
+        is_active=True,
+        created_at=NOW,
+        parent_id=None,
+    )
+    svc = IndexService.__new__(IndexService)
+    svc._archive = AsyncMock()
+    svc._archive.get_trd_serie_by_id.return_value = serie
+
+    serie_nombre, subserie_nombre = await svc._contexto_series(serie.id)
+    assert serie_nombre == "Contratos"
+    assert subserie_nombre is None
+
+
+@pytest.mark.asyncio
+async def test_verify_v2_indice_firmado_sigue_verificando_ok(client_with_conn) -> None:
+    """(g) Retrocompat: un índice legado con xsd_version='v2' (creado antes
+    del salto a v3, E15 finalización RT-15) y ya firmado sigue verificando OK
+    — `verify()` no asume v3 en ningún punto."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    firma_id = uuid.uuid4()
+    h = "6" * 64
+    v2_xml = (
+        '<indice xmlns="urn:orpycamcp:indice:v2" xsdVersion="v2">'
+        "<cabecera><identificadorSistema>abc</identificadorSistema></cabecera>"
+        "<documentos/></indice>"
+    )
+    indice = _indice_row_with_firma(firma_id)
+    indice["xsd_version"] = "v2"
+    indice["xml"] = v2_xml
+    indice["xml_sha256"] = xml_sha256(v2_xml)
+    exp = make_expediente_record(exp_id=exp_id)
+    link = make_radicado_link_record(radicado_id=rad_id, content_hash=h)
+
+    mock_conn.fetchrow.side_effect = [None, exp, indice]
+    mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
+
+    from app.clients.signature_client import VerifyResult
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value=v2_xml),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
+                )
+            ),
+        ),
+    ):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify",
+            headers=TENANT_HEADERS,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["firma"]["presente"] is True
+    assert body["firma"]["valida"] is True
+    assert body["valido"] is True
