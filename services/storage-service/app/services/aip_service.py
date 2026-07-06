@@ -53,6 +53,7 @@ from app.repositories.preservacion_repository import PreservacionRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
 from app.schemas.preservacion import AipCreate, AipResponse
 from app.services.aip_builder import AipDocMaterial, aip_sha256, build_bag
+from app.services.aip_replica_service import ReplicaResult, replicate_aip
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
@@ -218,6 +219,26 @@ class AipService:
         )
         version_id = getattr(write_result, "version_id", None)
 
+        # Réplica best-effort del AIP ya sellado (E10 Increment C1b). Se
+        # dispara AQUÍ, ANTES de abrir la transacción crítica de abajo —
+        # `replicate_aip` nunca propaga (best-effort no-fatal): un fallo de
+        # I/O de la réplica NO debe poder tumbar el registro del AIP primario,
+        # que ya es válido e inmutable en el bucket WORM primario.
+        num_copias = await self._evt_repo.current_num_copias()
+        if num_copias is None:
+            num_copias = 1
+        replica_result: ReplicaResult | None = await replicate_aip(
+            primary_minio=minio,
+            tenant_slug=self._tenant_slug,
+            primary_bucket=bucket,
+            object_key=object_key,
+            zip_bytes=artifact.zip_bytes,
+            retention_mode=mode,
+            retain_until=retain_until,
+            legal_hold=payload.legal_hold,
+            num_copias=num_copias,
+        )
+
         # La subida a WORM (arriba) es irreversible y externa a la BD — no hay
         # forma de hacerla atómica con el registro. Lo que SÍ debe ser atómico
         # es el registro mismo: si cualquier INSERT de aquí abajo fallara a
@@ -310,6 +331,28 @@ class AipService:
                 },
                 agente=actor,
             )
+
+            # Réplica (E10 Increment C1b, PIEZA 5): SOLO `preservacion_evento`
+            # tipo=REPLICA — nunca `preservacion_worm_objeto` (exigiría migrar
+            # su CHECK tipo IN(indice,aip); la inmutabilidad de la réplica la
+            # garantiza el object-lock del bucket réplica, no una fila
+            # nuestra) ni un evento PREMIS dentro del Bag (ya sellado). Se
+            # inserta AQUÍ, dentro de la misma tx que el resto del AIP, para
+            # que la traza quede consistente aunque la subida de la réplica
+            # (I/O externo, ya resuelta arriba, best-effort no-fatal) haya
+            # fallado.
+            if replica_result is not None:
+                await self._evt_repo.insert_evento(
+                    {
+                        "object_ref": payload.expediente_id,
+                        "tipo": "REPLICA",
+                        "resultado": "ok" if replica_result.ok else "fallo",
+                        "hash_after": zip_hash if replica_result.ok else None,
+                        "detalle": replica_result.detalle,
+                    },
+                    agente=actor,
+                )
+
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -327,6 +370,7 @@ class AipService:
                     "retain_until": retain_until.isoformat(),
                     "retention_mode": mode,
                     "legal_hold": payload.legal_hold,
+                    "replica": replica_result.detalle if replica_result is not None else None,
                 },
             )
 
@@ -346,4 +390,7 @@ class AipService:
             retain_until=row["retain_until"],
             retention_mode=row["retention_mode"],
             legal_hold=row["legal_hold"],
+            replicado=replica_result.ok if replica_result is not None else False,
+            replica_target=replica_result.target if replica_result is not None else None,
+            replica_copias_hechas=replica_result.copias_hechas if replica_result is not None else 1,
         )

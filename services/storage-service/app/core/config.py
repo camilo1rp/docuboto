@@ -48,6 +48,21 @@ class Settings(BaseSettings):
     # del llamador (unidades mal convertidas), no una decisión TRD deliberada.
     preservation_max_retention_years: int = 100
 
+    # Réplica del AIP empaquetado (E10 Increment C1b, RF-FIR-15). Feature
+    # flag/kill-switch: con False, `empaquetar_aip` se comporta EXACTAMENTE
+    # igual que antes de este incremento (sin réplica alguna).
+    preservation_replica_enabled: bool = False
+    preservation_replica_bucket_suffix: str = "preservation-replica"
+    # Segundo endpoint MinIO opcional (réplica CROSS-SITE real, capacidad de
+    # producción). Si NO se configura, la réplica es LOCAL: un segundo bucket
+    # del MISMO MinIO primario — honestamente NO es copia geográfica (ver
+    # `aip_replica_service.ReplicaResult.detalle`). Credenciales secretas:
+    # nunca se loguean.
+    minio_secondary_endpoint: str | None = None
+    minio_secondary_access_key: str | None = None
+    minio_secondary_secret_key: str | None = None
+    minio_secondary_use_ssl: bool = False
+
     @field_validator("preservation_retention_mode")
     @classmethod
     def _validate_retention_mode(cls, v: str) -> str:

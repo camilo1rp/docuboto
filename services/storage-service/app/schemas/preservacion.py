@@ -205,6 +205,16 @@ class AipResponse(BaseModel):
     quedan NULL en esas filas). Declararlos NOT NULL rompía `GET
     /aip/{expediente_id}` con un 500 cuando el AIP vigente de un expediente
     era todavía un stub (hallazgo de auditoría Increment B).
+
+    `replicado`/`replica_target`/`replica_copias_hechas` (E10 Increment C1b,
+    RF-FIR-15) NO se persisten en la tabla `aip` (SIN migración en este
+    incremento, PIEZA 5: la réplica solo deja rastro en
+    `preservacion_evento` tipo=REPLICA) — llevan default para que `GET
+    /aip/{expediente_id}` (construido desde la fila cruda de BD, que nunca
+    tiene estas columnas) siga validando; solo la respuesta DIRECTA de
+    `POST /aip` (que construye `AipService.empaquetar_aip` a mano, no desde
+    la fila) los rellena con el resultado real de la réplica intentada en
+    esa misma llamada.
     """
 
     id: uuid.UUID
@@ -222,6 +232,9 @@ class AipResponse(BaseModel):
     retain_until: datetime | None
     retention_mode: str | None
     legal_hold: bool
+    replicado: bool = False
+    replica_target: Literal["local", "cross-site"] | None = None
+    replica_copias_hechas: int | None = 1
 
 
 class EventoResponse(BaseModel):

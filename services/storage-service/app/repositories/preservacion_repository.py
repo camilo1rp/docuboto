@@ -51,6 +51,21 @@ class PreservacionRepository:
             f"SELECT {_PLAN_COLS} FROM preservacion_plan ORDER BY version DESC LIMIT 1"
         )
 
+    async def current_num_copias(self) -> int | None:
+        """``num_copias`` del plan vigente, o ``None`` si no hay plan.
+
+        Usa ``fetchval`` (no ``fetchrow``/``current_plan``) DELIBERADAMENTE:
+        ``empaquetar_aip`` ya consume una secuencia fija de ``fetchrow`` (doc(s)
+        + índice opcional + INSERT RETURNING de `aip`) que los tests fijan con
+        ``side_effect`` — leer aquí con ``fetchrow`` desplazaría esa lista y
+        rompería todos los tests existentes de AIP. El llamador trata ``None``
+        (sin plan) como ``num_copias=1`` (copia única, sin réplica).
+        """
+        await self._sp()
+        return await self._conn.fetchval(
+            "SELECT num_copias FROM preservacion_plan ORDER BY version DESC LIMIT 1"
+        )
+
     async def list_plan_versions(self) -> list[asyncpg.Record]:
         await self._sp()
         return list(

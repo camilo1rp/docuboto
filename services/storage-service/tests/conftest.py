@@ -121,6 +121,8 @@ def _make_mock_minio() -> MagicMock:
     minio.make_bucket = AsyncMock()
     # `.version_id` mimics miniopy_async's real ObjectWriteResult (WORM tests read it).
     minio.put_object = AsyncMock(return_value=MagicMock(version_id="v1"))
+    # Server-side copy for the LOCAL AIP replica target (E10 Increment C1b).
+    minio.copy_object = AsyncMock(return_value=MagicMock(version_id="v1"))
     minio.presigned_get_object = AsyncMock(return_value="http://minio/presigned-url")
     minio.remove_object = AsyncMock()
     minio.list_buckets = AsyncMock(return_value=[])

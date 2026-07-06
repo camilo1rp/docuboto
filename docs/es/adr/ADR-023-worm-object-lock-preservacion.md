@@ -81,6 +81,20 @@ Validación **PDF/A con veraPDF** (dependencia Java externa) + evento `VALIDACIO
 - **Criterio binario de "conforme pleno"** (ratificado): el `premis.xml` emitido (`object file` + `event` ingestion/fixity check + `agent`) pasa `assertValid` contra el schema **normativo**. La **ausencia** de `rights`/`environment`/`relationship`/`significantProperties`/`preservationLevel` **es conforme** (opcionales en el oficial; `object file` solo exige `objectIdentifier` + `objectCharacteristics`) — no un gap. Notable: **cero contenido semántico nuevo obligatorio** — la estructura de B ya era conforme salvo el tipado del `object`.
 - **Sin migración, sin cambios de endpoint/RBAC/acceso a datos** — puro cambio de emisión XML + XSD vendorizado. **79 tests verdes** (incluye un test que valida contra el XSD oficial y uno negativo que confirma que `assertValid` rechaza estructura inválida). **Deuda de roadmap (no incumplimiento)**: `formatName` lleva el MIME sin `formatRegistry`/PRONOM; vocabularios controlados y entidades opcionales (rights, preservationLevel) quedan como refinamiento futuro. **REPLICA** (C1b) y **veraPDF/PDF-A** (C2) siguen pendientes.
 
+---
+
+## Addendum — Increment C1b (2026-07-06): REPLICA del AIP
+
+**Estado**: Aceptado. Auditado APTO por `tenant-security-auditor` y `archival-compliance-auditor`.
+
+**Segunda copia inmutable del AIP** para durabilidad de preservación (OAIS *multiple copies*, `preservacion_plan.num_copias`).
+
+- **Disparo por `num_copias`** (copias totales = 1 primaria + N réplicas): `num_copias<=1` (o sin plan) → **cero réplicas** (respeta el plan de copia única); `>=2` → **una** réplica en C1b. Si `num_copias>2` con solo target local, el déficit se registra honestamente en el evento (`copias_solicitadas` vs `copias_hechas`); el fan-out multi-réplica es roadmap.
+- **Target configurable** (`app/services/aip_replica_service.py::replicate_aip`): default **local** — segundo bucket del mismo MinIO `orpycamcp-{slug}-preservation-replica` (nombre **solo del claim JWT**), provisionado con `object_lock=True` y `copy_object` server-side con la **misma `Retention`/`legal_hold`** que el primario (réplica tan inmutable como el original); si `MINIO_SECONDARY_ENDPOINT` está configurado → **cross-site** a un segundo MinIO (segundo cliente + `put_object`). Feature-flag `PRESERVATION_REPLICA_ENABLED` (default `false`).
+- **Best-effort NON-fatal** (crítico): la réplica se intenta **después** de subir el AIP primario a WORM y **antes** de la transacción crítica; `replicate_aip` **nunca propaga excepciones** — un fallo de I/O de MinIO se captura y se refleja como `ReplicaResult(ok=False)`, de modo que un fallo de durabilidad opcional **jamás revierte** el AIP primario ya sellado. El resultado se registra como **`preservacion_evento` tipo `REPLICA`** (`resultado=ok|fallo`) dentro de la tx — **único registro**: **no** se registra en `preservacion_worm_objeto` (evitar migrar el `CHECK` y no contaminar el gate de disposición; la inmutabilidad la da el object-lock del bucket réplica) ni se retrofitea el `premis.xml` sellado (la réplica del *objeto*-AIP es un evento de repositorio, no de contenido).
+- **Honestidad (RF-FIR-15)**: la réplica local (mismo MinIO) se etiqueta explícitamente como *"réplica local (segundo bucket), no cross-site"* en la respuesta (`replicado`/`replica_target`/`replica_copias_hechas`) y el `detail` del evento; la cross-site real queda como capacidad de prod activable por config. **Sin migración**. **87 tests verdes** (incluye el fallo de réplica best-effort no-fatal con el AIP primario intacto, y bucket réplica del claim vs body).
+- **Baja aceptadas (roadmap/edge, no bloqueantes)**: sin re-verificación de fixity post-réplica en el camino cross-site; `str(exc)` crudo de MinIO en el `detail`/respuesta (acotar); sin validación de que `MINIO_SECONDARY_ENDPOINT` difiera del primario (réplica ilusoria si coinciden); límite de 5 GiB de `copy_object` server-side (usar `compose_object` para AIP grandes).
+
 ## Relacionados
 
 - ISO 14721 (OAIS); RFC 8493 (BagIt); PREMIS v3; Ley 594/2000; Acuerdo AGN 060/2001.
