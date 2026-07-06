@@ -212,3 +212,42 @@ Migración tenant **`013_lt_lta_material.sql`** (aditiva, nullable, validada ide
 ### Relacionados (Inc.5)
 
 - ETSI EN 319 132 (perfiles XAdES-LT/LTA); RFC 5280 (CRL); RFC 3161 (ArchiveTimeStamp reusa el token).
+
+---
+
+## Addendum — Incremento 6 (2026-07-06): 2FA por TOTP (RFC 6238) en la firma personal
+
+**Estado**: Aceptado. Ratificado por `orfeo-architect`; auditado APTO por `tenant-security-auditor` y `archival-compliance-auditor`.
+
+### Decisión
+
+**Elevar el segundo factor de la firma personal de OTP-correo (posesión de canal, Inc.2) a TOTP RFC 6238 (posesión de dispositivo), como factor alternativo más fuerte** — sin reemplazar el OTP-correo ni forzar TOTP en este incremento.
+
+**D1 — el secreto TOTP vive en auth-service, no en signature-service.** Es una credencial de identidad durable por usuario (analogía con `password_migrated`), no un artefacto de firma; ubicarla en signature la scopearía mal (mañana sirve para step-up de login/admin) y ampliaría el blast radius. signature-service **nunca ve el secreto**: llama a un endpoint interno de verificación. Tabla nueva `auth_user_totp` (migración tenant `010`, separada de `auth_users`, único parcial `WHERE estado <> 'revocado'`): `secret_cifrado`/`secret_nonce` (AESGCM), `estado` (`pendiente_activacion`/`activo`/`revocado`), `last_timestep` (anti-replay), `failed_attempts`/`locked_until` (anti-brute-force), `algoritmo`/`digitos`/`periodo`/`key_version`.
+
+### Cifrado y RFC 6238
+
+- **AESGCM** (`cryptography.hazmat`, **no** Fernet) con **AAD = `tenant:{slug}:user:{id}:totp`** — ata el ciphertext a la fila/tenant: un ciphertext movido entre filas o tenants **falla** al descifrar. Nonce aleatorio de 12 bytes por registro; clave `TOTP_ENCRYPTION_KEY` (AES-256) **separada** de `signature_secret`, en config de auth (se añadió `cryptography>=42` explícito a auth + `requirements.lock` regenerado). El secreto se descifra **solo en memoria** en verify; nunca en logs/respuestas/eventos/audit; se revela **una vez** en el `otpauth://` de `enroll` (`Cache-Control: no-store`).
+- **RFC 6238 en stdlib** (`hmac`/`hashlib`, sin `pyotp` — coherente con `otp.py` y el RFC 3161 a mano): HMAC-SHA1, 6 dígitos, periodo 30 s, secreto 20 bytes, base32. Verificado contra los **vectores del Apéndice B** de la RFC.
+
+### Endpoints y encaje
+
+- **auth-service** (públicos, bearer del usuario): `POST /api/v1/auth/me/totp/enroll` (dos pasos: genera → `pendiente_activacion` → devuelve `otpauth://` una vez), `POST .../activate` `{code}`, `GET .../me/totp` (nunca el secreto), `DELETE .../me/totp` `{step_up_totp_code}`. **Step-up**: re-enrolar y desenrolar un factor **activo** exigen un código actual válido (consumido antes de la mutación) → sin ruta solo-sesión que swapee/despoje el 2.º factor.
+- **auth-service** (interno, red Docker, **no** enrutado por el gateway): `POST /internal/totp/verify` `{code, contexto?}` — deriva la identidad del **bearer reenviado** (`validate_token → sub → get_user_by_keycloak_sub`), **nunca** de un `user_id` de cuerpo (cierra IDOR). Honra `locked_until` **antes** de comparar; avanza el anti-replay en un **único `UPDATE` condicional** (`WHERE last_timestep < Tm`) y decide el lockout en el mismo `UPDATE` server-side (evita el *lost update* del contador bajo concurrencia — remediación de la auditoría de seguridad). Ventana de skew ±1.
+- **signature-service**: `FirmarRequest`/`LoteItem` ganan `totp_code`. `_gate_2fa` hace **selección determinista**: `totp_code` + TOTP activo → camino TOTP (verify vía auth, `contexto=solicitud_id` para correlacionar la evidencia entre servicios); `totp_code` sin TOTP activo → `422 totp_no_activo` (no cae en silencio al correo); ambos → prevalece TOTP; ninguno → `409 2fa_requerido`. **TOTP no toca `firma_challenge`** (ese modelo es del OTP pre-emitido); solo el payload de audit (`firma.turno_firmado factor_tipo='totp'`, `challenge_id=null`) y el dict de retorno del gate ganan `totp`. La regla `firma_2fa_required or nivel>=2 → 2FA` **no cambia**: TOTP es un **satisfactor** dentro del gate, nunca un bypass; el kill-switch sigue aplicando solo a PUBLICA(1).
+
+### Brecha de atomicidad cross-service (aceptada)
+
+El avance anti-replay (`last_timestep`) se commitea en la tx de **auth**, no en la de firma de signature. Si la firma hace rollback tras un verify OK, el código queda quemado (~30 s) — **sobre-consumo fail-safe, no replay**. Mitigación: el verify es el último guard antes de `marcar_turno`, con trabajo mínimo después. `verify_totp` es fail-closed (timeout ~3 s → `503 canal_2fa_no_disponible` + rollback), misma postura que el canal de correo caído en Inc.2.
+
+### Conformidad (RF-FIR-15)
+
+TOTP es factor de **posesión de dispositivo** (más fuerte que el OTP-correo), pero la firma sigue siendo **firma electrónica no cualificada** (Ley 527/1999 art. 7): TOTP **no** la convierte en firma digital/acreditada. No se rotula lo contrario en respuestas/UI/docs. El *system-of-record* del 2.º factor es el `audit_log` **de signature-service** (`firma.turno_firmado`, atómico con la firma); la entrada de auth (`totp.verificado`, best-effort) es corroborante.
+
+### Consecuencias
+
+**Positivas**: segundo factor más fuerte, self-service, sin infra externa; secreto confinado a auth y cifrado con binding por tenant/usuario; anti-replay atómico + lockout; retrocompatibilidad total (el camino OTP-correo sigue intacto). **Negativas / límites (roadmap)**: **WebAuthn** (posesión + biometría/hardware) sigue pendiente; el forzado de TOTP por nivel/tenant (`totp_requerido_por_nivel`) queda reservado, no implementado; doble control para desenrolar firmantes `nivel>=2` es evolutivo. **97+208 tests verdes** (auth+signature); auditoría de seguridad APTO (1 Media remediada: incremento atómico del contador; 1 Baja remediada: fuente canónica del `tenant_slug` para el AAD).
+
+### Relacionados (Inc.6)
+
+- RFC 6238 (TOTP), RFC 4226 (HOTP), RFC 4648 (base32); RFC 5116 (AEAD/AES-GCM).

@@ -40,6 +40,15 @@ class OtpEmailDeliveryError(RuntimeError):
     """notification-service no aceptó el envío del correo con el código OTP."""
 
 
+class TotpVerifyUnavailableError(RuntimeError):
+    """auth-service no respondió (o respondió con error) al verificar un TOTP.
+
+    FAIL-CLOSED (mismo criterio que ``SignerEmailError``/``OtpEmailDeliveryError``):
+    el llamante (``CadenaFirmaService._gate_2fa``) traduce esto en un 503
+    ``canal_2fa_no_disponible`` que aborta la firma.
+    """
+
+
 async def get_signer_email(authorization: str | None) -> str:
     """Resuelve el email del firmante autenticado vía ``auth-service GET /me``.
 
@@ -139,3 +148,53 @@ async def send_otp_email(
             f"notification-service → HTTP {resp.status_code} al enviar OTP: "
             f"{resp.text[:200]}"
         )
+
+
+async def verify_totp(
+    authorization: str | None, code: str, *, solicitud_id: uuid.UUID | None = None
+) -> dict:
+    """Verifica-y-consume un código TOTP vía ``auth-service POST /internal/totp/verify``.
+
+    Reenvía el header ``Authorization`` TAL CUAL llegó a este servicio (D1 del
+    contrato TOTP): auth-service deriva la identidad del propio bearer
+    (``sub`` -> ``auth_users.id``), NUNCA de un ``user_id`` que este servicio
+    pudiera mandar en el body — cierra IDOR (el firmante solo puede verificar
+    SU PROPIO TOTP).
+
+    ``solicitud_id`` se envía como ``contexto`` (campo ya soportado por
+    ``InternalTotpVerifyRequest``): un identificador de correlación, NUNCA un
+    secreto, que permite atar el audit ``totp.verificado`` de auth-service al
+    ``firma.turno_firmado`` concreto de este servicio (corroboración
+    independiente del factor verificado — DUR 1074/2015 art.2.2.2.47.4,
+    Ac.001/2024 trazabilidad del acto). Opcional: su ausencia no degrada el
+    fail-closed existente.
+
+    Timeout agresivo (``settings.totp_verify_timeout_seconds``, ~3s) y
+    fail-closed: cualquier fallo de red o HTTP != 200 se traduce en
+    ``TotpVerifyUnavailableError`` — el llamante la convierte en 503
+    ``canal_2fa_no_disponible`` (nunca cae en silencio a otro factor).
+
+    Devuelve el body JSON de auth-service tal cual (``valido``, y en caso de
+    fallo ``motivo``/``intentos_restantes``/``locked_until``; en éxito
+    ``timestep``/``factor_tipo``) — el mapeo a HTTPException vive en
+    ``CadenaFirmaService._gate_2fa``, no aquí.
+    """
+    if not authorization:
+        raise TotpVerifyUnavailableError("Authorization header missing")
+    headers = {"Authorization": authorization}
+    body: dict = {"code": code}
+    if solicitud_id is not None:
+        body["contexto"] = str(solicitud_id)
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.auth_service_url, timeout=settings.totp_verify_timeout_seconds
+        ) as client:
+            resp = await client.post("/internal/totp/verify", json=body, headers=headers)
+    except httpx.RequestError as exc:
+        raise TotpVerifyUnavailableError(f"auth-service inalcanzable: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise TotpVerifyUnavailableError(
+            f"auth-service → HTTP {resp.status_code} al verificar TOTP: {resp.text[:200]}"
+        )
+    return resp.json()

@@ -58,6 +58,20 @@ def _validate_otp_digits(v: str) -> str:
     return v
 
 
+_TOTP_CODE_RE = re.compile(r"\d{6}")
+
+
+def _validate_totp_digits(v: str) -> str:
+    """TOTP codes (RFC 6238, D6 of the auth-service contract) are ALWAYS 6
+    digits — fixed by the RFC 6238 profile chosen there (HMAC-SHA1, 6 digits,
+    30s period), unlike the OTP-email code above whose length is a local
+    config knob (``otp_longitud``). The two must never be conflated.
+    """
+    if not _TOTP_CODE_RE.fullmatch(v):
+        raise ValueError("totp_code must be exactly 6 digits")
+    return v
+
+
 class TurnoItem(BaseModel):
     """Single turn within a signature chain."""
 
@@ -118,18 +132,28 @@ class FirmarRequest(BaseModel):
     - Otherwise, if payload_xml is provided, its SHA-256 is used.
     - Fallback: sign over "{objeto_tipo}:{objeto_id}".
 
-    challenge_id/otp: second factor (E06 Inc.2, RF-FIR-13). Required together
-    when settings.firma_2fa_required=True — see CadenaFirmaService._gate_2fa.
+    Second factor (E06, RF-FIR-13) — two alternative satisfactors, mutually
+    exclusive by construction in CadenaFirmaService._gate_2fa:
+      - challenge_id/otp: OTP-correo (Inc.2). Required together.
+      - totp_code: TOTP (RFC 6238), verified against auth-service. When both
+        are present, TOTP takes priority and the OTP-correo fields are
+        ignored (see _gate_2fa's deterministic factor selection).
     """
 
     payload_xml: str | None = None
     challenge_id: uuid.UUID | None = None
     otp: str | None = None
+    totp_code: str | None = None
 
     @field_validator("otp")
     @classmethod
     def validate_otp_format(cls, v: str | None) -> str | None:
         return _validate_otp_digits(v) if v is not None else v
+
+    @field_validator("totp_code")
+    @classmethod
+    def validate_totp_format(cls, v: str | None) -> str | None:
+        return _validate_totp_digits(v) if v is not None else v
 
 
 class ChallengeResponse(BaseModel):
@@ -146,16 +170,32 @@ class ChallengeResponse(BaseModel):
 
 
 class LoteItem(BaseModel):
-    """One batch item: its own solicitud + its own 2FA credential (Q2 — one OTP per document)."""
+    """One batch item: its own solicitud + its own 2FA credential (Q2 — one
+    credential per document, never reused across items).
+
+    ``challenge_id``/``otp`` (OTP-correo) and ``totp_code`` (RFC 6238) are
+    now BOTH optional — CadenaFirmaService._gate_2fa enforces "exactly one
+    factor, TOTP wins if both present, 409 if neither" per item, same as
+    FirmarRequest for a single sign. Kept optional (not "exactly one of")
+    at the schema level so the error surfaces as the existing per-item
+    'omitido: 2fa_requerido' outcome rather than a blanket 422 for the whole
+    batch.
+    """
 
     solicitud_id: uuid.UUID
-    challenge_id: uuid.UUID
-    otp: str
+    challenge_id: uuid.UUID | None = None
+    otp: str | None = None
+    totp_code: str | None = None
 
     @field_validator("otp")
     @classmethod
-    def validate_otp_format(cls, v: str) -> str:
-        return _validate_otp_digits(v)
+    def validate_otp_format(cls, v: str | None) -> str | None:
+        return _validate_otp_digits(v) if v is not None else v
+
+    @field_validator("totp_code")
+    @classmethod
+    def validate_totp_format(cls, v: str | None) -> str | None:
+        return _validate_totp_digits(v) if v is not None else v
 
 
 class LoteRequest(BaseModel):

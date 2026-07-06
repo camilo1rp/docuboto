@@ -104,6 +104,21 @@ class Settings(BaseSettings):
     notification_service_url: str = "http://notification-service:8007"
     auth_service_url: str = "http://auth-service:8001"
 
+    # --- 2FA por TOTP (RFC 6238), elevando el OTP-correo del Inc.2 ---
+    # Kill-switch: True (default) permite que POST /sign y POST /batch acepten
+    # totp_code como satisfactor del gate 2FA (app/services/cadena_service.py
+    # CadenaFirmaService._gate_2fa selecciona TOTP sobre challenge_id+otp
+    # cuando ambos vienen presentes). En False, totp_code se IGNORA por
+    # completo (como si no viniera) — el caller cae al camino OTP-correo o,
+    # si tampoco lo trae, al 409 2fa_requerido de siempre. NUNCA se traduce
+    # en un bypass del gate en sí (firma_2fa_required / nivel_seguridad >= 2
+    # siguen mandando, ver firmar()).
+    totp_enabled: bool = True
+    # Timeout agresivo para POST /internal/totp/verify (auth-service) —
+    # fail-closed: cualquier excepción (timeout incluido) se traduce en 503
+    # canal_2fa_no_disponible + rollback, mismo patrón que get_signer_email.
+    totp_verify_timeout_seconds: float = 3.0
+
     # --- XAdES-T: sello de tiempo RFC 3161 del índice (E06 Inc.4, RT-16) ---
     # Kill-switch: True (default) exige un SignatureTimeStamp válido para toda
     # firma xades_local — sin TSA disponible, /sign-xml falla (503), igual que

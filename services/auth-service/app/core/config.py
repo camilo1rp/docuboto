@@ -49,6 +49,53 @@ class Settings(BaseSettings):
     service_port: int = 8001
     log_level: str = "info"
 
+    # --- TOTP (RFC 6238, E06) — 2FA para la firma personal, junto a auth_users ---
+    # Clave AES-256 (32 bytes, base64) para cifrar en reposo el secreto TOTP
+    # (app/core/totp.py, AESGCM). Vacía en dev por defecto: enroll falla
+    # explícitamente (ver totp_encryption_key_bytes) hasta configurarla — el
+    # secreto TOTP NUNCA se cifra con un valor implícito/derivado. Generar con
+    # p. ej. `python -c "import secrets,base64;print(base64.b64encode(secrets.token_bytes(32)).decode())"`.
+    totp_encryption_key: str = ""
+    # Label ``issuer`` embebido en el otpauth:// URI (apps autenticadoras lo
+    # muestran junto al nombre de cuenta).
+    totp_issuer: str = "OrpycaMCP"
+    # Máximo de verificaciones fallidas (activate + /internal/totp/verify
+    # comparten el mismo contador de la fila) antes de bloquear con locked_until.
+    totp_max_failed_attempts: int = 5
+    # Duración del bloqueo tras agotar totp_max_failed_attempts.
+    totp_lockout_seconds: int = 900
+    # Ventana de tolerancia de reloj (RFC 6238): acepta timesteps en
+    # [T-skew, T+skew]. 1 = ±30s con periodo=30s.
+    totp_skew_steps: int = 1
+    # Reservado (NOMBRE fijado, NO implementado en este incremento): forzar
+    # TOTP según nivel_seguridad del acto. Ver signature-service._gate_2fa,
+    # que hoy exige 2FA (OTP-correo o TOTP, a elección del cliente) para
+    # nivel_seguridad >= 2 vía firma_2fa_required — TOTP es un satisfactor
+    # alternativo dentro de ese gate, nunca un requisito adicional propio.
+    totp_requerido_por_nivel: bool = False
+
+    def totp_encryption_key_bytes(self) -> bytes:
+        """Decodifica ``totp_encryption_key`` (base64) a 32 bytes crudos (AES-256).
+
+        Lanza ``RuntimeError`` explícito si falta o no mide 32 bytes — nunca cae
+        a una clave derivada o implícita (RF-SEG). El caller (TotpService) deja
+        que esto se traduzca en un 500 hasta que el operador configure la clave.
+        """
+        import base64
+        import binascii
+
+        if not self.totp_encryption_key:
+            raise RuntimeError(
+                "totp_encryption_key no configurada — requerida para /me/totp/*"
+            )
+        try:
+            key = base64.b64decode(self.totp_encryption_key, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("totp_encryption_key no es base64 válido") from exc
+        if len(key) != 32:
+            raise RuntimeError("totp_encryption_key debe decodificar a 32 bytes (AES-256)")
+        return key
+
     @property
     def keycloak_realm_url(self) -> str:
         return f"{self.keycloak_url}/realms/{self.keycloak_realm}"

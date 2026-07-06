@@ -15,12 +15,18 @@ All routes require PERM_FIRMA (enforced by require_permission at router level, R
 Firmante identity comes exclusively from X-User-Id header (RF-FIR-11) — the internal
 auth_users.id UUID resolved by auth-service /validate with lazy provisioning.
 
-2FA por OTP-correo (E06 Inc.2, RF-FIR-13): POST /requests/{id}/challenge emits a
-one-time OTP delivered by email; POST /requests/{id}/sign and POST /batch then
-require challenge_id+otp (gated in CadenaFirmaService, only for the PERSONAL
-signature of the chain — the institutional seal of the index, /sign-xml in
-signature.py, is a different router and never calls CadenaFirmaService.firmar,
-so it is out of scope for this gate by construction).
+2FA (RF-FIR-13), two alternative factors gated in CadenaFirmaService — only
+for the PERSONAL signature of the chain (the institutional seal of the
+index, /sign-xml in signature.py, is a different router and never calls
+CadenaFirmaService.firmar, so it is out of scope for this gate by
+construction):
+  - OTP-correo (E06 Inc.2): POST /requests/{id}/challenge emits a one-time
+    OTP delivered by email; POST /requests/{id}/sign and POST /batch then
+    accept challenge_id+otp.
+  - TOTP (RFC 6238, E06): POST /requests/{id}/sign and POST /batch accept
+    totp_code instead — verified against auth-service (no local challenge
+    row). When both are present, TOTP takes priority (see
+    CadenaFirmaService._gate_2fa).
 """
 
 from __future__ import annotations
@@ -178,7 +184,8 @@ async def sign_turn(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SolicitudResponse:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    return await _service(conn, tenant_slug).firmar(solicitud_id, actor, body)
+    authorization = request.headers.get("Authorization")
+    return await _service(conn, tenant_slug).firmar(solicitud_id, actor, body, authorization)
 
 
 # ---------------------------------------------------------------------------
@@ -219,4 +226,5 @@ async def batch_sign(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> LoteResponse:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    return await _service(conn, tenant_slug).firmar_lote(body.items, actor)
+    authorization = request.headers.get("Authorization")
+    return await _service(conn, tenant_slug).firmar_lote(body.items, actor, authorization)

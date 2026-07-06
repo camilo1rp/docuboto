@@ -40,8 +40,10 @@ from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
     OtpEmailDeliveryError,
     SignerEmailError,
+    TotpVerifyUnavailableError,
     get_signer_email,
     send_otp_email,
+    verify_totp,
 )
 from app.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
 from app.core.redis_client import get_redis
@@ -494,6 +496,7 @@ class CadenaFirmaService:
         solicitud_id: uuid.UUID,
         actor: uuid.UUID,
         payload_opcional: FirmarRequest | None = None,
+        authorization: str | None = None,
     ) -> SolicitudResponse:
         """
         Signs the active turn for the given solicitud.
@@ -504,6 +507,11 @@ class CadenaFirmaService:
         3. 403 no_es_firmante — actor is not in the chain at all.
         4. 403 no_es_su_turno — actor is in the chain but it's not their turn yet
            (invariant: turn N+1 only after turn N is resolved, RF-FIR-04).
+
+        ``authorization`` is the raw ``Authorization`` header from the
+        inbound request — forwarded verbatim to auth-service when the 2FA
+        gate needs to verify a TOTP code (see _gate_2fa/verify_totp). Only
+        used by the TOTP factor; the OTP-correo factor never needs it.
 
         The firma row + turn update + solicitud state change + audit entry
         all commit in a single transaction (RF-FIR-14 atomicity).
@@ -588,7 +596,7 @@ class CadenaFirmaService:
             # a real switch only at PUBLICA / for test environments.
             if settings.firma_2fa_required or sol["nivel_seguridad"] >= 2:
                 otp_fail, consumed_challenge = await self._gate_2fa(
-                    solicitud_id, actor, sol, payload_opcional
+                    solicitud_id, actor, sol, payload_opcional, authorization
                 )
 
             if otp_fail is None:
@@ -673,9 +681,13 @@ class CadenaFirmaService:
                                 if consumed_challenge
                                 else None
                             ),
+                            # TOTP has no firma_challenge row — consumed_challenge
+                            # carries challenge_id=None for that factor (D1); guard
+                            # against str(None) turning into the literal string
+                            # "None" here (only stringify when there IS a challenge).
                             "challenge_id": (
                                 str(consumed_challenge["challenge_id"])
-                                if consumed_challenge
+                                if consumed_challenge and consumed_challenge.get("challenge_id")
                                 else None
                             ),
                             "resultado_2fa": (
@@ -705,36 +717,65 @@ class CadenaFirmaService:
         actor: uuid.UUID,
         sol: asyncpg.Record,
         body: FirmarRequest | None,
+        authorization: str | None = None,
     ) -> tuple[HTTPException | None, dict | None]:
         """
-        Verifies and consumes the 2FA challenge for a personal-signature turn
-        (E06 Inc.2, RF-FIR-13). MUST run inside the caller's ambient transaction
-        (the same one holding the turno FOR UPDATE lock) — see firmar().
+        Verifies and consumes the 2FA credential for a personal-signature turn
+        (RF-FIR-13), one of two mutually-exclusive factors:
 
-        Returns (None, consumed) on success: the challenge row is marked
-        'consumido' here, atomically with the marcar_turno() that follows in
-        the same ambient transaction (anti-TOCTOU/replay, step d of the
-        contract). ``consumed`` carries the authoritative challenge_id,
-        factor_tipo and consumido_at — the values firmar() embeds verbatim
-        into the firma.turno_firmado audit entry, never the client-supplied
-        challenge_id from ``body`` nor a value inferred from configuration
-        (defense-in-depth: the audited evidence always reflects the row that
-        was actually verified-and-consumed under FOR UPDATE).
+          - TOTP (RFC 6238) — ``body.totp_code``, verified against
+            auth-service (``verify_totp``). Preferred when present.
+          - OTP-correo (E06 Inc.2) — ``body.challenge_id`` + ``body.otp``,
+            verified locally against ``firma_challenge``.
+
+        Deterministic selection (never silently falls through between the
+        two): ``totp_code`` present -> ALWAYS the TOTP path, even if
+        auth-service reports the credential isn't active (422
+        ``totp_no_activo`` — an actionable error, not a silent fallback to
+        email); only when ``totp_code`` is absent does ``challenge_id``+
+        ``otp`` get considered; neither present -> 409 ``2fa_requerido``.
+
+        MUST run inside the caller's ambient transaction (the same one
+        holding the turno FOR UPDATE lock) — see firmar().
+
+        Returns (None, consumed) on success. For OTP-correo, the challenge
+        row is marked 'consumido' here, atomically with the marcar_turno()
+        that follows in the same ambient transaction (anti-TOCTOU/replay).
+        For TOTP, the anti-replay advance already committed durably inside
+        auth-service's OWN transaction (D1 of the TOTP contract) before this
+        method ever sees the result — there is nothing further to consume
+        here. Either way, ``consumed`` carries the authoritative factor_tipo,
+        challenge_id (``None`` for TOTP) and consumido_at — the values
+        firmar() embeds verbatim into the firma.turno_firmado audit entry,
+        never the client-supplied challenge_id from ``body`` nor a value
+        inferred from configuration (defense-in-depth: the audited evidence
+        always reflects what was actually verified-and-consumed).
 
         Returns (HTTPException, None) (never raises) on failure — the caller
-        raises it AFTER the ambient transaction has committed. This is
-        deliberate: some failure branches here mutate firma_challenge (attempt
-        counter, 'expirado'/'bloqueado' transitions) and that state MUST
-        survive even though the overall sign attempt is aborted. Raising
-        immediately here would propagate out of firmar()'s
+        raises it AFTER the ambient transaction has committed. For OTP-correo
+        this is load-bearing: some failure branches mutate firma_challenge
+        (attempt counter, 'expirado'/'bloqueado' transitions) and that state
+        MUST survive even though the overall sign attempt is aborted — raising
+        immediately would propagate out of firmar()'s
         `async with self._conn.transaction():` and roll back the whole
-        ambient transaction — silently undoing those durable state changes
-        along with it.
+        ambient transaction, silently undoing those durable state changes
+        along with it. For TOTP the counter is already durable in
+        auth-service's own transaction regardless of what happens here, so
+        this signature-service transaction has nothing local to preserve
+        beyond the audit entry below — using the SAME return-then-raise-
+        after-commit convention (rather than raising directly) is what lets
+        that audit entry ride along with the ambient commit instead of being
+        rolled back by an early raise.
         """
         challenge_repo = ChallengeRepository(self._conn)
 
+        totp_code = body.totp_code if body else None
         challenge_id = body.challenge_id if body else None
         otp = body.otp if body else None
+
+        if totp_code is not None and settings.totp_enabled:
+            return await self._gate_2fa_totp(solicitud_id, actor, sol, totp_code, authorization)
+
         if challenge_id is None or otp is None:
             return HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -887,6 +928,104 @@ class CadenaFirmaService:
         }
         return None, consumed
 
+    async def _gate_2fa_totp(
+        self,
+        solicitud_id: uuid.UUID,
+        actor: uuid.UUID,
+        sol: asyncpg.Record,
+        totp_code: str,
+        authorization: str | None,
+    ) -> tuple[HTTPException | None, dict | None]:
+        """
+        TOTP branch of ``_gate_2fa`` — verifies ``totp_code`` against
+        auth-service's ``POST /internal/totp/verify``, forwarding the
+        firmante's own bearer (D1: identity comes from the token, never from
+        a body field).
+
+        No local ``firma_challenge`` row exists for this factor — auth-service
+        does the anti-replay bookkeeping (``last_timestep``) atomically in its
+        OWN transaction, which is already durable by the time this method
+        returns, regardless of what happens to signature-service's ambient
+        transaction afterwards (accepted atomicity caveat, D1: if THIS
+        transaction later rolls back, the TOTP code is "burned" for its
+        ~30s window — fail-safe over-consumption, never a replay).
+        """
+        try:
+            result = await verify_totp(authorization, totp_code, solicitud_id=solicitud_id)
+        except TotpVerifyUnavailableError:
+            return HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "canal_2fa_no_disponible",
+                    "detail": "Could not verify the TOTP code (auth-service)",
+                    "status": 503,
+                },
+            ), None
+
+        now = datetime.now(timezone.utc)
+
+        if result.get("valido"):
+            consumed = {
+                "challenge_id": None,
+                "factor_tipo": "totp",
+                "hash_documento": sol["payload_sha256"],
+                "consumido_at": now,
+            }
+            return None, consumed
+
+        motivo = result.get("motivo")
+        intentos_restantes = result.get("intentos_restantes")
+        locked_until = result.get("locked_until")
+
+        if motivo == "no_activo":
+            exc = HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "totp_no_activo",
+                    "detail": "Caller has no active TOTP credential (RF-FIR-13)",
+                    "status": 422,
+                },
+            )
+        elif motivo == "bloqueado":
+            exc = HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail={
+                    "error": "totp_bloqueado",
+                    "detail": "TOTP is locked after too many failed attempts",
+                    "locked_until": locked_until,
+                    "status": 423,
+                },
+            )
+        else:  # "codigo_incorrecto" | "replay" | anything unexpected from auth-service
+            exc = HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error": "totp_incorrecto",
+                    "detail": "The provided TOTP code is incorrect",
+                    "intentos_restantes": intentos_restantes,
+                    "status": 401,
+                },
+            )
+
+        if _AUDIT_AVAILABLE:
+            await _audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="firma.challenge.fallido",
+                object_type=sol["objeto_tipo"],
+                object_ref=sol["objeto_id"],
+                actor=str(actor),
+                payload={
+                    "challenge_id": None,
+                    "factor_tipo": "totp",
+                    "solicitud_id": str(solicitud_id),
+                    "motivo": motivo,
+                    "intentos_restantes": intentos_restantes,
+                },
+            )
+        return exc, None
+
     async def rechazar(
         self,
         solicitud_id: uuid.UUID,
@@ -991,21 +1130,25 @@ class CadenaFirmaService:
         self,
         items: list[LoteItem],
         actor: uuid.UUID,
+        authorization: str | None = None,
     ) -> LoteResponse:
         """
         Batch sign: attempts firmar() for each item, each with its OWN 2FA
-        credential (Q2, E06 Inc.2 — one OTP per document, never reused across
-        items even when several turns belong to the same actor).
+        credential — one OTP-correo pair OR one totp_code per document, never
+        reused across items even when several turns belong to the same actor.
 
         A failure on one item does NOT abort the rest. Each result carries
         'firmado' on success or 'omitido' with the error code as detalle
-        (includes 2FA failures: 2fa_requerido, otp_incorrecto, challenge_*).
+        (includes 2FA failures: 2fa_requerido, otp_incorrecto, challenge_*,
+        totp_incorrecto, totp_no_activo, totp_bloqueado).
         """
         resultados: list[ResultadoLoteItem] = []
         for item in items:
             try:
-                body = FirmarRequest(challenge_id=item.challenge_id, otp=item.otp)
-                await self.firmar(item.solicitud_id, actor, body)
+                body = FirmarRequest(
+                    challenge_id=item.challenge_id, otp=item.otp, totp_code=item.totp_code
+                )
+                await self.firmar(item.solicitud_id, actor, body, authorization)
                 resultados.append(
                     ResultadoLoteItem(solicitud_id=item.solicitud_id, resultado="firmado")
                 )
