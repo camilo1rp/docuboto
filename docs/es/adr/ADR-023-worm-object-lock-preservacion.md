@@ -45,6 +45,30 @@ Los tests de storage-service **mockean el cliente MinIO por completo**; **ningú
 
 **Positivas**: inmutabilidad de infraestructura real sobre el índice firmado; la fixity amarra preservación con firma; el gate impide eliminación prematura (conformidad legal); aislamiento WORM por tenant; primer RBAC en storage-service. **Negativas / límites**: COMPLIANCE es irreversible — un `retain_until` mal derivado deja objetos imborrables por años (mitigado: COMPLIANCE solo en prod, cotas de retención, derivación desde la TRD como única autoridad); versioning implícito cambia la semántica de delete (delete markers); AIP real + PREMIS v3 (Increment B) y veraPDF/REPLICA (Increment C) siguen pendientes. **Frontera de confianza**: la correspondencia `expediente_id ↔ file_id` la garantiza **archive-service** antes de llamar; storage valida que el `file_id` exista en el tenant pero no modela expedientes.
 
+---
+
+## Addendum — Increment B (2026-07-06): AIP real (BagIt RFC 8493) + PREMIS v3
+
+**Estado**: Aceptado. Auditado APTO por `tenant-security-auditor` (tras remediar 2 Alta + 5 Media) y `archival-compliance-auditor`.
+
+### Decisión
+
+**Convertir el AIP de un stub textual en BD en un paquete OAIS real**: BagIt RFC 8493 serializado (ZIP) con los **bytes reales** de los documentos y **fixity recalculada**, PREMIS v3 (namespace oficial) validado estructuralmente, subido al **bucket WORM** del Increment A y cubierto por el gate de disposición.
+
+- **Mapeo documento→objeto**: `AipDocInput` gana `file_id` (localizador real en `files`); `valor_huella` se **elimina** (la fixity se recalcula, no se confía en la provista).
+- **Bag real** (`aip_builder.py`): por cada documento se descargan los bytes de MinIO por `object_key`, se **recalcula el SHA-256** y se contrasta con `files.sha256` — mismatch → aborta todo el empaquetado (409, `FIJACION` fallo, `audit_log`), no empaqueta contenido corrupto. Se arma `data/{nombre}` + `bagit.txt` + `bag-info.txt` (Payload-Oxum real) + `manifest-sha256.txt` + `premis.xml` + `indice-firmado.xml` (opcional) + `tagmanifest-sha256.txt` (que **cubre** `manifest-sha256.txt`, RFC 8493 §2.2.1), serializado ZIP. `aip_sha256` pasa a ser el SHA-256 del ZIP completo.
+- **PREMIS v3**: namespace oficial `http://www.loc.gov/premis/v3`, entidades `object`/`event`/`agent`, validado contra un **perfil XSD local** (no el schema completo de la Library of Congress — vendorizar el oficial + emitir `xsi:type="premis:file"` queda para Increment C; la conformidad se declara como **validación estructural contra perfil v3**, no "conforme pleno", RF-FIR-15). Se añadió `lxml` a storage-service (lockfile regenerado).
+- **WORM + gate**: el ZIP se sube al bucket de preservación con `Retention` (derivada de la TRD, mismo contrato que `proteger-indice`) + `legal_hold`, y se registra en `preservacion_worm_objeto` con `tipo='aip'` → el **gate de disposición del Increment A también cubre el AIP**. El registro (`insert_aip` + `worm_repo.insert` + eventos `INGESTA`/`FIJACION`/`WORM` ok + `audit_log`) va en una **única `conn.transaction()`** (atomicidad; la subida WORM, irreversible y externa a la BD, ocurre antes). Migración tenant `007` (aditiva/nullable, validada idempotente en PG15).
+- **Endpoint** `POST /api/v1/preservacion/aip` gateado `USUA_PERM_EXPEDIENTE` `min_crud=3`; **todas** las lecturas/escrituras del router de preservación quedan gateadas de forma consistente (`GET /aip`, `GET /plan`, `GET /plan/versions`, `list_eventos` con `min_crud=1`; `PUT /plan`, `POST /eventos` con `min_crud=3`) — endurecimiento de una fuga de metadatos (GET exponía nombres/hashes/ubicación WORM de documentos clasificados) y de escrituras ungated a la traza PREMIS.
+
+### Endurecimientos de la auditoría (remediados)
+
+**Alta**: (1) **colisión de nombres de payload** — dos documentos con igual `nombre` se sobrescribían en el ZIP mientras el manifest contaba ambos → Bag inválido y pérdida silenciosa de contenido, **irreparable bajo WORM COMPLIANCE**; cerrado con saneo de `nombre` (rechaza `/`, `\`, `..`, control chars) + unicidad (422) + `Payload-Oxum`/`num_files` derivados de las entradas reales; (2) **`GET /aip` sin RBAC** → fuga del inventario de documentos; gateado. **Media**: tagmanifest que no cubría el manifest; sobre-declaración de conformidad PREMIS; `AipResponse` que rompía la retrocompat con filas stub (campos WORM → `Optional`); rastro de eventos incompleto; no-atomicidad del registro.
+
+### Límites (Increment C, diferido)
+
+Validación **PDF/A con veraPDF** (dependencia Java externa) + evento `VALIDACION_PDFA`; **REPLICA** (segunda copia geográfica); XSD PREMIS oficial completo + `xsi:type`. **76 tests verdes** (MinIO 100% mockeado).
+
 ## Relacionados
 
 - ISO 14721 (OAIS); RFC 8493 (BagIt); PREMIS v3; Ley 594/2000; Acuerdo AGN 060/2001.

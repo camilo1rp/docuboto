@@ -10,8 +10,11 @@
 """Auditoría best-effort de accesos DENEGADOS por el gate RBAC (RF-SEG / MoReq).
 
 Gemelo de `document-service/tests/test_rbac_denial_audit.py`. storage-service no
-tenía gate RBAC alguno antes de E10 Increment A — `POST /proteger-indice` es el
-primer (y hoy único) endpoint gateado, así que es el que ejerce este contrato:
+tenía gate RBAC alguno antes de E10 Increment A — `POST /proteger-indice` fue el
+primer endpoint gateado; `POST /aip` (Increment B) usa el mismo
+`require_permission("USUA_PERM_EXPEDIENTE", min_crud=3)`, así que el contrato de
+auditoría de denegación (verificado aquí sobre `/proteger-indice`, que ejerce el
+mismo `clearance.py` compartido) aplica igual a ambos:
   (a) un usuario IDENTIFICADO con tenant válido → SÍ se audita.
   (b) una sonda sin identidad (sin X-User-Id) → NO se audita (regla anti-ruido).
   (c) el 403 ocurre igual aunque la propia auditoría falle (best-effort real).

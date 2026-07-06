@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+  Contacto: aurigadl@gmail.com
+
+  Software libre: este archivo se distribuye bajo la Licencia Pública General
+  Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+  conservando los términos de la GPL del Orfeo original del que deriva. Se
+  entrega SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y
+  <https://www.gnu.org/licenses/>.
+
+  E10 Increment B — PERFIL LOCAL de validación estructural PREMIS v3.
+
+  Este NO es el esquema completo publicado por la Library of Congress
+  (https://www.loc.gov/standards/premis/v3/premis.xsd) byte-a-byte: ese
+  documento cubre entidades que OrpycaMCP no emite todavía (rights,
+  environment, relationship, significantProperties, extensiones semánticas
+  completas) y no pudo vendorizarse localmente porque el entorno de build de
+  este incremento no tiene acceso a red saliente. Este archivo SÍ:
+
+    - usa el namespace OFICIAL "http://www.loc.gov/premis/v3" (no un urn:
+      inventado, a diferencia del placeholder que reemplaza),
+    - valida la estructura REAL que este servicio produce (object/event/agent
+      con sus identificadores, fixity, tipos y outcomes),
+    - sigue el vocabulario y cardinalidad de PREMIS v3 para esos elementos.
+
+  Roadmap: sustituir por el XSD oficial vendorizado cuando el pipeline de
+  build tenga acceso a red (o se importe manualmente desde un release
+  offline verificado) — ver memoria de agente `project_storage_service.md`.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:premis="http://www.loc.gov/premis/v3"
+           targetNamespace="http://www.loc.gov/premis/v3"
+           elementFormDefault="qualified">
+
+  <xs:element name="premis" type="premis:premisComplexType"/>
+
+  <xs:complexType name="premisComplexType">
+    <xs:sequence>
+      <xs:element ref="premis:object" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element ref="premis:event" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element ref="premis:agent" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="version" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <!-- ── Object (PREMIS v3 §object) ─────────────────────────────────── -->
+
+  <xs:element name="object" type="premis:objectComplexType"/>
+
+  <xs:complexType name="objectComplexType">
+    <xs:sequence>
+      <xs:element ref="premis:objectIdentifier" maxOccurs="unbounded"/>
+      <!-- Perfil local: categoría como elemento simple ("file") en vez del
+           xsi:type de sustitución de tipos del esquema oficial completo. -->
+      <xs:element name="objectCategory" type="xs:string"/>
+      <xs:element ref="premis:objectCharacteristics"/>
+      <xs:element name="originalName" type="xs:string" minOccurs="0"/>
+      <xs:element ref="premis:storage" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="objectIdentifier" type="premis:objectIdentifierComplexType"/>
+
+  <xs:complexType name="objectIdentifierComplexType">
+    <xs:sequence>
+      <xs:element name="objectIdentifierType" type="xs:string"/>
+      <xs:element name="objectIdentifierValue" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="objectCharacteristics" type="premis:objectCharacteristicsComplexType"/>
+
+  <xs:complexType name="objectCharacteristicsComplexType">
+    <xs:sequence>
+      <xs:element name="compositionLevel" type="xs:string" minOccurs="0"/>
+      <xs:element ref="premis:fixity" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="size" type="xs:nonNegativeInteger" minOccurs="0"/>
+      <xs:element ref="premis:format" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="fixity" type="premis:fixityComplexType"/>
+
+  <xs:complexType name="fixityComplexType">
+    <xs:sequence>
+      <xs:element name="messageDigestAlgorithm" type="xs:string"/>
+      <xs:element name="messageDigest" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="format" type="premis:formatComplexType"/>
+
+  <xs:complexType name="formatComplexType">
+    <xs:sequence>
+      <xs:element name="formatDesignation" minOccurs="0">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="formatName" type="xs:string"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="storage" type="premis:storageComplexType"/>
+
+  <xs:complexType name="storageComplexType">
+    <xs:sequence>
+      <xs:element name="contentLocation" minOccurs="0">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="contentLocationType" type="xs:string"/>
+            <xs:element name="contentLocationValue" type="xs:string"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── Event (PREMIS v3 §event) ────────────────────────────────────── -->
+
+  <xs:element name="event" type="premis:eventComplexType"/>
+
+  <xs:complexType name="eventComplexType">
+    <xs:sequence>
+      <xs:element name="eventIdentifier" type="premis:eventIdentifierComplexType"/>
+      <xs:element name="eventType" type="xs:string"/>
+      <xs:element name="eventDateTime" type="xs:dateTime"/>
+      <xs:element name="eventDetailInformation" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="eventDetail" type="xs:string" minOccurs="0"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="eventOutcomeInformation" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="eventOutcome" type="xs:string" minOccurs="0"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="linkingAgentIdentifier" type="premis:linkingAgentIdentifierComplexType"
+                  minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="linkingObjectIdentifier" type="premis:linkingObjectIdentifierComplexType"
+                  minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="eventIdentifierComplexType">
+    <xs:sequence>
+      <xs:element name="eventIdentifierType" type="xs:string"/>
+      <xs:element name="eventIdentifierValue" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="linkingAgentIdentifierComplexType">
+    <xs:sequence>
+      <xs:element name="linkingAgentIdentifierType" type="xs:string"/>
+      <xs:element name="linkingAgentIdentifierValue" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="linkingObjectIdentifierComplexType">
+    <xs:sequence>
+      <xs:element name="linkingObjectIdentifierType" type="xs:string"/>
+      <xs:element name="linkingObjectIdentifierValue" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── Agent (PREMIS v3 §agent) ────────────────────────────────────── -->
+
+  <xs:element name="agent" type="premis:agentComplexType"/>
+
+  <xs:complexType name="agentComplexType">
+    <xs:sequence>
+      <xs:element name="agentIdentifier" type="premis:agentIdentifierComplexType"/>
+      <xs:element name="agentName" type="xs:string" minOccurs="0"/>
+      <xs:element name="agentType" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="agentIdentifierComplexType">
+    <xs:sequence>
+      <xs:element name="agentIdentifierType" type="xs:string"/>
+      <xs:element name="agentIdentifierValue" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

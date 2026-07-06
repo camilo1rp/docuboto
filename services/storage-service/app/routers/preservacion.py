@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -31,7 +30,8 @@ from app.schemas.preservacion import (
     ProtegerIndiceRequest,
     ProtegerIndiceResponse,
 )
-from app.services.aip_builder import AipDoc, aip_sha256, build_bagit, build_premis
+from app.services.aip_builder import PremisValidationError
+from app.services.aip_service import AipService
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
@@ -67,7 +67,11 @@ def _evento_response(row) -> EventoResponse:
     return EventoResponse(**d)
 
 
-@router.get("/plan", response_model=PlanResponse)
+@router.get(
+    "/plan",
+    response_model=PlanResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+)
 async def get_plan(
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
@@ -81,7 +85,12 @@ async def get_plan(
     return PlanResponse(**dict(row))
 
 
-@router.put("/plan", response_model=PlanResponse, status_code=status.HTTP_201_CREATED)
+@router.put(
+    "/plan",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
 async def set_plan(
     payload: PlanCreate,
     request: Request,
@@ -94,7 +103,11 @@ async def set_plan(
     return PlanResponse(**dict(row))
 
 
-@router.get("/plan/versions", response_model=list[PlanResponse])
+@router.get(
+    "/plan/versions",
+    response_model=list[PlanResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+)
 async def list_plan_versions(
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
@@ -103,52 +116,79 @@ async def list_plan_versions(
     return [PlanResponse(**dict(r)) for r in rows]
 
 
-@router.post("/aip", response_model=AipResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/aip",
+    response_model=AipResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Empaqueta el AIP real (BagIt + PREMIS v3) de un expediente y lo sube "
+        "al bucket WORM (E10 Increment B, RF-PRE-05/07)"
+    ),
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
 async def empaquetar_aip(
     payload: AipCreate,
     request: Request,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> AipResponse:
-    """Empaqueta el AIP (BagIt + PREMIS) del expediente y registra la ingesta."""
-    repo = PreservacionRepository(conn, tenant_slug)
-    docs = [
-        AipDoc(document_id=d.document_id, nombre=d.nombre, valor_huella=d.valor_huella)
-        for d in payload.documentos
-    ]
-    now = datetime.now(tz=UTC)
-    bagit = build_bagit(payload.expediente_id, docs, now)
-    premis = build_premis(payload.expediente_id, docs, payload.indice_sha256, now)
-    sha = aip_sha256(bagit, premis)
-    row = await repo.insert_aip(
-        {
-            "expediente_id": payload.expediente_id,
-            "bagit": bagit,
-            "premis_xml": premis,
-            "aip_sha256": sha,
-            "indice_sha256": payload.indice_sha256,
-            "num_documentos": len(docs),
-        }
-    )
-    await repo.insert_evento(
-        {
-            "object_ref": payload.expediente_id,
-            "tipo": "INGESTA",
-            "resultado": "ok",
-            "hash_after": sha,
-            "detalle": {"num_documentos": len(docs)},
-        },
-        agente=_actor(request),
-    )
-    return AipResponse(**dict(row))
+    """Descarga los bytes reales de cada documento, RECALCULA su fixity contra
+    `files.sha256`, arma un Bag BagIt real + PREMIS v3 (validación estructural
+    contra un perfil local, namespace oficial — ver `schemas/premis-v3.xsd`)
+    y lo sube — como ZIP — al bucket WORM del tenant con retención
+    (`Retention`/`legal_hold`) derivada de la TRD del llamador. Operación de
+    alto privilegio e irreversible: min_crud=3, igual que `/proteger-indice`."""
+    service = AipService(conn, tenant_slug)
+    try:
+        return await service.empaquetar_aip(payload, actor=_actor(request))
+    except PreservationDisabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
+        ) from exc
+    except FileNotFoundForPreservationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
+        ) from exc
+    except InvalidRetentionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        ) from exc
+    except FixityMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
+        ) from exc
+    except ObjectLockNotEnabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
+        ) from exc
+    except PremisValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "premis_invalid", "detail": str(exc), "status": 500},
+        ) from exc
 
 
-@router.get("/aip/{expediente_id}", response_model=AipResponse)
+@router.get(
+    "/aip/{expediente_id}",
+    response_model=AipResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+)
 async def get_aip(
     expediente_id: str,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> AipResponse:
+    """Requiere `USUA_PERM_EXPEDIENTE` (min_crud=1, lectura): el AIP embebe
+    `premis_xml` con nombres originales, SHA-256 y tamaños de TODOS los
+    documentos del expediente — sin este gate, cualquier llamador con un JWT
+    válido del tenant (cualquier rol) podía cosechar ese inventario, incluido
+    el de expedientes clasificados (hallazgo de auditoría Increment B,
+    RF-SEG-08)."""
     row = await PreservacionRepository(conn, tenant_slug).latest_aip(expediente_id)
     if row is None:
         raise HTTPException(
@@ -158,7 +198,12 @@ async def get_aip(
     return AipResponse(**dict(row))
 
 
-@router.post("/eventos", response_model=EventoResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/eventos",
+    response_model=EventoResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
 async def record_evento(
     payload: EventoCreate,
     request: Request,
@@ -171,7 +216,11 @@ async def record_evento(
     return _evento_response(row)
 
 
-@router.get("/eventos", response_model=list[EventoResponse])
+@router.get(
+    "/eventos",
+    response_model=list[EventoResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+)
 async def list_eventos(
     object_ref: str | None = Query(default=None),
     tenant_slug: str = Depends(_require_tenant),

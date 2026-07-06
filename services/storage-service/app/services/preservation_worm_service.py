@@ -27,7 +27,6 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
-from datetime import UTC, datetime, timedelta
 
 import asyncpg
 from miniopy_async.retention import Retention
@@ -39,11 +38,25 @@ from app.repositories.file_repository import FileRepository
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
 from app.schemas.preservacion import ProtegerIndiceRequest, ProtegerIndiceResponse
+from app.services.retention_policy import InvalidRetentionError, validate_retain_until
 
 logger = logging.getLogger(__name__)
 
 _SERVICE = "storage-service"
 _BUCKET_PREFIX = "orpycamcp"
+
+# Reexportado: módulos que ya hacían `from app.services.preservation_worm_service
+# import InvalidRetentionError` (routers/preservacion.py) siguen funcionando sin
+# tocar sus imports — la definición real vive en `retention_policy.py` (E10
+# Increment B: `aip_service.py` también la necesita, sin duplicar el piso/techo).
+__all__ = [
+    "FileNotFoundForPreservationError",
+    "FixityMismatchError",
+    "InvalidRetentionError",
+    "PreservationDisabledError",
+    "PreservationWormService",
+    "preservation_bucket_name",
+]
 
 
 class PreservationDisabledError(Exception):
@@ -62,35 +75,12 @@ class FixityMismatchError(Exception):
     """
 
 
-class InvalidRetentionError(Exception):
-    """`retain_until` ausente, no futuro, o fuera de los límites configurados."""
-
-
 def preservation_bucket_name(tenant_slug: str) -> str:
     """Nombre del bucket WORM del tenant. `tenant_slug` SIEMPRE viene del claim
     JWT re-derivado por el gateway (`X-Tenant-Slug`, validado por
     `core.clearance.require_permission`/`core.database.tenant_schema`) —
     nunca del body de la petición."""
     return f"{_BUCKET_PREFIX}-{tenant_slug}-{settings.preservation_bucket_suffix}"
-
-
-def _validate_retain_until(retain_until: datetime) -> None:
-    now = datetime.now(tz=UTC)
-    if retain_until <= now:
-        raise InvalidRetentionError("retain_until debe ser una fecha futura")
-    max_dt = now + timedelta(days=365 * settings.preservation_max_retention_years)
-    if retain_until > max_dt:
-        raise InvalidRetentionError(
-            f"retain_until excede el máximo configurado "
-            f"({settings.preservation_max_retention_years} años)"
-        )
-    min_dt = now + timedelta(days=settings.preservation_min_retention_days)
-    if retain_until < min_dt:
-        raise InvalidRetentionError(
-            "retain_until implica menos de "
-            f"{settings.preservation_min_retention_days} días de retención "
-            "(piso de seguridad WORM)"
-        )
 
 
 class PreservationWormService:
@@ -110,7 +100,7 @@ class PreservationWormService:
             )
 
         retain_until = payload.resolve_retain_until()
-        _validate_retain_until(retain_until)
+        validate_retain_until(retain_until)
 
         # `files` no enlaza a expediente/documento en este incremento: no hay
         # forma de verificar aquí que `file_id` sea el índice firmado DEL

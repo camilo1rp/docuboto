@@ -25,6 +25,14 @@ _PLAN_COLS = (
     "politica_migracion, contingencia, creado_por, created_at"
 )
 _EVT_COLS = "id, object_ref, tipo, resultado, hash_before, hash_after, detalle, agente, ts"
+# E10 Increment B: `bagit` (columna legacy del stub) queda fuera — ya no se
+# lee ni se escribe; el AIP real vive como ZIP en el bucket WORM (bucket +
+# object_key), no como texto en esta tabla.
+_AIP_COLS = (
+    "id, expediente_id, premis_xml, aip_sha256, indice_sha256, num_documentos, "
+    "estado, created_at, bucket, object_key, aip_bytes, formato, retain_until, "
+    "retention_mode, legal_hold"
+)
 
 
 class PreservacionRepository:
@@ -98,21 +106,39 @@ class PreservacionRepository:
         return row
 
     async def insert_aip(self, data: dict) -> asyncpg.Record:
+        """Inserta el AIP real (E10 Increment B).
+
+        `id` se genera en la capa de servicio (no se deja el `DEFAULT
+        gen_random_uuid()` de la tabla) porque `object_key` del ZIP subido a
+        MinIO se deriva de ese mismo id — necesita conocerse ANTES del INSERT.
+
+        `bagit` (columna legacy del stub del Increment A, ahora NULLABLE tras
+        la migración 007) deliberadamente NO se escribe: el Bag real es un ZIP
+        binario que vive en el bucket WORM, no un texto en esta tabla.
+        """
         await self._sp()
         row = await self._conn.fetchrow(
-            """
-            INSERT INTO aip (expediente_id, bagit, premis_xml, aip_sha256,
-                             indice_sha256, num_documentos)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, expediente_id, bagit, premis_xml, aip_sha256,
-                      indice_sha256, num_documentos, estado, created_at
+            f"""
+            INSERT INTO aip (id, expediente_id, premis_xml, aip_sha256,
+                             indice_sha256, num_documentos, bucket, object_key,
+                             aip_bytes, formato, retain_until, retention_mode,
+                             legal_hold)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING {_AIP_COLS}
             """,
+            data["id"],
             data["expediente_id"],
-            data["bagit"],
             data["premis_xml"],
             data["aip_sha256"],
             data.get("indice_sha256"),
             data["num_documentos"],
+            data["bucket"],
+            data["object_key"],
+            data["aip_bytes"],
+            data["formato"],
+            data["retain_until"],
+            data["retention_mode"],
+            data["legal_hold"],
         )
         assert row is not None
         return row
@@ -120,8 +146,7 @@ class PreservacionRepository:
     async def latest_aip(self, expediente_id: str) -> asyncpg.Record | None:
         await self._sp()
         return await self._conn.fetchrow(
-            "SELECT id, expediente_id, bagit, premis_xml, aip_sha256, indice_sha256, "
-            "num_documentos, estado, created_at FROM aip "
+            f"SELECT {_AIP_COLS} FROM aip "
             "WHERE expediente_id = $1 ORDER BY created_at DESC LIMIT 1",
             expediente_id,
         )

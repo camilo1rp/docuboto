@@ -130,6 +130,18 @@ def _make_mock_minio() -> MagicMock:
     return minio
 
 
+def minio_get_object(content: bytes) -> AsyncMock:
+    """Mock de `Minio.get_object` que devuelve `content` al leerlo.
+
+    Compartido entre los tests de WORM (Increment A) y AIP real (Increment
+    B) — ambos flujos descargan bytes de MinIO para recalcular la fixity.
+    """
+    obj = MagicMock()
+    obj.read = AsyncMock(return_value=content)
+    obj.close = MagicMock()
+    return AsyncMock(return_value=obj)
+
+
 def _minio_patches(mock_minio: MagicMock):
     """
     Patch get_minio in all modules that import it at module level.
@@ -137,12 +149,14 @@ def _minio_patches(mock_minio: MagicMock):
     Every module does `from app.core.minio_client import get_minio`, which binds
     its OWN local name — patching the source module alone does not affect
     already-imported references, so each consumer must be patched independently
-    (WORM: `preservation_worm_service.py` is the 4th location, E10 Increment A).
+    (WORM: `preservation_worm_service.py` is the 4th location, E10 Increment A;
+    `aip_service.py` is the 5th, E10 Increment B).
     """
     return (
         patch("app.core.minio_client.get_minio", return_value=mock_minio),
         patch("app.services.storage_service.get_minio", return_value=mock_minio),
         patch("app.services.preservation_worm_service.get_minio", return_value=mock_minio),
+        patch("app.services.aip_service.get_minio", return_value=mock_minio),
         patch("app.routers.health.get_minio", return_value=mock_minio),
     )
 
@@ -158,8 +172,8 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, Mag
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4:
+    p1, p2, p3, p4, p5 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4, p5:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, mock_minio
 
@@ -177,8 +191,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4:
+    p1, p2, p3, p4, p5 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4, p5:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 

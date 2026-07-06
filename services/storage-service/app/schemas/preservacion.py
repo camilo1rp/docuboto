@@ -22,6 +22,14 @@ _TIPO = Literal["INGESTA", "FIJACION", "MIGRACION", "VALIDACION_PDFA", "WORM", "
 
 _EXPEDIENTE_ID_WS_RE = re.compile(r"\s+")
 
+# `nombre` se usa LITERALMENTE como ruta de payload dentro del Bag
+# (`data/{nombre}`, ver `aip_builder.build_bag`) y como línea de texto en
+# `manifest-sha256.txt`/`tagmanifest-sha256.txt`. Rechaza separadores de ruta
+# ('/', '\\') y caracteres de control/nueva línea (incluye CR/LF) — así se
+# cierra en el origen la posibilidad de zip-slip (rutas fuera de `data/`) y de
+# inyectar líneas falsas en el manifiesto (hallazgo de auditoría Increment B).
+_SAFE_NOMBRE_RE = re.compile(r"^[^/\\\x00-\x1f]+$")
+
 
 def canonicalize_expediente_id(value: str) -> str:
     """Normaliza espacios en blanco de `expediente_id`.
@@ -72,83 +80,21 @@ class EventoCreate(BaseModel):
     detalle: dict[str, Any] = Field(default_factory=dict)
 
 
-class AipDocInput(BaseModel):
-    document_id: str = Field(..., min_length=1)
-    nombre: str = Field(..., min_length=1, max_length=255)
-    valor_huella: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
-
-
-class AipCreate(BaseModel):
-    expediente_id: str = Field(..., min_length=1)
-    documentos: list[AipDocInput] = Field(default_factory=list)
-    indice_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
-
-
-class AipResponse(BaseModel):
-    id: uuid.UUID
-    expediente_id: str
-    aip_sha256: str
-    indice_sha256: str | None
-    num_documentos: int
-    estado: str
-    created_at: datetime
-    bagit: str
-    premis_xml: str
-
-
-class EventoResponse(BaseModel):
-    id: uuid.UUID
-    object_ref: str
-    tipo: str
-    resultado: str
-    hash_before: str | None
-    hash_after: str | None
-    detalle: dict[str, Any]
-    agente: str | None
-    ts: datetime
-
-
-# ── WORM (E10 Increment A, RF-PRE-03) ─────────────────────────────────
-
-
-class ProtegerIndiceRequest(BaseModel):
-    """Protege bajo WORM el índice electrónico firmado ya subido a `files`.
-
-    El `object_key`/bucket/hash conocido se resuelven internamente a partir de
-    `file_id` (la fila de `files` en el bucket -documents) — el llamador NO puede
-    declarar un hash arbitrario; storage-service recalcula el SHA-256 y lo
-    contrasta contra el registrado al momento de la subida original (fixity).
-
-    La retención se declara de una de dos formas, nunca ambas:
-      - `retain_until` directo (el llamador ya calculó la fecha absoluta), o
-      - `retencion_anios` + `fecha_inicio` (storage-service la deriva).
-
-    Contrato `file_id` ↔ `expediente_id` (hallazgo de auditoría Increment A):
-    `files` NO tiene, en este incremento, un enlace a expediente/documento —
-    storage-service no puede verificar por sí mismo que `file_id` sea
-    efectivamente el índice electrónico firmado DEL `expediente_id` declarado.
-    Ese vínculo es responsabilidad exclusiva del llamador: el contrato del
-    gateway establece que **solo archive-service** invoca este endpoint, y que
-    garantiza (a) `file_id` referencia el índice firmado (E15/E06) y (b)
-    `expediente_id` es el identificador CANÓNICO que también usará al llamar
-    la disposición final (mismo string, ver `canonicalize_expediente_id`).
-    Como COMPLIANCE es irreversible, un error aquí no es corregible después.
+class RetentionMixin(BaseModel):
+    """Contrato de retención WORM compartido por `ProtegerIndiceRequest` (índice,
+    Increment A) y `AipCreate` (AIP real, Increment B) — misma regla en ambos
+    extremos (RF-PRE-03): o `retain_until` directo, o `retencion_anios` +
+    `fecha_inicio` (nunca ambos). `storage-service` no conoce la TRD; el
+    llamador (archive-service) aporta el plazo ya resuelto o los insumos.
     """
 
-    file_id: uuid.UUID
-    expediente_id: str = Field(..., min_length=1, max_length=255)
     retain_until: datetime | None = None
     retencion_anios: int | None = Field(default=None, ge=1, le=100)
     fecha_inicio: date | None = None
     legal_hold: bool = False
 
-    @field_validator("expediente_id")
-    @classmethod
-    def _canonicalize_expediente_id(cls, value: str) -> str:
-        return canonicalize_expediente_id(value)
-
     @model_validator(mode="after")
-    def _check_retention_source(self) -> ProtegerIndiceRequest:
+    def _check_retention_source(self) -> RetentionMixin:
         directo = self.retain_until is not None
         derivado_anios = self.retencion_anios is not None
         derivado_fecha = self.fecha_inicio is not None
@@ -182,6 +128,148 @@ class ProtegerIndiceRequest(BaseModel):
             # (convención civil estándar para este desbordamiento de fecha).
             end_date = start.replace(month=2, day=28, year=start.year + self.retencion_anios)
         return datetime.combine(end_date, time.min, tzinfo=UTC)
+
+
+class AipDocInput(BaseModel):
+    """Un documento a incluir en el AIP.
+
+    `file_id` localiza el objeto REAL en `files` (bucket -documents) — storage
+    resuelve `object_key`/`sha256` registrado a partir de él. `valor_huella` NO
+    existe en este esquema: la fixity del AIP real (Increment B) SIEMPRE se
+    recalcula sobre los bytes descargados de MinIO, nunca se confía en un hash
+    aportado por el llamador (hallazgo evitado desde el diseño, a diferencia
+    del stub del AIP que sí lo aceptaba).
+    """
+
+    document_id: str = Field(..., min_length=1)
+    nombre: str = Field(..., min_length=1, max_length=255)
+    file_id: uuid.UUID
+
+    @field_validator("nombre")
+    @classmethod
+    def _validate_nombre(cls, value: str) -> str:
+        if value in (".", ".."):
+            raise ValueError("nombre no puede ser '.' ni '..'")
+        if not _SAFE_NOMBRE_RE.match(value):
+            raise ValueError(
+                "nombre no puede contener '/', '\\\\' ni caracteres de "
+                "control/nueva línea"
+            )
+        return value
+
+
+class AipCreate(RetentionMixin):
+    """Empaqueta un AIP (BagIt real + PREMIS v3) y lo sube al bucket WORM.
+
+    `indice_file_id` es opcional: si se aporta, el índice electrónico firmado
+    (ya presente en `files`) se embebe en el Bag como tag file
+    (`indice-firmado.xml`), con su propia fixity recalculada — redundante con
+    la protección directa de `POST /proteger-indice` (Increment A), correcto
+    para preservación (PIEZA 4).
+    """
+
+    expediente_id: str = Field(..., min_length=1, max_length=255)
+    documentos: list[AipDocInput] = Field(..., min_length=1)
+    indice_file_id: uuid.UUID | None = None
+
+    @field_validator("expediente_id")
+    @classmethod
+    def _canonicalize_expediente_id(cls, value: str) -> str:
+        return canonicalize_expediente_id(value)
+
+    @model_validator(mode="after")
+    def _check_unique_nombres(self) -> AipCreate:
+        # `nombre` es la clave de payload dentro del Bag (`data/{nombre}`) —
+        # un duplicado colapsaría dos documentos en una sola entrada del ZIP
+        # mientras `num_files`/`Payload-Oxum`/PREMIS seguirían contando ambos
+        # (hallazgo de auditoría Increment B: AIP inconsistente/incompleto).
+        nombres = [doc.nombre for doc in self.documentos]
+        if len(nombres) != len(set(nombres)):
+            raise ValueError(
+                "Los 'nombre' de 'documentos' deben ser únicos dentro del AIP"
+            )
+        return self
+
+
+class AipResponse(BaseModel):
+    """Respuesta del AIP real (Increment B).
+
+    Reemplaza el stub previo: ya NO devuelve `bagit` como texto (el Bag es un
+    ZIP binario en el bucket WORM, no un string) — `aip_sha256` ahora es la
+    huella del ZIP completo serializado, no de un texto sintético. `premis_xml`
+    se conserva (sigue siendo texto, útil para el llamador).
+
+    `bucket`/`object_key`/`aip_bytes`/`retain_until`/`retention_mode` son
+    OPCIONALES: la migración 007 es aditiva/nullable y preserva como válidas
+    las filas `aip` insertadas por el stub del Increment A (esas columnas
+    quedan NULL en esas filas). Declararlos NOT NULL rompía `GET
+    /aip/{expediente_id}` con un 500 cuando el AIP vigente de un expediente
+    era todavía un stub (hallazgo de auditoría Increment B).
+    """
+
+    id: uuid.UUID
+    expediente_id: str
+    aip_sha256: str
+    indice_sha256: str | None
+    num_documentos: int
+    estado: str
+    created_at: datetime
+    premis_xml: str
+    bucket: str | None
+    object_key: str | None
+    aip_bytes: int | None
+    formato: str
+    retain_until: datetime | None
+    retention_mode: str | None
+    legal_hold: bool
+
+
+class EventoResponse(BaseModel):
+    id: uuid.UUID
+    object_ref: str
+    tipo: str
+    resultado: str
+    hash_before: str | None
+    hash_after: str | None
+    detalle: dict[str, Any]
+    agente: str | None
+    ts: datetime
+
+
+# ── WORM (E10 Increment A, RF-PRE-03) ─────────────────────────────────
+
+
+class ProtegerIndiceRequest(RetentionMixin):
+    """Protege bajo WORM el índice electrónico firmado ya subido a `files`.
+
+    El `object_key`/bucket/hash conocido se resuelven internamente a partir de
+    `file_id` (la fila de `files` en el bucket -documents) — el llamador NO puede
+    declarar un hash arbitrario; storage-service recalcula el SHA-256 y lo
+    contrasta contra el registrado al momento de la subida original (fixity).
+
+    La retención (`retain_until` directo, o `retencion_anios` + `fecha_inicio`,
+    nunca ambos) es el contrato compartido de `RetentionMixin` — el mismo que
+    usa `AipCreate` (Increment B).
+
+    Contrato `file_id` ↔ `expediente_id` (hallazgo de auditoría Increment A):
+    `files` NO tiene, en este incremento, un enlace a expediente/documento —
+    storage-service no puede verificar por sí mismo que `file_id` sea
+    efectivamente el índice electrónico firmado DEL `expediente_id` declarado.
+    Ese vínculo es responsabilidad exclusiva del llamador: el contrato del
+    gateway establece que **solo archive-service** invoca este endpoint, y que
+    garantiza (a) `file_id` referencia el índice firmado (E15/E06) y (b)
+    `expediente_id` es el identificador CANÓNICO que también usará al llamar
+    la disposición final (mismo string, ver `canonicalize_expediente_id`).
+    Como COMPLIANCE es irreversible, un error aquí no es corregible después.
+    """
+
+    file_id: uuid.UUID
+    expediente_id: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator("expediente_id")
+    @classmethod
+    def _canonicalize_expediente_id(cls, value: str) -> str:
+        return canonicalize_expediente_id(value)
 
 
 class ProtegerIndiceResponse(BaseModel):

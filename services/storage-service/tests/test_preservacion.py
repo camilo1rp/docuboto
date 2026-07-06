@@ -37,7 +37,8 @@ def _plan_row(version: int = 1) -> dict:
 @pytest.mark.asyncio
 async def test_set_plan_versions(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.return_value = 0  # MAX(version) → 0 → nueva = 1
+    # 1.º fetchval = gate require_permission (concedido); 2.º = MAX(version) → 0.
+    mock_conn.fetchval.side_effect = [True, 0]
     mock_conn.fetchrow.return_value = _plan_row(version=1)
 
     resp = await client.put(
@@ -59,14 +60,27 @@ async def test_set_plan_versions(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_get_plan_not_found(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = True  # check_permission → concedido
     mock_conn.fetchrow.return_value = None
     resp = await client.get("/api/v1/preservacion/plan", headers=TENANT_HEADERS)
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
+async def test_get_plan_forbidden_without_permission(client_with_conn) -> None:
+    """GET /plan expone `politica_migracion`/`contingencia` — gateado igual
+    que `GET /aip/{expediente_id}` (hallazgo de auditoría Increment B)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = False  # check_permission → denegado
+    resp = await client.get("/api/v1/preservacion/plan", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_record_evento(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = True  # gate require_permission → concedido
     exp_ref = str(uuid.uuid4())
     h = "a" * 64
     mock_conn.fetchrow.return_value = {
@@ -99,8 +113,25 @@ async def test_record_evento(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_evento_forbidden_without_permission(client_with_conn) -> None:
+    """POST /eventos es una ESCRITURA a la traza de preservación: sin permiso
+    no debe poder inyectar eventos PREMIS falsos (hallazgo de auditoría R1,
+    endurecimiento de gate del router de preservación)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = False  # check_permission → denegado
+    resp = await client.post(
+        "/api/v1/preservacion/eventos",
+        json={"object_ref": str(uuid.uuid4()), "tipo": "WORM", "resultado": "ok"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_list_eventos(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = True  # check_permission → concedido
     mock_conn.fetch.return_value = [
         {
             "id": uuid.uuid4(),
@@ -119,69 +150,18 @@ async def test_list_eventos(client_with_conn) -> None:
     assert resp.json()[0]["tipo"] == "INGESTA"
 
 
-# ── AIP / BagIt + PREMIS (E10 RF-PRE-05/07) ───────────────────────────
-
-
-def test_aip_builder_artifacts() -> None:
-    from app.services.aip_builder import AipDoc, aip_sha256, build_bagit, build_premis
-
-    docs = [AipDoc(document_id="R-1", nombre="oficio.pdf", valor_huella="a" * 64)]
-    bagit = build_bagit("EXP-1", docs, NOW)
-    premis = build_premis("EXP-1", docs, "b" * 64, NOW)
-    assert "BagIt-Version" in bagit and "manifest-sha256" in bagit and "oficio.pdf" in bagit
-    assert "urn:orpycamcp:premis:v1" in premis and "messageDigest" in premis
-    h1 = aip_sha256(bagit, premis)
-    assert len(h1) == 64 and h1 == aip_sha256(bagit, premis)  # determinista
-
-
 @pytest.mark.asyncio
-async def test_empaquetar_aip(client_with_conn) -> None:
+async def test_list_eventos_forbidden_without_permission(client_with_conn) -> None:
+    """GET /eventos ya filtra `hash_before`/`hash_after`/`object_ref` por
+    expediente — mismo gate de lectura que `GET /aip/{expediente_id}`
+    (hallazgo de auditoría Increment B)."""
     client, mock_conn, _ = client_with_conn
-    aip_id = uuid.uuid4()
-    # insert_aip (fetchrow) ; insert_evento (fetchrow) — solo el primero alimenta la respuesta
-    mock_conn.fetchrow.side_effect = [
-        {
-            "id": aip_id,
-            "expediente_id": "EXP-1",
-            "bagit": "...",
-            "premis_xml": "<premis/>",
-            "aip_sha256": "c" * 64,
-            "indice_sha256": None,
-            "num_documentos": 1,
-            "estado": "empaquetado",
-            "created_at": NOW,
-        },
-        {
-            "id": uuid.uuid4(),
-            "object_ref": "EXP-1",
-            "tipo": "INGESTA",
-            "resultado": "ok",
-            "hash_before": None,
-            "hash_after": "c" * 64,
-            "detalle": None,
-            "agente": None,
-            "ts": NOW,
-        },
-    ]
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json={
-            "expediente_id": "EXP-1",
-            "documentos": [
-                {"document_id": "R-1", "nombre": "oficio.pdf", "valor_huella": "a" * 64}
-            ],
-        },
-        headers=TENANT_HEADERS,
-    )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["num_documentos"] == 1
-    assert len(body["aip_sha256"]) == 64
+    mock_conn.fetchval.return_value = False  # check_permission → denegado
+    resp = await client.get("/api/v1/preservacion/eventos?object_ref=exp-1", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+    mock_conn.fetch.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_get_aip_not_found(client_with_conn) -> None:
-    client, mock_conn, _ = client_with_conn
-    mock_conn.fetchrow.return_value = None
-    resp = await client.get("/api/v1/preservacion/aip/EXP-X", headers=TENANT_HEADERS)
-    assert resp.status_code == 404
+# El AIP real (BagIt + PREMIS v3, E10 Increment B) tiene su propia suite:
+# ver tests/test_aip_real.py — el stub previo (texto sintético, sin RBAC ni
+# bytes reales) fue reemplazado por completo.

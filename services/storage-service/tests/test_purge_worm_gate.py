@@ -92,6 +92,34 @@ async def test_purge_blocked_by_legal_hold_even_if_retain_until_past() -> None:
 
 
 @pytest.mark.asyncio
+async def test_purge_blocked_by_aip_type_worm_row() -> None:
+    """El gate no filtra por `tipo`: una fila `preservacion_worm_objeto` del
+    AIP real (Increment B, `tipo='aip'`) bloquea la disposición exactamente
+    igual que una del índice (`tipo='indice'`, Increment A) — la disposición
+    es un acto todo-o-nada por expediente bajo la misma TRD."""
+    conn = _mock_conn()
+    file_id = uuid.uuid4()
+    record = make_file_record(file_id=file_id)
+    active_lock = make_worm_row(
+        expediente_id="EXP-AIP",
+        tipo="aip",
+        retain_until=datetime.now(tz=UTC) + timedelta(days=10),
+    )
+    conn.fetchrow.side_effect = [record, active_lock]
+
+    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+        minio = MagicMock()
+        minio.remove_object = AsyncMock()
+        get_minio_mock.return_value = minio
+
+        service = StorageService(conn, TENANT_SLUG)
+        with pytest.raises(WormLockActiveError):
+            await service.purge_for_disposition(file_id, "EXP-AIP", reason="disposicion_final")
+
+        minio.remove_object.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_purge_allowed_once_worm_lock_expired() -> None:
     """Sin fila activa (expirada o nunca protegida) → la purga procede normalmente."""
     conn = _mock_conn()
