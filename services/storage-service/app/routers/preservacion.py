@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
+from app.core.minio_client import ObjectLockNotEnabledError
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.schemas.preservacion import (
     AipCreate,
@@ -26,8 +28,17 @@ from app.schemas.preservacion import (
     EventoResponse,
     PlanCreate,
     PlanResponse,
+    ProtegerIndiceRequest,
+    ProtegerIndiceResponse,
 )
 from app.services.aip_builder import AipDoc, aip_sha256, build_bagit, build_premis
+from app.services.preservation_worm_service import (
+    FileNotFoundForPreservationError,
+    FixityMismatchError,
+    InvalidRetentionError,
+    PreservationDisabledError,
+    PreservationWormService,
+)
 
 router = APIRouter(prefix="/api/v1/preservacion", tags=["preservacion"])
 
@@ -168,3 +179,53 @@ async def list_eventos(
 ) -> list[EventoResponse]:
     rows = await PreservacionRepository(conn, tenant_slug).list_eventos(object_ref)
     return [_evento_response(r) for r in rows]
+
+
+@router.post(
+    "/proteger-indice",
+    response_model=ProtegerIndiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Protege bajo WORM (MinIO Object Lock) el índice electrónico firmado "
+        "de un expediente (E10 Increment A, RF-PRE-03)"
+    ),
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
+async def proteger_indice(
+    payload: ProtegerIndiceRequest,
+    request: Request,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ProtegerIndiceResponse:
+    """Sube una copia inmutable del índice electrónico firmado ya presente en
+    `files` (bucket -documents) al bucket WORM del tenant, con retención
+    derivada de la TRD del llamador (archive-service). Operación de alto
+    privilegio e irreversible: min_crud=3, igual que otras disposiciones."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        return await service.proteger_indice(payload, actor=_actor(request))
+    except PreservationDisabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
+        ) from exc
+    except FileNotFoundForPreservationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
+        ) from exc
+    except InvalidRetentionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        ) from exc
+    except FixityMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
+        ) from exc
+    except ObjectLockNotEnabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
+        ) from exc

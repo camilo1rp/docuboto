@@ -7,7 +7,11 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Modos de retención WORM válidos (espejo de miniopy_async.commonconfig.{GOVERNANCE,COMPLIANCE}).
+_VALID_RETENTION_MODES = frozenset({"GOVERNANCE", "COMPLIANCE"})
 
 
 class Settings(BaseSettings):
@@ -23,6 +27,55 @@ class Settings(BaseSettings):
     keycloak_realm: str = "orpycamcp"
     service_port: int = 8005
     log_level: str = "info"
+
+    # Entorno de despliegue ("development" | "production"); no hay indicador común
+    # en el proyecto, así que storage-service define el suyo (autocontenido). Solo
+    # gatea el guard de arranque de preservación WORM (ver `preservation_startup_guard`).
+    app_env: str = "development"
+
+    # Preservación WORM del índice electrónico firmado (E10 Increment A, ADR-016/E15).
+    # Feature flag/kill-switch: con False, POST /preservacion/proteger-indice responde 503.
+    preservation_enabled: bool = False
+    preservation_bucket_suffix: str = "preservation"
+    # COMPLIANCE = ni siquiera root puede acortar/eliminar la retención (irreversible,
+    # el valor legalmente correcto para el índice electrónico). GOVERNANCE existe
+    # solo para necesidades operativas explícitas — ver guard de arranque abajo.
+    preservation_retention_mode: str = "COMPLIANCE"
+    # Piso de seguridad: rechaza `retain_until` que implique menos días que esto,
+    # aunque el TRD del llamador diga otra cosa (defensa en profundidad).
+    preservation_min_retention_days: int = 365
+    # Techo de cordura: una fecha de retención absurdamente lejana suele ser un bug
+    # del llamador (unidades mal convertidas), no una decisión TRD deliberada.
+    preservation_max_retention_years: int = 100
+
+    @field_validator("preservation_retention_mode")
+    @classmethod
+    def _validate_retention_mode(cls, v: str) -> str:
+        upper = v.upper()
+        if upper not in _VALID_RETENTION_MODES:
+            raise ValueError(
+                f"preservation_retention_mode debe ser uno de {sorted(_VALID_RETENTION_MODES)}, recibido {v!r}"
+            )
+        return upper
+
+    def preservation_startup_guard(self) -> list[str]:
+        """Avisos de arranque sobre la config de preservación WORM.
+
+        En ``app_env=="production"`` con modo distinto de COMPLIANCE, el llamador
+        (``main.py::lifespan``) trata estos avisos como FATALES (rechaza el arranque):
+        GOVERNANCE es evadible por un usuario con el permiso bypass-governance de
+        MinIO, y envenenar/perder la inmutabilidad del índice electrónico firmado
+        es irreversible en producción. En development/test son solo un warning
+        ruidoso (necesario para poder mockear MinIO sin permisos de bypass reales).
+        """
+        warnings: list[str] = []
+        if self.preservation_retention_mode != "COMPLIANCE":
+            warnings.append(
+                f"PRESERVATION_RETENTION_MODE={self.preservation_retention_mode} "
+                "(no COMPLIANCE): la retención WORM del índice electrónico es evadible "
+                "por un usuario con permiso bypass-governance de MinIO."
+            )
+        return warnings
 
     # Formatos admitidos en la subida (RF-DIG-04). CSV de MIME types; "*" = todos.
     allowed_mime_types: str = (

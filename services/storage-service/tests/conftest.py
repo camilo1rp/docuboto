@@ -16,7 +16,7 @@ so tests run without real infrastructure.
 
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest_asyncio
@@ -75,6 +75,35 @@ def make_file_record(
     }
 
 
+def make_worm_row(
+    *,
+    worm_id: uuid.UUID | None = None,
+    expediente_id: str = "EXP-1",
+    tipo: str = "indice",
+    bucket: str = f"orpycamcp-{TENANT_SLUG}-preservation",
+    object_key: str | None = None,
+    version_id: str | None = "v1",
+    sha256: str = SHA256,
+    retain_until: datetime | None = None,
+    retention_mode: str = "COMPLIANCE",
+    legal_hold: bool = False,
+    created_at: datetime | None = None,
+) -> dict:
+    return {
+        "id": worm_id or uuid.uuid4(),
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "bucket": bucket,
+        "object_key": object_key or f"{uuid.uuid4()}/indice.xml",
+        "version_id": version_id,
+        "sha256": sha256,
+        "retain_until": retain_until or (NOW + timedelta(days=1825)),
+        "retention_mode": retention_mode,
+        "legal_hold": legal_hold,
+        "created_at": created_at or NOW,
+    }
+
+
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None
@@ -90,10 +119,14 @@ def _make_mock_minio() -> MagicMock:
     minio = MagicMock()
     minio.bucket_exists = AsyncMock(return_value=True)
     minio.make_bucket = AsyncMock()
-    minio.put_object = AsyncMock()
+    # `.version_id` mimics miniopy_async's real ObjectWriteResult (WORM tests read it).
+    minio.put_object = AsyncMock(return_value=MagicMock(version_id="v1"))
     minio.presigned_get_object = AsyncMock(return_value="http://minio/presigned-url")
     minio.remove_object = AsyncMock()
     minio.list_buckets = AsyncMock(return_value=[])
+    # WORM (E10 Increment A): default = bucket ya existe CON Object Lock (no
+    # levanta S3Error) — el caso "sin lock" lo fuerza cada test que lo necesite.
+    minio.get_object_lock_config = AsyncMock(return_value=MagicMock())
     return minio
 
 
@@ -101,12 +134,15 @@ def _minio_patches(mock_minio: MagicMock):
     """
     Patch get_minio in all modules that import it at module level.
 
-    health router imports `from app.core.minio_client import get_minio` so its
-    local name must be patched independently from the source module.
+    Every module does `from app.core.minio_client import get_minio`, which binds
+    its OWN local name — patching the source module alone does not affect
+    already-imported references, so each consumer must be patched independently
+    (WORM: `preservation_worm_service.py` is the 4th location, E10 Increment A).
     """
     return (
         patch("app.core.minio_client.get_minio", return_value=mock_minio),
         patch("app.services.storage_service.get_minio", return_value=mock_minio),
+        patch("app.services.preservation_worm_service.get_minio", return_value=mock_minio),
         patch("app.routers.health.get_minio", return_value=mock_minio),
     )
 
@@ -122,8 +158,8 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, Mag
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3 = _minio_patches(mock_minio)
-    with p1, p2, p3:
+    p1, p2, p3, p4 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, mock_minio
 
@@ -141,8 +177,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3 = _minio_patches(mock_minio)
-    with p1, p2, p3:
+    p1, p2, p3, p4 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 

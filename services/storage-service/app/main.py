@@ -41,6 +41,28 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("storage-service starting up")
+
+    # Guard de arranque de preservación WORM (E10 Increment A): en producción,
+    # un modo de retención distinto de COMPLIANCE es evadible por un usuario con
+    # el permiso bypass-governance de MinIO — envenenar/perder la inmutabilidad
+    # del índice electrónico firmado es irreversible, así que se rechaza el
+    # arranque en vez de arrancar con una garantía WORM débil sin que nadie lo note.
+    preservation_warnings = settings.preservation_startup_guard()
+    if preservation_warnings:
+        # Fail-closed ante ambigüedad: cualquier `app_env` que no sea explícitamente
+        # un entorno de no-producción reconocido se trata COMO producción para este
+        # guard. Un `app_env` mal escrito o ausente (p. ej. "prod", "prd", "") no debe
+        # degradar en silencio la garantía WORM irreversible del índice firmado.
+        _NON_PROD_ENVS = {"development", "dev", "local", "test", "testing", "ci"}
+        if settings.app_env.strip().lower() not in _NON_PROD_ENVS:
+            raise RuntimeError(
+                f"Config de preservación WORM insegura (app_env={settings.app_env!r} "
+                "no es un entorno de no-producción reconocido): "
+                + "; ".join(preservation_warnings)
+            )
+        for warning in preservation_warnings:
+            logger.warning("PRESERVATION CONFIG WARNING: %s", warning)
+
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     init_minio(
         settings.minio_endpoint,

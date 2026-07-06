@@ -20,7 +20,10 @@ Responsibilities:
 Soft-delete vs. purge (D-04, constitución inv. 12):
   `delete()`               → marks deleted_at, audits the act. No MinIO call.
   `purge_for_disposition()` → removes the MinIO object THEN hard-deletes the row.
-                              Only for TRD final-disposition workflows.
+                              Only for TRD final-disposition workflows. Gated by
+                              the WORM lock (E10 Increment A): blocked while the
+                              expediente's protected índice is still under active
+                              retention or legal hold — see `WormLockActiveError`.
 """
 
 import hashlib
@@ -29,20 +32,34 @@ import uuid
 from datetime import timedelta
 
 import asyncpg
+from orpycamcp_common import audit
 
 from app.core.config import settings
 from app.core.minio_client import Minio, get_minio
 from app.models.file_record import FileRecord
 from app.repositories.file_repository import FileRepository
+from app.repositories.preservacion_worm_repository import PreservacionWormRepository
+from app.schemas.preservacion import canonicalize_expediente_id
 from app.schemas.storage import (
     FileResponse,
     IntegrityResponse,
     PresignedUrlResponse,
 )
-from orpycamcp_common import audit
 
 _BUCKET_PREFIX = "orpycamcp"
 _SERVICE = "storage-service"
+
+
+class WormLockActiveError(Exception):
+    """Se intentó purgar un archivo de un expediente con protección WORM activa.
+
+    Bloquea la disposición final mientras exista, para ESTE `expediente_id`, un
+    objeto en `preservacion_worm_objeto` con `retain_until` futuro o
+    `legal_hold = true` (E10 Increment A, AGN 001/2024 Art. 4.3.2.6). Retención
+    WORM y disparo de disposición derivan de la MISMA TRD y normalmente expiran
+    juntos — este gate es la red de seguridad contra la eliminación prematura,
+    no el mecanismo primario que decide CUÁNDO disponer.
+    """
 
 
 class UnsupportedFormatError(Exception):
@@ -263,6 +280,7 @@ class StorageService:
     async def purge_for_disposition(
         self,
         file_id: uuid.UUID,
+        expediente_id: str,
         reason: str,
         actor: uuid.UUID | None = None,
     ) -> bool:
@@ -270,13 +288,51 @@ class StorageService:
 
         This is the ONLY place that calls remove_object on MinIO. The file may
         be either active or already soft-deleted when disposition is executed.
-        Sequence: remove MinIO object → hard-delete DB row → audit.
+        Sequence: WORM gate → remove MinIO object → hard-delete DB row → audit.
+
+        `expediente_id` identifies the case file this purge belongs to — the WORM
+        gate (E10 Increment A) rejects the ENTIRE purge for that expediente while
+        its protected índice is still under active retention or legal hold, even
+        if `file_id` itself is not the protected object: disposition is an
+        all-or-nothing act for a given expediente under the same TRD.
 
         Returns False if no record exists (already purged or never existed).
+        Raises `WormLockActiveError` if the expediente is still under WORM lock.
         """
+        # Mismo string canónico que `ProtegerIndiceRequest` exige al proteger:
+        # el gate de abajo llavea por igualdad exacta contra ese valor
+        # (hallazgo de auditoría Increment A) — sin esto, un `expediente_id`
+        # con espacios incidentales distintos entre protección y disposición
+        # dejaría pasar la purga sin bloquear.
+        expediente_id = canonicalize_expediente_id(expediente_id)
+
         record = await self._repo.get_by_id_any_state(file_id)
         if record is None:
             return False
+
+        worm_repo = PreservacionWormRepository(self._conn, self._tenant_slug)
+        active_lock = await worm_repo.active_lock_for_expediente(expediente_id)
+        if active_lock is not None:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="file.purga_bloqueada_worm",
+                object_type="file",
+                object_ref=str(file_id),
+                actor=str(actor) if actor else None,
+                payload={
+                    "expediente_id": expediente_id,
+                    "worm_object_id": str(active_lock["id"]),
+                    "retain_until": active_lock["retain_until"].isoformat(),
+                    "legal_hold": active_lock["legal_hold"],
+                },
+            )
+            raise WormLockActiveError(
+                f"El expediente {expediente_id} tiene un objeto bajo protección "
+                f"WORM (retain_until={active_lock['retain_until']}, "
+                f"legal_hold={active_lock['legal_hold']}); disposición rechazada"
+            )
 
         minio = get_minio()
         await minio.remove_object(record.bucket, record.object_key)
