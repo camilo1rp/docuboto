@@ -137,5 +137,23 @@ class Settings(BaseSettings):
     # lo activa explícitamente porque solo provisiona `secrets/tsa/_dev/`.
     tsa_allow_dev_seal: bool = False
 
+    # --- XAdES-LT/LTA: material de validación a largo plazo (E06, RT-16) ---
+    # Kill-switch: `False` por defecto (comportamiento idéntico a antes de este
+    # incremento — la firma se queda en XAdES-T). En `True`, `LocalSigner.sign`
+    # intenta escalar a XAdES-LTA cuando el sello institucional del tenant (o
+    # `_dev/`) trae también `ca.crt`/`crl.der` (`scripts/gen-dev-ca.sh`) — ver
+    # `app.core.keys.load_seal`. LT y LTA se producen SIEMPRE juntos al firmar
+    # (nunca se persiste un XML que se quede a medio camino en "solo LT");
+    # `verify_xades` sí puede reportar el nivel LT si el `ArchiveTimeStamp` no
+    # llega a validar pero el resto del material LT sí.
+    signer_lt_enabled: bool = False
+    # Con `signer_lt_enabled=True`, este flag decide qué hacer si el tenant NO
+    # tiene material CA montado: `False` (default) degrada en silencio-pero-
+    # observable a XAdES-T (`firma.lt_downgrade_no_ca` en audit_log, ver
+    # `app.routers.signature`); `True` hace fallar `/sign-xml` con 503
+    # (`lt_material_required`) — fail-closed para despliegues que exigen
+    # conformidad estricta y no toleran ninguna firma sin LT/LTA.
+    signer_lt_require: bool = False
+
 
 settings = Settings()

@@ -80,6 +80,17 @@ def _read_pair(dir_path: Path, *, stem: str = "seal") -> tuple[bytes, bytes] | N
     return cert_pem, key_pem
 
 
+def _read_optional_file(path: Path) -> bytes | None:
+    """Lee ``path`` si existe; ``None`` si no (material LT/LTA OPCIONAL).
+
+    Usado para ``ca.crt``/``crl.der`` (XAdES-LT/LTA) — a diferencia de
+    ``seal.{crt,key}``, su ausencia nunca es un error: :func:`load_seal`
+    simplemente devuelve ``ca_cert_pem``/``crl_der`` en ``None`` y
+    ``LocalSigner.sign`` se queda en XAdES-T (RT-16, degradación observable).
+    """
+    return path.read_bytes() if path.is_file() else None
+
+
 def load_seal(tenant_slug: str) -> SignerRef:
     """Resuelve el sello institucional (cert+key) del tenant.
 
@@ -99,6 +110,14 @@ def load_seal(tenant_slug: str) -> SignerRef:
     (default, recomendado en producción) la ausencia de sello propio del
     tenant NUNCA cae a un par compartido con otros tenants: falla cerrado.
 
+    Además del par cert+key, resuelve el material OPCIONAL de la CA local de
+    desarrollo (XAdES-LT/LTA, ``scripts/gen-dev-ca.sh``) — ``ca.crt``/
+    ``crl.der`` — del MISMO directorio que efectivamente sirvió el sello (el
+    del tenant, o ``_dev`` si se cayó al fallback): nunca se mezcla la CA de
+    un directorio con el sello de otro. Ausencia de ese material no es un
+    error — ``ca_cert_pem``/``crl_der`` quedan en ``None`` y
+    ``LocalSigner.sign`` se mantiene en XAdES-T (ver ``settings.signer_lt_enabled``).
+
     Raises:
         ValueError: slug inválido (el router lo traduce a 400/500 según el
             contexto de la petición).
@@ -109,9 +128,11 @@ def load_seal(tenant_slug: str) -> SignerRef:
     slug = _validate_slug(tenant_slug)
     base = Path(settings.signer_cert_dir)
 
-    pair = _read_pair(base / slug)
+    resolved_dir = base / slug
+    pair = _read_pair(resolved_dir)
     if pair is None and settings.signer_allow_dev_seal:
-        pair = _read_pair(base / "_dev")
+        resolved_dir = base / "_dev"
+        pair = _read_pair(resolved_dir)
     if pair is None:
         raise SealNotFoundError(
             f"No se encontró sello de firma propio para el tenant {slug!r} bajo {base} "
@@ -127,6 +148,8 @@ def load_seal(tenant_slug: str) -> SignerRef:
         tipo_firma="sello_sistema",
         nivel_conformidad="xades_b_no_acreditado",
         acreditado=False,
+        ca_cert_pem=_read_optional_file(resolved_dir / "ca.crt"),
+        crl_der=_read_optional_file(resolved_dir / "crl.der"),
     )
 
 

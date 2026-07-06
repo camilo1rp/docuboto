@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -151,6 +151,115 @@ def _tsa_signer_ref(cert_pem: bytes, key_pem: bytes) -> SignerRef:
     return SignerRef(cert_pem=cert_pem, key_pem=key_pem, key_password=None)
 
 
+def _generate_ca(cn: str = "orpycamcp-dev-ca"):
+    """CA raíz efímera, en memoria (``cryptography``, sin openssl CLI ni
+    filesystem — mismo espíritu que ``scripts/gen-dev-ca.sh`` pero para
+    pruebas): ``basicConstraints CA:TRUE`` + ``keyUsage keyCertSign/cRLSign``.
+
+    Devuelve ``(ca_key, ca_cert)`` — los objetos ``cryptography``, no PEM/DER,
+    para que los helpers siguientes (``_issue_seal_signed_by_ca``,
+    ``_build_crl``) puedan firmar con ella directamente.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return key, cert
+
+
+def _ca_cert_pem(ca_cert: x509.Certificate) -> bytes:
+    return ca_cert.public_bytes(serialization.Encoding.PEM)
+
+
+def _issue_seal_signed_by_ca(
+    ca_key, ca_cert: x509.Certificate, cn: str = "orpycamcp-dev"
+) -> tuple[bytes, bytes, x509.Certificate]:
+    """Emite un sello (cert+key RSA-2048) firmado por ``ca_cert`` — NO
+    autofirmado, a diferencia de ``_generate_cert``. Devuelve
+    ``(seal_cert_pem, seal_key_pem, seal_cert)`` — el objeto ``Certificate``
+    se expone para que los tests puedan leer su ``serial_number`` (revocación).
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=825))
+        .sign(ca_key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem, cert
+
+
+def _build_crl(ca_key, ca_cert: x509.Certificate, *, revoked_serials: tuple[int, ...] = ()) -> bytes:
+    """CRL DER firmada por ``ca_cert`` (``CertificateRevocationListBuilder``,
+    en memoria) — ``revoked_serials`` vacío reproduce la CRL "0 revocados"
+    honesta que produce ``scripts/gen-dev-ca.sh`` en desarrollo.
+    """
+    now = datetime.now(UTC)
+    builder = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(ca_cert.subject)
+        .last_update(now)
+        .next_update(now + timedelta(days=3650))
+    )
+    for serial in revoked_serials:
+        revoked = x509.RevokedCertificateBuilder().serial_number(serial).revocation_date(now).build()
+        builder = builder.add_revoked_certificate(revoked)
+    crl = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+    return crl.public_bytes(serialization.Encoding.DER)
+
+
+def _lt_signer_ref(cert_pem: bytes, key_pem: bytes, ca_cert_pem: bytes, crl_der: bytes) -> SignerRef:
+    """``SignerRef`` con material LT/LTA (``ca_cert_pem``/``crl_der``) — mismo
+    patrón que ``_signer_ref`` pero co-ubicando la CA/CRL como haría
+    ``app.core.keys.load_seal`` con ``scripts/gen-dev-ca.sh`` real."""
+    return SignerRef(
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        key_password=None,
+        tipo_firma="sello_sistema",
+        nivel_conformidad="xades_b_no_acreditado",
+        acreditado=False,
+        ca_cert_pem=ca_cert_pem,
+        crl_der=crl_der,
+    )
+
+
 INDICE_XML = (
     b'<indice xmlns="urn:orpyca:indice">'
     b'<expediente id="exp-1">Contenido original</expediente>'
@@ -193,6 +302,16 @@ class _FakeFirmaTable:
                 tsa_timestamp,
                 tsa_cert_fingerprint,
                 tsa_acreditado,
+                lt_material_present,
+                ca_fingerprint,
+                crl_fingerprint,
+                crl_this_update,
+                crl_next_update,
+                archive_timestamp_present,
+                archive_timestamp_at,
+                archive_tsa_cert_fingerprint,
+                revocation_provenance,
+                archive_timestamp_token,
             ) = args
             row = {
                 "id": uuid.uuid4(),
@@ -216,6 +335,16 @@ class _FakeFirmaTable:
                 "tsa_timestamp": tsa_timestamp,
                 "tsa_cert_fingerprint": tsa_cert_fingerprint,
                 "tsa_acreditado": tsa_acreditado,
+                "lt_material_present": lt_material_present,
+                "ca_fingerprint": ca_fingerprint,
+                "crl_fingerprint": crl_fingerprint,
+                "crl_this_update": crl_this_update,
+                "crl_next_update": crl_next_update,
+                "archive_timestamp_present": archive_timestamp_present,
+                "archive_timestamp_at": archive_timestamp_at,
+                "archive_tsa_cert_fingerprint": archive_tsa_cert_fingerprint,
+                "revocation_provenance": revocation_provenance,
+                "archive_timestamp_token": archive_timestamp_token,
             }
             self.rows[str(row["id"])] = row
             return row
@@ -1064,3 +1193,607 @@ async def test_xades_t_verify_rejects_forged_timestamp_from_foreign_tsa(
     assert vbody["valida"] is True
     assert vbody["sello_tiempo_valido"] is False
     assert vbody["tsa_timestamp"] is None
+
+
+# ---------------------------------------------------------------------------
+# XAdES-LT/LTA — material de validación a largo plazo (E06, RT-16)
+# ---------------------------------------------------------------------------
+#
+# `settings.signer_lt_enabled` es `False` por defecto (kill-switch) — cada
+# test que ejercita el camino LT/LTA lo activa explícitamente vía monkeypatch
+# y lo restaura NO hace falta (monkeypatch revierte solo al terminar el test).
+# El material CA/CRL se genera enteramente en memoria (`_generate_ca` /
+# `_issue_seal_signed_by_ca` / `_build_crl`) — nunca toca el filesystem ni
+# `scripts/gen-dev-ca.sh`.
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_upgrades_to_lta_with_ca_material(signature_env, monkeypatch) -> None:
+    """(a) Con `signer_lt_enabled=True` y material CA/CRL montado, la firma
+    sube DIRECTAMENTE a XAdES-LTA (LT y LTA se producen SIEMPRE juntos al
+    firmar, RT-16 Pieza 5): CertificateValues=SOLO la CA (no duplica el sello,
+    ya en KeyInfo), RevocationValues=la CRL, ArchiveTimeStamp presente y en
+    ORDEN ETSI (después de SignatureTimeStamp/CertificateValues/RevocationValues)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    body = resp.json()
+
+    assert body["xades_level"] == "XAdES-LTA"
+    assert body["nivel_conformidad"] == "xades_lta_no_acreditado"
+    # RF-FIR-15 — nunca sobre-declarar conformidad, ni siquiera en LTA.
+    assert body["acreditado"] is False
+    assert body["lt_material_present"] is True
+    assert body["archive_timestamp_present"] is True
+    assert body["revocation_provenance"] == "dev"
+    assert body["crl_next_update"] is not None
+
+    signed_xml = uploads[0]["content"]
+    root = etree.fromstring(signed_xml)
+    ns = {
+        "ds": "http://www.w3.org/2000/09/xmldsig#",
+        "xades": "http://uri.etsi.org/01903/v1.3.2#",
+        "xadesv141": "http://uri.etsi.org/01903/v1.4.1#",
+    }
+    unsigned_sig_props = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties", namespaces=ns
+    )
+    assert unsigned_sig_props is not None
+    children = list(unsigned_sig_props)
+    tags = [etree.QName(c).localname for c in children]
+    # Orden ETSI EN 319 132: SignatureTimeStamp, CertificateValues,
+    # RevocationValues, ArchiveTimeStamp — SIEMPRE el último.
+    assert tags == [
+        "SignatureTimeStamp",
+        "CertificateValues",
+        "RevocationValues",
+        "ArchiveTimeStamp",
+    ]
+
+    cert_values = unsigned_sig_props.find("xades:CertificateValues", namespaces=ns)
+    encapsulated_certs = cert_values.findall("xades:EncapsulatedX509Certificate", namespaces=ns)
+    # SOLO la CA — el sello ya viaja en ds:KeyInfo, no se duplica (EN 319 132 §5.2.9).
+    assert len(encapsulated_certs) == 1
+    embedded_ca_der = b64decode(encapsulated_certs[0].text.strip())
+    assert embedded_ca_der == ca_cert.public_bytes(serialization.Encoding.DER)
+
+    rev_values = unsigned_sig_props.find(
+        "xades:RevocationValues/xades:CRLValues/xades:EncapsulatedCRLValue", namespaces=ns
+    )
+    assert b64decode(rev_values.text.strip()) == crl_der
+
+    archive_ts = unsigned_sig_props.find("xadesv141:ArchiveTimeStamp", namespaces=ns)
+    assert archive_ts is not None
+    # El CONTENEDOR es v1.4.1, pero sus hijos siguen en v1.3.2 (mismo
+    # XAdESTimeStampType que SignatureTimeStamp — ver app.providers.local).
+    assert archive_ts.find("xades:EncapsulatedTimeStamp", namespaces=ns) is not None
+    assert archive_ts.find("xadesv141:EncapsulatedTimeStamp", namespaces=ns) is None
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_verify_validates_chain_crl_and_archive_timestamp(
+    signature_env, monkeypatch
+) -> None:
+    """(b) /verify de una firma XAdES-LTA reporta valida=True, xades_level
+    recalculado a "XAdES-LTA" (nivel REALMENTE verificado, no el persistido en
+    la fila) y sello_tiempo_valido=True — round-trip completo end-to-end."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is True
+    assert vbody["xades_level"] == "XAdES-LTA"
+    assert vbody["acreditado"] is False
+    assert vbody["motivo"] is None
+    assert vbody["sello_tiempo_valido"] is True
+    assert vbody["lt_material_present"] is True
+    assert vbody["archive_timestamp_present"] is True
+    assert vbody["revocation_provenance"] == "dev"
+    assert vbody["crl_next_update"] is not None
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_revoked_seal_fails_closed(signature_env, monkeypatch) -> None:
+    """(c) Un sello cuyo serial SÍ aparece en la CRL de la CA -> verify
+    fail-closed (`certificado_sello_revocado`), aunque la firma XAdES-B/-T de
+    base sea criptográficamente válida."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    # CRL que YA revoca el serial de este sello concreto (simula un sello
+    # comprometido/rotado tras el cual la CA local lo lista en su próxima CRL).
+    crl_der = _build_crl(ca_key, ca_cert, revoked_serials=(seal_cert.serial_number,))
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is False
+    assert vbody["motivo"] == "certificado_sello_revocado"
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_ca_binding_rejects_misconfigured_foreign_ca(
+    signature_env, monkeypatch
+) -> None:
+    """(d) Aislamiento CA<->tenant (RT-16, Pieza 2/6.1): un sello NUNCA emitido
+    por la CA que se le asocia (p. ej. un operador copia por error el
+    ca.crt/crl.der de OTRO tenant junto al sello de este) debe fallar la
+    verificación de la cadena seal->CA (`cadena_seal_ca_invalida`) — nunca
+    reportarse válido solo porque el material "parece" una CA correcta."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    # CA legítima de un tenant distinto ("tenant B") — bien formada, pero
+    # NUNCA emitió este sello.
+    foreign_ca_key, foreign_ca_cert = _generate_ca(cn="ca-tenant-b")
+    # Sello AUTOFIRMADO real de "tenant A" (como en Inc.1, sin CA) —
+    # misconfigurado con el ca.crt/crl.der ajeno.
+    seal_cert_pem, seal_key_pem = _generate_cert("orpycamcp-dev-tenant-a")
+    crl_der = _build_crl(foreign_ca_key, foreign_ca_cert)
+    install_seal(
+        _lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(foreign_ca_cert), crl_der)
+    )
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is False
+    assert vbody["motivo"] is not None
+    assert vbody["motivo"].startswith("cadena_seal_ca_invalida")
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_downgrade_no_ca_material_stays_at_t_and_audits(
+    signature_env, monkeypatch
+) -> None:
+    """(e) `signer_lt_enabled=True` pero el tenant NO tiene ca.crt/crl.der
+    montado (el caso normal fuera de `scripts/gen-dev-ca.sh`) -> degradación
+    OBSERVABLE: la firma se queda en XAdES-T (nunca falla), y queda una
+    entrada de auditoría DEDICADA `firma.lt_downgrade_no_ca` — nunca en
+    silencio."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))  # sin ca_cert_pem/crl_der
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["xades_level"] == "XAdES-T"
+    assert body["lt_material_present"] is False
+    assert body["archive_timestamp_present"] is False
+
+    downgrade_calls = [
+        c
+        for c in conn.execute.call_args_list
+        if "INSERT INTO public.audit_log" in str(c.args[0])
+    ]
+    assert len(downgrade_calls) == 2  # firma.creada + firma.lt_downgrade_no_ca
+    actions = [c.args[5] for c in downgrade_calls]
+    assert "firma.lt_downgrade_no_ca" in actions
+    downgrade_payload = json.loads(
+        next(c for c in downgrade_calls if c.args[5] == "firma.lt_downgrade_no_ca").args[8]
+    )
+    assert downgrade_payload["xades_level"] == "XAdES-T"
+    assert downgrade_payload["signer_lt_enabled"] is True
+    assert downgrade_payload["motivo"] == "sin_material_ca_local"
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_disabled_kill_switch_never_audits_downgrade(
+    signature_env, monkeypatch
+) -> None:
+    """`signer_lt_enabled=False` (default) es simplemente el feature apagado —
+    NUNCA es una "degradación": no debe emitirse `firma.lt_downgrade_no_ca`."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    # signer_lt_enabled ya es False por defecto — no hace falta monkeypatch.
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    assert resp.json()["xades_level"] == "XAdES-T"
+
+    audit_calls = [
+        c for c in conn.execute.call_args_list if "INSERT INTO public.audit_log" in str(c.args[0])
+    ]
+    assert len(audit_calls) == 1  # solo firma.creada
+    assert audit_calls[0].args[5] == "firma.creada"
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_require_without_ca_material_returns_503(
+    signature_env, monkeypatch
+) -> None:
+    """(f) `signer_lt_require=True` + sin material CA -> 503
+    `lt_material_required`, fail-closed (para despliegues que exigen
+    conformidad LT/LTA estricta) — la fila `firma` NUNCA llega a persistirse."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_lt_require", True)
+
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))  # sin ca_cert_pem/crl_der
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "lt_material_required"
+    assert table.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_verify_pins_ca_fingerprint(monkeypatch) -> None:
+    """(g) Pinning (RT-16, Pieza 6.a) — mismo patrón que
+    `test_xades_t_verify_timestamp_token_pins_tsa_fingerprint`: sin
+    `expected_ca_fingerprint` (fila legacy o T-only) o con uno que no coincide
+    con la CA REALMENTE embebida, `verify_xades` falla-cerrado. Llamado
+    directo a la función (no vía HTTP, sin pasar por ``signature_env``/router)
+    para aislar el pinning de cualquier otra comprobación previa."""
+    from app.providers.base import PreparedDoc
+    from app.providers.local import LocalSigner, verify_xades
+
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_timestamp_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+
+    tsa_cert_pem, tsa_key_pem = _generate_tsa_cert()
+    monkeypatch.setattr(
+        tsa_module, "load_tsa_seal", lambda: _tsa_signer_ref(tsa_cert_pem, tsa_key_pem)
+    )
+
+    prepared = PreparedDoc(xml_bytes=INDICE_XML, objeto_tipo="indice", objeto_id="exp-1")
+    signer_ref = _lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der)
+    signed = await LocalSigner().sign(prepared, signer_ref)
+
+    fp = cert_fingerprint(seal_cert_pem)
+    correct_ca_fp = signed.extra["ca_fingerprint"]
+
+    outcome_ok = verify_xades(
+        signed.signed_xml,
+        fp,
+        expected_tsa_fingerprint=signed.extra["tsa_cert_fingerprint"],
+        expected_ca_fingerprint=correct_ca_fp,
+    )
+    assert outcome_ok.valida is True
+
+    outcome_missing = verify_xades(
+        signed.signed_xml,
+        fp,
+        expected_tsa_fingerprint=signed.extra["tsa_cert_fingerprint"],
+        expected_ca_fingerprint=None,
+    )
+    assert outcome_missing.valida is False
+    assert outcome_missing.motivo == "ca_fingerprint_no_registrado"
+
+    foreign_ca_key, foreign_ca_cert = _generate_ca(cn="otra-ca")
+    outcome_mismatch = verify_xades(
+        signed.signed_xml,
+        fp,
+        expected_tsa_fingerprint=signed.extra["tsa_cert_fingerprint"],
+        expected_ca_fingerprint=cert_fingerprint(_ca_cert_pem(foreign_ca_cert)),
+    )
+    assert outcome_mismatch.valida is False
+    assert outcome_mismatch.motivo == "ca_cert_fingerprint_no_coincide"
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_retrocompat_t_and_b_signatures_still_verify(
+    signature_env, monkeypatch
+) -> None:
+    """(h) Retrocompatibilidad: firmas XAdES-T y XAdES-B "puras" (sin
+    CertificateValues) verifican EXACTAMENTE igual que antes de este
+    incremento, incluso con `settings.signer_lt_enabled=True` a nivel de
+    servicio (el nivel LT/LTA solo se evalúa si la firma CONCRETA trae
+    CertificateValues)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    # T "puro": sello SIN material CA -> se queda en T (ver test de downgrade).
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    vbody = verify_resp.json()
+    assert vbody["valida"] is True
+    assert vbody["xades_level"] == "XAdES-T"
+    assert vbody["lt_material_present"] is False
+    assert vbody["archive_timestamp_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_acreditado_always_false(signature_env, monkeypatch) -> None:
+    """(i) RF-FIR-15: `acreditado` es SIEMPRE False incluso cuando la firma
+    escala a XAdES-LTA y verifica correctamente — la CA es de desarrollo, sin
+    acreditación ONAC."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    body = resp.json()
+    assert body["xades_level"] == "XAdES-LTA"
+    assert body["acreditado"] is False
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": body["firma_id"], "payload_xml": uploads[0]["content"].decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.json()["acreditado"] is False
+
+
+# ---------------------------------------------------------------------------
+# (j) Determinismo explícito del ArchiveTimeStamp — build y verify DEBEN usar
+#     el MISMO helper de canonicalización (_archive_ts_covered_bytes) sobre
+#     CUALQUIER re-parseo del mismo XML firmado, o el sello nunca validaría
+#     fuera del proceso que lo produjo (RT-16, requisito no negociable).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_xades_lta_archive_timestamp_covered_bytes_deterministic_across_reparse(
+    monkeypatch,
+) -> None:
+    """Llamada directa a `_archive_ts_covered_bytes` (sin pasar por HTTP): el
+    MISMO `signed_xml` re-parseado dos veces de forma INDEPENDIENTE (simula
+    que build ocurre en un proceso y verify en una request HTTP distinta,
+    posiblemente en otra réplica) produce EXACTAMENTE los mismos bytes
+    cubiertos. Si hubiera cualquier no-determinismo en la canonicalización
+    (prefijos de namespace, orden de atributos, espacios), esta igualdad
+    fallaría y el `ArchiveTimeStamp` jamás validaría fuera del árbol lxml
+    original en memoria — round-trip verde es el contrato mínimo."""
+    from app.providers.base import PreparedDoc
+    from app.providers.local import LocalSigner, _archive_ts_covered_bytes
+
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    # Este test no pasa por `signature_env` (no necesita cliente HTTP/tabla
+    # fake) — instala la TSA directamente, mismo patrón que
+    # `test_xades_lt_verify_pins_ca_fingerprint`.
+    tsa_cert_pem, tsa_key_pem = _generate_tsa_cert()
+    monkeypatch.setattr(
+        tsa_module, "load_tsa_seal", lambda: _tsa_signer_ref(tsa_cert_pem, tsa_key_pem)
+    )
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    signer_ref = _lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der)
+
+    prepared = PreparedDoc(xml_bytes=INDICE_XML, objeto_tipo="indice", objeto_id="exp-1")
+    signed = await LocalSigner().sign(prepared, signer_ref)
+    assert signed.xades_level == "XAdES-LTA"
+
+    root_a = etree.fromstring(signed.signed_xml)
+    root_b = etree.fromstring(signed.signed_xml)
+    covered_a = _archive_ts_covered_bytes(root_a)
+    covered_b = _archive_ts_covered_bytes(root_b)
+    assert covered_a == covered_b
+    assert len(covered_a) > 0
+
+    # El propio ArchiveTimeStamp embebido debe seguir validando contra este
+    # recálculo independiente — cierra el lazo determinismo -> verificación real.
+    ns = {
+        "xades": "http://uri.etsi.org/01903/v1.3.2#",
+        "xadesv141": "http://uri.etsi.org/01903/v1.4.1#",
+    }
+    archive_ts = root_b.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties/xadesv141:ArchiveTimeStamp",
+        namespaces=ns,
+    )
+    encapsulated = archive_ts.find("xades:EncapsulatedTimeStamp", namespaces=ns)
+    token_der = b64decode(encapsulated.text.strip())
+    outcome = tsa_module.verify_timestamp_token(
+        token_der, covered_a, expected_tsa_fingerprint=signed.extra["archive_tsa_cert_fingerprint"]
+    )
+    assert outcome.valido is True
+
+
+# ---------------------------------------------------------------------------
+# (k) Distinción del nivel REALMENTE verificado: LT (sin ArchiveTimeStamp)
+#     vs. LTA (con uno válido) vs. fail-closed (con uno presente pero
+#     corrupto) — ver `app.providers.local.verify_xades`, sección "XAdES-LT/LTA".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_verify_reports_lt_level_when_archive_timestamp_absent(
+    signature_env, monkeypatch
+) -> None:
+    """El `xadesv141:ArchiveTimeStamp` es una propiedad NO FIRMADA: removerlo
+    tras firmar (simulando un XML LTA truncado en tránsito, o un firma_id de
+    una fila anterior a que este servicio empezara a producir el sello de
+    archivo) NO invalida la firma XAdES-B/-T de base. `/verify` debe reportar
+    el nivel REALMENTE verificado para ESTE documento: "XAdES-LT" (no "XAdES-
+    LTA", que exige el ArchiveTimeStamp presente Y válido), con `valida=True`
+    y `archive_timestamp_present=False`."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    ns = {
+        "xades": "http://uri.etsi.org/01903/v1.3.2#",
+        "xadesv141": "http://uri.etsi.org/01903/v1.4.1#",
+    }
+    root = etree.fromstring(signed_xml)
+    unsigned_sig_props = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties", namespaces=ns
+    )
+    archive_ts = unsigned_sig_props.find("xadesv141:ArchiveTimeStamp", namespaces=ns)
+    assert archive_ts is not None
+    unsigned_sig_props.remove(archive_ts)
+    stripped_xml = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
+    assert stripped_xml != signed_xml
+
+    # Aísla del binding a firma_id (migración 010) — lo que se quiere probar
+    # aquí es la distinción de nivel, no el hash-binding ya cubierto arriba.
+    table.rows[firma_id]["signed_xml_sha256"] = None
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": stripped_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is True
+    assert vbody["xades_level"] == "XAdES-LT"
+    assert vbody["archive_timestamp_present"] is False
+    assert vbody["lt_material_present"] is True
+    assert vbody["motivo"] is None
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_verify_fails_closed_when_archive_timestamp_tampered(
+    signature_env, monkeypatch
+) -> None:
+    """A diferencia de la AUSENCIA total (degradación observable a "XAdES-LT"
+    del test anterior), un `ArchiveTimeStamp` que SIGUE PRESENTE pero cuyo
+    token no valida (corrupto/alterado) SÍ invalida la firma completa
+    (fail-closed) — material LT presente-pero-inválido nunca se tolera, a
+    diferencia del sello de tiempo XAdES-T "puro" ausente (ver docstring de
+    `verify_xades`)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    ns = {
+        "xades": "http://uri.etsi.org/01903/v1.3.2#",
+        "xadesv141": "http://uri.etsi.org/01903/v1.4.1#",
+    }
+    root = etree.fromstring(signed_xml)
+    archive_ts = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties/xadesv141:ArchiveTimeStamp",
+        namespaces=ns,
+    )
+    encapsulated = archive_ts.find("xades:EncapsulatedTimeStamp", namespaces=ns)
+    assert encapsulated is not None and encapsulated.text
+    # Base64 válido, contenido CMS/DER inválido — corrompe SOLO el token.
+    encapsulated.text = b64encode(b"not-a-valid-cms-token").decode("ascii")
+    tampered_xml = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
+
+    table.rows[firma_id]["signed_xml_sha256"] = None
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": tampered_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is False
+    assert vbody["motivo"] is not None
+    assert vbody["motivo"].startswith("archive_timestamp_invalido")
+
+
+# ---------------------------------------------------------------------------
+# (l) Binding CA<->tenant con DOS CAs REALES (no un sello autofirmado sin CA,
+#     como en el test de aislamiento de arriba): un sello REALMENTE emitido
+#     por la CA del tenant A, servido por error junto al ca.crt/crl.der de la
+#     CA del tenant B (ambas CAs legítimas, ninguna comprometida) -> la cadena
+#     seal->CA sigue fallando, nunca se reporta válido.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_xades_lt_seal_issued_by_ca_a_fails_verification_with_ca_b_material(
+    signature_env, monkeypatch
+) -> None:
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+
+    ca_a_key, ca_a_cert = _generate_ca(cn="ca-tenant-a")
+    ca_b_key, ca_b_cert = _generate_ca(cn="ca-tenant-b")
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(
+        ca_a_key, ca_a_cert, cn="tenant-a-seal"
+    )
+    # CRL de la CA de OTRO tenant (B) — simula un operador que copió por error
+    # el directorio de material CA del tenant equivocado junto al sello REAL
+    # del tenant A (a diferencia del test de arriba, aquí el sello SÍ fue
+    # emitido por una CA — solo la CA asociada es la incorrecta).
+    crl_b_der = _build_crl(ca_b_key, ca_b_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_b_cert), crl_b_der))
+
+    resp = await _sign_indice(client)
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"]
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is False
+    assert vbody["motivo"] is not None
+    assert vbody["motivo"].startswith("cadena_seal_ca_invalida")

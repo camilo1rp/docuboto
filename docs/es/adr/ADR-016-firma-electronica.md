@@ -170,3 +170,45 @@ El XAdES-B de Inc.1 usa `SigningTime` del **reloj del servidor**, que no es opon
 
 - RFC 3161 (Time-Stamp Protocol); ETSI EN 319 132 (perfil XAdES-T).
 - E06 tasks T-08 (cliente TSA) — realizado el modo local; el cliente remoto `TSA_URL` queda como stub para prod.
+
+---
+
+## Addendum — Incremento 5 (2026-07-05): XAdES-LT/LTA del índice con CA local de desarrollo (material de validación a largo plazo, no acreditado)
+
+**Estado**: Aceptado. Ratificado por `orfeo-architect`; auditado APTO por `tenant-security-auditor` y `archival-compliance-auditor`.
+
+### Decisión
+
+**Escalar la firma del índice de XAdES-T a XAdES-LT/LTA cuando el sello del tenant dispone de material de CA**, insertando (post-proceso lxml, patrón de Inc.4) `xades:CertificateValues` + `xades:RevocationValues` (LT) y `xadesv141:ArchiveTimeStamp` (LTA), con una **CA local de desarrollo** que emite el sello y produce la CRL. Todo **no acreditado** (la CA es dev, no ONAC), sin sobre-declarar (RF-FIR-15).
+
+**Línea roja de seguridad — la clave privada de la CA NUNCA entra a signature-service.** `scripts/gen-dev-ca.sh` retiene `ca.key` en `./secrets/ca-authority/` (chmod 600), directorio que **ningún** `docker-compose.yml` monta en el contenedor (solo se montan `./secrets/signing` y `./secrets/tsa` en modo `:ro`). El script copia **solo** los artefactos **públicos** `ca.crt` + `crl.der` al dir del sello del tenant. El servicio nunca lee `ca.key`; persiste solo certs públicos, fingerprints y tokens (el XML firmado en MinIO es la fuente de verdad del material LT/LTA).
+
+### Estructura y cobertura
+
+- **Orden ETSI EN 319 132 dentro de `xades:UnsignedSignatureProperties`** (refactor de `_insert_signature_timestamp` para crear el contenedor una sola vez): 1) `xades:SignatureTimeStamp` (v1.3.2, T, ya existía); 2) `xades:CertificateValues` (v1.3.2, LT) — `EncapsulatedX509Certificate` = **solo la CA** (el cert del sello ya está en `ds:KeyInfo`, EN 319 132 prohíbe duplicarlo); 3) `xades:RevocationValues/CRLValues/EncapsulatedCRLValue` (v1.3.2, LT) = `crl.der`; 4) `xadesv141:ArchiveTimeStamp` (**v1.4.1**, LTA, siempre el último). *Nota de implementación:* los hijos del `ArchiveTimeStamp` (`CanonicalizationMethod`/`EncapsulatedTimeStamp`) permanecen en v1.3.2 según las XSD reales de `signxml`; solo el contenedor usa v1.4.1.
+- **Perfil de ArchiveTimeStamp simplificado (no acreditado):** el token RFC 3161 (misma TSA local de Inc.4) sella un **conjunto cubierto fijo y determinista** — C14N exclusiva de `ds:SignedInfo ‖ ds:SignatureValue ‖ ds:KeyInfo ‖ xades:SignedProperties ‖ xades:SignatureTimeStamp ‖ xades:CertificateValues ‖ xades:RevocationValues`, snapshot **antes** de insertar el propio ArchiveTimeStamp. Como `SignedInfo` ya contiene el digest del documento *enveloped*, manipular documento/firma/certs/CRL queda bajo el sello. **Requisito no negociable:** build y verify comparten **una única** función de canonicalización (`_archive_ts_covered_bytes`) — cualquier no-determinismo (prefijos NS, whitespace) rompería la verificación. No es plenamente EN 319 132; se documenta como perfil simplificado.
+
+### Degradación observable y binding por tenant
+
+- **Sin `ca.crt`/`crl.der` en el dir del tenant** → la firma se queda en **XAdES-T** (patrón "omitir en legacy"), el `xades_level` refleja el nivel **realmente alcanzado** (nunca el intencionado), y se emite un audit dedicado **`firma.lt_downgrade_no_ca`** (nunca silenciosa). `signer_lt_enabled` (default `False`, opt-in + kill-switch) activa el escalado; `signer_lt_require` (default `False`) fuerza **`503 lt_material_required`** cuando falta material CA (despliegues de conformidad estricta). Defaults del lado de la disponibilidad.
+- **Aislamiento multi-tenant en el plano PKI:** `verify()` ancla `seal→CA` leyendo el dir **del tenant que firma** (pinning `ca_fingerprint`, migración 013) — un sello emitido por la CA del tenant B **falla** para el tenant A. No hay ancla CA global en código.
+
+### Verificación (`verify_xades` extendido)
+
+Fail-closed en todo: (1) cadena `seal→CA` (`Certificate.verify_directly_issued_by`, vigencias, `CA:TRUE`/`keyCertSign`); (2) **revocación real** — firma de la CRL contra la CA (fail-closed si inválida) y serial del sello **no** revocado (fail-closed si lo está); `crl_next_update` se comprueba y **expone**, sin hard-fail si caducó en modo no acreditado (las CRL de dev caducan); (3) `ArchiveTimeStamp` — reconstruye el conjunto cubierto con el helper compartido, `messageImprint`, token CMS RFC 3161, EKU crítico, pinning por fingerprint. Nivel reportado `XAdES-LT` o `XAdES-LTA` según lo presente y verificado. Retrocompatibilidad: firmas B/T previas verifican sin cambios.
+
+### Conformidad declarada (RF-FIR-15)
+
+`acreditado` **siempre `False`** (CA de dev, no ONAC). `nivel_conformidad` gana los valores `xades_lt_no_acreditado`/`xades_lta_no_acreditado` (migración 013, CHECK aditivo). La **CRL vacía** (0 revocados) es honesta; su procedencia se marca con `revocation_provenance="dev"` ("material de revocación de desarrollo, no de una PKI acreditada"). **Gap conocido documentado, no ocultado:** la TSA local es self-signed y no tiene material de validación propio (cadena/revocación) — una de las razones legítimas de `acreditado=False`; un B-LT estrictamente conformante también lo exigiría.
+
+### Persistencia y API
+
+Migración tenant **`013_lt_lta_material.sql`** (aditiva, nullable, validada idempotente en Postgres 15; no toca `firma_xades_level_check` que ya reservaba LT/LTA desde 008): `lt_material_present`, `ca_fingerprint`, `crl_fingerprint`, `crl_this_update`, `crl_next_update`, `archive_timestamp_present`, `archive_timestamp_at`, `archive_tsa_cert_fingerprint`, `revocation_provenance`, `archive_timestamp_token` (opcional, conveniencia). Enum `SignatureFormat` gana `XADES_LT`. `FirmaResponse`/`VerifyResponse` exponen `xades_level` + `lt_material_present` + `archive_timestamp_present` + `crl_next_update` + `revocation_provenance`. **Atomicidad** (remediación Media): el INSERT en `firma` y sus `audit.append` (`firma.creada`, `firma.lt_downgrade_no_ca`) van en un único `conn.transaction()` — la firma y su traza inmutable son atómicas (RF-FIR-14).
+
+### Consecuencias
+
+**Positivas**: material de validación embebido (cadena + revocación real contra CRL) → verificable a largo plazo aunque expire el cert; archive-timestamp que protege el conjunto firmado; aislamiento PKI por tenant; degradación honesta y auditada. **Negativas / límites (roadmap)**: CA/TSA de **desarrollo, no ONAC** → sigue no acreditado; perfil de ArchiveTimeStamp **simplificado** (no plenamente EN 319 132 — un validador XAdES-LTA de terceros no reconocería el conjunto cubierto propio); la TSA carece de material de validación propio; **XAdES-LT/LTA acreditado** (CA + TSA ONAC) queda diferido. **197 tests verdes**; 6 hallazgos Baja de auditoría aceptados/documentados (p. ej. exponer `crl_expired` derivado, pinning contra `archive_tsa_cert_fingerprint`).
+
+### Relacionados (Inc.5)
+
+- ETSI EN 319 132 (perfiles XAdES-LT/LTA); RFC 5280 (CRL); RFC 3161 (ArchiveTimeStamp reusa el token).

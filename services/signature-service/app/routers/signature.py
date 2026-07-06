@@ -46,7 +46,7 @@ from app.core.redis_client import get_redis
 from app.core.tsa import TsaUnavailableError
 from app.providers import get_provider
 from app.providers.base import SignerRef
-from app.providers.local import verify_xades
+from app.providers.local import LtMaterialRequiredError, verify_xades
 from app.repositories.firma_repository import FirmaRepository
 from app.repositories.signer_config_repository import SignerConfigRepository
 from app.schemas.firma import (
@@ -171,6 +171,21 @@ async def sign_xml(
                 "status": 503,
             },
         ) from exc
+    except LtMaterialRequiredError as exc:
+        # Fallo de infraestructura (XAdES-LT/LTA, RT-16): con
+        # settings.signer_lt_require=True, la ausencia de material de CA local
+        # (ca.crt/crl.der) tumba la firma completa — mismo trato que
+        # TsaUnavailableError. Con el flag en False (default), el proveedor NO
+        # lanza esta excepción: degrada en silencio-pero-observable a XAdES-T
+        # (ver `firma.lt_downgrade_no_ca` más abajo).
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "lt_material_required",
+                "detail": str(exc),
+                "status": 503,
+            },
+        ) from exc
 
     minio_key_firmado: str | None = None
     if provider_name == "xades_local":
@@ -210,63 +225,128 @@ async def sign_xml(
     tsa_timestamp_iso = signed.extra.get("tsa_timestamp")
     tsa_timestamp_dt = datetime.fromisoformat(tsa_timestamp_iso) if tsa_timestamp_iso else None
 
-    row = await FirmaRepository(conn).insert(
-        {
-            "objeto_tipo": payload.objeto_tipo,
-            "objeto_id": payload.objeto_id,
-            "formato_solicitado": payload.formato,
-            "firmante_id": firmante_id,
-            "payload_sha256": signed.payload_sha256,
-            "firma_blob": signed.signature_value_b64,
-            "provider": signed.provider,
-            "sello_tiempo": sello_tiempo_dt,
-            "certificado_pem": signed.certificado_pem or None,
-            "minio_key_firmado": minio_key_firmado,
-            "nivel_conformidad": signed.nivel_conformidad,
-            "xades_level": signed.xades_level,
-            "tipo_firma": signer_ref.tipo_firma,
-            "certificado_fingerprint": signed.certificado_fingerprint,
-            "signed_xml_sha256": signed_xml_sha256,
-            "tsa_token": signed.extra.get("tsa_token"),
-            "tsa_timestamp": tsa_timestamp_dt,
-            "tsa_cert_fingerprint": signed.extra.get("tsa_cert_fingerprint"),
-            "tsa_acreditado": signed.extra.get("tsa_acreditado", False),
-        }
+    # XAdES-LT/LTA (RT-16) — presentes en `signed.extra` SOLO cuando
+    # LocalSigner escaló a XAdES-LTA (settings.signer_lt_enabled=True Y
+    # material de CA local montado); ausentes para cualquier otro caso
+    # (columnas nullable, migración 013).
+    crl_this_update_iso = signed.extra.get("crl_this_update")
+    crl_this_update_dt = datetime.fromisoformat(crl_this_update_iso) if crl_this_update_iso else None
+    crl_next_update_iso = signed.extra.get("crl_next_update")
+    crl_next_update_dt = datetime.fromisoformat(crl_next_update_iso) if crl_next_update_iso else None
+    archive_timestamp_at_iso = signed.extra.get("archive_timestamp_at")
+    archive_timestamp_at_dt = (
+        datetime.fromisoformat(archive_timestamp_at_iso) if archive_timestamp_at_iso else None
     )
 
-    # Immutable audit record — RF-FIR-14, ADR-008.
-    if _AUDIT_AVAILABLE:
-        await _audit.append(
-            conn,
-            tenant_slug=tenant_slug,
-            service=_SERVICE,
-            action="firma.creada",
-            object_type=payload.objeto_tipo,
-            object_ref=str(payload.objeto_id) if payload.objeto_id else None,
-            actor=str(firmante_id),
-            payload={
-                "firma_id": str(row["id"]),
+    # La firma persistida y su traza inmutable deben ser atómicas (RF-FIR-14):
+    # si `_audit.append` fallara DESPUÉS del INSERT, sin esta transacción
+    # asyncpg ya habría auto-commiteado el INSERT de `firma` y la firma
+    # quedaría sin rastro en `audit_log`. `_audit.append` ya está diseñado
+    # para anidarse (abre su propia (sub)transacción vía savepoint — ver su
+    # docstring), así que envolver aquí es seguro. El upload a MinIO y el
+    # sellado ya ocurrieron antes de este bloque (no son objeto de rollback);
+    # la publicación del evento Redis (`publish_indice_firmado`, más abajo)
+    # queda deliberadamente FUERA — es best-effort y un fallo de Redis no
+    # debe revertir una firma ya trazada.
+    async with conn.transaction():
+        row = await FirmaRepository(conn).insert(
+            {
                 "objeto_tipo": payload.objeto_tipo,
+                "objeto_id": payload.objeto_id,
+                "formato_solicitado": payload.formato,
+                "firmante_id": firmante_id,
+                "payload_sha256": signed.payload_sha256,
+                "firma_blob": signed.signature_value_b64,
                 "provider": signed.provider,
-                "tipo_firma": signer_ref.tipo_firma,
+                "sello_tiempo": sello_tiempo_dt,
+                "certificado_pem": signed.certificado_pem or None,
+                "minio_key_firmado": minio_key_firmado,
                 "nivel_conformidad": signed.nivel_conformidad,
                 "xades_level": signed.xades_level,
+                "tipo_firma": signer_ref.tipo_firma,
                 "certificado_fingerprint": signed.certificado_fingerprint,
-                "indice_id": payload.indice_id,
-                "version": payload.version,
-                # (Inc.4, XAdES-T) Presentes solo cuando LocalSigner selló con
-                # TSA (`signed.extra` viene vacío para 'nativa' o XAdES-B
-                # "puro" — kill-switch `signer_timestamp_enabled=False`); el
-                # hecho del sellado queda en la traza inmutable, no solo en
-                # `firma` (append-only por convención, no el registro
-                # inmutable). `tsa_acreditado` se fija explícitamente en
-                # False para que la traza nunca sobre-declare conformidad
-                # (RF-FIR-15) aunque `signed.extra` llegara incompleto.
-                "tsa_timestamp": signed.extra.get("tsa_timestamp"),
+                "signed_xml_sha256": signed_xml_sha256,
+                "tsa_token": signed.extra.get("tsa_token"),
+                "tsa_timestamp": tsa_timestamp_dt,
                 "tsa_cert_fingerprint": signed.extra.get("tsa_cert_fingerprint"),
-                "tsa_acreditado": False,
-            },
+                "tsa_acreditado": signed.extra.get("tsa_acreditado", False),
+                "lt_material_present": signed.extra.get("lt_material_present", False),
+                "ca_fingerprint": signed.extra.get("ca_fingerprint"),
+                "crl_fingerprint": signed.extra.get("crl_fingerprint"),
+                "crl_this_update": crl_this_update_dt,
+                "crl_next_update": crl_next_update_dt,
+                "archive_timestamp_present": signed.extra.get("archive_timestamp_present", False),
+                "archive_timestamp_at": archive_timestamp_at_dt,
+                "archive_tsa_cert_fingerprint": signed.extra.get("archive_tsa_cert_fingerprint"),
+                "revocation_provenance": signed.extra.get("revocation_provenance"),
+                "archive_timestamp_token": signed.extra.get("archive_timestamp_token"),
+            }
         )
+
+        # Immutable audit record — RF-FIR-14, ADR-008.
+        if _AUDIT_AVAILABLE:
+            await _audit.append(
+                conn,
+                tenant_slug=tenant_slug,
+                service=_SERVICE,
+                action="firma.creada",
+                object_type=payload.objeto_tipo,
+                object_ref=str(payload.objeto_id) if payload.objeto_id else None,
+                actor=str(firmante_id),
+                payload={
+                    "firma_id": str(row["id"]),
+                    "objeto_tipo": payload.objeto_tipo,
+                    "provider": signed.provider,
+                    "tipo_firma": signer_ref.tipo_firma,
+                    "nivel_conformidad": signed.nivel_conformidad,
+                    "xades_level": signed.xades_level,
+                    "certificado_fingerprint": signed.certificado_fingerprint,
+                    "indice_id": payload.indice_id,
+                    "version": payload.version,
+                    # (Inc.4, XAdES-T) Presentes solo cuando LocalSigner selló con
+                    # TSA (`signed.extra` viene vacío para 'nativa' o XAdES-B
+                    # "puro" — kill-switch `signer_timestamp_enabled=False`); el
+                    # hecho del sellado queda en la traza inmutable, no solo en
+                    # `firma` (append-only por convención, no el registro
+                    # inmutable). `tsa_acreditado` se fija explícitamente en
+                    # False para que la traza nunca sobre-declare conformidad
+                    # (RF-FIR-15) aunque `signed.extra` llegara incompleto.
+                    "tsa_timestamp": signed.extra.get("tsa_timestamp"),
+                    "tsa_cert_fingerprint": signed.extra.get("tsa_cert_fingerprint"),
+                    "tsa_acreditado": False,
+                    # (XAdES-LT/LTA, RT-16) Presentes solo cuando LocalSigner
+                    # escaló a XAdES-LTA — ausentes para 'nativa', XAdES-B/-T o
+                    # cualquier degradación (ver el evento separado más abajo).
+                    "lt_material_present": signed.extra.get("lt_material_present", False),
+                    "ca_fingerprint": signed.extra.get("ca_fingerprint"),
+                    "archive_timestamp_present": signed.extra.get("archive_timestamp_present", False),
+                    "revocation_provenance": signed.extra.get("revocation_provenance"),
+                },
+            )
+
+            # Evento de auditoría DEDICADO para la degradación observable
+            # (RT-16, Pieza 3): `settings.signer_lt_enabled=True` pero el tenant
+            # no tiene material CA (ca.crt/crl.der) montado — el índice se firmó
+            # igualmente (se quedó en XAdES-T), pero un operador que audite
+            # `audit_log` debe poder detectar esta postura sin inspeccionar cada
+            # XML firmado. Nunca se emite si `signer_lt_enabled=False` (el
+            # feature está simplemente apagado, no es una degradación).
+            if signed.extra.get("lt_downgrade_no_ca"):
+                await _audit.append(
+                    conn,
+                    tenant_slug=tenant_slug,
+                    service=_SERVICE,
+                    action="firma.lt_downgrade_no_ca",
+                    object_type=payload.objeto_tipo,
+                    object_ref=str(payload.objeto_id) if payload.objeto_id else None,
+                    actor=str(firmante_id),
+                    payload={
+                        "firma_id": str(row["id"]),
+                        "xades_level": signed.xades_level,
+                        "signer_lt_enabled": settings.signer_lt_enabled,
+                        "motivo": "sin_material_ca_local",
+                    },
+                )
 
     # Bookkeeping best-effort del sello vigente (migración 009 — no crítico).
     if provider_name == "xades_local":
@@ -326,6 +406,10 @@ async def sign_xml(
         acreditado=signer_ref.acreditado,
         tsa_timestamp=d.get("tsa_timestamp"),
         tsa_acreditado=d.get("tsa_acreditado", False),
+        lt_material_present=d.get("lt_material_present", False),
+        archive_timestamp_present=d.get("archive_timestamp_present", False),
+        revocation_provenance=d.get("revocation_provenance"),
+        crl_next_update=d.get("crl_next_update"),
     )
 
 
@@ -397,12 +481,17 @@ async def verify(
             payload.payload_xml.encode(),
             fingerprint,
             expected_tsa_fingerprint=row.get("tsa_cert_fingerprint"),
+            expected_ca_fingerprint=row.get("ca_fingerprint"),
         )
         return VerifyResponse(
             firma_id=row["id"],
             valida=outcome.valida,
             provider="xades_local",
-            xades_level=row.get("xades_level"),
+            # El nivel REALMENTE verificado para ESTE documento (RT-16, Pieza
+            # 6.4) — nunca el `xades_level` "intencionado" al firmar. Se cae
+            # al persistido en la fila solo si `verify_xades` no llegó a
+            # evaluar ningún nivel (p. ej. certificado fuera de vigencia).
+            xades_level=outcome.xades_level or row.get("xades_level"),
             nivel_conformidad=row.get("nivel_conformidad"),
             acreditado=outcome.acreditado,
             motivo=outcome.motivo,
@@ -410,6 +499,10 @@ async def verify(
             # aplica, no es un fallo) — ver app.providers.local.VerifyOutcome.
             sello_tiempo_valido=outcome.sello_tiempo_valido,
             tsa_timestamp=outcome.tsa_timestamp,
+            lt_material_present=outcome.lt_material_present,
+            archive_timestamp_present=outcome.archive_timestamp_present,
+            revocation_provenance=outcome.revocation_provenance,
+            crl_next_update=outcome.crl_next_update,
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
@@ -480,4 +573,8 @@ async def get_firma(
         acreditado=False,
         tsa_timestamp=d.get("tsa_timestamp"),
         tsa_acreditado=d.get("tsa_acreditado", False),
+        lt_material_present=d.get("lt_material_present", False),
+        archive_timestamp_present=d.get("archive_timestamp_present", False),
+        revocation_provenance=d.get("revocation_provenance"),
+        crl_next_update=d.get("crl_next_update"),
     )

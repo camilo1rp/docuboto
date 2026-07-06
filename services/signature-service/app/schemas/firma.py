@@ -73,6 +73,19 @@ class FirmaResponse(BaseModel):
     tsa_timestamp: datetime | None = None
     tsa_acreditado: bool = False
 
+    # --- XAdES-LT/LTA (RF-FIR-15) — None/False para firmas que no escalaron ---
+    # `lt_material_present`/`archive_timestamp_present` reflejan lo persistido
+    # al firmar (migración 013). `revocation_provenance` es SIEMPRE 'dev' en
+    # este incremento cuando `lt_material_present=True` (CA local de
+    # desarrollo, jamás una PKI acreditada) — nunca se omite, ver
+    # `app.providers.local` sección "XAdES-LT/LTA". `crl_next_update` se
+    # EXPONE para diagnóstico (una CRL de desarrollo caducada no invalida por
+    # sí sola una firma ya producida).
+    lt_material_present: bool = False
+    archive_timestamp_present: bool = False
+    revocation_provenance: str | None = None
+    crl_next_update: datetime | None = None
+
 
 class VerifyRequest(BaseModel):
     """``payload_xml`` es el XML de entrada a verificar.
@@ -106,3 +119,11 @@ class VerifyResponse(BaseModel):
     # genTime declarado por la TSA, solo presente cuando el sello es válido.
     sello_tiempo_valido: bool | None = None
     tsa_timestamp: datetime | None = None
+
+    # --- XAdES-LT/LTA — reflejan el nivel REALMENTE verificado para ESTE
+    # documento (app.providers.local.VerifyOutcome), no el `xades_level`
+    # intencionado al firmar. Ver FirmaResponse para la semántica de cada campo.
+    lt_material_present: bool = False
+    archive_timestamp_present: bool = False
+    revocation_provenance: str | None = None
+    crl_next_update: datetime | None = None

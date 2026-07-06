@@ -20,7 +20,10 @@ _COLS = (
     "payload_sha256, firma_blob, provider, sello_tiempo, created_at, "
     "certificado_pem, minio_key_firmado, nivel_conformidad, xades_level, "
     "tipo_firma, certificado_fingerprint, signed_xml_sha256, "
-    "tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado"
+    "tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado, "
+    "lt_material_present, ca_fingerprint, crl_fingerprint, crl_this_update, "
+    "crl_next_update, archive_timestamp_present, archive_timestamp_at, "
+    "archive_tsa_cert_fingerprint, revocation_provenance, archive_timestamp_token"
 )
 
 
@@ -50,14 +53,30 @@ class FirmaRepository:
         ``tsa_acreditado`` es NOT NULL (default ``False`` en la migración):
         se pasa siempre ``False`` explícito (RF-FIR-15) salvo que el
         llamador indique lo contrario.
+
+        Los campos LT/LTA (``lt_material_present``, ``ca_fingerprint``,
+        ``crl_fingerprint``, ``crl_this_update``, ``crl_next_update``,
+        ``archive_timestamp_present``, ``archive_timestamp_at``,
+        ``archive_tsa_cert_fingerprint``, ``revocation_provenance``,
+        ``archive_timestamp_token``; migración 013) son ``None``/``False``
+        para cualquier firma que no escaló a XAdES-LTA (``nativa``, XAdES-B,
+        XAdES-T sin material de CA local, o degradación
+        ``firma.lt_downgrade_no_ca``) — mismo patrón aditivo que las columnas
+        de migraciones anteriores. Ninguno de estos campos transporta material
+        PRIVADO (RT-16): solo certificados/CRL públicos, huellas y fechas.
         """
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma (objeto_tipo, objeto_id, formato_solicitado,
                 firmante_id, payload_sha256, firma_blob, provider, sello_tiempo,
                 certificado_pem, minio_key_firmado, nivel_conformidad, xades_level,
                 tipo_firma, certificado_fingerprint, signed_xml_sha256,
-                tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado,
+                lt_material_present, ca_fingerprint, crl_fingerprint,
+                crl_this_update, crl_next_update, archive_timestamp_present,
+                archive_timestamp_at, archive_tsa_cert_fingerprint,
+                revocation_provenance, archive_timestamp_token)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                        $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
                 RETURNING {_COLS}""",
             data["objeto_tipo"],
             data.get("objeto_id"),
@@ -78,6 +97,16 @@ class FirmaRepository:
             data.get("tsa_timestamp"),
             data.get("tsa_cert_fingerprint"),
             data.get("tsa_acreditado", False),
+            data.get("lt_material_present", False),
+            data.get("ca_fingerprint"),
+            data.get("crl_fingerprint"),
+            data.get("crl_this_update"),
+            data.get("crl_next_update"),
+            data.get("archive_timestamp_present", False),
+            data.get("archive_timestamp_at"),
+            data.get("archive_tsa_cert_fingerprint"),
+            data.get("revocation_provenance"),
+            data.get("archive_timestamp_token"),
         )
         assert row is not None
         return row

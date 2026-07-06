@@ -75,6 +75,34 @@ kill-switch en ``False``, o si ninguna TSA está disponible, ver
 :func:`LocalSigner.sign` — este último caso hace FALLAR la firma completa
 (fail-closed, igual que la ausencia de sello institucional en Inc.1), NO
 degrada en silencio a XAdES-B.
+
+--- XAdES-LT/LTA (E06, RT-16) — material de validación a largo plazo ---
+Con ``settings.signer_lt_enabled=True`` Y el sello institucional del tenant
+acompañado de material de una CA local de desarrollo (``ca.crt``/``crl.der``,
+co-ubicados por ``app.core.keys.load_seal`` — ver ``scripts/gen-dev-ca.sh``),
+la firma XAdES-T se escala en el MISMO acto a XAdES-LTA: se añaden, dentro de
+la misma ``xades:UnsignedSignatureProperties``, en ORDEN ETSI EN 319 132
+(``SignatureTimeStamp`` ya insertado, luego):
+
+  1. ``xades:CertificateValues`` — SOLO el certificado de la CA (el del sello
+     ya viaja en ``ds:KeyInfo``, no se duplica aquí).
+  2. ``xades:RevocationValues`` — la CRL de la CA (``xades:CRLValues``).
+  3. ``xadesv141:ArchiveTimeStamp`` (namespace v1.4.1, distinto de v1.3.2) —
+     SIEMPRE el ÚLTIMO: un sello RFC 3161 (misma TSA que XAdES-T) sobre la
+     concatenación C14N-exclusiva de un conjunto FIJO y determinista de
+     elementos precedentes (ver :func:`_archive_ts_covered_bytes` — build y
+     verify comparten la MISMA función; cualquier divergencia rompe la
+     verificación).
+
+LT y LTA se producen SIEMPRE juntos al firmar (nunca queda una firma "solo
+LT" persistida) — la distinción entre ambos niveles solo emerge en
+:func:`verify_xades` si el ``ArchiveTimeStamp`` no llega a validar pero el
+resto del material LT sí. Sin material CA montado, la firma se queda en
+XAdES-T: degradación OBSERVABLE (``firma.lt_downgrade_no_ca`` en
+``app.routers.signature``), nunca silenciosa. Perfil "LTA SIMPLIFICADO, NO
+ACREDITADO" (RF-FIR-15): ``acreditado`` sigue SIEMPRE ``False`` — la CA es de
+desarrollo, sin acreditación ONAC, y la propia TSA que sella el
+``ArchiveTimeStamp`` es autofirmada (no emitida por esa CA).
 """
 
 from __future__ import annotations
@@ -86,7 +114,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
@@ -102,6 +130,18 @@ _C14N_ALG = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 _DS_NS = {"ds": "http://www.w3.org/2000/09/xmldsig#"}
 _XADES_NS_URI = "http://uri.etsi.org/01903/v1.3.2#"
 _XADES_NS = {"xades": _XADES_NS_URI}
+# XAdES-LTA (v1.4.1): namespace DISTINTO de v1.3.2 — SOLO el ArchiveTimeStamp
+# "moderno" vive aquí (RT-16, ver docstring de módulo "XAdES-LT/LTA").
+_XADESV141_NS_URI = "http://uri.etsi.org/01903/v1.4.1#"
+_XADESV141_NS = {"xadesv141": _XADESV141_NS_URI}
+_LT_NS = {**_XADES_NS, **_XADESV141_NS}
+
+
+class LtMaterialRequiredError(RuntimeError):
+    """``settings.signer_lt_require=True`` pero el tenant no tiene material de
+    CA local (``ca.crt``/``crl.der``) montado junto a su sello institucional
+    (RT-16, Pieza 3) — fail-closed, el router lo traduce a 503.
+    """
 
 
 def _safe_parser() -> etree.XMLParser:
@@ -167,6 +207,17 @@ class VerifyOutcome:
     # firma XAdES-B de base ya validó (``valida=True``) — ver verify_xades.
     sello_tiempo_valido: bool | None = None
     tsa_timestamp: datetime | None = None
+    # --- XAdES-LT/LTA — nivel REALMENTE verificado (RT-16, Pieza 6.4): nunca
+    # el nivel "intencionado" al firmar, sino el que esta comprobación pudo
+    # validar de verdad para ESTE ``signed_xml`` concreto. ``None`` solo si
+    # ``valida=False`` antes de llegar siquiera a evaluar el nivel (p. ej.
+    # certificado fuera de vigencia) — el llamador (``app.routers.signature``)
+    # entonces cae al ``xades_level`` persistido en la fila.
+    xades_level: str | None = None
+    lt_material_present: bool = False
+    archive_timestamp_present: bool = False
+    revocation_provenance: str | None = None
+    crl_next_update: datetime | None = None
 
 
 def _c14n_element(el: etree._Element) -> bytes:
@@ -179,38 +230,198 @@ def _c14n_element(el: etree._Element) -> bytes:
     return etree.tostring(el, method="c14n", exclusive=True)
 
 
-def _insert_signature_timestamp(signed_root: etree._Element, token: tsa.TimestampToken) -> None:
-    """Incrusta ``xades:UnsignedProperties/.../xades:SignatureTimeStamp``.
+def _get_or_create_unsigned_sig_props(signed_root: etree._Element) -> etree._Element:
+    """Localiza (o crea, la PRIMERA vez) ``xades:UnsignedProperties/
+    xades:UnsignedSignatureProperties`` dentro de la ``xades:QualifyingProperties``
+    que ``signxml`` ya produjo (RT-16, Pieza 4).
 
-    Propiedad NO FIRMADA (RT-16, ver nota de módulo "XAdES-T"): se añade como
-    HERMANA de ``xades:SignedProperties``, dentro de la MISMA
-    ``xades:QualifyingProperties`` que ``signxml`` ya produjo — nunca toca
-    ``ds:SignedInfo`` ni ninguna ``ds:Reference``, así que no invalida la
-    firma XAdES-B de base.
+    Punto único de entrada compartido por :func:`_insert_signature_timestamp`
+    (XAdES-T), :func:`_insert_certificate_values`/:func:`_insert_revocation_values`
+    (XAdES-LT) y :func:`_insert_archive_timestamp` (XAdES-LTA): cada llamada
+    posterior reutiliza el MISMO elemento en vez de crear un
+    ``UnsignedProperties`` duplicado, así que el orden ETSI EN 319 132 entre
+    las propiedades queda determinado exclusivamente por el ORDEN DE LLAMADA
+    de ``LocalSigner.sign`` (``etree.SubElement`` siempre añade al final).
+
+    Ninguna de estas propiedades está FIRMADA (no hay ``ds:Reference`` que las
+    cubra en ``ds:SignedInfo``), así que insertarlas después de que ``signxml``
+    ya calculó y firmó todas las referencias no invalida la firma XAdES-B de
+    base — ver la nota de módulo "XAdES-T".
     """
     qp = signed_root.find(".//xades:QualifyingProperties", namespaces=_XADES_NS)
     if qp is None:  # pragma: no cover — signxml siempre produce QualifyingProperties
         raise ValueError("qualifying_properties_no_encontrado")
 
-    ts_id = f"SignXMLTimeStamp{uuid.uuid4().hex[:8].upper()}"
-    token_b64 = b64encode(token.token_der).decode("ascii")
-
     # Construido vía la API de elementos de lxml (no etree.fromstring sobre un
     # fragmento interpolado por f-string): aunque hoy todo el contenido
-    # interpolado lo produce el propio servidor (base64 del token + uuid hex +
-    # literales, nunca markup ajeno), usar la misma postura endurecida
-    # (_safe_parser) que el resto del módulo evita depender de esa garantía
-    # como único control — defensa en profundidad uniforme.
-    unsigned_props = etree.SubElement(qp, f"{{{_XADES_NS_URI}}}UnsignedProperties")
-    unsigned_sig_props = etree.SubElement(
-        unsigned_props, f"{{{_XADES_NS_URI}}}UnsignedSignatureProperties"
+    # interpolado lo produce el propio servidor (base64 del token/certificado/
+    # CRL + uuid hex + literales, nunca markup ajeno), usar la misma postura
+    # endurecida (_safe_parser) que el resto del módulo evita depender de esa
+    # garantía como único control — defensa en profundidad uniforme.
+    unsigned_props = qp.find("xades:UnsignedProperties", namespaces=_XADES_NS)
+    if unsigned_props is None:
+        unsigned_props = etree.SubElement(qp, f"{{{_XADES_NS_URI}}}UnsignedProperties")
+    unsigned_sig_props = unsigned_props.find(
+        "xades:UnsignedSignatureProperties", namespaces=_XADES_NS
     )
+    if unsigned_sig_props is None:
+        unsigned_sig_props = etree.SubElement(
+            unsigned_props, f"{{{_XADES_NS_URI}}}UnsignedSignatureProperties"
+        )
+    return unsigned_sig_props
+
+
+def _insert_signature_timestamp(signed_root: etree._Element, token: tsa.TimestampToken) -> None:
+    """Incrusta ``xades:SignatureTimeStamp`` (XAdES-T, RT-16, Inc.4). Ver
+    :func:`_get_or_create_unsigned_sig_props` para el punto de inserción."""
+    unsigned_sig_props = _get_or_create_unsigned_sig_props(signed_root)
+
+    ts_id = f"SignXMLTimeStamp{uuid.uuid4().hex[:8].upper()}"
     sig_ts = etree.SubElement(unsigned_sig_props, f"{{{_XADES_NS_URI}}}SignatureTimeStamp")
     sig_ts.set("Id", ts_id)
     c14n_method = etree.SubElement(sig_ts, f"{{{_DS_NS['ds']}}}CanonicalizationMethod")
     c14n_method.set("Algorithm", _C14N_ALG.value)
     encapsulated_ts = etree.SubElement(sig_ts, f"{{{_XADES_NS_URI}}}EncapsulatedTimeStamp")
-    encapsulated_ts.text = token_b64
+    encapsulated_ts.text = b64encode(token.token_der).decode("ascii")
+
+
+def _insert_certificate_values(unsigned_sig_props: etree._Element, ca_cert_der: bytes) -> None:
+    """Incrusta ``xades:CertificateValues`` (XAdES-LT, Pieza 4).
+
+    SOLO el certificado de la CA — el del sello institucional ya viaja en
+    ``ds:KeyInfo/ds:X509Data/ds:X509Certificate`` y EN 319 132 §5.2.9 exige NO
+    duplicar certificados ya presentes en ``KeyInfo``.
+    """
+    cert_values = etree.SubElement(unsigned_sig_props, f"{{{_XADES_NS_URI}}}CertificateValues")
+    encapsulated_cert = etree.SubElement(
+        cert_values, f"{{{_XADES_NS_URI}}}EncapsulatedX509Certificate"
+    )
+    encapsulated_cert.text = b64encode(ca_cert_der).decode("ascii")
+
+
+def _insert_revocation_values(unsigned_sig_props: etree._Element, crl_der: bytes) -> None:
+    """Incrusta ``xades:RevocationValues/xades:CRLValues`` (XAdES-LT, Pieza 4).
+
+    Una única CRL de la CA local de desarrollo (``crl.der``, DER en base64).
+    """
+    revocation_values = etree.SubElement(
+        unsigned_sig_props, f"{{{_XADES_NS_URI}}}RevocationValues"
+    )
+    crl_values = etree.SubElement(revocation_values, f"{{{_XADES_NS_URI}}}CRLValues")
+    encapsulated_crl = etree.SubElement(crl_values, f"{{{_XADES_NS_URI}}}EncapsulatedCRLValue")
+    encapsulated_crl.text = b64encode(crl_der).decode("ascii")
+
+
+def _archive_ts_covered_bytes(signed_root: etree._Element) -> bytes:
+    """Concatena la canonicalización exclusiva (exc-c14n 1.0) del conjunto FIJO
+    y determinista que cubre el ``xadesv141:ArchiveTimeStamp`` (XAdES-LTA
+    SIMPLIFICADO, Pieza 5), en ESTE orden:
+
+        C14N(ds:SignedInfo) || C14N(ds:SignatureValue) || C14N(ds:KeyInfo) ||
+        C14N(xades:SignedProperties) || C14N(xades:SignatureTimeStamp) ||
+        C14N(xades:CertificateValues) || C14N(xades:RevocationValues)
+
+    Debe llamarse ANTES de insertar el propio ``ArchiveTimeStamp`` (que cubre
+    todo lo anterior, nunca a sí mismo). Usado TANTO al construir
+    (``LocalSigner.sign``) COMO al verificar (:func:`verify_xades`) — la MISMA
+    función en ambos lados: cualquier no-determinismo (prefijos de namespace,
+    espacios) invalidaría la verificación (RT-16, requisito no negociable del
+    contrato de este incremento).
+
+    ``ds:SignedInfo`` ya lleva el digest del documento enveloped (referencia
+    principal calculada por ``signxml``) — no hace falta re-canonicalizar el
+    cuerpo del índice electrónico aparte.
+
+    Raises:
+        ValueError: falta alguno de los siete elementos requeridos (firma
+            XAdES-B/-T/-LT incompleta o corrupta).
+    """
+    signed_info = signed_root.find(".//ds:Signature/ds:SignedInfo", namespaces=_DS_NS)
+    signature_value = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
+    key_info = signed_root.find(".//ds:Signature/ds:KeyInfo", namespaces=_DS_NS)
+    qp = signed_root.find(".//xades:QualifyingProperties", namespaces=_XADES_NS)
+    signed_props = qp.find("xades:SignedProperties", namespaces=_XADES_NS) if qp is not None else None
+    sig_ts = (
+        qp.find(
+            "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:SignatureTimeStamp",
+            namespaces=_XADES_NS,
+        )
+        if qp is not None
+        else None
+    )
+    cert_values = (
+        qp.find(
+            "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:CertificateValues",
+            namespaces=_XADES_NS,
+        )
+        if qp is not None
+        else None
+    )
+    rev_values = (
+        qp.find(
+            "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:RevocationValues",
+            namespaces=_XADES_NS,
+        )
+        if qp is not None
+        else None
+    )
+
+    required = {
+        "ds:SignedInfo": signed_info,
+        "ds:SignatureValue": signature_value,
+        "ds:KeyInfo": key_info,
+        "xades:SignedProperties": signed_props,
+        "xades:SignatureTimeStamp": sig_ts,
+        "xades:CertificateValues": cert_values,
+        "xades:RevocationValues": rev_values,
+    }
+    missing = [name for name, el in required.items() if el is None]
+    if missing:
+        raise ValueError(f"elementos_faltantes_para_archive_timestamp: {missing}")
+
+    return b"".join(
+        etree.tostring(el, method="c14n", exclusive=True)
+        for el in (
+            signed_info,
+            signature_value,
+            key_info,
+            signed_props,
+            sig_ts,
+            cert_values,
+            rev_values,
+        )
+    )
+
+
+def _insert_archive_timestamp(
+    signed_root: etree._Element, unsigned_sig_props: etree._Element
+) -> tsa.TimestampToken:
+    """Incrusta ``xadesv141:ArchiveTimeStamp`` (XAdES-LTA, Pieza 5) — SIEMPRE
+    el ÚLTIMO hijo insertado en ``UnsignedSignatureProperties`` (cubre todo lo
+    precedente, ver :func:`_archive_ts_covered_bytes`). Reutiliza
+    ``tsa.build_timestamp_token`` (la MISMA TSA que sella XAdES-T) sobre el
+    digest de la concatenación cubierta, no sobre ``ds:SignatureValue``.
+
+    Namespace: SOLO el elemento contenedor ``ArchiveTimeStamp`` en sí usa
+    v1.4.1 (``xadesv141``, el que distingue el perfil "moderno" del legado
+    ``xades:ArchiveTimeStamp`` v1.3.2) — el elemento global
+    ``xadesv141:ArchiveTimeStamp`` referencia el MISMO ``XAdESTimeStampType``
+    de v1.3.2 que ``SignatureTimeStamp`` (ver ``XAdESv141.xsd``/``XAdES.xsd``
+    de ``signxml``), así que sus HIJOS (``CanonicalizationMethod``,
+    ``EncapsulatedTimeStamp``) van en el namespace v1.3.2 de siempre — usar
+    v1.4.1 también para los hijos rompe la validación XSD de ``signxml``.
+    """
+    covered = _archive_ts_covered_bytes(signed_root)
+    token = tsa.build_timestamp_token(covered)
+
+    ts_id = f"SignXMLArchiveTimeStamp{uuid.uuid4().hex[:8].upper()}"
+    archive_ts = etree.SubElement(unsigned_sig_props, f"{{{_XADESV141_NS_URI}}}ArchiveTimeStamp")
+    archive_ts.set("Id", ts_id)
+    c14n_method = etree.SubElement(archive_ts, f"{{{_DS_NS['ds']}}}CanonicalizationMethod")
+    c14n_method.set("Algorithm", _C14N_ALG.value)
+    encapsulated_ts = etree.SubElement(archive_ts, f"{{{_XADES_NS_URI}}}EncapsulatedTimeStamp")
+    encapsulated_ts.text = b64encode(token.token_der).decode("ascii")
+    return token
 
 
 class LocalSigner:
@@ -254,6 +465,7 @@ class LocalSigner:
         signature_value_b64 = (sig_value_el.text or "") if sig_value_el is not None else ""
 
         xades_level = SignatureFormat.XADES_B.value
+        nivel_conformidad = signer.nivel_conformidad
         extra: dict = {}
         if settings.signer_timestamp_enabled and sig_value_el is not None:
             # Fail-closed (RT-16, mismo patrón que la ausencia de sello
@@ -272,6 +484,56 @@ class LocalSigner:
                 "tsa_acreditado": False,
             }
 
+            # --- XAdES-LT/LTA (RT-16) — ver nota de módulo "XAdES-LT/LTA" ---
+            if settings.signer_lt_enabled:
+                if signer.ca_cert_pem and signer.crl_der:
+                    unsigned_sig_props = _get_or_create_unsigned_sig_props(signed_root)
+                    ca_cert = x509.load_pem_x509_certificate(signer.ca_cert_pem)
+                    ca_der = ca_cert.public_bytes(serialization.Encoding.DER)
+                    crl = x509.load_der_x509_crl(signer.crl_der)
+
+                    _insert_certificate_values(unsigned_sig_props, ca_der)
+                    _insert_revocation_values(unsigned_sig_props, signer.crl_der)
+                    # SIEMPRE el último — cubre TODO lo insertado hasta aquí
+                    # (SignatureTimeStamp + CertificateValues + RevocationValues).
+                    archive_token = _insert_archive_timestamp(signed_root, unsigned_sig_props)
+
+                    xades_level = SignatureFormat.XADES_LTA.value
+                    nivel_conformidad = "xades_lta_no_acreditado"
+                    extra.update(
+                        {
+                            "lt_material_present": True,
+                            "ca_fingerprint": ca_cert.fingerprint(hashes.SHA256()).hex(),
+                            "crl_fingerprint": hashlib.sha256(signer.crl_der).hexdigest(),
+                            "crl_this_update": crl.last_update_utc.isoformat(),
+                            "crl_next_update": (
+                                crl.next_update_utc.isoformat() if crl.next_update_utc else None
+                            ),
+                            "archive_timestamp_present": True,
+                            "archive_timestamp_at": archive_token.gen_time.isoformat(),
+                            "archive_tsa_cert_fingerprint": archive_token.tsa_cert_fingerprint,
+                            "archive_timestamp_token": b64encode(
+                                archive_token.token_der
+                            ).decode("ascii"),
+                            # Perfil LTA SIMPLIFICADO, NO ACREDITADO (RF-FIR-15,
+                            # Pieza 7): la CRL es de una CA de desarrollo, jamás
+                            # de una PKI acreditada — se marca la procedencia en
+                            # vez de dejarla implícita.
+                            "revocation_provenance": "dev",
+                            "lt_downgrade_no_ca": False,
+                        }
+                    )
+                else:
+                    # Degradación OBSERVABLE (RT-16, Pieza 3): el índice se
+                    # queda en XAdES-T, nunca en silencio — el router audita
+                    # `firma.lt_downgrade_no_ca` cuando ve este flag.
+                    extra["lt_downgrade_no_ca"] = True
+                    if settings.signer_lt_require:
+                        raise LtMaterialRequiredError(
+                            "signer_lt_require=True pero el tenant no tiene material de "
+                            "CA local (ca.crt/crl.der) montado junto a su sello institucional"
+                        )
+
         signed_xml = etree.tostring(signed_root, xml_declaration=False, encoding="UTF-8")
 
         return SignedDoc(
@@ -280,7 +542,7 @@ class LocalSigner:
             signature_value_b64=signature_value_b64,
             certificado_pem=signer.cert_pem.decode(),
             xades_level=xades_level,
-            nivel_conformidad=signer.nivel_conformidad,
+            nivel_conformidad=nivel_conformidad,
             provider="xades_local",
             certificado_fingerprint=cert_fingerprint(signer.cert_pem),
             extra=extra,
@@ -298,9 +560,12 @@ class LocalSigner:
 
 
 def verify_xades(
-    signed_xml: bytes, expected_fingerprint: str, expected_tsa_fingerprint: str | None = None
+    signed_xml: bytes,
+    expected_fingerprint: str,
+    expected_tsa_fingerprint: str | None = None,
+    expected_ca_fingerprint: str | None = None,
 ) -> VerifyOutcome:
-    """Verifica una firma XAdES-B enveloped (E06, Inc.1, RF-FIR-15).
+    """Verifica una firma XAdES-B/-T/-LT/-LTA enveloped (E06, RF-FIR-15).
 
     Valida, en orden (fail-closed: cualquier fallo devuelve ``valida=False``
     con un ``motivo`` explicativo — nunca lanza para casos de negocio):
@@ -317,13 +582,13 @@ def verify_xades(
          debe depender de secretos montados ni de si el sello rotó desde
          entonces; el registro histórico es la fuente de verdad).
 
-    NO valida cadena de confianza contra una CA raíz ni CRL/OCSP (XAdES-LT/LTA,
-    fuera de alcance del Incremento 1 — RT-16): por eso ``acreditado`` es
-    siempre ``False`` en el resultado, incluso cuando la firma es
-    criptográficamente válida (RF-FIR-15: no sobre-declarar conformidad).
+    ``acreditado`` es SIEMPRE ``False`` en el resultado, incluso cuando la
+    firma es criptográficamente válida y sube hasta XAdES-LTA (RF-FIR-15: la
+    CA local de desarrollo no tiene acreditación ONAC — ver la nota de módulo
+    "XAdES-LT/LTA").
 
-    (Inc.4, XAdES-T) SI las comprobaciones 1-4 anteriores pasan Y la firma
-    lleva ``xades:SignatureTimeStamp``, además verifica el sello de tiempo
+    (XAdES-T) SI las comprobaciones 1-4 anteriores pasan Y la firma lleva
+    ``xades:SignatureTimeStamp``, además verifica el sello de tiempo
     (``app.core.tsa.verify_timestamp_token``) y lo refleja en
     ``VerifyOutcome.sello_tiempo_valido``/``tsa_timestamp``. Una firma
     XAdES-B "pura" (sin SignatureTimeStamp, p. ej. firmada con el kill-switch
@@ -339,6 +604,41 @@ def verify_xades(
     ``SignatureTimeStamp`` pero ``expected_tsa_fingerprint`` es ``None``
     (fila anterior a la migración 012, sin la columna poblada), el sello se
     reporta inválido — fail-closed, nunca se omite la comprobación.
+
+    (XAdES-LT/LTA) SI el sello de tiempo validó Y la firma lleva
+    ``xades:CertificateValues``, además valida (fail-closed, cualquier fallo
+    de aquí en adelante hace ``valida=False`` — a diferencia del sello de
+    tiempo "puro" ausente, el material LT presente-pero-inválido SÍ invalida
+    la firma completa):
+
+      a. La huella del certificado de la CA embebido coincide con
+         ``expected_ca_fingerprint`` — ``firma.ca_fingerprint`` (migración
+         013), el ANCLA DE CONFIANZA a la CA DEL TENANT capturada al firmar
+         (mismo patrón de pinning que ``expected_tsa_fingerprint``: sin este
+         cotejo, cualquiera podría anexar CertificateValues de SU PROPIA CA).
+      b. La CA tiene ``basicConstraints CA:TRUE`` y ``keyUsage keyCertSign``,
+         y está vigente.
+      c. El certificado del sello (``embedded_cert``) fue REALMENTE emitido
+         por esa CA (``Certificate.verify_directly_issued_by``) — la cadena
+         seal→CA (RT-16, Pieza 6.1).
+      d. La CRL embebida (``xades:RevocationValues``) está firmada por la
+         MISMA CA y el serial del sello NO aparece revocado — fail-closed si
+         la firma de la CRL no valida o si el serial SÍ está revocado
+         (RT-16, Pieza 6.2). ``nextUpdate`` vencido se EXPONE
+         (``VerifyOutcome.crl_next_update``) pero NO invalida por sí solo la
+         firma en este perfil no acreditado (las CRL de desarrollo caducan).
+
+    Si además hay ``xadesv141:ArchiveTimeStamp``, se reconstruye el conjunto
+    cubierto (:func:`_archive_ts_covered_bytes`, MISMA función que al firmar)
+    y se verifica el token RFC 3161 (misma TSA/pinning que XAdES-T) — RT-16,
+    Pieza 6.3. Solo entonces ``VerifyOutcome.xades_level`` sube a
+    ``"XAdES-LTA"``; con CertificateValues/RevocationValues válidos pero SIN
+    ArchiveTimeStamp (o con uno que no valida), se reporta ``"XAdES-LT"``.
+
+    ``VerifyOutcome.xades_level`` refleja SIEMPRE el nivel REALMENTE
+    verificado para ESTE ``signed_xml`` (no el que se INTENTÓ al firmar) —
+    retrocompatible: una firma XAdES-B/-T sin CertificateValues se reporta
+    igual que antes de este incremento.
     """
     try:
         root = _parse_no_doctype(signed_xml)
@@ -380,7 +680,7 @@ def verify_xades(
     if not covers_root:
         return VerifyOutcome(False, False, "referencia_no_cubre_raiz")
 
-    # (Inc.4) Sello de tiempo, si lo hay — ver docstring "XAdES-T" arriba.
+    # (XAdES-T) Sello de tiempo, si lo hay — ver docstring "XAdES-T" arriba.
     # Se recalcula sobre el ds:SignatureValue TAL COMO llega en este
     # `signed_xml` (no el de la fila BD), así que una alteración posterior al
     # sellado se detecta aquí igual que la detectaría el propio TSTInfo.
@@ -390,7 +690,7 @@ def verify_xades(
         namespaces=_XADES_NS,
     )
     if encapsulated_ts is None or not (encapsulated_ts.text or "").strip():
-        return VerifyOutcome(True, False, None)
+        return VerifyOutcome(True, False, None, xades_level=SignatureFormat.XADES_B.value)
 
     sig_value_el = root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
     if sig_value_el is None:  # pragma: no cover — imposible si la firma XAdES-B ya validó
@@ -404,10 +704,122 @@ def verify_xades(
     ts_outcome = tsa.verify_timestamp_token(
         token_der, _c14n_element(sig_value_el), expected_tsa_fingerprint=expected_tsa_fingerprint
     )
+    if not ts_outcome.valido:
+        return VerifyOutcome(True, False, None, sello_tiempo_valido=False)
+
+    xades_level = SignatureFormat.XADES_T.value
+    tsa_timestamp = ts_outcome.gen_time
+
+    # (XAdES-LT/LTA) Solo se evalúa si la firma trae CertificateValues — ver
+    # docstring de la función, sección "XAdES-LT/LTA". Ausente: retrocompat
+    # exacta con el comportamiento previo a este incremento (se queda en T).
+    cert_values_el = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
+        "/xades:CertificateValues/xades:EncapsulatedX509Certificate",
+        namespaces=_XADES_NS,
+    )
+    if cert_values_el is None or not (cert_values_el.text or "").strip():
+        return VerifyOutcome(
+            True, False, None,
+            sello_tiempo_valido=True, tsa_timestamp=tsa_timestamp, xades_level=xades_level,
+        )
+
+    try:
+        ca_cert = x509.load_der_x509_certificate(b64decode(cert_values_el.text.strip()))
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        return VerifyOutcome(False, False, f"ca_certificado_ilegible: {exc}")
+
+    ca_fingerprint = ca_cert.fingerprint(hashes.SHA256()).hex()
+    if not expected_ca_fingerprint:
+        return VerifyOutcome(False, False, "ca_fingerprint_no_registrado")
+    if ca_fingerprint != expected_ca_fingerprint:
+        return VerifyOutcome(False, False, "ca_cert_fingerprint_no_coincide")
+
+    try:
+        ca_bc = ca_cert.extensions.get_extension_for_class(x509.BasicConstraints)
+    except x509.ExtensionNotFound:
+        return VerifyOutcome(False, False, "ca_sin_basic_constraints")
+    if not ca_bc.value.ca:
+        return VerifyOutcome(False, False, "ca_basic_constraints_no_es_ca")
+
+    try:
+        ca_ku = ca_cert.extensions.get_extension_for_class(x509.KeyUsage)
+    except x509.ExtensionNotFound:
+        return VerifyOutcome(False, False, "ca_sin_key_usage")
+    if not ca_ku.value.key_cert_sign:
+        return VerifyOutcome(False, False, "ca_sin_key_usage_cert_sign")
+
+    if not (ca_cert.not_valid_before_utc <= now <= ca_cert.not_valid_after_utc):
+        return VerifyOutcome(False, False, "ca_certificado_fuera_de_vigencia")
+
+    # (c) Cadena seal -> CA: el certificado del sello debe haber sido
+    # REALMENTE emitido por esta CA (firma + issuer/subject).
+    try:
+        embedded_cert.verify_directly_issued_by(ca_cert)
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        return VerifyOutcome(False, False, f"cadena_seal_ca_invalida: {exc}")
+
+    # (d) Revocación real: CRL firmada por la MISMA CA + serial no revocado.
+    rev_values_el = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
+        "/xades:RevocationValues/xades:CRLValues/xades:EncapsulatedCRLValue",
+        namespaces=_XADES_NS,
+    )
+    if rev_values_el is None or not (rev_values_el.text or "").strip():
+        return VerifyOutcome(False, False, "revocation_values_ausente")
+
+    try:
+        crl = x509.load_der_x509_crl(b64decode(rev_values_el.text.strip()))
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        return VerifyOutcome(False, False, f"crl_ilegible: {exc}")
+
+    if not crl.is_signature_valid(ca_cert.public_key()):
+        return VerifyOutcome(False, False, "crl_firma_invalida")
+    if crl.issuer != ca_cert.subject:
+        return VerifyOutcome(False, False, "crl_issuer_no_coincide_ca")
+    if crl.get_revoked_certificate_by_serial_number(embedded_cert.serial_number) is not None:
+        return VerifyOutcome(False, False, "certificado_sello_revocado")
+
+    # nextUpdate vencido se EXPONE, no invalida (perfil no_acreditado, CRL de
+    # desarrollo — ver docstring de la función).
+    crl_next_update = crl.next_update_utc
+
+    xades_level = SignatureFormat.XADES_LT.value
+
+    # (ArchiveTimeStamp, XAdES-LTA) — Pieza 5/6.3.
+    archive_ts_el = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
+        # SOLO el contenedor es v1.4.1 — su hijo EncapsulatedTimeStamp sigue
+        # en v1.3.2 (ver docstring de _insert_archive_timestamp).
+        "/xadesv141:ArchiveTimeStamp/xades:EncapsulatedTimeStamp",
+        namespaces=_LT_NS,
+    )
+    archive_timestamp_present = bool(archive_ts_el is not None and (archive_ts_el.text or "").strip())
+    if archive_timestamp_present:
+        try:
+            archive_token_der = b64decode(archive_ts_el.text.strip())
+            covered = _archive_ts_covered_bytes(root)
+        except Exception as exc:  # noqa: BLE001 — fail-closed
+            return VerifyOutcome(False, False, f"archive_timestamp_ilegible: {exc}")
+
+        archive_outcome = tsa.verify_timestamp_token(
+            archive_token_der, covered, expected_tsa_fingerprint=expected_tsa_fingerprint
+        )
+        if not archive_outcome.valido:
+            return VerifyOutcome(
+                False, False, f"archive_timestamp_invalido: {archive_outcome.motivo}"
+            )
+        xades_level = SignatureFormat.XADES_LTA.value
+
     return VerifyOutcome(
-        True,
-        False,
-        None,
-        sello_tiempo_valido=ts_outcome.valido,
-        tsa_timestamp=ts_outcome.gen_time if ts_outcome.valido else None,
+        True, False, None,
+        sello_tiempo_valido=True,
+        tsa_timestamp=tsa_timestamp,
+        xades_level=xades_level,
+        lt_material_present=True,
+        archive_timestamp_present=archive_timestamp_present,
+        # Procedencia SIEMPRE "dev" en este incremento — no hay integración
+        # con una CA acreditada ONAC (RF-FIR-15, Pieza 7).
+        revocation_provenance="dev",
+        crl_next_update=crl_next_update,
     )

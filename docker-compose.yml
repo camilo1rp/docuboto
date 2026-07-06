@@ -192,8 +192,18 @@ services:
       # de una TSA principal montada falla cerrado (503) en vez de sellar con
       # el par de pruebas.
       - TSA_ALLOW_DEV_SEAL=${TSA_ALLOW_DEV_SEAL:-true}
+      # XAdES-LT/LTA (RT-16) — kill-switch en false por defecto: sin correr
+      # scripts/gen-dev-ca.sh (que provisiona ca.crt/crl.der junto al sello
+      # de _dev/), la firma se queda en XAdES-T exactamente como antes de
+      # este incremento. La clave privada de la CA NUNCA se monta aquí — solo
+      # ./secrets/signing (material público de la CA + sello) ya está montado
+      # abajo. Ver app/core/config.py para el detalle de ambos flags.
+      - SIGNER_LT_ENABLED=${SIGNER_LT_ENABLED:-false}
+      - SIGNER_LT_REQUIRE=${SIGNER_LT_REQUIRE:-false}
     volumes:
       # Solo lectura: signature-service nunca escribe en los sellos montados.
+      # NUNCA se monta ./secrets/ca-authority (clave privada de la CA local de
+      # desarrollo, scripts/gen-dev-ca.sh) — solo material PÚBLICO llega aquí.
       - ./secrets/signing:/run/secrets/signing:ro
       - ./secrets/tsa:/run/secrets/tsa:ro
     networks:

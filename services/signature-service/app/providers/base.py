@@ -30,20 +30,30 @@ from typing import Protocol
 class SignatureFormat(str, Enum):
     """Nivel XAdES del formato de firma producido.
 
-    :attr:`XADES_B` (Incremento 1, firma "baseline") y :attr:`XADES_T`
+    :attr:`XADES_B` (Incremento 1, firma "baseline"), :attr:`XADES_T`
     (Incremento 4 — sello de tiempo RFC 3161/TSA sobre ``ds:SignatureValue``,
-    ver ``app.core.tsa``) están implementados. ``xades_local`` produce
-    XAdES-T por defecto (``settings.signer_timestamp_enabled=True``); con el
-    kill-switch en ``False``, o sin TSA local/remota disponible tratada como
-    fallo de infraestructura, degrada a XAdES-B (ver
-    ``app.providers.local.LocalSigner.sign``). :attr:`XADES_LTA` (validación
-    a largo plazo, requiere CRL/OCSP) queda RESERVADO — no tiene productor ni
-    consumidor en este código.
+    ver ``app.core.tsa``), :attr:`XADES_LT` (material de validación a largo
+    plazo — ``CertificateValues``/``RevocationValues`` de la CA local de
+    desarrollo) y :attr:`XADES_LTA` (``ArchiveTimeStamp`` sobre lo anterior,
+    perfil LTA SIMPLIFICADO no acreditado) están implementados. ``xades_local``
+    produce XAdES-T por defecto (``settings.signer_timestamp_enabled=True``);
+    con el kill-switch en ``False``, o sin TSA local/remota disponible tratada
+    como fallo de infraestructura, degrada a XAdES-B (ver
+    ``app.providers.local.LocalSigner.sign``). Con ``settings.signer_lt_enabled``
+    (``False`` por defecto) Y material de CA local montado junto al sello del
+    tenant (``ca.crt``/``crl.der`` — ``scripts/gen-dev-ca.sh``), la firma sube
+    directamente a XAdES-LTA (LT y LTA se producen SIEMPRE juntos al firmar;
+    la distinción LT vs. LTA solo emerge en ``verify_xades`` si el
+    ``ArchiveTimeStamp`` no llega a validar pero el resto del material LT sí).
+    Sin ese material, o con el flag en ``False``, la firma se queda en
+    XAdES-T (degradación observable — ver ``firma.lt_downgrade_no_ca`` en
+    ``app.routers.signature``), NUNCA se sobre-declara.
     """
 
     XADES_B = "XAdES-B"
     XADES_T = "XAdES-T"  # Inc.4 — sello de tiempo RFC 3161/TSA (app.core.tsa)
-    XADES_LTA = "XAdES-LTA"  # reservado — CRL/OCSP, no implementado
+    XADES_LT = "XAdES-LT"  # CertificateValues + RevocationValues (CA local, no acreditada)
+    XADES_LTA = "XAdES-LTA"  # + ArchiveTimeStamp — perfil LTA simplificado, no acreditado
 
 
 @dataclass(slots=True)
@@ -81,6 +91,14 @@ class SignerRef:
     identidad del firmante respectivamente. Se prefirió reusar el mismo
     dataclass (en vez de una unión de tipos) para que el router pueda tratar
     ambos proveedores de forma uniforme a través del mismo `Protocol`.
+
+    ``ca_cert_pem``/``crl_der`` (XAdES-LT/LTA — ``app.core.keys.load_seal``)
+    son el material PÚBLICO de la CA local de desarrollo (``ca.crt``) y su CRL
+    firmada (``crl.der``), co-ubicados con el sello bajo el MISMO directorio
+    resuelto para el tenant (o ``_dev``) — nunca mezclados entre tenants
+    distintos. ``None`` cuando ese material no está montado (el caso normal
+    fuera de ``scripts/gen-dev-ca.sh``): ``LocalSigner.sign`` entonces se
+    queda en XAdES-T, nunca sube a LT/LTA (RF-FIR-15, degradación observable).
     """
 
     cert_pem: bytes
@@ -92,6 +110,8 @@ class SignerRef:
     # (el único material disponible en el Incremento 1 — ver RT-16, sin CA
     # acreditada ONAC) SIEMPRE resuelve `acreditado=False`, sin excepción.
     acreditado: bool = False
+    ca_cert_pem: bytes | None = None
+    crl_der: bytes | None = None
 
 
 @dataclass(slots=True)
