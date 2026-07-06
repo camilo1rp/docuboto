@@ -46,6 +46,8 @@ from typing import Literal
 
 from lxml import etree
 
+from app.services.pdfa.types import PdfaResult
+
 _PREMIS_NS = "http://www.loc.gov/premis/v3"
 _XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "premis-v3-loc.xsd"
@@ -178,9 +180,23 @@ def _build_event_element(
     event_type: str,
     generado: datetime,
     detail: str,
-    outcome: Literal["success", "failure"],
+    outcome: str,
     linked_object_ids: list[str],
+    outcome_detail_note: str | None = None,
+    extra_linking_agent: tuple[str, str] | None = None,
 ) -> None:
+    """Construye un `event` PREMIS.
+
+    `outcome` es texto libre (`stringPlusAuthority` en el XSD oficial, sin
+    enumeración cerrada) — admite "success"/"failure" (ingestion/fixity) y
+    también "passed"/"failed"/"not evaluated" (evento `validation`, E10
+    Increment C2a). `outcome_detail_note` (opcional) emite un
+    `eventOutcomeDetail/eventOutcomeDetailNote` — usado para el perfil PDF/A
+    y el validador, sin necesidad de campos nuevos. `extra_linking_agent`
+    (opcional) añade un SEGUNDO `linkingAgentIdentifier` además del agente de
+    software fijo de este servicio (p. ej. el validador PDF/A que produjo el
+    resultado) — `linkingAgentIdentifier` admite `maxOccurs="unbounded"`.
+    """
     ev = _sub(root, "event")
     eid = _sub(ev, "eventIdentifier")
     _sub(eid, "eventIdentifierType", "UUID")
@@ -191,9 +207,17 @@ def _build_event_element(
     _sub(detail_info, "eventDetail", detail)
     outcome_info = _sub(ev, "eventOutcomeInformation")
     _sub(outcome_info, "eventOutcome", outcome)
+    if outcome_detail_note is not None:
+        outcome_detail = _sub(outcome_info, "eventOutcomeDetail")
+        _sub(outcome_detail, "eventOutcomeDetailNote", outcome_detail_note)
     linking_agent = _sub(ev, "linkingAgentIdentifier")
     _sub(linking_agent, "linkingAgentIdentifierType", "software")
     _sub(linking_agent, "linkingAgentIdentifierValue", "OrpycaMCP-storage-service")
+    if extra_linking_agent is not None:
+        extra_type, extra_value = extra_linking_agent
+        extra_linking = _sub(ev, "linkingAgentIdentifier")
+        _sub(extra_linking, "linkingAgentIdentifierType", extra_type)
+        _sub(extra_linking, "linkingAgentIdentifierValue", extra_value)
     for object_id in linked_object_ids:
         linking_obj = _sub(ev, "linkingObjectIdentifier")
         _sub(linking_obj, "linkingObjectIdentifierType", "document_id")
@@ -217,6 +241,20 @@ def _build_agent_element(
     _sub(agent, "agentType", agent_type)
 
 
+# Vocabulario PREMIS de `eventOutcome` para el evento `validation` PDF/A —
+# nunca "success"/"failure" (esos quedan para ingestion/fixity check): un
+# `eventOutcome="not evaluated"` deja explícito, en el propio PDI, que la
+# conformidad NO fue evaluada (RF-FIR-15, E10 Increment C2a). El texto es
+# libre (`stringPlusAuthority`), pero mantener un vocabulario estable y
+# documentado facilita a cualquier consumidor externo del PREMIS interpretar
+# el resultado sin ambigüedad.
+_PDFA_OUTCOME_LABELS: dict[str, str] = {
+    "conformant": "passed",
+    "non_conformant": "failed",
+    "not_evaluated": "not evaluated",
+}
+
+
 def build_premis_v3(
     *,
     expediente_id: str,
@@ -225,6 +263,7 @@ def build_premis_v3(
     generado: datetime,
     actor: str | None,
     fixity_outcome: Literal["success", "failure"] = "success",
+    pdfa_results: dict[str, PdfaResult] | None = None,
 ) -> str:
     """Construye el manifiesto PREMIS v3 (objetos + eventos + agentes).
 
@@ -237,8 +276,20 @@ def build_premis_v3(
         práctica siempre "success" aquí, porque un mismatch aborta el
         empaquetado ANTES de llegar a este builder; el parámetro existe para
         que el vocabulario de outcomes sea comprobable con un test directo).
-      - AGENT: el software (OrpycaMCP storage-service) y, si se conoce, el
-        actor humano/sistema de la petición.
+        Además, un evento ``validation`` por cada entrada de ``pdfa_results``
+        (E10 Increment C2a, RF-PRE-02) — solo para los documentos que SON un
+        PDF y que fueron efectivamente pasados por el validador activo
+        (`app.services.pdfa`) ANTES de llamar a este builder; el
+        ``eventOutcome`` nunca es "success"/"failure" sino
+        "passed"/"failed"/"not evaluated" (``_PDFA_OUTCOME_LABELS``), y el
+        detalle (perfil + validador) queda en ``eventOutcomeDetailNote`` —
+        "not evaluated" JAMÁS implica conformidad.
+      - AGENT: el software (OrpycaMCP storage-service), si se conoce el
+        actor humano/sistema de la petición, y — por cada validador PDF/A
+        distinto que produjo algún resultado — el propio validador como
+        agente de software adicional (deduplicado por
+        ``validator_agent``, para no repetir el mismo agente una vez por
+        documento validado).
     """
     # `premis` (prefijado, ADEMAS del default sin prefijo) es necesario para
     # que el valor `xsi:type="premis:file"` resuelva a un QName válido — el
@@ -297,6 +348,33 @@ def build_premis_v3(
         linked_object_ids=linked_ids,
     )
 
+    # Evento `validation` PDF/A por documento validado (E10 Increment C2a) —
+    # `pdfa_results` solo trae entradas para los documentos que SON un PDF Y
+    # que el llamador efectivamente pasó por el validador activo ANTES de
+    # invocar este builder (`app.services.aip_service.AipService.empaquetar_aip`,
+    # fuera de la transacción de BD). El índice electrónico NUNCA se valida
+    # como PDF/A (no es un documento del expediente).
+    validator_agents_emitidos: set[str] = set()
+    for doc in docs:
+        result = (pdfa_results or {}).get(doc.document_id)
+        if result is None:
+            continue
+        _build_event_element(
+            root,
+            event_id=f"pdfa-validation:{doc.document_id}",
+            event_type="validation",
+            generado=generado,
+            detail=f"Validación PDF/A (perfil {result.profile}) de {doc.nombre}",
+            outcome=_PDFA_OUTCOME_LABELS[result.outcome],
+            linked_object_ids=[doc.document_id],
+            outcome_detail_note=(
+                f"profile={result.profile}; outcome={result.outcome}; "
+                f"validator={result.validator_agent}"
+            ),
+            extra_linking_agent=("software", result.validator_agent),
+        )
+        validator_agents_emitidos.add(result.validator_agent)
+
     _build_agent_element(
         root,
         identifier_type="software",
@@ -304,6 +382,16 @@ def build_premis_v3(
         name="OrpycaMCP storage-service",
         agent_type="software",
     )
+    # Un agente de software adicional por cada validador PDF/A DISTINTO que
+    # produjo algún resultado (deduplicado — no uno por documento validado).
+    for validator_agent in sorted(validator_agents_emitidos):
+        _build_agent_element(
+            root,
+            identifier_type="software",
+            identifier_value=validator_agent,
+            name=None,
+            agent_type="software",
+        )
     if actor:
         _build_agent_element(
             root,
@@ -389,6 +477,7 @@ def build_bag(
     generado: datetime,
     actor: str | None,
     fixity_outcome: Literal["success", "failure"] = "success",
+    pdfa_results: dict[str, PdfaResult] | None = None,
 ) -> BagArtifact:
     """Arma el Bag REAL (RFC 8493) completo y lo serializa como ZIP.
 
@@ -415,6 +504,7 @@ def build_bag(
         generado=generado,
         actor=actor,
         fixity_outcome=fixity_outcome,
+        pdfa_results=pdfa_results,
     )
     validate_premis_xml(premis_xml)
 

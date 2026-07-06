@@ -74,7 +74,10 @@ class PlanResponse(BaseModel):
 class EventoCreate(BaseModel):
     object_ref: str = Field(..., min_length=1, max_length=255)
     tipo: _TIPO
-    resultado: Literal["ok", "fallo"] = "ok"
+    # "no_evaluado" (E10 Increment C2a, migración 008): estado HONESTO para
+    # VALIDACION_PDFA cuando el validador real no corrió (RF-FIR-15) — nunca
+    # implica conformidad ni no-conformidad, distinto de "ok"/"fallo".
+    resultado: Literal["ok", "fallo", "no_evaluado"] = "ok"
     hash_before: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     hash_after: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     detalle: dict[str, Any] = Field(default_factory=dict)

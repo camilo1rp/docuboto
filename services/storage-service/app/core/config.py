@@ -63,6 +63,37 @@ class Settings(BaseSettings):
     minio_secondary_secret_key: str | None = None
     minio_secondary_use_ssl: bool = False
 
+    # Validación PDF/A del AIP en ingesta (E10 Increment C2a, RF-PRE-02, ISO
+    # 19005, OAIS). Gate maestro/kill-switch: con False (default),
+    # `empaquetar_aip` NO invoca validador alguno — se comporta exactamente
+    # igual que antes de este incremento.
+    preservation_pdfa_validation_enabled: bool = False
+    # "stub" (default, HONESTO: siempre `outcome=not_evaluated`, ver
+    # `app/services/pdfa/stub.py`) | "verapdf" (E10 Increment C2b, roadmap —
+    # hoy degrada a stub con warning, `app/services/pdfa/factory.py`).
+    pdfa_validator: str = "stub"
+    # Perfil PDF/A objetivo: POLÍTICA DECLARADA de la institución (no un
+    # detalle implícito del validador). PDF/A-2b (ISO 19005-2) es el default
+    # razonable para documentos administrativos digitalizados.
+    pdfa_profile: str = "2b"
+    # Reservados para E10 Increment C2b (SubprocessVeraPdfValidator real,
+    # veraPDF vía subprocess) — SIN uso en este incremento.
+    verapdf_binary: str | None = None
+    verapdf_timeout_seconds: int = 60
+    verapdf_max_concurrency: int = 1
+    verapdf_jvm_max_heap_mb: int = 512
+
+    @field_validator("pdfa_validator")
+    @classmethod
+    def _validate_pdfa_validator(cls, v: str) -> str:
+        valid = frozenset({"stub", "verapdf"})
+        lowered = v.lower()
+        if lowered not in valid:
+            raise ValueError(
+                f"pdfa_validator debe ser uno de {sorted(valid)}, recibido {v!r}"
+            )
+        return lowered
+
     @field_validator("preservation_retention_mode")
     @classmethod
     def _validate_retention_mode(cls, v: str) -> str:

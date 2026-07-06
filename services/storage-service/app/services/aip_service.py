@@ -16,18 +16,30 @@ Orquesta, para cada documento declarado:
   2. descargar sus BYTES de MinIO y RECALCULAR el SHA-256 — si no coincide con
      `files.sha256`, el empaquetado se ABORTA por completo (no se sube
      contenido cuya integridad está en duda);
-  3. construir el Bag (BagIt real) + PREMIS v3, validado con conformidad
+  3. si `PRESERVATION_PDFA_VALIDATION_ENABLED=true`, validar PDF/A (E10
+     Increment C2a, RF-PRE-02) cada documento detectado como PDF por MAGIC
+     BYTES — FUERA de cualquier transacción de BD (`app.services.pdfa`). El
+     validador por defecto (`StubPdfaValidator`) es HONESTO: siempre
+     `outcome=not_evaluated` (RF-FIR-15) — jamás afirma conformidad ni
+     no-conformidad cuando el validador real (veraPDF, E10 Increment C2b)
+     no está disponible. Es ADVISORY: un PDF no-conforme NO bloquea el
+     empaquetado, solo queda registrado (evento + PREMIS) para remediación
+     archivística futura (migración de formato);
+  4. construir el Bag (BagIt real) + PREMIS v3, validado con conformidad
      plena contra el XSD OFICIAL de PREMIS v3 de la Library of Congress
-     (`schemas/premis-v3-loc.xsd`, E10 Increment C1a);
-  4. subir el ZIP resultante al bucket WORM (Object Lock, misma fundación del
+     (`schemas/premis-v3-loc.xsd`, E10 Increment C1a) — incluye, por cada
+     documento validado, un evento `validation` PDF/A;
+  5. subir el ZIP resultante al bucket WORM (Object Lock, misma fundación del
      Increment A) con la retención aportada por el llamador (archive-service,
      dueño de la TRD);
-  5. persistir, en UNA transacción atómica, la fila `aip` (ubicación/formato
+  6. persistir, en UNA transacción atómica, la fila `aip` (ubicación/formato
      reales), el registro en `preservacion_worm_objeto` (tipo="aip", para que
      el gate de disposición final también lo cubra), el rastro de eventos
-     PREMIS (FIJACION/WORM/INGESTA, todos resultado=ok) y el `audit_log`
-     inmutable — la subida a WORM ya ocurrió (irreversible, externa a la BD),
-     pero su REGISTRO nunca debe quedar a medias.
+     PREMIS (FIJACION/WORM/INGESTA resultado=ok, y VALIDACION_PDFA por
+     documento PDF validado — `ok`/`fallo`/`no_evaluado`, keyado por
+     `file_id`, no por `expediente_id`) y el `audit_log` inmutable — la
+     subida a WORM ya ocurrió (irreversible, externa a la BD), pero su
+     REGISTRO nunca debe quedar a medias.
 
 storage-service NO conoce la TRD ni valida que `file_id` pertenezca al
 `expediente_id` declarado — mismo contrato que `proteger_indice`
@@ -54,6 +66,7 @@ from app.repositories.preservacion_worm_repository import PreservacionWormReposi
 from app.schemas.preservacion import AipCreate, AipResponse
 from app.services.aip_builder import AipDocMaterial, aip_sha256, build_bag
 from app.services.aip_replica_service import ReplicaResult, replicate_aip
+from app.services.pdfa import PdfaResult, get_pdfa_validator, run_pdfa_validation
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
@@ -63,6 +76,22 @@ from app.services.preservation_worm_service import (
 from app.services.retention_policy import validate_retain_until
 
 _SERVICE = "storage-service"
+
+# Firma de archivo PDF (magic bytes) — se detecta por CONTENIDO, nunca por
+# `files.mime_type` (lo declara el cliente en el multipart original, no es
+# fiable como base para decidir qué se valida — E10 Increment C2a, PIEZA 4).
+_PDF_MAGIC = b"%PDF"
+
+# `preservacion_evento.resultado` (migración 008) espejo del `PdfaResult.outcome`.
+_PDFA_RESULTADO_MAP: dict[str, str] = {
+    "conformant": "ok",
+    "non_conformant": "fallo",
+    "not_evaluated": "no_evaluado",
+}
+
+
+def _looks_like_pdf(content: bytes) -> bool:
+    return content.startswith(_PDF_MAGIC)
 
 
 async def _download(minio, bucket: str, object_key: str) -> bytes:
@@ -146,6 +175,12 @@ class AipService:
         minio = get_minio()
 
         docs_material: list[AipDocMaterial] = []
+        # `document_id` -> `file_id` real: el rastro de `preservacion_evento`
+        # (VALIDACION_PDFA) keyea por `file_id` (el objeto real validado),
+        # mientras que el PREMIS keyea por `document_id` (identificador de
+        # negocio del documento en el expediente) — espacios de nombres
+        # deliberadamente distintos, ver PIEZA 6 del contrato.
+        file_ids_by_document: dict[str, uuid.UUID] = {}
         for doc_input in payload.documentos:
             record, content = await self._resolve_and_verify(
                 minio,
@@ -163,6 +198,23 @@ class AipService:
                     mime_type=record.mime_type,
                 )
             )
+            file_ids_by_document[doc_input.document_id] = doc_input.file_id
+
+        # Validación PDF/A (E10 Increment C2a, RF-PRE-02) — SIEMPRE fuera de
+        # `conn.transaction()` (PIEZA 4 del contrato): un validador best-effort
+        # (hoy el stub, mañana un subprocess veraPDF de Increment C2b) nunca
+        # debe correr con la conexión de BD retenida dentro de una tx. Se
+        # detecta el PDF por MAGIC BYTES sobre el contenido REAL descargado
+        # (nunca por `files.mime_type`, que lo declara el cliente).
+        pdfa_results: dict[str, PdfaResult] = {}
+        if settings.preservation_pdfa_validation_enabled:
+            validator = get_pdfa_validator(settings)
+            for material in docs_material:
+                if not _looks_like_pdf(material.content):
+                    continue
+                pdfa_results[material.document_id] = await run_pdfa_validation(
+                    validator, material.content, profile=settings.pdfa_profile
+                )
 
         indice_material: AipDocMaterial | None = None
         indice_sha256: str | None = None
@@ -195,6 +247,7 @@ class AipService:
             indice=indice_material,
             generado=now,
             actor=actor,
+            pdfa_results=pdfa_results,
         )
 
         zip_hash = aip_sha256(artifact.zip_bytes)
@@ -331,6 +384,32 @@ class AipService:
                 },
                 agente=actor,
             )
+
+            # Validación PDF/A (E10 Increment C2a, RF-PRE-02): un
+            # `preservacion_evento` tipo=VALIDACION_PDFA POR DOCUMENTO
+            # validado (no por expediente, a diferencia de FIJACION/WORM/
+            # INGESTA arriba) — `object_ref` es el `file_id` REAL del objeto
+            # validado (PIEZA 6(a) del contrato), no `document_id` ni
+            # `expediente_id`. El resultado ya se calculó FUERA de esta
+            # transacción (ver arriba); aquí solo se persiste el rastro —
+            # `resultado="no_evaluado"` (stub por defecto) NUNCA implica
+            # conformidad, y el AIP se empaqueta igual (advisory, PIEZA 5).
+            for document_id, result in pdfa_results.items():
+                await self._evt_repo.insert_evento(
+                    {
+                        "object_ref": str(file_ids_by_document[document_id]),
+                        "tipo": "VALIDACION_PDFA",
+                        "resultado": _PDFA_RESULTADO_MAP[result.outcome],
+                        "detalle": {
+                            "document_id": document_id,
+                            "profile": result.profile,
+                            "outcome": result.outcome,
+                            "validator_agent": result.validator_agent,
+                            **result.detail,
+                        },
+                    },
+                    agente=actor,
+                )
 
             # Réplica (E10 Increment C1b, PIEZA 5): SOLO `preservacion_evento`
             # tipo=REPLICA — nunca `preservacion_worm_objeto` (exigiría migrar

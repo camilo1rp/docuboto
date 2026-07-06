@@ -95,6 +95,19 @@ Validación **PDF/A con veraPDF** (dependencia Java externa) + evento `VALIDACIO
 - **Honestidad (RF-FIR-15)**: la réplica local (mismo MinIO) se etiqueta explícitamente como *"réplica local (segundo bucket), no cross-site"* en la respuesta (`replicado`/`replica_target`/`replica_copias_hechas`) y el `detail` del evento; la cross-site real queda como capacidad de prod activable por config. **Sin migración**. **87 tests verdes** (incluye el fallo de réplica best-effort no-fatal con el AIP primario intacto, y bucket réplica del claim vs body).
 - **Baja aceptadas (roadmap/edge, no bloqueantes)**: sin re-verificación de fixity post-réplica en el camino cross-site; `str(exc)` crudo de MinIO en el `detail`/respuesta (acotar); sin validación de que `MINIO_SECONDARY_ENDPOINT` difiera del primario (réplica ilusoria si coinciden); límite de 5 GiB de `copy_object` server-side (usar `compose_object` para AIP grandes).
 
+---
+
+## Addendum — Increment C2a (2026-07-06): validación PDF/A — contrato + honestidad (sin veraPDF real)
+
+**Estado**: Aceptado. Auditado APTO por `archival-compliance-auditor` y `tenant-security-auditor`.
+
+**Cablea el paso de validación PDF/A del AIP (OAIS, validación en ingesta) de forma honesta**, dejando la interfaz lista para que **C2b** enchufe veraPDF real. No existe un validador PDF/A puro-Python maduro (veraPDF es Java) y no se bloatea la imagen `slim` de dev con una JVM para una feature off-by-default — el validador real y su imagen de deploy son C2b.
+
+- **Interfaz pluggable** (`app/services/pdfa/`): `PdfaValidator` (Protocol, `async validate(pdf_path, *, profile) -> PdfaResult`), `StubPdfaValidator` (**default, honesto**: siempre `outcome="not_evaluated"`, `validator_agent="stub/validator_unavailable"` — **no finge**), factory que si `PDFA_VALIDATOR=verapdf` pero el binario no está degrada a stub con warning (no crashea), y `run_pdfa_validation` (materializa a tempfile, **nunca lanza**).
+- **Migración `008` — habilita la honestidad**: `preservacion_evento.resultado` era `CHECK IN ('ok','fallo')`; el honesto `no_evaluado` no cabía (forzarlo a `ok` implica conformidad, a `fallo` no-conformidad — ambos mienten). La migración amplía la columna a `VARCHAR(16)` y el CHECK a `('ok','fallo','no_evaluado')` (idempotente, validada en Postgres 15). Sin columnas nuevas (`detalle` JSONB + `agente` cubren perfil/versión/outcome).
+- **Encaje** (`empaquetar_aip`): detecta PDFs por **magic bytes `%PDF`** (no por `mime_type`, que lo declara el cliente), corre la validación **fuera de `conn.transaction()`** (un subprocess JVM futuro no puede correr con la tx abierta ni hacer rollback del AIP), y emite un `preservacion_evento` `VALIDACION_PDFA` por documento (`resultado` ok|fallo|**no_evaluado**) + un evento PREMIS **`validation`** (`eventOutcome` passed|failed|**"not evaluated"**) + un software Agent por validador — todo **sigue validando contra el XSD oficial** (`premis-v3-loc.xsd`, C1a) sin tocarlo.
+- **Advisory por defecto** (ratificado): un PDF válido no-PDF/A **no bloquea** el AIP (el documento ya está radicado con número inmutable; el remedio archivístico es **migrar el formato**, no rechazar). No hay modo estricto en el empaquetado. `PDFA_PROFILE` (default `2b`) es **política declarada**, no implícita. **Honestidad (RF-FIR-15)**: `"not evaluated" ≠ "passed"`; el wording deja claro que la validación no se realizó (validador no disponible). **95 tests verdes**; **veraPDF real (subprocess endurecido + imagen de deploy + CI) = C2b, roadmap**. Baja aceptadas: `%PDF` exigido en offset 0; `pdfa_profile` no cotejado con `preservacion_plan.formatos_destino`; `object_ref=file_id` en el evento vs `document_id` en el PREMIS (cross-ref).
+
 ## Relacionados
 
 - ISO 14721 (OAIS); RFC 8493 (BagIt); PREMIS v3; Ley 594/2000; Acuerdo AGN 060/2001.
