@@ -65,9 +65,21 @@ Los tests de storage-service **mockean el cliente MinIO por completo**; **ningú
 
 **Alta**: (1) **colisión de nombres de payload** — dos documentos con igual `nombre` se sobrescribían en el ZIP mientras el manifest contaba ambos → Bag inválido y pérdida silenciosa de contenido, **irreparable bajo WORM COMPLIANCE**; cerrado con saneo de `nombre` (rechaza `/`, `\`, `..`, control chars) + unicidad (422) + `Payload-Oxum`/`num_files` derivados de las entradas reales; (2) **`GET /aip` sin RBAC** → fuga del inventario de documentos; gateado. **Media**: tagmanifest que no cubría el manifest; sobre-declaración de conformidad PREMIS; `AipResponse` que rompía la retrocompat con filas stub (campos WORM → `Optional`); rastro de eventos incompleto; no-atomicidad del registro.
 
-### Límites (Increment C, diferido)
+### Límites (Increment C, diferido en el momento de B)
 
-Validación **PDF/A con veraPDF** (dependencia Java externa) + evento `VALIDACION_PDFA`; **REPLICA** (segunda copia geográfica); XSD PREMIS oficial completo + `xsi:type`. **76 tests verdes** (MinIO 100% mockeado).
+Validación **PDF/A con veraPDF** (dependencia Java externa) + evento `VALIDACION_PDFA`; **REPLICA** (segunda copia); XSD PREMIS oficial completo + `xsi:type` (→ cerrado en C1a). **76 tests verdes** (MinIO 100% mockeado).
+
+---
+
+## Addendum — Increment C1a (2026-07-06): PREMIS v3 conformidad plena
+
+**Estado**: Aceptado. Auditado APTO por `archival-compliance-auditor`.
+
+**Cierra el gap de honestidad de B**: el AIP validaba su `premis.xml` contra un **perfil XSD local propio** (validar contra un schema que escribimos nosotros no prueba conformidad). C1a lo hace **conforme pleno**: valida contra el **`premis.xsd` OFICIAL de la Library of Congress** (vendorizado en `services/storage-service/schemas/premis-v3-loc.xsd`, 52.845 B, `targetNamespace=http://www.loc.gov/premis/v3`, **autocontenido** — la referencia a `xlink` fue eliminada en PREMIS v3).
+
+- El elemento `<object>` emite ahora **`xsi:type="premis:file"`** (mecanismo oficial de tipado por sustitución: `objectComplexType` es `abstract` y `file`/`representation`/`bitstream` lo extienden) y se **elimina el elemento `<objectCategory>`** (era de PREMIS v2, no existe en v3). El `nsmap` del root gana los prefijos `premis` y `xsi`. `_SCHEMA_PATH` reapunta al XSD oficial; el perfil local `premis-v3.xsd` se **elimina** (`git rm`).
+- **Criterio binario de "conforme pleno"** (ratificado): el `premis.xml` emitido (`object file` + `event` ingestion/fixity check + `agent`) pasa `assertValid` contra el schema **normativo**. La **ausencia** de `rights`/`environment`/`relationship`/`significantProperties`/`preservationLevel` **es conforme** (opcionales en el oficial; `object file` solo exige `objectIdentifier` + `objectCharacteristics`) — no un gap. Notable: **cero contenido semántico nuevo obligatorio** — la estructura de B ya era conforme salvo el tipado del `object`.
+- **Sin migración, sin cambios de endpoint/RBAC/acceso a datos** — puro cambio de emisión XML + XSD vendorizado. **79 tests verdes** (incluye un test que valida contra el XSD oficial y uno negativo que confirma que `assertValid` rechaza estructura inválida). **Deuda de roadmap (no incumplimiento)**: `formatName` lleva el MIME sin `formatRegistry`/PRONOM; vocabularios controlados y entidades opcionales (rights, preservationLevel) quedan como refinamiento futuro. **REPLICA** (C1b) y **veraPDF/PDF-A** (C2) siguen pendientes.
 
 ## Relacionados
 

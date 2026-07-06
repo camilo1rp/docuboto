@@ -22,9 +22,11 @@ namespace inventado). Este módulo:
   hacia MinIO que un tar);
 - genera un manifiesto PREMIS v3 con el namespace OFICIAL
   (``http://www.loc.gov/premis/v3``) con entidades OBJECT/EVENT/AGENT,
-  validado ESTRUCTURALMENTE contra un perfil LOCAL de PREMIS v3 (no el XSD
-  completo de la Library of Congress — ver ``schemas/premis-v3.xsd`` para el
-  alcance exacto de ese perfil y el roadmap de vendorización del XSD oficial).
+  validado contra el XSD OFICIAL de PREMIS v3 de la Library of Congress
+  vendorizado en ``schemas/premis-v3-loc.xsd`` (E10 Increment C1a) —
+  conformidad plena, no un perfil propio: el ``object`` se tipa con
+  ``xsi:type="premis:file"`` (mecanismo del schema oficial para la categoría
+  del objeto; no existe elemento ``objectCategory`` en PREMIS v3).
 
 La fixity de cada documento SIEMPRE llega ya recalculada por el llamador
 (``AipService`` descarga los bytes de MinIO y contrasta contra ``files.sha256``
@@ -45,7 +47,8 @@ from typing import Literal
 from lxml import etree
 
 _PREMIS_NS = "http://www.loc.gov/premis/v3"
-_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "premis-v3.xsd"
+_XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "premis-v3-loc.xsd"
 
 _INDICE_TAG_FILENAME = "indice-firmado.xml"
 _PREMIS_TAG_FILENAME = "premis.xml"
@@ -60,7 +63,8 @@ _schema_cache: etree.XMLSchema | None = None
 
 
 class PremisValidationError(Exception):
-    """El PREMIS generado no valida contra ``schemas/premis-v3.xsd``.
+    """El PREMIS generado no valida contra el XSD OFICIAL de PREMIS v3
+    (``schemas/premis-v3-loc.xsd``, vendorizado de la Library of Congress).
 
     No debería ocurrir en producción (la estructura la arma este mismo
     módulo) — es una red de seguridad ante una regresión futura, para NUNCA
@@ -105,7 +109,9 @@ def _schema() -> etree.XMLSchema:
 
 
 def validate_premis_xml(xml_text: str) -> None:
-    """Valida ``xml_text`` contra el XSD local de PREMIS v3.
+    """Valida ``xml_text`` contra el XSD OFICIAL de PREMIS v3 de la Library
+    of Congress (``schemas/premis-v3-loc.xsd``) — conformidad plena, no un
+    perfil propio.
 
     Levanta :class:`PremisValidationError` con el detalle del esquema si no
     valida — nunca deja pasar un PREMIS inválido hacia el Bag/WORM.
@@ -116,7 +122,7 @@ def validate_premis_xml(xml_text: str) -> None:
     except etree.XMLSyntaxError as exc:
         raise PremisValidationError(f"PREMIS mal formado: {exc}") from exc
     except etree.DocumentInvalid as exc:
-        raise PremisValidationError(f"PREMIS no conforme al XSD v3: {exc}") from exc
+        raise PremisValidationError(f"PREMIS no conforme al XSD oficial v3: {exc}") from exc
 
 
 def _sub(parent: etree._Element, tag: str, text: str | None = None) -> etree._Element:
@@ -137,11 +143,18 @@ def _build_object_element(
     original_name: str,
     content_location: str,
 ) -> None:
-    obj = _sub(root, "object")
+    # PREMIS v3 oficial no tiene elemento `objectCategory` (existía en v2):
+    # la categoría del objeto se expresa con `xsi:type` sobre el propio
+    # elemento `object`, que selecciona el complexType concreto (`file`,
+    # `representation`, `bitstream`, `intellectualEntity`) que extiende el
+    # `objectComplexType` abstracto — ver el comentario del propio XSD oficial
+    # junto a `complexType name="file"`.
+    obj = etree.SubElement(
+        root, f"{{{_PREMIS_NS}}}object", attrib={f"{{{_XSI_NS}}}type": "premis:file"}
+    )
     oid = _sub(obj, "objectIdentifier")
     _sub(oid, "objectIdentifierType", identifier_type)
     _sub(oid, "objectIdentifierValue", identifier_value)
-    _sub(obj, "objectCategory", "file")
     chars = _sub(obj, "objectCharacteristics")
     _sub(chars, "compositionLevel", "0")
     fixity = _sub(chars, "fixity")
@@ -227,7 +240,16 @@ def build_premis_v3(
       - AGENT: el software (OrpycaMCP storage-service) y, si se conoce, el
         actor humano/sistema de la petición.
     """
-    root = etree.Element(f"{{{_PREMIS_NS}}}premis", attrib={"version": "3.0"}, nsmap={None: _PREMIS_NS})
+    # `premis` (prefijado, ADEMAS del default sin prefijo) es necesario para
+    # que el valor `xsi:type="premis:file"` resuelva a un QName válido — el
+    # validador de esquema resuelve el prefijo del VALOR del atributo contra
+    # las declaraciones de namespace en alcance, no basta con el namespace
+    # por defecto del elemento.
+    root = etree.Element(
+        f"{{{_PREMIS_NS}}}premis",
+        attrib={"version": "3.0"},
+        nsmap={None: _PREMIS_NS, "premis": _PREMIS_NS, "xsi": _XSI_NS},
+    )
 
     linked_ids: list[str] = []
     for doc in docs:
@@ -383,7 +405,8 @@ def build_bag(
                                     file)
 
     Lanza :class:`PremisValidationError` si el PREMIS generado no valida
-    contra el XSD local — el Bag NUNCA se serializa con un PDI inválido.
+    contra el XSD oficial de PREMIS v3 — el Bag NUNCA se serializa con un PDI
+    inválido.
     """
     premis_xml = build_premis_v3(
         expediente_id=expediente_id,

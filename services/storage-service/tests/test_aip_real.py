@@ -562,7 +562,9 @@ async def test_empaquetar_aip_without_indice_excludes_indice_tag_file(client_wit
     assert "indice-firmado.xml" not in tagmanifest
 
     premis_xml = zf.read("premis.xml").decode()
-    assert premis_xml.count("<object>") == 1  # solo el documento, sin el índice
+    # `<object ` (con espacio) para no contar `<objectIdentifier`/`<objectCharacteristics`
+    # — cada `object` real lleva el atributo `xsi:type="premis:file"`.
+    assert premis_xml.count("<object ") == 1  # solo el documento, sin el índice
 
     from app.services.aip_builder import validate_premis_xml
 
@@ -680,7 +682,7 @@ async def test_empaquetar_aip_multiple_documentos_payload_oxum_and_manifest(
     assert zf.read("data/anexo2.pdf") == content2
 
     premis_xml = zf.read("premis.xml").decode()
-    assert premis_xml.count("<object>") == 2
+    assert premis_xml.count("<object ") == 2
     assert sha2 in premis_xml
 
 

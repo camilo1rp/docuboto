@@ -133,11 +133,12 @@ async def empaquetar_aip(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> AipResponse:
     """Descarga los bytes reales de cada documento, RECALCULA su fixity contra
-    `files.sha256`, arma un Bag BagIt real + PREMIS v3 (validación estructural
-    contra un perfil local, namespace oficial — ver `schemas/premis-v3.xsd`)
-    y lo sube — como ZIP — al bucket WORM del tenant con retención
-    (`Retention`/`legal_hold`) derivada de la TRD del llamador. Operación de
-    alto privilegio e irreversible: min_crud=3, igual que `/proteger-indice`."""
+    `files.sha256`, arma un Bag BagIt real + PREMIS v3 (conformidad plena:
+    validado contra el XSD OFICIAL de PREMIS v3 de la LoC — ver
+    `schemas/premis-v3-loc.xsd`) y lo sube — como ZIP — al bucket WORM del
+    tenant con retención (`Retention`/`legal_hold`) derivada de la TRD del
+    llamador. Operación de alto privilegio e irreversible: min_crud=3, igual
+    que `/proteger-indice`."""
     service = AipService(conn, tenant_slug)
     try:
         return await service.empaquetar_aip(payload, actor=_actor(request))

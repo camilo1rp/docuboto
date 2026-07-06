@@ -16,9 +16,9 @@ Orquesta, para cada documento declarado:
   2. descargar sus BYTES de MinIO y RECALCULAR el SHA-256 — si no coincide con
      `files.sha256`, el empaquetado se ABORTA por completo (no se sube
      contenido cuya integridad está en duda);
-  3. construir el Bag (BagIt real) + PREMIS v3, validado estructuralmente
-     contra el perfil PREMIS v3 local (namespace oficial, ver
-     `schemas/premis-v3.xsd` para el alcance exacto de ese perfil);
+  3. construir el Bag (BagIt real) + PREMIS v3, validado con conformidad
+     plena contra el XSD OFICIAL de PREMIS v3 de la Library of Congress
+     (`schemas/premis-v3-loc.xsd`, E10 Increment C1a);
   4. subir el ZIP resultante al bucket WORM (Object Lock, misma fundación del
      Increment A) con la retención aportada por el llamador (archive-service,
      dueño de la TRD);
