@@ -111,6 +111,40 @@ describe("sanitizeHtml — neutraliza vectores XSS", () => {
     expect(sanitizeHtml("<scr<script>ipt>alert(1)").toLowerCase()).not.toContain("<script");
     expect(sanitizeHtml("<p>x</p><script>alert(1)").toLowerCase()).not.toContain("<script");
   });
+
+  it("neutraliza un <iframe> anidado dentro de una etiqueta permitida", () => {
+    const out = sanitizeHtml('<p>ok<iframe src="https://evil"></iframe></p>').toLowerCase();
+    expect(out).not.toContain("<iframe");
+    expect(out).toContain("ok");
+  });
+
+  it("descarta <img> (no está en la allowlist) y neutraliza su onerror", () => {
+    const out = sanitizeHtml('<p><img src=x onerror="alert(1)">texto</p>').toLowerCase();
+    expect(out).not.toContain("<img");
+    expect(out).not.toContain("onerror");
+    expect(out).toContain("texto");
+  });
+
+  it("descarta <form>/<input> (no forman parte del editor) preservando el texto", () => {
+    const out = sanitizeHtml(
+      '<form><input type="text" onfocus="alert(1)"></form>texto',
+    ).toLowerCase();
+    expect(out).not.toContain("<form");
+    expect(out).not.toContain("<input");
+    expect(out).not.toContain("onfocus");
+    expect(out).toContain("texto");
+  });
+
+  it("neutraliza handlers on* variados (onmouseover, onload, onfocus) en etiquetas permitidas", () => {
+    const out = sanitizeHtml('<p onmouseover="alert(1)" onfocus="alert(2)">x</p>').toLowerCase();
+    expect(out).toBe("<p>x</p>");
+  });
+
+  it("elimina <meta http-equiv=refresh> (bloque no peligroso per se, pero fuera de allowlist)", () => {
+    const out = sanitizeHtml('<meta http-equiv="refresh" content="0;url=https://evil">texto');
+    expect(out.toLowerCase()).not.toContain("<meta");
+    expect(out).toContain("texto");
+  });
 });
 
 describe("attachSafeBody — observations_html es campo de salida", () => {

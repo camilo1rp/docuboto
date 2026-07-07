@@ -29,6 +29,7 @@
 -->
 <script>
   import { createEventDispatcher, onMount, tick } from "svelte";
+  import { pushOverlay, popOverlay, isTopOverlay } from "$lib/utils/overlayStack.js";
 
   export let open = false;
   export let title = "";
@@ -55,7 +56,12 @@
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
   function trapFocus(e) {
-    if (!open || !drawerEl) return;
+    // No procesar eventos si el drawer está cerrado, o si hay otra superposición
+    // (Modal/Drawer) apilada encima — solo el tope de la pila reacciona a
+    // Tab/Escape (ver overlayStack.js). Ej.: un Modal de confirmación abierto
+    // desde dentro de este Drawer no debe dejar que Escape cierre también el
+    // Drawer de fondo.
+    if (!open || !drawerEl || !isTopOverlay(instanceId)) return;
     const focusable = Array.from(drawerEl.querySelectorAll(FOCUSABLE));
     if (!focusable.length) return;
     const first = focusable[0];
@@ -77,13 +83,24 @@
     dispatch("close");
   }
 
-  $: if (open) {
+  // Guard `typeof document !== "undefined"` (D-16): este bloque reactivo corre
+  // también durante el render SSR (a diferencia de onMount, que SvelteKit solo
+  // ejecuta en cliente) — si `open` llega en true en el primer render del
+  // servidor, acceder a `document` sin guardar revienta con ReferenceError y
+  // devuelve 500 en toda ruta que monte el componente.
+  $: if (typeof document !== "undefined" && open) {
     previousFocus = document.activeElement;
+    pushOverlay(instanceId);
     tick().then(() => closeBtnEl?.focus());
   } else if (previousFocus) {
+    popOverlay(instanceId);
+    // Copia local + limpieza inmediata (no dentro del `.then`): evita que un
+    // cierre/apertura rápidos pisen la referencia en vuelo de un `tick()`
+    // anterior o la dejen en null antes de tiempo.
+    const elementToRefocus = /** @type {HTMLElement} */ (previousFocus);
+    previousFocus = null;
     tick().then(() => {
-      /** @type {HTMLElement} */ (previousFocus).focus?.();
-      previousFocus = null;
+      elementToRefocus?.focus?.();
     });
   }
 
@@ -91,7 +108,10 @@
   // SSR, donde `document` no existe y rompería el render.
   onMount(() => {
     document.addEventListener("keydown", trapFocus);
-    return () => document.removeEventListener("keydown", trapFocus);
+    return () => {
+      popOverlay(instanceId);
+      document.removeEventListener("keydown", trapFocus);
+    };
   });
 </script>
 

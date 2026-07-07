@@ -73,15 +73,23 @@
     }
   }
 
-  $: if (open) {
+  // Guard `typeof document !== "undefined"` (D-16): este bloque reactivo corre
+  // también durante el render SSR — si `open` llega en true en el primer
+  // render del servidor, acceder a `document` sin guardar revienta con
+  // ReferenceError y devuelve 500 en toda ruta que monte AssistantDock.
+  $: if (typeof document !== "undefined" && open) {
     previousFocus = document.activeElement;
     tick().then(() => {
       if (closeBtnEl) closeBtnEl.focus();
     });
   } else if (previousFocus) {
+    // Copia local + limpieza inmediata (no dentro del `.then`): evita que un
+    // cierre/apertura rápidos del dock pisen la referencia en vuelo de un
+    // `tick()` anterior o la dejen en null antes de tiempo.
+    const elementToRefocus = /** @type {HTMLElement} */ (previousFocus);
+    previousFocus = null;
     tick().then(() => {
-      /** @type {HTMLElement} */ (previousFocus).focus?.();
-      previousFocus = null;
+      elementToRefocus?.focus?.();
     });
   }
 

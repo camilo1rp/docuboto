@@ -10,6 +10,8 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "test": "vitest",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
     "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
     "lint": "prettier --check . && eslint .",
     "format": "prettier --write ."
@@ -36,11 +38,15 @@
     "yjs": "^13.6.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@sveltejs/adapter-node": "^2.0.0",
     "@sveltejs/vite-plugin-svelte": "^3.0.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^4.2.3",
     "@types/node": "^20.0.0",
     "eslint": "^8.28.0",
     "eslint-plugin-svelte": "^2.35.0",
+    "jsdom": "^26.1.0",
     "prettier": "^3.0.0",
     "prettier-plugin-svelte": "^3.1.0",
     "sass": "^1.101.0",

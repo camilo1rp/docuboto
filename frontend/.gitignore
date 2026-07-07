@@ -7,3 +7,12 @@ node_modules/
 !.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Archivos temporales de ssrSafety.test.js (compilación SSR real vía svelte/compiler);
+# se limpian en un `finally`, esto es solo un colchón de seguridad.
+.vitest-ssr-tmp-*
+
+# Salida de Playwright y huerfano root-owned de un build Docker previo — jamas commitear
+test-results/
+playwright-report/
+build-root-owned-orphan/

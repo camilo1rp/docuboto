@@ -82,8 +82,12 @@
     }
   }
 
-  // Gestión de foco al abrir/cerrar el drawer
-  $: if ($sidebarMobileOpen) {
+  // Gestión de foco al abrir/cerrar el drawer.
+  // Guard `typeof document !== "undefined"` (D-16): este bloque reactivo corre
+  // también durante el render SSR, donde `document` no existe — sin el guard,
+  // un $sidebarMobileOpen=true en el primer render del servidor rompería con
+  // ReferenceError toda ruta que monte AppLayout.
+  $: if (typeof document !== "undefined" && $sidebarMobileOpen) {
     drawerPreviousFocus = document.activeElement;
     tick().then(() => {
       if (drawerEl) {
@@ -92,9 +96,13 @@
       }
     });
   } else if (drawerPreviousFocus) {
+    // Copia local + limpieza inmediata (no dentro del `.then`): evita que un
+    // cierre/apertura rápidos del drawer móvil pisen la referencia en vuelo
+    // de un `tick()` anterior o la dejen en null antes de tiempo.
+    const elementToRefocus = /** @type {HTMLElement} */ (drawerPreviousFocus);
+    drawerPreviousFocus = null;
     tick().then(() => {
-      /** @type {HTMLElement} */ (drawerPreviousFocus).focus?.();
-      drawerPreviousFocus = null;
+      elementToRefocus?.focus?.();
     });
   }
 
