@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
+from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.models.archive import Expediente
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
@@ -201,8 +202,14 @@ class IndexService:
         `close_expediente` pasa `assert_open=False`: ES la regeneración final
         legítima, invocada justo después de transicionar el expediente a
         'closed' (por eso su propio `exp.status` ya no es 'open' en ese punto).
+
+        Pre-condición interna de existencia/estado, no una lectura expuesta al
+        llamante — no-read-up aquí queda DIFERIDO (decisión del arquitecto, ver
+        `core.clearance.CLEARANCE_SIN_RESTRICCION`). RF-SEG-08.
         """
-        exp = await self._archive.get_expediente_by_id(expediente_id)
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -359,7 +366,9 @@ class IndexService:
         `ArchiveService.get_expediente`, replicado aquí porque las lecturas de
         índice NO pasan por `ArchiveService`). Devuelve el `Expediente` (su
         `code` es el `object_ref` que necesita la pista de acceso, R3-a)."""
-        exp = await self._archive.get_expediente_by_id(expediente_id, max_clearance)
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -546,7 +555,9 @@ class IndexService:
         alterno para leer un expediente CLASIFICADA sin la clearance debida
         (aunque `GET /{id}` ya lo negara con 404)."""
         max_clearance = await self._archive.caller_clearance(user_id)
-        exp = await self._archive.get_expediente_by_id(expediente_id, max_clearance)
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

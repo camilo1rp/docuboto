@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import asyncpg
 from fastapi import HTTPException, status
 
+from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
@@ -57,7 +58,13 @@ class TransferenciaService:
     async def create(
         self, payload: TransferenciaCreate, creada_por: str | None
     ) -> TransferenciaResponse:
-        exp = await self._archive.get_expediente_by_id(payload.expediente_id)
+        # Pre-condición interna de existencia/estado (¿existe y está 'closed'?),
+        # no una lectura expuesta al llamante — el endpoint ya exige
+        # USUA_PERM_EXPEDIENTE (D-08). No-read-up aquí queda DIFERIDO (decisión
+        # del arquitecto, ver `core.clearance.CLEARANCE_SIN_RESTRICCION`). RF-SEG-08.
+        exp = await self._archive.get_expediente_by_id(
+            payload.expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

@@ -93,4 +93,60 @@ describe("FormField — label asociado y accesibilidad básica", () => {
     render(FormField, { props: { id: "asunto", label: "Asunto", disabled: true } });
     expect(screen.getByLabelText("Asunto")).toBeDisabled();
   });
+
+  it("el atributo name usa id por defecto (necesario para FormData nativo)", () => {
+    render(FormField, { props: { id: "asunto", label: "Asunto" } });
+    expect(screen.getByLabelText("Asunto")).toHaveAttribute("name", "asunto");
+  });
+
+  it("el atributo name se puede sobrescribir independientemente de id", () => {
+    render(FormField, { props: { id: "field-name", name: "name", label: "Nombre" } });
+    expect(screen.getByLabelText("Nombre")).toHaveAttribute("name", "name");
+  });
+
+  // El `name` se añadió a los 6 controles (text/email/password/number/date/
+  // select/textarea) pero los dos tests anteriores solo cubren `type="text"`.
+  // select y textarea son justo los que usan los formularios reales con
+  // form actions nativos (p. ej. el modal de creación de expedientes).
+  it("type=select: el atributo name usa id por defecto", () => {
+    render(FormField, {
+      props: {
+        id: "tipo",
+        label: "Tipo documental",
+        type: "select",
+        options: [{ value: "oficio", label: "Oficio" }],
+      },
+    });
+    expect(screen.getByLabelText("Tipo documental")).toHaveAttribute("name", "tipo");
+  });
+
+  it("type=select: el atributo name se puede sobrescribir independientemente de id", () => {
+    render(FormField, {
+      props: {
+        id: "trd-serie-select",
+        name: "trd_serie_id",
+        label: "Serie TRD",
+        type: "select",
+        options: [{ value: "s1", label: "Serie 1" }],
+      },
+    });
+    expect(screen.getByLabelText("Serie TRD")).toHaveAttribute("name", "trd_serie_id");
+  });
+
+  it("type=textarea: el atributo name usa id por defecto", () => {
+    render(FormField, { props: { id: "obs", label: "Observaciones", type: "textarea" } });
+    expect(screen.getByLabelText("Observaciones")).toHaveAttribute("name", "obs");
+  });
+
+  it("type=textarea: el atributo name se puede sobrescribir independientemente de id", () => {
+    render(FormField, {
+      props: {
+        id: "field-description",
+        name: "description",
+        label: "Descripción",
+        type: "textarea",
+      },
+    });
+    expect(screen.getByLabelText("Descripción")).toHaveAttribute("name", "description");
+  });
 });

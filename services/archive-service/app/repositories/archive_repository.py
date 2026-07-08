@@ -91,12 +91,19 @@ class ArchiveRepository:
         status: str | None,
         offset: int,
         limit: int,
+        max_clearance: int,
     ) -> tuple[list[Expediente], int]:
         await self._set_search_path()
 
-        conditions = ["1=1"]
-        params: list[object] = []
-        idx = 1
+        # Control de acceso por clasificación (RF-SEG-08 / RF-BUS-04), no-read-up:
+        # solo expedientes cuyo nivel no supere el clearance del llamante. PRIMERA
+        # condición — calcado de `search_expedientes` (líneas ~710-712) — para que
+        # el filtro entre en `where`, compartido por el COUNT(*) (X-Total-Count) y
+        # la query de página. Sin esto, cualquier portador de USUA_PERM_EXPEDIENTE
+        # enumeraba expedientes RESERVADA/CLASIFICADA en el listado general.
+        conditions = ["nivel_seguridad <= $1"]
+        params: list[object] = [max_clearance]
+        idx = 2
 
         if status is not None:
             conditions.append(f"status = ${idx}")
@@ -205,11 +212,16 @@ class ArchiveRepository:
         )
 
     async def get_expediente_by_id(
-        self, expediente_id: uuid.UUID, max_clearance: int = 3
+        self, expediente_id: uuid.UUID, *, max_clearance: int
     ) -> Expediente | None:
-        # max_clearance=3 (CLASIFICADA) = sin restricción para llamantes internos/sistema;
-        # el GET de usuario pasa el clearance real → un expediente por encima devuelve None
-        # (el servicio lo traduce a 404, sin revelar su existencia). RF-SEG-08 / RF-BUS-04.
+        # `max_clearance` es OBLIGATORIO y solo por keyword — a propósito, sin
+        # default (RF-SEG-08 / RF-BUS-04): un default "sin restricción" aquí es
+        # justo el bug que se está corrigiendo (leak de RESERVADA/CLASIFICADA).
+        # El GET de usuario pasa el clearance real del llamante → un expediente
+        # por encima devuelve None (el servicio lo traduce a 404, sin revelar su
+        # existencia). Los llamantes internos que necesitan "sin restricción" de
+        # forma deliberada pasan `core.clearance.CLEARANCE_SIN_RESTRICCION`
+        # explícitamente — visible en el código, no oculto en la firma.
         await self._set_search_path()
         row = await self._conn.fetchrow(
             "SELECT * FROM expedientes WHERE id = $1 AND nivel_seguridad <= $2",

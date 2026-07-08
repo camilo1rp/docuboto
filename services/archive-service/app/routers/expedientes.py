@@ -26,7 +26,6 @@ from fastapi import (
 
 from app.core.clearance import check_permission, require_permission
 from app.core.database import get_db_conn
-from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
     BatchLinkRequest,
     BatchLinkResult,
@@ -123,10 +122,17 @@ async def list_expedientes(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[ExpedienteResponse]:
+    # No-read-up (RF-SEG-08): antes este listado no filtraba por `nivel_seguridad`
+    # — cualquier portador de USUA_PERM_EXPEDIENTE enumeraba expedientes
+    # RESERVADA/CLASIFICADA. Mismo criterio que `get_expediente`/`search_expedientes`.
     service = ArchiveService(conn, tenant_slug)
-    items, total = await service.list_expedientes(status=exp_status, page=page, size=size)
+    items, total = await service.list_expedientes(
+        status=exp_status, page=page, size=size, user_id=user_id, canal=canal
+    )
     response.headers["X-Total-Count"] = str(total)
     return items
 
@@ -148,6 +154,7 @@ async def search_expedientes(
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteSearchResponse:
     metadata_filter = {
@@ -155,7 +162,10 @@ async def search_expedientes(
         for k, v in request.query_params.items()
         if k.startswith("meta.") and k != "meta."
     }
-    rows, total = await ArchiveRepository(conn, tenant_slug).search_expedientes(
+    # Pasa por ArchiveService (antes llamaba al repositorio directo) para dejar
+    # la traza AGREGADA de consulta (RF-BUS-10) con el mismo criterio que
+    # `list_expedientes` — ver `ArchiveService.search_expedientes`.
+    rows, total = await ArchiveService(conn, tenant_slug).search_expedientes(
         q=q,
         status=exp_status,
         date_from=date_from,
@@ -164,6 +174,7 @@ async def search_expedientes(
         page=page,
         size=size,
         user_id=user_id,
+        canal=canal,
     )
     response.headers["X-Total-Count"] = str(total)
     return ExpedienteSearchResponse(
@@ -342,7 +353,7 @@ async def update_expediente(
             },
         )
     service = ArchiveService(conn, tenant_slug)
-    return await service.update_expediente(expediente_id, payload)
+    return await service.update_expediente(expediente_id, payload, actor)
 
 
 @router.post(

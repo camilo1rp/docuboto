@@ -21,16 +21,29 @@ CREATE EXPEDIENTE:
   execute  — SET search_path (create_expediente)
   fetchrow — INSERT expedientes RETURNING
 
-LIST EXPEDIENTES:
+LIST EXPEDIENTES (RF-SEG-08 no-read-up: caller_clearance ANTES del listado):
+  execute  — SET search_path (caller_clearance)
+  fetchrow — resolve_caller_clearance (auth_users + role_clearance)
   execute  — SET search_path (fetchval)
-  fetchval — COUNT
+  fetchval — COUNT (WHERE incluye nivel_seguridad <= clearance)
   execute  — SET search_path (fetch)
-  fetch    — SELECT page
+  fetch    — SELECT page (mismo predicado/parámetro de clearance que el COUNT)
 
-GET EXPEDIENTE BY ID:
+GET EXPEDIENTE BY ID (RF-SEG-08 no-read-up: caller_clearance ANTES del get):
+  execute  — SET search_path (caller_clearance)
+  fetchrow — resolve_caller_clearance (auth_users + role_clearance)
   execute  — SET search_path
-  fetchrow — SELECT expediente
+  fetchrow — SELECT expediente (WHERE nivel_seguridad <= clearance)
   fetch    — SELECT radicados
+
+PATCH EXPEDIENTE (RF-SEG-08 no-read-up; 404 no 403 si excede el clearance):
+  execute  — SET search_path (caller_clearance)
+  fetchrow — resolve_caller_clearance
+  execute  — SET search_path (get_expediente_by_id)
+  fetchrow — SELECT expediente (WHERE nivel_seguridad <= clearance) — None → 404
+  fetch    — SELECT radicados (solo si el expediente SÍ es visible)
+  execute  — SET search_path (update_expediente)
+  fetchrow — UPDATE expedientes ... RETURNING
 
 LINK RADICADO (link_radicado calls get+exists+insert):
   execute  — SET search_path (get)
@@ -72,6 +85,7 @@ from tests.conftest import (
     RADICADO_ID,
     SERIE_ID,
     TENANT_HEADERS,
+    TENANT_SLUG,
     TRACKING_NUMBER,
     USER_ID,
     make_expediente_record,
@@ -157,7 +171,13 @@ async def test_list_expedientes(
         make_expediente_record(exp_id=uuid.uuid4(), code="EXP-2024-0001"),
         make_expediente_record(exp_id=uuid.uuid4(), code="EXP-2024-0002"),
     ]
-    mock_conn.fetchval.return_value = 2
+    # fetchrow determinista (RF-SEG-08): sin membresías → PUBLICA (1). Dejarlo
+    # sin configurar dejaría pasar un AsyncMock truthy no configurado por
+    # `resolve_caller_clearance` (`.get("is_root")` de un MagicMock es truthy)
+    # y el test pasaría en verde sin ejercitar el filtro de clearance.
+    mock_conn.fetchrow.return_value = None
+    # [0]=D-08 gate (USUA_PERM_EXPEDIENTE granted), [1]=COUNT(*) del listado.
+    mock_conn.fetchval.side_effect = [True, 2]
     mock_conn.fetch.return_value = records
 
     response = await client.get(
@@ -171,6 +191,93 @@ async def test_list_expedientes(
     assert len(body) == 2
     assert body[0]["code"] == "EXP-2024-0001"
     assert body[1]["code"] == "EXP-2024-0002"
+
+    # El COUNT (X-Total-Count) y la query de página comparten el MISMO
+    # predicado de clearance con el MISMO parámetro ligado (PUBLICA=1, no
+    # CLASIFICADA=3) — de lo contrario el filtro no se estaría ejercitando.
+    count_sql, count_clearance = mock_conn.fetchval.call_args_list[1][0]
+    assert "nivel_seguridad <= $1" in count_sql
+    assert count_clearance == 1
+
+    page_args = mock_conn.fetch.call_args[0]
+    assert "nivel_seguridad <= $1" in page_args[0]
+    assert page_args[1] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_expedientes_filters_by_clearance(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """RF-SEG-08 / RF-BUS-04: un llamante con clearance PUBLICA (1) —
+    `resolve_caller_clearance` sin membresías/is_root — emite el listado con
+    `nivel_seguridad <= $1` ligado a 1, no a CLASIFICADA (3)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = None  # sin membresías → PUBLICA (1)
+    mock_conn.fetchval.side_effect = [True, 0]  # [0] gate D-08, [1] COUNT
+    mock_conn.fetch.return_value = []
+
+    response = await client.get("/api/v1/expedientes", headers=TENANT_HEADERS)
+
+    assert response.status_code == 200
+    count_sql, count_clearance = mock_conn.fetchval.call_args_list[1][0]
+    assert "nivel_seguridad <= $1" in count_sql
+    assert count_clearance == 1
+
+    page_args = mock_conn.fetch.call_args[0]
+    assert "nivel_seguridad <= $1" in page_args[0]
+    assert page_args[1] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_expedientes_total_count_shares_clearance_filter_with_page(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """CRÍTICO (RF-SEG-08): `X-Total-Count` (COUNT(*)) debe compartir EXACTAMENTE
+    el mismo predicado y parámetro de clearance que la query de página. Un fix
+    que solo filtrara la página y dejara el total sin filtrar seguiría siendo un
+    leak — revelaría cuántos expedientes RESERVADA/CLASIFICADA existen aunque
+    ninguno aparezca listado. Usa un clearance no trivial (RESERVADA=2, ni
+    PUBLICA(1) ni CLASIFICADA(3)) para no poder acertar por casualidad."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = {"is_root": False, "max_level": 2}
+    mock_conn.fetchval.side_effect = [True, 5]  # [0] gate D-08, [1] COUNT
+    mock_conn.fetch.return_value = []
+
+    response = await client.get("/api/v1/expedientes", headers=TENANT_HEADERS)
+
+    assert response.status_code == 200
+    assert response.headers["x-total-count"] == "5"
+
+    count_sql, count_clearance = mock_conn.fetchval.call_args_list[1][0]
+    page_sql, page_clearance = mock_conn.fetch.call_args[0][:2]
+
+    assert count_clearance == 2
+    assert page_clearance == 2
+    assert count_clearance == page_clearance
+    assert "nivel_seguridad <= $1" in count_sql
+    assert "nivel_seguridad <= $1" in page_sql
+
+
+@pytest.mark.asyncio
+async def test_list_expedientes_sin_user_id_es_rechazado_por_el_gate_rbac(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Sin X-User-Id, `require_permission` (D-08) YA responde 403 fail-closed
+    (`check_permission` con `user_id=None` devuelve `False` sin consultar la
+    BD) — la petición ni siquiera llega al no-read-up de `list_expedientes`/
+    `resolve_caller_clearance`. Comportamiento REAL observado (no el asumido de
+    "degrada a PUBLICA y lista igual"): fail-closed en la capa RBAC, más
+    estricto todavía que el no-read-up del servicio."""
+    client, mock_conn = client_with_conn
+
+    response = await client.get(
+        "/api/v1/expedientes",
+        headers={"X-Tenant-Slug": TENANT_SLUG},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetchrow.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +383,11 @@ async def test_update_expediente_status(
     closed_record = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed")
 
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
-    # First fetchrow → get_expediente_by_id (current state check)
-    # Second fetchrow → update_expediente RETURNING
-    mock_conn.fetchrow.side_effect = [open_record, closed_record]
+    # 1st fetchrow → resolve_caller_clearance (RF-SEG-08, caller_clearance) → None
+    #   (usuario sin fila en auth_users/sin membresías) → PUBLICA (1).
+    # 2nd fetchrow → get_expediente_by_id (current state check)
+    # 3rd fetchrow → update_expediente RETURNING
+    mock_conn.fetchrow.side_effect = [None, open_record, closed_record]
     # fetch → radicados list (empty for get_expediente_by_id call)
     mock_conn.fetch.return_value = []
 
@@ -291,6 +400,64 @@ async def test_update_expediente_status(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_update_expediente_above_clearance_returns_404_not_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """RF-SEG-08 no-read-up: un expediente por encima del clearance del llamante
+    responde 404 (no 403) — no revela su existencia. `get_expediente_by_id`
+    filtra `nivel_seguridad <= max_clearance`; con el llamante en PUBLICA (1) y
+    el expediente por encima, la query real no devolvería fila — se simula
+    aquí con `fetchrow → None` en la 2.ª llamada (existencia)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    # 1st fetchrow → resolve_caller_clearance → None (sin membresías) → PUBLICA(1)
+    # 2nd fetchrow → get_expediente_by_id — filtrado por clearance → None
+    mock_conn.fetchrow.side_effect = [None, None]
+
+    response = await client.patch(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        json={"name": "Nuevo nombre"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "expediente_not_found"
+
+
+@pytest.mark.asyncio
+async def test_update_expediente_within_clearance_returns_200(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Contraparte del test anterior: con clearance suficiente (root → CLASIFICADA)
+    para ver el expediente, el PATCH de un campo no-disposición (name) procede
+    normalmente y devuelve 200."""
+    client, mock_conn = client_with_conn
+    existing_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    updated_record = make_expediente_record(
+        exp_id=EXPEDIENTE_ID, nivel_seguridad=3, name="Nuevo nombre"
+    )
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    # 1st fetchrow → resolve_caller_clearance → is_root → CLASIFICADA (3)
+    # 2nd fetchrow → get_expediente_by_id (visible: 3 <= 3)
+    # 3rd fetchrow → update_expediente RETURNING
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True, "max_level": None},
+        existing_record,
+        updated_record,
+    ]
+    mock_conn.fetch.return_value = []
+
+    response = await client.patch(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        json={"name": "Nuevo nombre"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Nuevo nombre"
 
 
 @pytest.mark.asyncio

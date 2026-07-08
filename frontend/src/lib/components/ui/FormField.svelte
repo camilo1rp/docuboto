@@ -14,6 +14,9 @@
 
   Props:
     id         string   — id del control (obligatorio para asociar label)
+    name       string   — atributo `name` del control HTML, para FormData
+                          nativo en formularios con `method="POST"` +
+                          form actions de SvelteKit (default: usa `id`)
     label      string   — texto del label visible
     type       string   — 'text'|'email'|'password'|'number'|'date'|'select'|'textarea'
     value      any      — valor del campo (bindable)
@@ -31,6 +34,8 @@
 -->
 <script>
   export let id = "";
+  /** Atributo `name` del control HTML (default: `id`) — necesario para FormData nativo. */
+  export let name = "";
   export let label = "";
 
   /** @type {'text'|'email'|'password'|'number'|'date'|'select'|'textarea'} */
@@ -47,6 +52,7 @@
   /** @type {Array<{value: string; label: string}>} */
   export let options = [];
 
+  $: fieldName = name || id;
   $: hintId = hint ? `${id}-hint` : undefined;
   // El contenedor de error existe siempre en el DOM; siempre incluimos su ID
   // en aria-describedby para que el campo quede asociado desde el inicio.
@@ -69,6 +75,7 @@
     <div class="op-field__select-wrapper">
       <select
         {id}
+        name={fieldName}
         class="op-field__control op-field__select"
         bind:value
         {disabled}
@@ -91,6 +98,7 @@
   {:else if type === "textarea"}
     <textarea
       {id}
+      name={fieldName}
       class="op-field__control op-field__textarea"
       bind:value
       {placeholder}
@@ -106,6 +114,7 @@
   {:else if type === "number"}
     <input
       {id}
+      name={fieldName}
       type="number"
       class="op-field__control op-field__input"
       bind:value
@@ -122,6 +131,7 @@
   {:else if type === "email"}
     <input
       {id}
+      name={fieldName}
       type="email"
       class="op-field__control op-field__input"
       bind:value
@@ -138,6 +148,7 @@
   {:else if type === "password"}
     <input
       {id}
+      name={fieldName}
       type="password"
       class="op-field__control op-field__input"
       bind:value
@@ -154,6 +165,7 @@
   {:else if type === "date"}
     <input
       {id}
+      name={fieldName}
       type="date"
       class="op-field__control op-field__input"
       bind:value
@@ -171,6 +183,7 @@
     <!-- type="text" (default) -->
     <input
       {id}
+      name={fieldName}
       type="text"
       class="op-field__control op-field__input"
       bind:value

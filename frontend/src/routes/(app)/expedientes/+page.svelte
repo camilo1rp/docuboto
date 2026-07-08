@@ -10,26 +10,582 @@
 -->
 
 <!--
-  Listado de expedientes — placeholder (T-12 implementará la vista completa).
-  Sirve como punto de navegación para el breadcrumb del workspace de expediente.
+  /expedientes — Listado de expedientes (T-12, RF-UI-05).
+
+  Todo el estado de la vista (filtros, página) vive en la URL: los cambios usan
+  goto() y re-ejecutan +page.server.js#load (navegación cliente de SvelteKit,
+  sin recarga completa). No hay ningún endpoint proxy /expedientes/api — D-05
+  se cumple por construcción (el access_token nunca sale del servidor).
+
+  Filtros soportados por /api/v1/expedientes/search:
+    - q (texto libre, opcional; se omite del backend si tiene <2 caracteres)
+    - status: open | closed | transferred
+    - date_from, date_to (ISO date)
+    - page (size fijo en 20, no configurable desde la UI)
+
+  Acción de fila: solo "Abrir" (enlace al workspace del expediente, T-10).
+  NO hay cerrar/transferir aquí: el backend los exige con crud>=3 pero
+  /auth/me expone permissions[] sin nivel crud — no se puede espejar esa
+  condición sin renderizar botones que el backend rechazaría (peor que no
+  mostrarlos). Cerrar/transferir viven en el workspace de expediente.
+
+  nivel_seguridad: NO se muestra en el listado ni en el formulario de
+  creación (fijo en 1/PÚBLICA) — ver nota en +page.server.js#actions.create.
 -->
 <script>
+  import { onMount } from "svelte";
+  import { goto, invalidateAll } from "$app/navigation";
+  import { enhance } from "$app/forms";
+  import { navigating } from "$app/stores";
+  import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { permissions } from "$lib/stores/auth.js";
+
+  import DataTable from "$lib/components/ui/DataTable.svelte";
+  import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import FormField from "$lib/components/ui/FormField.svelte";
+  import Modal from "$lib/components/ui/Modal.svelte";
+
+  /** @type {import('./$types').PageData} */
+  export let data;
+  /** @type {import('./$types').ActionData} */
+  export let form;
+
+  const pageSize = 20;
+
+  // ---------------------------------------------------------------------------
+  // Filtros — estado editable del formulario, resincronizado desde la URL en
+  // cada carga (M-4): sin esto, navegar atrás/adelante cambia la tabla pero
+  // deja los inputs con los valores de la navegación anterior.
+  // ---------------------------------------------------------------------------
+  let filterQ = "";
+  let filterStatus = "";
+  let filterDateFrom = "";
+  let filterDateTo = "";
+  let dateRangeError = "";
+
+  /** @param {{q?: string, status?: string, dateFrom?: string, dateTo?: string}|undefined} filters */
+  function syncFiltersFromUrl(filters) {
+    filterQ = filters?.q ?? "";
+    filterStatus = filters?.status ?? "";
+    filterDateFrom = filters?.dateFrom ?? "";
+    filterDateTo = filters?.dateTo ?? "";
+  }
+
+  $: syncFiltersFromUrl(data.initialFilters);
+
+  // ---------------------------------------------------------------------------
+  // Datos de la tabla — siempre reflejan la última carga SSR (goto() los renueva)
+  // ---------------------------------------------------------------------------
+  $: expedientes = data.expedientes ?? [];
+  $: total = data.total ?? 0;
+  $: currentPage = data.initialFilters?.page ?? 1;
+
+  // $navigating: solo mientras SvelteKit resuelve una navegación HACIA esta
+  // misma vista (filtro/página/reintentar). Una navegación de salida (p. ej.
+  // "Abrir" a /expedientes/{id}) no debe hacer parpadear la tabla a esqueleto.
+  $: loading = $navigating?.to?.route?.id === "/(app)/expedientes";
+
+  // ---------------------------------------------------------------------------
+  // Autorización (espejo del RBAC; el backend siempre re-valida — ADR-013/020)
+  // ---------------------------------------------------------------------------
+  $: canManage = $permissions.includes("USUA_PERM_EXPEDIENTE");
+
+  onMount(() => {
+    setBreadcrumbs([{ label: "Expedientes" }]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Helpers de presentación
+  // ---------------------------------------------------------------------------
+  const STATUS_LABELS = { open: "Abierto", closed: "Cerrado", transferred: "Transferido" };
+  // "closed" (cerrado) es un estado normal del ciclo de vida, no un error:
+  // StatusChip mapea closed→rojo, así que se pide explícitamente "neutral" (gris).
+  const STATUS_CHIP_MAP = { open: "active", closed: "neutral", transferred: "info" };
+
+  const TABLE_COLUMNS = [
+    { key: "code", label: "Código", width: "160px" },
+    { key: "name", label: "Nombre" },
+    { key: "status", label: "Estado", width: "140px" },
+    { key: "opened_at", label: "Apertura", width: "130px" },
+    { key: "actions", label: "Acciones", width: "110px" },
+  ];
+
+  /** @param {string|null|undefined} iso */
+  function formatDate(iso) {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleDateString("es-CO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filtros y paginación — todo pasa por goto() (URL = fuente de verdad)
+  // ---------------------------------------------------------------------------
+
+  /** @param {number} page */
+  function buildParams(page = 1) {
+    const params = new URLSearchParams();
+    if (filterQ.trim().length >= 2) params.set("q", filterQ.trim());
+    if (filterStatus) params.set("status", filterStatus);
+    if (filterDateFrom) params.set("date_from", filterDateFrom);
+    if (filterDateTo) params.set("date_to", filterDateTo);
+    if (page > 1) params.set("page", String(page));
+    return params;
+  }
+
+  function applyFilters() {
+    dateRangeError = "";
+    if (filterDateFrom && filterDateTo && filterDateFrom > filterDateTo) {
+      dateRangeError = "La fecha inicio no puede ser posterior a la fecha fin.";
+      return;
+    }
+    goto(`/expedientes?${buildParams(1).toString()}`, { keepFocus: true });
+  }
+
+  function clearFilters() {
+    filterQ = "";
+    filterStatus = "";
+    filterDateFrom = "";
+    filterDateTo = "";
+    dateRangeError = "";
+    goto("/expedientes", { keepFocus: true });
+  }
+
+  /** @param {CustomEvent<{page: number}>} e */
+  function onPageChange(e) {
+    goto(`/expedientes?${buildParams(e.detail.page).toString()}`);
+  }
+
+  $: hasActiveFilters = !!(filterQ.trim() || filterStatus || filterDateFrom || filterDateTo);
+
+  // ---------------------------------------------------------------------------
+  // Modal de creación (actions.create — form action nativo, sin +server.js)
+  // ---------------------------------------------------------------------------
+  let showCreateModal = false;
+  let createName = "";
+  let createDescription = "";
+  let createTrdSerieId = "";
+  let creating = false;
+
+  function openCreateModal() {
+    createName = "";
+    createDescription = "";
+    createTrdSerieId = "";
+    showCreateModal = true;
+  }
+
+  // Si la creación falla (fail() del action), el modal debe quedar/volver abierto
+  // para mostrar el error — SvelteKit no navega en un fail(), solo actualiza `form`.
+  // También repuebla el formulario con los `values` que devuelve fail() (M-7):
+  // sin esto, un 422 del backend borra lo que el usuario ya había escrito.
+  $: if (form?.error) {
+    showCreateModal = true;
+    if (form.values) {
+      createName = form.values.name ?? "";
+      createDescription = form.values.description ?? "";
+      createTrdSerieId = form.values.trdSerieId ?? "";
+    }
+  }
+
+  // El error de validación de `name` ("obligatorio" / "máximo 500 caracteres")
+  // se anexa también al campo (aria-invalid + aria-describedby vía FormField,
+  // M-7): antes solo vivía en el aviso general del modal (role="alert", que
+  // se mantiene arriba para todos los tipos de error) y un usuario de lector
+  // de pantalla que tabulaba directo al campo no percibía que estaba
+  // inválido. Otros errores (upstream_error, connection_error,
+  // metadata_validation_failed, unauthenticated) no son atribuibles a un
+  // campo concreto y solo aparecen en el aviso general.
+  $: createNameError = form?.error === "validation_error" ? (form.detail ?? "") : "";
 </script>
 
 <svelte:head>
   <title>Expedientes — OrpycaMCP</title>
 </svelte:head>
 
-<div style="padding: var(--op-space-5);">
-  <h1
-    style="font-size: var(--op-font-lg); font-weight: var(--op-weight-bold); color: var(--op-text); margin-bottom: var(--op-space-4);"
-  >
-    Expedientes
-  </h1>
-  <EmptyState
-    icon="fa-folder-open"
-    title="Vista en construcción"
-    description="La gestión de expedientes (T-12) se implementará en la siguiente tarea. Accede a un expediente directamente desde la bandeja de radicados."
-  />
+<div class="expedientes">
+  <!-- -----------------------------------------------------------------------
+    Encabezado
+  ----------------------------------------------------------------------- -->
+  <header class="expedientes__header">
+    <h1 class="expedientes__title">Expedientes</h1>
+    {#if canManage}
+      <Button variant="primary" size="sm" icon="fas fa-plus" on:click={openCreateModal}>
+        Crear expediente
+      </Button>
+    {/if}
+  </header>
+
+  <!-- -----------------------------------------------------------------------
+    Filtros
+  ----------------------------------------------------------------------- -->
+  <!-- Sin aria-label: el <form role="search"> de dentro ya es el landmark
+    (dos landmarks "region" anidados casi redundantes eran ruido para lectores
+    de pantalla). -->
+  <section class="expedientes__filters">
+    <form
+      class="filters-form"
+      role="search"
+      aria-label="Buscar expedientes"
+      on:submit|preventDefault={applyFilters}
+    >
+      <div class="filters-form__fields">
+        <FormField
+          label="Buscar"
+          type="text"
+          id="filter-q"
+          bind:value={filterQ}
+          placeholder="Nombre o código del expediente…"
+          hint="Mínimo 2 caracteres para buscar por texto."
+        />
+        <FormField
+          label="Estado"
+          type="select"
+          id="filter-status"
+          bind:value={filterStatus}
+          options={[
+            { value: "", label: "Todos los estados" },
+            { value: "open", label: "Abierto" },
+            { value: "closed", label: "Cerrado" },
+            { value: "transferred", label: "Transferido" },
+          ]}
+        />
+        <FormField
+          label="Fecha desde"
+          type="date"
+          id="filter-date-from"
+          bind:value={filterDateFrom}
+          error={dateRangeError}
+        />
+        <FormField label="Fecha hasta" type="date" id="filter-date-to" bind:value={filterDateTo} />
+      </div>
+
+      <div class="filters-form__actions">
+        <Button type="submit" variant="primary" size="sm" icon="fas fa-filter">Filtrar</Button>
+        {#if hasActiveFilters}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            icon="fas fa-times"
+            on:click={clearFilters}
+          >
+            Limpiar
+          </Button>
+        {/if}
+      </div>
+    </form>
+  </section>
+
+  <!-- -----------------------------------------------------------------------
+    Listado
+  ----------------------------------------------------------------------- -->
+  {#if data.loadError && expedientes.length === 0 && !loading}
+    <EmptyState
+      icon="fas fa-exclamation-circle"
+      title="Error al cargar los expedientes"
+      description={data.loadError}
+    >
+      <Button variant="primary" on:click={invalidateAll}>Reintentar</Button>
+    </EmptyState>
+  {:else if loading || expedientes.length > 0}
+    <div class="expedientes__table-wrap">
+      <DataTable
+        columns={TABLE_COLUMNS}
+        rows={expedientes}
+        totalCount={total}
+        page={currentPage}
+        {pageSize}
+        {loading}
+        caption="Listado de expedientes"
+        on:pageChange={onPageChange}
+      >
+        <svelte:fragment slot="row" let:row>
+          <td class="op-datatable__td">
+            <code class="expediente-code">{row.code}</code>
+          </td>
+          <td class="op-datatable__td">{row.name}</td>
+          <td class="op-datatable__td">
+            <StatusChip
+              status={STATUS_CHIP_MAP[row.status] ?? "neutral"}
+              label={STATUS_LABELS[row.status] ?? row.status}
+              dot={true}
+            />
+          </td>
+          <td class="op-datatable__td">
+            <time datetime={row.opened_at}>{formatDate(row.opened_at)}</time>
+          </td>
+          <td class="op-datatable__td">
+            <a
+              href="/expedientes/{row.id}"
+              class="action-link"
+              aria-label="Abrir expediente {row.name}"
+            >
+              <i class="fas fa-folder-open" aria-hidden="true"></i>
+              Abrir
+            </a>
+          </td>
+        </svelte:fragment>
+      </DataTable>
+    </div>
+  {:else}
+    <EmptyState
+      icon="fas fa-folder-open"
+      title={hasActiveFilters ? "Sin resultados" : "Sin expedientes"}
+      description={hasActiveFilters
+        ? "No hay expedientes que coincidan con los filtros aplicados."
+        : "Aún no se han creado expedientes."}
+    >
+      {#if hasActiveFilters}
+        <Button variant="ghost" on:click={clearFilters}>Limpiar filtros</Button>
+      {:else if canManage}
+        <Button variant="primary" on:click={openCreateModal}>Crear expediente</Button>
+      {/if}
+    </EmptyState>
+  {/if}
 </div>
+
+{#if canManage}
+  <!-- =========================================================================
+  Modal: crear expediente (form action nativo — actions.create)
+========================================================================= -->
+  <Modal
+    open={showCreateModal}
+    title="Crear expediente"
+    size="md"
+    on:close={() => (showCreateModal = false)}
+  >
+    {#if form?.error}
+      <p class="modal-error" role="alert">{form.detail}</p>
+    {/if}
+    <form
+      id="expediente-create-form"
+      method="POST"
+      action="?/create"
+      use:enhance={() => {
+        creating = true;
+        return async ({ update }) => {
+          await update();
+          creating = false;
+        };
+      }}
+    >
+      <div class="modal-form">
+        <FormField
+          id="create-name"
+          name="name"
+          label="Nombre"
+          type="text"
+          required={true}
+          bind:value={createName}
+          placeholder="Asunto o nombre del expediente"
+          hint="Obligatorio, máximo 500 caracteres."
+          error={createNameError}
+        />
+        <FormField
+          id="create-description"
+          name="description"
+          label="Descripción (opcional)"
+          type="textarea"
+          bind:value={createDescription}
+          rows={3}
+        />
+        <FormField
+          id="create-trd"
+          name="trd_serie_id"
+          label="Serie TRD (opcional)"
+          type="text"
+          bind:value={createTrdSerieId}
+          placeholder="UUID de la serie documental"
+          hint="Déjalo vacío si no aplica una serie TRD específica."
+        />
+        <!--
+        Nivel de seguridad: NO seleccionable en v1. SessionUser (JWT + /auth/me)
+        no expone el clearance del usuario en el front, así que no hay forma de
+        acotar este <select> a los niveles que el usuario podría leer de vuelta
+        (decisión de orfeo-architect, E22 T-12). Se crea siempre en nivel 1
+        (PÚBLICA) desde +page.server.js#actions.create. Cuando el clearance esté
+        disponible en el front, descomentar y acotar `options` a los niveles
+        <= clearance del usuario:
+
+        <FormField
+          id="create-nivel"
+          name="nivel_seguridad"
+          label="Nivel de seguridad"
+          type="select"
+          bind:value={createNivelSeguridad}
+          options={NIVEL_OPTIONS}
+        />
+      -->
+      </div>
+    </form>
+    <svelte:fragment slot="footer">
+      <Button
+        type="submit"
+        form="expediente-create-form"
+        variant="primary"
+        size="sm"
+        loading={creating}
+        disabled={creating || !createName.trim()}
+      >
+        <i class="fas fa-save" aria-hidden="true"></i>
+        Crear
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={creating}
+        on:click={() => (showCreateModal = false)}
+      >
+        Cancelar
+      </Button>
+    </svelte:fragment>
+  </Modal>
+{/if}
+
+<style lang="scss">
+  // ---------------------------------------------------------------------------
+  // Layout principal
+  // ---------------------------------------------------------------------------
+
+  .expedientes {
+    padding: var(--op-space-6);
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-4);
+  }
+
+  .expedientes__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--op-space-3);
+    padding-bottom: var(--op-space-4);
+    border-bottom: 1px solid var(--op-border);
+  }
+
+  .expedientes__title {
+    font-size: var(--op-font-xl);
+    font-weight: var(--op-weight-bold);
+    color: var(--op-text);
+    margin: 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filtros
+  // ---------------------------------------------------------------------------
+
+  .expedientes__filters {
+    background: var(--op-surface);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    padding: var(--op-space-4) var(--op-space-5);
+  }
+
+  .filters-form {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--op-space-4);
+    flex-wrap: wrap;
+  }
+
+  .filters-form__fields {
+    display: flex;
+    gap: var(--op-space-3);
+    flex-wrap: wrap;
+    flex: 1;
+  }
+
+  .filters-form__actions {
+    display: flex;
+    gap: var(--op-space-2);
+    align-items: flex-end;
+    margin-bottom: 2px;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tabla
+  // ---------------------------------------------------------------------------
+
+  .expedientes__table-wrap {
+    background: var(--op-surface);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    overflow: hidden;
+  }
+
+  .expediente-code {
+    font-family: monospace;
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-primary-dark);
+    background: var(--op-primary-light);
+    padding: 2px var(--op-space-2);
+    border-radius: var(--op-radius-sm);
+    white-space: nowrap;
+  }
+
+  .action-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--op-space-1);
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-primary-dark);
+    text-decoration: none;
+    padding: 3px var(--op-space-2);
+    border-radius: var(--op-radius-sm);
+    border: 1px solid var(--op-primary-light);
+    background: var(--op-primary-light);
+    transition:
+      background var(--op-transition),
+      color var(--op-transition);
+
+    &:hover {
+      background: var(--op-primary);
+      color: var(--op-surface);
+      border-color: var(--op-primary);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: 2px;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modal de creación
+  // ---------------------------------------------------------------------------
+
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-3);
+  }
+
+  .modal-error {
+    background: var(--op-error-bg);
+    color: var(--op-error-fg);
+    border: 1px solid var(--op-error);
+    border-radius: var(--op-radius);
+    padding: var(--op-space-3) var(--op-space-4);
+    font-size: var(--op-font-sm);
+    margin: 0 0 var(--op-space-4);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Responsive
+  // ---------------------------------------------------------------------------
+
+  @media (max-width: 768px) {
+    .expedientes {
+      padding: var(--op-space-4);
+    }
+  }
+</style>

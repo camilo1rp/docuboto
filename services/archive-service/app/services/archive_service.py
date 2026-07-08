@@ -18,6 +18,7 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
+from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.audit_read import AuditReadRepository
@@ -59,6 +60,18 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "closed": {"transferred"},
     "transferred": set(),
 }
+
+# Traza AGREGADA de consulta (RF-BUS-10/E09; Ley 1712/2014, Decreto 1081/2015):
+# `object_type` deliberadamente FUERA de `AuditReadRepository._OBJECT_TYPES`
+# (`app/repositories/audit_read.py`, hoy `("expediente", "expediente_indice")`)
+# — un listado/búsqueda no es una lectura DE un expediente concreto, así que
+# no debe colarse en `GET /{id}/historial-acceso` ni en el `<pistaAuditoria>`
+# del índice FIRMADO de ninguno de los expedientes devueltos (Ac. AGN
+# 001/2024 art. 4.3.2.3): esos se anclan al expediente puntual, esto habla de
+# un CONJUNTO. `object_ref` es una constante por el mismo motivo: una
+# consulta agregada no tiene un único expediente al que atribuirse.
+_SEARCH_OBJECT_TYPE = "expediente_busqueda"
+_SEARCH_OBJECT_REF = "listado"
 
 
 class ArchiveService:
@@ -130,12 +143,135 @@ class ArchiveService:
         status: str | None,
         page: int,
         size: int,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> tuple[list[ExpedienteResponse], int]:
+        # No-read-up (RF-SEG-08): mismo criterio que `get_expediente`/`search_expedientes`
+        # — antes este listado no filtraba por `nivel_seguridad` en absoluto, así que
+        # cualquier portador de USUA_PERM_EXPEDIENTE enumeraba expedientes RESERVADA/
+        # CLASIFICADA (code/name/description/metadata/disposition/opened_by).
         offset = (page - 1) * size
+        clearance = await self._repo.caller_clearance(user_id)
         expedientes, total = await self._repo.list_expedientes(
-            status=status, offset=offset, limit=size
+            status=status, offset=offset, limit=size, max_clearance=clearance
+        )
+        # Traza AGREGADA de consulta (RF-BUS-10): UNA entrada por listado
+        # exitoso — ver `_audit_search_access`.
+        await self._audit_search_access(
+            action="archive.expediente_consultado_listado",
+            filtros={"status": status},
+            total=total,
+            page=page,
+            size=size,
+            user_id=user_id,
+            canal=canal,
         )
         return [_to_expediente_response(e) for e in expedientes], total
+
+    async def search_expedientes(
+        self,
+        *,
+        q: str | None,
+        status: str | None,
+        date_from: date | None,
+        date_to: date | None,
+        metadata_filter: dict | None,
+        page: int,
+        size: int,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Full-text search de expedientes (E09/ADR-014).
+
+        Envuelve `ArchiveRepository.search_expedientes` (antes invocado
+        directamente desde el router, sin pasar por el servicio) para poder
+        dejar la traza agregada de consulta (RF-BUS-10) con el mismo criterio
+        que `list_expedientes` — actor/canal/total en un solo sitio.
+        """
+        rows, total = await self._repo.search_expedientes(
+            q=q,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+            metadata_filter=metadata_filter,
+            page=page,
+            size=size,
+            user_id=user_id,
+        )
+        # `q` es texto libre tecleado por quien busca y puede contener datos
+        # personales (nombres, números de documento, asuntos) — RF-BUS-10
+        # exige dejar constancia de los CRITERIOS y el TOTAL para rendición de
+        # cuentas, no necesariamente el texto crudo, que además duplicaría
+        # PII dentro de una cadena de auditoría INMUTABLE y de retención
+        # indefinida (Ley 1712/2014 principio de minimización). Se registra
+        # solo presencia + longitud de `q`; `status`/`date_from`/`date_to`
+        # son criterios estructurales (no datos personales del buscador) y sí
+        # se registran tal cual; de `metadata_filter` solo las CLAVES
+        # consultadas (los valores podrían igualmente ser PII).
+        filtros = {
+            "q_presente": q is not None,
+            "q_len": len(q) if q else None,
+            "status": status,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "metadata_filter_keys": sorted(metadata_filter) if metadata_filter else None,
+        }
+        await self._audit_search_access(
+            action="archive.expediente_consultado_busqueda",
+            filtros=filtros,
+            total=total,
+            page=page,
+            size=size,
+            user_id=user_id,
+            canal=canal,
+        )
+        return rows, total
+
+    async def _audit_search_access(
+        self,
+        *,
+        action: str,
+        filtros: dict,
+        total: int,
+        page: int,
+        size: int,
+        user_id: uuid.UUID | None,
+        canal: str,
+    ) -> None:
+        """Traza AGREGADA de consulta (RF-BUS-10/E09; Ley 1712/2014, Decreto
+        1081/2015) — gemelo de `_audit_read_access` pero UNA sola entrada por
+        listado/búsqueda EXITOSO, nunca por fila del resultado: auditar por
+        fila (i) infla la cadena de hash de `public.audit_log` (encadenada
+        por tenant, `orpycamcp_common.audit`) proporcionalmente a `size`, y
+        (ii) contaminaría `GET /{id}/historial-acceso` y el
+        `<pistaAuditoria>` del índice FIRMADO de CADA expediente devuelto
+        (Ac. AGN 001/2024 art. 4.3.2.3) con eventos que en realidad describen
+        un CONJUNTO, no una lectura de ESE expediente — de ahí que
+        `object_type`/`object_ref` sean las constantes de módulo
+        `_SEARCH_OBJECT_TYPE`/`_SEARCH_OBJECT_REF`, deliberadamente fuera del
+        `_OBJECT_TYPES` que lee `AuditReadRepository`.
+
+        Best-effort: nunca degrada la consulta a 500 por un fallo de
+        auditoría. Mismo gate que `_audit_read_access`: canal no auditable o
+        `user_id is None` descartan el registro (sin actor real no hay a
+        quién atribuir la consulta).
+        """
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action=action,
+                object_type=_SEARCH_OBJECT_TYPE,
+                object_ref=_SEARCH_OBJECT_REF,
+                actor=str(user_id),
+                canal=canal,
+                payload={**filtros, "total": total, "page": page, "size": size},
+            )
+        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+            logger.warning("audit.append (%s) failed", action, exc_info=True)
 
     async def get_expediente(
         self,
@@ -144,7 +280,9 @@ class ArchiveService:
         canal: str = "system",
     ) -> ExpedienteResponse:
         max_clearance = await self._repo.caller_clearance(user_id)
-        expediente = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        expediente = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if expediente is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -188,9 +326,20 @@ class ArchiveService:
             logger.warning("audit.append (expediente_consultado) failed", exc_info=True)
 
     async def update_expediente(
-        self, expediente_id: uuid.UUID, payload: ExpedienteUpdate
+        self,
+        expediente_id: uuid.UUID,
+        payload: ExpedienteUpdate,
+        user_id: uuid.UUID | None = None,
     ) -> ExpedienteResponse:
-        existing = await self._repo.get_expediente_by_id(expediente_id)
+        # No-read-up (RF-SEG-08): el PATCH devuelve `ExpedienteResponse` completo
+        # (mismo leak que `GET /{id}` si se usara el clearance "sin restricción")
+        # — resuelve el clearance real del llamante, igual que `get_expediente`.
+        # Mantiene semántica 404-no-403: un expediente por encima del clearance
+        # no revela su existencia.
+        max_clearance = await self._repo.caller_clearance(user_id)
+        existing = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if existing is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -236,7 +385,13 @@ class ArchiveService:
     # ------------------------------------------------------------------
 
     async def _expediente_or_404(self, expediente_id: uuid.UUID):
-        exp = await self._repo.get_expediente_by_id(expediente_id)
+        # Pre-condición interna de existencia/estado para close/transfer — NO una
+        # lectura expuesta al llamante; ambos ya exigen `USUA_PERM_EXPEDIENTE`
+        # crud>=3 en el router (D-08). No-read-up aquí queda DIFERIDO (decisión
+        # del arquitecto) — ver `core.clearance.CLEARANCE_SIN_RESTRICCION`.
+        exp = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -415,7 +570,9 @@ class ArchiveService:
         default sin restricción, dejando el foliado como una ruta alterna
         para leer un expediente CLASIFICADA sin la clearance debida."""
         max_clearance = await self._repo.caller_clearance(user_id)
-        exp = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        exp = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -454,7 +611,9 @@ class ArchiveService:
         lecturas del expediente — un expediente por encima del clearance del
         llamante es 404 (no revela su existencia), ANTES de tocar audit_log."""
         max_clearance = await self._repo.caller_clearance(user_id)
-        exp = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        exp = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -478,7 +637,9 @@ class ArchiveService:
         perfil v4, R4-b) — deliberadamente NO firmado (la matriz RBAC cambia
         con el tiempo). Mismo gate no-read-up que el resto de lecturas."""
         max_clearance = await self._repo.caller_clearance(user_id)
-        exp = await self._repo.get_expediente_by_id(expediente_id, max_clearance)
+        exp = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
         if exp is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -520,7 +681,12 @@ class ArchiveService:
     async def link_radicado(
         self, expediente_id: uuid.UUID, payload: RadicadoLink
     ) -> ExpedienteRadicadoResponse:
-        existing = await self._repo.get_expediente_by_id(expediente_id)
+        # No-read-up DIFERIDO aquí (decisión del arquitecto, ver
+        # `core.clearance.CLEARANCE_SIN_RESTRICCION`) — brecha conocida y
+        # explícita, no escondida en un default de firma. RF-SEG-08.
+        existing = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
         if existing is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -572,8 +738,15 @@ class ArchiveService:
         self, expediente_id: uuid.UUID, items: list[RadicadoLink]
     ) -> BatchLinkResult:
         """Vincula múltiples radicados de una vez (idempotente) y regenera el índice
-        una sola vez al final. Omite los ya vinculados (paridad legado: inclusión masiva)."""
-        existing = await self._repo.get_expediente_by_id(expediente_id)
+        una sola vez al final. Omite los ya vinculados (paridad legado: inclusión masiva).
+
+        No-read-up DIFERIDO aquí (decisión del arquitecto, ver
+        `core.clearance.CLEARANCE_SIN_RESTRICCION`) — brecha conocida y explícita,
+        no escondida en un default de firma. RF-SEG-08.
+        """
+        existing = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
         if existing is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -622,8 +795,15 @@ class ArchiveService:
         retiro) — la trazabilidad completa (Ley 594/2000; Ac. AGN 001/2024
         art. 4.3.2.3) exige identificar al agente responsable, no solo cuándo
         y por qué. Queda tanto en la hoja de ruta del expediente
-        (`expediente_eventos`) como en el `audit_log` inmutable (Canal A)."""
-        existing = await self._repo.get_expediente_by_id(expediente_id)
+        (`expediente_eventos`) como en el `audit_log` inmutable (Canal A).
+
+        No-read-up DIFERIDO aquí (decisión del arquitecto, ver
+        `core.clearance.CLEARANCE_SIN_RESTRICCION`) — brecha conocida y explícita,
+        no escondida en un default de firma. RF-SEG-08.
+        """
+        existing = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
         if existing is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

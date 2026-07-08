@@ -45,6 +45,19 @@ logger = logging.getLogger(__name__)
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
 
+# TODO seguridad, diferido — ver hilo RF-SEG-08. `ArchiveRepository.get_expediente_by_id`
+# exige `max_clearance` explícito (ya no tiene default peligroso). Los llamantes
+# listados abajo lo resuelven como pre-condición interna de existencia/estado
+# (p. ej. "¿existe y está 'open'?" antes de vincular/excluir/regenerar índice/
+# transferir) y NO como una lectura expuesta al usuario: la autorización real de
+# la operación ya la impone `require_permission(..., min_crud=3)` en el router
+# (D-08). Aplicar no-read-up (clearance real del llamante) en estos puntos queda
+# DIFERIDO por decisión del arquitecto — este nombre deja el riesgo VISIBLE en
+# el código en vez de escondido en un default de firma.
+# Usado por: ArchiveService.{link_radicado, link_radicados_batch, unlink_radicado,
+# _expediente_or_404}; IndexService.regenerate; TransferenciaService.create.
+CLEARANCE_SIN_RESTRICCION = CLASIFICADA
+
 
 async def resolve_caller_clearance(
     conn: asyncpg.Connection, user_id: uuid.UUID | None
