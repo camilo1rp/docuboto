@@ -45,17 +45,32 @@ logger = logging.getLogger(__name__)
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
 
-# TODO seguridad, diferido — ver hilo RF-SEG-08. `ArchiveRepository.get_expediente_by_id`
-# exige `max_clearance` explícito (ya no tiene default peligroso). Los llamantes
-# listados abajo lo resuelven como pre-condición interna de existencia/estado
-# (p. ej. "¿existe y está 'open'?" antes de vincular/excluir/regenerar índice/
-# transferir) y NO como una lectura expuesta al usuario: la autorización real de
-# la operación ya la impone `require_permission(..., min_crud=3)` en el router
-# (D-08). Aplicar no-read-up (clearance real del llamante) en estos puntos queda
-# DIFERIDO por decisión del arquitecto — este nombre deja el riesgo VISIBLE en
-# el código en vez de escondido en un default de firma.
-# Usado por: ArchiveService.{link_radicado, link_radicados_batch, unlink_radicado,
-# _expediente_or_404}; IndexService.regenerate; TransferenciaService.create.
+# `ArchiveRepository.get_expediente_by_id` exige `max_clearance` explícito (ya
+# no tiene default peligroso). Los llamantes listados abajo lo resuelven como
+# pre-condición interna de existencia/estado (p. ej. "¿existe y está 'open'?"
+# antes de vincular/excluir/regenerar índice/transferir) y NO como una lectura
+# expuesta al usuario: la autorización real de la operación ya la impone
+# `require_permission(..., min_crud=3)` en el router (D-08). Este nombre deja
+# el riesgo VISIBLE en el código en vez de escondido en un default de firma.
+# Los usos NO son homogéneos — distinguir dos grupos:
+#
+# (a) `ArchiveService._expediente_or_404` (close/transfer): NO es deuda. La
+#     disposición (cierre/transferencia, crud>=3) es ortogonal al clearance de
+#     lectura por diseño DECIDIDO (Opción B, validada por
+#     archival-compliance-auditor — Ley 594/2000 arts. 22-24/27, Ley
+#     1712/2014 arts. 18-19; gatear disposición por clearance invertiría el
+#     mínimo privilegio: un archivista de custodia mueve series al AGN sin
+#     leer cada expediente reservado). El constraint de compliance es que la
+#     RESPUESTA de close/transfer no exponga contenido clasificado — resuelto
+#     con `schemas.archive.ExpedienteDisposicionResult` (metadatos de ciclo
+#     de vida, sin `metadata`/`description`/`radicados`/`opened_by`).
+#
+# (b) `ArchiveService.{link_radicado, link_radicados_batch, unlink_radicado}`;
+#     `IndexService.regenerate`; `TransferenciaService.create`: SÍ siguen
+#     DIFERIDOS — otra pregunta normativa distinta (mutar/leer el CONTENIDO de
+#     un expediente por encima del clearance del llamante, no solo
+#     transicionar su ciclo de vida), aún sin resolver por el
+#     arquitecto/compliance. No confundir con (a).
 CLEARANCE_SIN_RESTRICCION = CLASIFICADA
 
 

@@ -119,6 +119,31 @@ class ExpedienteResponse(BaseModel):
     radicados: list[ExpedienteRadicadoResponse] = []
 
 
+class ExpedienteDisposicionResult(BaseModel):
+    """Respuesta de `POST /{id}/close` y `POST /{id}/transfer`.
+
+    Deliberadamente NO es `ExpedienteResponse`: la disposición (cierre/
+    transferencia, crud>=3) es ortogonal al clearance de lectura del llamante
+    (RF-SEG-08 Opción B, validada por archival-compliance-auditor — Ley
+    594/2000 arts. 22-24/27, Ley 1712/2014 arts. 18-19). Un archivista de
+    custodia con permiso de disposición pero SIN clearance para leer el
+    contenido de un expediente RESERVADA/CLASIFICADA puede cerrarlo o
+    transferirlo — pero la respuesta de esa operación no debe filtrarle ese
+    contenido. Por eso este modelo trae solo metadatos de ciclo de vida y
+    omite deliberadamente `metadata`, `description`, `radicados` y
+    `opened_by`.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    status: str
+    disposition: dict[str, Any] | None = None
+    closed_at: datetime | None = None
+    transferred_at: datetime | None = None
+
+
 # Disposición: códigos AGN (CT/E/S/M) + valores antiguos por compatibilidad.
 _DISPOSITION = Literal["CT", "E", "S", "M", "eliminate", "conserve", "digitize", "select"]
 

@@ -27,6 +27,7 @@ from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.archive import (
     BatchLinkResult,
     ExpedienteCreate,
+    ExpedienteDisposicionResult,
     ExpedienteEventoResponse,
     ExpedienteIndice,
     ExpedienteRadicadoResponse,
@@ -301,10 +302,12 @@ class ArchiveService:
         """Pista de acceso (E15 perfil v4, R3-a) — gemelo de
         `IndexService._audit_read_access`: una lectura exitosa de `GET
         /expedientes/{id}` deja traza en `audit_log` con el actor real y el
-        canal de origen; 'system' (llamadas internas tras una mutación ya
-        auditada, p. ej. `close_expediente`/`transfer_expediente` devolviendo
-        su propio resultado) NO escribe pista. Best-effort: nunca degrada la
-        lectura a 500 por un fallo de auditoría.
+        canal de origen; 'system' (llamadas internas que reutilizan
+        `get_expediente` como lectura auxiliar, no como respuesta de una
+        mutación — `close_expediente`/`transfer_expediente` ya NO pasan por
+        aquí, construyen su propia `ExpedienteDisposicionResult` sin re-leer)
+        NO escribe pista. Best-effort: nunca degrada la lectura a 500 por un
+        fallo de auditoría.
 
         `user_id is None` también descarta el registro (espejo de
         `IndexService._audit_read_access`): sin actor real no hay a quién
@@ -385,10 +388,19 @@ class ArchiveService:
     # ------------------------------------------------------------------
 
     async def _expediente_or_404(self, expediente_id: uuid.UUID):
-        # Pre-condición interna de existencia/estado para close/transfer — NO una
-        # lectura expuesta al llamante; ambos ya exigen `USUA_PERM_EXPEDIENTE`
-        # crud>=3 en el router (D-08). No-read-up aquí queda DIFERIDO (decisión
-        # del arquitecto) — ver `core.clearance.CLEARANCE_SIN_RESTRICCION`.
+        # Usado SOLO por close/transfer: pre-condición interna de existencia/
+        # estado, NO una lectura expuesta al llamante — ambos ya exigen
+        # `USUA_PERM_EXPEDIENTE` crud>=3 en el router (D-08). No-read-up aquí
+        # NO es deuda: la disposición (cierre/transferencia) es ortogonal al
+        # clearance de lectura por diseño DECIDIDO (Opción B, validada por
+        # archival-compliance-auditor — Ley 594/2000 arts. 22-24/27, Ley
+        # 1712/2014 arts. 18-19; gatear disposición por clearance invertiría
+        # el mínimo privilegio: un archivista de custodia mueve series al AGN
+        # sin leer cada expediente reservado). El único constraint es que la
+        # respuesta de close/transfer no exponga contenido clasificado — ver
+        # `ExpedienteDisposicionResult`. Ver `core.clearance.
+        # CLEARANCE_SIN_RESTRICCION` para el contraste con los usos SÍ
+        # diferidos (link/unlink/create).
         exp = await self._repo.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
@@ -419,7 +431,7 @@ class ArchiveService:
         expediente_id: uuid.UUID,
         firmante: str | None = None,
         actor_id: str | None = None,
-    ) -> ExpedienteResponse:
+    ) -> ExpedienteDisposicionResult:
         """Cierra el expediente: materializa la disposición TRD, genera la versión
         final del índice y sella XAdES-B el índice (E06 Inc.1, best-effort).
 
@@ -438,7 +450,7 @@ class ArchiveService:
         if exp.trd_serie_id is not None:
             schedule = await self.compute_retention(exp.trd_serie_id, datetime.now(tz=UTC).date())
             disposition = schedule.model_dump(mode="json")
-        await self._repo.transition_expediente(
+        transitioned = await self._repo.transition_expediente(
             expediente_id, status="closed", disposition=disposition
         )
         # Índice electrónico: versión final + sello XAdES-B al cierre (RF-EXP-06).
@@ -497,7 +509,40 @@ class ArchiveService:
                     "motivo": "sellado_xades_no_obtenido_al_cierre",
                 },
             )
-        return await self.get_expediente(expediente_id)
+        # No re-lee vía `get_expediente`: ese método resuelve el clearance del
+        # llamante (`caller_clearance(user_id)`), y aquí no se propaga
+        # `user_id` — hacerlo devolvería 404 espurio para un archivista con
+        # permiso de disposición pero sin clearance de lectura sobre un
+        # expediente RESERVADA/CLASIFICADA, pese a que el cierre YA se
+        # comprometió (`get_db_conn` es autocommit, sin transacción de
+        # request). Se construye la respuesta estrecha a partir del `exp` ya
+        # cargado + el resultado de la propia transición (ortogonalidad
+        # decidida, ver `ExpedienteDisposicionResult`).
+        #
+        # `transition_expediente` hace `UPDATE ... RETURNING *`; solo devuelve
+        # None si el WHERE id=$1 no casa, algo inalcanzable aquí (la fila la
+        # acaba de cargar `_expediente_or_404` en la misma conexión secuencial
+        # y no hay DELETE físico de expedientes). Aun así, fail-closed: un
+        # endpoint de disposición NUNCA debe reportar `status="open"` — si la
+        # transición no devolvió fila, es una invariante rota, no un cierre.
+        if transitioned is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "expediente_transition_failed",
+                    "detail": "La transición de cierre no devolvió el expediente actualizado.",
+                    "status": 409,
+                },
+            )
+        result = transitioned
+        return ExpedienteDisposicionResult(
+            id=result.id,
+            code=result.code,
+            status=result.status,
+            disposition=result.disposition,
+            closed_at=result.closed_at,
+            transferred_at=None,
+        )
 
     async def _assert_indice_firmado(self, expediente_id: uuid.UUID) -> None:
         """Exige índice electrónico 'firmado' antes de transferir.
@@ -523,7 +568,9 @@ class ArchiveService:
                 },
             )
 
-    async def transfer_expediente(self, expediente_id: uuid.UUID) -> ExpedienteResponse:
+    async def transfer_expediente(
+        self, expediente_id: uuid.UUID
+    ) -> ExpedienteDisposicionResult:
         """Transfiere el expediente (closed → transferred).
 
         Bloqueante: exige índice electrónico 'firmado' — ver
@@ -532,7 +579,9 @@ class ArchiveService:
         exp = await self._expediente_or_404(expediente_id)
         self._assert_transition(exp.status, "transferred")
         await self._assert_indice_firmado(expediente_id)
-        await self._repo.transition_expediente(expediente_id, status="transferred")
+        transitioned = await self._repo.transition_expediente(
+            expediente_id, status="transferred"
+        )
         await self._repo.insert_expediente_evento(
             expediente_id, numero_expediente=exp.code, accion="transferido"
         )
@@ -544,7 +593,28 @@ class ArchiveService:
             object_type="expediente",
             object_ref=exp.code,
         )
-        return await self.get_expediente(expediente_id)
+        # Misma razón que `close_expediente`: no re-lee vía `get_expediente`
+        # (evita el 404 espurio no-read-up) — respuesta estrecha construida a
+        # partir de la transición ya comprometida. Fail-closed idéntico: un
+        # endpoint de disposición nunca reporta el estado pre-transición.
+        if transitioned is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "expediente_transition_failed",
+                    "detail": "La transición de transferencia no devolvió el expediente actualizado.",
+                    "status": 409,
+                },
+            )
+        result = transitioned
+        return ExpedienteDisposicionResult(
+            id=result.id,
+            code=result.code,
+            status=result.status,
+            disposition=result.disposition,
+            closed_at=result.closed_at,
+            transferred_at=None,
+        )
 
     async def list_eventos(
         self, expediente_id: uuid.UUID, user_id: uuid.UUID | None = None

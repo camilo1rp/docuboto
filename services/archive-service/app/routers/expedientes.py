@@ -30,6 +30,7 @@ from app.schemas.archive import (
     BatchLinkRequest,
     BatchLinkResult,
     ExpedienteCreate,
+    ExpedienteDisposicionResult,
     ExpedienteEventoResponse,
     ExpedienteIndice,
     ExpedienteRadicadoResponse,
@@ -188,7 +189,7 @@ async def search_expedientes(
 
 @router.post(
     "/{expediente_id}/close",
-    response_model=ExpedienteResponse,
+    response_model=ExpedienteDisposicionResult,
     summary="Close expediente and materialize TRD disposition (E02)",
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
@@ -198,12 +199,19 @@ async def close_expediente(
     x_user_id: str | None = Header(default=None),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
-) -> ExpedienteResponse:
+) -> ExpedienteDisposicionResult:
     firmante = x_user_id or x_username
     # `actor_id` es estrictamente X-User-Id (UUID de auth_users.id): es lo que
     # signature-service exige para sellar el índice (E06 Inc.1, RF-FIR-11/12).
     # Sin él la firma no se intenta y el índice queda 'pendiente_firma' — el
     # cierre no se bloquea (decisión del usuario, RT-16).
+    #
+    # Respuesta estrecha (`ExpedienteDisposicionResult`), NO el expediente
+    # completo: la disposición es ortogonal al clearance de lectura del
+    # llamante (RF-SEG-08 Opción B) — devolver `ExpedienteResponse` aquí
+    # exigiría propagar `user_id` para gatear la lectura, lo que produciría
+    # un 404 espurio para quien tiene permiso de disposición pero no
+    # clearance de lectura, pese a que el cierre ya se comprometió.
     return await ArchiveService(conn, tenant_slug).close_expediente(
         expediente_id, firmante, actor_id=x_user_id
     )
@@ -211,7 +219,7 @@ async def close_expediente(
 
 @router.post(
     "/{expediente_id}/transfer",
-    response_model=ExpedienteResponse,
+    response_model=ExpedienteDisposicionResult,
     summary="Transfer expediente (closed → transferred) (E02)",
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
@@ -219,7 +227,10 @@ async def transfer_expediente(
     expediente_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
-) -> ExpedienteResponse:
+) -> ExpedienteDisposicionResult:
+    # Misma razón que `close_expediente`: respuesta estrecha, ortogonal al
+    # clearance de lectura (RF-SEG-08 Opción B) — ver
+    # `schemas.archive.ExpedienteDisposicionResult`.
     return await ArchiveService(conn, tenant_slug).transfer_expediente(expediente_id)
 
 
