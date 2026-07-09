@@ -10,13 +10,16 @@
 """
 Tests de metadatos del expediente (E03, ADR-007): plantillas + validación.
 
-Secuencia de CREATE con plantilla de serie:
-  1. execute  — SET search_path (get_active_template)
-  2. fetchrow — plantilla activa de la serie
-  3. execute  — SET search_path + INSERT ON CONFLICT (next_expediente_code)
-  4. fetchval — last_seq
-  5. execute  — SET search_path (create_expediente)
-  6. fetchrow — INSERT expediente RETURNING
+Secuencia de CREATE con plantilla de serie (RF-SEG-08, M3 — no-write-up de
+`nivel_seguridad` al ABRIR el expediente: `caller_clearance` corre ANTES que
+cualquier otra cosa, incl. la resolución de plantilla):
+  1. fetchrow — resolve_caller_clearance (gate M3: nivel_seguridad <= clearance)
+  2. execute  — SET search_path (get_active_template)
+  3. fetchrow — plantilla activa de la serie
+  4. execute  — SET search_path + INSERT ON CONFLICT (next_expediente_code)
+  5. fetchval — last_seq
+  6. execute  — SET search_path (create_expediente)
+  7. fetchrow — INSERT expediente RETURNING
 """
 
 from __future__ import annotations
@@ -181,10 +184,13 @@ async def test_create_expediente_valid_metadata(
     exp_record = make_expediente_record(
         trd_serie_id=serie_id, metadata=metadata, metadata_template_id=template_id
     )
-    # 1) plantilla activa, 2) INSERT expediente, 3) lookup TRD serie (E15 v3,
-    # <contexto> del índice v0 — el expediente tiene trd_serie_id), 4) INSERT
-    # índice v0 (E15)
+    # 0) resolve_caller_clearance (M3, RF-SEG-08) → None → PUBLICA(1), suficiente
+    #    porque el payload no fija nivel_seguridad (default 1); 1) plantilla
+    #    activa, 2) INSERT expediente, 3) lookup TRD serie (E15 v3, <contexto>
+    #    del índice v0 — el expediente tiene trd_serie_id), 4) INSERT índice v0
+    #    (E15)
     mock_conn.fetchrow.side_effect = [
+        None,
         _template_row(template_id, serie_id),
         exp_record,
         make_trd_serie_record(serie_id=serie_id),
@@ -215,7 +221,10 @@ async def test_create_expediente_invalid_metadata_is_422(
     serie_id = uuid.uuid4()
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # Falta 'contrato_num' (requerido) → falla la validación antes de crear.
-    mock_conn.fetchrow.side_effect = [_template_row(template_id, serie_id)]
+    # 0) resolve_caller_clearance (M3) → None → PUBLICA(1); el payload no fija
+    #    nivel_seguridad (default 1), así que el gate no interfiere y se llega
+    #    a la validación de metadatos que este test ejercita.
+    mock_conn.fetchrow.side_effect = [None, _template_row(template_id, serie_id)]
 
     resp = await client.post(
         "/api/v1/expedientes",

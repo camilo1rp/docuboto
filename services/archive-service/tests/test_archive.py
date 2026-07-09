@@ -73,6 +73,7 @@ LIST TRD SERIES:
 
 from __future__ import annotations
 
+import json
 import uuid
 from unittest.mock import AsyncMock
 
@@ -155,6 +156,177 @@ async def test_create_expediente_missing_tenant(client: AsyncClient) -> None:
     )
     assert response.status_code == 403
     assert response.json()["detail"]["error"] == "forbidden"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/expedientes — M3 no-write-up de nivel_seguridad al ABRIR
+# (RF-SEG-08): `ArchiveService.create_expediente` resuelve el clearance del
+# creador ANTES del INSERT y rechaza con 403 si `nivel_seguridad` pedido
+# excede lo que ese llamante puede ver. Espejo de la reclasificación de
+# document-service: 403 explícito, nunca un clamp silencioso.
+# ---------------------------------------------------------------------------
+
+
+def _expedientes_insert_calls(mock_conn: AsyncMock) -> list:
+    """Llamadas `fetchrow` que ejecutan el INSERT de `expedientes` (no el del
+    índice `expediente_indice`, que también pasa por `fetchrow`)."""
+    return [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expedientes" in c.args[0]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_above_own_clearance_is_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Regresión del gate M3: un creador con clearance PUBLICA (1) que pide
+    `nivel_seguridad=3` (CLASIFICADA) recibe 403 ANTES de cualquier INSERT.
+    Si alguien quita el gate en `ArchiveService.create_expediente`, este test
+    debe fallar (dejaría de ser 403, o el INSERT se ejecutaría)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    # Única fetchrow esperada: resolve_caller_clearance → PUBLICA (1).
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json={**_CREATE_EXP_PAYLOAD, "nivel_seguridad": 3},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+    # El gate corta ANTES del INSERT: una sola fetchrow (la del clearance).
+    assert mock_conn.fetchrow.call_count == 1
+    assert _expedientes_insert_calls(mock_conn) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("nivel_seguridad", "expected_status"),
+    [
+        (3, 403),  # CLASIFICADA > RESERVADA(2) del creador → rechazado
+        (2, 201),  # igual al clearance → permitido
+        (1, 201),  # por debajo del clearance → permitido
+    ],
+)
+async def test_create_expediente_no_write_up_by_level(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+    nivel_seguridad: int,
+    expected_status: int,
+) -> None:
+    """No-write-up estricto: con clearance RESERVADA (2), igual-o-por-debajo
+    pasa (2, 1); por encima (3) no. No es un límite fijo en PUBLICA — se
+    contrasta contra el clearance REAL del creador."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1  # D-08 gate + next_expediente_code/audit
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=nivel_seguridad)
+    if expected_status == 403:
+        mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 2}]
+    else:
+        mock_conn.fetchrow.side_effect = [
+            {"is_root": False, "max_level": 2},  # resolve_caller_clearance → RESERVADA(2)
+            exp_record,  # INSERT expedientes RETURNING
+            exp_record,  # INSERT expediente_indice RETURNING (E15 v0)
+        ]
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json={**_CREATE_EXP_PAYLOAD, "nivel_seguridad": nivel_seguridad},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 403:
+        assert response.json()["detail"]["error"] == "forbidden"
+        assert _expedientes_insert_calls(mock_conn) == []
+    else:
+        insert_calls = _expedientes_insert_calls(mock_conn)
+        assert len(insert_calls) == 1
+        assert insert_calls[0][8] == nivel_seguridad  # $8 = nivel_seguridad
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_publica_default_with_publica_clearance(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Camino feliz que usa el frontend: clearance PUBLICA (1) creando con el
+    `nivel_seguridad` por defecto (1, no enviado en el payload) — el gate M3
+    no debe interferir con el caso común."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=1)
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": False, "max_level": 1},  # resolve_caller_clearance → PUBLICA(1)
+        exp_record,
+        exp_record,
+    ]
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json=_CREATE_EXP_PAYLOAD,  # sin nivel_seguridad -> default 1
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    insert_calls = _expedientes_insert_calls(mock_conn)
+    assert len(insert_calls) == 1
+    assert insert_calls[0][8] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_rejection_is_not_a_silent_clamp(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El 403 es TOTAL: no se crea un expediente con el nivel rebajado a la
+    baja en su lugar — eso sería una desclasificación de facto silenciosa.
+    Contraparte explícita de `test_create_expediente_above_own_clearance_is_403`,
+    verificando la ausencia del INSERT en vez de solo el status code."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]  # PUBLICA(1)
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json={**_CREATE_EXP_PAYLOAD, "nivel_seguridad": 2},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    body = response.json()
+    assert "code" not in body  # no se devolvió un expediente creado (ni rebajado)
+    assert _expedientes_insert_calls(mock_conn) == []
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_audit_includes_nivel_seguridad(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Cuando la creación es válida con `nivel_seguridad>=2`, el asiento
+    `archive.expediente_created` en `audit_log` incluye `nivel_seguridad` en
+    su payload — deja motivado el acto de clasificación desde la apertura."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=2)
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True, "max_level": None},  # CLASIFICADA(3), sobra para pedir 2
+        exp_record,
+        exp_record,
+    ]
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json={**_CREATE_EXP_PAYLOAD, "nivel_seguridad": 2},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    calls = _audit_inserts(mock_conn, "archive.expediente_created")
+    assert len(calls) == 1
+    payload = json.loads(calls[0][8])
+    assert payload["nivel_seguridad"] == 2
 
 
 # ---------------------------------------------------------------------------

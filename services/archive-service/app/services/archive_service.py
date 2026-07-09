@@ -93,6 +93,44 @@ class ArchiveService:
         payload: ExpedienteCreate,
         opened_by: uuid.UUID | None,
     ) -> ExpedienteResponse:
+        # No-write-up (RF-SEG-08, M3): antes `nivel_seguridad` pasaba directo
+        # al INSERT sin contrastarlo contra el clearance de quien abre el
+        # expediente — un portador de USUA_PERM_EXPEDIENTE con clearance
+        # PUBLICA podía crear un expediente CLASIFICADA y perderlo de vista de
+        # inmediato (list/get/search lo ocultan por no-read-up). Clasificar/
+        # reservar es un acto reglado de quien tiene competencia (Ley
+        # 1712/2014 arts. 6, 18-20; Decreto 1081/2015): un funcionario no
+        # puede originar contenido por encima de su propia habilitación.
+        # Espejo exacto del no-write-up de reclasificación en
+        # document-service (`document_service.py`, reclassify): 403
+        # EXPLÍCITO, NO un clamp silencioso a PUBLICA — rebajar el nivel
+        # solicitado sería una desclasificación de facto sin dejar rastro del
+        # acto. `opened_by` es el X-User-Id ya validado por el router
+        # (`_optional_user`, `routers/expedientes.py`), nunca un campo del
+        # body. `caller_clearance(None)` resuelve a PUBLICA=1 (fail-closed);
+        # en la práctica ese caso es inalcanzable aquí porque
+        # `require_permission` ya exige `USUA_PERM_EXPEDIENTE` y
+        # `check_permission` rechaza `user_id is None` con 403 antes de
+        # llegar a este handler (D-08) — se mantiene el gate de todos modos
+        # por si esa cadena de permisos cambiara.
+        clearance = await self._repo.caller_clearance(opened_by)
+        if payload.nivel_seguridad > clearance:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "detail": (
+                        "No puede crear un expediente con nivel_seguridad "
+                        f"{payload.nivel_seguridad} por encima de su propio "
+                        f"clearance ({clearance}): clasificar o reservar un "
+                        "expediente es un acto reglado, reservado a quien "
+                        "tiene la competencia para hacerlo (no-write-up, "
+                        "Ley 1712/2014 arts. 6, 18-20; Decreto 1081/2015)."
+                    ),
+                    "status": 403,
+                },
+            )
+
         # Metadatos (E03, ADR-007): si la serie TRD tiene plantilla activa, los
         # valores se validan contra su JSON Schema antes de abrir el expediente.
         metadata_template_id: uuid.UUID | None = None
@@ -134,7 +172,10 @@ class ArchiveService:
             object_type="expediente",
             object_ref=expediente.code,
             actor=str(opened_by) if opened_by else None,
-            payload={"id": str(expediente.id)},
+            # `nivel_seguridad` deja motivado el acto de clasificación desde
+            # la apertura (barato de incluir, valioso cuando >=2/RESERVADA-
+            # CLASIFICADA): ver el gate no-write-up más arriba.
+            payload={"id": str(expediente.id), "nivel_seguridad": expediente.nivel_seguridad},
         )
         return _to_expediente_response(expediente)
 
