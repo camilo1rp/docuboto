@@ -24,11 +24,14 @@ Mock call sequence — GET /api/v1/batch/{job_id}/status (happy path):
   fetch    — SELECT batch_job_items                   → items
 """
 
+import json
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.batch_service import BatchArchiveService
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
@@ -198,3 +201,130 @@ async def test_create_batch_expedientes_productora_longitud_inconsistente_422(
     resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
     assert resp.status_code == 422
     assert mock_conn.fetchval.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# process_batch_expedientes (tarea detached) — auditoría forense por expediente
+# creado (E08 §9, Canal A). El router solo cubre el 202/403/422 de encolado;
+# este bloque ejercita el propio `BatchArchiveService.process_batch_expedientes`
+# a nivel de servicio, con una conexión mock propia (espejo de `tests/test_clearance.py`,
+# que también construye `AsyncMock()` directamente en vez de pasar por el
+# cliente HTTP — aquí no hay puerta HTTP para esta tarea, corre fuera del
+# ciclo request/response).
+# ---------------------------------------------------------------------------
+
+
+def _item_payload(name: str) -> str:
+    return json.dumps(
+        {
+            "name": name,
+            "description": None,
+            "trd_serie_id": None,
+            "radicado_ids": [],
+            "tracking_numbers": [],
+            "dependencia_productora_codigos": [],
+            "dependencia_productora_nombres": [],
+        }
+    )
+
+
+def _audit_inserts(conn, action: str) -> list:
+    """Espejo de `test_archive.py::_audit_inserts`: filtra por el patrón real
+    de `audit.append` (`INSERT INTO public.audit_log`), no a ciegas — el
+    propio `audit.append` añade su advisory lock (`execute`) + `fetchval` del
+    `prev_hash` + el `INSERT` final; solo el último es el asiento en sí."""
+    return [
+        c.args
+        for c in conn.execute.call_args_list
+        if isinstance(c.args[0], str)
+        and "INSERT INTO public.audit_log" in c.args[0]
+        and c.args[5] == action
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_batch_expedientes_emits_one_audit_entry_per_expediente() -> None:
+    """`process_batch_expedientes` deja un asiento `archive.expediente_created`
+    en `audit_log` por CADA expediente creado con éxito — espejo de
+    `ArchiveService.create_expediente` (Ley 594/2000 arts. 21-24). Antes del
+    fix el batch escribía sus propios INSERT sin pasar nunca por `audit.append`,
+    un hueco de trazabilidad para la vía de creación masiva. Verifica: (1)
+    N expedientes creados -> N asientos (ni 0 ni uno agregado), (2) `actor`
+    es el `created_by` VALIDADO por el router (X-User-Id), NUNCA un campo del
+    body, (3) el payload trae `nivel_seguridad`, (4) el asiento se escribe en
+    `self.conn` — la conexión propia de la tarea detached — porque es la
+    ÚNICA conexión a la que `process_batch_expedientes` tiene acceso (no
+    recibe ni un pool ni la conexión request-scoped)."""
+    conn = AsyncMock()
+    # `async with conn.transaction():` dentro de `audit.append` (mismo patrón
+    # que `tests/conftest.py::_make_mock_conn`).
+    conn.transaction = MagicMock(return_value=AsyncMock())
+
+    job_id = uuid.uuid4()
+    created_by = uuid.uuid4()
+    exp_ids = [uuid.uuid4(), uuid.uuid4()]
+    item_ids = [uuid.uuid4(), uuid.uuid4()]
+
+    items = [
+        {"id": item_ids[0], "item_index": 0, "payload": _item_payload("Expediente batch 1")},
+        {"id": item_ids[1], "item_index": 1, "payload": _item_payload("Expediente batch 2")},
+    ]
+    conn.fetch.return_value = items
+
+    seq_counter = {"n": 0}
+
+    async def _fetchval(query, *args, **kwargs):
+        if "RETURNING created_by" in query:
+            return created_by
+        if "INSERT INTO expediente_sequences" in query:
+            seq_counter["n"] += 1
+            return seq_counter["n"]
+        if "SELECT hash" in query:  # audit.append: prev_hash lookup
+            return None
+        raise AssertionError(f"fetchval inesperado en el test: {query}")
+
+    conn.fetchval.side_effect = _fetchval
+
+    exp_rows = iter(
+        [
+            {"id": exp_ids[0], "nivel_seguridad": 1},
+            {"id": exp_ids[1], "nivel_seguridad": 2},
+        ]
+    )
+    final_row = {"failed_items": 0}
+
+    async def _fetchrow(query, *args, **kwargs):
+        if "INSERT INTO expedientes" in query:
+            return next(exp_rows)
+        if "SELECT failed_items" in query:
+            return final_row
+        raise AssertionError(f"fetchrow inesperado en el test: {query}")
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    service = BatchArchiveService(conn, "demo")
+    await service.process_batch_expedientes(job_id)
+
+    # Ningún ítem falló silenciosamente enmascarando una query no enrutada
+    # (`except Exception` del bucle atraparía un `AssertionError` de los
+    # routers de arriba y lo convertiría en 'failed', dejando `audit_calls`
+    # vacío en vez de fallar con un traceback claro).
+    failed_updates = [
+        c.args
+        for c in conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "status='failed'" in c.args[0]
+    ]
+    assert failed_updates == []
+
+    audit_calls = _audit_inserts(conn, "archive.expediente_created")
+    assert len(audit_calls) == 2  # N expedientes creados -> N asientos
+
+    year = datetime.now(tz=UTC).year
+    for call, exp_id, nivel in zip(audit_calls, exp_ids, (1, 2), strict=True):
+        actor, object_type, object_ref, payload_json = call[3], call[6], call[7], call[8]
+        assert actor == str(created_by)  # X-User-Id validado por el router, no del body
+        assert object_type == "expediente"
+        assert object_ref.startswith(f"EXP-{year}-")
+        payload = json.loads(payload_json)
+        assert payload["id"] == str(exp_id)
+        assert payload["nivel_seguridad"] == nivel

@@ -170,13 +170,29 @@ class FisicoRepository:
             )
         )
 
-    async def expedientes_in_unit(self, unidad_id: uuid.UUID) -> list[asyncpg.Record]:
+    async def expedientes_in_unit(
+        self, unidad_id: uuid.UUID, *, max_clearance: int
+    ) -> list[asyncpg.Record]:
+        """Expedientes contenidos en la unidad, filtrados por fila (RF-SEG-08).
+
+        `max_clearance` es OBLIGATORIO y solo por keyword — mismo patrón
+        fail-closed que `fuid_inventory`/`get_expediente_by_id`: sin este
+        filtro, un portador de `USUA_PERM_EXPEDIENTE` sin clearance
+        suficiente enumeraba (existencia de) expedientes RESERVADA/
+        CLASIFICADA vía el inventario físico de la unidad.
+        """
         await self._sp()
         return list(
             await self._conn.fetch(
-                "SELECT expediente_id, folio_inicio, folio_fin "
-                "FROM expediente_unidad WHERE unidad_id = $1 ORDER BY added_at",
+                """
+                SELECT eu.expediente_id, eu.folio_inicio, eu.folio_fin
+                  FROM expediente_unidad eu
+                  JOIN expedientes e ON e.id = eu.expediente_id
+                 WHERE eu.unidad_id = $1 AND e.nivel_seguridad <= $2
+                 ORDER BY eu.added_at
+                """,
                 unidad_id,
+                max_clearance,
             )
         )
 

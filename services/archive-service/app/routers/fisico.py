@@ -55,8 +55,9 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
     """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
 
     Gemelo de `expedientes.py::_optional_user` / `indice.py::_optional_user`:
-    usado en el FUID (`/fuid`, `/fuid.xml`), que expone asunto/serie/signatura
-    del expediente — contenido, no metadato de custodia.
+    usado en el FUID (`/fuid`, `/fuid.xml`) y en `expedientes_in_unit`
+    (`/unidades/{id}/expedientes`), que exponen asunto/serie/signatura o la
+    mera existencia del expediente — contenido, no metadato de custodia.
     """
     if not x_user_id:
         return None
@@ -192,9 +193,10 @@ async def link_expediente(
 async def expedientes_in_unit(
     unidad_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[ExpedienteEnUnidad]:
-    return await FisicoService(conn, tenant_slug).expedientes_in_unit(unidad_id)
+    return await FisicoService(conn, tenant_slug).expedientes_in_unit(unidad_id, user_id=user_id)
 
 
 @router.get(
@@ -208,6 +210,19 @@ async def units_of_expediente(
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[UnidadDeExpediente]:
+    # No-read-up DELIBERADAMENTE NO aplicado aquí (decisión arquitecto +
+    # archival-compliance-auditor, RF-SEG-08): esta ruta se indexa por un
+    # `expediente_id` (UUIDv4 no adivinable) YA CONOCIDO y solo revela DÓNDE
+    # está físicamente (signatura + folios) — es GESTIÓN DE CUSTODIA ortogonal
+    # al clearance de lectura (el operario de depósito localiza la unidad para
+    # préstamo/movimiento sin habilitación para leer su contenido; exigir
+    # clearance invertiría el mínimo privilegio, mismo criterio que la
+    # transferencia/cierre en M1). NO expone asunto/serie/descripción, así que
+    # no filtra CONTENIDO ni ENUMERA existencia. Contrasta con
+    # `/unidades/{id}/expedientes` (gemela), que SÍ enumera los expedientes de
+    # una unidad y por eso SÍ filtra por fila (Ley 1712/2014 art. 19).
+    # Residual conocido (Baja): la ubicación física de un CLASIFICADA a quien
+    # porta su UUID — seguimiento para el barrido conjunto con compliance.
     return await FisicoService(conn, tenant_slug).units_of_expediente(expediente_id)
 
 

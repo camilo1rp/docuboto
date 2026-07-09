@@ -14,8 +14,11 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import asyncpg
+from orpycamcp_common import audit
 
 from app.schemas.batch import BatchExpedienteCreate, BatchExpedientesRequest
+
+_SERVICE = "archive-service"
 
 
 class BatchArchiveService:
@@ -57,8 +60,16 @@ class BatchArchiveService:
 
     async def process_batch_expedientes(self, job_id: UUID) -> None:
         """Process queued expediente items."""
-        await self.conn.execute(
-            "UPDATE batch_jobs SET status='processing', started_at=now() WHERE id=$1",
+        # `created_by` es la identidad validada por el router (`_require_user`,
+        # X-User-Id) al encolar el job — nunca un campo del body — y es el
+        # actor que se deja en `audit_log` por cada expediente creado abajo
+        # (espejo de `ArchiveService.create_expediente`, Ley 594/2000 arts. 21-24).
+        created_by: UUID = await self.conn.fetchval(
+            """
+            UPDATE batch_jobs SET status='processing', started_at=now()
+            WHERE id=$1
+            RETURNING created_by
+            """,
             job_id,
         )
         items = await self.conn.fetch(
@@ -87,16 +98,46 @@ class BatchArchiveService:
 
                 trd_id = UUID(data["trd_serie_id"]) if data.get("trd_serie_id") else None
 
-                exp_id: UUID = await self.conn.fetchval(
+                exp_row = await self.conn.fetchrow(
                     """
                     INSERT INTO expedientes (code, name, description, trd_serie_id)
                     VALUES ($1, $2, $3, $4)
-                    RETURNING id
+                    RETURNING id, nivel_seguridad
                     """,
                     code,
                     exp.name,
                     exp.description,
                     trd_id,
+                )
+                exp_id: UUID = exp_row["id"]
+
+                # Auditoría forense transversal (E08 §9, Canal A) — espejo de
+                # `ArchiveService.create_expediente`. El camino normal deja
+                # este asiento por expediente creado; el batch lo omitía por
+                # completo (INSERT propio, fuera de `ArchiveService`), un
+                # hueco de trazabilidad para instrumentos de creación masiva
+                # (Ley 594/2000 arts. 21-24). Usa `self.conn` (la conexión
+                # propia de la tarea detached, ver `routers/batch.py::
+                # _run_batch_job` / `acquire_tenant`) — nunca la conexión
+                # request-scoped, que ya fue devuelta al pool para cuando
+                # este bucle corre.
+                #
+                # Va INMEDIATAMENTE tras el INSERT del expediente (que ya está
+                # committed, autocommit), ANTES de vincular radicados y de
+                # marcar el ítem 'success'/contadores: si el propio
+                # `audit.append` fallara, el `except` marca el ítem 'failed'
+                # sin haber contado un 'success' (sin doble conteo) y el
+                # asiento refleja la creación real del expediente aunque el
+                # resto del ítem no complete.
+                await audit.append(
+                    self.conn,
+                    tenant_slug=self.tenant_slug,
+                    service=_SERVICE,
+                    action="archive.expediente_created",
+                    object_type="expediente",
+                    object_ref=code,
+                    actor=str(created_by) if created_by else None,
+                    payload={"id": str(exp_id), "nivel_seguridad": exp_row["nivel_seguridad"]},
                 )
 
                 # Link radicados if provided. Este INSERT es independiente del

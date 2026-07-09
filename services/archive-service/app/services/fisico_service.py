@@ -160,8 +160,17 @@ class FisicoService:
         rows = await self._repo.units_of_expediente(expediente_id)
         return [UnidadDeExpediente(**dict(r)) for r in rows]
 
-    async def expedientes_in_unit(self, unidad_id: uuid.UUID) -> list[ExpedienteEnUnidad]:
-        rows = await self._repo.expedientes_in_unit(unidad_id)
+    async def expedientes_in_unit(
+        self, unidad_id: uuid.UUID, *, user_id: uuid.UUID | None = None
+    ) -> list[ExpedienteEnUnidad]:
+        # No-read-up (RF-SEG-08): listar los expedientes de una unidad revela
+        # la EXISTENCIA de los clasificados/reservados a un no-lector (Ley
+        # 1712/2014 art. 19), igual que cualquier otro listado — filtro por
+        # fila, mismo patrón que `generate_fuid` más abajo. La ruta gemela
+        # `units_of_expediente` (dónde está UN expediente dado su id) es
+        # custodia ortogonal y no se toca aquí.
+        max_clearance = await self._archive.caller_clearance(user_id)
+        rows = await self._repo.expedientes_in_unit(unidad_id, max_clearance=max_clearance)
         return [ExpedienteEnUnidad(**dict(r)) for r in rows]
 
     # -- préstamos -----------------------------------------------------

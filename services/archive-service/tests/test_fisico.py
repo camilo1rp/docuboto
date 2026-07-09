@@ -135,6 +135,77 @@ async def test_link_and_locate_expediente(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_expedientes_in_unit_row_level_filter(client_with_conn) -> None:
+    """RF-SEG-08: `expedientes_in_unit` filtra POR FILA (`e.nivel_seguridad <=
+    $2`, `$2` ligado al `max_clearance` real del llamante), no en
+    post-proceso Python — mismo patrón que `test_fuid_inventory_row_level_filter`.
+    Un `fetch` falso simula lo que haría Postgres: solo devuelve las filas
+    cuyo nivel de origen sea <= `max_clearance`, así el test rompe si el
+    código deja de pasar `max_clearance` a la query, o si alguien lo
+    sustituye por un filtro Python aguas abajo."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    unidad_id = uuid.uuid4()
+
+    exp_publica = uuid.uuid4()
+    exp_clasificada = uuid.uuid4()
+    niveles = {exp_publica: 1, exp_clasificada: 3}
+
+    async def fake_fetch(query, *params):
+        assert "eu.unidad_id = $1" in query
+        assert "e.nivel_seguridad <= $2" in query
+        assert params[0] == unidad_id
+        max_clearance = params[1]
+        return [
+            {"expediente_id": eid, "folio_inicio": 1, "folio_fin": 10}
+            for eid in (exp_publica, exp_clasificada)
+            if niveles[eid] <= max_clearance
+        ]
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    # Caller de clearance PUBLICA(1): resolve_caller_clearance sin fila RBAC.
+    mock_conn.fetchrow.return_value = None
+    resp_low = await client.get(
+        f"/api/v1/unidades/{unidad_id}/expedientes", headers=TENANT_HEADERS
+    )
+    assert resp_low.status_code == 200
+    body_low = resp_low.json()
+    assert len(body_low) == 1
+    assert body_low[0]["expediente_id"] == str(exp_publica)
+
+    # Misma unidad, caller root (CLASIFICADA=3): ambos expedientes visibles.
+    mock_conn.fetchrow.return_value = {"is_root": True, "max_level": None}
+    resp_high = await client.get(
+        f"/api/v1/unidades/{unidad_id}/expedientes", headers=TENANT_HEADERS
+    )
+    assert resp_high.status_code == 200
+    body_high = resp_high.json()
+    assert {r["expediente_id"] for r in body_high} == {str(exp_publica), str(exp_clasificada)}
+
+
+@pytest.mark.asyncio
+async def test_expedientes_in_unit_sin_user_id_403(client_with_conn) -> None:
+    """Fail-closed observado (no asumido): `check_permission` corta en
+    `user_id is None -> return False` ANTES de tocar la BD (ver
+    `app/core/clearance.py`), así que sin `X-User-Id` la petición nunca llega
+    a `caller_clearance` — `require_permission` ya la rechaza con 403. El
+    mock de `fetchval` deliberadamente devuelve `True` para demostrar que
+    esto NO depende de la respuesta RBAC: el corte ocurre antes de
+    consultarla (mismo patrón que `test_fuid_sin_user_id_403`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # irrelevante: el corte es por user_id=None
+    headers = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
+    resp = await client.get(f"/api/v1/unidades/{uuid.uuid4()}/expedientes", headers=headers)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+    # Ni `caller_clearance` (resolve_caller_clearance) ni la query de fila
+    # se ejecutaron: el 403 corta ANTES de llegar al servicio.
+    mock_conn.fetchrow.assert_not_called()
+    mock_conn.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_unidad_not_found(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: permission ok; service raises 404
