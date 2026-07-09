@@ -192,6 +192,61 @@ async def test_firmar_indice_signature_service_inalcanzable_no_bloquea(client_wi
 
 
 @pytest.mark.asyncio
+async def test_close_expediente_audit_uses_real_regenerate_result_not_redacted(
+    client_with_conn,
+) -> None:
+    """CRÍTICO (M2, RF-SEG-08): la redacción de `RebuildResult` vive SOLO en
+    el HANDLER `routers/indice.py::rebuild_indice` — `close_expediente`
+    (`ArchiveService`) reutiliza `IndexService.regenerate` directamente
+    (canal 'system') y su asiento `archive.expediente_closed` debe llevar el
+    `xsd_version` REAL que `regenerate` devolvió, nunca `None` ni un valor
+    redactado. Si alguien moviera la redacción de M2 dentro de
+    `IndexService.regenerate` en vez de dejarla en el handler del rebuild,
+    este test debe fallar (el payload dejaría de traer el marcador
+    distintivo)."""
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    # Expediente CLASIFICADA (3): el escenario donde M2 podría, por error,
+    # colarse en la ruta interna de cierre si la redacción no estuviera
+    # aislada al handler del rebuild.
+    exp_open = make_expediente_record(exp_id=exp_id, exp_status="open", nivel_seguridad=3)
+    exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed", nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE (crud>=3) granted
+    mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
+    mock_conn.fetch.return_value = []
+
+    from app.schemas.archive import RebuildResult
+    from app.services.index_service import IndexService
+
+    # Marcador distintivo e inequívocamente REAL — un `xsd_version` que la
+    # redacción de M2 jamás produciría (esa solo deja pasar la constante del
+    # perfil, nunca un valor inventado como este).
+    fake_rebuild = RebuildResult(
+        version=7,
+        xml_sha256="a" * 64,
+        num_documentos=3,
+        unchanged=False,
+        xsd_version="v4-real-marker",
+    )
+    with (
+        patch.object(IndexService, "regenerate", new=AsyncMock(return_value=fake_rebuild)),
+        patch.object(IndexService, "firmar_indice", new=AsyncMock(return_value=None)),
+    ):
+        resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    audit_calls = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    # args: (sql, tenant, service, actor, canal, action, object_type, object_ref, payload, prev_hash, hash)
+    closed_payloads = [a[8] for a in audit_calls if a[5] == "archive.expediente_closed"]
+    assert closed_payloads
+    assert '"v4-real-marker"' in closed_payloads[0]
+
+
+@pytest.mark.asyncio
 async def test_close_invalid_state(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted

@@ -204,8 +204,14 @@ class IndexService:
         'closed' (por eso su propio `exp.status` ya no es 'open' en ese punto).
 
         Pre-condición interna de existencia/estado, no una lectura expuesta al
-        llamante — no-read-up aquí queda DIFERIDO (decisión del arquitecto, ver
-        `core.clearance.CLEARANCE_SIN_RESTRICCION`). RF-SEG-08.
+        llamante — la mutación (regenerar el índice) es LEGÍTIMA sin
+        clearance de lectura, mismo principio que `ArchiveService.
+        link_radicado`/`unlink_radicado` (M2, RF-SEG-08, resuelto: ver
+        `core.clearance.CLEARANCE_SIN_RESTRICCION`). Cuando el disparador es
+        el endpoint `POST /{id}/indice/rebuild`, la RESPUESTA se acota según
+        el clearance real del llamante en el HANDLER de `routers/indice.py`
+        (NO aquí: este método también lo reutiliza `close_expediente` en
+        canal 'system', que necesita los valores reales para su auditoría).
         """
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION

@@ -671,16 +671,19 @@ async def test_link_radicado(
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
     link_record = make_radicado_link_record(expediente_id=EXPEDIENTE_ID, radicado_id=RADICADO_ID)
 
-    # fetchrow: get_expediente, link INSERT..ON CONFLICT RETURNING, [regenerate:
-    # get_expediente, get_current(None), insert_version índice]
-    mock_conn.fetchrow.side_effect = [exp_record, link_record, exp_record, None, exp_record]
+    # fetchrow: get_expediente, caller_clearance (M2, RF-SEG-08 — None → PUBLICA(1),
+    # suficiente porque el expediente es nivel_seguridad=1 por defecto), link
+    # INSERT..ON CONFLICT RETURNING, [regenerate: get_expediente, get_current(None),
+    # insert_version índice]
+    mock_conn.fetchrow.side_effect = [exp_record, None, link_record, exp_record, None, exp_record]
     # fetch → radicados (empty during get_expediente check)
     mock_conn.fetch.return_value = []
     # fetchval: [0]=D-08 gate (USUA_PERM_EXPEDIENTE granted), [1]=COUNT(*) duplicate
     # check (estado='vinculado') → 0, [2]=MAX(orden_documental)+1 (E15 perfil v3,
     # asignación atómica del orden ESTABLE), [3]=audit.append prev_hash lookup
-    # (regenerate_index → índice E15, ADR-010)
-    mock_conn.fetchval.side_effect = [True, 0, 1, None]
+    # (regenerate_index → índice E15, ADR-010), [4]=audit.append prev_hash lookup
+    # (archive.radicado_linked, M2 — la mutación SIEMPRE audita)
+    mock_conn.fetchval.side_effect = [True, 0, 1, None, None]
 
     response = await client.post(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
@@ -692,6 +695,8 @@ async def test_link_radicado(
     body = response.json()
     assert body["radicado_id"] == str(RADICADO_ID)
     assert body["tracking_number"] == TRACKING_NUMBER
+    # Llamante con clearance suficiente (M2): `added_at` real, no redactado.
+    assert body["added_at"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -736,9 +741,11 @@ async def test_unlink_radicado(
     # devuelve "UPDATE 1" (ya no un DELETE físico).
     mock_conn.execute.return_value = "UPDATE 1"
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
-    # fetchrow: get_expediente (guard), [regenerate: get_expediente,
-    # get_current(None), insert_version índice]
-    mock_conn.fetchrow.side_effect = [exp_record, exp_record, None, exp_record]
+    # fetchrow: get_expediente (guard), caller_clearance (M2, RF-SEG-08 — None →
+    # PUBLICA(1), suficiente porque el expediente es nivel_seguridad=1 por
+    # defecto), [regenerate: get_expediente, get_current(None), insert_version
+    # índice]
+    mock_conn.fetchrow.side_effect = [exp_record, None, exp_record, None, exp_record]
     mock_conn.fetch.return_value = []
 
     response = await client.delete(
@@ -762,7 +769,9 @@ async def test_unlink_radicado_audits_actor_and_causal(
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     mock_conn.execute.return_value = "UPDATE 1"
     exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
-    mock_conn.fetchrow.side_effect = [exp_record, exp_record, None, exp_record]
+    # fetchrow: get_expediente (guard), caller_clearance (M2 — None → PUBLICA(1)),
+    # [regenerate: get_expediente, get_current(None), insert_version índice]
+    mock_conn.fetchrow.side_effect = [exp_record, None, exp_record, None, exp_record]
     mock_conn.fetch.return_value = []
 
     response = await client.delete(
@@ -879,10 +888,13 @@ async def test_link_radicados_batch(
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
     r1, r2 = uuid.uuid4(), uuid.uuid4()
-    # get_expediente_by_id (fetchrow exp) ; luego por cada radicado: link INSERT (fetchrow);
-    # al final regenerate: get_expediente_by_id (fetchrow exp), get_current (None), insert índice
+    # get_expediente_by_id (fetchrow exp) ; caller_clearance (M2, RF-SEG-08 — None →
+    # PUBLICA(1), suficiente porque el expediente es nivel_seguridad=1 por defecto);
+    # luego por cada radicado: link INSERT (fetchrow); al final regenerate:
+    # get_expediente_by_id (fetchrow exp), get_current (None), insert índice
     mock_conn.fetchrow.side_effect = [
         exp,  # _expediente_or_404
+        None,  # caller_clearance → PUBLICA(1)
         make_radicado_link_record(radicado_id=r1),  # link r1 INSERT..ON CONFLICT RETURNING
         make_radicado_link_record(radicado_id=r2),  # link r2 INSERT..ON CONFLICT RETURNING
         exp,
@@ -892,8 +904,10 @@ async def test_link_radicados_batch(
     mock_conn.fetch.return_value = []
     # fetchval: [0]=D-08 gate, [1]=radicado_link_exists r1 → 0, [2]=MAX(orden_documental)+1
     # para r1 (E15 perfil v3), [3]=radicado_link_exists r2 → 0, [4]=MAX(orden_documental)+1
-    # para r2, [5]=audit.append prev_hash lookup (regenerate_index, 1 sola vez tras el batch)
-    mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None]
+    # para r2, [5]=audit.append prev_hash lookup (regenerate_index, 1 sola vez tras el batch),
+    # [6]=audit.append prev_hash lookup (archive.radicado_batch_linked, M2 — la
+    # mutación SIEMPRE audita)
+    mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None, None]
 
     resp = await client.post(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
@@ -908,6 +922,471 @@ async def test_link_radicados_batch(
     assert resp.status_code == 200
     body = resp.json()
     assert body["vinculados"] == 2 and body["omitidos"] == 0 and body["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# M2 (RF-SEG-08, resuelto) — redacción de RESPUESTA vs mutación SIEMPRE
+# ejecutada, para link/batch/unlink/rebuild sobre un expediente CLASIFICADA
+# (nivel_seguridad=3). Cada endpoint tiene el PAR: clearance insuficiente
+# (PUBLICA=1, respuesta acotada) vs clearance suficiente (CLASIFICADA=3,
+# respuesta completa) — ver `ArchiveService.link_radicado` /
+# `link_radicados_batch` / `unlink_radicado` y `routers/indice.py::rebuild_indice`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_radicados_batch_redacted_when_caller_cannot_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2: con clearance PUBLICA (1) sobre un expediente CLASIFICADA (3), la
+    inclusión masiva SIGUE ejecutándose (2 INSERTs + su propio asiento de
+    audit_log con los conteos REALES) pero la RESPUESTA se acota a
+    `vinculados=None, omitidos=None` — solo `total` (eco del input) se
+    conserva. Si alguien redactara la MUTACIÓN en vez de la respuesta, los
+    dos INSERTs y el asiento `archive.radicado_batch_linked` desaparecerían."""
+    client, mock_conn = client_with_conn
+    exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open", nivel_seguridad=3)
+    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        exp,  # _expediente_or_404-like: get_expediente_by_id (existing)
+        None,  # caller_clearance → PUBLICA(1): resolve_caller_clearance sin fila
+        make_radicado_link_record(radicado_id=r1),
+        make_radicado_link_record(radicado_id=r2),
+        exp,  # regenerate: get_expediente_by_id
+        None,  # regenerate: get_current
+        exp,  # regenerate: insert índice version
+    ]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None, None]
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+        json={
+            "radicados": [
+                {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                {"radicado_id": str(r2), "tracking_number": "2024-A-002"},
+            ]
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["vinculados"] is None
+    assert body["omitidos"] is None
+    assert body["total"] == 2
+
+    # La mutación SIEMPRE ocurre: ambos INSERTs se ejecutaron.
+    insert_calls = [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_radicados" in c.args[0]
+    ]
+    assert len(insert_calls) == 2
+
+    # La traza forense NUNCA se redacta: el audit_log lleva los conteos reales.
+    calls = _audit_inserts(mock_conn, "archive.radicado_batch_linked")
+    assert len(calls) == 1
+    payload = json.loads(calls[0][8])
+    assert payload["vinculados"] == 2
+    assert payload["omitidos"] == 0
+
+
+@pytest.mark.asyncio
+async def test_link_radicados_batch_full_response_when_caller_can_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 (contraparte): con clearance CLASIFICADA (3) — suficiente para leer
+    el mismo expediente — la respuesta trae los conteos REALES, no None."""
+    client, mock_conn = client_with_conn
+    exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open", nivel_seguridad=3)
+    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        exp,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+        make_radicado_link_record(radicado_id=r1),
+        make_radicado_link_record(radicado_id=r2),
+        exp,
+        None,
+        exp,
+    ]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None, None]
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+        json={
+            "radicados": [
+                {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                {"radicado_id": str(r2), "tracking_number": "2024-A-002"},
+            ]
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["vinculados"] == 2
+    assert body["omitidos"] == 0
+    assert body["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_duplicate_redacted_when_caller_cannot_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2: oráculo de pertenencia suprimido — un radicado YA vinculado a un
+    expediente CLASIFICADA (3) no debe filtrar (vía 409) que ya pertenecía al
+    conjunto documental a un llamante con clearance PUBLICA (1). Responde 201
+    idempotente-silencioso con `added_at=None`, no 409."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    # fetchrow: get_expediente_by_id (existing), caller_clearance → PUBLICA(1)
+    mock_conn.fetchrow.side_effect = [exp_record, None]
+    mock_conn.fetch.return_value = []
+    # fetchval: [0]=D-08 gate (truthy), [1]=duplicate check → 1 (ya vinculado)
+    mock_conn.fetchval.return_value = 1
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["radicado_id"] == str(RADICADO_ID)
+    assert body["tracking_number"] == TRACKING_NUMBER
+    assert body["added_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_duplicate_conflict_when_caller_can_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 (contraparte): con clearance CLASIFICADA (3) — suficiente para leer
+    el mismo expediente — el duplicado SÍ se revela como 409, como antes de M2."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    mock_conn.fetchrow.side_effect = [
+        exp_record,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+    ]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.return_value = 1  # gate + duplicate check
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "radicado_already_linked"
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_new_link_redacted_but_still_audits(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2: vincular un radicado NUEVO (no duplicado) a un expediente
+    CLASIFICADA (3) con clearance PUBLICA (1) del llamante SIEMPRE ejecuta la
+    vinculación y SIEMPRE audita (`archive.radicado_linked` con los datos
+    reales) — solo la RESPUESTA se acota (`added_at=None`). La traza forense
+    no se redacta."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    link_record = make_radicado_link_record(expediente_id=EXPEDIENTE_ID, radicado_id=RADICADO_ID)
+    # fetchrow: get_expediente_by_id (existing), caller_clearance → PUBLICA(1),
+    # link INSERT..ON CONFLICT RETURNING, [regenerate: get_expediente_by_id,
+    # get_current(None), insert_version índice]
+    mock_conn.fetchrow.side_effect = [exp_record, None, link_record, exp_record, None, exp_record]
+    mock_conn.fetch.return_value = []
+    # fetchval: [0]=D-08 gate, [1]=duplicate check → 0, [2]=MAX(orden_documental)+1,
+    # [3]=audit prev_hash (regenerate_index), [4]=audit prev_hash (radicado_linked)
+    mock_conn.fetchval.side_effect = [True, 0, 1, None, None]
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    # Respuesta acotada: no revela el `added_at` real a quien no puede leer.
+    assert body["added_at"] is None
+
+    # La mutación ocurrió: el INSERT se ejecutó.
+    insert_calls = [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_radicados" in c.args[0]
+    ]
+    assert len(insert_calls) == 1
+
+    # La traza forense NUNCA se redacta: el asiento existe con datos reales.
+    calls = _audit_inserts(mock_conn, "archive.radicado_linked")
+    assert len(calls) == 1
+    payload = json.loads(calls[0][8])
+    assert payload["radicado_id"] == str(RADICADO_ID)
+    assert payload["tracking_number"] == TRACKING_NUMBER
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_not_found_redacted_when_caller_cannot_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2: oráculo de pertenencia suprimido en `unlink` — un vínculo
+    inexistente sobre un expediente CLASIFICADA (3) no debe filtrar (vía 404)
+    que el radicado nunca estuvo vinculado a un llamante con clearance
+    PUBLICA (1). Responde 204 exista o no el vínculo."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.execute.return_value = "UPDATE 0"  # ningún vínculo vigente coincide
+    # fetchrow: get_expediente_by_id (existing), caller_clearance → PUBLICA(1)
+    mock_conn.fetchrow.side_effect = [exp_record, None]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_not_found_conflict_when_caller_can_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 (contraparte): con clearance CLASIFICADA (3) — suficiente para leer
+    el mismo expediente — un vínculo inexistente SÍ se revela como 404, como
+    antes de M2."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.execute.return_value = "UPDATE 0"
+    mock_conn.fetchrow.side_effect = [
+        exp_record,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+    ]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "radicado_link_not_found"
+
+
+# ---------------------------------------------------------------------------
+# M2 hallazgo #1 (oráculo residual de ciclo de vida, cierre) — para
+# link_radicado / link_radicados_batch / unlink_radicado, `_assert_open` (409
+# `expediente_not_open` con el estado LITERAL) solo se evalúa para quien SÍ
+# puede leer el expediente. Un no-lector con un expediente CLASIFICADA (3)
+# NO 'open' recibe el mismo ack acotado que el resto de casos SIN mutar (sin
+# INSERT ni regeneración de índice) — indistinguible de open/duplicado/ya-
+# excluido. Cada endpoint trae el PAR: no-lector+closed (sin 409, sin mutar)
+# vs lector-legítimo+closed (409 `expediente_not_open`, el error informativo
+# se conserva). Ver `ArchiveService.link_radicado`/`link_radicados_batch`/
+# `unlink_radicado` y `routers/indice.py::rebuild_indice` (mismo criterio).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_closed_redacted_no_mutation_when_caller_cannot_read(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1: expediente CLASIFICADA (3) closed + clearance PUBLICA
+    (1) del llamante -> NO 409 `expediente_not_open`; responde el ack
+    acotado (idéntico al de open-acotado/duplicado-acotado, `added_at=None`)
+    SIN mutar -- ni INSERT en `expediente_radicados` ni regeneración de
+    índice."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    # fetchrow: get_expediente_by_id (existing, CLEARANCE_SIN_RESTRICCION),
+    # caller_clearance (None: sin fila RBAC -> PUBLICA(1), insuficiente para
+    # nivel_seguridad=3 -> NO puede leer -> `_assert_open` nunca se evalúa).
+    mock_conn.fetchrow.side_effect = [exp_closed, None]
+    mock_conn.fetch.return_value = []
+    # fetchval: [0]=D-08 gate, [1]=radicado_link_exists -> 0 (no duplicado,
+    # así se llega a la rama `existing.status != "open"`).
+    mock_conn.fetchval.side_effect = [True, 0]
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["radicado_id"] == str(RADICADO_ID)
+    assert body["tracking_number"] == TRACKING_NUMBER
+    assert body["added_at"] is None
+
+    insert_calls = [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_radicados" in c.args[0]
+    ]
+    assert len(insert_calls) == 0
+    assert _audit_inserts(mock_conn, "archive.radicado_linked") == []
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_closed_conflict_when_caller_can_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1 (contraparte): con clearance CLASIFICADA (3) —
+    suficiente para leer el mismo expediente closed — el 409
+    `expediente_not_open` SÍ se propaga, como antes de M2."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    mock_conn.fetchrow.side_effect = [
+        exp_closed,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+    ]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.return_value = True  # D-08 gate
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "expediente_not_open"
+
+
+@pytest.mark.asyncio
+async def test_link_radicados_batch_closed_redacted_no_mutation_when_caller_cannot_read(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1: expediente CLASIFICADA (3) closed + clearance PUBLICA
+    (1) -> NO 409; responde `BatchLinkResult(vinculados=None, omitidos=None,
+    total=len(items))` SIN mutar -- el bucle de vinculación nunca se
+    ejecuta (ningún INSERT, ninguna regeneración de índice)."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    # fetchrow: get_expediente_by_id (existing), caller_clearance → PUBLICA(1)
+    # (insuficiente) -> retorno anticipado, sin entrar al bucle por-item.
+    mock_conn.fetchrow.side_effect = [exp_closed, None]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.return_value = True  # D-08 gate (único fetchval esperado)
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+        json={
+            "radicados": [
+                {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                {"radicado_id": str(r2), "tracking_number": "2024-A-002"},
+            ]
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["vinculados"] is None
+    assert body["omitidos"] is None
+    assert body["total"] == 2
+
+    insert_calls = [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_radicados" in c.args[0]
+    ]
+    assert len(insert_calls) == 0
+    assert _audit_inserts(mock_conn, "archive.radicado_batch_linked") == []
+
+
+@pytest.mark.asyncio
+async def test_link_radicados_batch_closed_conflict_when_caller_can_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1 (contraparte): con clearance CLASIFICADA (3) — el 409
+    `expediente_not_open` SÍ se propaga para la inclusión masiva."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        exp_closed,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+    ]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.return_value = True  # D-08 gate
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+        json={
+            "radicados": [
+                {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                {"radicado_id": str(r2), "tracking_number": "2024-A-002"},
+            ]
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "expediente_not_open"
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_closed_no_mutation_when_caller_cannot_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1: expediente CLASIFICADA (3) closed + clearance PUBLICA
+    (1) -> NO 409 `expediente_not_open`; responde 204 SIN mutar -- ningún
+    UPDATE de exclusión sobre `expediente_radicados`."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    # fetchrow: get_expediente_by_id (existing), caller_clearance → PUBLICA(1)
+    # (insuficiente) -> retorno anticipado, antes de `repo.unlink_radicado`.
+    mock_conn.fetchrow.side_effect = [exp_closed, None]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 204
+
+    exclude_calls = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "expediente_radicados" in c.args[0] and "excluido" in c.args[0]
+    ]
+    assert len(exclude_calls) == 0
+    assert _audit_inserts(mock_conn, "archive.radicado_excluido") == []
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_closed_conflict_when_caller_can_read_classified(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1 (contraparte): con clearance CLASIFICADA (3) — el 409
+    `expediente_not_open` SÍ se propaga para la exclusión."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.fetchrow.side_effect = [
+        exp_closed,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+    ]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "expediente_not_open"
 
 
 # ---------------------------------------------------------------------------

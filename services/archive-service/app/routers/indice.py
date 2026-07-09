@@ -30,8 +30,9 @@ import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
-from app.core.clearance import require_permission
+from app.core.clearance import CLEARANCE_SIN_RESTRICCION, require_permission
 from app.core.database import get_db_conn
+from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
     IndiceFirmarResult,
     IndiceResponse,
@@ -233,9 +234,105 @@ async def rebuild_indice(
     expediente_id: uuid.UUID,
     request: Request,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> RebuildResult:
+    """Regenera (admin) el índice electrónico — ver `IndexService.regenerate`.
+
+    M2 (RF-SEG-08, resuelto): la mutación es LEGÍTIMA sin clearance de
+    lectura (misma lógica que link/unlink) y SIEMPRE se ejecuta —
+    `IndexService.regenerate` sigue resolviendo existencia/estado con
+    `CLEARANCE_SIN_RESTRICCION` internamente, SIN CAMBIOS: ese método lo
+    reutiliza `close_expediente` (canal 'system') para su propio asiento de
+    auditoría, que necesita los valores REALES. La redacción de la RESPUESTA
+    de ESTE endpoint vive aquí, en el handler, después de la regeneración:
+    se acota a un ack minimalista si el llamante no puede LEER el expediente
+    (clearance REAL, no `CLEARANCE_SIN_RESTRICCION` — esa constante solo
+    sirve para la lectura barata del `nivel_seguridad`, no para la decisión
+    de redacción).
+
+    M2 hallazgo #1 (oráculo residual de ciclo de vida): `regenerate` lanza su
+    propio 409 `expediente_not_open` (con el estado LITERAL en el cuerpo)
+    INTERNAMENTE, vía su `assert_open` -- un no-lector que sondea un
+    expediente CLASIFICADA closed/transferred por su UUID recibía ese 409
+    crudo. Se intercepta en el `except`: si el llamante no puede leer, el 409
+    se sustituye por el mismo ack acotado que la rama "no puede leer" del
+    camino de éxito -- indistinguible entre sí, sea cual sea el estado del
+    expediente. `IndexService.regenerate`/`assert_open` NO se tocan:
+    `close_expediente` los reutiliza y debe seguir viendo el 409/los valores
+    reales. Cualquier otra excepción (p.ej. 404 `expediente_not_found`,
+    residual aceptado por diseño, coherente con M1) se propaga sin interceptar.
+
+    `xsd_version` en el ack acotado es SIEMPRE `None` (auditoría de cierre de
+    hallazgo #1, cobertura de testing-engineer): la rama `except` -- el único
+    dato que tiene a mano es el 409 de `regenerate`, que aborta ANTES de
+    calcular ninguna versión real -- no puede rellenarlo con un valor real sin
+    una consulta adicional. Antes esta rama de éxito (open, no-lector)
+    devolvía `rebuild_result.xsd_version` (valor real, p.ej. "v2"/"v4")
+    mientras la rama `except` (closed/transferred, no-lector) devolvía `None`
+    -- un no-lector podía distinguir open (xsd_version poblado) de
+    closed/transferred (xsd_version `None`) SOLO por ese campo, pese a que
+    `version`/`xml_sha256`/`num_documentos`/`unchanged` ya eran uniformes:
+    el mismo oráculo residual de ciclo de vida que hallazgo #1 buscaba cerrar,
+    reabierto por una vía distinta. Se unifica a `None` en ambas ramas.
+    """
     generado_por = request.headers.get("X-Username") or "system"
-    return await IndexService(conn, tenant_slug).regenerate(
-        expediente_id, generado_por=generado_por
+    archive_repo = ArchiveRepository(conn, tenant_slug)
+
+    async def _puede_leer() -> bool:
+        # Clearance REAL del llamante vs `nivel_seguridad` del expediente. La
+        # decisión de redacción SIEMPRE es el clearance real; el
+        # `CLEARANCE_SIN_RESTRICCION` de `get_expediente_by_id` solo evita
+        # perder la fila por su propio filtro no-read-up. `exp is None`
+        # (inexistente) -> False; en la rama de éxito la fila siempre existe.
+        clearance = await archive_repo.caller_clearance(user_id)
+        exp = await archive_repo.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
+        return exp is not None and exp.nivel_seguridad <= clearance
+
+    # `puede_leer` se resuelve DESPUÉS de `regenerate` en la rama de éxito
+    # (preserva el orden de llamadas que asumen los tests del camino normal) y
+    # DENTRO del `except` para la rama #1 -- en ambos casos corre a lo sumo una
+    # vez. `regenerate`/`assert_open` NO se tocan (los reutiliza
+    # `close_expediente` con valores reales).
+    try:
+        rebuild_result = await IndexService(conn, tenant_slug).regenerate(
+            expediente_id, generado_por=generado_por
+        )
+    except HTTPException as exc:
+        # #1: un no-lector que sondea un CLASIFICADA closed/transferred por su
+        # UUID recibía el 409 `expediente_not_open` con el estado LITERAL en el
+        # cuerpo -> oráculo de ciclo de vida. Se sustituye por el mismo ack
+        # acotado que la rama "no puede leer" de abajo (indistinguible del caso
+        # open acotado). Se intercepta CUALQUIER 409 de `regenerate` (hoy
+        # `expediente_not_open` y el `expediente_closed`/índice-firmado, ambos
+        # revelan ciclo de vida o estado del índice de un CLASIFICADA),
+        # desacoplado del string de error interno del servicio. El 404
+        # `expediente_not_found` (residual aceptado, existencia por UUIDv4 no
+        # adivinable, coherente con M1) y cualquier otra excepción se propagan
+        # sin interceptar.
+        if (
+            exc.status_code == status.HTTP_409_CONFLICT
+            and not await _puede_leer()
+        ):
+            return RebuildResult(
+                version=None,
+                xml_sha256=None,
+                num_documentos=None,
+                unchanged=False,
+                xsd_version=None,
+            )
+        raise
+    if await _puede_leer():
+        return rebuild_result
+    return RebuildResult(
+        version=None,
+        xml_sha256=None,
+        num_documentos=None,
+        unchanged=False,
+        # `None`, no `rebuild_result.xsd_version` (ver hallazgo #1 en el
+        # docstring): debe ser indistinguible del ack de la rama `except`
+        # (expediente closed/transferred), que no dispone de un valor real.
+        xsd_version=None,
     )

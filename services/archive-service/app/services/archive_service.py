@@ -790,11 +790,33 @@ class ArchiveService:
             )
 
     async def link_radicado(
-        self, expediente_id: uuid.UUID, payload: RadicadoLink
+        self,
+        expediente_id: uuid.UUID,
+        payload: RadicadoLink,
+        user_id: uuid.UUID | None = None,
     ) -> ExpedienteRadicadoResponse:
-        # No-read-up DIFERIDO aquí (decisión del arquitecto, ver
-        # `core.clearance.CLEARANCE_SIN_RESTRICCION`) — brecha conocida y
-        # explícita, no escondida en un default de firma. RF-SEG-08.
+        """Vincula un radicado al expediente.
+
+        M2 (RF-SEG-08, resuelto): la mutación es LEGÍTIMA sin clearance de
+        lectura — componer un expediente (ordenar/vincular) es gestión
+        archivística, ortogonal a leer su contenido (Ac. AGN 001/2024 arts.
+        4.3.1.7/4.3.2.3; misma lógica que M1 en close/transfer). Por eso la
+        existencia/estado del expediente se resuelve SIEMPRE con
+        `CLEARANCE_SIN_RESTRICCION` y la vinculación SIEMPRE se ejecuta. Lo
+        que se acota es la RESPUESTA cuando el llamante no puede LEER el
+        expediente (`nivel_seguridad > su clearance`): se suprime el 409
+        `radicado_already_linked` (no revela pertenencia previa) y se omite
+        `added_at` real (idempotente-silencioso), para no dejar un oráculo de
+        lectura disfrazado de escritura.
+
+        M2 hallazgo #1 (oráculo residual de ciclo de vida, auditoría M2):
+        `_assert_open` (409 `expediente_not_open`, con el estado LITERAL en
+        el cuerpo) solo se evalúa para quien SÍ puede leer — `puede_leer` se
+        resuelve ANTES, y a un no-lector el estado closed/transferred del
+        expediente NUNCA le llega como 409: cae en la misma rama sin mutar
+        de más abajo (`existing.status != "open"`), indistinguible del resto
+        de acks acotados.
+        """
         existing = await self._repo.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
@@ -807,19 +829,46 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        self._assert_open(existing)
+
+        clearance = await self._repo.caller_clearance(user_id)
+        puede_leer = existing.nivel_seguridad <= clearance
+
+        if puede_leer:
+            self._assert_open(existing)
 
         duplicate = await self._repo.radicado_link_exists(expediente_id, payload.radicado_id)
         if duplicate:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "radicado_already_linked",
-                    "detail": (
-                        f"Radicado {payload.radicado_id} is already linked to expediente {expediente_id}"
-                    ),
-                    "status": 409,
-                },
+            if puede_leer:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "radicado_already_linked",
+                        "detail": (
+                            f"Radicado {payload.radicado_id} is already linked to expediente {expediente_id}"
+                        ),
+                        "status": 409,
+                    },
+                )
+            # Idempotente-silencioso (M2): no revela que ya estaba vinculado
+            # ni el `added_at` real de esa vinculación previa a quien no
+            # puede leer el expediente.
+            return ExpedienteRadicadoResponse(
+                radicado_id=payload.radicado_id,
+                tracking_number=payload.tracking_number,
+                added_at=None,
+            )
+
+        if existing.status != "open":
+            # Solo alcanzable con `puede_leer=False`: si pudiera leer,
+            # `_assert_open` ya habría lanzado el 409 informativo arriba.
+            # Un no-lector no tiene nada que mutar (closed/transferred) y
+            # recibe el MISMO ack acotado que el resto de ramas -- el cuerpo
+            # no distingue "closed", "transferred" ni "ya vinculado" (M2
+            # hallazgo #1).
+            return ExpedienteRadicadoResponse(
+                radicado_id=payload.radicado_id,
+                tracking_number=payload.tracking_number,
+                added_at=None,
             )
 
         link = await self._repo.link_radicado(
@@ -843,17 +892,55 @@ class ArchiveService:
                 "tracking_number": payload.tracking_number,
             },
         )
-        return _to_radicado_response(link)
+        # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
+        # vinculación de un radicado es una mutación del conjunto documental
+        # del expediente, igual de auditable que `radicado_excluido`. SIEMPRE
+        # se escribe, incluso cuando la respuesta se acota abajo (la
+        # redacción es de la respuesta al llamante, no de la traza forense).
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="archive.radicado_linked",
+            object_type="expediente",
+            object_ref=existing.code,
+            actor=str(user_id) if user_id else None,
+            payload={
+                "radicado_id": str(payload.radicado_id),
+                "tracking_number": payload.tracking_number,
+            },
+        )
+        response = _to_radicado_response(link)
+        if not puede_leer:
+            # Respuesta acotada (M2): no filtra el `added_at` real a quien no
+            # puede leer el expediente. `radicado_id`/`tracking_number` son
+            # eco del input que el propio llamante ya envió, no se redactan.
+            return ExpedienteRadicadoResponse(
+                radicado_id=response.radicado_id,
+                tracking_number=response.tracking_number,
+                added_at=None,
+            )
+        return response
 
     async def link_radicados_batch(
-        self, expediente_id: uuid.UUID, items: list[RadicadoLink]
+        self,
+        expediente_id: uuid.UUID,
+        items: list[RadicadoLink],
+        user_id: uuid.UUID | None = None,
     ) -> BatchLinkResult:
         """Vincula múltiples radicados de una vez (idempotente) y regenera el índice
         una sola vez al final. Omite los ya vinculados (paridad legado: inclusión masiva).
 
-        No-read-up DIFERIDO aquí (decisión del arquitecto, ver
-        `core.clearance.CLEARANCE_SIN_RESTRICCION`) — brecha conocida y explícita,
-        no escondida en un default de firma. RF-SEG-08.
+        M2 (RF-SEG-08, resuelto) — mismo criterio que `link_radicado`: la
+        mutación es LEGÍTIMA sin clearance de lectura y SIEMPRE se ejecuta;
+        la RESPUESTA se acota (`vinculados`/`omitidos` -> None) cuando el
+        llamante no puede LEER el expediente, para no filtrar el volumen del
+        conjunto documental. `total` se conserva (eco del input).
+
+        M2 hallazgo #1: para un no-lector, `_assert_open` (409 con el estado
+        LITERAL) nunca se evalúa -- si el expediente no está open, se
+        devuelve el mismo ack acotado SIN mutar, indistinguible del caso
+        open acotado (ver rama `elif` más abajo).
         """
         existing = await self._repo.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
@@ -867,8 +954,18 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        self._assert_open(existing)
+
+        clearance = await self._repo.caller_clearance(user_id)
+        puede_leer = existing.nivel_seguridad <= clearance
+
+        if puede_leer:
+            self._assert_open(existing)
+        elif existing.status != "open":
+            # No-lector, expediente no-open: sin mutar (M2 hallazgo #1).
+            return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
+
         vinculados = omitidos = 0
+        linked_ids: list[str] = []
         for it in items:
             if await self._repo.radicado_link_exists(expediente_id, it.radicado_id):
                 omitidos += 1
@@ -885,8 +982,29 @@ class ArchiveService:
                 dependencia_productora_nombre=it.dependencia_productora_nombre,
             )
             vinculados += 1
+            linked_ids.append(str(it.radicado_id))
         if vinculados:
             await self._regenerate_index(expediente_id)
+            # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
+            # inclusión masiva es la MISMA mutación de conjunto documental que
+            # `link_radicado`, repetida N veces; queda SIEMPRE, incluso cuando
+            # la respuesta se acota abajo.
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.radicado_batch_linked",
+                object_type="expediente",
+                object_ref=existing.code,
+                actor=str(user_id) if user_id else None,
+                payload={
+                    "vinculados": vinculados,
+                    "omitidos": omitidos,
+                    "radicado_ids": linked_ids,
+                },
+            )
+        if not puede_leer:
+            return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
         return BatchLinkResult(vinculados=vinculados, omitidos=omitidos, total=len(items))
 
     async def unlink_radicado(
@@ -906,11 +1024,21 @@ class ArchiveService:
         retiro) — la trazabilidad completa (Ley 594/2000; Ac. AGN 001/2024
         art. 4.3.2.3) exige identificar al agente responsable, no solo cuándo
         y por qué. Queda tanto en la hoja de ruta del expediente
-        (`expediente_eventos`) como en el `audit_log` inmutable (Canal A).
+        (`expediente_eventos`) como en el `audit_log` inmutable (Canal A). Es
+        también el `user_id` con el que se resuelve el clearance del llamante
+        para la respuesta acotada (M2, ver abajo).
 
-        No-read-up DIFERIDO aquí (decisión del arquitecto, ver
-        `core.clearance.CLEARANCE_SIN_RESTRICCION`) — brecha conocida y explícita,
-        no escondida en un default de firma. RF-SEG-08.
+        M2 (RF-SEG-08, resuelto): la exclusión es LEGÍTIMA sin clearance de
+        lectura (mismo criterio que `link_radicado`/`link_radicados_batch`) y
+        SIEMPRE se ejecuta. Cuando el llamante no puede LEER el expediente
+        (`nivel_seguridad > su clearance`), se SUPRIME el 404
+        `radicado_link_not_found`: responde 204 exista o no el vínculo, para
+        no revelar pertenencia a quien no tiene clearance de lectura.
+
+        M2 hallazgo #1: por el mismo motivo, `_assert_open` (409 con el
+        estado LITERAL) solo se evalúa para quien SÍ puede leer -- un
+        no-lector con un expediente no-open recibe el mismo 204 sin mutar,
+        indistinguible del resto de casos acotados.
         """
         existing = await self._repo.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
@@ -924,19 +1052,32 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        self._assert_open(existing)
+
+        clearance = await self._repo.caller_clearance(actor)
+        puede_leer = existing.nivel_seguridad <= clearance
+
+        if puede_leer:
+            self._assert_open(existing)
+        elif existing.status != "open":
+            # No-lector, expediente no-open: 204 sin mutar (M2 hallazgo #1).
+            return
+
         excluded = await self._repo.unlink_radicado(expediente_id, radicado_id, causal=causal)
         if not excluded:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "radicado_link_not_found",
-                    "detail": (
-                        f"Radicado {radicado_id} is not linked to expediente {expediente_id}"
-                    ),
-                    "status": 404,
-                },
-            )
+            if puede_leer:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "radicado_link_not_found",
+                        "detail": (
+                            f"Radicado {radicado_id} is not linked to expediente {expediente_id}"
+                        ),
+                        "status": 404,
+                    },
+                )
+            # Idempotente-silencioso (M2): nada que mutar/auditar — no revela
+            # si el vínculo existía a quien no puede leer el expediente.
+            return
         await self._regenerate_index(expediente_id)
         await self._repo.insert_expediente_evento(
             expediente_id,

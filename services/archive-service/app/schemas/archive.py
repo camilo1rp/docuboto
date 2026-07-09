@@ -73,8 +73,14 @@ class BatchLinkRequest(BaseModel):
 
 
 class BatchLinkResult(BaseModel):
-    vinculados: int
-    omitidos: int  # ya estaban vinculados
+    # `None` (M2, RF-SEG-08): la mutación SIEMPRE ocurre, pero cuando el
+    # llamante no puede LEER el expediente (nivel_seguridad > su clearance) se
+    # acota la respuesta a `None` para no filtrar el volumen vinculado/omitido
+    # — oráculo de pertenencia y tamaño del conjunto documental. `total` se
+    # conserva SIEMPRE: es eco del propio input que el llamante ya envió, no
+    # es sensible.
+    vinculados: int | None
+    omitidos: int | None  # ya estaban vinculados
     total: int
 
 
@@ -83,7 +89,11 @@ class ExpedienteRadicadoResponse(BaseModel):
 
     radicado_id: uuid.UUID
     tracking_number: str
-    added_at: datetime
+    # `None` (M2, RF-SEG-08): cuando el llamante no puede LEER el expediente,
+    # `link_radicado` responde idempotente-silencioso (no revela si ya estaba
+    # vinculado, ni el instante real de vinculación previo) — ver
+    # `ArchiveService.link_radicado`.
+    added_at: datetime | None
 
 
 class ExpedienteEventoResponse(BaseModel):
@@ -257,14 +267,38 @@ class IndiceVersionSummary(BaseModel):
 
 
 class RebuildResult(BaseModel):
-    version: int
-    xml_sha256: str
-    num_documentos: int
+    # `version`/`xml_sha256`/`num_documentos` → `None` (M2, RF-SEG-08): la
+    # mutación (`IndexService.regenerate`) SIEMPRE ocurre, pero el endpoint
+    # `POST /{id}/indice/rebuild` acota la respuesta a un ack minimalista
+    # cuando el llamante no puede LEER el expediente — de lo contrario
+    # filtraría volumen documental (`num_documentos`) y huella
+    # (`xml_sha256`/`version`) a quien no tiene clearance. La redacción vive en
+    # el HANDLER del router (`routers/indice.py`), NUNCA dentro de
+    # `IndexService.regenerate`: ese método lo reutiliza `close_expediente`
+    # (canal 'system') para su propio asiento de auditoría, que necesita los
+    # valores REALES sin importar clearance de lectura.
+    version: int | None
+    xml_sha256: str | None
+    num_documentos: int | None
+    # `unchanged` es un oráculo débil de "hubo cambios en el conjunto
+    # documental" — también se redacta a un valor fijo (`False`) cuando el
+    # llamante no puede leer, en vez de conservarlo.
     unchanged: bool = False
     # xsdVersion de la versión devuelta (la nueva si se regeneró, o la ya
     # persistida si `unchanged`) — fuente para que el llamador (p. ej. el
     # asiento de auditoría del cierre) no asuma ciegamente la constante del
-    # módulo cuando `regenerate` no creó versión nueva.
+    # módulo cuando `regenerate` no creó versión nueva. NO es una constante
+    # global fija: varía por expediente según cuándo se regeneró por última
+    # vez su índice (retrocompat v1/v2/v4, RT-15 Inc.3) — por eso, a
+    # diferencia de lo que decía este comentario antes, SÍ se redacta a
+    # `None` en la respuesta acotada de `POST /{id}/indice/rebuild` cuando el
+    # llamante no puede leer el expediente (`routers/indice.py::
+    # rebuild_indice`, hallazgo #1): dejarlo poblado solo en la rama "open"
+    # y `None` solo en la rama "closed/transferred" era, por sí mismo, un
+    # oráculo de ciclo de vida — aunque el resto de campos ya fueran
+    # uniformes. `IndexService.regenerate`/`close_expediente` (canal
+    # 'system') siguen viendo el valor real; esto solo afecta el ack HTTP
+    # acotado.
     xsd_version: str | None = None
 
 

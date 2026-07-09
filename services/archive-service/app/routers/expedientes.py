@@ -378,10 +378,15 @@ async def link_radicado(
     expediente_id: uuid.UUID,
     payload: RadicadoLink,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteRadicadoResponse:
+    # `user_id` (M2, RF-SEG-08): resuelve el clearance real del llamante para
+    # acotar la respuesta cuando no puede LEER el expediente — la vinculación
+    # en sí SIEMPRE se ejecuta (ortogonal al clearance, ver
+    # `ArchiveService.link_radicado`).
     service = ArchiveService(conn, tenant_slug)
-    return await service.link_radicado(expediente_id, payload)
+    return await service.link_radicado(expediente_id, payload, user_id)
 
 
 @router.post(
@@ -394,10 +399,12 @@ async def link_radicados_batch(
     expediente_id: uuid.UUID,
     payload: BatchLinkRequest,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> BatchLinkResult:
+    # `user_id` (M2, RF-SEG-08): ver `link_radicado` — misma respuesta acotada.
     return await ArchiveService(conn, tenant_slug).link_radicados_batch(
-        expediente_id, payload.radicados
+        expediente_id, payload.radicados, user_id
     )
 
 

@@ -695,8 +695,11 @@ async def test_rebuild_idempotent_when_unchanged(client_with_conn) -> None:
     # tiene — v4: el hash cubre el XML completo (cabecera incluida), así que
     # se computa con las mismas piezas del servicio bajo prueba.
     expected_ch = await _expected_rebuild_hash(exp, [link])
-    # get_expediente_by_id: fetchrow(exp) + fetch(radicados); get_current: fetchrow(indice)
-    mock_conn.fetchrow.side_effect = [exp, _indice_row(version=3, content=expected_ch)]
+    # get_expediente_by_id: fetchrow(exp) + fetch(radicados); get_current: fetchrow(indice);
+    # caller_clearance (M2, RF-SEG-08 — None → PUBLICA(1), suficiente porque el
+    # expediente es nivel_seguridad=1 por defecto); get_expediente_by_id de nuevo
+    # (redacción de la respuesta en el handler, ver `routers/indice.py::rebuild_indice`)
+    mock_conn.fetchrow.side_effect = [exp, _indice_row(version=3, content=expected_ch), None, exp]
     mock_conn.fetch.return_value = [link]
 
     resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
@@ -727,7 +730,9 @@ async def test_rebuild_idempotent_when_rt15_metadata_unchanged(client_with_conn)
         added_at=added_at,
     )
     expected_ch = await _expected_rebuild_hash(exp, [link])
-    mock_conn.fetchrow.side_effect = [exp, _indice_row(version=1, content=expected_ch)]
+    # + caller_clearance (M2 — None → PUBLICA(1)) + get_expediente_by_id de nuevo
+    # (redacción de la respuesta, ver `routers/indice.py::rebuild_indice`)
+    mock_conn.fetchrow.side_effect = [exp, _indice_row(version=1, content=expected_ch), None, exp]
     mock_conn.fetch.return_value = [link]
 
     resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
@@ -752,11 +757,15 @@ async def test_rebuild_creates_new_version_when_only_folios_changed(client_with_
     # El índice vigente (version=3) fue generado ANTES de declarar folios.
     link_sin_folios = make_radicado_link_record(radicado_id=rad_id, content_hash=h, added_at=added_at)
     ch_sin_folios = await _expected_rebuild_hash(exp, [link_sin_folios])
-    # get_expediente_by_id, get_current, e insert_version (RETURNING) — en ese orden.
+    # get_expediente_by_id, get_current, e insert_version (RETURNING) — en ese orden;
+    # + caller_clearance (M2 — None → PUBLICA(1)) + get_expediente_by_id de nuevo
+    # (redacción de la respuesta, ver `routers/indice.py::rebuild_indice`)
     mock_conn.fetchrow.side_effect = [
         exp,
         _indice_row(version=3, content=ch_sin_folios),
         _indice_row(version=4),
+        None,
+        exp,
     ]
     # El vínculo actual YA tiene folios declarados (RT-15) — content_hash difiere.
     mock_conn.fetch.return_value = [
@@ -794,12 +803,195 @@ async def test_rebuild_rejected_on_closed_expediente(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # D-08
     exp_id = uuid.uuid4()
     exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
-    mock_conn.fetchrow.side_effect = [exp_closed]
+    # regenerate: get_expediente_by_id -> exp_closed (dispara el 409
+    # `expediente_not_open`); el handler intercepta esa excepción en su
+    # `except` y evalúa `_puede_leer()` para decidir si propagarla o
+    # sustituirla por el ack acotado (M2 hallazgo #1) -> caller_clearance
+    # (None: sin fila RBAC -> PUBLICA(1)) + get_expediente_by_id de nuevo
+    # (exp_closed, nivel_seguridad=1 <= PUBLICA(1) -> SÍ puede leer -> el 409
+    # se propaga tal cual, como espera este test).
+    mock_conn.fetchrow.side_effect = [exp_closed, None, exp_closed]
     mock_conn.fetch.return_value = []
 
     resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "expediente_not_open"
+
+
+# ---------------------------------------------------------------------------
+# M2 (RF-SEG-08, resuelto) — `POST /indice/rebuild` SIEMPRE regenera
+# (`IndexService.regenerate` resuelve existencia/estado con
+# `CLEARANCE_SIN_RESTRICCION`, sin cambios) pero la RESPUESTA se acota en el
+# HANDLER (`routers/indice.py::rebuild_indice`) cuando el llamante no puede
+# LEER un expediente CLASIFICADA (3) — ver `RebuildResult`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebuild_redacted_when_caller_cannot_read_classified(client_with_conn) -> None:
+    """M2: con clearance PUBLICA (1) sobre un expediente CLASIFICADA (3), el
+    rebuild SIGUE regenerando/persistiendo el índice, pero la respuesta acota
+    `version`/`xml_sha256`/`num_documentos` a `None` y `unchanged` a `False`
+    (valor fijo, no el resultado real). `xsd_version` TAMBIÉN se redacta a
+    `None` (hallazgo #1, ver `RebuildResult.xsd_version`): antes se
+    conservaba el valor real aquí, mientras que la rama "no-lector + closed/
+    transferred" (`test_rebuild_redacted_when_caller_cannot_read_classified_closed`)
+    ya devolvía `None` -- esa asimetría era, por sí sola, un oráculo de ciclo
+    de vida. Ambos casos deben ser indistinguibles."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    added_at = NOW
+    exp = make_expediente_record(exp_id=exp_id, nivel_seguridad=3)
+    link = make_radicado_link_record(radicado_id=rad_id, tracking_number="2024-E-001", added_at=added_at)
+    expected_ch = await _expected_rebuild_hash(exp, [link])
+    # get_expediente_by_id (regenerate) + get_current (índice vigente,
+    # unchanged) + caller_clearance (M2 — None → PUBLICA(1), insuficiente
+    # para nivel_seguridad=3) + get_expediente_by_id de nuevo (redacción de
+    # la respuesta en el handler).
+    mock_conn.fetchrow.side_effect = [exp, _indice_row(version=3, content=expected_ch), None, exp]
+    mock_conn.fetch.return_value = [link]
+
+    resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["version"] is None
+    assert body["xml_sha256"] is None
+    assert body["num_documentos"] is None
+    # Redactado a un valor FIJO, no al resultado real de `regenerate` (que
+    # aquí habría sido `unchanged=True`) — así lo especifica `RebuildResult`.
+    assert body["unchanged"] is False
+    # Hallazgo #1: `xsd_version` también se redacta (antes era "v2", el valor
+    # real) para ser indistinguible de la rama "no-lector + closed".
+    assert body["xsd_version"] is None
+
+
+@pytest.mark.asyncio
+async def test_rebuild_full_response_when_caller_can_read_classified(client_with_conn) -> None:
+    """M2 (contraparte): con clearance CLASIFICADA (3) — suficiente para leer
+    el mismo expediente — la respuesta trae los valores REALES de `regenerate`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    added_at = NOW
+    exp = make_expediente_record(exp_id=exp_id, nivel_seguridad=3)
+    link = make_radicado_link_record(radicado_id=rad_id, tracking_number="2024-E-001", added_at=added_at)
+    expected_ch = await _expected_rebuild_hash(exp, [link])
+    mock_conn.fetchrow.side_effect = [
+        exp,
+        _indice_row(version=3, content=expected_ch),
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+        exp,
+    ]
+    mock_conn.fetch.return_value = [link]
+
+    resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["unchanged"] is True
+    assert body["version"] == 3
+    # `xml_sha256` (unchanged) es el de la fila persistida (`_indice_row`,
+    # sobre el XML placeholder almacenado), no `expected_ch` (el content_hash
+    # que decide si hubo cambios) — mismo criterio que `RebuildResult` real.
+    assert body["xml_sha256"] == xml_sha256("<indice/>")
+    assert body["num_documentos"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rebuild_redacted_when_caller_cannot_read_classified_closed(client_with_conn) -> None:
+    """M2 hallazgo #1 (auditoría M2, cierre): un no-lector (clearance PUBLICA=1)
+    que sondea un expediente CLASIFICADA (3) **closed** por su UUID NO debe
+    recibir el 409 `expediente_not_open` (con el estado LITERAL en el
+    cuerpo) que `IndexService.regenerate`/`assert_open` lanzan internamente
+    -- eso sería un oráculo de ciclo de vida (revelaría "closed" a quien no
+    puede leer el expediente). El handler lo intercepta en su `except` y
+    responde el MISMO ack acotado que la rama "no-lector + open"
+    (`test_rebuild_redacted_when_caller_cannot_read_classified`, arriba):
+    ambos cuerpos deben ser byte-a-byte idénticos, incl. `xsd_version`
+    (`None` en ambos -- ver `RebuildResult.xsd_version`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    exp_id = uuid.uuid4()
+    exp_closed_classificada = make_expediente_record(
+        exp_id=exp_id, exp_status="closed", nivel_seguridad=3
+    )
+    # regenerate: get_expediente_by_id -> exp (closed) dispara el 409
+    # `expediente_not_open` DENTRO de `assert_open`, antes de tocar el
+    # índice (`get_current` nunca se llama). El handler intercepta esa
+    # excepción en su `except` y evalúa `_puede_leer()`: caller_clearance
+    # (None: sin fila RBAC -> PUBLICA(1)) + get_expediente_by_id de nuevo
+    # (mismo exp closed/CLASIFICADA, nivel_seguridad=3 > PUBLICA(1) -> NO
+    # puede leer) -> el 409 se sustituye por el ack acotado.
+    mock_conn.fetchrow.side_effect = [
+        exp_closed_classificada,
+        None,
+        exp_closed_classificada,
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["version"] is None
+    assert body["xml_sha256"] is None
+    assert body["num_documentos"] is None
+    assert body["unchanged"] is False
+    assert body["xsd_version"] is None
+
+    # Nada se persistió: `assert_open` abortó antes de llegar a `get_current`/
+    # `insert_version` -- ningún INSERT en `expediente_indice`.
+    insert_calls = [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_indice" in c.args[0]
+    ]
+    assert len(insert_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_rebuild_open_and_closed_no_lector_acks_are_indistinguishable(client_with_conn) -> None:
+    """M2 hallazgo #1: el ack acotado que recibe un no-lector es EXACTAMENTE
+    el mismo, sea cual sea el estado real del expediente CLASIFICADA
+    (open/closed) -- comparación DIRECTA de los dos cuerpos de respuesta
+    HTTP reales (mismo cliente/mock, reconfigurado entre llamadas), en vez
+    de solo repetir las mismas aserciones campo a campo en dos tests
+    separados: si alguno de los dos caminos volviera a filtrar un campo
+    (p.ej. `xsd_version`) este test lo detecta aunque las aserciones
+    individuales de `test_rebuild_redacted_when_caller_cannot_read_classified`
+    y `test_rebuild_redacted_when_caller_cannot_read_classified_closed` se
+    desincronizaran por error."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    exp_open = make_expediente_record(exp_id=exp_id, exp_status="open", nivel_seguridad=3)
+    link = make_radicado_link_record(radicado_id=rad_id, tracking_number="2024-E-001", added_at=NOW)
+    expected_ch = await _expected_rebuild_hash(exp_open, [link])
+
+    # 1) no-lector + open (unchanged): mismo montaje que
+    # `test_rebuild_redacted_when_caller_cannot_read_classified`.
+    mock_conn.fetchrow.side_effect = [
+        exp_open,
+        _indice_row(version=3, content=expected_ch),
+        None,
+        exp_open,
+    ]
+    mock_conn.fetch.return_value = [link]
+    resp_open = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
+    assert resp_open.status_code == 200
+
+    # 2) no-lector + closed: mismo expediente/nivel_seguridad, solo cambia el
+    # status -- mismo montaje que
+    # `test_rebuild_redacted_when_caller_cannot_read_classified_closed`.
+    exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed", nivel_seguridad=3)
+    mock_conn.fetchrow.side_effect = [exp_closed, None, exp_closed]
+    mock_conn.fetch.return_value = []
+    resp_closed = await client.post(f"/api/v1/expedientes/{exp_id}/indice/rebuild", headers=TENANT_HEADERS)
+    assert resp_closed.status_code == 200
+
+    assert resp_open.json() == resp_closed.json()
 
 
 # ---------------------------------------------------------------------------
