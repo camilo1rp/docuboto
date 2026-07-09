@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import asyncpg
 from fastapi import HTTPException, status
 
+from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.fisico_repository import FisicoRepository
 from app.schemas.fisico import (
     ExpedienteEnUnidad,
@@ -77,6 +78,7 @@ def _not_found(detail: str) -> HTTPException:
 class FisicoService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._repo = FisicoRepository(conn, tenant_slug)
+        self._archive = ArchiveRepository(conn, tenant_slug)
 
     # -- ubicaciones ---------------------------------------------------
 
@@ -237,17 +239,31 @@ class FisicoService:
         ubicacion_id: uuid.UUID | None,
         trd_serie_id: uuid.UUID | None,
         expediente_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
     ) -> FuidResponse:
+        # No-read-up (RF-SEG-08): el FUID expone asunto/serie/signatura del
+        # expediente — es contenido, no metadato de custodia (defensa en
+        # profundidad; `TransferenciaService.fuid` ya aplica un 404 total
+        # aguas arriba para la puerta single-expediente, pero las puertas
+        # multi-expediente de `fisico.py` solo tienen este filtro por fila).
+        max_clearance = await self._archive.caller_clearance(user_id)
         rows = await self._repo.fuid_inventory(
             ubicacion_id=ubicacion_id,
             trd_serie_id=trd_serie_id,
             expediente_id=expediente_id,
+            max_clearance=max_clearance,
         )
         fuid_rows = [FuidRow(orden=i, **dict(r)) for i, r in enumerate(rows, start=1)]
         return FuidResponse(generado_ts=datetime.now(tz=UTC), total=len(fuid_rows), rows=fuid_rows)
 
     async def generate_fuid_xml(
-        self, *, ubicacion_id: uuid.UUID | None, trd_serie_id: uuid.UUID | None
+        self,
+        *,
+        ubicacion_id: uuid.UUID | None,
+        trd_serie_id: uuid.UUID | None,
+        user_id: uuid.UUID | None = None,
     ) -> str:
-        fuid = await self.generate_fuid(ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id)
+        fuid = await self.generate_fuid(
+            ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id, user_id=user_id
+        )
         return _fuid_to_xml(fuid)

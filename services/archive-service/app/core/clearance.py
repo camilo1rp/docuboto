@@ -83,10 +83,19 @@ CLASIFICADA = 3  # nivel máximo (security_levels.code)
 #     `close_expediente` (canal 'system') para su propio asiento de
 #     auditoría, que necesita los valores REALES.
 #
-# (c) `TransferenciaService.create` (E12): SIGUE DIFERIDO — misma pregunta
-#     normativa que (b) (mutar/leer el CONTENIDO de un expediente por encima
-#     del clearance del llamante), aún sin resolver por el
-#     arquitecto/compliance para transferencias. No confundir con (a)/(b).
+# (c) `TransferenciaService.create` (E12): RESUELTO-ortogonal, mismo
+#     principio que (a) — la transferencia (create/enviar/recibir/rechazar)
+#     es un acto de custodia, ortogonal al clearance de LECTURA (Opción B,
+#     decidida por compliance: Ley 594/2000 arts. 22-24; Ac. AGN 001/2024
+#     art. 4.3.2.4 — mismo umbral crud>=3, mismo oráculo de estado residual
+#     `invalid_status_transition` ya aceptado para (a)). `create` usa
+#     `CLEARANCE_SIN_RESTRICCION` SOLO para la pre-condición interna de
+#     existencia/estado (¿existe y está 'closed'?); el `TransferenciaResponse`
+#     estrecho + crud>=3 ya bastan, NO se acota (a diferencia de (b): es
+#     crud>=3, no crud>=1, y no filtra contenido). Distinto de
+#     `TransferenciaService.fuid`, que SÍ expone contenido (asunto/serie/
+#     signatura del expediente) y por eso SÍ aplica no-read-up real
+#     (404 total si el llamante no puede leer el expediente, ver el método).
 CLEARANCE_SIN_RESTRICCION = CLASIFICADA
 
 

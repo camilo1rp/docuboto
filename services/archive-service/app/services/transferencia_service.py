@@ -60,8 +60,10 @@ class TransferenciaService:
     ) -> TransferenciaResponse:
         # Pre-condición interna de existencia/estado (¿existe y está 'closed'?),
         # no una lectura expuesta al llamante — el endpoint ya exige
-        # USUA_PERM_EXPEDIENTE (D-08). No-read-up aquí queda DIFERIDO (decisión
-        # del arquitecto, ver `core.clearance.CLEARANCE_SIN_RESTRICCION`). RF-SEG-08.
+        # USUA_PERM_EXPEDIENTE crud>=3 (D-08). RESUELTO-ortogonal (ya NO es
+        # deuda): la transferencia es un acto de custodia, ortogonal al
+        # clearance de lectura (Opción B, ver `core.clearance
+        # .CLEARANCE_SIN_RESTRICCION` bloque (c)). RF-SEG-08.
         exp = await self._archive.get_expediente_by_id(
             payload.expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
@@ -193,7 +195,9 @@ class TransferenciaService:
             )
         return _resp(row)
 
-    async def fuid(self, transferencia_id: uuid.UUID) -> FuidResponse:
+    async def fuid(
+        self, transferencia_id: uuid.UUID, user_id: uuid.UUID | None = None
+    ) -> FuidResponse:
         row = await self._repo.get(transferencia_id)
         if row is None:
             raise HTTPException(
@@ -204,6 +208,28 @@ class TransferenciaService:
                     "status": 404,
                 },
             )
+        # No-read-up (RF-SEG-08): el FUID es descripción de CONTENIDO del
+        # expediente (asunto/serie/signatura, Ley 1712/2014 arts. 18-19; Ley
+        # 594/2000 art. 27) — a diferencia de la transferencia en sí (acto de
+        # custodia, ortogonal, ver `core.clearance.CLEARANCE_SIN_RESTRICCION`
+        # bloque (c)). 404 total, indistinguible de un expediente inexistente:
+        # no revela ni existencia ni estado a quien no puede leerlo.
+        caller_clearance = await self._archive.caller_clearance(user_id)
+        exp = await self._archive.get_expediente_by_id(
+            row["expediente_id"], max_clearance=caller_clearance
+        )
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "status": 404,
+                },
+            )
         return await FisicoService(self._conn, self._tenant).generate_fuid(
-            ubicacion_id=None, trd_serie_id=None, expediente_id=row["expediente_id"]
+            ubicacion_id=None,
+            trd_serie_id=None,
+            expediente_id=row["expediente_id"],
+            user_id=user_id,
         )

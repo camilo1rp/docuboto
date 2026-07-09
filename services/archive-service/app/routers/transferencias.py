@@ -46,6 +46,28 @@ def _actor(request: Request) -> str | None:
     return request.headers.get("X-Username") or request.headers.get("X-User-Id")
 
 
+def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
+    """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
+
+    Gemelo de `expedientes.py::_optional_user`: usado en el FUID de la
+    transferencia (`/{id}/fuid`), que expone asunto/serie/signatura del
+    expediente — contenido, no metadato de custodia.
+    """
+    if not x_user_id:
+        return None
+    try:
+        return uuid.UUID(x_user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_user_id",
+                "detail": "X-User-Id must be a valid UUID",
+                "status": 400,
+            },
+        )
+
+
 @router.post(
     "",
     response_model=TransferenciaResponse,
@@ -141,6 +163,7 @@ async def rechazar(
 async def transferencia_fuid(
     transferencia_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FuidResponse:
-    return await TransferenciaService(conn, tenant_slug).fuid(transferencia_id)
+    return await TransferenciaService(conn, tenant_slug).fuid(transferencia_id, user_id)

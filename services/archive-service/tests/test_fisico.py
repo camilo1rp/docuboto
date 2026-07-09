@@ -262,6 +262,93 @@ async def test_fuid_export_xml(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fuid_inventory_row_level_filter(client_with_conn) -> None:
+    """RF-SEG-08 V2: `fuid_inventory` filtra POR FILA (`e.nivel_seguridad <=
+    $1`, `$1` ligado al `max_clearance` real del llamante), no en
+    post-proceso Python. Un `fetch` falso simula lo que haría Postgres:
+    solo devuelve las filas cuyo nivel de origen sea <= `max_clearance` —
+    así el test rompe si el código deja de pasar `max_clearance` a la query,
+    o si alguien lo sustituye por un filtro Python aguas abajo (indistinguible
+    para un mock que no ejecuta SQL de verdad)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+
+    row_publica = _fuid_inv_row(expediente_code="EXP-PUB")
+    row_clasificada = _fuid_inv_row(expediente_code="EXP-CLA")
+    niveles = {"EXP-PUB": 1, "EXP-CLA": 3}
+
+    async def fake_fetch(query, *params):
+        assert "e.nivel_seguridad <= $1" in query
+        max_clearance = params[0]
+        return [
+            r for r in (row_publica, row_clasificada) if niveles[r["expediente_code"]] <= max_clearance
+        ]
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    # Caller de clearance PUBLICA(1): resolve_caller_clearance sin fila RBAC.
+    mock_conn.fetchrow.return_value = None
+    resp_low = await client.get("/api/v1/fuid", headers=TENANT_HEADERS)
+    assert resp_low.status_code == 200
+    body_low = resp_low.json()
+    assert body_low["total"] == 1
+    assert body_low["rows"][0]["expediente_code"] == "EXP-PUB"
+
+    # Mismo inventario, caller root (CLASIFICADA=3): ambos visibles.
+    mock_conn.fetchrow.return_value = {"is_root": True, "max_level": None}
+    resp_high = await client.get("/api/v1/fuid", headers=TENANT_HEADERS)
+    assert resp_high.status_code == 200
+    body_high = resp_high.json()
+    assert body_high["total"] == 2
+    assert {r["expediente_code"] for r in body_high["rows"]} == {"EXP-PUB", "EXP-CLA"}
+
+
+@pytest.mark.asyncio
+async def test_fuid_xml_row_level_filter(client_with_conn) -> None:
+    """Mismo filtro por-fila que `test_fuid_inventory_row_level_filter`, para
+    la puerta `/fuid.xml` (`FisicoService.generate_fuid_xml` delega en el
+    mismo `generate_fuid`): un expediente CLASIFICADA no aparece en el XML
+    para un llamante sin clearance suficiente."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+
+    row_publica = _fuid_inv_row(expediente_code="EXP-PUB")
+    row_clasificada = _fuid_inv_row(expediente_code="EXP-CLA")
+    niveles = {"EXP-PUB": 1, "EXP-CLA": 3}
+
+    async def fake_fetch(query, *params):
+        assert "e.nivel_seguridad <= $1" in query
+        max_clearance = params[0]
+        return [
+            r for r in (row_publica, row_clasificada) if niveles[r["expediente_code"]] <= max_clearance
+        ]
+
+    mock_conn.fetch.side_effect = fake_fetch
+    mock_conn.fetchrow.return_value = None  # caller_clearance -> PUBLICA(1)
+
+    resp = await client.get("/api/v1/fuid.xml", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert "EXP-PUB" in resp.text
+    assert "EXP-CLA" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_fuid_sin_user_id_403(client_with_conn) -> None:
+    """Fail-closed observado (no asumido): `check_permission` corta en
+    `user_id is None -> return False` ANTES de tocar la BD (ver
+    `app/core/clearance.py`), así que sin `X-User-Id` la petición nunca llega
+    a `caller_clearance` — `require_permission` ya la rechaza con 403. El
+    mock de `fetchval` deliberadamente devuelve `True` para demostrar que
+    esto NO depende de la respuesta RBAC: el corte ocurre antes de consultarla."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # irrelevante: el corte es por user_id=None
+    headers = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
+    resp = await client.get("/api/v1/fuid", headers=headers)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
 async def test_list_movimientos(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted

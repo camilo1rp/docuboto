@@ -284,12 +284,21 @@ class FisicoRepository:
         *,
         ubicacion_id: uuid.UUID | None,
         trd_serie_id: uuid.UUID | None,
+        max_clearance: int,
         expediente_id: uuid.UUID | None = None,
     ) -> list[asyncpg.Record]:
-        """Inventario derivado: expediente ↔ unidad ↔ signatura ↔ serie TRD."""
+        """Inventario derivado: expediente ↔ unidad ↔ signatura ↔ serie TRD.
+
+        `max_clearance` es OBLIGATORIO y solo por keyword — mismo patrón que
+        `ArchiveRepository.get_expediente_by_id` (RF-SEG-08 / RF-BUS-04): el
+        FUID expone `asunto`/`serie`/`signatura` del expediente, que es
+        CONTENIDO, no metadato de custodia. Sin este filtro, un portador de
+        `USUA_PERM_EXPEDIENTE` sin clearance suficiente enumeraba expedientes
+        RESERVADA/CLASIFICADA vía el inventario físico.
+        """
         await self._sp()
-        conds: list[str] = []
-        params: list[object] = []
+        conds: list[str] = ["e.nivel_seguridad <= $1"]
+        params: list[object] = [max_clearance]
         if ubicacion_id is not None:
             params.append(ubicacion_id)
             conds.append(f"u.ubicacion_id = ${len(params)}")
@@ -299,7 +308,7 @@ class FisicoRepository:
         if expediente_id is not None:
             params.append(expediente_id)
             conds.append(f"e.id = ${len(params)}")
-        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        where = f"WHERE {' AND '.join(conds)}"
         return list(
             await self._conn.fetch(
                 f"""

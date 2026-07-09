@@ -145,27 +145,116 @@ async def test_transferencia_fuid(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     tid = uuid.uuid4()
     exp_id = uuid.uuid4()
-    mock_conn.fetchrow.return_value = _transfer_row(id=tid, expediente_id=exp_id)
-    mock_conn.fetch.return_value = [
-        {
-            "expediente_id": exp_id,
-            "expediente_code": "EXP-2024-0001",
-            "asunto": "Contrato",
-            "fecha_inicial": NOW,
-            "fecha_final": None,
-            "serie_code": "100",
-            "serie_name": "Contratos",
-            "signatura": "DEP01-C0124",
-            "unidad_tipo": "caja",
-            "soporte": "papel",
-            "num_folios": 200,
-            "folio_inicio": 1,
-            "folio_fin": 200,
-        },
+    # Secuencia real (RF-SEG-08 V2, no-read-up del FUID single):
+    #   1) repo.get(transferencia)
+    #   2) caller_clearance (TransferenciaService.fuid) -> None -> PUBLICA(1)
+    #   3) get_expediente_by_id -> nivel_seguridad=1 <= PUBLICA -> visible
+    #   4) caller_clearance de nuevo (dentro de FisicoService.generate_fuid)
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        None,
+    ]
+    # fetch: 1) _get_radicados (irrelevante al FUID, forma distinta a la fila
+    # del FUID) ; 2) fuid_inventory (las filas reales del FUID).
+    mock_conn.fetch.side_effect = [
+        [],
+        [
+            {
+                "expediente_id": exp_id,
+                "expediente_code": "EXP-2024-0001",
+                "asunto": "Contrato",
+                "fecha_inicial": NOW,
+                "fecha_final": None,
+                "serie_code": "100",
+                "serie_name": "Contratos",
+                "signatura": "DEP01-C0124",
+                "unidad_tipo": "caja",
+                "soporte": "papel",
+                "num_folios": 200,
+                "folio_inicio": 1,
+                "folio_fin": 200,
+            },
+        ],
     ]
     resp = await client.get(f"/api/v1/transferencias/{tid}/fuid", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_transferencia_fuid_no_read_up_404(client_with_conn) -> None:
+    """RF-SEG-08 V2: el FUID de la transferencia es CONTENIDO del expediente
+    (asunto/serie/signatura — Ley 1712/2014 arts. 18-19; Ley 594/2000 art.
+    27), no un acto de custodia. Un llamante sin clearance suficiente sobre
+    un expediente CLASIFICADA(3) recibe 404 `expediente_not_found`,
+    indistinguible de un expediente inexistente (no revela ni existencia ni
+    estado). Contraste: el MISMO expediente, con clearance suficiente, sí
+    genera el FUID (200) — este test rompe si alguien quita el no-read-up
+    del FUID single."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+
+    # No-lector: caller_clearance -> PUBLICA(1); get_expediente_by_id no
+    # matchea `nivel_seguridad <= max_clearance` sobre el expediente real
+    # (CLASIFICADA=3) -> None (la BD real filtra por fila; el mock simula
+    # ese resultado, mismo patrón que test_archive.py::
+    # test_roles_autorizados_clearance_scoped_returns_404).
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id),
+        None,
+        None,
+    ]
+    resp = await client.get(f"/api/v1/transferencias/{tid}/fuid", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+    # Mismo expediente/transferencia, caller root (CLASIFICADA=3): sí puede.
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id),
+        {"is_root": True, "max_level": None},
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=3),
+        {"is_root": True, "max_level": None},
+    ]
+    mock_conn.fetch.side_effect = [
+        [],
+        [
+            {
+                "expediente_id": exp_id,
+                "expediente_code": "EXP-2024-0001",
+                "asunto": "Contrato",
+                "fecha_inicial": NOW,
+                "fecha_final": None,
+                "serie_code": "100",
+                "serie_name": "Contratos",
+                "signatura": "DEP01-C0124",
+                "unidad_tipo": "caja",
+                "soporte": "papel",
+                "num_folios": 200,
+                "folio_inicio": 1,
+                "folio_fin": 200,
+            },
+        ],
+    ]
+    resp2 = await client.get(f"/api/v1/transferencias/{tid}/fuid", headers=TENANT_HEADERS)
+    assert resp2.status_code == 200
+    assert resp2.json()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_transferencia_fuid_not_found_before_clearance(client_with_conn) -> None:
+    """El 404 `transferencia_not_found` sigue resolviéndose ANTES que el
+    no-read-up (RF-SEG-08 V2): una transferencia inexistente nunca llega a
+    resolver clearance ni a tocar el expediente."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    mock_conn.fetchrow.return_value = None  # repo.get(transferencia_id) -> no existe
+    resp = await client.get(f"/api/v1/transferencias/{uuid.uuid4()}/fuid", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "transferencia_not_found"
 
 
 # ---------------------------------------------------------------------------

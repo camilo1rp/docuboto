@@ -51,6 +51,28 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
+def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
+    """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
+
+    Gemelo de `expedientes.py::_optional_user` / `indice.py::_optional_user`:
+    usado en el FUID (`/fuid`, `/fuid.xml`), que expone asunto/serie/signatura
+    del expediente — contenido, no metadato de custodia.
+    """
+    if not x_user_id:
+        return None
+    try:
+        return uuid.UUID(x_user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_user_id",
+                "detail": "X-User-Id must be a valid UUID",
+                "status": 400,
+            },
+        )
+
+
 # -- ubicaciones -------------------------------------------------------
 
 
@@ -283,10 +305,11 @@ async def get_fuid(
     ubicacion_id: uuid.UUID | None = Query(default=None),
     trd_serie_id: uuid.UUID | None = Query(default=None),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FuidResponse:
     return await FisicoService(conn, tenant_slug).generate_fuid(
-        ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id
+        ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id, user_id=user_id
     )
 
 
@@ -299,9 +322,10 @@ async def get_fuid_xml(
     ubicacion_id: uuid.UUID | None = Query(default=None),
     trd_serie_id: uuid.UUID | None = Query(default=None),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> Response:
     xml = await FisicoService(conn, tenant_slug).generate_fuid_xml(
-        ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id
+        ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id, user_id=user_id
     )
     return Response(content=xml, media_type="application/xml")
