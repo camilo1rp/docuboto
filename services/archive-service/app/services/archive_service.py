@@ -141,42 +141,55 @@ class ArchiveService:
                 metadata_template_id = template["id"]
 
         year = datetime.now(tz=UTC).year
-        code = await self._repo.next_expediente_code(year)
-        expediente = await self._repo.create_expediente(
-            code=code,
-            name=payload.name,
-            description=payload.description,
-            trd_serie_id=payload.trd_serie_id,
-            opened_by=opened_by,
-            metadata=payload.metadata,
-            metadata_template_id=metadata_template_id,
-            nivel_seguridad=payload.nivel_seguridad,
-        )
-        # Índice electrónico disponible desde la creación (E15, versión 0).
-        from app.services.index_service import IndexService
+        # Atomicidad expediente<->auditoría: código+INSERT+índice v0+evento de
+        # apertura+asiento forense son un único acto de negocio (Ley 594/2000
+        # arts. 21-24) — si cualquiera falla, ninguno debe persistir. Todo el
+        # tramo es 100% DB (sin HTTP/Redis a mitad, verificado en
+        # `index_service.create_version_zero`/`insert_expediente_evento`/
+        # `audit.append`), así que envolverlo es seguro. `audit.append` abre
+        # su propia sub-transacción con `pg_advisory_xact_lock`; anidada aquí
+        # degrada a SAVEPOINT y el lock se libera al commit de este bloque
+        # (aceptable: el tramo es corto y puramente DB, no queda retenido
+        # durante I/O externo). La validación previa (clearance/plantilla)
+        # queda deliberadamente FUERA: no hay nada que revertir y no
+        # conviene mantener la tx abierta durante ella.
+        async with self._conn.transaction():
+            code = await self._repo.next_expediente_code(year)
+            expediente = await self._repo.create_expediente(
+                code=code,
+                name=payload.name,
+                description=payload.description,
+                trd_serie_id=payload.trd_serie_id,
+                opened_by=opened_by,
+                metadata=payload.metadata,
+                metadata_template_id=metadata_template_id,
+                nivel_seguridad=payload.nivel_seguridad,
+            )
+            # Índice electrónico disponible desde la creación (E15, versión 0).
+            from app.services.index_service import IndexService
 
-        await IndexService(self._conn, self._tenant_slug).create_version_zero(expediente)
-        # Hoja de ruta del expediente (E02 §9): apertura.
-        await self._repo.insert_expediente_evento(
-            expediente.id,
-            numero_expediente=expediente.code,
-            accion="abierto",
-            actor=opened_by,
-        )
-        # Auditoría forense transversal (E08 §9, Canal A).
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.expediente_created",
-            object_type="expediente",
-            object_ref=expediente.code,
-            actor=str(opened_by) if opened_by else None,
-            # `nivel_seguridad` deja motivado el acto de clasificación desde
-            # la apertura (barato de incluir, valioso cuando >=2/RESERVADA-
-            # CLASIFICADA): ver el gate no-write-up más arriba.
-            payload={"id": str(expediente.id), "nivel_seguridad": expediente.nivel_seguridad},
-        )
+            await IndexService(self._conn, self._tenant_slug).create_version_zero(expediente)
+            # Hoja de ruta del expediente (E02 §9): apertura.
+            await self._repo.insert_expediente_evento(
+                expediente.id,
+                numero_expediente=expediente.code,
+                accion="abierto",
+                actor=opened_by,
+            )
+            # Auditoría forense transversal (E08 §9, Canal A).
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.expediente_created",
+                object_type="expediente",
+                object_ref=expediente.code,
+                actor=str(opened_by) if opened_by else None,
+                # `nivel_seguridad` deja motivado el acto de clasificación desde
+                # la apertura (barato de incluir, valioso cuando >=2/RESERVADA-
+                # CLASIFICADA): ver el gate no-write-up más arriba.
+                payload={"id": str(expediente.id), "nivel_seguridad": expediente.nivel_seguridad},
+            )
         return _to_expediente_response(expediente)
 
     async def list_expedientes(

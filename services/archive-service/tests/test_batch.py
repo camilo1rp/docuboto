@@ -328,3 +328,181 @@ async def test_process_batch_expedientes_emits_one_audit_entry_per_expediente() 
         payload = json.loads(payload_json)
         assert payload["id"] == str(exp_id)
         assert payload["nivel_seguridad"] == nivel
+
+
+# ---------------------------------------------------------------------------
+# Atomicidad por-ítem (residual cerrado): cada ítem del batch está envuelto en
+# su propio `async with self.conn.transaction():` (secuencia + INSERT +
+# audit.append + radicados + UPDATE success/processed_items), con el `except`
+# FUERA de ese `async with` — el manejo de fallo ('failed'/failed_items) corre
+# en su propio statement autocommit. Con `conn` mockeado no hay ROLLBACK real
+# de datos (eso es Postgres en runtime); lo que se cubre aquí es la
+# ESTRUCTURA: el wrap es POR ÍTEM (no uno solo para todo el job), y un fallo a
+# mitad de un ítem no contamina el conteo/asiento del resto.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_process_batch_expedientes_wraps_each_item_in_its_own_transaction() -> None:
+    """Anti-regresión: `conn.transaction()` se invoca POR ÍTEM, no una sola
+    vez para todo el bucle — si el wrap envolviera el job entero, un ítem que
+    revierte retendría el advisory lock de auditoría del tenant (dentro de
+    `audit.append`) durante el resto del job. Con N=3 ítems exitosos y sin
+    radicados, se esperan exactamente 2*N invocaciones de `transaction()`: una
+    por el `async with self.conn.transaction():` propio de cada ítem + una
+    por la sub-transacción que abre `audit.append` (SAVEPOINT anidado) dentro
+    de cada ítem. Si el wrap se moviera fuera del bucle (job entero), el
+    conteo caería a 1 + N."""
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+
+    job_id = uuid.uuid4()
+    created_by = uuid.uuid4()
+    n = 3
+    exp_ids = [uuid.uuid4() for _ in range(n)]
+    item_ids = [uuid.uuid4() for _ in range(n)]
+
+    items = [
+        {"id": item_ids[i], "item_index": i, "payload": _item_payload(f"Expediente batch {i}")}
+        for i in range(n)
+    ]
+    conn.fetch.return_value = items
+
+    seq_counter = {"n": 0}
+
+    async def _fetchval(query, *args, **kwargs):
+        if "RETURNING created_by" in query:
+            return created_by
+        if "INSERT INTO expediente_sequences" in query:
+            seq_counter["n"] += 1
+            return seq_counter["n"]
+        if "SELECT hash" in query:  # audit.append: prev_hash lookup
+            return None
+        raise AssertionError(f"fetchval inesperado en el test: {query}")
+
+    conn.fetchval.side_effect = _fetchval
+
+    exp_rows = iter([{"id": eid, "nivel_seguridad": 1} for eid in exp_ids])
+    final_row = {"failed_items": 0}
+
+    async def _fetchrow(query, *args, **kwargs):
+        if "INSERT INTO expedientes" in query:
+            return next(exp_rows)
+        if "SELECT failed_items" in query:
+            return final_row
+        raise AssertionError(f"fetchrow inesperado en el test: {query}")
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    service = BatchArchiveService(conn, "demo")
+    await service.process_batch_expedientes(job_id)
+
+    assert conn.transaction.call_count == 2 * n
+
+
+@pytest.mark.asyncio
+async def test_process_batch_expedientes_item_failure_marks_failed_outside_tx() -> None:
+    """Ítem que falla A MITAD de su propia transacción (aquí: en el propio
+    `INSERT INTO expedientes` del ítem, ANTES de llegar a `audit.append` —
+    que ahora corre al FINAL de la tx del ítem, tras vincular radicados y
+    marcar éxito) — dispara el `except Exception` de
+    `process_batch_expedientes`, que queda FUERA del `async with
+    self.conn.transaction():` del ítem. La prueba estructural es que esas
+    líneas de recuperación SÍ se ejecutan: si `except` estuviera dentro del
+    `async with`, la excepción abortaría la tx completa (incl. el propio
+    UPDATE de 'failed') y asyncpg no permitiría ejecutar más sentencias sobre
+    una tx ya abortada.
+
+    Verifica, con dos ítems (1 exitoso, 2 fallido):
+    (a) el ítem 1 recibe `status='success'`/`processed_items+1` y deja su
+        asiento `archive.expediente_created`;
+    (b) el ítem 2 recibe `status='failed'`/`failed_items+1`;
+    (c) sin doble conteo — ningún ítem incrementa ambos contadores;
+    (d) el asiento de auditoría SOLO existe para el ítem exitoso: al fallar
+        en el propio `INSERT INTO expedientes`, el ítem 2 nunca llega al
+        vínculo de radicados, al UPDATE de éxito ni a `audit.append` —
+        verificable con mocks SIN depender de que estos reviertan un efecto
+        ya aplicado (a diferencia de inyectar el fallo DESPUÉS de que esos
+        pasos ya completaron, donde el mock no los revertiría y haría falta
+        documentar por separado que en runtime real la tx sí lo hace)."""
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+
+    job_id = uuid.uuid4()
+    created_by = uuid.uuid4()
+    exp_ids = [uuid.uuid4(), uuid.uuid4()]
+    item_ids = [uuid.uuid4(), uuid.uuid4()]
+
+    items = [
+        {"id": item_ids[0], "item_index": 0, "payload": _item_payload("Expediente batch 1")},
+        {"id": item_ids[1], "item_index": 1, "payload": _item_payload("Expediente batch 2")},
+    ]
+    conn.fetch.return_value = items
+
+    seq_counter = {"n": 0}
+
+    async def _fetchval(query, *args, **kwargs):
+        if "RETURNING created_by" in query:
+            return created_by
+        if "INSERT INTO expediente_sequences" in query:
+            seq_counter["n"] += 1
+            return seq_counter["n"]
+        if "SELECT hash" in query:  # audit.append: prev_hash lookup (solo ítem 1)
+            return None
+        raise AssertionError(f"fetchval inesperado en el test: {query}")
+
+    conn.fetchval.side_effect = _fetchval
+
+    exp_rows = iter([{"id": exp_ids[0], "nivel_seguridad": 1}])
+    final_row = {"failed_items": 1}
+    expediente_insert_count = {"n": 0}
+
+    async def _fetchrow(query, *args, **kwargs):
+        if "INSERT INTO expedientes" in query:
+            expediente_insert_count["n"] += 1
+            if expediente_insert_count["n"] == 2:
+                # ítem 2: falla EN el propio INSERT del expediente — antes de
+                # vincular radicados, del UPDATE de éxito y de `audit.append`.
+                raise RuntimeError("expediente insert failed (simulated)")
+            return next(exp_rows)
+        if "SELECT failed_items" in query:
+            return final_row
+        raise AssertionError(f"fetchrow inesperado en el test: {query}")
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    service = BatchArchiveService(conn, "demo")
+    await service.process_batch_expedientes(job_id)
+
+    def _execute_calls(pattern: str) -> list:
+        return [
+            c.args
+            for c in conn.execute.call_args_list
+            if isinstance(c.args[0], str) and pattern in c.args[0]
+        ]
+
+    success_updates = _execute_calls("status='success'")
+    failed_updates = _execute_calls("status='failed'")
+    processed_incr = _execute_calls("processed_items=processed_items+1")
+    failed_incr = _execute_calls("failed_items=failed_items+1")
+
+    # (a) ítem 1: éxito, sin contaminar por el fallo del ítem 2.
+    assert len(success_updates) == 1
+    assert success_updates[0][1] == exp_ids[0]  # result_id
+    assert success_updates[0][2] == item_ids[0]
+    assert len(processed_incr) == 1
+
+    # (b) ítem 2: fallido, marcado FUERA de la tx (el `except` sí se ejecutó).
+    assert len(failed_updates) == 1
+    assert failed_updates[0][2] == item_ids[1]
+    assert len(failed_incr) == 1
+
+    # (c) sin doble conteo.
+    assert len(success_updates) + len(failed_updates) == 2
+    assert len(processed_incr) + len(failed_incr) == 2
+
+    # (d) el asiento de auditoría SOLO existe para el ítem exitoso.
+    audit_calls = _audit_inserts(conn, "archive.expediente_created")
+    assert len(audit_calls) == 1
+    payload = json.loads(audit_calls[0][8])
+    assert payload["id"] == str(exp_ids[0])

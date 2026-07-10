@@ -35,17 +35,23 @@ class ArchiveRepository:
 
     async def next_expediente_code(self, year: int) -> str:
         await self._set_search_path()
-        # Atomic upsert increments the sequence for the given year.
-        await self._conn.execute(
+        # Un ÚNICO INSERT ... ON CONFLICT ... RETURNING (antes: upsert sin
+        # RETURNING + SELECT aparte). El read-after-write en dos statements
+        # separados dejaba una ventana entre el UPDATE del upsert y el SELECT
+        # donde dos creadores concurrentes podían leer el MISMO `last_seq` ->
+        # código duplicado `EXP-AAAA-NNNN`. Colapsado a un solo statement
+        # (espejo de `BatchArchiveService.process_batch_expedientes`), el
+        # row-lock del propio `ON CONFLICT` serializa a los concurrentes; con
+        # esto envuelto en la transacción de `create_expediente` el
+        # consecutivo queda monótono sin duplicados.
+        seq: int = await self._conn.fetchval(
             """
             INSERT INTO expediente_sequences (year, last_seq)
             VALUES ($1, 1)
             ON CONFLICT (year) DO UPDATE SET last_seq = expediente_sequences.last_seq + 1
+            RETURNING last_seq
             """,
             year,
-        )
-        seq: int = await self._conn.fetchval(
-            "SELECT last_seq FROM expediente_sequences WHERE year = $1", year
         )
         return f"EXP-{year}-{seq:04d}"
 

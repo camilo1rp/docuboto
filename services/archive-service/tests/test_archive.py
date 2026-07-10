@@ -80,6 +80,8 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
+import app.services.archive_service as archive_service_module
+from app.schemas.archive import ExpedienteCreate
 from tests.conftest import (
     EXPEDIENTE_ID,
     NOW,
@@ -327,6 +329,120 @@ async def test_create_expediente_audit_includes_nivel_seguridad(
     assert len(calls) == 1
     payload = json.loads(calls[0][8])
     assert payload["nivel_seguridad"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Atomicidad expediente<->auditoría (residual cerrado): las escrituras de
+# `ArchiveService.create_expediente` (código+INSERT+índice v0+evento de
+# apertura+asiento forense) están envueltas en `async with
+# self._conn.transaction():`; el gate 403/validación de plantilla quedan
+# FUERA. Con `conn` mockeado no se puede aseverar el ROLLBACK real (eso es
+# comportamiento de Postgres en runtime) — lo que sí se cubre aquí es la
+# ESTRUCTURA y el comportamiento OBSERVABLE con mocks: el wrap existe, un
+# fallo tardío se propaga (no hay "éxito a medias"), y el gate no abre tx.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_wraps_writes_in_a_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Anti-regresión del wrapping: si alguien quita el `async with
+    self._conn.transaction():` de `create_expediente`, este test debe fallar.
+    `IndexService.insert_version` (índice v0) y `audit.append` abren cada uno
+    su propia (sub)transacción — anidada, degrada a SAVEPOINT — así que un
+    create exitoso sin `trd_serie_id` (sin validación de plantilla) invoca
+    `conn.transaction()` exactamente 3 veces: el wrap de `create_expediente`
+    + el de `insert_version` + el de `audit.append`. Si el wrap de
+    `create_expediente` desapareciera, el conteo caería a 2."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1  # D-08 gate + next_expediente_code/audit prev_hash
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True, "max_level": None},  # resolve_caller_clearance
+        exp_record,  # INSERT expedientes RETURNING
+        exp_record,  # INSERT expediente_indice RETURNING (v0)
+    ]
+
+    response = await client.post(
+        "/api/v1/expedientes", json=_CREATE_EXP_PAYLOAD, headers=TENANT_HEADERS
+    )
+
+    assert response.status_code == 201
+    assert mock_conn.transaction.called
+    assert mock_conn.transaction.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_late_failure_propagates_not_a_fake_success(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un fallo TARDÍO dentro de la transacción (aquí: `audit.append`, el
+    último paso de la secuencia envuelta) debe PROPAGARSE — `create_expediente`
+    nunca debe devolver un `ExpedienteResponse` de éxito si el asiento
+    forense no se pudo escribir. Sustituye `audit.append` por completo (en
+    vez de forzar un fallo interno de asyncpg) — mismo patrón ya documentado
+    para simular fallos de auditoría en `orpycamcp_common.audit.append_denial`
+    (nota de llamador). Invoca `ArchiveService.create_expediente` DIRECTAMENTE
+    (no vía HTTP): Starlette's `ServerErrorMiddleware` reraise la excepción
+    hacia el transporte ASGI DESPUÉS de invocar el exception handler global de
+    `app/main.py` (para que el servidor/test runner la vea), así que pasar por
+    `httpx.AsyncClient` aquí solo añadiría una capa intermedia — la aserción
+    relevante es que la excepción sale de la corrutina del SERVICIO, no que se
+    convierta en un 500 HTTP."""
+    _, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True, "max_level": None},  # resolve_caller_clearance
+        exp_record,  # INSERT expedientes RETURNING
+        exp_record,  # INSERT expediente_indice RETURNING (v0)
+    ]
+
+    async def _boom(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("audit failure (simulated)")
+
+    monkeypatch.setattr(archive_service_module.audit, "append", _boom)
+
+    service = archive_service_module.ArchiveService(mock_conn, TENANT_SLUG)
+    payload = ExpedienteCreate(**_CREATE_EXP_PAYLOAD)
+
+    with pytest.raises(RuntimeError, match="audit failure"):
+        await service.create_expediente(payload, USER_ID)
+
+    # Llegó a intentar el INSERT de `expedientes` (y el evento de apertura)
+    # antes de que `audit.append` reventara — el fallo es TARDÍO, no previo.
+    assert _expedientes_insert_calls(mock_conn) != []
+    evento_calls = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_eventos" in c.args[0]
+    ]
+    assert evento_calls != []
+
+
+@pytest.mark.asyncio
+async def test_create_expediente_403_gate_never_opens_a_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El gate no-write-up (M3) queda DELIBERADAMENTE fuera de `async with
+    self._conn.transaction():` — no hay nada que revertir y no conviene
+    mantener la tx abierta durante la validación. Cuando el gate rechaza
+    (403), NUNCA debe abrirse una transacción: `mock_conn.transaction` debe
+    quedar en `call_count == 0` (D-08 ya pasó, `check_permission` solo usa
+    `fetchval`, sin `transaction()`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]  # PUBLICA(1)
+
+    response = await client.post(
+        "/api/v1/expedientes",
+        json={**_CREATE_EXP_PAYLOAD, "nivel_seguridad": 3},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    assert mock_conn.transaction.call_count == 0
 
 
 # ---------------------------------------------------------------------------
