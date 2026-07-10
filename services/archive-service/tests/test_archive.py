@@ -81,7 +81,7 @@ import pytest
 from httpx import AsyncClient
 
 import app.services.archive_service as archive_service_module
-from app.schemas.archive import ExpedienteCreate
+from app.schemas.archive import ExpedienteCreate, RadicadoLink
 from tests.conftest import (
     EXPEDIENTE_ID,
     NOW,
@@ -1503,6 +1503,311 @@ async def test_unlink_radicado_closed_conflict_when_caller_can_read_classified(
 
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "expediente_not_open"
+
+
+# ---------------------------------------------------------------------------
+# Atomicidad vínculo<->auditoría (link_radicado / link_radicados_batch /
+# unlink_radicado): las escrituras (mutación + `_regenerate_index` + evento de
+# la hoja de ruta + `audit.append` propio) están envueltas en `async with
+# self._conn.transaction():` (mismo patrón que `create_expediente`, ver esa
+# sección arriba). Con `conn` mockeado no se puede aseverar el ROLLBACK físico
+# — lo que sí se cubre aquí es la ESTRUCTURA (el wrap se abre SOLO en el
+# camino que muta, NUNCA en las ramas de redacción M2 / M2 hallazgo #1 que no
+# mutan) y el COMPORTAMIENTO observable con mocks (un fallo a mitad de la
+# secuencia envuelta se PROPAGA, no hay éxito a medias).
+#
+# `IndexService.regenerate` dentro de `_regenerate_index` deja SIEMPRE su
+# propio asiento `archive.indice_regenerated` (además de `insert_version`),
+# y `ArchiveRepository.link_radicado` abre SU PROPIA (sub)transacción para el
+# `pg_advisory_xact_lock` del orden_documental atómico — así que un
+# `link_radicado` exitoso abre `conn.transaction()` 5 veces: el wrap propio +
+# la del repo (advisory lock) + `insert_version` + `audit.append`
+# (indice_regenerated) + `audit.append` (radicado_linked). `unlink_radicado`
+# no tiene esa (sub)transacción extra del repo (su mutación es un UPDATE
+# simple vía `execute`, sin advisory lock) — 4 veces: wrap + insert_version +
+# audit.append (indice_regenerated) + audit.append (radicado_excluido).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_wraps_writes_in_a_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Anti-regresión del wrapping: si alguien quita el `async with
+    self._conn.transaction():` de `link_radicado`, este test debe fallar (el
+    conteo caería de 5 a 4). Ver el comentario de sección para el desglose de
+    las 5 (sub)transacciones."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    link_record = make_radicado_link_record(expediente_id=EXPEDIENTE_ID, radicado_id=RADICADO_ID)
+    mock_conn.fetchrow.side_effect = [exp_record, None, link_record, exp_record, None, exp_record]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.side_effect = [True, 0, 1, None, None]
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    assert mock_conn.transaction.called
+    assert mock_conn.transaction.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_redacted_duplicate_never_opens_a_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2: un llamante sin clearance de lectura sobre un expediente
+    CLASIFICADA (3) que intenta vincular un radicado YA vinculado recibe el
+    ack idempotente-silencioso (`added_at=None`, sin 409) SIN abrir
+    transacción — es una rama que no muta nada."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    mock_conn.fetchrow.side_effect = [exp_record, None]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.return_value = 1  # gate + duplicate check → ya vinculado
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["added_at"] is None
+    assert mock_conn.transaction.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_redacted_closed_never_opens_a_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2 hallazgo #1: un llamante sin clearance de lectura sobre un
+    expediente CLASIFICADA (3) *closed* recibe el mismo ack acotado SIN
+    mutar — `_assert_open` nunca se evalúa y ninguna transacción se abre."""
+    client, mock_conn = client_with_conn
+    exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
+    mock_conn.fetchrow.side_effect = [exp_closed, None]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.side_effect = [True, 0]  # gate; duplicate check → no duplicado
+
+    response = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
+        json={"radicado_id": str(RADICADO_ID), "tracking_number": TRACKING_NUMBER},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["added_at"] is None
+    assert mock_conn.transaction.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_link_radicado_late_failure_propagates_not_a_fake_success(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un fallo TARDÍO dentro de la transacción (aquí: `audit.append`,
+    invocado primero por `IndexService.regenerate` para su propio asiento
+    `archive.indice_regenerated`) debe PROPAGARSE — `link_radicado` nunca
+    debe devolver un `ExpedienteRadicadoResponse` de éxito si el asiento
+    forense no se pudo escribir. Sustituye `audit.append` por completo (mismo
+    patrón que `test_create_expediente_late_failure_propagates_not_a_fake_success`)
+    e invoca `ArchiveService.link_radicado` DIRECTAMENTE (no vía HTTP) — la
+    aserción relevante es que la excepción sale de la corrutina del
+    SERVICIO."""
+    _, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    link_record = make_radicado_link_record(expediente_id=EXPEDIENTE_ID, radicado_id=RADICADO_ID)
+    # fetchrow: get_expediente_by_id (link_radicado), caller_clearance (None
+    # → PUBLICA), link INSERT..ON CONFLICT RETURNING, [regenerate:
+    # get_expediente_by_id, get_current(None), insert_version índice]
+    mock_conn.fetchrow.side_effect = [exp_record, None, link_record, exp_record, None, exp_record]
+    mock_conn.fetch.return_value = []
+    # fetchval: [0]=duplicate check → 0, [1]=MAX(orden_documental)+1. Sin gate
+    # D-08 (llamada directa al servicio, sin pasar por el router/dependency).
+    mock_conn.fetchval.side_effect = [0, 1]
+
+    async def _boom(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("audit failure (simulated)")
+
+    monkeypatch.setattr(archive_service_module.audit, "append", _boom)
+
+    service = archive_service_module.ArchiveService(mock_conn, TENANT_SLUG)
+    payload = RadicadoLink(radicado_id=RADICADO_ID, tracking_number=TRACKING_NUMBER)
+
+    with pytest.raises(RuntimeError, match="audit failure"):
+        await service.link_radicado(EXPEDIENTE_ID, payload, USER_ID)
+
+    # Llegó a mutar (el INSERT del vínculo y el de la versión del índice ya
+    # se ejecutaron) antes de que `audit.append` reventara — el fallo es
+    # TARDÍO, no previo.
+    link_insert_calls = [
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_radicados" in c.args[0]
+    ]
+    assert link_insert_calls != []
+
+
+@pytest.mark.asyncio
+async def test_link_radicados_batch_wraps_the_whole_loop_in_one_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Anti-regresión: `link_radicados_batch` abre el wrap propio (el `async
+    with` que envuelve el `for` completo) UNA sola vez para todo el lote — no
+    una por vínculo. El conteo TOTAL sí escala con N porque cada
+    `ArchiveRepository.link_radicado` abre su propia (sub)transacción para el
+    advisory lock del orden_documental: con N=2 ítems nuevos, se esperan 6 =
+    1 (wrap del lote) + 2 (una por ítem, advisory lock) + 1 (insert_version)
+    + 1 (audit.append indice_regenerated) + 1 (audit.append
+    radicado_batch_linked). Si el wrap del LOTE desapareciera pero cada ítem
+    conservara su propia sub-transacción, el conteo bajaría a 5, no a 6 — así
+    que esta cifra por sí sola no distingue "wrap del lote ausente" de "wrap
+    presente"; lo que SÍ es anti-regresión aquí es que el conteo NO escala
+    1:1 con N (ver docstring de la clase para el desglose)."""
+    client, mock_conn = client_with_conn
+    exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
+    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        exp,
+        None,
+        make_radicado_link_record(radicado_id=r1),
+        make_radicado_link_record(radicado_id=r2),
+        exp,
+        None,
+        exp,
+    ]
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None, None]
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+        json={
+            "radicados": [
+                {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                {"radicado_id": str(r2), "tracking_number": "2024-A-002"},
+            ]
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert mock_conn.transaction.call_count == 6
+
+
+@pytest.mark.asyncio
+async def test_link_radicados_batch_all_omitted_no_audit_no_regen(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Lote donde TODOS los ítems ya estaban vinculados (`vinculados == 0`):
+    el wrap se abre igual (envuelve el bucle completo) pero, al no haber
+    nada que vincular, ni `_regenerate_index` ni `audit.append` se invocan
+    dentro — 0 asientos `archive.radicado_batch_linked`."""
+    client, mock_conn = client_with_conn
+    exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
+    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [exp, None]  # get_expediente_by_id; caller_clearance
+    mock_conn.fetch.return_value = []
+    # fetchval: [0]=D-08 gate, [1]=radicado_link_exists r1 → True (ya vinculado),
+    # [2]=radicado_link_exists r2 → True
+    mock_conn.fetchval.side_effect = [True, 1, 1]
+
+    resp = await client.post(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+        json={
+            "radicados": [
+                {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                {"radicado_id": str(r2), "tracking_number": "2024-A-002"},
+            ]
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["vinculados"] == 0
+    assert body["omitidos"] == 2
+
+    assert mock_conn.transaction.call_count == 1  # solo el wrap del bucle
+    assert _audit_inserts(mock_conn, "archive.radicado_batch_linked") == []
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_wraps_writes_in_a_transaction(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Anti-regresión: una exclusión exitosa (`excluded=True`, clearance
+    suficiente) invoca `conn.transaction()` 4 veces (wrap + insert_version +
+    audit.append[indice_regenerated] + audit.append[radicado_excluido]) —
+    mismo conteo que `link_radicado`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.execute.return_value = "UPDATE 1"  # E15 perfil v3: soft-delete
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID)
+    mock_conn.fetchrow.side_effect = [exp_record, None, exp_record, None, exp_record]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 204
+    assert mock_conn.transaction.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_not_found_for_reader_opens_tx_then_raises(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Un llamante que SÍ puede leer el expediente y excluye un vínculo
+    inexistente recibe el 404 informativo `radicado_link_not_found` — el
+    `raise` ocurre DENTRO del wrap (la tx se abrió pero no queda nada que
+    revertir: ni `insert_version` ni `audit.append` llegan a invocarse)."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.execute.return_value = "UPDATE 0"
+    mock_conn.fetchrow.side_effect = [
+        exp_record,
+        {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
+    ]
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert mock_conn.transaction.call_count == 1  # solo el wrap; nada dentro
+    assert _audit_inserts(mock_conn, "archive.radicado_excluido") == []
+
+
+@pytest.mark.asyncio
+async def test_unlink_radicado_not_found_for_non_reader_silent_return_within_tx(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """M2: un llamante SIN clearance de lectura que excluye un vínculo
+    inexistente recibe 204 silencioso (`return` dentro del wrap, sin
+    excepción) — la tx se abre (commit vacío, inocuo) pero no hay `insert_
+    version` ni `audit.append`."""
+    client, mock_conn = client_with_conn
+    exp_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.execute.return_value = "UPDATE 0"
+    mock_conn.fetchrow.side_effect = [exp_record, None]  # caller_clearance → PUBLICA(1)
+    mock_conn.fetch.return_value = []
+
+    response = await client.delete(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/{RADICADO_ID}",
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 204
+    assert mock_conn.transaction.call_count == 1  # solo el wrap; nada dentro
+    assert _audit_inserts(mock_conn, "archive.radicado_excluido") == []
 
 
 # ---------------------------------------------------------------------------

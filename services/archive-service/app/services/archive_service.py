@@ -884,45 +884,54 @@ class ArchiveService:
                 added_at=None,
             )
 
-        link = await self._repo.link_radicado(
-            expediente_id,
-            payload.radicado_id,
-            payload.tracking_number,
-            content_hash=payload.content_hash.lower() if payload.content_hash else None,
-            formato=payload.formato,
-            tamano_bytes=payload.tamano_bytes,
-            folios=payload.folios,
-            dependencia_productora_codigo=payload.dependencia_productora_codigo,
-            dependencia_productora_nombre=payload.dependencia_productora_nombre,
-        )
-        await self._regenerate_index(expediente_id)
-        await self._repo.insert_expediente_evento(
-            expediente_id,
-            numero_expediente=existing.code,
-            accion="radicado_vinculado",
-            detalles={
-                "radicado_id": str(payload.radicado_id),
-                "tracking_number": payload.tracking_number,
-            },
-        )
-        # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
-        # vinculación de un radicado es una mutación del conjunto documental
-        # del expediente, igual de auditable que `radicado_excluido`. SIEMPRE
-        # se escribe, incluso cuando la respuesta se acota abajo (la
-        # redacción es de la respuesta al llamante, no de la traza forense).
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.radicado_linked",
-            object_type="expediente",
-            object_ref=existing.code,
-            actor=str(user_id) if user_id else None,
-            payload={
-                "radicado_id": str(payload.radicado_id),
-                "tracking_number": payload.tracking_number,
-            },
-        )
+        # Atomicidad vínculo<->auditoría (mismo patrón que `create_expediente`):
+        # la mutación, la regeneración del índice, el evento de la hoja de
+        # ruta y el asiento forense son un único acto de negocio — si algo
+        # falla a mitad, ninguno debe persistir (antes: autocommit por
+        # statement, un fallo entre el link y el `audit.append` dejaba el
+        # vínculo hecho SIN su asiento de auditoría). Tramo 100% DB (sin
+        # HTTP/Redis a mitad); `audit.append` va último para minimizar la
+        # retención del `pg_advisory_xact_lock` del tenant que abre.
+        async with self._conn.transaction():
+            link = await self._repo.link_radicado(
+                expediente_id,
+                payload.radicado_id,
+                payload.tracking_number,
+                content_hash=payload.content_hash.lower() if payload.content_hash else None,
+                formato=payload.formato,
+                tamano_bytes=payload.tamano_bytes,
+                folios=payload.folios,
+                dependencia_productora_codigo=payload.dependencia_productora_codigo,
+                dependencia_productora_nombre=payload.dependencia_productora_nombre,
+            )
+            await self._regenerate_index(expediente_id)
+            await self._repo.insert_expediente_evento(
+                expediente_id,
+                numero_expediente=existing.code,
+                accion="radicado_vinculado",
+                detalles={
+                    "radicado_id": str(payload.radicado_id),
+                    "tracking_number": payload.tracking_number,
+                },
+            )
+            # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
+            # vinculación de un radicado es una mutación del conjunto documental
+            # del expediente, igual de auditable que `radicado_excluido`. SIEMPRE
+            # se escribe, incluso cuando la respuesta se acota abajo (la
+            # redacción es de la respuesta al llamante, no de la traza forense).
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.radicado_linked",
+                object_type="expediente",
+                object_ref=existing.code,
+                actor=str(user_id) if user_id else None,
+                payload={
+                    "radicado_id": str(payload.radicado_id),
+                    "tracking_number": payload.tracking_number,
+                },
+            )
         response = _to_radicado_response(link)
         if not puede_leer:
             # Respuesta acotada (M2): no filtra el `added_at` real a quien no
@@ -977,45 +986,52 @@ class ArchiveService:
             # No-lector, expediente no-open: sin mutar (M2 hallazgo #1).
             return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
 
+        # Atomicidad lote<->auditoría (mismo patrón que `link_radicado`): UN
+        # expediente, N vínculos es una unidad todo-o-nada — si un vínculo del
+        # lote falla a mitad, revierte TODO el lote (nada de vínculos
+        # parciales ni índice regenerado a medias sin su asiento forense). Si
+        # el bucle no vincula nada (todos omitidos), la tx cierra sin writes
+        # (inocuo). `audit.append` último write dentro del `if vinculados`.
         vinculados = omitidos = 0
         linked_ids: list[str] = []
-        for it in items:
-            if await self._repo.radicado_link_exists(expediente_id, it.radicado_id):
-                omitidos += 1
-                continue
-            await self._repo.link_radicado(
-                expediente_id,
-                it.radicado_id,
-                it.tracking_number,
-                content_hash=it.content_hash.lower() if it.content_hash else None,
-                formato=it.formato,
-                tamano_bytes=it.tamano_bytes,
-                folios=it.folios,
-                dependencia_productora_codigo=it.dependencia_productora_codigo,
-                dependencia_productora_nombre=it.dependencia_productora_nombre,
-            )
-            vinculados += 1
-            linked_ids.append(str(it.radicado_id))
-        if vinculados:
-            await self._regenerate_index(expediente_id)
-            # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
-            # inclusión masiva es la MISMA mutación de conjunto documental que
-            # `link_radicado`, repetida N veces; queda SIEMPRE, incluso cuando
-            # la respuesta se acota abajo.
-            await audit.append(
-                self._conn,
-                tenant_slug=self._tenant_slug,
-                service=_SERVICE,
-                action="archive.radicado_batch_linked",
-                object_type="expediente",
-                object_ref=existing.code,
-                actor=str(user_id) if user_id else None,
-                payload={
-                    "vinculados": vinculados,
-                    "omitidos": omitidos,
-                    "radicado_ids": linked_ids,
-                },
-            )
+        async with self._conn.transaction():
+            for it in items:
+                if await self._repo.radicado_link_exists(expediente_id, it.radicado_id):
+                    omitidos += 1
+                    continue
+                await self._repo.link_radicado(
+                    expediente_id,
+                    it.radicado_id,
+                    it.tracking_number,
+                    content_hash=it.content_hash.lower() if it.content_hash else None,
+                    formato=it.formato,
+                    tamano_bytes=it.tamano_bytes,
+                    folios=it.folios,
+                    dependencia_productora_codigo=it.dependencia_productora_codigo,
+                    dependencia_productora_nombre=it.dependencia_productora_nombre,
+                )
+                vinculados += 1
+                linked_ids.append(str(it.radicado_id))
+            if vinculados:
+                await self._regenerate_index(expediente_id)
+                # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
+                # inclusión masiva es la MISMA mutación de conjunto documental que
+                # `link_radicado`, repetida N veces; queda SIEMPRE, incluso cuando
+                # la respuesta se acota abajo.
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.radicado_batch_linked",
+                    object_type="expediente",
+                    object_ref=existing.code,
+                    actor=str(user_id) if user_id else None,
+                    payload={
+                        "vinculados": vinculados,
+                        "omitidos": omitidos,
+                        "radicado_ids": linked_ids,
+                    },
+                )
         if not puede_leer:
             return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
         return BatchLinkResult(vinculados=vinculados, omitidos=omitidos, total=len(items))
@@ -1075,45 +1091,52 @@ class ArchiveService:
             # No-lector, expediente no-open: 204 sin mutar (M2 hallazgo #1).
             return
 
-        excluded = await self._repo.unlink_radicado(expediente_id, radicado_id, causal=causal)
-        if not excluded:
-            if puede_leer:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={
-                        "error": "radicado_link_not_found",
-                        "detail": (
-                            f"Radicado {radicado_id} is not linked to expediente {expediente_id}"
-                        ),
-                        "status": 404,
-                    },
-                )
-            # Idempotente-silencioso (M2): nada que mutar/auditar — no revela
-            # si el vínculo existía a quien no puede leer el expediente.
-            return
-        await self._regenerate_index(expediente_id)
-        await self._repo.insert_expediente_evento(
-            expediente_id,
-            numero_expediente=existing.code,
-            accion="radicado_excluido",
-            actor=actor,
-            detalles={"radicado_id": str(radicado_id), "causal": causal},
-        )
-        # Auditoría forense inmutable (E08 §9, Canal A): la exclusión es una
-        # acción de disposición reforzada (crud>=3, ver el decorador del
-        # router) — antes solo dejaba rastro en `expediente_eventos` (schema
-        # del tenant) y el asiento genérico `archive.indice_regenerated`;
-        # ahora tiene su propio asiento con actor y causal en `audit_log`.
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.radicado_excluido",
-            object_type="expediente",
-            object_ref=existing.code,
-            actor=str(actor) if actor else None,
-            payload={"radicado_id": str(radicado_id), "causal": causal},
-        )
+        # Atomicidad exclusión<->auditoría (mismo patrón que `link_radicado`):
+        # la mutación, la regeneración del índice, el evento de la hoja de
+        # ruta y el asiento forense son un único acto de negocio. Si
+        # `unlink_radicado` no afecta fila, no hay nada que revertir: el
+        # `raise`/`return` dentro del bloque cierran la tx sin writes
+        # (rollback vacío o commit vacío, ambos inocuos).
+        async with self._conn.transaction():
+            excluded = await self._repo.unlink_radicado(expediente_id, radicado_id, causal=causal)
+            if not excluded:
+                if puede_leer:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail={
+                            "error": "radicado_link_not_found",
+                            "detail": (
+                                f"Radicado {radicado_id} is not linked to expediente {expediente_id}"
+                            ),
+                            "status": 404,
+                        },
+                    )
+                # Idempotente-silencioso (M2): nada que mutar/auditar — no revela
+                # si el vínculo existía a quien no puede leer el expediente.
+                return
+            await self._regenerate_index(expediente_id)
+            await self._repo.insert_expediente_evento(
+                expediente_id,
+                numero_expediente=existing.code,
+                accion="radicado_excluido",
+                actor=actor,
+                detalles={"radicado_id": str(radicado_id), "causal": causal},
+            )
+            # Auditoría forense inmutable (E08 §9, Canal A): la exclusión es una
+            # acción de disposición reforzada (crud>=3, ver el decorador del
+            # router) — antes solo dejaba rastro en `expediente_eventos` (schema
+            # del tenant) y el asiento genérico `archive.indice_regenerated`;
+            # ahora tiene su propio asiento con actor y causal en `audit_log`.
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.radicado_excluido",
+                object_type="expediente",
+                object_ref=existing.code,
+                actor=str(actor) if actor else None,
+                payload={"radicado_id": str(radicado_id), "causal": causal},
+            )
 
     # ------------------------------------------------------------------
     # TRD series
