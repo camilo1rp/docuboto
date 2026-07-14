@@ -77,6 +77,20 @@ def make_expediente_record(
     }
 
 
+def make_expediente_update_row(*, old: dict, new: dict) -> dict:
+    """Fila mockeada del nuevo `ArchiveRepository.update_expediente` (metadatos):
+    el estado NUEVO (`new`, `e.*`) más los valores PREVIOS (`old_*`) que la
+    sentencia real trae del `FOR UPDATE` de la MISMA query — ver su docstring
+    (el "before" auditado NO sale de una pre-lectura separada, H3)."""
+    return {
+        **new,
+        "old_name": old["name"],
+        "old_description": old["description"],
+        "old_trd_serie_id": old["trd_serie_id"],
+        "old_status": old["status"],
+    }
+
+
 def make_radicado_link_record(
     *,
     expediente_id: uuid.UUID | None = None,
