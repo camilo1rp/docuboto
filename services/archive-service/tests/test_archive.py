@@ -36,14 +36,21 @@ GET EXPEDIENTE BY ID (RF-SEG-08 no-read-up: caller_clearance ANTES del get):
   fetchrow — SELECT expediente (WHERE nivel_seguridad <= clearance)
   fetch    — SELECT radicados
 
-PATCH EXPEDIENTE (RF-SEG-08 no-read-up; 404 no 403 si excede el clearance):
+PATCH EXPEDIENTE (RF-SEG-08 no-read-up; 404 no 403 si excede el clearance;
+`status` fue retirado del schema — cualquier valor 422 `extra_forbidden` ANTES
+de tocar la BD, ver test_update_expediente_rechaza_status):
   execute  — SET search_path (caller_clearance)
   fetchrow — resolve_caller_clearance
   execute  — SET search_path (get_expediente_by_id)
   fetchrow — SELECT expediente (WHERE nivel_seguridad <= clearance) — None → 404
   fetch    — SELECT radicados (solo si el expediente SÍ es visible)
-  execute  — SET search_path (update_expediente)
-  fetchrow — UPDATE expedientes ... RETURNING
+  execute  — SET search_path (repo.update_expediente)
+  fetchrow — WITH old AS (... FOR UPDATE) UPDATE expedientes ... RETURNING e.*, old_*
+  -- si hubo cambios efectivos (metadata_audit):
+  execute  — INSERT expediente_eventos (accion='actualizado'|'reclasificado')
+  execute  — pg_advisory_xact_lock (audit.append, cadena del tenant)
+  fetchval — SELECT hash (prev_hash de audit_log)
+  execute  — INSERT audit_log (action='archive.expediente_updated'|'archive.expediente_reclasificado')
 
 LINK RADICADO (link_radicado calls get+exists+insert):
   execute  — SET search_path (get)
@@ -92,6 +99,7 @@ from tests.conftest import (
     TRACKING_NUMBER,
     USER_ID,
     make_expediente_record,
+    make_expediente_update_row,
     make_radicado_link_record,
     make_trd_serie_record,
 )
@@ -658,36 +666,58 @@ async def test_get_expediente_not_found(
 
 
 # ---------------------------------------------------------------------------
-# PATCH /api/v1/expedientes/{expediente_id} — close (open→closed)
+# PATCH /api/v1/expedientes/{expediente_id} — metadatos (NO transiciona status)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_update_expediente_status(
+@pytest.mark.parametrize("status_value", ["closed", "transferred", "open", None])
+async def test_update_expediente_rechaza_status(
     client_with_conn: tuple[AsyncClient, AsyncMock],
+    status_value: str | None,
 ) -> None:
+    """`ExpedienteUpdate` retiró `status` (extra="forbid"): el PATCH ya NO es una
+    ruta alterna a /close y /transfer. CUALQUIER valor de `status` en el body
+    — incluido `null` — se rechaza con 422 ANTES de tocar la base de datos: es
+    oracle-free (no revela existencia/clearance del expediente)."""
     client, mock_conn = client_with_conn
-    open_record = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
-    closed_record = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed")
-
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
-    # 1st fetchrow → resolve_caller_clearance (RF-SEG-08, caller_clearance) → None
-    #   (usuario sin fila en auth_users/sin membresías) → PUBLICA (1).
-    # 2nd fetchrow → get_expediente_by_id (current state check)
-    # 3rd fetchrow → update_expediente RETURNING
-    mock_conn.fetchrow.side_effect = [None, open_record, closed_record]
-    # fetch → radicados list (empty for get_expediente_by_id call)
-    mock_conn.fetch.return_value = []
 
     response = await client.patch(
         f"/api/v1/expedientes/{EXPEDIENTE_ID}",
-        json={"status": "closed"},
+        json={"status": status_value},
         headers=TENANT_HEADERS,
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "closed"
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["type"] == "extra_forbidden"
+    assert detail[0]["loc"] == ["body", "status"]
+    # Prueba ejecutable de que no hay oráculo de existencia: el rechazo ocurre
+    # en la validación del body de FastAPI, antes de `caller_clearance` y de
+    # `get_expediente_by_id`.
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_expediente_status_rechazado_incluso_con_crud_3(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Fija la invariante nueva: la puerta contra transicionar por PATCH ya no es
+    RBAC, es el esquema — ni siquiera un llamante con crud=5 (permiso pleno)
+    puede colar `status` en el body."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso pleno (crud>=3 incluido)
+
+    response = await client.patch(
+        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
+        json={"status": "transferred"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+    mock_conn.fetchrow.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -721,20 +751,22 @@ async def test_update_expediente_within_clearance_returns_200(
 ) -> None:
     """Contraparte del test anterior: con clearance suficiente (root → CLASIFICADA)
     para ver el expediente, el PATCH de un campo no-disposición (name) procede
-    normalmente y devuelve 200."""
+    normalmente, deja asiento `archive.expediente_updated` y devuelve 200."""
     client, mock_conn = client_with_conn
     existing_record = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
     updated_record = make_expediente_record(
         exp_id=EXPEDIENTE_ID, nivel_seguridad=3, name="Nuevo nombre"
     )
-    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    update_row = make_expediente_update_row(old=existing_record, new=updated_record)
+
+    mock_conn.fetchval.return_value = True  # D-08 gate + audit.append prev_hash lookup
     # 1st fetchrow → resolve_caller_clearance → is_root → CLASIFICADA (3)
     # 2nd fetchrow → get_expediente_by_id (visible: 3 <= 3)
-    # 3rd fetchrow → update_expediente RETURNING
+    # 3rd fetchrow → repo.update_expediente RETURNING (e.* + old_*)
     mock_conn.fetchrow.side_effect = [
         {"is_root": True, "max_level": None},
         existing_record,
-        updated_record,
+        update_row,
     ]
     mock_conn.fetch.return_value = []
 
@@ -746,32 +778,6 @@ async def test_update_expediente_within_clearance_returns_200(
 
     assert response.status_code == 200
     assert response.json()["name"] == "Nuevo nombre"
-
-
-@pytest.mark.asyncio
-async def test_update_expediente_disposition_requires_crud_3(
-    client_with_conn: tuple[AsyncClient, AsyncMock],
-) -> None:
-    """El PATCH que transiciona a closed/transferred es DISPOSICIÓN y exige
-    crud>=3 (Crear/Borrar), igual que /close y /transfer — cierra la ruta alterna
-    que evadía el umbral reforzado (Ley 594/2000 arts. 22-24). Con el permiso solo
-    a nivel Leer (gate del decorador pasa con crud>=1, el check condicional de
-    disposición no), responde 403 sin ejecutar la transición."""
-    client, mock_conn = client_with_conn
-    # 1.º fetchval = gate del decorador (min_crud=1) → True (tiene el permiso).
-    # 2.º fetchval = check condicional de disposición (min_crud=3) → False.
-    mock_conn.fetchval.side_effect = [True, False]
-
-    response = await client.patch(
-        f"/api/v1/expedientes/{EXPEDIENTE_ID}",
-        json={"status": "transferred"},
-        headers=TENANT_HEADERS,
-    )
-
-    assert response.status_code == 403
-    assert response.json()["detail"]["error"] == "forbidden"
-    # El 403 corta ANTES del servicio: la transición no se ejecutó.
-    mock_conn.fetchrow.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

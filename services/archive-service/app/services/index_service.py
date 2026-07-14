@@ -462,6 +462,27 @@ class IndexService:
         )
         return row["xml"]
 
+    async def _mark_pendiente_audited(
+        self, indice_id: uuid.UUID, expediente_id: uuid.UUID, *, tenant_slug: str,
+        actor_id: str | None, motivo: str,
+    ) -> None:
+        """Marca 'pendiente_firma' y su asiento de auditoría como un ÚNICO acto (H5):
+        antes vivían en dos commits distintos (autocommit aquí + `audit.append` de
+        vuelta en `ArchiveService.close_expediente`) — un fallo entre ambos dejaba el
+        índice marcado sin que quedara traza alguna del porqué."""
+        async with self._conn.transaction():
+            await self._index.mark_pendiente(indice_id)
+            await audit.append(
+                self._conn,
+                tenant_slug=tenant_slug,
+                service=_SERVICE,
+                action="archive.indice_firma_pendiente",
+                object_type="expediente_indice",
+                object_ref=str(expediente_id),
+                actor=actor_id,
+                payload={"expediente_id": str(expediente_id), "motivo": motivo},
+            )
+
     async def firmar_indice(
         self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
     ) -> SignedIndice | None:
@@ -477,6 +498,18 @@ class IndexService:
         cierra el expediente: signature-service lo exige para atribuir el
         sello (RF-FIR-11/12/14) y responde 401 sin él, por lo que aquí se
         cortocircuita a 'pendiente_firma' sin siquiera intentar la llamada.
+
+        Atomicidad efecto<->asiento (H5): el desenlace del sellado (marcar
+        'firmado'/'pendiente_firma') y su propio asiento de auditoría
+        ('archive.indice_firmado' / 'archive.indice_firma_pendiente') se
+        comprometen juntos, en una única `conn.transaction()` por rama — antes
+        el UPDATE de estado corría en autocommit aquí y el `audit.append`
+        vivía aparte, en `ArchiveService.close_expediente`, en OTRA
+        transacción: un fallo entre ambos dejaba el índice 'firmado' (con
+        `firma_id` ya persistido) SIN asiento en la cadena inmutable. La
+        llamada HTTP a signature-service ya ocurrió (o se decidió no
+        intentarla) ANTES de cada bloque, así que este tramo es 100% DB — no
+        hay HTTP dentro de la tx.
         """
         from app.clients import signature_client
 
@@ -484,7 +517,10 @@ class IndexService:
         if current is None or current["estado"] == "firmado":
             return None
         if not actor_id:
-            await self._index.mark_pendiente(current["id"])
+            await self._mark_pendiente_audited(
+                current["id"], expediente_id, tenant_slug=tenant_slug,
+                actor_id=actor_id, motivo="sin_actor_id",
+            )
             return None
         signed = await signature_client.sign_xml(
             tenant_slug=tenant_slug,
@@ -495,9 +531,23 @@ class IndexService:
             version=current["version"],
         )
         if signed is None:
-            await self._index.mark_pendiente(current["id"])
+            await self._mark_pendiente_audited(
+                current["id"], expediente_id, tenant_slug=tenant_slug,
+                actor_id=actor_id, motivo="sellado_xades_no_obtenido",
+            )
             return None
-        await self._index.mark_signed(current["id"], signed.firma_id, signed.minio_key_firmado)
+        async with self._conn.transaction():
+            await self._index.mark_signed(current["id"], signed.firma_id, signed.minio_key_firmado)
+            await audit.append(
+                self._conn,
+                tenant_slug=tenant_slug,
+                service=_SERVICE,
+                action="archive.indice_firmado",
+                object_type="expediente_indice",
+                object_ref=str(expediente_id),
+                actor=actor_id,
+                payload={"expediente_id": str(expediente_id), "firma_id": str(signed.firma_id)},
+            )
         return signed
 
     async def firmar_indice_retry(

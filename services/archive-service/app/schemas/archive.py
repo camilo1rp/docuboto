@@ -30,10 +30,24 @@ class ExpedienteCreate(BaseModel):
 
 
 class ExpedienteUpdate(BaseModel):
+    """Metadatos del expediente. NO transiciona el ciclo de vida (Ley 594/2000
+    arts. 22/24; Acuerdo AGN 001/2024 art. 4.3.2.4): `status` fue retirado a
+    propósito — era una ruta alterna a `POST /{id}/close` y `POST /{id}/transfer`
+    que ejecutaba la MISMA transición sin auditoría, sin disposición TRD
+    materializada, sin índice electrónico final y sin la guarda TOCTOU
+    (`expected_status`) de `transition_expediente`. `extra="forbid"` es
+    OBLIGATORIO, no cosmético: sin él, un `{"status": "closed"}` se ignoraría en
+    silencio (default de Pydantic v2) y el llamante creería haber cerrado el
+    expediente sin haberlo hecho (fail-open semántico, peor que el bug
+    original). Con `forbid`, cualquier intento de enviar `status` (incluido
+    `null`) responde 422 ANTES de tocar la base de datos — oracle-free: no
+    revela si el expediente existe ni su clearance."""
+
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     description: str | None = None
     trd_serie_id: uuid.UUID | None = None
-    status: Literal["open", "closed", "transferred"] | None = None
 
 
 class RadicadoLink(BaseModel):

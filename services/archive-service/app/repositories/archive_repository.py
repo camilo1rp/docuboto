@@ -263,58 +263,80 @@ class ArchiveRepository:
         name: str | None,
         description: str | None,
         trd_serie_id: uuid.UUID | None,
-        status: str | None,
-    ) -> Expediente | None:
+    ) -> tuple[Expediente, dict[str, object]] | None:
+        """Actualiza metadatos (name/description/trd_serie_id) — NUNCA `status`/
+        `closed_at`: esas columnas las escribe EXCLUSIVAMENTE
+        `transition_expediente` (con `expected_status`, H3). Este método era
+        antes el segundo escritor no auditado de `status`/`closed_at` — el arma
+        que dejaba el PATCH transicionar el ciclo de vida sin las garantías de
+        `close_expediente`/`transfer_expediente`; se retiró la capacidad, no solo
+        el uso.
+
+        Devuelve `(Expediente, old)`, donde `old` trae los valores PREVIOS
+        (`name`/`description`/`trd_serie_id`/`status`) tomados del `FOR UPDATE`
+        de la MISMA sentencia — el "before" para la auditoría del llamador debe
+        salir de AQUÍ, no de una pre-lectura separada (ventana TOCTOU entre la
+        pre-lectura no-read-up del servicio y este UPDATE).
+        """
         await self._set_search_path()
-
-        assignments: list[str] = ["updated_at = $1"]
-        params: list[object] = [datetime.now(tz=UTC)]
-        idx = 2
-
-        if name is not None:
-            assignments.append(f"name = ${idx}")
-            params.append(name)
-            idx += 1
-        if description is not None:
-            assignments.append(f"description = ${idx}")
-            params.append(description)
-            idx += 1
-        if trd_serie_id is not None:
-            assignments.append(f"trd_serie_id = ${idx}")
-            params.append(trd_serie_id)
-            idx += 1
-        if status is not None:
-            assignments.append(f"status = ${idx}")
-            params.append(status)
-            idx += 1
-            if status == "closed":
-                assignments.append(f"closed_at = ${idx}")
-                params.append(datetime.now(tz=UTC))
-                idx += 1
-
-        set_clause = ", ".join(assignments)
-        params.append(expediente_id)
-
+        now = datetime.now(tz=UTC)
         row = await self._conn.fetchrow(
-            f"""
-            UPDATE expedientes
-               SET {set_clause}
-             WHERE id = ${idx}
-            RETURNING *
+            """
+            WITH old AS (
+                SELECT id, name, description, trd_serie_id, status
+                  FROM expedientes
+                 WHERE id = $1
+                   FOR UPDATE
+            )
+            UPDATE expedientes e
+               SET name = COALESCE($2, e.name),
+                   description = COALESCE($3, e.description),
+                   trd_serie_id = COALESCE($4, e.trd_serie_id),
+                   updated_at = $5
+              FROM old
+             WHERE e.id = old.id
+            RETURNING e.*, old.name AS old_name, old.description AS old_description,
+                      old.trd_serie_id AS old_trd_serie_id, old.status AS old_status
             """,
-            *params,
+            expediente_id,
+            name,
+            description,
+            trd_serie_id,
+            now,
         )
-        return _row_to_expediente(row) if row is not None else None
+        if row is None:
+            return None
+        old: dict[str, object] = {
+            "name": row["old_name"],
+            "description": row["old_description"],
+            "trd_serie_id": row["old_trd_serie_id"],
+            "status": row["old_status"],
+        }
+        return _row_to_expediente(row), old
 
     async def transition_expediente(
         self,
         expediente_id: uuid.UUID,
         *,
         status: str,
+        expected_status: str,
         disposition: dict | None = None,
     ) -> Expediente | None:
         """Cambia el estado del ciclo de vida (cierre/transferencia) y, al cerrar,
-        materializa la disposición calculada (E02/ADR-015)."""
+        materializa la disposición calculada (E02/ADR-015).
+
+        `expected_status` cierra el `WHERE` (`AND status = $N`), que pasa a ser el
+        ÚNICO punto serializado por Postgres para decidir la transición (H3): antes
+        la guarda de estado (`_assert_transition`/comprobación equivalente) se
+        evaluaba FUERA de esta sentencia, dejando una ventana TOCTOU real — dos
+        peticiones concurrentes (doble clic, reintento de cliente, dos réplicas del
+        gateway) podían leer ambas el mismo `status` origen, pasar la validación, y
+        AMBOS `UPDATE` casar el `WHERE` (antes solo por `id`) y commitear: dos
+        eventos/asientos de auditoría para una única transición de negocio en la
+        hoja de ruta append-only e `audit_log` INDELEBLE. Con la guarda dentro del
+        `WHERE`, solo el primer `UPDATE` en llegar casa (`status` ya cambió para el
+        segundo) — el `None` que devuelve el perdedor pasa a ser un caso
+        SIGNIFICATIVO y alcanzable, no un fail-closed defensivo teórico."""
         await self._set_search_path()
         now = datetime.now(tz=UTC)
         assignments = ["status = $1", "updated_at = $2"]
@@ -328,9 +350,13 @@ class ArchiveRepository:
             assignments.append(f"disposition = ${idx}::jsonb")
             params.append(json.dumps(disposition, default=str))
             idx += 1
+        id_idx = idx
         params.append(expediente_id)
+        status_idx = idx + 1
+        params.append(expected_status)
         row = await self._conn.fetchrow(
-            f"UPDATE expedientes SET {', '.join(assignments)} " f"WHERE id = ${idx} RETURNING *",
+            f"UPDATE expedientes SET {', '.join(assignments)} "
+            f"WHERE id = ${id_idx} AND status = ${status_idx} RETURNING *",
             *params,
         )
         return _row_to_expediente(row) if row is not None else None

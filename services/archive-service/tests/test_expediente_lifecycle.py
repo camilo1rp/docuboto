@@ -84,23 +84,38 @@ async def test_close_forwards_x_user_id_as_actor_id(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_close_sin_firma_audita_indice_pendiente(client_with_conn) -> None:
-    """Media (indice/audit): si el sellado falla al cierre, el audit_log de
-    'archive.expediente_closed' lleva indice_estado='pendiente_firma' Y se
-    emite una entrada adicional 'archive.indice_firma_pendiente' (traza del
-    fallo de sellado — ADR-010)."""
+    """Si el sellado no se obtiene al cierre, queda traza: se emite
+    'archive.indice_firma_pendiente' (ADR-010).
+
+    Se mockea `signature_client.sign_xml` (la frontera HTTP), NO `firmar_indice`:
+    ese asiento y el `mark_pendiente` que lo acompaña viven DENTRO de
+    `firmar_indice`, comprometidos juntos (H5) — mockear el método entero
+    borraría de la prueba justo el efecto que se quiere observar.
+
+    El payload de 'archive.expediente_closed' NO puede declarar el estado del
+    índice: se commitea ANTES de intentar el sellado, así que afirmar ahí
+    'pendiente_firma' sería sobre-declarar un desenlace que todavía no ha
+    ocurrido (RF-FIR-15). El hecho vive en su propio asiento posterior.
+    """
     client, mock_conn = client_with_conn
     exp_id = uuid.uuid4()
     exp_open = make_expediente_record(exp_id=exp_id, exp_status="open")
     exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
+    indice_vigente = {
+        "id": uuid.uuid4(),
+        "estado": "vigente",
+        "xml": "<indice/>",
+        "version": 1,
+    }
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
-    mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
+    mock_conn.fetchrow.side_effect = [exp_open, exp_closed, indice_vigente]
     mock_conn.fetch.return_value = []
 
     from app.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
-        patch.object(IndexService, "firmar_indice", new=AsyncMock(return_value=None)),
+        patch("app.clients.signature_client.sign_xml", new=AsyncMock(return_value=None)),
     ):
         resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -114,7 +129,8 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn) -> None
     actions = [a[5] for a in audit_calls]
     assert "archive.indice_firma_pendiente" in actions
     closed_payloads = [a[8] for a in audit_calls if a[5] == "archive.expediente_closed"]
-    assert closed_payloads and '"pendiente_firma"' in closed_payloads[0]
+    assert closed_payloads
+    assert "pendiente_firma" not in closed_payloads[0]
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ from fastapi import (
     status,
 )
 
-from app.core.clearance import check_permission, require_permission
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
     BatchLinkRequest,
@@ -225,13 +225,21 @@ async def close_expediente(
 )
 async def transfer_expediente(
     expediente_id: uuid.UUID,
+    x_username: str | None = Header(default=None),
+    x_user_id: str | None = Header(default=None),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteDisposicionResult:
     # Misma razón que `close_expediente`: respuesta estrecha, ortogonal al
     # clearance de lectura (RF-SEG-08 Opción B) — ver
     # `schemas.archive.ExpedienteDisposicionResult`.
-    return await ArchiveService(conn, tenant_slug).transfer_expediente(expediente_id)
+    #
+    # H2: la identidad (X-User-Id, respaldo X-Username) YA la exige
+    # `require_permission(min_crud=3)` arriba para autorizar — antes este
+    # handler ni siquiera la declaraba y un cambio de custodia irreversible
+    # quedaba sin responsable identificado en la hoja de ruta/audit_log.
+    actor = x_user_id or x_username
+    return await ArchiveService(conn, tenant_slug).transfer_expediente(expediente_id, actor=actor)
 
 
 @router.get(
@@ -334,7 +342,7 @@ async def list_expediente_eventos(
 @router.patch(
     "/{expediente_id}",
     response_model=ExpedienteResponse,
-    summary="Update expediente fields or transition status",
+    summary="Update expediente metadata (name/description/trd_serie_id) — does not transition status",
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def update_expediente(
@@ -344,25 +352,13 @@ async def update_expediente(
     actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteResponse:
-    # El PATCH genérico puede transicionar el ciclo de vida (open→closed→
-    # transferred), las MISMAS transiciones que /close y /transfer, que exigen
-    # autoridad de disposición (crud>=3). Sin este gate condicional, el PATCH
-    # sería una ruta alterna que evade el umbral reforzado (Ley 594/2000 arts.
-    # 22-24; Acuerdo AGN 001/2024). El decorador exige USUA_PERM_EXPEDIENTE con
-    # el default crud>=1 (basta para editar nombre/descr/serie); solo la
-    # transición de disposición eleva a crud>=3. `require_permission` ya fijó el
-    # search_path del tenant, así que `check_permission` consulta el schema correcto.
-    if payload.status in ("closed", "transferred") and not await check_permission(
-        conn, actor, "USUA_PERM_EXPEDIENTE", min_crud=3
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "forbidden",
-                "detail": "La disposición del expediente (cierre/transferencia) "
-                "requiere USUA_PERM_EXPEDIENTE con nivel crud>=3.",
-            },
-        )
+    # El ciclo de vida (open→closed→transferred) transita EXCLUSIVAMENTE por
+    # POST /{id}/close y POST /{id}/transfer (ambos crud>=3) — este PATCH ya no
+    # acepta `status` en absoluto (`ExpedienteUpdate` con `extra="forbid"`, ver
+    # su docstring): era una ruta alterna sin auditoría, sin disposición TRD
+    # materializada, sin índice final y sin la guarda TOCTOU de
+    # `transition_expediente` (Ley 594/2000 arts. 22-24; Acuerdo AGN 001/2024
+    # art. 4.3.2.4).
     service = ArchiveService(conn, tenant_slug)
     return await service.update_expediente(expediente_id, payload, actor)
 

@@ -13,6 +13,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, date, datetime
+from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -388,11 +389,42 @@ class ArchiveService:
         payload: ExpedienteUpdate,
         user_id: uuid.UUID | None = None,
     ) -> ExpedienteResponse:
-        # No-read-up (RF-SEG-08): el PATCH devuelve `ExpedienteResponse` completo
-        # (mismo leak que `GET /{id}` si se usara el clearance "sin restricción")
-        # — resuelve el clearance real del llamante, igual que `get_expediente`.
-        # Mantiene semántica 404-no-403: un expediente por encima del clearance
-        # no revela su existencia.
+        """Actualiza metadatos (name/description/trd_serie_id). NO transiciona el
+        ciclo de vida (`status` ya no existe en `ExpedienteUpdate` — ver su
+        docstring): eso es exclusivo de `POST /{id}/close` y `POST /{id}/transfer`.
+
+        No-read-up (RF-SEG-08): el PATCH devuelve `ExpedienteResponse` completo
+        (mismo leak que `GET /{id}` si se usara el clearance "sin restricción")
+        — resuelve el clearance real del llamante, igual que `get_expediente`.
+        Mantiene semántica 404-no-403: un expediente por encima del clearance
+        no revela su existencia. Esta decisión de seguridad NO cambia aquí.
+
+        Reclasificación TRD (Ley 594/2000 art. 24): cambiar `trd_serie_id`
+        altera el tiempo de retención y la disposición final proyectada — es
+        un acto con efecto jurídico, no una corrección cosmética. Por eso:
+        (a) exige el expediente `open` (`_assert_open`, mismo criterio que
+        link/unlink — sobre closed/transferred la disposición ya está
+        materializada o el expediente ya no está bajo custodia); (b) exige un
+        actor identificable (X-User-Id) — una reclasificación sin responsable
+        no puede escribirse; (c) deja un asiento propio
+        `archive.expediente_reclasificado` con la disposición PROYECTADA
+        antes/después (RF-FIR-15: no afirma que `expedientes.disposition` ya
+        cambió en disco — eso solo ocurre al cierre).
+
+        Atomicidad mutación<->asiento (mismo patrón que H1/H2): el UPDATE, el
+        evento de la hoja de ruta y `audit.append` son un único acto de
+        negocio dentro de una sola `conn.transaction()`. El "before" auditado
+        sale del propio `UPDATE ... RETURNING` (repo, `FOR UPDATE`), NO de la
+        pre-lectura no-read-up de arriba (lección H3: hay una ventana TOCTOU
+        entre ambas). Si no hay cambios efectivos, no se emite evento ni
+        asiento (no se contamina la cadena con actos que no ocurrieron).
+
+        Intentos denegados (H6): si el bloque falla (expediente no-open al
+        reclasificar, actor ausente), se deja un asiento best-effort
+        `archive.expediente_update_denied` FUERA de la tx ya revertida
+        (autocommit) — nunca degrada el fallo real a 500, nunca enmascara la
+        excepción original.
+        """
         max_clearance = await self._repo.caller_clearance(user_id)
         existing = await self._repo.get_expediente_by_id(
             expediente_id, max_clearance=max_clearance
@@ -407,35 +439,142 @@ class ArchiveService:
                 },
             )
 
-        if payload.status is not None:
-            allowed = _VALID_TRANSITIONS.get(existing.status, set())
-            if payload.status not in allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "error": "invalid_status_transition",
-                        "detail": (
-                            f"Cannot transition from '{existing.status}' to '{payload.status}'"
-                        ),
-                        "status": 422,
+        intenta_reclasificar = (
+            payload.trd_serie_id is not None and payload.trd_serie_id != existing.trd_serie_id
+        )
+        actor = str(user_id) if user_id is not None else None
+
+        try:
+            if intenta_reclasificar:
+                self._assert_open(existing)
+                if actor is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={
+                            "error": "actor_required",
+                            "detail": (
+                                "La reclasificación de TRD requiere un actor "
+                                "identificable (X-User-Id)."
+                            ),
+                            "status": 403,
+                        },
+                    )
+
+            async with self._conn.transaction():
+                result = await self._repo.update_expediente(
+                    expediente_id,
+                    name=payload.name,
+                    description=payload.description,
+                    trd_serie_id=payload.trd_serie_id,
+                )
+                if result is None:
+                    # Solo alcanzable si el expediente desapareció entre la
+                    # pre-lectura y este UPDATE — no hay DELETE de expedientes
+                    # hoy, así que es defensivo, no un caso normal.
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "expediente_update_failed",
+                            "detail": "La actualización no devolvió el expediente.",
+                            "status": 409,
+                        },
+                    )
+                updated, old = result
+
+                changed: dict[str, Any] = {}
+                if payload.name is not None and payload.name != old["name"]:
+                    changed["name"] = {"before": old["name"], "after": updated.name}
+                if payload.description is not None and payload.description != old["description"]:
+                    changed["description"] = {
+                        "before": old["description"],
+                        "after": updated.description,
+                    }
+                if payload.trd_serie_id is not None and payload.trd_serie_id != old["trd_serie_id"]:
+                    old_serie_id = old["trd_serie_id"]
+                    changed["trd_serie_id"] = {
+                        "before": str(old_serie_id) if old_serie_id else None,
+                        "after": str(updated.trd_serie_id),
+                    }
+
+                if changed:
+                    reclasifica = "trd_serie_id" in changed
+                    action = (
+                        "archive.expediente_reclasificado"
+                        if reclasifica
+                        else "archive.expediente_updated"
+                    )
+                    audit_payload: dict[str, Any] = {"changed": changed}
+                    if reclasifica:
+                        hoy = datetime.now(tz=UTC).date()
+                        old_serie_id = old["trd_serie_id"]
+                        new_serie_id = updated.trd_serie_id
+                        serie_before = (
+                            await self.compute_retention(old_serie_id, hoy)
+                            if old_serie_id is not None
+                            else None
+                        )
+                        serie_after = (
+                            await self.compute_retention(new_serie_id, hoy)
+                            if new_serie_id is not None
+                            else None
+                        )
+                        audit_payload["serie_codigo"] = {
+                            "before": serie_before.code if serie_before else None,
+                            "after": serie_after.code if serie_after else None,
+                        }
+                        audit_payload["disposicion_proyectada"] = {
+                            "before": serie_before.model_dump(mode="json")
+                            if serie_before
+                            else None,
+                            "after": serie_after.model_dump(mode="json") if serie_after else None,
+                        }
+                        audit_payload["expediente_status"] = updated.status
+
+                    await self._repo.insert_expediente_evento(
+                        expediente_id,
+                        numero_expediente=updated.code,
+                        accion="reclasificado" if reclasifica else "actualizado",
+                        actor=user_id,
+                        detalles={"changed": changed},
+                    )
+                    # `audit.append` LO ÚLTIMO dentro de la tx (H1/H2/H4).
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action=action,
+                        object_type="expediente",
+                        object_ref=updated.code,
+                        actor=actor,
+                        payload=audit_payload,
+                    )
+        except HTTPException as exc:
+            # Best-effort (mismo patrón que `audit.append_denial` /
+            # `expediente_close_failed`): nunca deja que un fallo de auditoría
+            # oculte el error real, nunca lo convierte en un 500 por su cuenta.
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.expediente_update_denied",
+                    object_type="expediente",
+                    object_ref=existing.code,
+                    actor=actor,
+                    payload={
+                        "status_actual": existing.status,
+                        "motivo": exc.detail.get("error")
+                        if isinstance(exc.detail, dict)
+                        else str(exc.detail),
                     },
                 )
-            # Este PATCH genérico es una ruta alterna a `transfer_expediente` para la
-            # misma transición closed→transferred: aplica la MISMA guarda de índice
-            # firmado (Acuerdo AGN 001/2024 art. 4.3.2.4) — de lo contrario un
-            # llamador podría transferir un expediente sin índice sellado rodeando
-            # el endpoint dedicado `POST /{id}/transfer`.
-            if payload.status == "transferred":
-                await self._assert_indice_firmado(expediente_id)
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning(
+                    "audit.append(expediente_update_denied) failed", exc_info=True
+                )
+            raise
 
-        updated = await self._repo.update_expediente(
-            expediente_id,
-            name=payload.name,
-            description=payload.description,
-            trd_serie_id=payload.trd_serie_id,
-            status=payload.status,
-        )
-        return _to_expediente_response(updated)  # type: ignore[arg-type]
+        return _to_expediente_response(updated)
 
     # ------------------------------------------------------------------
     # Ciclo de vida del expediente (E02/ADR-015)
@@ -495,99 +634,178 @@ class ArchiveService:
         atribuir el sello (RF-FIR-11/12): si falta o la firma falla, el índice
         queda 'pendiente_firma' (decisión del usuario, RT-16) — el cierre del
         expediente NUNCA se bloquea por esto.
+
+        Atomicidad transición<->auditoría (mismo patrón que `link_radicado`):
+        la transición de estado, el evento de la hoja de ruta y la
+        regeneración final del índice (tramo 100% DB, sin HTTP a mitad) son
+        un único acto de negocio dentro de una sola `conn.transaction()` —
+        antes cada sentencia commiteaba por su cuenta (autocommit) y un fallo
+        a mitad (p. ej. el índice ya 'firmado' por un `POST /indice/firmar`
+        previo sobre el expediente aún open) dejaba el expediente 'closed'
+        SIN evento ni asiento de auditoría, de forma permanente e
+        irreproducible (el reintento choca con 409 `invalid_status_transition`).
+
+        El sellado XAdES-B (`firmar_indice`) es HTTP y queda deliberadamente
+        FUERA de la transacción, tras el commit, best-effort (RT-16): (a) un
+        POST no se revierte con ROLLBACK — si el sello se emite y la tx
+        aborta, signature-service ya lo tendría marcado sobre una fila
+        revertida; (b) mantener la tx abierta durante la latencia HTTP
+        retendría el `pg_advisory_xact_lock` del tenant que `audit.append`
+        toma internamente, serializando TODA la auditoría del tenant. Por
+        eso el asiento 'archive.expediente_closed' (dentro de la tx, lo
+        último) NO puede afirmar `indice_estado`/`firma_id` del sellado —
+        ese resultado aún no existe en el instante del commit (RF-FIR-15,
+        no sobre-declarar) — y el desenlace del sellado se audita aparte,
+        después, en su propio asiento **dentro** de `IndexService.firmar_indice`
+        (atómico con la marca de estado del índice — ver su docstring, H5).
+
+        Traza de intentos denegados (H6): el Modelo de Requisitos SGDEA exige
+        que la pista registre también los intentos DENEGADOS de alterar el
+        ciclo de vida de un expediente (es lo que permite demostrar que el
+        control existió y actuó). Ante un `HTTPException`, se deja fuera de la
+        tx (ya revertida, en autocommit) un asiento
+        'archive.expediente_close_failed' — mismo patrón best-effort que
+        `audit.append_denial` (`core/clearance.py`): nunca degrada el fallo
+        real a un 500 por un problema de auditoría, y jamás enmascara la
+        excepción original (`raise` sin argumentos al final, siempre re-lanza
+        LA MISMA excepción de negocio).
+
+        El `try` abarca TAMBIÉN las validaciones previas (`_assert_transition`,
+        `compute_retention`), no solo el bloque transaccional: el intento
+        denegado más FRECUENTE es precisamente el que rebota en la validación
+        —cerrar un expediente ya 'closed'/'transferred' (409), o con una serie
+        TRD inexistente (404)—, y dejarlo fuera del `try` hacía que el caso
+        común no dejara rastro mientras el docstring afirmaba lo contrario
+        (RF-FIR-15). Las validaciones siguen FUERA de la `conn.transaction()`,
+        que se abre después: son lecturas puras, no hay nada que revertir.
         """
         from app.services.index_service import IndexService
 
         exp = await self._expediente_or_404(expediente_id)
-        self._assert_transition(exp.status, "closed")
-        disposition = None
-        if exp.trd_serie_id is not None:
-            schedule = await self.compute_retention(exp.trd_serie_id, datetime.now(tz=UTC).date())
-            disposition = schedule.model_dump(mode="json")
-        transitioned = await self._repo.transition_expediente(
-            expediente_id, status="closed", disposition=disposition
-        )
-        # Índice electrónico: versión final + sello XAdES-B al cierre (RF-EXP-06).
-        # El resultado (`signed`) se captura para dejar traza del estado del
-        # índice en el audit_log de cierre — best-effort: un sellado fallido
-        # NUNCA bloquea el cierre (RT-16), pero debe quedar auditado.
-        # `assert_open=False`: en este punto el expediente YA transicionó a
-        # 'closed' (arriba) — esta ES la regeneración final legítima que el
-        # guard de `regenerate` rechazaría por defecto.
         index = IndexService(self._conn, self._tenant_slug)
-        rebuild_result = await index.regenerate(
-            expediente_id, generado_por=firmante or "system", assert_open=False
-        )
-        signed = await index.firmar_indice(
-            expediente_id, tenant_slug=self._tenant_slug, actor_id=actor_id
-        )
-        indice_estado = "firmado" if signed is not None else "pendiente_firma"
-        await self._repo.insert_expediente_evento(
-            expediente_id,
-            numero_expediente=exp.code,
-            accion="cerrado",
-            comentario=f"firmante={firmante}" if firmante else None,
-        )
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.expediente_closed",
-            object_type="expediente",
-            object_ref=exp.code,
-            actor=firmante,
-            payload={
-                "indice_estado": indice_estado,
-                "firma_id": str(signed.firma_id) if signed is not None else None,
-                # Trazabilidad del salto v1->v2 (E15 Inc.3, RT-15): xsd_version
-                # real de la versión que `regenerate` acaba de devolver (NO la
-                # constante del módulo) — no afirma "v2" si `regenerate`
-                # resultó `unchanged` sobre una versión persistida distinta.
-                "xsd_version": rebuild_result.xsd_version,
-            },
-        )
-        if signed is None:
-            # Contraparte de 'firma.creada' (signature-service): deja traza
-            # explícita de que el índice electrónico de este expediente cerró
-            # SIN sellar (ADR-010, trazabilidad de no-conformidad).
-            await audit.append(
-                self._conn,
-                tenant_slug=self._tenant_slug,
-                service=_SERVICE,
-                action="archive.indice_firma_pendiente",
-                object_type="expediente_indice",
-                object_ref=exp.code,
-                actor=firmante,
-                payload={
-                    "expediente_id": str(expediente_id),
-                    "motivo": "sellado_xades_no_obtenido_al_cierre",
-                },
-            )
+        try:
+            self._assert_transition(exp.status, "closed")
+            disposition = None
+            if exp.trd_serie_id is not None:
+                schedule = await self.compute_retention(
+                    exp.trd_serie_id, datetime.now(tz=UTC).date()
+                )
+                disposition = schedule.model_dump(mode="json")
+
+            async with self._conn.transaction():
+                transitioned = await self._repo.transition_expediente(
+                    expediente_id, status="closed", expected_status=exp.status, disposition=disposition
+                )
+                # Fail-closed DENTRO de la tx: `transition_expediente` cierra el
+                # `WHERE` con `AND status = $N` (H3) — un `None` aquí ya no es
+                # teórico: significa que OTRA transición ganó la carrera entre
+                # la lectura de `exp` (arriba) y este UPDATE (doble clic,
+                # reintento del cliente, dos réplicas del gateway). Revierte en
+                # vez de dejar un cierre a medias o reportar un resultado que
+                # no es el que realmente se comprometió.
+                if transitioned is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "expediente_transition_failed",
+                            "detail": "La transición de cierre no devolvió el expediente actualizado.",
+                            "status": 409,
+                        },
+                    )
+                await self._repo.insert_expediente_evento(
+                    expediente_id,
+                    numero_expediente=exp.code,
+                    accion="cerrado",
+                    comentario=f"firmante={firmante}" if firmante else None,
+                )
+                # Índice electrónico: versión final del conjunto documental
+                # (RF-EXP-06). `assert_open=False`: el expediente YA transicionó
+                # arriba a 'closed' — esta ES la regeneración final legítima que
+                # el guard de `regenerate` rechazaría por defecto. Si el índice
+                # vigente ya estaba 'firmado' (p. ej. sellado manualmente antes
+                # del cierre), `regenerate` lanza 409 aquí y la tx revierte
+                # ÍNTEGRA (transición + evento incluidos) — el hueco que este
+                # parche cierra.
+                rebuild_result = await index.regenerate(
+                    expediente_id, generado_por=firmante or "system", assert_open=False
+                )
+                # `audit.append` LO ÚLTIMO dentro de la tx (además del que emite
+                # `regenerate` internamente vía 'archive.indice_regenerated', que
+                # ya toma el advisory lock del tenant: este re-toma el mismo lock,
+                # ya poseído, sin espera adicional). El sellado XAdES-B todavía no
+                # se ha intentado en este punto — el payload declara solo lo que
+                # es cierto en el instante del commit: la versión final del
+                # índice ya persistida, sin sellar, más el efecto jurídico del
+                # cierre (Ley 594/2000 art. 24; Acuerdo AGN 004/2019) — la
+                # disposición TRD materializada y el estado anterior (H4): antes
+                # solo vivía en `expedientes.disposition`, una columna MUTABLE,
+                # sin traza inmutable del acto.
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.expediente_closed",
+                    object_type="expediente",
+                    object_ref=exp.code,
+                    actor=firmante,
+                    payload={
+                        "indice_version": rebuild_result.version,
+                        "xml_sha256": rebuild_result.xml_sha256,
+                        # Trazabilidad del salto v1->v2 (E15 Inc.3, RT-15): xsd_version
+                        # real de la versión que `regenerate` acaba de devolver (NO la
+                        # constante del módulo) — no afirma "v2" si `regenerate`
+                        # resultó `unchanged` sobre una versión persistida distinta.
+                        "xsd_version": rebuild_result.xsd_version,
+                        "indice_estado": "no_firmado",
+                        "status_anterior": exp.status,
+                        "closed_at": transitioned.closed_at,
+                        "trd_serie_id": str(exp.trd_serie_id) if exp.trd_serie_id else None,
+                        "disposition": disposition,
+                    },
+                )
+        except HTTPException as exc:
+            # Best-effort (mismo patrón que `audit.append_denial`): nunca deja
+            # que un fallo de auditoría oculte el 409/500 real, y nunca
+            # convierte este catch en un 500 por su cuenta.
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.expediente_close_failed",
+                    object_type="expediente",
+                    object_ref=exp.code,
+                    actor=firmante,
+                    payload={
+                        # Estado REAL tras el ROLLBACK: como el bloque completo se
+                        # revirtió, el expediente sigue en `exp.status` (el que se
+                        # observó al empezar el intento) — no es una suposición.
+                        "status_actual": exp.status,
+                        "motivo": exc.detail.get("error")
+                        if isinstance(exc.detail, dict)
+                        else str(exc.detail),
+                    },
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning(
+                    "audit.append(expediente_close_failed) failed", exc_info=True
+                )
+            raise
+        # --- fuera de la tx (ya comprometida), best-effort (RT-16): sellado
+        # XAdES-B vía HTTP a signature-service. Un fallo aquí NUNCA bloquea
+        # ni revierte el cierre, que ya es un hecho consumado — el desenlace
+        # (firmado / pendiente_firma) se audita DENTRO de `firmar_indice`,
+        # atómico con la marca de estado del índice (H5) — ya no aquí, dos
+        # commits distintos para el mismo par efecto+asiento.
+        await index.firmar_indice(expediente_id, tenant_slug=self._tenant_slug, actor_id=actor_id)
         # No re-lee vía `get_expediente`: ese método resuelve el clearance del
         # llamante (`caller_clearance(user_id)`), y aquí no se propaga
         # `user_id` — hacerlo devolvería 404 espurio para un archivista con
         # permiso de disposición pero sin clearance de lectura sobre un
         # expediente RESERVADA/CLASIFICADA, pese a que el cierre YA se
-        # comprometió (`get_db_conn` es autocommit, sin transacción de
-        # request). Se construye la respuesta estrecha a partir del `exp` ya
-        # cargado + el resultado de la propia transición (ortogonalidad
-        # decidida, ver `ExpedienteDisposicionResult`).
-        #
-        # `transition_expediente` hace `UPDATE ... RETURNING *`; solo devuelve
-        # None si el WHERE id=$1 no casa, algo inalcanzable aquí (la fila la
-        # acaba de cargar `_expediente_or_404` en la misma conexión secuencial
-        # y no hay DELETE físico de expedientes). Aun así, fail-closed: un
-        # endpoint de disposición NUNCA debe reportar `status="open"` — si la
-        # transición no devolvió fila, es una invariante rota, no un cierre.
-        if transitioned is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "expediente_transition_failed",
-                    "detail": "La transición de cierre no devolvió el expediente actualizado.",
-                    "status": 409,
-                },
-            )
+        # comprometió. Se construye la respuesta estrecha a partir del
+        # resultado de la propia transición (ortogonalidad decidida, ver
+        # `ExpedienteDisposicionResult`), NO de una re-lectura.
         result = transitioned
         return ExpedienteDisposicionResult(
             id=result.id,
@@ -623,43 +841,110 @@ class ArchiveService:
             )
 
     async def transfer_expediente(
-        self, expediente_id: uuid.UUID
+        self, expediente_id: uuid.UUID, actor: str | None = None
     ) -> ExpedienteDisposicionResult:
         """Transfiere el expediente (closed → transferred).
 
         Bloqueante: exige índice electrónico 'firmado' — ver
-        `_assert_indice_firmado` (Acuerdo AGN 001/2024 art. 4.3.2.4).
+        `_assert_indice_firmado` (Acuerdo AGN 001/2024 art. 4.3.2.4). No hay
+        HTTP en ningún punto de este flujo (a diferencia de `close_expediente`),
+        así que la transición, el evento de la hoja de ruta y el asiento de
+        auditoría se comprometen atómicamente en una única `conn.transaction()`
+        (mismo patrón que `close_expediente`/`link_radicado`): antes cada
+        sentencia commiteaba por su cuenta y un fallo entre el UPDATE y el
+        `audit.append` dejaba el expediente 'transferred' (estado que
+        CONGELA el expediente — `_assert_open`) sin evento ni asiento,
+        de forma irreversible y sin rastro.
+
+        `_assert_indice_firmado` se evalúa FUERA de la tx, antes: el estado
+        'firmado' del índice es absorbente (`mark_pendiente`/`regenerate`
+        lo protegen con `WHERE estado <> 'firmado'` / guard 409), así que
+        leerlo fuera solo puede volverse más permisivo entre la lectura y la
+        transición — no hay TOCTOU explotable.
+
+        `actor` (H2): identidad de quien transfiere (X-User-Id, o X-Username
+        como respaldo — mismo criterio que `firmante` en `close_expediente`).
+        Antes el router ni siquiera declaraba estas cabeceras pese a que
+        `require_permission(min_crud=3)` YA exige `X-User-Id` para autorizar
+        la operación: la identidad estaba en la petición y se descartaba,
+        dejando un cambio de custodia irreversible sin responsable
+        identificado en la hoja de ruta ni en `audit_log`.
         """
         exp = await self._expediente_or_404(expediente_id)
-        self._assert_transition(exp.status, "transferred")
-        await self._assert_indice_firmado(expediente_id)
-        transitioned = await self._repo.transition_expediente(
-            expediente_id, status="transferred"
-        )
-        await self._repo.insert_expediente_evento(
-            expediente_id, numero_expediente=exp.code, accion="transferido"
-        )
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.expediente_transferred",
-            object_type="expediente",
-            object_ref=exp.code,
-        )
+        try:
+            # Dentro del `try` (pero FUERA de la tx, que se abre después): el
+            # rechazo de `_assert_indice_firmado` es justamente el control que
+            # impone el Acuerdo AGN 001/2024 art. 4.3.2.4 — transferir sin
+            # índice electrónico sellado — y es el evento que un auditor
+            # necesita poder ver. Dejarlo fuera del `try` lo hacía invisible.
+            self._assert_transition(exp.status, "transferred")
+            await self._assert_indice_firmado(expediente_id)
+            async with self._conn.transaction():
+                transitioned = await self._repo.transition_expediente(
+                    expediente_id, status="transferred", expected_status=exp.status
+                )
+                # Fail-closed DENTRO de la tx: `transition_expediente` cierra el
+                # `WHERE` con `AND status = $N` (H3) — igual razonamiento que
+                # `close_expediente`, ahora alcanzable bajo una carrera real (dos
+                # transferencias concurrentes del mismo expediente ya 'closed').
+                if transitioned is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "expediente_transition_failed",
+                            "detail": (
+                                "La transición de transferencia no devolvió el "
+                                "expediente actualizado."
+                            ),
+                            "status": 409,
+                        },
+                    )
+                await self._repo.insert_expediente_evento(
+                    expediente_id,
+                    numero_expediente=exp.code,
+                    accion="transferido",
+                    comentario=f"firmante={actor}" if actor else None,
+                )
+                # `audit.append` LO ÚLTIMO dentro de la tx (advisory lock del
+                # tenant retenido el mínimo tiempo posible hasta el COMMIT).
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.expediente_transferred",
+                    object_type="expediente",
+                    object_ref=exp.code,
+                    actor=actor,
+                )
+        except HTTPException as exc:
+            # Gemelo de `expediente_close_failed`: la transferencia es un cambio
+            # de custodia irreversible, y su DENEGACIÓN es tan auditable como su
+            # consumación (Modelo de Requisitos SGDEA; Ley 594/2000 art. 22).
+            # Best-effort: nunca degrada el fallo real a un 500 por auditoría.
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.expediente_transfer_failed",
+                    object_type="expediente",
+                    object_ref=exp.code,
+                    actor=actor,
+                    payload={
+                        "status_actual": exp.status,
+                        "motivo": exc.detail.get("error")
+                        if isinstance(exc.detail, dict)
+                        else str(exc.detail),
+                    },
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning(
+                    "audit.append(expediente_transfer_failed) failed", exc_info=True
+                )
+            raise
         # Misma razón que `close_expediente`: no re-lee vía `get_expediente`
         # (evita el 404 espurio no-read-up) — respuesta estrecha construida a
-        # partir de la transición ya comprometida. Fail-closed idéntico: un
-        # endpoint de disposición nunca reporta el estado pre-transición.
-        if transitioned is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "expediente_transition_failed",
-                    "detail": "La transición de transferencia no devolvió el expediente actualizado.",
-                    "status": 409,
-                },
-            )
+        # partir de la transición ya comprometida.
         result = transitioned
         return ExpedienteDisposicionResult(
             id=result.id,

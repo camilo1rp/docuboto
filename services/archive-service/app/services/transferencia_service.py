@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import HTTPException, status
+from orpycamcp_common import audit
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.repositories.archive_repository import ArchiveRepository
@@ -34,6 +35,8 @@ from app.schemas.transferencia import (
     TransferenciaResponse,
 )
 from app.services.fisico_service import FisicoService
+
+_SERVICE = "archive-service"
 
 _VALID = {
     "preparada": {"enviada"},
@@ -149,16 +152,74 @@ class TransferenciaService:
                     "status": 409,
                 },
             )
-        row = await self._repo.update_estado(
-            transferencia_id,
-            {
-                "estado": "recibida",
-                "recibida_at": datetime.now(tz=UTC),
-                "decidida_por": decidida_por,
-            },
-        )
-        # Congelación: el expediente pasa a transferred (no admite documentos).
-        await self._archive.transition_expediente(existing["expediente_id"], status="transferred")
+        # Atomicidad (H1): recibir() congela el expediente (`transferred`, ya no
+        # admite documentos) — el UPDATE de la transferencia, la transición del
+        # expediente, su evento en la hoja de ruta y el asiento de auditoría son
+        # UN ÚNICO acto de custodia dentro de una sola `conn.transaction()`, mismo
+        # patrón que `ArchiveService.transfer_expediente`. Antes eran dos UPDATE en
+        # autocommit sin evento ni `audit.append` (0 llamadas en todo el fichero):
+        # un fallo entre ambos podía divergir (transferencia 'recibida' con el
+        # expediente aún 'closed', o viceversa) y, aun sin fallo, la congelación
+        # -- el efecto jurídico irreversible -- quedaba sin traza (Ley 594/2000
+        # art. 22, Modelo de Requisitos SGDEA).
+        #
+        # Granularidad de la tx: UNA por recepción, no una-por-ítem al estilo
+        # `batch_service`. `transferencias.expediente_id` es una columna simple
+        # (1 transferencia = 1 expediente, ver `TransferenciaRepository._COLS`) —
+        # no hay aquí una colección de ítems independientes que aislar entre sí
+        # (el patrón de `batch_service` existe para que el fallo de UN ítem no
+        # arrastre a los demás de una LISTA). Los dos UPDATE de este método
+        # pertenecen al MISMO acto de custodia sobre el MISMO expediente: si el
+        # segundo fallara, dejar comprometido solo el primero (transferencia
+        # 'recibida' sin expediente 'transferred') sería el estado incoherente
+        # que la atomicidad busca evitar, no una granularidad más fina deseable.
+        async with self._conn.transaction():
+            row = await self._repo.update_estado(
+                transferencia_id,
+                {
+                    "estado": "recibida",
+                    "recibida_at": datetime.now(tz=UTC),
+                    "decidida_por": decidida_por,
+                },
+            )
+            # Congelación: el expediente pasa a transferred (no admite documentos).
+            # `expected_status="closed"` (H3): cierra el `WHERE` de la transición
+            # contra la misma carrera que `ArchiveService.transfer_expediente`.
+            transitioned = await self._archive.transition_expediente(
+                existing["expediente_id"], status="transferred", expected_status="closed"
+            )
+            if transitioned is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "expediente_transition_failed",
+                        "detail": (
+                            "La transición de transferencia no devolvió el "
+                            "expediente actualizado."
+                        ),
+                        "status": 409,
+                    },
+                )
+            # H2: `decidida_por` (X-User-Id, respaldo X-Username — ver
+            # `routers/transferencias.py::_actor`) es la identidad real de quien
+            # recibe la transferencia; antes ni el evento ni el asiento existían.
+            await self._archive.insert_expediente_evento(
+                existing["expediente_id"],
+                numero_expediente=transitioned.code,
+                accion="transferido",
+                comentario=f"firmante={decidida_por}" if decidida_por else None,
+            )
+            # `audit.append` LO ÚLTIMO dentro de la tx (advisory lock del tenant
+            # retenido el mínimo tiempo posible hasta el COMMIT).
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant,
+                service=_SERVICE,
+                action="archive.expediente_transferred",
+                object_type="expediente",
+                object_ref=transitioned.code,
+                actor=decidida_por,
+            )
         return _resp(row)
 
     async def rechazar(
