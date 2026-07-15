@@ -29,6 +29,7 @@ from orpycamcp_common import audit
 from app.core.actor import Actor
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.repositories.archive_repository import ArchiveRepository
+from app.repositories.fisico_repository import FisicoRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.schemas.fisico import FuidResponse
@@ -52,6 +53,16 @@ _VALID = {
     "enviada": {"recibida", "rechazada"},
     "recibida": set(),
     "rechazada": set(),
+}
+
+# H-M (Media, Ley 594/2000 art. 23 -- ciclo vital del documento): fase de
+# archivo esperada en origen/destino según el tipo de transferencia.
+# `ubicacion.tipo_archivo` (migración 010, `gestion|central|historico`) es la
+# FASE de archivo, no un dato de contenido -- se valida en `create()` cuando
+# el cliente aporta el par de ubicaciones.
+_TIPO_ARCHIVO_ESPERADO: dict[str, tuple[str, str]] = {
+    "primaria": ("gestion", "central"),
+    "secundaria": ("central", "historico"),
 }
 
 
@@ -109,21 +120,115 @@ class TransferenciaService:
                         "status": 409,
                     },
                 )
+            # H-M (Media, Ley 594/2000 art. 23 -- ciclo vital): coherencia
+            # origen/destino con el TIPO de transferencia. Regla "ambos o
+            # ninguno": si el cliente aporta topología física, exige el PAR
+            # completo y coherente con la fase de archivo; si no aporta
+            # ninguna, se admite -- E17 (archivo físico) es explícitamente
+            # PARCIAL en el roadmap y no todo tenant tendrá su topología de
+            # `ubicacion` poblada (acoplar E12 a un E17 completo rompería esa
+            # adopción). Lecturas PLANAS de `ubicacion` -- topología física
+            # (fase de archivo), no CONTENIDO del expediente: a diferencia
+            # del FUID, no hay aquí concern de clearance/no-read-up.
+            # Va ANTES de la tx: son solo lecturas, nada que revertir todavía.
+            origen_id = payload.ubicacion_origen_id
+            destino_id = payload.ubicacion_destino_id
+            if (origen_id is None) != (destino_id is None):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "ubicaciones_par_incompleto",
+                        "detail": (
+                            "ubicacion_origen_id y ubicacion_destino_id deben aportarse "
+                            "juntas (traspaso con topología física) o ninguna (sin "
+                            "topología física modelada)"
+                        ),
+                        "status": 422,
+                    },
+                )
+            if origen_id is not None:
+                if origen_id == destino_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "ubicaciones_origen_destino_iguales",
+                            "detail": "ubicacion_origen_id y ubicacion_destino_id no pueden coincidir",
+                            "status": 422,
+                        },
+                    )
+                fisico_repo = FisicoRepository(self._conn, self._tenant)
+                ub_origen = await fisico_repo.get_ubicacion(origen_id)
+                ub_destino = await fisico_repo.get_ubicacion(destino_id)
+                if ub_origen is None or ub_destino is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "ubicacion_not_found",
+                            "detail": "ubicacion_origen_id o ubicacion_destino_id no existe",
+                            "status": 422,
+                        },
+                    )
+                esperado_origen, esperado_destino = _TIPO_ARCHIVO_ESPERADO[payload.tipo]
+                if (
+                    ub_origen["tipo_archivo"] != esperado_origen
+                    or ub_destino["tipo_archivo"] != esperado_destino
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "ubicacion_incoherente_con_tipo",
+                            "detail": (
+                                f"Transferencia '{payload.tipo}' exige origen de tipo "
+                                f"'{esperado_origen}' y destino de tipo '{esperado_destino}' "
+                                "(Ley 594/2000 art. 23, ciclo vital del documento)"
+                            ),
+                            "status": 422,
+                        },
+                    )
             # Atomicidad preparación<->auditoría (mismo patrón que
             # `ArchiveService.create_expediente`): INSERT + evento de hoja de
             # ruta + asiento forense son un único acto de negocio; `audit.append`
             # va LO ÚLTIMO (retiene el advisory lock del tenant el mínimo tiempo).
             async with self._conn.transaction():
-                row = await self._repo.insert(
-                    {
-                        "tipo": payload.tipo,
-                        "expediente_id": payload.expediente_id,
-                        "ubicacion_origen_id": payload.ubicacion_origen_id,
-                        "ubicacion_destino_id": payload.ubicacion_destino_id,
-                        "observacion": payload.observacion,
-                        "creada_por": actor.audit_actor,
-                    }
-                )
+                # H-L (Media, Ac. AGN 001/2024 Tít. 4.4): a lo sumo UNA
+                # transferencia ACTIVA (preparada/enviada) por expediente
+                # (índice único parcial, migración 024). El gate `closed` de
+                # arriba NO cierra la carrera: dos `create()` concurrentes
+                # sobre el mismo expediente pasan ambos ese chequeo -- el
+                # ÍNDICE es quien serializa de verdad. El 2º INSERT viola la
+                # unicidad y se traduce aquí a un 409 limpio, nunca un 500.
+                try:
+                    row = await self._repo.insert(
+                        {
+                            "tipo": payload.tipo,
+                            "expediente_id": payload.expediente_id,
+                            "ubicacion_origen_id": payload.ubicacion_origen_id,
+                            "ubicacion_destino_id": payload.ubicacion_destino_id,
+                            "observacion": payload.observacion,
+                            "creada_por": actor.audit_actor,
+                        }
+                    )
+                except asyncpg.UniqueViolationError as uv:
+                    # Discrimina por CONSTRAINT, no solo por tipo de excepción:
+                    # hoy el único índice único de `transferencias` (aparte del
+                    # PK `id`, inalcanzable con `gen_random_uuid`) es el de H-L,
+                    # pero una unicidad AÑADIDA por una migración futura no debe
+                    # etiquetarse erróneamente como este 409 -- si la violación
+                    # no es la del índice de H-L, se re-lanza el error original
+                    # (mejor un fallo honesto que un mensaje engañoso).
+                    if uv.constraint_name != "ux_transferencias_activa_por_expediente":
+                        raise
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "transferencia_activa_existente",
+                            "detail": (
+                                "Ya existe una transferencia activa (preparada/enviada) "
+                                "para este expediente"
+                            ),
+                            "status": 409,
+                        },
+                    ) from uv
                 await self._archive.insert_expediente_evento(
                     payload.expediente_id,
                     numero_expediente=exp.code,
