@@ -558,6 +558,17 @@ class TransferenciaService:
                             "num_documentos": len(fx.documentos),
                             "algoritmo": "SHA-256",
                         },
+                        # Ancla de la fixity del ACTA en la cadena de hash
+                        # INDELEBLE de `audit_log`: `transferencia_acta` es
+                        # append-only forzado por el motor (migración 023), pero
+                        # -- a diferencia de `audit_log` -- no tiene hash-chain
+                        # propia y su `acta_fuid_sha256` vive en la MISMA fila que
+                        # protege. Anclarlo aquí hace que una manipulación del
+                        # acta que saltara el trigger (sólo un superusuario:
+                        # `DISABLE TRIGGER`/`session_replication_role=replica`,
+                        # mismo caveat que `audit_log`) sea DETECTABLE: el SHA
+                        # encadenado no se puede reescribir sin romper la cadena.
+                        "acta_fuid_sha256": acta_sha,
                     },
                 )
                 await audit.append(
