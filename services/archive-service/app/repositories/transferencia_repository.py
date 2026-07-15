@@ -25,6 +25,15 @@ _COLS = (
     "motivo_rechazo, rechazada_at"
 )
 
+# Migración 022 (E12 H-I): acta de entrega congelada, 1:1 con la transferencia
+# RECIBIDA. Columnas propias -- deliberadamente NO se añaden a `_COLS` (el
+# XML no debe arrastrarse por el hot path de `insert`/`get`/`list`/
+# `update_estado`, ver docstring de la migración).
+_ACTA_COLS = (
+    "transferencia_id, acta_fuid_xml, acta_fuid_sha256, elaborado_por, entregado_por, "
+    "recibido_por, elaborado_at, entregado_at, recibido_at, indice_version, congelada_at"
+)
+
 # Columnas que `update_estado` NUNCA acepta en `assignments`: `estado` tiene su
 # propio parámetro (para que la guarda `expected_estado` quede visible en la
 # firma, no enterrada en un dict libre) y `id` identifica la fila, no un valor
@@ -138,4 +147,29 @@ class TransferenciaRepository:
             f"WHERE id = ${id_idx} AND estado = ${expected_idx} "
             f"RETURNING {_COLS}",
             *params,
+        )
+
+    async def insert_acta(self, data: dict) -> None:
+        """Congela el acta de entrega (E12 H-I): escritura ÚNICA dentro de la
+        MISMA `conn.transaction()` de `TransferenciaService.recibir` -- no hay
+        ruta de `UPDATE` sobre esta tabla en el repositorio (la `PRIMARY KEY`
+        de la migración 022 impide además un segundo `INSERT`), así que el
+        acta es append-only de facto. Sin `RETURNING`: el llamante ya tiene
+        todos los valores que insertó, no necesita releerlos."""
+        await self._sp()
+        cols = list(data.keys())
+        ph = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+        await self._conn.execute(
+            f"INSERT INTO transferencia_acta ({', '.join(cols)}) VALUES ({ph})",
+            *data.values(),
+        )
+
+    async def get_acta(self, transferencia_id: uuid.UUID) -> asyncpg.Record | None:
+        """Devuelve el acta YA CONGELADA -- `None` si la transferencia aún no
+        se recibió (o fue rechazada, que nunca produce acta, ver
+        `TransferenciaService.recibir`)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_ACTA_COLS} FROM transferencia_acta WHERE transferencia_id = $1",
+            transferencia_id,
         )

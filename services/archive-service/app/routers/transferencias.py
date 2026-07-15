@@ -21,6 +21,7 @@ from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
+    TransferenciaActaResponse,
     TransferenciaCreate,
     TransferenciaRechazo,
     TransferenciaResponse,
@@ -147,5 +148,24 @@ async def transferencia_fuid(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FuidResponse:
     return await TransferenciaService(conn, tenant_slug).fuid(
+        transferencia_id, actor.id if actor else None
+    )
+
+
+@router.get(
+    "/{transferencia_id}/acta",
+    response_model=TransferenciaActaResponse,
+    summary="Acta de entrega CONGELADA al recibir (E12 H-I, Ac. AGN 001/2024 Anexo FUID)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def transferencia_acta(
+    transferencia_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    # Lectura, no acto de custodia (RF-SEG-08, mismo gating que `/fuid`):
+    # `optional_actor` no exige `X-User-Id` (anónimo -> clearance PUBLICA).
+    actor: Actor | None = Depends(optional_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> TransferenciaActaResponse:
+    return await TransferenciaService(conn, tenant_slug).acta(
         transferencia_id, actor.id if actor else None
     )

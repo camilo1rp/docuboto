@@ -726,3 +726,187 @@ async def test_recibir_fixity_mismatch_409_no_congela(client_with_conn) -> None:
     assert any(a[5] == "archive.transferencia_recibida_failed" for a in audit_calls)
     # El expediente NUNCA se congeló: ni evento ni asiento de la transición.
     assert not any(a[5] == "archive.expediente_transferred" for a in audit_calls)
+
+
+# ---------------------------------------------------------------------------
+# H-I (E12, Ac. AGN 001/2024 Anexo FUID; Ley 594/2000 arts. 15/26): el FUID se
+# congela como ACTA DE ENTREGA dentro de la MISMA tx de `recibir()` -- ya NO
+# se regenera al vuelo. `GET /{id}/acta` sirve ESE snapshot, con no-read-up
+# (mismo criterio de contenido que `fuid()`).
+# ---------------------------------------------------------------------------
+
+
+def _acta_row(**kw) -> dict:
+    base = {
+        "transferencia_id": uuid.uuid4(),
+        "acta_fuid_xml": "<fuid/>",
+        "acta_fuid_sha256": "a" * 64,
+        "elaborado_por": str(USER_ID),
+        "entregado_por": str(USER_ID),
+        "recibido_por": str(USER_ID),
+        "elaborado_at": NOW,
+        "entregado_at": NOW,
+        "recibido_at": NOW,
+        "indice_version": 0,
+        "congelada_at": NOW,
+    }
+    base.update(kw)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_recibir_congela_acta_de_entrega(client_with_conn) -> None:
+    """H-I: `recibir()` inserta en `transferencia_acta` DENTRO de la tx --
+    los tres responsables vienen de las columnas YA fijadas de la fila
+    (`creada_por`/`enviada_por`/`decidida_por`, nunca de un valor
+    recalculado), `indice_version` es `fx.version` (resuelto por `fixity()`
+    en la MISMA tx, sin consulta extra) y `congelada_at` es el `generado_ts`
+    del FUID -- el mismo instante embebido en `acta_fuid_xml` sobre el que se
+    calculó `acta_fuid_sha256` (ya no `now()` recalculado aparte)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="enviada",
+            creada_por="creador-uuid",
+            enviada_por="remitente-uuid",
+        ),
+        _indice_row(),  # gate `firmado`, FUERA de la tx
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),  # fixity()
+        _indice_row(),  # fixity(): _row_or_404 -> get_current (version=0)
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            recibida_at=NOW,
+            decidida_por=str(USER_ID),
+        ),
+        make_expediente_record(exp_id=exp_id, exp_status="transferred"),
+    ]
+    mock_conn.fetch.return_value = []  # _get_radicados / get_items / fuid_inventory
+
+    resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    acta_call = next(
+        c
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO transferencia_acta" in c.args[0]
+    )
+    cols = acta_call.args[0].split("(", 2)[1].split(")", 1)[0].split(", ")
+    data = dict(zip(cols, acta_call.args[1:]))
+
+    assert data["transferencia_id"] == tid
+    assert data["elaborado_por"] == "creador-uuid"
+    assert data["entregado_por"] == "remitente-uuid"
+    assert data["recibido_por"] == str(USER_ID)
+    assert data["recibido_at"] == NOW
+    assert data["indice_version"] == 0
+    assert data["acta_fuid_xml"].startswith("<")
+    assert len(data["acta_fuid_sha256"]) == 64
+    # sha256 real del XML congelado -- no un valor cualquiera.
+    assert data["acta_fuid_sha256"] == hashlib.sha256(
+        data["acta_fuid_xml"].encode("utf-8")
+    ).hexdigest()
+    # `congelada_at` == el `generado` embebido en el propio XML.
+    assert data["congelada_at"].isoformat() in data["acta_fuid_xml"]
+
+
+@pytest.mark.asyncio
+async def test_transferencia_acta_get_after_recibir(client_with_conn) -> None:
+    """`GET /acta` sirve el snapshot YA CONGELADO (`repo.get_acta`), NUNCA lo
+    regenera: secuencia `repo.get(transferencia)` -> `caller_clearance` ->
+    `get_expediente_by_id` (no-read-up) -> `repo.get_acta`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="recibida"),
+        None,  # caller_clearance: usuario no resoluble -> PUBLICA(1)
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+    ]
+    mock_conn.fetch.return_value = []  # _get_radicados
+
+    resp = await client.get(f"/api/v1/transferencias/{tid}/acta", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["transferencia_id"] == str(tid)
+    assert body["expediente_id"] == str(exp_id)
+    assert body["acta_fuid_sha256"] == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_transferencia_acta_aun_no_congelada_404(client_with_conn) -> None:
+    """Una transferencia que el llamante SÍ puede leer pero que aún no fue
+    `recibida` (o fue `rechazada`, que nunca produce acta) responde 404
+    `acta_not_found` -- distinto del 404 de no-read-up."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        None,  # repo.get_acta -> aún no congelada
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(f"/api/v1/transferencias/{tid}/acta", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "acta_not_found"
+
+
+@pytest.mark.asyncio
+async def test_transferencia_acta_no_read_up_404(client_with_conn) -> None:
+    """RF-SEG-08: el acta es CONTENIDO del expediente (asunto/serie/signatura
+    embebidos en `acta_fuid_xml`), no un acto de custodia -- un llamante sin
+    clearance suficiente sobre un expediente CLASIFICADA(3) recibe 404
+    `expediente_not_found`, sin llegar siquiera a `repo.get_acta` (mismo
+    criterio que `fuid()`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="recibida"),
+        None,  # caller_clearance -> PUBLICA(1)
+        None,  # get_expediente_by_id: nivel_seguridad real no casa -> None
+    ]
+    resp = await client.get(f"/api/v1/transferencias/{tid}/acta", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "expediente_not_found"
+
+
+@pytest.mark.asyncio
+async def test_transferencia_acta_transferencia_not_found_before_clearance(
+    client_with_conn,
+) -> None:
+    """El 404 `transferencia_not_found` se resuelve ANTES que el no-read-up:
+    una transferencia inexistente nunca llega a resolver clearance."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = None
+    resp = await client.get(
+        f"/api/v1/transferencias/{uuid.uuid4()}/acta", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "transferencia_not_found"
+
+
+@pytest.mark.asyncio
+async def test_transferencia_acta_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        f"/api/v1/transferencias/{uuid.uuid4()}/acta", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"

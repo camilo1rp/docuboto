@@ -69,3 +69,27 @@ class TransferenciaResponse(BaseModel):
     # `enviada_at`/`recibida_at`.
     motivo_rechazo: str | None = None
     rechazada_at: datetime | None = None
+
+
+class TransferenciaActaResponse(BaseModel):
+    """Acta de entrega CONGELADA (E12 H-I, Ac. AGN 001/2024 Anexo FUID) --
+    devuelta tal cual se escribió al recibir la transferencia, nunca
+    regenerada (ver `TransferenciaService.acta`). Los tres responsables
+    (`elaborado_por`/`entregado_por`/`recibido_por`) son el snapshot de las
+    columnas de identidad de `transferencias` en el instante del traspaso."""
+
+    transferencia_id: uuid.UUID
+    expediente_id: uuid.UUID
+    acta_fuid_xml: str
+    acta_fuid_sha256: str
+    elaborado_por: str | None
+    entregado_por: str | None
+    recibido_por: str | None
+    elaborado_at: datetime | None
+    entregado_at: datetime | None
+    recibido_at: datetime
+    # H-H (parcial): versión del índice electrónico pinneada dentro de la tx
+    # de recepción (`fx.version`) -- el pin completo (`indice_firma_id` +
+    # validación) queda diferido en roadmap.
+    indice_version: int | None = None
+    congelada_at: datetime

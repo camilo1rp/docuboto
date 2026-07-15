@@ -249,13 +249,23 @@ class FisicoService:
         trd_serie_id: uuid.UUID | None,
         expediente_id: uuid.UUID | None = None,
         user_id: uuid.UUID | None = None,
+        max_clearance: int | None = None,
     ) -> FuidResponse:
         # No-read-up (RF-SEG-08): el FUID expone asunto/serie/signatura del
         # expediente — es contenido, no metadato de custodia (defensa en
         # profundidad; `TransferenciaService.fuid` ya aplica un 404 total
         # aguas arriba para la puerta single-expediente, pero las puertas
         # multi-expediente de `fisico.py` solo tienen este filtro por fila).
-        max_clearance = await self._archive.caller_clearance(user_id)
+        #
+        # `max_clearance` (E12 H-I): por defecto `None` -- la ruta VIVA
+        # (llamante humano vía `fuid()`/`generate_fuid_xml`) resuelve el
+        # clearance REAL de `user_id`, sin cambios de comportamiento. Un
+        # llamante interno que congela el acta de entrega en un acto de
+        # CUSTODIA (`TransferenciaService.recibir`, ortogonal a lectura --
+        # mismo criterio que `fixity`, `core.clearance` bloque (c)) pasa
+        # `CLEARANCE_SIN_RESTRICCION` explícito, sin resolver `caller_clearance`.
+        if max_clearance is None:
+            max_clearance = await self._archive.caller_clearance(user_id)
         rows = await self._repo.fuid_inventory(
             ubicacion_id=ubicacion_id,
             trd_serie_id=trd_serie_id,

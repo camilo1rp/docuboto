@@ -17,6 +17,7 @@ ya no admite documentos). El FUID (E17) acompaña la transferencia como entregab
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -32,11 +33,14 @@ from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
+    TransferenciaActaResponse,
     TransferenciaCreate,
     TransferenciaRechazo,
     TransferenciaResponse,
 )
-from app.services.fisico_service import FisicoService
+# `_fuid_to_xml` (E12 H-I): reusada TAL CUAL, sin duplicar la serialización
+# canónica (C14N) -- es el mismo cuerpo que congela el acta de entrega.
+from app.services.fisico_service import FisicoService, _fuid_to_xml
 from app.services.index_service import IndexService
 
 logger = logging.getLogger(__name__)
@@ -317,7 +321,11 @@ class TransferenciaService:
         `actor` (H-D): identidad unívoca de quien recibe -- `Actor.id` puebla
         `expediente_eventos.actor` (antes NULL, H-E) y `Actor.audit_actor`
         puebla `transferencias.decidida_por`/`audit_log.actor` (antes podía
-        ser un username, H-D)."""
+        ser un username, H-D).
+
+        H-I: también congela el ACTA DE ENTREGA (FUID, Ac. AGN 001/2024 Anexo
+        FUID) en `transferencia_acta`, dentro de esta MISMA tx -- ver
+        `TransferenciaService.acta` para su lectura (no-read-up)."""
         existing: asyncpg.Record | None = None
         # Detalle por-documento de una fixity fallida: se captura aquí para el
         # asiento forense indeleble (`*_failed`), NUNCA para la respuesta HTTP
@@ -466,6 +474,55 @@ class TransferenciaService:
                         else None,
                         "status_anterior": "closed",
                     },
+                )
+                # H-I (Ac. AGN 001/2024 Anexo FUID; Ley 594/2000 arts. 15/26):
+                # el FUID es el INSTRUMENTO FORMAL de la entrega -- se congela
+                # AQUÍ, dentro de la MISMA tx que la fixity y la congelación
+                # del expediente, para que el acta atestigüe lo efectivamente
+                # entregado/recibido en ESTE instante, no un estado posterior
+                # regenerado al vuelo (antes `TransferenciaService.fuid` lo
+                # generaba con `generado_ts=now()` sobre el estado ACTUAL,
+                # perdiendo su valor de acta tan pronto el expediente se
+                # tocara de nuevo). `max_clearance=CLEARANCE_SIN_RESTRICCION`
+                # (custodia, ortogonal a lectura -- mismo criterio que `fixity`
+                # arriba): un archivista de depósito que recibe legítimamente
+                # un expediente reservado que no puede LEER debe poder
+                # producir el acta del traspaso.
+                fuid = await FisicoService(self._conn, self._tenant).generate_fuid(
+                    ubicacion_id=None,
+                    trd_serie_id=None,
+                    expediente_id=existing["expediente_id"],
+                    max_clearance=CLEARANCE_SIN_RESTRICCION,
+                )
+                acta_xml = _fuid_to_xml(fuid)
+                acta_sha = hashlib.sha256(acta_xml.encode("utf-8")).hexdigest()
+                await self._repo.insert_acta(
+                    {
+                        "transferencia_id": transferencia_id,
+                        "acta_fuid_xml": acta_xml,
+                        "acta_fuid_sha256": acta_sha,
+                        # Tres responsables del Anexo FUID: snapshot de las
+                        # columnas de identidad YA fijadas de `transferencias`
+                        # (Elaborado=`creada_por`, Entregado=`enviada_por`,
+                        # Recibido=`row["decidida_por"]` -- el UPDATE de
+                        # arriba, no `actor.audit_actor` directo, para que el
+                        # acta lea SIEMPRE de la fila persistida).
+                        "elaborado_por": existing["creada_por"],
+                        "entregado_por": existing["enviada_por"],
+                        "recibido_por": row["decidida_por"],
+                        "elaborado_at": existing["created_at"],
+                        "entregado_at": existing["enviada_at"],
+                        "recibido_at": row["recibida_at"],
+                        # H-H (parcial, gratis): `fx.version` ya lo resolvió
+                        # `fixity()` DENTRO de esta misma tx (mismo `row` de
+                        # `expediente_indice` cuya huella se comparó) -- sin
+                        # consulta extra ni TOCTOU frente a la fixity congelada.
+                        "indice_version": fx.version,
+                        # = el `generado` embebido en `acta_xml` (mismo
+                        # instante sobre el que se calculó `acta_sha`) -- ya
+                        # NO se regenera al vuelo con `now()`.
+                        "congelada_at": fuid.generado_ts,
+                    }
                 )
                 # `audit.append` LO ÚLTIMO dentro de la tx -- DOS asientos porque
                 # el acto muta DOS objetos (transferencia + expediente); dejar
@@ -705,3 +762,61 @@ class TransferenciaService:
             expediente_id=row["expediente_id"],
             user_id=user_id,
         )
+
+    async def acta(
+        self, transferencia_id: uuid.UUID, user_id: uuid.UUID | None = None
+    ) -> TransferenciaActaResponse:
+        """Devuelve el ACTA DE ENTREGA ya CONGELADA (E12 H-I) -- NUNCA la
+        regenera; a diferencia de `fuid()` (que sí genera al vuelo sobre el
+        estado ACTUAL), esta lectura sirve el snapshot escrito por `recibir()`
+        dentro de su tx.
+
+        No-read-up (RF-SEG-08, mismo patrón que `fuid()`): el acta expone
+        asunto/serie/signatura del expediente (Ley 1712/2014 arts. 18-19; Ley
+        594/2000 art. 27) -- CONTENIDO, no metadato de custodia -- así que la
+        LECTURA aplica el clearance REAL del llamante. Orden fail-closed
+        deliberado: primero el no-read-up sobre el EXPEDIENTE (404 total,
+        indistinguible de inexistente, a quien no puede leerlo), y solo
+        DESPUÉS la existencia del acta -- así un no-lector nunca distingue
+        "expediente inexistente" de "expediente reservado sin acta todavía",
+        que sí sería un oráculo nuevo sobre el ciclo de vida."""
+        row = await self._repo.get(transferencia_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "transferencia_not_found",
+                    "detail": str(transferencia_id),
+                    "status": 404,
+                },
+            )
+        caller_clearance = await self._archive.caller_clearance(user_id)
+        exp = await self._archive.get_expediente_by_id(
+            row["expediente_id"], max_clearance=caller_clearance
+        )
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "status": 404,
+                },
+            )
+        acta = await self._repo.get_acta(transferencia_id)
+        if acta is None:
+            # Un lector legítimo YA sabe por `GET /{id}` que la transferencia
+            # no está 'recibida' (o fue 'rechazada', que nunca produce acta)
+            # -- este 404 no abre un oráculo nuevo para quien sí puede leer.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "acta_not_found",
+                    "detail": (
+                        "La transferencia aún no tiene acta de entrega "
+                        "(se congela al recibirla)"
+                    ),
+                    "status": 404,
+                },
+            )
+        return TransferenciaActaResponse(**dict(acta), expediente_id=row["expediente_id"])
