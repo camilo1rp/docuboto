@@ -14,14 +14,15 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
+from app.core.actor import Actor, optional_actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
     TransferenciaCreate,
-    TransferenciaDecision,
+    TransferenciaRechazo,
     TransferenciaResponse,
 )
 from app.services.transferencia_service import TransferenciaService
@@ -42,32 +43,6 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _actor(request: Request) -> str | None:
-    return request.headers.get("X-Username") or request.headers.get("X-User-Id")
-
-
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
-
-    Gemelo de `expedientes.py::_optional_user`: usado en el FUID de la
-    transferencia (`/{id}/fuid`), que expone asunto/serie/signatura del
-    expediente — contenido, no metadato de custodia.
-    """
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "X-User-Id must be a valid UUID",
-                "status": 400,
-            },
-        )
-
-
 @router.post(
     "",
     response_model=TransferenciaResponse,
@@ -76,11 +51,11 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
 )
 async def create_transferencia(
     payload: TransferenciaCreate,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaResponse:
-    return await TransferenciaService(conn, tenant_slug).create(payload, _actor(request))
+    return await TransferenciaService(conn, tenant_slug).create(payload, actor)
 
 
 @router.get(
@@ -118,9 +93,14 @@ async def get_transferencia(
 async def enviar(
     transferencia_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    # H-C: antes este handler ni siquiera declaraba la identidad del llamante
+    # -- un acto de custodia (remisión) quedaba sin responsable posible en la
+    # hoja de ruta/audit_log pese a que `require_permission(min_crud=3)` YA
+    # exige `X-User-Id` para autorizar la operación.
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaResponse:
-    return await TransferenciaService(conn, tenant_slug).enviar(transferencia_id)
+    return await TransferenciaService(conn, tenant_slug).enviar(transferencia_id, actor)
 
 
 @router.post(
@@ -130,11 +110,11 @@ async def enviar(
 )
 async def recibir(
     transferencia_id: uuid.UUID,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaResponse:
-    return await TransferenciaService(conn, tenant_slug).recibir(transferencia_id, _actor(request))
+    return await TransferenciaService(conn, tenant_slug).recibir(transferencia_id, actor)
 
 
 @router.post(
@@ -144,14 +124,12 @@ async def recibir(
 )
 async def rechazar(
     transferencia_id: uuid.UUID,
-    payload: TransferenciaDecision,
-    request: Request,
+    payload: TransferenciaRechazo,
     tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaResponse:
-    return await TransferenciaService(conn, tenant_slug).rechazar(
-        transferencia_id, payload, _actor(request)
-    )
+    return await TransferenciaService(conn, tenant_slug).rechazar(transferencia_id, payload, actor)
 
 
 @router.get(
@@ -163,7 +141,11 @@ async def rechazar(
 async def transferencia_fuid(
     transferencia_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
-    user_id: uuid.UUID | None = Depends(_optional_user),
+    # Lectura, no acto de custodia (RF-SEG-08 bloque (b) de `core/clearance.py`):
+    # `optional_actor` no exige `X-User-Id` (anónimo -> clearance PUBLICA).
+    actor: Actor | None = Depends(optional_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FuidResponse:
-    return await TransferenciaService(conn, tenant_slug).fuid(transferencia_id, user_id)
+    return await TransferenciaService(conn, tenant_slug).fuid(
+        transferencia_id, actor.id if actor else None
+    )

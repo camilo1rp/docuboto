@@ -323,6 +323,25 @@ class IndiceVerifyDoc(BaseModel):
     coincide: bool
 
 
+class IndiceFixityResult(BaseModel):
+    """Fixity PURA-BD del índice electrónico (E12 H-G): compara
+    `documentos[].coincide` (huella de cada documento vigente/excluido vs su
+    `content_hash` actual) y `huella_indice_ok` (re-hash de la fila del
+    índice) -- SIN verificación de firma (HTTP) y sin gate de lectura cuando
+    `IndexService.fixity` se invoca con `CLEARANCE_SIN_RESTRICCION`.
+
+    Reutilizado por `IndexService.verify` (con el clearance real del
+    llamante) y por `TransferenciaService.recibir` (acto de custodia
+    ortogonal al clearance de lectura, `core.clearance` bloque (c)) -- un
+    único sitio para la comparación de huellas evita que ambos consumidores
+    diverjan si cambia el algoritmo o la semántica de exclusión."""
+
+    version: int
+    documentos: list[IndiceVerifyDoc]
+    documentos_ok: bool
+    huella_indice_ok: bool
+
+
 class IndiceVerifyFirma(BaseModel):
     presente: bool
     valida: bool

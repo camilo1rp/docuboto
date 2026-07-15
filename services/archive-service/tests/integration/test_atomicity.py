@@ -21,6 +21,7 @@ Carril de integración (`RUN_INTEGRATION=1`, ver `conftest.py`). Usa los fixture
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from datetime import UTC, date, datetime
 
@@ -31,6 +32,7 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
+from app.core.actor import Actor
 from app.core.database import tenant_schema
 from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
@@ -41,7 +43,7 @@ from app.schemas.archive import (
     TrdSerieCreate,
 )
 from app.schemas.batch import BatchExpedienteCreate, BatchExpedientesRequest
-from app.schemas.transferencia import TransferenciaCreate
+from app.schemas.transferencia import TransferenciaCreate, TransferenciaRechazo, TransferenciaResponse
 from app.services.archive_service import ArchiveService
 from app.services.batch_service import BatchArchiveService
 from app.services.transferencia_service import TransferenciaService
@@ -1012,7 +1014,9 @@ async def test_close_expediente_concurrent_double_close_exactly_one_wins(
 # ---------------------------------------------------------------------------
 
 
-async def _seed_transferencia_lista_para_recibir(conn: asyncpg.Connection, slug: str, name: str):
+async def _seed_transferencia_lista_para_recibir(
+    conn: asyncpg.Connection, slug: str, name: str, actor: Actor | None = None
+):
     """Deja un expediente 'closed' con índice 'firmado' y una transferencia
     'enviada' sobre él -- la precondición exacta de `TransferenciaService.recibir`.
 
@@ -1020,6 +1024,7 @@ async def _seed_transferencia_lista_para_recibir(conn: asyncpg.Connection, slug:
     en `test_transfer_expediente_*`, ver 'compromises'): no hay sellado XAdES-B
     real ni tráfico HTTP a signature-service en este tier.
     """
+    actor = actor or Actor(id=uuid.uuid4(), username="itest-seed")
     schema = tenant_schema(slug)
     archive = ArchiveService(conn, slug)
     created = await archive.create_expediente(
@@ -1034,9 +1039,9 @@ async def _seed_transferencia_lista_para_recibir(conn: asyncpg.Connection, slug:
     )
     transferencia = TransferenciaService(conn, slug)
     resp = await transferencia.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), creada_por=None
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
     )
-    await transferencia.enviar(resp.id)
+    await transferencia.enviar(resp.id, actor)
     return created, resp
 
 
@@ -1062,8 +1067,9 @@ async def test_transferencia_recibir_rollback_reverts_transferencia_and_expedien
     )
 
     service = TransferenciaService(conn, slug)
+    actor = Actor(id=uuid.uuid4(), username="itest-user")
     with pytest.raises(asyncpg.exceptions.CheckViolationError):
-        await service.recibir(transferencia.id, decidida_por="itest-user")
+        await service.recibir(transferencia.id, actor)
 
     # Verificación post-rollback desde una SEGUNDA conexión: los DOS lados del
     # gemelo revierten JUNTOS -- antes eran dos UPDATE en autocommit que
@@ -1115,9 +1121,9 @@ async def test_transferencia_recibir_commits_transferencia_and_expediente_with_a
         conn, slug, "itest recibir OK"
     )
 
-    decidida_por = f"itest-user-{uuid.uuid4()}"
+    actor = Actor(id=uuid.uuid4(), username="itest-user-recibe")
     service = TransferenciaService(conn, slug)
-    result = await service.recibir(transferencia.id, decidida_por=decidida_por)
+    result = await service.recibir(transferencia.id, actor)
     assert result.estado == "recibida"
 
     second_conn = await asyncpg.connect(dsn=DSN)
@@ -1152,8 +1158,289 @@ async def test_transferencia_recibir_commits_transferencia_and_expediente_with_a
     assert transferencia_estado == "recibida"
     assert expediente_status == "transferred"
     assert transferred_audit_row is not None
-    assert transferred_audit_row["actor"] == decidida_por
+    # H-D: el actor escrito es SIEMPRE `Actor.audit_actor` (el UUID como
+    # string) -- nunca el username, aunque `actor.username` esté poblado.
+    assert transferred_audit_row["actor"] == actor.audit_actor
     assert evento_transferido == 1
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# (ii.c) H-G (E12, Ac. AGN 001/2024 Tít. 4.4; Ley 594/2000 art. 16; ISO
+# 16363): `recibir()` ya no confía SOLO en `estado='firmado'` -- re-verifica
+# la FIXITY del acervo (huella de cada documento vigente + re-hash de la fila
+# del índice) DENTRO de la misma `conn.transaction()` que congela el
+# expediente. A diferencia de `_seed_transferencia_lista_para_recibir` (sin
+# documentos, fixity vacuamente verdadera), este helper deja un radicado
+# VINCULADO real -- la comparación de huellas se ejercita de verdad.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_transferencia_lista_para_recibir_con_documento(
+    conn: asyncpg.Connection,
+    slug: str,
+    name: str,
+    actor: Actor | None = None,
+    *,
+    nivel_seguridad: int = 1,
+):
+    """Como `_seed_transferencia_lista_para_recibir`, pero con UN radicado
+    VINCULADO (huella real capturada en el índice firmado) -- precondición
+    para ejercitar `IndexService.fixity` (E12 H-G) sobre un acervo no vacío.
+
+    Devuelve ``(created, transferencia, radicado_id, content_hash_original)``.
+    """
+    actor = actor or Actor(id=uuid.uuid4(), username="itest-seed-fixity")
+    schema = tenant_schema(slug)
+    archive = ArchiveService(conn, slug)
+    # M3 (no-write-up, RF-SEG-08): `create_expediente` exige que quien ABRE
+    # tenga clearance >= `nivel_seguridad` -- `opened_by=None` resuelve
+    # SIEMPRE a PUBLICA(1) (`resolve_caller_clearance`), y este tenant
+    # desechable no tiene `auth_users`/`role_clearance` provisionados para
+    # simular un actor con clearance CLASIFICADA. Se crea PUBLICA(1) (acto
+    # que este helper no ejercita) y, si se pidió un nivel superior, se
+    # reclasifica DIRECTO en BD -- fuera del acto de creación, sin pasar por
+    # el gate M3 que no es lo que este test verifica.
+    created = await archive.create_expediente(
+        payload=ExpedienteCreate(name=name, nivel_seguridad=1),
+        opened_by=None,
+    )
+    if nivel_seguridad != 1:
+        await conn.execute(
+            f'UPDATE "{schema}".expedientes SET nivel_seguridad = $2 WHERE id = $1',
+            created.id,
+            nivel_seguridad,
+        )
+    radicado_id = uuid.uuid4()
+    content_hash = hashlib.sha256(f"{radicado_id}-contenido-original".encode()).hexdigest()
+    await archive.link_radicado(
+        created.id,
+        RadicadoLink(
+            radicado_id=radicado_id,
+            tracking_number="2026-ITEST-E-000001",
+            content_hash=content_hash,
+        ),
+        user_id=None,
+    )
+    await archive.close_expediente(created.id)
+    await conn.execute(
+        f'UPDATE "{schema}".expediente_indice SET estado = \'firmado\', firma_id = $2 '
+        "WHERE expediente_id = $1 AND estado <> 'firmado'",
+        created.id,
+        uuid.uuid4(),
+    )
+    transferencia = TransferenciaService(conn, slug)
+    resp = await transferencia.create(
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+    )
+    await transferencia.enviar(resp.id, actor)
+    return created, resp, radicado_id, content_hash
+
+
+@pytest.mark.integration
+async def test_transferencia_recibir_fixity_intacta_congela_expediente(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """H-G camino feliz: índice firmado + acervo INTACTO -- `recibir()`
+    congela el expediente y el asiento de éxito lleva la atestación de
+    fixity (base PREMIS, E12 H-G/d)."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia, _radicado_id, _hash = (
+        await _seed_transferencia_lista_para_recibir_con_documento(conn, slug, "itest fixity OK")
+    )
+
+    actor = Actor(id=uuid.uuid4(), username="itest-recibe-fixity-ok")
+    service = TransferenciaService(conn, slug)
+    result = await service.recibir(transferencia.id, actor)
+    assert result.estado == "recibida"
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+        recibida_row = await second_conn.fetchrow(
+            "SELECT payload FROM public.audit_log "
+            "WHERE tenant_slug = $1 AND action = $2 AND object_ref = $3",
+            slug,
+            "archive.transferencia_recibida",
+            str(transferencia.id),
+        )
+    finally:
+        await second_conn.close()
+
+    assert expediente_status == "transferred"
+    assert recibida_row is not None
+    payload = (
+        json.loads(recibida_row["payload"])
+        if isinstance(recibida_row["payload"], str)
+        else recibida_row["payload"]
+    )
+    # El bloque `fixity` (H-G/d) queda capturado en el asiento de ÉXITO --
+    # atestación de que la comparación de huellas se ejecutó y pasó.
+    assert payload["fixity"]["documentos_ok"] is True
+    assert payload["fixity"]["huella_indice_ok"] is True
+    assert payload["fixity"]["num_documentos"] == 1
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+@pytest.mark.integration
+async def test_transferencia_recibir_fixity_mismatch_revierte_sin_congelar(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """H-G mismatch: el radicado se ALTERA (content_hash actual distinto de la
+    huella capturada en el índice firmado) DESPUÉS de la firma -- `recibir()`
+    debe rechazar con 409 `fixity_mismatch` y NO congelar el expediente. Se
+    verifica la REVERSIÓN real desde una SEGUNDA conexión (no solo el status
+    code de la excepción): la transferencia SIGUE 'enviada', el expediente
+    SIGUE 'closed', sin asiento de éxito, y con `transferencia_recibida_failed`
+    (motivo='fixity_mismatch')."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia, radicado_id, _original_hash = (
+        await _seed_transferencia_lista_para_recibir_con_documento(
+            conn, slug, "itest fixity mismatch"
+        )
+    )
+
+    # Alteración POSTERIOR a la firma del índice: simula un documento
+    # sustituido/corrompido entre el cierre y esta recepción -- el
+    # `content_hash` ACTUAL del vínculo ya no coincide con `valor_huella`
+    # capturado en `expediente_indice_item` al firmar.
+    tampered_hash = hashlib.sha256(b"contenido-alterado-tras-firma").hexdigest()
+    await conn.execute(
+        f'UPDATE "{schema}".expediente_radicados SET content_hash = $2 '
+        "WHERE expediente_id = $1 AND radicado_id = $3",
+        created.id,
+        tampered_hash,
+        radicado_id,
+    )
+
+    actor = Actor(id=uuid.uuid4(), username="itest-recibe-fixity-mismatch")
+    service = TransferenciaService(conn, slug)
+    with pytest.raises(HTTPException) as exc_info:
+        await service.recibir(transferencia.id, actor)
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"] == "fixity_mismatch"
+    # Redacción custodia-vs-contenido: la respuesta al actor de custodia lleva
+    # solo un CONTEO, NUNCA la enumeración de radicados alterados de un
+    # expediente que podría no poder leer (hallazgo #1 del auditor de seguridad).
+    assert "documentos_fallidos" not in exc_info.value.detail
+    assert exc_info.value.detail["num_documentos_fallidos"] == 1
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencia_estado = await second_conn.fetchval(
+            f'SELECT estado FROM "{schema}".transferencias WHERE id = $1', transferencia.id
+        )
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+        recibida_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_recibida",
+        )
+        transferred_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.expediente_transferred",
+        )
+        failed_row = await second_conn.fetchrow(
+            "SELECT payload FROM public.audit_log "
+            "WHERE tenant_slug = $1 AND action = $2 AND object_ref = $3",
+            slug,
+            "archive.transferencia_recibida_failed",
+            str(transferencia.id),
+        )
+    finally:
+        await second_conn.close()
+
+    # El corazón del test: NI la transferencia NI el expediente avanzaron --
+    # sin congelación a medias pese a la excepción.
+    assert transferencia_estado == "enviada"
+    assert expediente_status == "closed"
+    assert recibida_audit == 0
+    assert transferred_audit == 0
+    assert failed_row is not None
+    failed_payload = (
+        json.loads(failed_row["payload"])
+        if isinstance(failed_row["payload"], str)
+        else failed_row["payload"]
+    )
+    assert failed_payload["motivo"] == "fixity_mismatch"
+    # El detalle forense (los UUIDs) SÍ vive en el registro indeleble, cuya
+    # lectura exige permiso de auditoría -- traza completa sin fuga en el 409.
+    assert failed_payload["documentos_fallidos"] == [str(radicado_id)]
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+@pytest.mark.integration
+async def test_transferencia_recibir_fixity_ortogonal_a_clearance_lectura(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """H-G ortogonalidad de clearance: un archivista SIN clearance de LECTURA
+    sobre un expediente CLASIFICADA(3) puede recibir su transferencia
+    igualmente -- la fixity de `recibir()` usa
+    `CLEARANCE_SIN_RESTRICCION` (custodia, ortogonal a lectura, `core.
+    clearance` bloque (c)) y NO debe imponer no-read-up.
+
+    Se blinda con el contraste explícito: invocar `IndexService.fixity`
+    directamente con el clearance REAL de un lector sin permisos (PUBLICA=1,
+    sin membership RBAC en este tenant desechable) sobre el MISMO expediente
+    SÍ aplica no-read-up (404) -- si `recibir()` alguna vez empezara a
+    resolver el clearance real del actor en vez de pasar
+    `CLEARANCE_SIN_RESTRICCION` explícitamente, este test lo detectaría."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia, _radicado_id, _hash = (
+        await _seed_transferencia_lista_para_recibir_con_documento(
+            conn, slug, "itest fixity clasificada", nivel_seguridad=3
+        )
+    )
+
+    from app.core.clearance import PUBLICA
+    from app.services.index_service import IndexService
+
+    # Contraste: con el clearance REAL de un lector sin acceso, la MISMA
+    # comparación de fixity SÍ es no-read-up (esto es lo que `recibir()`
+    # deliberadamente NO hace).
+    index_service = IndexService(conn, slug)
+    with pytest.raises(HTTPException) as exc_info:
+        await index_service.fixity(created.id, version=None, max_clearance=PUBLICA)
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"] == "expediente_not_found"
+
+    # `recibir()` (acto de custodia) SÍ recibe la transferencia pese al
+    # mismo expediente CLASIFICADA(3) y un actor sin ninguna clearance de
+    # lectura resuelta -- 0 filas RBAC provisionadas para este `actor.id`
+    # en el tenant desechable.
+    actor = Actor(id=uuid.uuid4(), username="itest-archivista-sin-clearance-lectura")
+    service = TransferenciaService(conn, slug)
+    result = await service.recibir(transferencia.id, actor)
+    assert result.estado == "recibida"
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+    finally:
+        await second_conn.close()
+    assert expediente_status == "transferred"
 
     ok, broken_id = await audit.verify_chain(conn, slug)
     assert ok is True
@@ -1682,6 +1969,723 @@ async def test_transfer_expediente_denied_still_open_audits_failure_and_chain_st
     payload = json.loads(payload) if isinstance(payload, str) else payload
     assert payload["status_actual"] == "open"
     assert payload["motivo"] == "invalid_status_transition"
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# E12 -- H-A (guarda TOCTOU en `TransferenciaRepository.update_estado`), H-B
+# (auditoría de create/enviar/rechazar), H-D (identidad unificada) y H-E
+# (hoja de ruta con `actor` UUID no nulo) contra Postgres REAL.
+#
+# Helpers de seed compartidos por esta tanda.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_expediente_closed(
+    conn: asyncpg.Connection, slug: str, name: str
+) -> ExpedienteDisposicionResult:
+    """Expediente 'closed' sin exigir índice firmado -- precondición de
+    `create()`/`enviar()`/`rechazar()` (a diferencia de `recibir()`, ninguno
+    de los tres valida el estado del índice electrónico)."""
+    archive = ArchiveService(conn, slug)
+    created = await archive.create_expediente(
+        payload=ExpedienteCreate(name=name, nivel_seguridad=1), opened_by=None
+    )
+    await archive.close_expediente(created.id)
+    return created
+
+
+async def _seed_transferencia_preparada(
+    conn: asyncpg.Connection,
+    slug: str,
+    name: str,
+    actor: Actor | None = None,
+    *,
+    observacion: str | None = None,
+):
+    """Expediente 'closed' + transferencia 'preparada' -- precondición de
+    `enviar()`/`rechazar()` cuando el test necesita partir de un estado
+    posterior a `create()`.
+
+    `observacion` (H-K): dato de PREPARACIÓN opcional -- distinto del
+    `motivo` de un rechazo posterior, para que un test de `rechazar()` pueda
+    comprobar que NO se pisa (a diferencia del comportamiento previo a H-K,
+    donde `payload.observacion or existing["observacion"]` sí lo hacía)."""
+    actor = actor or Actor(id=uuid.uuid4(), username="itest-seed-preparada")
+    created = await _seed_expediente_closed(conn, slug, name)
+    transferencia = TransferenciaService(conn, slug)
+    resp = await transferencia.create(
+        TransferenciaCreate(
+            tipo="primaria", expediente_id=created.id, observacion=observacion
+        ),
+        actor,
+    )
+    return created, resp
+
+
+async def _labeled(label: str, coro):
+    """Envuelve una corrutina de acto de custodia para `asyncio.gather`:
+    devuelve `(label, resultado, None)` en éxito o `(label, None, exc)` si
+    lanzó `HTTPException` -- permite distinguir qué corrutina ganó la carrera
+    sin que `return_exceptions=True` mezcle excepciones inesperadas con las
+    esperadas (409 del perdedor)."""
+    try:
+        result = await coro
+        return label, result, None
+    except HTTPException as exc:
+        return label, None, exc
+
+
+# ---------------------------------------------------------------------------
+# (m) EL TEST ESTRELLA de esta tanda -- carrera LETAL rechazar-vs-recibir
+# (H-A): dos corrutinas, CADA UNA con su PROPIA conexión asyncpg, decidiendo
+# la MISMA transferencia 'enviada' a la vez. Sin el `AND estado = $N` del
+# `WHERE` de `update_estado`, ambas podrían leer 'enviada' en `_require`,
+# pasar la validación, y comprometer AMBOS `UPDATE` -- el desenlace
+# jurídicamente imposible: transferencia 'rechazada' + expediente ya
+# congelado 'transferred' por el `recibir()` concurrente, en un `audit_log`
+# INDELEBLE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_transferencia_recibir_vs_rechazar_concurrent_exactly_one_wins(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia = await _seed_transferencia_lista_para_recibir(
+        conn, slug, "itest carrera recibir-vs-rechazar"
+    )
+    transferencia_id = transferencia.id
+
+    actor_recibe = Actor(id=uuid.uuid4(), username="itest-recibe")
+    actor_rechaza = Actor(id=uuid.uuid4(), username="itest-rechaza")
+
+    async def _recibir() -> tuple[str, object, HTTPException | None]:
+        own_conn = await asyncpg.connect(dsn=DSN)
+        try:
+            own_service = TransferenciaService(own_conn, slug)
+            return await _labeled("recibir", own_service.recibir(transferencia_id, actor_recibe))
+        finally:
+            await own_conn.close()
+
+    async def _rechazar() -> tuple[str, object, HTTPException | None]:
+        own_conn = await asyncpg.connect(dsn=DSN)
+        try:
+            own_service = TransferenciaService(own_conn, slug)
+            payload = TransferenciaRechazo(motivo="itest rechazo concurrente")
+            return await _labeled(
+                "rechazar", own_service.rechazar(transferencia_id, payload, actor_rechaza)
+            )
+        finally:
+            await own_conn.close()
+
+    # Sin sleeps: las dos corrutinas compiten de verdad por el mismo `WHERE
+    # id = $N AND estado = 'enviada'` sobre la MISMA fila.
+    results = await asyncio.gather(_recibir(), _rechazar())
+
+    successes = [(label, r) for label, r, exc in results if exc is None]
+    failures = [(label, exc) for label, r, exc in results if exc is not None]
+
+    # El corazón del test: exactamente UNA corrutina gana -- nunca las dos,
+    # nunca ninguna.
+    assert len(successes) == 1, f"se esperaba exactamente 1 ganador, resultados: {results!r}"
+    assert len(failures) == 1, f"se esperaba exactamente 1 perdedor, resultados: {results!r}"
+
+    winner_label, winner_result = successes[0]
+    loser_label, loser_exc = failures[0]
+    assert {winner_label, loser_label} == {"recibir", "rechazar"}
+    assert isinstance(winner_result, TransferenciaResponse)
+    assert loser_exc.status_code == 409
+    assert loser_exc.detail["error"] == "invalid_status_transition"
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencia_estado = await second_conn.fetchval(
+            f'SELECT estado FROM "{schema}".transferencias WHERE id = $1', transferencia_id
+        )
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+        recibida_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_recibida",
+        )
+        rechazada_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_rechazada",
+        )
+        transferred_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.expediente_transferred",
+        )
+    finally:
+        await second_conn.close()
+
+    # LA ASERCIÓN LETAL: nunca 'rechazada' con el expediente ya 'transferred'
+    # -- el estado jurídicamente imposible que motivó H-A.
+    assert not (transferencia_estado == "rechazada" and expediente_status == "transferred")
+    # Y su gemelo simétrico, igual de imposible: 'recibida' sin que el
+    # expediente se haya congelado -- ambos UPDATE (transferencia + expediente)
+    # viven en la MISMA `conn.transaction()` de `recibir()`.
+    assert not (transferencia_estado == "recibida" and expediente_status != "transferred")
+    # Solo hay dos desenlaces coherentes posibles bajo la carrera.
+    assert (transferencia_estado, expediente_status) in {
+        ("recibida", "transferred"),
+        ("rechazada", "closed"),
+    }
+    # El desenlace persistido coincide con quién ganó según el resultado en
+    # memoria de cada corrutina -- no solo "algo consistente quedó en BD".
+    if winner_label == "recibir":
+        assert transferencia_estado == "recibida"
+        assert recibida_audit == 1
+        assert rechazada_audit == 0
+        assert transferred_audit == 1
+    else:
+        assert transferencia_estado == "rechazada"
+        assert rechazada_audit == 1
+        assert recibida_audit == 0
+        assert transferred_audit == 0
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# (n) Doble `enviar()` concurrente sobre la MISMA transferencia 'preparada':
+# solo una corrutina commitea, un único asiento -- `public.audit_log` es
+# INDELEBLE, un asiento duplicado sería permanente.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_transferencia_doble_enviar_concurrente_solo_uno_commitea(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia = await _seed_transferencia_preparada(
+        conn, slug, "itest doble enviar"
+    )
+    transferencia_id = transferencia.id
+
+    async def _enviar_one(i: int):
+        own_conn = await asyncpg.connect(dsn=DSN)
+        try:
+            own_service = TransferenciaService(own_conn, slug)
+            actor = Actor(id=uuid.uuid4(), username=f"itest-enviar-{i}")
+            return await _labeled(f"enviar-{i}", own_service.enviar(transferencia_id, actor))
+        finally:
+            await own_conn.close()
+
+    results = await asyncio.gather(_enviar_one(0), _enviar_one(1))
+    successes = [r for _, r, exc in results if exc is None]
+    failures = [exc for _, r, exc in results if exc is not None]
+
+    assert len(successes) == 1, f"se esperaba exactamente 1 ganador: {results!r}"
+    assert len(failures) == 1, f"se esperaba exactamente 1 perdedor: {results!r}"
+    assert failures[0].status_code == 409
+    assert failures[0].detail["error"] == "invalid_status_transition"
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        row = await second_conn.fetchrow(
+            f'SELECT estado, enviada_at, enviada_por FROM "{schema}".transferencias WHERE id = $1',
+            transferencia_id,
+        )
+        enviada_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_enviada",
+        )
+        enviada_failed_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_enviada_failed",
+        )
+    finally:
+        await second_conn.close()
+
+    # El corazón del test: exactamente 1 fila terminó 'enviada' con su
+    # responsable poblado -- ni 0 (las dos perdieron) ni un estado corrupto.
+    assert row["estado"] == "enviada"
+    assert row["enviada_at"] is not None
+    assert row["enviada_por"] is not None
+    assert enviada_audit == 1
+    assert enviada_failed_audit == 1
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# (o) Doble `recibir()` concurrente sobre la MISMA transferencia 'enviada':
+# solo una corrutina commitea -- y solo UNA congela el expediente ('transferred'),
+# nunca dos intentos de congelación del mismo expediente.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_transferencia_doble_recibir_concurrente_solo_uno_commitea(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia = await _seed_transferencia_lista_para_recibir(
+        conn, slug, "itest doble recibir"
+    )
+    transferencia_id = transferencia.id
+
+    async def _recibir_one(i: int):
+        own_conn = await asyncpg.connect(dsn=DSN)
+        try:
+            own_service = TransferenciaService(own_conn, slug)
+            actor = Actor(id=uuid.uuid4(), username=f"itest-recibe-{i}")
+            return await _labeled(f"recibir-{i}", own_service.recibir(transferencia_id, actor))
+        finally:
+            await own_conn.close()
+
+    results = await asyncio.gather(_recibir_one(0), _recibir_one(1))
+    successes = [r for _, r, exc in results if exc is None]
+    failures = [exc for _, r, exc in results if exc is not None]
+
+    assert len(successes) == 1, f"se esperaba exactamente 1 ganador: {results!r}"
+    assert len(failures) == 1, f"se esperaba exactamente 1 perdedor: {results!r}"
+    assert failures[0].status_code == 409
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencia_estado = await second_conn.fetchval(
+            f'SELECT estado FROM "{schema}".transferencias WHERE id = $1', transferencia_id
+        )
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+        recibida_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_recibida",
+        )
+        transferred_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.expediente_transferred",
+        )
+        evento_transferido = await second_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferido",
+        )
+    finally:
+        await second_conn.close()
+
+    # El corazón del test: la congelación del expediente ocurre EXACTAMENTE
+    # una vez -- no hay forma de que dos `recibir()` concurrentes produzcan
+    # dos asientos 'expediente_transferred' ni dos eventos 'transferido' en
+    # la hoja de ruta append-only.
+    assert transferencia_estado == "recibida"
+    assert expediente_status == "transferred"
+    assert recibida_audit == 1
+    assert transferred_audit == 1
+    assert evento_transferido == 1
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# (p) Atomicidad de `create()`: fallo NATURAL (CHECK sobre
+# `expediente_eventos.accion`) revierte el INSERT de la transferencia ya
+# ejecutado -- y, en el camino feliz, el actor llega no-nulo y UNIFICADO
+# (H-D) a los tres sitios (fila de `transferencias`, asiento de auditoría,
+# hoja de ruta) aunque la petición traiga un `username` distinto.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_transferencia_create_rollback_reverts_insert_and_audit_on_natural_failure(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created = await _seed_expediente_closed(conn, slug, "itest create boom")
+
+    # Fallo NATURAL: revienta `insert_expediente_evento(accion='transferencia_preparada')`,
+    # que `create()` inserta DESPUÉS de `repo.insert` (ya comprometido en la
+    # tx) y ANTES de `audit.append('archive.transferencia_preparada')`.
+    await conn.execute(
+        f'ALTER TABLE "{schema}".expediente_eventos '
+        "ADD CONSTRAINT ck_itest_create_boom CHECK (accion <> 'transferencia_preparada')"
+    )
+
+    service = TransferenciaService(conn, slug)
+    actor = Actor(id=uuid.uuid4(), username="itest-create-boom")
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await service.create(
+            TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+        )
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencias_count = await second_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".transferencias WHERE expediente_id = $1',
+            created.id,
+        )
+        preparada_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_preparada",
+        )
+        evento_count = await second_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferencia_preparada",
+        )
+    finally:
+        await second_conn.close()
+
+    # El corazón del test: el INSERT de la transferencia (ya ejecutado, con
+    # RETURNING, antes del CHECK) NO sobrevivió -- revirtió junto con el
+    # resto del bloque atómico, no queda una fila "preparada" huérfana sin
+    # su asiento.
+    assert transferencias_count == 0
+    assert preparada_audit == 0
+    assert evento_count == 0
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+@pytest.mark.integration
+async def test_transferencia_create_commits_with_unified_actor_and_hoja_de_ruta(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created = await _seed_expediente_closed(conn, slug, "itest create OK actor")
+
+    service = TransferenciaService(conn, slug)
+    # `username` deliberadamente DISTINTO del UUID -- H-D exige que lo escrito
+    # en todas las columnas de identidad sea SIEMPRE `actor.audit_actor`
+    # (el UUID), nunca "itest-create-humano".
+    actor = Actor(id=uuid.uuid4(), username="itest-create-humano")
+    resp = await service.create(
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+    )
+    assert resp.estado == "preparada"
+    assert resp.creada_por == actor.audit_actor
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencia_row = await second_conn.fetchrow(
+            f'SELECT creada_por FROM "{schema}".transferencias WHERE id = $1', resp.id
+        )
+        audit_row = await second_conn.fetchrow(
+            "SELECT actor FROM public.audit_log "
+            "WHERE tenant_slug = $1 AND action = $2 AND object_ref = $3",
+            slug,
+            "archive.transferencia_preparada",
+            str(resp.id),
+        )
+        evento_row = await second_conn.fetchrow(
+            f'SELECT actor FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferencia_preparada",
+        )
+    finally:
+        await second_conn.close()
+
+    # Los TRES sitios llevan la MISMA identidad no nula -- nunca el username.
+    assert transferencia_row["creada_por"] == actor.audit_actor
+    assert audit_row is not None
+    assert audit_row["actor"] == actor.audit_actor
+    assert evento_row is not None
+    assert evento_row["actor"] == actor.id  # columna UUID tipada -- antes NULL (H-E)
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# (q) Atomicidad de `enviar()`: fallo NATURAL revierte el `update_estado`
+# YA comprometido en la tx (la transferencia debe volver a 'preparada', no
+# quedarse a medio camino en 'enviada' sin evento/asiento).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_transferencia_enviar_rollback_reverts_estado_and_audit_on_natural_failure(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    creador = Actor(id=uuid.uuid4(), username="itest-enviar-boom-creador")
+    created, transferencia = await _seed_transferencia_preparada(
+        conn, slug, "itest enviar boom", actor=creador
+    )
+
+    # Fallo NATURAL: revienta `insert_expediente_evento(accion='transferencia_enviada')`,
+    # que `enviar()` inserta DESPUÉS de `update_estado` (ya comprometido: la
+    # fila pasó a 'enviada' dentro de la tx) y ANTES de
+    # `audit.append('archive.transferencia_enviada')`.
+    await conn.execute(
+        f'ALTER TABLE "{schema}".expediente_eventos '
+        "ADD CONSTRAINT ck_itest_enviar_boom CHECK (accion <> 'transferencia_enviada')"
+    )
+
+    service = TransferenciaService(conn, slug)
+    actor = Actor(id=uuid.uuid4(), username="itest-enviar-boom")
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await service.enviar(transferencia.id, actor)
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        row = await second_conn.fetchrow(
+            f'SELECT estado, enviada_at, enviada_por FROM "{schema}".transferencias WHERE id = $1',
+            transferencia.id,
+        )
+        enviada_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_enviada",
+        )
+        evento_count = await second_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferencia_enviada",
+        )
+    finally:
+        await second_conn.close()
+
+    # El corazón del test: el `UPDATE ... SET estado = 'enviada'` (ya
+    # comprometido dentro de la tx, ANTES del CHECK que revienta) se revirtió
+    # -- sigue 'preparada', sin `enviada_at`/`enviada_por` a medio poblar.
+    assert row["estado"] == "preparada"
+    assert row["enviada_at"] is None
+    assert row["enviada_por"] is None
+    assert enviada_audit == 0
+    assert evento_count == 0
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+@pytest.mark.integration
+async def test_transferencia_enviar_commits_with_unified_actor_and_hoja_de_ruta(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    created, transferencia = await _seed_transferencia_preparada(conn, slug, "itest enviar OK")
+
+    service = TransferenciaService(conn, slug)
+    actor = Actor(id=uuid.uuid4(), username="itest-enviar-humano")
+    result = await service.enviar(transferencia.id, actor)
+    assert result.estado == "enviada"
+    assert result.enviada_por == actor.audit_actor
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencia_row = await second_conn.fetchrow(
+            f'SELECT enviada_por FROM "{schema}".transferencias WHERE id = $1', transferencia.id
+        )
+        audit_row = await second_conn.fetchrow(
+            "SELECT actor FROM public.audit_log "
+            "WHERE tenant_slug = $1 AND action = $2 AND object_ref = $3",
+            slug,
+            "archive.transferencia_enviada",
+            str(transferencia.id),
+        )
+        evento_row = await second_conn.fetchrow(
+            f'SELECT actor FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferencia_enviada",
+        )
+    finally:
+        await second_conn.close()
+
+    assert transferencia_row["enviada_por"] == actor.audit_actor
+    assert audit_row is not None
+    assert audit_row["actor"] == actor.audit_actor
+    assert evento_row is not None
+    assert evento_row["actor"] == actor.id
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+# ---------------------------------------------------------------------------
+# (r) Atomicidad de `rechazar()`: fallo NATURAL revierte el `update_estado`
+# YA comprometido (la transferencia debe volver a 'enviada'), y en el camino
+# feliz el expediente permanece 'closed' -- rechazar NO lo toca, a diferencia
+# de `recibir()`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_transferencia_rechazar_rollback_reverts_estado_and_audit_on_natural_failure(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    creador = Actor(id=uuid.uuid4(), username="itest-rechazar-boom-creador")
+    created, transferencia = await _seed_transferencia_preparada(
+        conn, slug, "itest rechazar boom", actor=creador
+    )
+    service = TransferenciaService(conn, slug)
+    await service.enviar(transferencia.id, creador)
+
+    # Fallo NATURAL: revienta `insert_expediente_evento(accion='transferencia_rechazada')`,
+    # que `rechazar()` inserta DESPUÉS de `update_estado` (ya comprometido:
+    # la fila pasó a 'rechazada' dentro de la tx) y ANTES de
+    # `audit.append('archive.transferencia_rechazada')`.
+    await conn.execute(
+        f'ALTER TABLE "{schema}".expediente_eventos '
+        "ADD CONSTRAINT ck_itest_rechazar_boom CHECK (accion <> 'transferencia_rechazada')"
+    )
+
+    actor = Actor(id=uuid.uuid4(), username="itest-rechazar-boom")
+    payload = TransferenciaRechazo(motivo="itest motivo boom")
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await service.rechazar(transferencia.id, payload, actor)
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        row = await second_conn.fetchrow(
+            f'SELECT estado, decidida_por FROM "{schema}".transferencias WHERE id = $1',
+            transferencia.id,
+        )
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+        rechazada_audit = await second_conn.fetchval(
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1 AND action = $2",
+            slug,
+            "archive.transferencia_rechazada",
+        )
+        evento_count = await second_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferencia_rechazada",
+        )
+    finally:
+        await second_conn.close()
+
+    # El corazón del test: el `UPDATE ... SET estado = 'rechazada'` (ya
+    # comprometido ANTES del CHECK) se revirtió -- sigue 'enviada', sin
+    # `decidida_por` a medio poblar.
+    assert row["estado"] == "enviada"
+    assert row["decidida_por"] is None
+    assert expediente_status == "closed"
+    assert rechazada_audit == 0
+    assert evento_count == 0
+
+    ok, broken_id = await audit.verify_chain(conn, slug)
+    assert ok is True
+    assert broken_id is None
+
+
+@pytest.mark.integration
+async def test_transferencia_rechazar_commits_with_unified_actor_and_hoja_de_ruta(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    creador = Actor(id=uuid.uuid4(), username="itest-rechazar-ok-creador")
+    # `observacion` de PREPARACIÓN, deliberadamente DISTINTA del `motivo` del
+    # rechazo de abajo -- H-K: si `rechazar()` volviera a pisarla (bug
+    # previo, `payload.observacion or existing["observacion"]`), este valor
+    # desaparecería y la aserción de abajo lo detectaría.
+    created, transferencia = await _seed_transferencia_preparada(
+        conn, slug, "itest rechazar OK", actor=creador, observacion="lote 2026-Q1, entrega parcial"
+    )
+    service = TransferenciaService(conn, slug)
+    await service.enviar(transferencia.id, creador)
+
+    actor = Actor(id=uuid.uuid4(), username="itest-rechazar-humano")
+    payload = TransferenciaRechazo(motivo="faltan folios 12-15")
+    result = await service.rechazar(transferencia.id, payload, actor)
+    assert result.estado == "rechazada"
+    assert result.decidida_por == actor.audit_actor
+    # H-K/H-J en la respuesta inmediata del propio `rechazar()` (no solo en
+    # la relectura por segunda conexión de abajo).
+    assert result.motivo_rechazo == "faltan folios 12-15"
+    assert result.observacion == "lote 2026-Q1, entrega parcial"
+    assert result.rechazada_at is not None
+
+    second_conn = await asyncpg.connect(dsn=DSN)
+    try:
+        transferencia_row = await second_conn.fetchrow(
+            f'SELECT decidida_por, observacion, motivo_rechazo, rechazada_at '
+            f'FROM "{schema}".transferencias WHERE id = $1',
+            transferencia.id,
+        )
+        expediente_status = await second_conn.fetchval(
+            f'SELECT status FROM "{schema}".expedientes WHERE id = $1', created.id
+        )
+        audit_row = await second_conn.fetchrow(
+            "SELECT actor, payload FROM public.audit_log "
+            "WHERE tenant_slug = $1 AND action = $2 AND object_ref = $3",
+            slug,
+            "archive.transferencia_rechazada",
+            str(transferencia.id),
+        )
+        evento_row = await second_conn.fetchrow(
+            f'SELECT actor FROM "{schema}".expediente_eventos '
+            "WHERE expediente_id = $1 AND accion = $2",
+            created.id,
+            "transferencia_rechazada",
+        )
+    finally:
+        await second_conn.close()
+
+    assert transferencia_row["decidida_por"] == actor.audit_actor
+    # H-K, el corazón del test: el MOTIVO va a su columna propia...
+    assert transferencia_row["motivo_rechazo"] == "faltan folios 12-15"
+    # ...y la OBSERVACIÓN de preparación queda INTACTA -- NO pisada por el
+    # motivo del rechazo (comportamiento previo a H-K, ya retirado).
+    assert transferencia_row["observacion"] == "lote 2026-Q1, entrega parcial"
+    # H-J: sello temporal propio del acto, gemelo de enviada_at/recibida_at.
+    assert transferencia_row["rechazada_at"] is not None
+    # `rechazar()` NO congela el expediente -- sigue 'closed', ortogonal al
+    # ciclo de vida de la transferencia (a diferencia de `recibir()`).
+    assert expediente_status == "closed"
+    assert audit_row is not None
+    assert audit_row["actor"] == actor.audit_actor
+    payload_row = audit_row["payload"]
+    payload_row = json.loads(payload_row) if isinstance(payload_row, str) else payload_row
+    assert payload_row["motivo"] == "faltan folios 12-15"
+    assert evento_row is not None
+    assert evento_row["actor"] == actor.id
 
     ok, broken_id = await audit.verify_chain(conn, slug)
     assert ok is True

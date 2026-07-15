@@ -24,6 +24,7 @@ from fastapi import (
     status,
 )
 
+from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
@@ -195,16 +196,23 @@ async def search_expedientes(
 )
 async def close_expediente(
     expediente_id: uuid.UUID,
-    x_username: str | None = Header(default=None),
-    x_user_id: str | None = Header(default=None),
     tenant_slug: str = Depends(_require_tenant),
+    # H-D: identidad única resuelta en `app.core.actor.require_actor` —
+    # X-User-Id es SIEMPRE la fuente de verdad, sin el fallback `or
+    # x_username` de antes (código en la práctica inalcanzable, ya que
+    # `require_permission(min_crud=3)` ya exige X-User-Id para autorizar, pero
+    # que dejaba la puerta abierta a escribir una identidad inconsistente con
+    # la de `transferencias.py` -- mismo funcionario, dos identidades según la
+    # ruta). `actor.username` queda disponible si se necesitara como atributo
+    # descriptivo, nunca como identidad.
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteDisposicionResult:
-    firmante = x_user_id or x_username
     # `actor_id` es estrictamente X-User-Id (UUID de auth_users.id): es lo que
     # signature-service exige para sellar el índice (E06 Inc.1, RF-FIR-11/12).
     # Sin él la firma no se intenta y el índice queda 'pendiente_firma' — el
-    # cierre no se bloquea (decisión del usuario, RT-16).
+    # cierre no se bloquea (decisión del usuario, RT-16). Con `require_actor`
+    # fail-closed, `actor.audit_actor` ya nunca es None en este handler.
     #
     # Respuesta estrecha (`ExpedienteDisposicionResult`), NO el expediente
     # completo: la disposición es ortogonal al clearance de lectura del
@@ -213,7 +221,7 @@ async def close_expediente(
     # un 404 espurio para quien tiene permiso de disposición pero no
     # clearance de lectura, pese a que el cierre ya se comprometió.
     return await ArchiveService(conn, tenant_slug).close_expediente(
-        expediente_id, firmante, actor_id=x_user_id
+        expediente_id, actor.audit_actor, actor_id=actor.audit_actor
     )
 
 
@@ -225,21 +233,22 @@ async def close_expediente(
 )
 async def transfer_expediente(
     expediente_id: uuid.UUID,
-    x_username: str | None = Header(default=None),
-    x_user_id: str | None = Header(default=None),
     tenant_slug: str = Depends(_require_tenant),
+    # H-D: mismo helper único que `close_expediente` — ver su comentario.
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> ExpedienteDisposicionResult:
     # Misma razón que `close_expediente`: respuesta estrecha, ortogonal al
     # clearance de lectura (RF-SEG-08 Opción B) — ver
     # `schemas.archive.ExpedienteDisposicionResult`.
     #
-    # H2: la identidad (X-User-Id, respaldo X-Username) YA la exige
+    # H2: la identidad (X-User-Id, fuente única — H-D) YA la exige
     # `require_permission(min_crud=3)` arriba para autorizar — antes este
     # handler ni siquiera la declaraba y un cambio de custodia irreversible
     # quedaba sin responsable identificado en la hoja de ruta/audit_log.
-    actor = x_user_id or x_username
-    return await ArchiveService(conn, tenant_slug).transfer_expediente(expediente_id, actor=actor)
+    return await ArchiveService(conn, tenant_slug).transfer_expediente(
+        expediente_id, actor=actor.audit_actor
+    )
 
 
 @router.get(

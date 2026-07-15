@@ -9,14 +9,50 @@
 
 """Tests de transferencias documentales (E12)."""
 
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS, make_expediente_record
+from tests.conftest import (
+    TENANT_HEADERS,
+    USER_ID,
+    make_expediente_record,
+    make_radicado_link_record,
+)
 
 NOW = datetime.now(tz=UTC)
+
+# Fila del índice electrónico usada por `IndexService.fixity` (E12 H-G) en el
+# gate de recepción -- `xml`/`xml_sha256` DEBEN ser consistentes entre sí
+# (`hashlib.sha256(xml).hexdigest() == xml_sha256`) para que `huella_indice_ok`
+# dé `True` en el camino feliz de `recibir()`.
+_INDICE_XML = "<indiceElectronico/>"
+_INDICE_XML_SHA256 = hashlib.sha256(_INDICE_XML.encode("utf-8")).hexdigest()
+
+
+def _indice_row(**kw) -> dict:
+    base = {
+        "id": uuid.uuid4(),
+        "estado": "firmado",
+        "version": 0,
+        "xml": _INDICE_XML,
+        "xml_sha256": _INDICE_XML_SHA256,
+    }
+    base.update(kw)
+    return base
+
+
+def _audit_log_calls(mock_conn) -> list[tuple]:
+    """args: (sql, tenant, service, actor, canal, action, object_type, object_ref,
+    payload, prev_hash, hash) — mismo shape que el resto de test_expediente_*."""
+    return [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
 
 
 def _transfer_row(**kw) -> dict:
@@ -31,6 +67,8 @@ def _transfer_row(**kw) -> dict:
         "observacion": None,
         "created_at": NOW,
         "enviada_at": None,
+        # `enviada_por` (migración 020, H-B/H-C): responsable de la remisión.
+        "enviada_por": None,
         "recibida_at": None,
         "decidida_por": None,
     }
@@ -81,20 +119,32 @@ async def test_enviar_then_recibir_freezes_expediente(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     tid = uuid.uuid4()
     exp_id = uuid.uuid4()
-    # enviar: get(preparada) → update(enviada)
+    # enviar: _require.get(preparada) → _expediente_code (código para la hoja
+    # de ruta/auditoría, H-B) → update_estado(expected='preparada', 'enviada').
     mock_conn.fetchrow.side_effect = [
         _transfer_row(id=tid, expediente_id=exp_id, estado="preparada"),
-        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada", enviada_at=NOW),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="enviada",
+            enviada_at=NOW,
+            enviada_por=str(USER_ID),
+        ),
     ]
+    mock_conn.fetch.return_value = []
     env = await client.post(f"/api/v1/transferencias/{tid}/enviar", headers=TENANT_HEADERS)
     assert env.status_code == 200
     assert env.json()["estado"] == "enviada"
 
-    # recibir: get(enviada) → get_current(índice firmado) → update(recibida) →
-    # transition_expediente(transferred)
+    # recibir: get(enviada) → get_current(gate, índice firmado) →
+    # fixity() [get_expediente_by_id + get_current + get_items, E12 H-G] →
+    # update(recibida) → transition_expediente(transferred)
     mock_conn.fetchrow.side_effect = [
         _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
-        {"id": uuid.uuid4(), "estado": "firmado"},
+        _indice_row(),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _indice_row(),
         _transfer_row(id=tid, expediente_id=exp_id, estado="recibida", recibida_at=NOW),
         make_expediente_record(exp_id=exp_id, exp_status="transferred"),
     ]
@@ -341,3 +391,338 @@ async def test_create_transferencia_con_permiso_201(client_with_conn) -> None:
     )
     assert resp.status_code == 201
     assert resp.json()["estado"] == "preparada"
+
+
+# ---------------------------------------------------------------------------
+# H-B: create/enviar/rechazar SÍ dejan asiento de auditoría (antes 0 llamadas
+# a `audit.append` en los tres). H-D: el actor escrito es SIEMPRE X-User-Id
+# (`Actor.audit_actor`), nunca el username -- aunque la petición traiga
+# X-Username, no gana la carrera de identidad (antes invertida en esta ruta).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_transferencia_audits_success(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate + audit.append prev_hash
+    exp_id = uuid.uuid4()
+    exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
+    mock_conn.fetchrow.side_effect = [exp_closed, _transfer_row(expediente_id=exp_id)]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        "/api/v1/transferencias",
+        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        # X-Username presente A PROPÓSITO: H-D exige que el actor escrito sea
+        # el UUID (X-User-Id), NUNCA "ana" -- antes de este incremento
+        # `_actor()` invertía la prioridad (X-Username primero).
+        headers={**TENANT_HEADERS, "X-Username": "ana"},
+    )
+    assert resp.status_code == 201
+
+    audit_calls = _audit_log_calls(mock_conn)
+    creada = next(a for a in audit_calls if a[5] == "archive.transferencia_preparada")
+    assert creada[6] == "transferencia"
+    assert creada[3] == str(USER_ID)  # actor -- NUNCA "ana"
+    payload = json.loads(creada[8])
+    assert payload["expediente_code"] == exp_closed["code"]
+    assert payload["estado_nuevo"] == "preparada"
+
+    evento_call = next(
+        c
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expediente_eventos" in c.args[0]
+    )
+    # (expediente_id, numero, accion, actor, comentario, detalles)
+    assert evento_call.args[3] == "transferencia_preparada"
+    assert evento_call.args[4] == USER_ID
+
+
+@pytest.mark.asyncio
+async def test_create_transferencia_denied_audits_failure(client_with_conn) -> None:
+    """El intento denegado MÁS FRECUENTE (expediente no cerrado) también deja
+    traza -- antes `create()` no auditaba NADA, ni éxito ni fallo."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.return_value = make_expediente_record(exp_id=exp_id, exp_status="open")
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        "/api/v1/transferencias",
+        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 409
+
+    audit_calls = _audit_log_calls(mock_conn)
+    denial = next(a for a in audit_calls if a[5] == "archive.transferencia_preparada_failed")
+    assert denial[3] == str(USER_ID)
+    payload = json.loads(denial[8])
+    assert payload["motivo"] == "expediente_not_closed"
+    assert not any(a[5] == "archive.transferencia_preparada" for a in audit_calls)
+
+
+@pytest.mark.asyncio
+async def test_enviar_audits_success_with_actor_uuid(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="preparada"),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada", enviada_at=NOW),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/transferencias/{tid}/enviar",
+        headers={**TENANT_HEADERS, "X-Username": "remitente"},
+    )
+    assert resp.status_code == 200
+
+    audit_calls = _audit_log_calls(mock_conn)
+    enviada = next(a for a in audit_calls if a[5] == "archive.transferencia_enviada")
+    assert enviada[3] == str(USER_ID)  # actor -- NUNCA "remitente"
+    assert enviada[7] == str(tid)  # object_ref
+
+
+@pytest.mark.asyncio
+async def test_rechazar_audits_success_with_motivo(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _transfer_row(id=tid, expediente_id=exp_id, estado="rechazada", decidida_por=str(USER_ID)),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/transferencias/{tid}/rechazar",
+        json={"motivo": "faltan folios"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+
+    audit_calls = _audit_log_calls(mock_conn)
+    rechazada = next(a for a in audit_calls if a[5] == "archive.transferencia_rechazada")
+    assert rechazada[3] == str(USER_ID)
+    payload = json.loads(rechazada[8])
+    assert payload["motivo"] == "faltan folios"
+
+
+# ---------------------------------------------------------------------------
+# H-A: guarda de estado en `update_estado` (gemela de `transition_expediente`,
+# H3/cf83324). `_require` puede validar la transición y aun así perder la
+# carrera real contra el `WHERE` -- se simula devolviendo `None` desde el
+# UPDATE (perdedor) pese a que `_require` ya la dio por válida.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enviar_pierde_la_carrera_409_y_audita_denegacion(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="preparada"),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        None,  # update_estado: el WHERE (estado='preparada') ya no casó -- perdedor.
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(f"/api/v1/transferencias/{tid}/enviar", headers=TENANT_HEADERS)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "invalid_status_transition"
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert any(a[5] == "archive.transferencia_enviada_failed" for a in audit_calls)
+    assert not any(a[5] == "archive.transferencia_enviada" for a in audit_calls)
+
+
+@pytest.mark.asyncio
+async def test_recibir_pierde_la_carrera_contra_rechazar_409(client_with_conn) -> None:
+    """Caso letal cerrado por H-A: si un `rechazar()` concurrente ya commiteó
+    ('enviada'->'rechazada'), el `WHERE estado='enviada'` de `recibir()` no
+    casa -- 409, y el expediente NUNCA se congela."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
+        _indice_row(),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _indice_row(),
+        None,  # update_estado: el WHERE (estado='enviada') ya no casó -- perdedor.
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "invalid_status_transition"
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert any(a[5] == "archive.transferencia_recibida_failed" for a in audit_calls)
+    # El expediente NUNCA se congeló: ni evento ni asiento de la transición.
+    assert not any(a[5] == "archive.expediente_transferred" for a in audit_calls)
+
+
+# ---------------------------------------------------------------------------
+# H-K: motivo de rechazo OBLIGATORIO (frontera HTTP/Pydantic -- 422 antes de
+# tocar el service/repository) + NO destructivo (no pisa `observacion`) +
+# expuesto en su propia columna. H-J: `rechazada_at` en la respuesta.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rechazar_sin_motivo_422(client_with_conn) -> None:
+    """`TransferenciaRechazo.motivo` es obligatorio (H-K): antes de este
+    incremento, `TransferenciaDecision.observacion` admitía `None` -- un
+    rechazo inmotivado. Cuerpo vacío -> 422, sin tocar el service."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: permiso concedido
+    tid = uuid.uuid4()
+
+    resp = await client.post(
+        f"/api/v1/transferencias/{tid}/rechazar",
+        json={},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    # Nunca llegó a `_require`/`update_estado`: sin lectura de la transferencia.
+    assert mock_conn.fetchrow.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_rechazar_motivo_en_blanco_422(client_with_conn) -> None:
+    """`motivo` de solo espacios lo rechaza el `field_validator` (`_no_blank`),
+    no solo `min_length` de Pydantic -- " " tiene longitud 1 pero es un
+    motivo vacío en la práctica."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+
+    resp = await client.post(
+        f"/api/v1/transferencias/{tid}/rechazar",
+        json={"motivo": "   "},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    assert mock_conn.fetchrow.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_rechazar_no_pisa_observacion_y_expone_motivo_rechazo(client_with_conn) -> None:
+    """H-K/H-J: el motivo del rechazo va a `motivo_rechazo` (columna propia,
+    NO `observacion`) y la respuesta expone `rechazada_at`. Se comprueba en
+    DOS capas: (1) la SQL que `update_estado` emite NO asigna `observacion`
+    -- si `rechazar()` volviera a hacer `payload.observacion or existing[...]`
+    (comportamiento pre-H-K), esa columna reaparecería en el `SET`; (2) el
+    cuerpo de la respuesta refleja `observacion` de PREPARACIÓN intacta."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid, expediente_id=exp_id, estado="enviada", observacion="prep original"
+        ),
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="rechazada",
+            decidida_por=str(USER_ID),
+            observacion="prep original",
+            motivo_rechazo="faltan folios 12-15",
+            rechazada_at=NOW,
+        ),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/transferencias/{tid}/rechazar",
+        json={"motivo": "faltan folios 12-15"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["observacion"] == "prep original"
+    assert body["motivo_rechazo"] == "faltan folios 12-15"
+    assert body["rechazada_at"] is not None
+
+    update_call = next(
+        c
+        for c in mock_conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "UPDATE transferencias" in c.args[0]
+    )
+    sql = update_call.args[0]
+    # Solo el tramo `SET ...` importa aquí -- `RETURNING {_COLS}` SIEMPRE
+    # menciona `observacion` (es una columna real de la tabla), así que
+    # buscar la palabra en la sentencia COMPLETA sería un falso positivo.
+    set_clause = sql.split("WHERE", 1)[0]
+    assert "observacion = $" not in set_clause
+    assert "motivo_rechazo = $" in set_clause
+    assert "rechazada_at = $" in set_clause
+
+
+# ---------------------------------------------------------------------------
+# H-G (E12, Ac. AGN 001/2024 Tít. 4.4): `recibir()` re-verifica la fixity del
+# acervo (huellas de documentos + re-hash del índice) DENTRO de la tx, antes
+# de congelar el expediente -- ya no basta `estado='firmado'`. Este es el
+# límite HTTP/service de la garantía; la reversión REAL bajo Postgres (la
+# parte que este carril mockeado no puede observar) vive en
+# `tests/integration/test_atomicity.py`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recibir_fixity_mismatch_409_no_congela(client_with_conn) -> None:
+    """Un documento del acervo se alteró DESPUÉS de firmar el índice --
+    `IndexService.fixity` detecta que `valor_huella` (índice) != `content_hash`
+    (radicado actual) y `recibir()` responde 409 `fixity_mismatch` sin llegar
+    a `update_estado`/`transition_expediente`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+
+    mock_conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="enviada"),
+        _indice_row(),  # gate `firmado`, FUERA de la tx
+        make_expediente_record(exp_id=exp_id, exp_status="closed"),  # fixity(): get_expediente_by_id
+        _indice_row(),  # fixity(): _row_or_404 -> get_current
+    ]
+    mock_conn.fetch.side_effect = [
+        # _get_radicados (dentro de get_expediente_by_id): huella ACTUAL.
+        [
+            make_radicado_link_record(
+                expediente_id=exp_id, radicado_id=doc_id, content_hash="a" * 64
+            )
+        ],
+        # get_items: huella capturada en el índice al firmar -- distinta.
+        [{"document_id": doc_id, "valor_huella": "b" * 64}],
+    ]
+
+    resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "fixity_mismatch"
+
+    audit_calls = _audit_log_calls(mock_conn)
+    failed = next(a for a in audit_calls if a[5] == "archive.transferencia_recibida_failed")
+    payload = json.loads(failed[8])
+    assert payload["motivo"] == "fixity_mismatch"
+    assert not any(a[5] == "archive.transferencia_recibida" for a in audit_calls)
+    assert not any(a[5] == "archive.expediente_transferred" for a in audit_calls)
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert any(a[5] == "archive.transferencia_recibida_failed" for a in audit_calls)
+    # El expediente NUNCA se congeló: ni evento ni asiento de la transición.
+    assert not any(a[5] == "archive.expediente_transferred" for a in audit_calls)

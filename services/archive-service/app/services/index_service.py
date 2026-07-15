@@ -37,6 +37,7 @@ from app.models.archive import Expediente
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.schemas.archive import (
+    IndiceFixityResult,
     IndiceItemResponse,
     IndiceResponse,
     IndiceVerifyDoc,
@@ -596,6 +597,77 @@ class IndexService:
             )
         return signed
 
+    def _fixity_from_row(self, exp: Expediente, row, items) -> IndiceFixityResult:
+        """Comparación de huellas pura-BD sobre un `row`/`items` YA obtenidos
+        (E12 H-G). Núcleo compartido por `fixity()` (autocontenido, una
+        consulta propia por llamada) y `verify()` (reutiliza el `row`/`items`
+        que YA necesita para el tramo de firma) -- evita que `verify()` pague
+        una segunda consulta de `expediente_indice` solo por reusar esta
+        comparación."""
+        current = {str(r.radicado_id): r.content_hash for r in exp.radicados}
+        docs: list[IndiceVerifyDoc] = []
+        all_ok = True
+        for it in items:
+            hi = it["valor_huella"]
+            ha = current.get(str(it["document_id"]))
+            coincide = hi is not None and ha is not None and hi == ha
+            if not coincide:
+                all_ok = False
+            docs.append(
+                IndiceVerifyDoc(
+                    document_id=it["document_id"],
+                    huella_indice=hi,
+                    huella_actual=ha,
+                    coincide=coincide,
+                )
+            )
+        huella_indice_ok = xml_sha256(row["xml"]) == row["xml_sha256"]
+        return IndiceFixityResult(
+            version=row["version"],
+            documentos=docs,
+            documentos_ok=all_ok,
+            huella_indice_ok=huella_indice_ok,
+        )
+
+    async def fixity(
+        self,
+        expediente_id: uuid.UUID,
+        version: int | None = None,
+        *,
+        max_clearance: int,
+    ) -> IndiceFixityResult:
+        """Fixity PURA-BD del índice electrónico (E12 H-G): `documentos[].coincide`
+        (huella de cada documento del índice vs `content_hash` actual del radicado
+        vigente) + `huella_indice_ok` (re-hash de la fila del índice vs
+        `xml_sha256` persistido). SIN verificación de firma (HTTP) y SIN gate de
+        lectura cuando se invoca con `CLEARANCE_SIN_RESTRICCION`.
+
+        Autocontenido: resuelve `exp`/`row`/`items` con SUS PROPIAS consultas --
+        pensado para `TransferenciaService.recibir` (`CLEARANCE_SIN_RESTRICCION`
+        -- acto de custodia ortogonal al clearance de lectura, `core.clearance`
+        bloque (c)), que no tiene ya un `row` en mano. `verify()` NO llama a este
+        método (evitaría re-consultar `expediente_indice` que ya necesita para el
+        tramo de firma): ambos comparten la comparación vía `_fixity_from_row`,
+        un único sitio para que no diverjan si cambia el algoritmo o la semántica
+        de exclusión. No llama `_audit_read_access`: no es una lectura de
+        contenido por un usuario (mismo criterio que `verify` ya aplicaba antes
+        de este refactor)."""
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": str(expediente_id),
+                    "status": 404,
+                },
+            )
+        row = await self._row_or_404(expediente_id, version)
+        items = await self._index.get_items(row["id"])
+        return self._fixity_from_row(exp, row, items)
+
     async def verify(
         self,
         expediente_id: uuid.UUID,
@@ -625,23 +697,12 @@ class IndexService:
             )
         row = await self._row_or_404(expediente_id, version)
         items = await self._index.get_items(row["id"])
-        current = {str(r.radicado_id): r.content_hash for r in exp.radicados}
-        docs: list[IndiceVerifyDoc] = []
-        all_ok = True
-        for it in items:
-            hi = it["valor_huella"]
-            ha = current.get(str(it["document_id"]))
-            coincide = hi is not None and ha is not None and hi == ha
-            if not coincide:
-                all_ok = False
-            docs.append(
-                IndiceVerifyDoc(
-                    document_id=it["document_id"],
-                    huella_indice=hi,
-                    huella_actual=ha,
-                    coincide=coincide,
-                )
-            )
+        # Fixity (documentos + huella del índice): comparación pura-BD
+        # compartida con `fixity()` (E12 H-G) vía `_fixity_from_row` -- mismo
+        # `row`/`items` que este método YA necesitaba para el tramo de firma,
+        # sin re-consultar `expediente_indice`.
+        fx = self._fixity_from_row(exp, row, items)
+        docs = fx.documentos
         # Acoplamiento firma↔índice (E06 Inc.1): si hay firma, se descarga el
         # XML YA FIRMADO desde MinIO (vía storage-service) y se verifica la
         # firma XAdES-B real contra ESE contenido — nunca contra `row["xml"]`
@@ -691,13 +752,13 @@ class IndexService:
         # con `xml_sha256` persistido. Sin esto, una alteración directa del
         # XML de un índice 'vigente'/'pendiente_firma' (aún no sellado) queda
         # indetectada — el sellado XAdES solo protege la COPIA firmada en
-        # MinIO, no la fila en BD (Acuerdo AGN 001/2024, E15).
-        huella_indice_ok = xml_sha256(row["xml"]) == row["xml_sha256"]
-        valido = all_ok and huella_indice_ok and (not firma_presente or firma.valida)
+        # MinIO, no la fila en BD (Acuerdo AGN 001/2024, E15). Ambos valores
+        # vienen de `fx` (`fixity()`, E12 H-G) — ya no se recalculan aquí.
+        valido = fx.documentos_ok and fx.huella_indice_ok and (not firma_presente or firma.valida)
         return IndiceVerifyResponse(
             version=row["version"],
             valido=valido,
-            huella_indice_ok=huella_indice_ok,
+            huella_indice_ok=fx.huella_indice_ok,
             documentos=docs,
             firma=firma,
             fecha_verificacion=datetime.now(tz=UTC),

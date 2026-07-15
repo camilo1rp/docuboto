@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TransferenciaCreate(BaseModel):
@@ -26,8 +26,23 @@ class TransferenciaCreate(BaseModel):
     observacion: str | None = Field(default=None, max_length=2000)
 
 
-class TransferenciaDecision(BaseModel):
-    observacion: str | None = Field(default=None, max_length=2000)
+class TransferenciaRechazo(BaseModel):
+    """Payload de `rechazar` (E12 H-K). El rechazo es una decisión de fondo
+    (estado TERMINAL) y su motivo es el insumo de la subsanación -- a
+    diferencia de `TransferenciaDecision` (retirado), `motivo` es
+    OBLIGATORIO: antes se admitía un rechazo inmotivado (`observacion` con
+    default `None`), lo que dejaba el porqué del rechazo sin registro
+    reconstruible."""
+
+    motivo: str = Field(min_length=3, max_length=2000)
+
+    @field_validator("motivo")
+    @classmethod
+    def _no_blank(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("motivo de rechazo requerido (mín. 3 caracteres)")
+        return v
 
 
 class TransferenciaResponse(BaseModel):
@@ -41,5 +56,16 @@ class TransferenciaResponse(BaseModel):
     observacion: str | None
     created_at: datetime
     enviada_at: datetime | None
+    # `enviada_por` (migración 020, H-B/H-C): responsable de la REMISIÓN —
+    # gemelo de `creada_por`/`decidida_por`, poblado desde `Actor.audit_actor`
+    # (X-User-Id), nunca desde un username (RF-SEG-08 / Ac. AGN 001/2024 art.
+    # 4.3.2.2, ver `app/core/actor.py`).
+    enviada_por: str | None
     recibida_at: datetime | None
     decidida_por: str | None
+    # `motivo_rechazo`/`rechazada_at` (migración 021, H-K/H-J): motivo
+    # OBLIGATORIO del rechazo en columna propia (nunca pisa `observacion`,
+    # el dato de preparación) + sello temporal propio del acto, gemelo de
+    # `enviada_at`/`recibida_at`.
+    motivo_rechazo: str | None = None
+    rechazada_at: datetime | None = None

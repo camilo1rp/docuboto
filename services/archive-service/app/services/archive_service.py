@@ -76,6 +76,22 @@ _SEARCH_OBJECT_TYPE = "expediente_busqueda"
 _SEARCH_OBJECT_REF = "listado"
 
 
+def _safe_uuid(value: str | None) -> uuid.UUID | None:
+    """Parseo defensivo para columnas UUID de identidad (`expediente_eventos.actor`)
+    pobladas a partir de un parámetro `str | None` histórico (`firmante`/`actor`
+    en `close_expediente`/`transfer_expediente`, H-E). Con `require_actor`
+    (H-D) el router SIEMPRE entrega un UUID válido, pero ambos métodos siguen
+    siendo públicos e invocables directo (tests de integración, jobs) con
+    cualquier string -- `None` en vez de un `ValueError` no capturado a mitad
+    de una transacción de negocio."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
 class ArchiveService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._repo = ArchiveRepository(conn, tenant_slug)
@@ -628,12 +644,17 @@ class ArchiveService:
         """Cierra el expediente: materializa la disposición TRD, genera la versión
         final del índice y sella XAdES-B el índice (E06 Inc.1, best-effort).
 
-        `firmante` es el valor mostrado en la hoja de ruta/auditoría (puede
-        caer a X-Username si no hay X-User-Id). `actor_id` es estrictamente el
-        X-User-Id (UUID de `auth_users.id`) que signature-service exige para
-        atribuir el sello (RF-FIR-11/12): si falta o la firma falla, el índice
-        queda 'pendiente_firma' (decisión del usuario, RT-16) — el cierre del
-        expediente NUNCA se bloquea por esto.
+        `firmante` es el valor mostrado en la hoja de ruta/auditoría. `actor_id`
+        es estrictamente el X-User-Id (UUID de `auth_users.id`) que
+        signature-service exige para atribuir el sello (RF-FIR-11/12): si
+        falta o la firma falla, el índice queda 'pendiente_firma' (decisión
+        del usuario, RT-16) — el cierre del expediente NUNCA se bloquea por
+        esto. Desde H-D (E12, `app.core.actor.require_actor`), el router
+        pasa el MISMO valor (`Actor.audit_actor`, el UUID como string) en
+        ambos parámetros — ya no hay fallback a X-Username: antes `firmante`
+        podía caer a un username si faltaba X-User-Id, dejando una identidad
+        inconsistente con la de `TransferenciaService`/`transfer_expediente`
+        para el mismo funcionario.
 
         Atomicidad transición<->auditoría (mismo patrón que `link_radicado`):
         la transición de estado, el evento de la hoja de ruta y la
@@ -712,10 +733,21 @@ class ArchiveService:
                             "status": 409,
                         },
                     )
+                # H-E (E12, misma corrección aplicada a `TransferenciaService`):
+                # antes `actor=` no se pasaba en absoluto -- la columna UUID de
+                # `expediente_eventos` quedaba NULL y la única identidad vivía
+                # en el texto libre `comentario="firmante=..."`. `actor_id` es
+                # estrictamente X-User-Id (ver docstring) desde que el router
+                # usa `require_actor` (fail-closed), pero este método sigue
+                # siendo público y invocable directo (tests de integración,
+                # jobs) con un `actor_id` que no sea un UUID -- parseo
+                # defensivo (`None` si no castea) en vez de reventar con un
+                # `ValueError` no capturado a mitad de la transacción.
                 await self._repo.insert_expediente_evento(
                     expediente_id,
                     numero_expediente=exp.code,
                     accion="cerrado",
+                    actor=_safe_uuid(actor_id),
                     comentario=f"firmante={firmante}" if firmante else None,
                 )
                 # Índice electrónico: versión final del conjunto documental
@@ -862,9 +894,10 @@ class ArchiveService:
         leerlo fuera solo puede volverse más permisivo entre la lectura y la
         transición — no hay TOCTOU explotable.
 
-        `actor` (H2): identidad de quien transfiere (X-User-Id, o X-Username
-        como respaldo — mismo criterio que `firmante` en `close_expediente`).
-        Antes el router ni siquiera declaraba estas cabeceras pese a que
+        `actor` (H2/H-D): identidad de quien transfiere — SIEMPRE
+        `Actor.audit_actor` (X-User-Id, sin fallback a X-Username desde
+        `app.core.actor.require_actor`; ver `close_expediente`). Antes el
+        router ni siquiera declaraba estas cabeceras pese a que
         `require_permission(min_crud=3)` YA exige `X-User-Id` para autorizar
         la operación: la identidad estaba en la petición y se descartaba,
         dejando un cambio de custodia irreversible sin responsable
@@ -899,11 +932,18 @@ class ArchiveService:
                             "status": 409,
                         },
                     )
+                # H-E (E12): antes `actor=` no se pasaba -- la columna UUID
+                # quedaba NULL. Vocabulario (H-E', mismo criterio que
+                # `TransferenciaService.recibir`): quien transfiere no "firma"
+                # -- se retira `comentario=f"firmante={...}"` (texto libre
+                # redundante con la columna tipada `actor`). `_safe_uuid`:
+                # mismo parseo defensivo que `close_expediente` (ver su
+                # comentario) -- este método sigue aceptando cualquier `str`.
                 await self._repo.insert_expediente_evento(
                     expediente_id,
                     numero_expediente=exp.code,
                     accion="transferido",
-                    comentario=f"firmante={actor}" if actor else None,
+                    actor=_safe_uuid(actor),
                 )
                 # `audit.append` LO ÚLTIMO dentro de la tx (advisory lock del
                 # tenant retenido el mínimo tiempo posible hasta el COMMIT).

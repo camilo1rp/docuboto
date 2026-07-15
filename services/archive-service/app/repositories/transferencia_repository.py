@@ -19,8 +19,18 @@ from app.core.database import tenant_schema
 
 _COLS = (
     "id, tipo, estado, expediente_id, ubicacion_origen_id, ubicacion_destino_id, "
-    "creada_por, observacion, created_at, enviada_at, recibida_at, decidida_por"
+    "creada_por, observacion, created_at, enviada_at, enviada_por, recibida_at, decidida_por, "
+    # H-K/H-J (migración 021): motivo propio del rechazo (nunca pisa
+    # `observacion`) + sello temporal propio del acto.
+    "motivo_rechazo, rechazada_at"
 )
+
+# Columnas que `update_estado` NUNCA acepta en `assignments`: `estado` tiene su
+# propio parámetro (para que la guarda `expected_estado` quede visible en la
+# firma, no enterrada en un dict libre) y `id` identifica la fila, no un valor
+# a escribir. Un solo escritor de la columna de estado — mismo principio que
+# retiró `status` de `ArchiveRepository.update_expediente` (ver su docstring).
+_FORBIDDEN_ASSIGNMENT_COLS = frozenset({"estado", "id"})
 
 
 class TransferenciaRepository:
@@ -68,14 +78,64 @@ class TransferenciaRepository:
         )
 
     async def update_estado(
-        self, transferencia_id: uuid.UUID, assignments: dict
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        expected_estado: str,
+        estado: str,
+        assignments: dict | None = None,
     ) -> asyncpg.Record | None:
+        """Transiciona `estado` con guarda TOCTOU (H-A) — gemela de
+        `ArchiveRepository.transition_expediente` (ver su docstring, H3/cf83324).
+
+        Antes este método emitía `UPDATE ... WHERE id = $N` SIN comprobar el
+        estado de origen: `TransferenciaService._require` validaba la
+        transición ANTES de llamar aquí, pero esa validación quedaba FUERA de
+        la sentencia — dos llamadas concurrentes (p. ej. `rechazar()` y
+        `recibir()` sobre la MISMA transferencia 'enviada') podían leer ambas
+        el mismo estado de origen, pasar `_require`, y comprometer AMBOS
+        `UPDATE`. El desenlace letal: `rechazada` + expediente ya congelado
+        `transferred` por el `recibir()` concurrente -- un estado jurídicamente
+        imposible e irreversible en un `audit_log` INDELEBLE (Ley 594/2000 art.
+        16; Acuerdo AGN 001/2024 Tít. 4.4).
+
+        `expected_estado` es OBLIGATORIO y solo por *keyword*, sin default: con
+        un default "permisivo" un call-site futuro podría omitirlo y el TOCTOU
+        volvería en silencio; sin default, olvidarlo es un `TypeError` en la
+        primera llamada, no un bug que sobrevive a los tests. `estado` sale del
+        dict libre para que la guarda sea visible en la firma, no un valor más
+        entre `assignments` (que además la RECHAZA explícitamente, junto con
+        `id`, ver `_FORBIDDEN_ASSIGNMENT_COLS`).
+
+        `None` (perdedor de la carrera) es responsabilidad del LLAMANTE:
+        `_require` sigue siendo la validación temprana/UX (404/409 con mensaje
+        de negocio); este `WHERE` es quien serializa de verdad bajo
+        concurrencia real y quien decide el caso alcanzable.
+        """
+        assignments = assignments or {}
+        forbidden = _FORBIDDEN_ASSIGNMENT_COLS & assignments.keys()
+        if forbidden:
+            raise ValueError(
+                f"update_estado: assignments no puede incluir {sorted(forbidden)} "
+                "-- usa los parámetros `estado`/`transferencia_id` dedicados."
+            )
         await self._sp()
         cols = list(assignments.keys())
-        set_clause = ", ".join(f"{c} = ${i}" for i, c in enumerate(cols, start=1))
-        idx = len(cols) + 1
+        set_parts = ["estado = $1"]
+        params: list[object] = [estado]
+        idx = 2
+        for c in cols:
+            set_parts.append(f"{c} = ${idx}")
+            params.append(assignments[c])
+            idx += 1
+        id_idx = idx
+        params.append(transferencia_id)
+        idx += 1
+        expected_idx = idx
+        params.append(expected_estado)
         return await self._conn.fetchrow(
-            f"UPDATE transferencias SET {set_clause} WHERE id = ${idx} " f"RETURNING {_COLS}",
-            *assignments.values(),
-            transferencia_id,
+            f"UPDATE transferencias SET {', '.join(set_parts)} "
+            f"WHERE id = ${id_idx} AND estado = ${expected_idx} "
+            f"RETURNING {_COLS}",
+            *params,
         )
