@@ -120,20 +120,70 @@ class TransferenciaService:
                         "status": 409,
                     },
                 )
-            # H-M (Media, Ley 594/2000 art. 23 -- ciclo vital): coherencia
-            # origen/destino con el TIPO de transferencia. Regla "ambos o
-            # ninguno": si el cliente aporta topología física, exige el PAR
-            # completo y coherente con la fase de archivo; si no aporta
-            # ninguna, se admite -- E17 (archivo físico) es explícitamente
-            # PARCIAL en el roadmap y no todo tenant tendrá su topología de
-            # `ubicacion` poblada (acoplar E12 a un E17 completo rompería esa
-            # adopción). Lecturas PLANAS de `ubicacion` -- topología física
-            # (fase de archivo), no CONTENIDO del expediente: a diferencia
-            # del FUID, no hay aquí concern de clearance/no-read-up.
-            # Va ANTES de la tx: son solo lecturas, nada que revertir todavía.
+            # H-M (Media, Ley 594/2000 art. 23 -- ciclo vital) + cotejo (RF-FIR-15,
+            # Ac. AGN 001/2024 Anexo FUID; Ley 594/2000 arts. 15/26): coherencia
+            # origen/destino con el TIPO de transferencia, y obligatoriedad
+            # CONDICIONADA a la tenencia física LOCALIZADA del expediente.
+            # `expediente_unidad` es M2M (un expediente puede estar en VARIAS
+            # unidades) y `unidad_conservacion.ubicacion_id` es NULLABLE
+            # (migración 010, ON DELETE SET NULL) -- una unidad SIN
+            # `ubicacion_id` no cuenta como tenencia localizada, no hay
+            # ubicación contra la cual cotejar.
+            #
+            # Rama A (CON tenencia localizada): origen/destino OBLIGATORIOS y
+            # el origen debe COTEJAR -- estar ENTRE las ubicaciones ACTUALES
+            # del expediente (no una fase de archivo arbitraria). Sin esto, el
+            # acta FUID congelada al recibir (H-I) atestiguaría un movimiento
+            # no sustentado por el vínculo real `expediente_unidad` --
+            # inventario incompleto.
+            #
+            # Rama B (SIN tenencia localizada -- expediente puramente
+            # electrónico, o físico sin `ubicacion_id` resuelta): la
+            # transferencia es LÓGICA, origen/destino físico son N/A. Se
+            # conserva el comportamiento H-M previo ("ambos o ninguno", SIN
+            # cotejo -- no hay ubicación actual contra la cual cotejar) --
+            # exigir topología física SIEMPRE haría imposible transferir un
+            # expediente electrónico, el caso de uso central de un DMS
+            # moderno; E17 (archivo físico) es explícitamente PARCIAL en el
+            # roadmap y no todo tenant tendrá su topología de `ubicacion`
+            # poblada. Residual declarado (RF-FIR-15): un expediente sin
+            # tenencia localizada que SÍ aporta el par no se cotea -- no peor
+            # que el status-quo previo a este incremento (antes NINGÚN origen
+            # se coteaba).
+            #
+            # El destino NUNCA se cotea (en ninguna rama): es a DÓNDE VA, no
+            # dónde está -- solo se valida por coherencia de tipo, como hasta
+            # ahora.
+            #
+            # Lecturas PLANAS de `expediente_unidad`/`ubicacion` -- topología
+            # física, no CONTENIDO del expediente: a diferencia del FUID, no
+            # hay aquí concern de clearance/no-read-up. Va ANTES de la tx: son
+            # solo lecturas, nada que revertir todavía.
             origen_id = payload.ubicacion_origen_id
             destino_id = payload.ubicacion_destino_id
-            if (origen_id is None) != (destino_id is None):
+            fisico_repo = FisicoRepository(self._conn, self._tenant)
+            units = await fisico_repo.units_of_expediente(payload.expediente_id)
+            current_ubicaciones = {
+                u["ubicacion_id"] for u in units if u["ubicacion_id"] is not None
+            }
+            tiene_tenencia_localizada = bool(current_ubicaciones)
+
+            if tiene_tenencia_localizada:
+                if origen_id is None or destino_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "ubicaciones_requeridas_fisico",
+                            "detail": (
+                                "El expediente tiene tenencia física localizada -- "
+                                "ubicacion_origen_id y ubicacion_destino_id son "
+                                "obligatorios (Ley 594/2000 arts. 15/26, Anexo FUID "
+                                "Ac. AGN 001/2024)"
+                            ),
+                            "status": 422,
+                        },
+                    )
+            elif (origen_id is None) != (destino_id is None):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail={
@@ -156,7 +206,6 @@ class TransferenciaService:
                             "status": 422,
                         },
                     )
-                fisico_repo = FisicoRepository(self._conn, self._tenant)
                 ub_origen = await fisico_repo.get_ubicacion(origen_id)
                 ub_destino = await fisico_repo.get_ubicacion(destino_id)
                 if ub_origen is None or ub_destino is None:
@@ -165,6 +214,23 @@ class TransferenciaService:
                         detail={
                             "error": "ubicacion_not_found",
                             "detail": "ubicacion_origen_id o ubicacion_destino_id no existe",
+                            "status": 422,
+                        },
+                    )
+                # Cotejo (nuevo, solo rama A -- sin tenencia localizada no hay
+                # ubicación actual contra la cual cotejar). Va ANTES de la
+                # coherencia de tipo: "no es una ubicación actual del
+                # expediente" es un error fáctico más fuerte y específico que
+                # "es del tipo equivocado" -- el cotejo gana.
+                if tiene_tenencia_localizada and origen_id not in current_ubicaciones:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "ubicacion_origen_no_actual",
+                            "detail": (
+                                "ubicacion_origen_id no es una ubicación actual del "
+                                "expediente (vínculo expediente_unidad)"
+                            ),
                             "status": 422,
                         },
                     )
