@@ -10,21 +10,33 @@
 -->
 
 <!--
-  AssistantDock.svelte — Panel lateral del asistente conversacional.
+  AssistantDock.svelte — Panel lateral del asistente conversacional (E22/E18).
 
-  Estado: VACÍO (placeholder para Fase 3 / T-14).
+  Traduce lenguaje natural a *tool calls* de la capa MCP vía el gateway
+  (heredan auth + RBAC + tenant + auditoría) — este componente solo dibuja
+  la conversación, nunca ejecuta acciones por su cuenta.
 
-  El dock se activa/oculta con el botón en la topbar.
-  En Fase 3 se conectará a:
-    - $lib/stores/assistant.js (estado de la conversación)
-    - $lib/services/assistant.service.js (POST /api/v1/assistant/message)
-    - Panel de chat, entrada de texto, VoiceInput y subida de anexos.
+  Conectado a:
+    - $lib/stores/assistant.js — estado de la conversación (turnos, sending/error/unavailable)
+    - $lib/services/assistant.service.js — POST /asistente/api/message (proxy SSR, D-05)
 
-  Por ahora renderiza un estado vacío accesible que no produce errores
-  y sirve de ancla para los tests de T-05.
+  El backend real (mcp-server, E18) es scaffold: si el proxy responde
+  `assistant_unavailable` (backend ausente/501), se muestra un estado
+  HONESTO — nunca una respuesta simulada.
+
+  Diferidos explícitos de este slice: VoiceInput, subida de anexos,
+  streaming (SSE), persistencia de historial entre recargas (el hilo vive
+  solo en memoria del store; "Nueva conversación" lo limpia).
 -->
 <script>
   import { onMount, tick } from "svelte";
+  import {
+    assistantState,
+    send as sendAssistant,
+    reset as resetAssistant,
+  } from "$lib/stores/assistant.js";
+  import Button from "$lib/components/ui/Button.svelte";
+  import Loader from "$lib/components/ui/Loader.svelte";
 
   /** Controla si el dock está visible */
   export let open = false;
@@ -40,6 +52,7 @@
 
   let dockEl;
   let closeBtnEl;
+  let inputEl;
   /** @type {Element|null} */
   let previousFocus = null;
 
@@ -80,7 +93,11 @@
   $: if (typeof document !== "undefined" && open) {
     previousFocus = document.activeElement;
     tick().then(() => {
-      if (closeBtnEl) closeBtnEl.focus();
+      // Foco al campo de mensaje al abrir: es un dock de chat, el usuario debe
+      // poder escribir de inmediato. `closeBtnEl` como respaldo si el textarea
+      // aún no está montado (ambos dentro del focus-trap, así que el trap se
+      // mantiene en cualquier caso).
+      (inputEl ?? closeBtnEl)?.focus?.();
     });
   } else if (previousFocus) {
     // Copia local + limpieza inmediata (no dentro del `.then`): evita que un
@@ -99,6 +116,37 @@
     document.addEventListener("keydown", trapFocus);
     return () => document.removeEventListener("keydown", trapFocus);
   });
+
+  // ---------------------------------------------------------------------------
+  // Chat — estado de la conversación (E22/E18)
+  // ---------------------------------------------------------------------------
+  let draft = "";
+  let messagesEl;
+
+  /** Envía el borrador actual. El turno del usuario se conserva aunque falle. */
+  function handleSubmit() {
+    const texto = draft.trim();
+    if (!texto || $assistantState.estado === "sending") return;
+    draft = "";
+    sendAssistant(texto);
+  }
+
+  /** Enter envía; Shift+Enter inserta salto de línea. */
+  function handleKeydown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }
+
+  // Autoscroll al último turno — guardado (D-16): solo corre en el navegador,
+  // `messagesEl` es `undefined` durante SSR y el acceso a `window`/DOM ahí
+  // rompería el render del layout.
+  $: if (typeof window !== "undefined" && $assistantState.messages) {
+    tick().then(() => {
+      if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+  }
 </script>
 
 {#if open}
@@ -115,35 +163,115 @@
     role="dialog"
     aria-modal="true"
     aria-label="Asistente conversacional"
-    aria-live="polite"
   >
     <div class="assistant-dock__header">
       <span class="assistant-dock__title">
         <i class="fas fa-robot" aria-hidden="true"></i>
         Asistente OrpycaMCP
       </span>
-      <button
-        bind:this={closeBtnEl}
-        class="assistant-dock__close"
-        type="button"
-        aria-label="Cerrar asistente"
-        on:click={onClose}
-      >
-        <i class="fas fa-times" aria-hidden="true"></i>
-      </button>
-    </div>
-
-    <div class="assistant-dock__body">
-      <!-- Placeholder Fase 3 — T-14 reemplaza este bloque -->
-      <div class="assistant-dock__placeholder">
-        <i class="fas fa-comments" aria-hidden="true"></i>
-        <p>El asistente estará disponible en la Fase 3.</p>
-        <p class="assistant-dock__placeholder-sub">
-          Podrá radicar, consultar expedientes y ejecutar tareas mediante lenguaje natural, acotado
-          por sus permisos.
-        </p>
+      <div class="assistant-dock__header-actions">
+        <button
+          class="assistant-dock__reset"
+          type="button"
+          disabled={$assistantState.messages.length === 0}
+          aria-label="Iniciar una nueva conversación"
+          title="Nueva conversación"
+          on:click={() => resetAssistant()}
+        >
+          <i class="fas fa-rotate-left" aria-hidden="true"></i>
+        </button>
+        <button
+          bind:this={closeBtnEl}
+          class="assistant-dock__close"
+          type="button"
+          aria-label="Cerrar asistente"
+          on:click={onClose}
+        >
+          <i class="fas fa-times" aria-hidden="true"></i>
+        </button>
       </div>
     </div>
+
+    <!--
+      Live region acotada a la lista de turnos (no a todo el <aside>): así
+      solo se anuncian los mensajes nuevos, no el chrome del dock (header,
+      formulario). `role="log"` es el patrón ARIA recomendado para chats.
+    -->
+    <div
+      class="assistant-dock__body"
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions"
+      bind:this={messagesEl}
+    >
+      {#if $assistantState.messages.length === 0 && $assistantState.estado === "idle"}
+        <div class="assistant-dock__placeholder">
+          <i class="fas fa-comments" aria-hidden="true"></i>
+          <p>Escribe una consulta para comenzar.</p>
+          <p class="assistant-dock__placeholder-sub">
+            Podrá radicar, consultar expedientes y ejecutar tareas mediante lenguaje natural,
+            acotado por sus permisos. Toda acción de escritura pedirá confirmación explícita.
+          </p>
+        </div>
+      {/if}
+
+      {#each $assistantState.messages as turn (turn.id)}
+        <div class="assistant-turn assistant-turn--{turn.role}">
+          <span class="sr-only">{turn.role === "user" ? "Tú" : "Asistente"}:</span>
+          {#if turn.html}
+            <!-- HTML saneado server-side ($lib/server/sanitizeHtml.js) en el proxy — nunca crudo (D-05). -->
+            <div class="assistant-turn__bubble">{@html turn.html}</div>
+          {:else}
+            <p class="assistant-turn__bubble assistant-turn__bubble--plain">{turn.texto}</p>
+          {/if}
+        </div>
+      {/each}
+
+      {#if $assistantState.estado === "sending"}
+        <div class="assistant-turn assistant-turn--assistant assistant-turn--pending">
+          <Loader type="spinner" size="sm" label="El asistente está escribiendo…" />
+        </div>
+      {/if}
+    </div>
+
+    {#if $assistantState.estado === "unavailable"}
+      <div class="assistant-dock__banner assistant-dock__banner--info" role="status">
+        <i class="fas fa-circle-info" aria-hidden="true"></i>
+        <span>El asistente aún no está disponible. Esta función se activará próximamente.</span>
+      </div>
+    {:else if $assistantState.estado === "error"}
+      <div class="assistant-dock__banner assistant-dock__banner--error" role="alert">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span
+          >{$assistantState.errorDetail ?? "No se pudo enviar el mensaje. Intente de nuevo."}</span
+        >
+      </div>
+    {/if}
+
+    <form class="assistant-dock__form" on:submit|preventDefault={handleSubmit}>
+      <label for="assistant-dock-input" class="sr-only">Mensaje para el asistente</label>
+      <textarea
+        id="assistant-dock-input"
+        class="assistant-dock__input"
+        bind:this={inputEl}
+        bind:value={draft}
+        on:keydown={handleKeydown}
+        rows="2"
+        maxlength="4000"
+        placeholder="Escribe tu mensaje…"
+        disabled={$assistantState.estado === "sending"}
+      ></textarea>
+      <Button
+        type="submit"
+        variant="primary"
+        size="sm"
+        icon="fas fa-paper-plane"
+        loading={$assistantState.estado === "sending"}
+        disabled={!draft.trim() || $assistantState.estado === "sending"}
+      >
+        <span class="sr-only">Enviar mensaje</span>
+      </Button>
+    </form>
   </aside>
 {/if}
 
@@ -188,7 +316,14 @@
       color: var(--op-primary-dark);
     }
 
-    &__close {
+    &__header-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-1);
+    }
+
+    &__close,
+    &__reset {
       background: none;
       border: none;
       cursor: pointer;
@@ -198,7 +333,7 @@
       display: flex;
       align-items: center;
 
-      &:hover {
+      &:hover:not(:disabled) {
         background: var(--op-bg);
         color: var(--op-text);
       }
@@ -207,18 +342,24 @@
         outline: 2px solid var(--op-primary);
         outline-offset: 2px;
       }
+
+      &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
     }
 
     &__body {
       flex: 1;
       overflow-y: auto;
       display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: var(--op-space-5);
+      flex-direction: column;
+      gap: var(--op-space-3);
+      padding: var(--op-space-4);
     }
 
     &__placeholder {
+      margin: auto;
       text-align: center;
       color: var(--op-text-secondary);
 
@@ -238,6 +379,126 @@
     &__placeholder-sub {
       font-size: var(--op-font-sm) !important;
       opacity: 0.7;
+    }
+
+    &__banner {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--op-space-2);
+      margin: 0 var(--op-space-4) var(--op-space-3);
+      padding: var(--op-space-3);
+      border-radius: var(--op-radius-sm);
+      font-size: var(--op-font-sm);
+      flex-shrink: 0;
+
+      &--info {
+        background: var(--op-primary-light);
+        color: var(--op-primary-dark);
+      }
+
+      &--error {
+        background: var(--op-error-ring);
+        color: var(--op-error);
+      }
+
+      i {
+        margin-top: 2px;
+        flex-shrink: 0;
+      }
+    }
+
+    &__form {
+      display: flex;
+      align-items: flex-end;
+      gap: var(--op-space-2);
+      padding: var(--op-space-3) var(--op-space-4);
+      border-top: 1px solid var(--op-border);
+      flex-shrink: 0;
+    }
+
+    &__input {
+      flex: 1;
+      resize: none;
+      font-family: var(--op-font-family);
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+      background: var(--op-bg);
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius-sm);
+      padding: var(--op-space-2) var(--op-space-3);
+
+      &:focus-visible,
+      &:focus {
+        outline: 2px solid var(--op-primary);
+        outline-offset: 1px;
+        border-color: var(--op-primary);
+      }
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+    }
+  }
+
+  .assistant-turn {
+    display: flex;
+    max-width: 88%;
+
+    &--user {
+      align-self: flex-end;
+
+      .assistant-turn__bubble {
+        background: var(--op-primary);
+        color: var(--op-surface);
+        border-bottom-right-radius: 2px;
+      }
+    }
+
+    &--assistant {
+      align-self: flex-start;
+
+      .assistant-turn__bubble {
+        background: var(--op-bg);
+        color: var(--op-text);
+        border-bottom-left-radius: 2px;
+      }
+    }
+
+    &--pending {
+      padding: var(--op-space-2) 0;
+    }
+
+    &__bubble {
+      margin: 0;
+      padding: var(--op-space-2) var(--op-space-3);
+      border-radius: var(--op-radius);
+      font-size: var(--op-font-sm);
+      line-height: 1.45;
+      overflow-wrap: break-word;
+
+      &--plain {
+        white-space: pre-wrap;
+      }
+
+      :global(p) {
+        margin: 0 0 var(--op-space-2);
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+
+      :global(a) {
+        color: inherit;
+        text-decoration: underline;
+      }
+
+      :global(code) {
+        background: var(--op-border);
+        color: var(--op-text);
+        border-radius: 3px;
+        padding: 0 3px;
+      }
     }
   }
 

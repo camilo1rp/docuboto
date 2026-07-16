@@ -848,3 +848,26 @@ Evalúa varios radicados (1-500) contra el mismo conjunto de reglas en una sola 
 // Response 200
 { "results": [ { "matched": true, "radicado_id": "uuid", "assign_to_dept": "...", ... }, ... ] }
 ```
+
+## Asistente conversacional — mcp-server (E18/E22, ADR-020) — **contrato definido, backend PENDIENTE**
+
+> El **frontend** del asistente está implementado (E22: store, service, proxy BFF, UI de chat en `AssistantDock`); el **backend** (`mcp-server`, LLM/knowledge reales) es scaffold pendiente de roadmap. El proxy SvelteKit apunta a este contrato y, mientras el gateway no lo exponga, traduce la ausencia (404/501/5xx/conexión rehusada) a un `503 assistant_unavailable` — la UI muestra "asistente no disponible", nunca una respuesta simulada.
+
+### `POST /api/v1/assistant/message`
+
+Envía un turno del usuario y devuelve la respuesta del asistente. Autorización: **autenticado** (sin permiso `--op` fino; cada acción que el asistente dispare hacia adelante se re-valida contra el RBAC/clearance del usuario en el servicio que la ejecute). Headers de identidad (`X-Tenant-Slug`/`X-User-Id`/`X-Username`) los inyecta el proxy SSR desde `locals`, nunca del body.
+
+```json
+// Request  (allowlist en el proxy: solo estos dos campos)
+{ "mensaje": "string (≤4000, trim)", "conversation_id": "uuid (opcional)" }
+// Response 200
+{
+  "conversation_id": "uuid",
+  "message": { "id": "uuid", "role": "assistant", "texto": "respuesta (AUTORITATIVO)", "formato": "markdown|text", "ts": "ISO-8601" }
+}
+```
+
+- `texto` es la **fuente de verdad**; `formato` es una pista de render. El proxy convierte `formato:"markdown"` a HTML con `marked` y lo **sanea server-side** (`sanitizeHtml`) antes de cruzar al cliente — el output del asistente es **contenido no confiable** (XSS/prompt-injection). El backend **no** debe enviar HTML; si lo hiciera, el proxy lo ignora.
+- Reservado para el futuro (el slice actual los ignora sin romperse): `acciones[]`, `citations[]`, `usage`.
+- Preparado para **streaming** (no construido): un `POST .../message/stream` (NDJSON/SSE) con el mismo `conversation_id` y `message.id` estables por turno permitiría *appendear* deltas al mismo turno sin cambiar el shape.
+- **Nota de contrato (a reconciliar)**: el proxy envía `X-Username` desde el claim `preferred_username` (el `SessionUser` del front no tiene `username`).
