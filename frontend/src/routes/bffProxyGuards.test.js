@@ -37,6 +37,7 @@ import { GET as firmasGet } from "./(app)/firmas/api/+server.js";
 import { GET as borradoresGet, POST as borradoresPost } from "./(app)/borradores/api/+server.js";
 import { GET as busquedaGet } from "./(app)/busqueda/api/+server.js";
 import { GET as descargaGet } from "./(app)/expedientes/[id]/api/download/[fileId]/+server.js";
+import { GET as metadataTemplatesGet } from "./(app)/expedientes/api/metadata-templates/+server.js";
 
 // Proxies de escritura — anular, reclasificar, firmar/rechazar, transferir, radicar.
 import { POST as anulacionPost } from "./(app)/bandeja/api/[id]/anulacion/+server.js";
@@ -118,6 +119,17 @@ describe("Proxies BFF — 401 sin locals.accessToken (D-05)", () => {
       url: url("/bandeja/api"),
     });
     expect(res.status).toBe(401);
+  });
+
+  it("expedientes/api/metadata-templates GET → 401 unauthenticated (antes de validar trd_serie_id)", async () => {
+    // Sin `trd_serie_id` el handler devolvería 400 si llegara a la validación
+    // del allowlist; el 401 debe ganar siempre porque el guard es lo primero.
+    const res = await metadataTemplatesGet({
+      locals: NO_SESSION_LOCALS,
+      url: url("/expedientes/api/metadata-templates"),
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("unauthenticated");
   });
 });
 

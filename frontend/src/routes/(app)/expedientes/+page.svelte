@@ -14,8 +14,10 @@
 
   Todo el estado de la vista (filtros, página) vive en la URL: los cambios usan
   goto() y re-ejecutan +page.server.js#load (navegación cliente de SvelteKit,
-  sin recarga completa). No hay ningún endpoint proxy /expedientes/api — D-05
-  se cumple por construcción (el access_token nunca sale del servidor).
+  sin recarga completa). El listado en sí es SSR-puro; el ÚNICO endpoint
+  proxy bajo /expedientes/api es GET metadata-templates (D-05), usado por el
+  Modal de creación al elegir una serie TRD (T-12 Form Builder, §1 del
+  contrato orfeo-architect) — el access_token nunca sale del servidor.
 
   Filtros soportados por /api/v1/expedientes/search:
     - q (texto libre, opcional; se omite del backend si tiene <2 caracteres)
@@ -28,6 +30,12 @@
   /auth/me expone permissions[] sin nivel crud — no se puede espejar esa
   condición sin renderizar botones que el backend rechazaría (peor que no
   mostrarlos). Cerrar/transferir viven en el workspace de expediente.
+
+  Modal de creación (T-12 Form Builder): al elegir una serie TRD se carga su
+  plantilla de metadatos ACTIVA (json_schema) y se renderizan sus campos
+  dinámicos vía SchemaField.svelte — ver $lib/utils/schemaField.js para el
+  mapeo tipo-de-schema -> control. Constructos no soportados (object/array/
+  oneOf/$ref) no se renderizan; se avisa con un contador.
 
   nivel_seguridad: NO se muestra en el listado ni en el formulario de
   creación (fijo en 1/PÚBLICA) — ver nota en +page.server.js#actions.create.
@@ -46,6 +54,8 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
+  import SchemaField from "$lib/components/ui/SchemaField.svelte";
+  import { resolveSchemaControl } from "$lib/utils/schemaField.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -171,10 +181,81 @@
   let createTrdSerieId = "";
   let creating = false;
 
+  // ---------------------------------------------------------------------------
+  // Form Builder (T-12): campos dinámicos de la plantilla de metadatos de la
+  // serie TRD elegida. Se traen del proxy GET /expedientes/api/metadata-templates
+  // (D-05, contrato §1) al cambiar `createTrdSerieId` — no del `load` SSR:
+  // el Modal tiene estado local y un reload SSR a mitad de formulario lo
+  // perdería.
+  // ---------------------------------------------------------------------------
+  /** @type {any} plantilla activa de la serie (ExpedienteTemplateResponse) */
+  let activeTemplate = null;
+  let loadingTemplate = false;
+  /** @type {Record<string, string>} valores de los campos dinámicos, por clave del schema */
+  let metadataValues = {};
+
+  $: serieOptions = [
+    { value: "", label: "— sin serie / sin metadatos —" },
+    ...(data.trdSeries ?? []).map((s) => ({ value: s.id, label: `${s.code} — ${s.name}` })),
+  ];
+
+  $: templateProperties =
+    activeTemplate?.json_schema?.properties && typeof activeTemplate.json_schema.properties === "object"
+      ? Object.entries(activeTemplate.json_schema.properties)
+      : [];
+  $: templateRequired = activeTemplate?.json_schema?.required ?? [];
+  // SchemaField ya decide por sí mismo si un constructo es soportado, pero la
+  // página necesita filtrar ANTES de renderizar para poder contar los que no
+  // lo son (aviso) — resolveSchemaControl es la misma función que usa
+  // SchemaField internamente (fuente única de verdad, $lib/utils/schemaField.js).
+  $: supportedTemplateProperties = templateProperties.filter(
+    ([, propSchema]) => resolveSchemaControl(propSchema) !== null,
+  );
+  $: unsupportedFieldCount = templateProperties.length - supportedTemplateProperties.length;
+
+  /**
+   * Trae la plantilla ACTIVA de metadatos de la serie elegida y prepara
+   * `metadataValues`. `presetValues`, si se pasa, repuebla los campos tras un
+   * 422 del backend (mismo espíritu que M-7 para name/description/trd).
+   * @param {Record<string, string>|null} [presetValues]
+   */
+  async function onSerieChange(presetValues = null) {
+    activeTemplate = null;
+    metadataValues = {};
+    if (!createTrdSerieId) return;
+
+    loadingTemplate = true;
+    try {
+      const params = new URLSearchParams({ trd_serie_id: createTrdSerieId });
+      const res = await fetch(`/expedientes/api/metadata-templates?${params}`);
+      /** @type {any[]} */
+      const templates = await res.json();
+      if (!res.ok) throw templates;
+      const found = Array.isArray(templates) ? templates.find((t) => t?.activo) : null;
+      activeTemplate = found ?? null;
+      if (activeTemplate?.json_schema?.properties) {
+        metadataValues = Object.fromEntries(
+          Object.keys(activeTemplate.json_schema.properties).map((k) => [
+            k,
+            presetValues?.[k] ?? "",
+          ]),
+        );
+      }
+    } catch {
+      // Sin plantilla activa (o error de red) es válido; el backend valida
+      // `metadata` de todas formas al crear.
+      activeTemplate = null;
+    } finally {
+      loadingTemplate = false;
+    }
+  }
+
   function openCreateModal() {
     createName = "";
     createDescription = "";
     createTrdSerieId = "";
+    activeTemplate = null;
+    metadataValues = {};
     showCreateModal = true;
   }
 
@@ -188,8 +269,32 @@
       createName = form.values.name ?? "";
       createDescription = form.values.description ?? "";
       createTrdSerieId = form.values.trdSerieId ?? "";
+      // Si la plantilla ya estaba cargada (caso normal con JS: use:enhance no
+      // remonta el componente, metadataValues nunca se perdió), solo se
+      // fusionan los valores crudos por si acaso. Si NO hay plantilla en
+      // memoria (mount fresco tras un reload sin JS), se refetch — sin el
+      // schema no hay dónde repoblar los campos dinámicos.
+      if (createTrdSerieId && !activeTemplate && !loadingTemplate) {
+        onSerieChange(form.values.meta ?? null);
+      } else if (form.values.meta) {
+        metadataValues = { ...metadataValues, ...form.values.meta };
+      }
     }
   }
+
+  // Mapeo heurístico (best-effort) del 422 metadata_validation_failed a un
+  // campo concreto: el backend solo da el `message` de jsonschema (p. ej.
+  // "'monto_contrato' is a required property"), sin ruta estructurada — ver
+  // contrato §5. Si el mensaje empieza por 'clave' y esa clave está en el
+  // schema renderizado, se resalta ESE campo; si no hay match, el error
+  // queda solo en el aviso general del Modal (role="alert").
+  $: metaFieldError = (() => {
+    if (form?.error !== "metadata_validation_failed" || typeof form?.detail !== "string") return {};
+    const match = /^'([^']+)'/.exec(form.detail);
+    const key = match?.[1];
+    if (!key || !templateProperties.some(([k]) => k === key)) return {};
+    return { [key]: form.detail };
+  })();
 
   // El error de validación de `name` ("obligatorio" / "máximo 500 caracteres")
   // se anexa también al campo (aria-invalid + aria-describedby vía FormField,
@@ -397,11 +502,46 @@
           id="create-trd"
           name="trd_serie_id"
           label="Serie TRD (opcional)"
-          type="text"
+          type="select"
           bind:value={createTrdSerieId}
-          placeholder="UUID de la serie documental"
-          hint="Déjalo vacío si no aplica una serie TRD específica."
+          options={serieOptions}
+          hint="Elegir una serie con plantilla de metadatos activa habilita campos adicionales."
+          on:change={() => onSerieChange()}
         />
+
+        <!-- Campos dinámicos de la plantilla de metadatos de la serie (T-12 Form Builder) -->
+        {#if createTrdSerieId}
+          <div class="modal-form__meta">
+            {#if loadingTemplate}
+              <p class="modal-form__meta-loading">
+                <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+                Cargando metadatos de la serie…
+              </p>
+            {:else if supportedTemplateProperties.length > 0}
+              <p class="modal-form__section-label">
+                <i class="fas fa-tags" aria-hidden="true"></i>
+                Metadatos de la serie
+              </p>
+              {#each supportedTemplateProperties as [key, propSchema] (key)}
+                <SchemaField
+                  propKey={key}
+                  schema={propSchema}
+                  required={templateRequired.includes(key)}
+                  bind:value={metadataValues[key]}
+                  error={metaFieldError[key] ?? ""}
+                />
+              {/each}
+            {/if}
+            {#if unsupportedFieldCount > 0}
+              <p class="modal-form__meta-warning" role="status">
+                {unsupportedFieldCount}
+                {unsupportedFieldCount === 1 ? "campo" : "campos"} de la plantilla no se
+                {unsupportedFieldCount === 1 ? "puede editar" : "pueden editar"} en este formulario.
+              </p>
+            {/if}
+          </div>
+        {/if}
+
         <!--
         Nivel de seguridad: NO seleccionable en v1. SessionUser (JWT + /auth/me)
         no expone el clearance del usuario en el front, así que no hay forma de
@@ -567,6 +707,44 @@
     display: flex;
     flex-direction: column;
     gap: var(--op-space-3);
+  }
+
+  // Campos dinámicos de la plantilla de metadatos (T-12 Form Builder)
+  .modal-form__meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-3);
+    padding: var(--op-space-3);
+    border: 1px dashed var(--op-border);
+    border-radius: var(--op-radius);
+    background: var(--op-bg);
+  }
+
+  .modal-form__section-label {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    margin: 0;
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .modal-form__meta-loading {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    margin: 0;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+  }
+
+  .modal-form__meta-warning {
+    margin: 0;
+    font-size: var(--op-font-xs);
+    color: var(--op-warning);
   }
 
   .modal-error {

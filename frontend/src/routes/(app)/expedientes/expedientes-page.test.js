@@ -55,6 +55,7 @@ function baseData(overrides = {}) {
     total: 0,
     loadError: null,
     initialFilters: { q: "", status: "", dateFrom: "", dateTo: "", page: 1 },
+    trdSeries: [],
     ...overrides,
   };
 }
@@ -246,10 +247,25 @@ describe("/expedientes — formulario de creación muestra el error del action",
     expect(nameInput.getAttribute("aria-describedby")).toContain("create-name-error");
   });
 
-  it("repuebla el formulario con los `values` que devuelve fail() tras un error (M-7)", () => {
+  it("repuebla el formulario con los `values` que devuelve fail() tras un error (M-7)", async () => {
+    // T-12 Form Builder: "Serie TRD" pasó de <input type=text> a <select> (el
+    // texto libre de UUID era código muerto — nadie teclea UUIDs). Para que
+    // el <select> pueda tener ESE valor seleccionado necesita una <option>
+    // real con ese id — de ahí `trdSeries` en `data`. El fetch al proxy de
+    // plantillas se stubea (jsdom no trae `fetch`): sin plantilla activa es
+    // un resultado válido, no afecta la repoblación de name/description/serie.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => [] }));
+
     render(ExpedientesPage, {
       props: {
-        data: baseData({ expedientes: [HIT_1], total: 1 }),
+        data: baseData({
+          expedientes: [HIT_1],
+          total: 1,
+          trdSeries: [
+            { id: "11111111-1111-1111-1111-111111111111", code: "1000", name: "Contratos" },
+          ],
+        }),
         form: {
           error: "validation_error",
           detail: "El nombre no puede superar los 500 caracteres.",
@@ -267,6 +283,8 @@ describe("/expedientes — formulario de creación muestra el error del action",
     expect(screen.getByLabelText("Serie TRD (opcional)")).toHaveValue(
       "11111111-1111-1111-1111-111111111111",
     );
+
+    globalThis.fetch = originalFetch;
   });
 
   it("un error no atribuible a un campo (upstream_error) NO se pisa en el campo Nombre, se muestra en el aviso general", () => {
@@ -282,6 +300,134 @@ describe("/expedientes — formulario de creación muestra el error del action",
       "false",
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Error 500 al crear el expediente.");
+  });
+});
+
+describe("/expedientes — Form Builder (T-12): campos dinámicos de la plantilla de la serie", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_EXPEDIENTE"] }));
+  });
+  afterEach(() => {
+    clearSession();
+    vi.restoreAllMocks();
+  });
+
+  const SERIE_ID = "44444444-4444-4444-4444-444444444444";
+  const TRD_SERIES = [{ id: SERIE_ID, code: "2000", name: "Procesos disciplinarios" }];
+
+  it("el select de Serie TRD lista las series de data.trdSeries (además de la opción vacía)", async () => {
+    render(ExpedientesPage, {
+      props: {
+        data: baseData({ expedientes: [HIT_1], total: 1, trdSeries: TRD_SERIES }),
+        form: null,
+      },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Crear expediente" }));
+
+    expect(
+      screen.getByRole("option", { name: "— sin serie / sin metadatos —" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "2000 — Procesos disciplinarios" })).toBeInTheDocument();
+  });
+
+  it("elegir una serie con plantilla activa renderiza sus campos dinámicos (SchemaField)", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => [
+        {
+          id: "tpl-1",
+          activo: true,
+          json_schema: {
+            properties: {
+              motivo: { type: "string", title: "Motivo" },
+              urgente: { type: "boolean", title: "Urgente" },
+            },
+            required: ["motivo"],
+          },
+        },
+      ],
+    }));
+
+    render(ExpedientesPage, {
+      props: {
+        data: baseData({ expedientes: [HIT_1], total: 1, trdSeries: TRD_SERIES }),
+        form: null,
+      },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Crear expediente" }));
+    await fireEvent.change(screen.getByLabelText("Serie TRD (opcional)"), {
+      target: { value: SERIE_ID },
+    });
+
+    expect(await screen.findByLabelText("Motivo", { exact: false })).toHaveAttribute(
+      "name",
+      "meta_motivo",
+    );
+    const urgenteSelect = screen.getByLabelText("Urgente", { exact: false });
+    expect(urgenteSelect.tagName).toBe("SELECT");
+    expect(urgenteSelect).toHaveAttribute("name", "meta_urgente");
+  });
+
+  it("una plantilla con un campo no soportado (object) muestra el aviso de campos no editables", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => [
+        {
+          id: "tpl-2",
+          activo: true,
+          json_schema: {
+            properties: {
+              motivo: { type: "string" },
+              anexos_extra: { type: "object", properties: {} },
+            },
+            required: [],
+          },
+        },
+      ],
+    }));
+
+    render(ExpedientesPage, {
+      props: {
+        data: baseData({ expedientes: [HIT_1], total: 1, trdSeries: TRD_SERIES }),
+        form: null,
+      },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Crear expediente" }));
+    await fireEvent.change(screen.getByLabelText("Serie TRD (opcional)"), {
+      target: { value: SERIE_ID },
+    });
+
+    await screen.findByLabelText("motivo", { exact: false });
+    expect(screen.queryByLabelText("anexos_extra", { exact: false })).not.toBeInTheDocument();
+    expect(
+      screen.getByText("1 campo de la plantilla no se puede editar en este formulario."),
+    ).toBeInTheDocument();
+  });
+
+  it("serie sin plantilla activa: no renderiza campos dinámicos ni el aviso", async () => {
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => [] }));
+
+    render(ExpedientesPage, {
+      props: {
+        data: baseData({ expedientes: [HIT_1], total: 1, trdSeries: TRD_SERIES }),
+        form: null,
+      },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Crear expediente" }));
+    await fireEvent.change(screen.getByLabelText("Serie TRD (opcional)"), {
+      target: { value: SERIE_ID },
+    });
+
+    // Espera a que se resuelva el fetch (sin plantilla activa es un estado
+    // válido, no hay ningún elemento nuevo que esperar con findBy*).
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText(/no se puede editar/)).not.toBeInTheDocument();
   });
 });
 

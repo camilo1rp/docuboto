@@ -487,4 +487,260 @@ describe("expedientes/+page.server.js#actions.create — allowlist anti mass-ass
     expect(result.status).toBe(502);
     expect(result.data.error).toBe("invalid_upstream_response");
   });
+
+  it("422 metadata_validation_failed en forma ANIDADA (HTTPException(detail={...}) de FastAPI) se lee correctamente", async () => {
+    const fd = new FormData();
+    fd.set("name", "Expediente con plantilla TRD");
+    fd.set("trd_serie_id", "22222222-2222-2222-2222-222222222222");
+
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        detail: {
+          error: "metadata_validation_failed",
+          detail: "'monto_contrato' is a required property",
+          status: 422,
+        },
+      }),
+    }));
+
+    const result = await actions.create({
+      request: { formData: async () => fd },
+      cookies: { get: () => "tok" },
+      locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+    });
+
+    expect(result.status).toBe(422);
+    expect(result.data.error).toBe("metadata_validation_failed");
+    expect(result.data.detail).toBe("'monto_contrato' is a required property");
+  });
+});
+
+describe("expedientes/+page.server.js#actions.create — construcción de `metadata` (T-12 Form Builder)", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const SERIE_ID = "33333333-3333-3333-3333-333333333333";
+  const SCHEMA = {
+    json_schema: {
+      properties: {
+        motivo: { type: "string" },
+        monto_contrato: { type: "number" },
+        urgente: { type: "boolean" },
+        fecha_limite: { type: "string", format: "date" },
+        // No declarado en el schema — NO debe colarse en metadata aunque el
+        // cliente envíe meta_no_declarado (allowlist anti mass-assignment).
+      },
+      required: ["motivo"],
+    },
+  };
+
+  /** Instala un fetch fake: 1ª llamada = plantillas, 2ª = creación del expediente. */
+  function installTemplateThenCreateFetch({ templateBody = [{ ...SCHEMA, activo: true }] } = {}) {
+    const calls = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      calls.push({ input, init });
+      if (calls.length === 1) {
+        return { ok: true, status: 200, json: async () => templateBody };
+      }
+      return { ok: true, status: 201, json: async () => ({ id: "exp-meta-1" }) };
+    });
+    return calls;
+  }
+
+  it("construye metadata SOLO con las claves declaradas por el json_schema, coercionando tipos", async () => {
+    const calls = installTemplateThenCreateFetch();
+    const fd = new FormData();
+    fd.set("name", "Expediente con metadatos");
+    fd.set("trd_serie_id", SERIE_ID);
+    fd.set("meta_motivo", "Renovación de contrato");
+    fd.set("meta_monto_contrato", "1500000.50");
+    fd.set("meta_urgente", "true");
+    fd.set("meta_fecha_limite", "2026-12-31");
+    // Intento de mass-assignment: clave que NO está en el schema.
+    fd.set("meta_no_declarado", "inyeccion");
+
+    try {
+      await actions.create({
+        request: { formData: async () => fd },
+        cookies: { get: () => "tok" },
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+      });
+    } catch {
+      // redirect esperado
+    }
+
+    const createPayload = JSON.parse(calls[1].init.body);
+    expect(createPayload.metadata).toEqual({
+      motivo: "Renovación de contrato",
+      monto_contrato: 1500000.5,
+      urgente: true,
+      fecha_limite: "2026-12-31",
+    });
+    expect(createPayload.metadata.no_declarado).toBeUndefined();
+  });
+
+  it("campos meta_* vacíos se omiten de metadata (deja que el backend exija los required)", async () => {
+    const calls = installTemplateThenCreateFetch();
+    const fd = new FormData();
+    fd.set("name", "Expediente con metadatos parciales");
+    fd.set("trd_serie_id", SERIE_ID);
+    fd.set("meta_motivo", "Motivo mínimo");
+    // monto_contrato/urgente/fecha_limite: no se envían
+
+    try {
+      await actions.create({
+        request: { formData: async () => fd },
+        cookies: { get: () => "tok" },
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+      });
+    } catch {
+      // redirect esperado
+    }
+
+    const createPayload = JSON.parse(calls[1].init.body);
+    expect(createPayload.metadata).toEqual({ motivo: "Motivo mínimo" });
+  });
+
+  it("un valor number inválido ('abc') se omite en vez de enviar NaN", async () => {
+    const calls = installTemplateThenCreateFetch();
+    const fd = new FormData();
+    fd.set("name", "Expediente con monto inválido");
+    fd.set("trd_serie_id", SERIE_ID);
+    fd.set("meta_monto_contrato", "no-es-un-numero");
+
+    try {
+      await actions.create({
+        request: { formData: async () => fd },
+        cookies: { get: () => "tok" },
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+      });
+    } catch {
+      // redirect esperado
+    }
+
+    const createPayload = JSON.parse(calls[1].init.body);
+    expect(createPayload.metadata.monto_contrato).toBeUndefined();
+    expect(JSON.stringify(createPayload)).not.toContain("NaN");
+  });
+
+  it("sin serie TRD elegida: no se llama al endpoint de plantillas, metadata queda {}", async () => {
+    const calls = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      calls.push({ input, init });
+      return { ok: true, status: 201, json: async () => ({ id: "exp-sin-serie" }) };
+    });
+
+    const fd = new FormData();
+    fd.set("name", "Expediente sin serie");
+
+    try {
+      await actions.create({
+        request: { formData: async () => fd },
+        cookies: { get: () => "tok" },
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+      });
+    } catch {
+      // redirect esperado
+    }
+
+    expect(calls).toHaveLength(1); // solo la creación, ninguna llamada a plantillas
+    const createPayload = JSON.parse(calls[0].init.body);
+    expect(createPayload.metadata).toEqual({});
+  });
+
+  it("serie sin plantilla activa (lista vacía): metadata queda {} sin romper la creación", async () => {
+    const calls = installTemplateThenCreateFetch({ templateBody: [] });
+    const fd = new FormData();
+    fd.set("name", "Expediente con serie sin plantilla");
+    fd.set("trd_serie_id", SERIE_ID);
+    fd.set("meta_motivo", "no debería colarse, no hay schema");
+
+    try {
+      await actions.create({
+        request: { formData: async () => fd },
+        cookies: { get: () => "tok" },
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+      });
+    } catch {
+      // redirect esperado
+    }
+
+    const createPayload = JSON.parse(calls[1].init.body);
+    expect(createPayload.metadata).toEqual({});
+  });
+
+  it("5xx al traer la plantilla: 503 connection_error, NO se descartan name/description ya escritos", async () => {
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) }));
+
+    const fd = new FormData();
+    fd.set("name", "Expediente con plantillas caídas");
+    fd.set("description", "No se debe perder esta descripción");
+    fd.set("trd_serie_id", SERIE_ID);
+
+    const result = await actions.create({
+      request: { formData: async () => fd },
+      cookies: { get: () => "tok" },
+      locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.data.error).toBe("connection_error");
+    expect(result.data.values.name).toBe("Expediente con plantillas caídas");
+    expect(result.data.values.description).toBe("No se debe perder esta descripción");
+  });
+
+  it("fallo de red al traer la plantilla: 503 connection_error", async () => {
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("network down");
+    });
+
+    const fd = new FormData();
+    fd.set("name", "Expediente con red caída");
+    fd.set("trd_serie_id", SERIE_ID);
+
+    const result = await actions.create({
+      request: { formData: async () => fd },
+      cookies: { get: () => "tok" },
+      locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.data.error).toBe("connection_error");
+  });
+
+  it("422 metadata_validation_failed tras construir metadata: repuebla `values.meta` con los raw strings", async () => {
+    const calls = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      calls.push({ input, init });
+      if (calls.length === 1) {
+        return { ok: true, status: 200, json: async () => [{ ...SCHEMA, activo: true }] };
+      }
+      return {
+        ok: false,
+        status: 422,
+        json: async () => ({
+          error: "metadata_validation_failed",
+          detail: "'monto_contrato' is a required property",
+        }),
+      };
+    });
+
+    const fd = new FormData();
+    fd.set("name", "Expediente que falla validación");
+    fd.set("trd_serie_id", SERIE_ID);
+    fd.set("meta_motivo", "Motivo escrito por el usuario");
+
+    const result = await actions.create({
+      request: { formData: async () => fd },
+      cookies: { get: () => "tok" },
+      locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+    });
+
+    expect(result.status).toBe(422);
+    expect(result.data.values.meta).toEqual({ motivo: "Motivo escrito por el usuario" });
+  });
 });

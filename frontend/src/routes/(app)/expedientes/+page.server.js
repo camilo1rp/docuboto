@@ -10,6 +10,12 @@
 /**
  * expedientes/+page.server.js — Listado de expedientes (T-12, RF-UI-05).
  *
+ * Carga además `trdSeries` (GET /api/v1/trd?is_active=true&size=100 — mismo
+ * endpoint que radicar/+page.server.js) para poblar el `<select>` de serie
+ * TRD del Modal de creación (T-12 Form Builder). Se carga siempre (no solo
+ * si `canManage`): es una llamada pequeña y gatearla por permiso añadiría
+ * una segunda ruta de degradación sin beneficio real.
+ *
  * Endpoint real: GET /api/v1/expedientes/search
  *   - `q` es OPCIONAL y tiene min_length=2 en el backend: si el texto tiene
  *     menos de 2 caracteres tras trim() se OMITE por completo del query string
@@ -47,6 +53,7 @@
 import { fail, redirect } from "@sveltejs/kit";
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { coerceSchemaValue } from "$lib/utils/schemaField.js";
 
 const STATUS_ALLOWLIST = ["open", "closed", "transferred"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -99,8 +106,14 @@ export async function load({ cookies, parent, url, fetch }) {
       total: 0,
       loadError: "Sesión no válida. Vuelve a iniciar sesión.",
       initialFilters,
+      trdSeries: [],
     };
   }
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "X-Tenant-Slug": tenant,
+  };
 
   const params = new URLSearchParams({ page: String(page), size: String(PAGE_SIZE) });
   // Trampa del contrato: min_length=2 en el backend — omitir `q` por debajo
@@ -110,17 +123,30 @@ export async function load({ cookies, parent, url, fetch }) {
   if (dateFrom) params.set("date_from", dateFrom);
   if (dateTo) params.set("date_to", dateTo);
 
+  // Serie TRD: catálogo para el <select> del Modal de creación (T-12 Form
+  // Builder). Se carga en paralelo con la búsqueda; si falla, el <select>
+  // degrada a solo la opción "sin serie" (el Modal sigue funcionando).
+  // Envueltos en una función async: si `fetch` lanza SÍNCRONAMENTE (algunos
+  // mocks de test lo hacen), Promise.allSettled solo atrapa rechazos — un
+  // throw síncrono al evaluar los argumentos del array se propagaría sin
+  // pasar por allSettled.
+  const [searchRes, trdRes] = await Promise.allSettled([
+    (async () => fetch(`${API_V1}/expedientes/search?${params.toString()}`, { headers }))(),
+    (async () => fetch(`${API_V1}/trd?is_active=true&size=100`, { headers }))(),
+  ]);
+
+  let trdSeries = [];
+  if (trdRes.status === "fulfilled" && trdRes.value.ok) {
+    trdSeries = await trdRes.value.json().catch(() => []);
+  }
+
   let expedientes = [];
   let total = 0;
   let loadError = null;
 
   try {
-    const res = await fetch(`${API_V1}/expedientes/search?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Tenant-Slug": tenant,
-      },
-    });
+    if (searchRes.status === "rejected") throw searchRes.reason;
+    const res = searchRes.value;
 
     if (res.ok) {
       const body = await res.json();
@@ -150,14 +176,48 @@ export async function load({ cookies, parent, url, fetch }) {
     total,
     loadError,
     initialFilters,
-    // token y tenant NO se exponen (D-05) — no hace falta: no hay acciones
-    // client-side en esta vista, solo navegación (goto) y el form action `create`.
+    trdSeries,
+    // token y tenant NO se exponen (D-05) — no hace falta: la única llamada
+    // client-side de esta vista es GET /expedientes/api/metadata-templates
+    // (D-05, lee la cookie httpOnly en el servidor), más la navegación
+    // (goto) y el form action `create`.
   };
 }
 
 // ---------------------------------------------------------------------------
 // actions.create — creación de expediente (form action, sin +server.js)
 // ---------------------------------------------------------------------------
+
+/**
+ * Extrae `{error, detail}` de una respuesta de error del backend.
+ *
+ * Soporta dos formas: la plana observada normalmente en este front
+ * (`{error, detail: <string>}`) y la forma ANIDADA que produce FastAPI al
+ * serializar `HTTPException(detail={...})` tal como lo hace archive-service
+ * en `create_expediente` para `metadata_validation_failed`
+ * (`{detail: {error, detail: <string>, status}}` — expedientes.py:104-112,
+ * metadata_service.py:46, contrato orfeo-architect §"Hecho verificado"). Un
+ * 422 de FastAPI sin handler propio (RequestValidationError) trae `detail`
+ * como LISTA de dicts, no string ni objeto con `.detail` — cae al mensaje
+ * genérico en vez de interpolar "[object Object]" (M-3).
+ * @param {any} body
+ * @param {Response} res
+ */
+function extractErrorDetail(body, res) {
+  if (typeof body.detail === "string") {
+    return { error: body.error ?? "upstream_error", detail: body.detail };
+  }
+  if (body.detail && typeof body.detail === "object" && !Array.isArray(body.detail)) {
+    const nestedDetail = body.detail.detail;
+    if (typeof nestedDetail === "string") {
+      return { error: body.detail.error ?? body.error ?? "upstream_error", detail: nestedDetail };
+    }
+  }
+  return {
+    error: body.error ?? "upstream_error",
+    detail: `Error ${res.status} al crear el expediente.`,
+  };
+}
 
 /** @type {import('./$types').Actions} */
 export const actions = {
@@ -171,13 +231,23 @@ export const actions = {
    * `code` es server-generated: el backend lo asigna, NUNCA se envía desde
    * el front.
    *
-   * v1 (E22 T-12): sin Form Builder, `metadata` va siempre `{}`. El nivel de
-   * seguridad no es seleccionable desde este formulario: SessionUser (JWT +
-   * /auth/me) no expone el clearance del usuario en el front, así que no hay
-   * forma de acotar el <select> a los niveles que el usuario podría leer de
-   * vuelta (decisión de orfeo-architect). Se fija nivel 1 (PÚBLICA) — la
-   * opción visible sin conocer el clearance. El bloque de opciones queda
-   * comentado para cuando el clearance esté disponible en el front.
+   * `metadata` (T-12 Form Builder): si se eligió una serie TRD, se re-obtiene
+   * su plantilla ACTIVA de metadatos (GET .../expediente-metadata/templates)
+   * — la MISMA fuente de verdad que el cliente usó para renderizar los
+   * campos, pero re-consultada server-side, autoritativa — y se construye
+   * `metadata` campo a campo SOLO con las claves que el `json_schema`
+   * declara (doble allowlist: prefijo `meta_` del FormData Y pertenencia al
+   * schema), coercionando cada valor a su tipo declarado
+   * (`$lib/utils/schemaField.js#coerceSchemaValue`). Sin serie o sin
+   * plantilla activa, `metadata` queda `{}` (comportamiento v1 preservado).
+   *
+   * El nivel de seguridad no es seleccionable desde este formulario:
+   * SessionUser (JWT + /auth/me) no expone el clearance del usuario en el
+   * front, así que no hay forma de acotar el <select> a los niveles que el
+   * usuario podría leer de vuelta (decisión de orfeo-architect). Se fija
+   * nivel 1 (PÚBLICA) — la opción visible sin conocer el clearance. El
+   * bloque de opciones queda comentado en +page.svelte para cuando el
+   * clearance esté disponible en el front.
    */
   create: async ({ request, cookies, locals }) => {
     const token = locals.accessToken ?? cookies.get(COOKIE_ACCESS_TOKEN) ?? "";
@@ -206,12 +276,64 @@ export const actions = {
       });
     }
 
+    // -------------------------------------------------------------------
+    // metadata: allowlist campo a campo desde el json_schema de la
+    // plantilla ACTIVA de la serie TRD elegida (nunca un passthrough del
+    // FormData). `metaRawValues` guarda los strings crudos (pre-coerción)
+    // SOLO para repoblar el formulario si el backend rechaza la creación —
+    // no se reenvían tal cual al backend.
+    // -------------------------------------------------------------------
+    /** @type {Record<string, unknown>} */
+    const metadata = {};
+    /** @type {Record<string, string>} */
+    const metaRawValues = {};
+
+    if (trdSerieId) {
+      let tplRes;
+      try {
+        tplRes = await fetch(
+          `${API_V1}/expediente-metadata/templates?trd_serie_id=${encodeURIComponent(trdSerieId)}`,
+          { headers: { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant } },
+        );
+      } catch {
+        return fail(503, {
+          error: "connection_error",
+          detail: "No se pudo conectar al servidor de plantillas de metadatos.",
+          values: { name, description, trdSerieId },
+        });
+      }
+
+      if (tplRes.ok) {
+        const list = await tplRes.json().catch(() => []);
+        const tpl = Array.isArray(list) ? list.find((t) => t?.activo) : null;
+        const properties = tpl?.json_schema?.properties;
+        if (properties && typeof properties === "object") {
+          for (const key of Object.keys(properties)) {
+            const raw = String(formData.get(`meta_${key}`) ?? "");
+            if (raw !== "") metaRawValues[key] = raw;
+            const coerced = coerceSchemaValue(properties[key], raw);
+            if (coerced !== undefined) metadata[key] = coerced;
+          }
+        }
+      } else if (tplRes.status >= 500) {
+        // Fallo real del servicio de plantillas: NO se descarta en silencio
+        // lo que el usuario ya escribió — se le pide reintentar.
+        return fail(503, {
+          error: "connection_error",
+          detail: "No se pudo cargar la plantilla de metadatos de la serie TRD.",
+          values: { name, description, trdSerieId, meta: metaRawValues },
+        });
+      }
+      // 4xx no-500 (serie sin plantilla activa, por ejemplo): metadata
+      // queda {} — comportamiento v1 preservado, el backend igual valida.
+    }
+
     /** @type {Record<string, unknown>} */
     const payload = {
       name,
       // Nivel de seguridad fijo v1 — ver nota arriba. NUNCA se envía `code`.
       nivel_seguridad: 1,
-      metadata: {},
+      metadata,
     };
     if (description) payload.description = description;
     if (trdSerieId) payload.trd_serie_id = trdSerieId;
@@ -231,7 +353,7 @@ export const actions = {
       return fail(503, {
         error: "connection_error",
         detail: "No se pudo conectar al servidor de expedientes.",
-        values: { name, description, trdSerieId },
+        values: { name, description, trdSerieId, meta: metaRawValues },
       });
     }
 
@@ -239,19 +361,12 @@ export const actions = {
 
     if (!res.ok) {
       // 422 metadata_validation_failed (serie TRD con plantilla activa) u
-      // otro error del backend: se propaga el detail al formulario. Un 422 de
-      // validación de FastAPI (RequestValidationError, sin handler propio en
-      // archive-service) trae `detail` como LISTA de dicts, no string —
-      // interpolarlo tal cual en {form.detail} renderiza "[object Object]"
-      // (M-3). Se normaliza a un mensaje legible en ese caso.
-      const detail =
-        typeof body.detail === "string"
-          ? body.detail
-          : `Error ${res.status} al crear el expediente.`;
+      // otro error del backend: se propaga el detail al formulario.
+      const { error, detail } = extractErrorDetail(body, res);
       return fail(res.status, {
-        error: body.error ?? "upstream_error",
+        error,
         detail,
-        values: { name, description, trdSerieId },
+        values: { name, description, trdSerieId, meta: metaRawValues },
       });
     }
 
@@ -262,7 +377,7 @@ export const actions = {
       return fail(502, {
         error: "invalid_upstream_response",
         detail: "El expediente se creó pero el servidor no devolvió su identificador.",
-        values: { name, description, trdSerieId },
+        values: { name, description, trdSerieId, meta: metaRawValues },
       });
     }
 
