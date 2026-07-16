@@ -59,18 +59,25 @@ async def proxy_request(
     upstream_url: str,
     request: Request,
     extra_headers: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> Response:
     headers = _build_upstream_headers(request, extra_headers or {})
 
     body = await request.body()
 
-    upstream_response = await http_client.request(
-        method=request.method,
-        url=upstream_url,
-        headers=headers,
-        content=body,
-        params=dict(request.query_params),
-    )
+    # `timeout` override se pasa por-petición (p. ej. el asistente E18, cuyo loop
+    # LLM excede el timeout global del cliente). Sin override se usa el del cliente.
+    request_kwargs: dict[str, object] = {
+        "method": request.method,
+        "url": upstream_url,
+        "headers": headers,
+        "content": body,
+        "params": dict(request.query_params),
+    }
+    if timeout is not None:
+        request_kwargs["timeout"] = timeout
+
+    upstream_response = await http_client.request(**request_kwargs)
 
     response_headers: dict[str, str] = {}
     for key, value in upstream_response.headers.items():

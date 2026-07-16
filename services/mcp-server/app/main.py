@@ -19,10 +19,20 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from app import mcp_app
 from app.core.config import settings
+from app.routers.assistant import router as assistant_router
 from app.routers.health import router as health_router
 from app.routers.mcp import router as mcp_router
 
+# Import guardado del SDK de Anthropic (E18): si el paquete falta, el asistente
+# degrada a "no disponible" en vez de tumbar el arranque del mcp-server (que
+# también sirve el catálogo MCP). RF-FIR-15: honestidad, nunca un crash opaco.
+try:  # pragma: no cover - trivial
+    import anthropic
+except ImportError:  # pragma: no cover
+    anthropic = None  # type: ignore[assignment]
+
 logging.basicConfig(level=settings.log_level.upper())
+logger = logging.getLogger(__name__)
 
 # Transporte HTTP streamable del protocolo MCP (clientes remotos). Stateless +
 # JSON response: cada POST es autocontenido, lo que permite propagar el contexto
@@ -61,8 +71,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.gateway_client = httpx.AsyncClient(
         base_url=settings.gateway_url, timeout=settings.request_timeout
     )
+
+    # Asistente conversacional (E18/ADR-019). Historial efímero por proceso
+    # (límite declarado: no multi-réplica; migración a Redis diferida).
+    app.state.conversations = {}
+    if anthropic is not None and settings.anthropic_api_key:
+        # Claude API DIRECTO (no vía gateway). El token del USUARIO no se usa
+        # aquí: cada tool lo re-propaga al gateway vía el dispatcher.
+        app.state.anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        app.state.assistant_available = True
+    else:
+        # Degradación honesta (RF-FIR-15): el endpoint responderá 503
+        # assistant_unavailable; nunca finge ni crashea.
+        app.state.anthropic_client = None
+        app.state.assistant_available = False
+        logger.info(
+            "Asistente E18 DESHABILITADO (sin ANTHROPIC_API_KEY o SDK ausente): "
+            "POST /api/v1/assistant/message responderá 503 assistant_unavailable."
+        )
+
     async with _session_manager.run():  # ciclo de vida del transporte MCP HTTP
         yield
+
+    if app.state.anthropic_client is not None:
+        with contextlib.suppress(Exception):
+            await app.state.anthropic_client.close()
     await app.state.gateway_client.aclose()
 
 
@@ -80,6 +113,7 @@ app = FastAPI(
 )
 
 app.include_router(mcp_router)  # API HTTP simple del catálogo (/api/v1/mcp/...)
+app.include_router(assistant_router)  # asistente conversacional (E18, /api/v1/assistant/...)
 app.include_router(health_router)
 # Protocolo MCP streamable (clientes remotos).
 app.mount("/mcp", _handle_mcp)

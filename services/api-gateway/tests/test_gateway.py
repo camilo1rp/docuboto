@@ -271,6 +271,8 @@ async def test_route_to_upstream_domain_prefixes():
         workflow_service_url="http://workflow:8006",
         notification_service_url="http://notification:8007",
         signature_service_url="http://signature:8008",
+        mcp_service_url="http://mcp:8009",
+        assistant_proxy_timeout=180.0,
     )
     cases = {
         "/api/v1/audit": "http://auth:8001",
@@ -285,11 +287,15 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/trd/series": "http://archive:8004",
         "/api/v1/workflows/inbox": "http://workflow:8006",
         "/api/v1/workflow/rules/eval": "http://workflow:8006",
+        # E18: el asistente conversacional enruta al mcp-server.
+        "/api/v1/assistant/message": "http://mcp:8009",
     }
     for path, expected in cases.items():
         assert _route_to_upstream(path, state) == expected, path
 
     assert _route_to_upstream("/api/v1/unknown", state) is None
+    # El catálogo/protocolo MCP NO se expone por el gateway (solo /assistant/).
+    assert _route_to_upstream("/api/v1/mcp/tools", state) is None
 
 
 async def test_public_verify_route_is_public_and_routed():
@@ -309,6 +315,8 @@ async def test_public_verify_route_is_public_and_routed():
         workflow_service_url="http://workflow:8006",
         notification_service_url="http://notification:8007",
         signature_service_url="http://signature:8008",
+        mcp_service_url="http://mcp:8009",
+        assistant_proxy_timeout=180.0,
     )
     assert _route_to_upstream("/api/v1/public/demo/verify/abc", state) == "http://document:8003"
 

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     workflow_service_url: str = "http://workflow-service:8006"
     notification_service_url: str = "http://notification-service:8007"
     signature_service_url: str = "http://signature-service:8008"
+    mcp_service_url: str = "http://mcp-server:8009"
 
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
@@ -30,6 +31,11 @@ class Settings(BaseSettings):
     rate_limit_per_ip: int = 100
     rate_limit_global: int = 1000
     proxy_timeout: float = 30.0
+    # Timeout largo SOLO para el asistente conversacional (E18): el loop LLM
+    # (varias iteraciones Claude + llamadas a tools vía gateway) supera con
+    # holgura el proxy_timeout global de 30s. No se sube el global para no
+    # relajar el resto de rutas.
+    assistant_proxy_timeout: float = 180.0
     service_port: int = 8080
     log_level: str = "info"
 

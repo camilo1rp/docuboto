@@ -67,6 +67,8 @@ async def test_client(mock_redis, mock_http_client):
         app.state.workflow_service_url = settings.workflow_service_url
         app.state.notification_service_url = settings.notification_service_url
         app.state.signature_service_url = settings.signature_service_url
+        app.state.mcp_service_url = settings.mcp_service_url
+        app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
         app.state.rate_limit_per_ip = 100
         app.state.rate_limit_global = 1000
         yield client, mock_http_client, mock_redis

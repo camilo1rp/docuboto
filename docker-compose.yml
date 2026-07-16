@@ -140,6 +140,11 @@ services:
       - "19009:8009"
     environment:
       - GATEWAY_URL=http://api-gateway:8080
+      # Asistente conversacional (E18). SIN la clave, el asistente degrada
+      # honestamente a 503 assistant_unavailable (el catálogo MCP sigue OK).
+      # La clave NUNCA se versiona: se toma del entorno del host (o .env no
+      # versionado). Modelo por defecto: claude-opus-4-8 (config.py).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     networks:
       - orpycamcp-net
     depends_on:

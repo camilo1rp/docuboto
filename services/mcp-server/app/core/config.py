@@ -33,5 +33,18 @@ class Settings(BaseSettings):
     mcp_auth_username: str = ""
     mcp_auth_password: str = ""
 
+    # Asistente conversacional (E18/ADR-019): el mcp-server llama a Claude API
+    # DIRECTO (no vía gateway); cada tool se ejecuta vía el dispatcher existente,
+    # que re-propaga el token del usuario al gateway (el asistente corre AS-THE-USER).
+    # Vacío = degradación honesta (503 assistant_unavailable, RF-FIR-15); nunca
+    # una respuesta fingida ni un 500 crudo. NO poner una key real aquí — se
+    # inyecta por entorno (ver docker-compose.yml).
+    anthropic_api_key: str = ""
+    assistant_model: str = "claude-opus-4-8"
+    assistant_max_tokens: int = 16000
+    assistant_max_iterations: int = 8  # tope del loop tool_use manual
+    assistant_history_ttl_seconds: int = 1800  # inactividad → se descarta el historial
+    assistant_max_turns: int = 20  # tope de turnos de usuario por conversación
+
 
 settings = Settings()

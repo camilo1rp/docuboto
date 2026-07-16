@@ -69,6 +69,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/notification/admin/", app_state.notification_service_url),
         # signature-service
         ("/api/v1/signature/", app_state.signature_service_url),
+        # mcp-server — asistente conversacional (E18/ADR-019). El catálogo/protocolo
+        # MCP (/api/v1/mcp, /mcp) NO se expone al exterior por el gateway a propósito.
+        ("/api/v1/assistant/", app_state.mcp_service_url),
     ]
     # Also match exact prefix without trailing slash
     for prefix, base_url in routing:
@@ -99,12 +102,18 @@ async def _handle_proxy(request: Request, path: str) -> Response:
 
     http_client: httpx.AsyncClient = request.app.state.http_client
 
+    # El asistente (E18) necesita un timeout mucho mayor que el global (loop LLM).
+    timeout: float | None = None
+    if upstream_base == request.app.state.mcp_service_url:
+        timeout = request.app.state.assistant_proxy_timeout
+
     try:
         return await proxy_request(
             http_client=http_client,
             upstream_url=upstream_url,
             request=request,
             extra_headers=extra_headers,
+            timeout=timeout,
         )
     except httpx.TimeoutException:
         return JSONResponse(
