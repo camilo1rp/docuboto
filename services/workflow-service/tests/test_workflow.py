@@ -614,10 +614,12 @@ async def test_devolver_no_active_step(
 
 
 @pytest.mark.asyncio
-async def test_devolver_not_current_holder_403(
+async def test_devolver_not_current_holder_is_neutral_404(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
-    """D-06: solo el tenedor actual (assigned_to) puede devolver el radicado."""
+    """D-06/M2 (no-oráculo): un no-tenedor recibe el MISMO 404 `no_active_step`
+    que el caso sin paso activo — YA NO un 403 `not_current_holder` distinguible
+    (ese 403 permitía sondear existencia/tenencia de un radicado clasificado)."""
     client, mock_conn, _ = client_with_conn
     # El paso pertenece a un usuario distinto del actor (USER_ID).
     other_holder = uuid.uuid4()
@@ -631,8 +633,11 @@ async def test_devolver_not_current_holder_403(
         json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
         headers=TENANT_HEADERS,
     )
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "not_current_holder"
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "no_active_step"
+    # Mismo cuerpo exacto que "sin paso activo" (no-oráculo: byte-a-byte igual).
+    no_step_body = resp.json()
+    assert no_step_body["detail"]["detail"] == f"No active flow step found for radicado {RADICADO_ID}"
 
 
 @pytest.mark.asyncio
@@ -640,7 +645,11 @@ async def test_rollback_reactivates_previous(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
-    current = make_step_record(step_number=2, step_status="pending", to_dept="B")
+    # D-06/M2: assigned_to debe coincidir con el actor (USER_ID) para pasar la
+    # verificación de tenencia (rollback es una acción del tenedor actual).
+    current = make_step_record(
+        step_number=2, step_status="pending", to_dept="B", assigned_to=USER_ID
+    )
     previous = make_step_record(step_number=1, step_status="completed", to_dept="A")
     reactivated = make_step_record(step_number=1, step_status="pending", to_dept="A")
     # get_current, get_previous_step, apply_rollback (UPDATE ... RETURNING)
@@ -668,11 +677,34 @@ async def test_rollback_no_active_step(
 
 
 @pytest.mark.asyncio
+async def test_rollback_by_non_holder_is_neutral_no_active_step(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """M2/no-oráculo: un no-tenedor recibe el MISMO error que "no hay paso activo"
+    (NO un 403 distinguible) y la mutación (apply_rollback) NUNCA se invoca."""
+    client, mock_conn, _ = client_with_conn
+    other_holder = uuid.uuid4()
+    current = make_step_record(
+        step_number=2, step_status="pending", to_dept="B", assigned_to=other_holder
+    )
+    mock_conn.fetchrow.return_value = current  # solo se consulta get_current
+
+    response = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/rollback", headers=TENANT_HEADERS
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "no_active_step"
+    # Solo UNA llamada a fetchrow (get_current); ni get_previous_step ni
+    # apply_rollback (que también usarían fetchrow) se invocaron.
+    assert mock_conn.fetchrow.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_rollback_initial_step_rejected(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
-    current = make_step_record(step_number=1, step_status="pending")
+    current = make_step_record(step_number=1, step_status="pending", assigned_to=USER_ID)
     mock_conn.fetchrow.side_effect = [current, None]  # sin paso previo
 
     response = await client.post(

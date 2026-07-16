@@ -50,6 +50,32 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
+def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
+    """Identidad opcional del llamante (X-User-Id). A diferencia de
+    `_require_user` (assign/transfer/etc., que exige la cabecera con 400), las
+    LECTURAS de bandeja/hoja-de-ruta (RF-SEG-08) no deben romper sin ella: el
+    clearance resuelto simplemente degrada a PUBLICA (fail-closed, ver
+    `resolve_caller_clearance`). Ausente/inválida => `None`. Gemelo de
+    `document-service/app/routers/documents.py::_get_registered_by`.
+    """
+    if not x_user_id:
+        return None
+    try:
+        return uuid.UUID(x_user_id)
+    except ValueError:
+        return None
+
+
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Canal de origen de la petición (X-Canal), inyectado server-side por el
+    api-gateway (D-03; excluido del whitelist de client request headers en
+    `api-gateway/app/core/proxy.py::FORWARDED_REQUEST_HEADERS`, un cliente no
+    puede forjarlo). Ausente => 'system' (no se audita como consulta de un
+    usuario real). Gemelo de `document-service`/`archive-service` `_optional_canal`.
+    """
+    return x_canal or "system"
+
+
 def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
     if not x_user_id:
         raise HTTPException(
@@ -135,6 +161,8 @@ async def get_inbox(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[FlowStepResponse]:
     if box is not None and box not in VALID_BOXES:
@@ -148,7 +176,13 @@ async def get_inbox(
         )
     service = WorkflowService(conn, tenant_slug)
     items, total = await service.inbox(
-        box=box, dept=dept, assigned_to=assigned_to, page=page, size=size
+        box=box,
+        dept=dept,
+        assigned_to=assigned_to,
+        page=page,
+        size=size,
+        user_id=user_id,
+        canal=canal,
     )
     response.headers["X-Total-Count"] = str(total)
     return items
@@ -168,11 +202,18 @@ async def list_pending(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[FlowStepResponse]:
     service = WorkflowService(conn, tenant_slug)
     items, total = await service.list_pending(
-        dept=dept, assigned_to=assigned_to, page=page, size=size
+        dept=dept,
+        assigned_to=assigned_to,
+        page=page,
+        size=size,
+        user_id=user_id,
+        canal=canal,
     )
     response.headers["X-Total-Count"] = str(total)
     return items
@@ -218,10 +259,15 @@ async def transfer_radicado(
 async def get_flow_history(
     radicado_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowHistoryResponse:
+    # RF-SEG-08 (no-read-up) + RF-BUS-10 (traza de lectura): mismo patrón que
+    # /pending y /inbox, no restringido a admin (X-User-Id opcional, fail-closed
+    # a PUBLICA sin identidad).
     service = WorkflowService(conn, tenant_slug)
-    return await service.get_history(radicado_id)
+    return await service.get_history(radicado_id, user_id=user_id, canal=canal)
 
 
 @router.post(
@@ -303,12 +349,14 @@ async def get_flow_events(
     radicado_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
     actor: uuid.UUID = Depends(_require_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[FlowEventResponse]:
-    # Hoja de ruta operativa: acotada por el clearance del llamante (E08 §9 / RF-SEG-08),
-    # NO restringida a administrador. El X-User-Id ya lo exige _require_user.
+    # Hoja de ruta operativa: acotada por el clearance REAL del llamante (E08 §9 /
+    # RF-SEG-08, `caller_clearance`), NO restringida a administrador. El X-User-Id
+    # ya lo exige _require_user. RF-BUS-10: traza best-effort de la consulta.
     service = WorkflowService(conn, tenant_slug)
-    return await service.get_events(radicado_id, actor)
+    return await service.get_events(radicado_id, actor, canal=canal)
 
 
 @router.get(
@@ -319,10 +367,15 @@ async def get_flow_events(
 async def get_current_step(
     radicado_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
+    # RF-SEG-08 (no-read-up): X-User-Id opcional, fail-closed a PUBLICA sin
+    # identidad (mismo patrón que /pending, /inbox y /history). RF-BUS-10: traza
+    # best-effort de la consulta (solo tras lectura exitosa).
     service = WorkflowService(conn, tenant_slug)
-    return await service.get_current(radicado_id)
+    return await service.get_current(radicado_id, user_id=user_id, canal=canal)
 
 
 @router.patch(

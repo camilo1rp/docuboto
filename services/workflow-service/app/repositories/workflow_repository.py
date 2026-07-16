@@ -21,6 +21,20 @@ from app.core.database import tenant_schema
 from app.models.flow import FlowStep
 
 
+def _clearance_condition(idx: int) -> str:
+    """Predicado no-read-up (RF-SEG-08) correlacionado con `flow_steps.radicado_id`.
+
+    COALESCE a PUBLICA(1) si el radicado no está clasificado/replicado (mismo
+    criterio que `list_flow_events`). Factorizado porque lo reutilizan
+    `list_pending`, `list_inbox`, `get_history` y `get_current` — así el
+    predicado no puede divergir entre call sites.
+    """
+    return (
+        f"COALESCE((SELECT nivel_seguridad FROM radicados "
+        f"WHERE id = flow_steps.radicado_id), 1) <= ${idx}"
+    )
+
+
 class WorkflowRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -165,25 +179,51 @@ class WorkflowRepository:
             )
         )
 
-    async def get_history(self, radicado_id: uuid.UUID) -> list[FlowStep]:
+    async def get_history(self, radicado_id: uuid.UUID, *, max_clearance: int) -> list[FlowStep]:
+        """Hoja de ruta completa de un radicado (RF-SEG-08, no-read-up).
+
+        ``max_clearance`` es **keyword-only y obligatorio** (sin default peligroso,
+        gemelo del patrón de archive-service): un radicado por encima del clearance
+        del llamante devuelve una hoja de ruta VACÍA, no un error — no hay oráculo.
+        Expuesto vía HTTP (`GET /{radicado_id}/history`), sin más llamador interno.
+        """
         await self._set_search_path()
         rows = await self._conn.fetch(
-            "SELECT * FROM flow_steps WHERE radicado_id = $1 ORDER BY step_number ASC",
+            f"""
+            SELECT * FROM flow_steps
+             WHERE radicado_id = $1
+               AND {_clearance_condition(2)}
+             ORDER BY step_number ASC
+            """,
             radicado_id,
+            max_clearance,
         )
         return [_row_to_model(r) for r in rows]
 
-    async def get_current(self, radicado_id: uuid.UUID) -> FlowStep | None:
+    async def get_current(self, radicado_id: uuid.UUID, *, max_clearance: int) -> FlowStep | None:
+        """Paso activo de un radicado (RF-SEG-08, no-read-up).
+
+        ``max_clearance`` es **keyword-only y obligatorio**. Tiene DOS naturalezas de
+        llamador (ver `app.core.clearance.CLEARANCE_SIN_RESTRICCION`):
+          - `WorkflowService.get_current` (HTTP-facing, `GET /{radicado_id}/current`):
+            SIEMPRE resuelve el clearance REAL del llamante.
+          - `WorkflowService.rollback`/`devolver` (acción de trámite/tenencia, no
+            lectura): pasan `CLEARANCE_SIN_RESTRICCION` a propósito — mover el
+            radicado es ortogonal al clearance de lectura, la autorización real vive
+            en la verificación de tenencia/estado de esos métodos.
+        """
         await self._set_search_path()
         row = await self._conn.fetchrow(
-            """
+            f"""
             SELECT * FROM flow_steps
              WHERE radicado_id = $1
                AND status IN ('pending', 'in_progress')
+               AND {_clearance_condition(2)}
              ORDER BY step_number DESC
              LIMIT 1
             """,
             radicado_id,
+            max_clearance,
         )
         return _row_to_model(row) if row is not None else None
 
@@ -192,9 +232,15 @@ class WorkflowRepository:
         *,
         dept: str | None,
         assigned_to: uuid.UUID | None,
+        max_clearance: int,
         offset: int,
         limit: int,
     ) -> tuple[list[FlowStep], int]:
+        """``max_clearance`` es keyword-only y obligatorio (RF-SEG-08, no-read-up):
+        un radicado clasificado por encima del clearance del llamante no aparece en
+        la bandeja NI cuenta en el total — el predicado entra en el ``WHERE``
+        compartido por el `COUNT(*)` y la página (`X-Total-Count` no debe delatar
+        filas ocultas)."""
         await self._set_search_path()
 
         conditions = ["status IN ('pending', 'in_progress')"]
@@ -210,6 +256,10 @@ class WorkflowRepository:
             conditions.append(f"assigned_to = ${idx}")
             params.append(assigned_to)
             idx += 1
+
+        conditions.append(_clearance_condition(idx))
+        params.append(max_clearance)
+        idx += 1
 
         where = " AND ".join(conditions)
 
@@ -275,11 +325,15 @@ class WorkflowRepository:
         doc_type: str | None,
         dept: str | None,
         assigned_to: uuid.UUID | None,
+        max_clearance: int,
         offset: int,
         limit: int,
     ) -> tuple[list[FlowStep], int]:
         """Bandeja tipada: pasos activos filtrados por doc_type (E/S/I), dependencia
-        y/o responsable, priorizados por antigüedad (RF-FLU-03)."""
+        y/o responsable, priorizados por antigüedad (RF-FLU-03).
+
+        ``max_clearance`` es keyword-only y obligatorio (RF-SEG-08, no-read-up):
+        mismo predicado y misma garantía COUNT==SELECT que `list_pending`."""
         await self._set_search_path()
         conditions = ["status IN ('pending', 'in_progress')"]
         params: list[object] = []
@@ -296,6 +350,9 @@ class WorkflowRepository:
             conditions.append(f"assigned_to = ${idx}")
             params.append(assigned_to)
             idx += 1
+        conditions.append(_clearance_condition(idx))
+        params.append(max_clearance)
+        idx += 1
         where = " AND ".join(conditions)
 
         total: int = await self._conn.fetchval(

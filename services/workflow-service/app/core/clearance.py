@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
 
+# Sentinela nombrado para los pocos call sites que, DELIBERADAMENTE, resuelven
+# `WorkflowRepository.get_current` sin restricción de clearance (barrido
+# RF-SEG-08 de la bandeja/pending, E05 §10). Espejo de
+# `archive-service/app/core/clearance.py::CLEARANCE_SIN_RESTRICCION`: mover un
+# radicado (rollback/devolución) es un acto de trámite/tenencia, ORTOGONAL al
+# clearance de LECTURA (mismo principio que M1/M2 en archive-service — Ley
+# 594/2000 arts. 22-24, Ac. AGN 001/2024 arts. 4.3.1.7/4.3.2.3). La autorización
+# de esos actos ya vive en la verificación de tenencia (`devolver`: solo el
+# `assigned_to` actual) o en el propio estado del paso (`rollback`); NO en el
+# clearance del radicado. Usar esta constante SOLO para esa pre-condición
+# interna — la lectura HTTP-facing (`GET /{radicado_id}/current`) SIEMPRE
+# resuelve el clearance REAL vía `caller_clearance`/`resolve_caller_clearance`.
+CLEARANCE_SIN_RESTRICCION = CLASIFICADA
+
 
 async def resolve_caller_clearance(
     conn: asyncpg.Connection, user_id: uuid.UUID | None
