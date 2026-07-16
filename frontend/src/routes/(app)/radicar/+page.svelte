@@ -39,6 +39,8 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
+  import SchemaField from "$lib/components/ui/SchemaField.svelte";
+  import { resolveSchemaControl, coerceSchemaValue } from "$lib/utils/schemaField.js";
   // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
   // se realizan a través de los endpoints locales /radicar/api/* que leen la
   // cookie httpOnly en el servidor — el token nunca alcanza el JS del cliente (D-05).
@@ -103,6 +105,20 @@
 
   // Errores de validación por campo
   let errors = /** @type {Record<string, string>} */ ({});
+
+  // Campos dinámicos de la plantilla de metadatos del tipo documental (E03).
+  // SchemaField ya decide por sí mismo si un constructo es soportado, pero la
+  // página necesita filtrar ANTES de renderizar para poder contar los que no
+  // lo son (aviso) — resolveSchemaControl es la misma función que usa
+  // SchemaField internamente (fuente única de verdad, $lib/utils/schemaField.js).
+  $: templateProperties =
+    activeTemplate?.schema?.properties && typeof activeTemplate.schema.properties === "object"
+      ? Object.entries(activeTemplate.schema.properties)
+      : [];
+  $: supportedTemplateProperties = templateProperties.filter(
+    ([, propSchema]) => resolveSchemaControl(propSchema) !== null,
+  );
+  $: unsupportedFieldCount = templateProperties.length - supportedTemplateProperties.length;
 
   // Dependencias como opciones para select
   $: dependenciaOptions = [
@@ -320,10 +336,19 @@
         folios: null,
       }));
 
-    // Preparar metadatos extra del tipo documental (solo los no vacíos)
-    const cleanMetadata = Object.fromEntries(
-      Object.entries(extraMetadata).filter(([, v]) => v !== "" && v !== null && v !== undefined),
-    );
+    // Preparar metadatos extra del tipo documental — allowlist campo a campo
+    // por las claves del schema (nunca reenviar `extraMetadata` íntegro) más
+    // coerción por tipo declarado (number/boolean tipados, no strings): el
+    // backend valida con jsonschema estricto (Draft 2020-12) y rechaza un
+    // boolean/enum enviado como string de `<select>` — ver schemaField.js.
+    // `coerceSchemaValue` devuelve `undefined` para vacíos/no soportados/
+    // coerción inválida, y esas claves no se asignan.
+    const templateSchemaProperties = activeTemplate?.schema?.properties ?? {};
+    const cleanMetadata = {};
+    for (const [key, propSchema] of Object.entries(templateSchemaProperties)) {
+      const coerced = coerceSchemaValue(propSchema, extraMetadata[key]);
+      if (coerced !== undefined) cleanMetadata[key] = coerced;
+    }
 
     /** @type {import('$lib/types/api.js').DocumentCreate} */
     const payload = {
@@ -730,33 +755,33 @@
               </div>
             {/if}
 
-            <!-- Campos extra del tipo documental (E03 — plantilla de metadatos) -->
-            {#if activeTemplate?.schema?.properties}
+            <!-- Campos extra del tipo documental (E03 — plantilla de metadatos, SchemaField T-12) -->
+            {#if templateProperties.length > 0}
               <div class="radicar-step__field radicar-step__field--full">
                 <p class="radicar-step__section-label">
                   <i class="fas fa-tags" aria-hidden="true"></i>
                   Metadatos del tipo documental
                 </p>
                 <div class="radicar-step__grid">
-                  {#each Object.entries(activeTemplate.schema.properties) as [key, schemaProp] (key)}
-                    {@const isRequired = activeTemplate.schema.required?.includes(key)}
+                  {#each supportedTemplateProperties as [key, propSchema] (key)}
                     <div class="radicar-step__field">
-                      <FormField
-                        id="meta_{key}"
-                        label={schemaProp.title ?? key}
-                        type={schemaProp.type === "number" || schemaProp.type === "integer"
-                          ? "number"
-                          : schemaProp.format === "date"
-                            ? "date"
-                            : "text"}
+                      <SchemaField
+                        propKey={key}
+                        schema={propSchema}
+                        required={activeTemplate.schema.required?.includes(key)}
                         bind:value={extraMetadata[key]}
-                        required={isRequired}
-                        hint={schemaProp.description ?? ""}
                         error={errors[`meta_${key}`] ?? ""}
                       />
                     </div>
                   {/each}
                 </div>
+                {#if unsupportedFieldCount > 0}
+                  <p class="radicar-step__meta-warning" role="status">
+                    {unsupportedFieldCount}
+                    {unsupportedFieldCount === 1 ? "campo" : "campos"} de la plantilla no se
+                    {unsupportedFieldCount === 1 ? "puede editar" : "pueden editar"} en este formulario.
+                  </p>
+                {/if}
               </div>
             {/if}
 
@@ -1069,41 +1094,43 @@
 <!-- ======================================================================== -->
 <!-- Modal de confirmación atómica                                              -->
 <!-- ======================================================================== -->
-{#if showConfirmModal}
-  <Modal title="Confirmar radicación" on:close={closeConfirmModal}>
+<!-- BUGFIX (hallazgo incidental, fuera del alcance de la migración SchemaField):
+     el diálogo de confirmación de radicación NUNCA era visible en producción --
+     `Modal` gatea su markup tras `{#if open}` y no se le pasaba `open`. Se controla
+     la visibilidad SOLO con `open` (mismo patrón que el Modal de expedientes; sin un
+     `{#if}` externo que desmonte el componente antes de que devuelva el foco al
+     abridor al cerrar). -->
+<Modal open={showConfirmModal} title="Confirmar radicación" on:close={closeConfirmModal}>
+  <p>
+    Estás a punto de radicar un documento de
+    <strong>{docType === "E" ? "Entrada" : docType === "S" ? "Salida" : "Interno"}</strong>
+    con asunto:
+  </p>
+  <blockquote class="radicar-modal__subject">"{subject}"</blockquote>
+  {#if anexos.filter((a) => a.uploaded).length > 0}
     <p>
-      Estás a punto de radicar un documento de
-      <strong>{docType === "E" ? "Entrada" : docType === "S" ? "Salida" : "Interno"}</strong>
-      con asunto:
+      <i class="fas fa-paperclip" aria-hidden="true"></i>
+      {anexos.filter((a) => a.uploaded).length} anexo(s) adjunto(s).
     </p>
-    <blockquote class="radicar-modal__subject">"{subject}"</blockquote>
-    {#if anexos.filter((a) => a.uploaded).length > 0}
-      <p>
-        <i class="fas fa-paperclip" aria-hidden="true"></i>
-        {anexos.filter((a) => a.uploaded).length} anexo(s) adjunto(s).
-      </p>
-    {/if}
-    <p class="radicar-modal__note">
-      El número de radicado se asignará de forma inmutable. Esta acción no se puede deshacer (solo
-      es posible solicitar anulación posterior con causal).
-    </p>
+  {/if}
+  <p class="radicar-modal__note">
+    El número de radicado se asignará de forma inmutable. Esta acción no se puede deshacer (solo es
+    posible solicitar anulación posterior con causal).
+  </p>
 
-    <div slot="footer" class="radicar-modal__footer">
-      <Button variant="secondary" on:click={closeConfirmModal} disabled={submitting}>
-        Cancelar
-      </Button>
-      <Button variant="primary" on:click={submitRadicacion} disabled={submitting}>
-        {#if submitting}
-          <Loader size="sm" />
-          Radicando...
-        {:else}
-          <i class="fas fa-check" aria-hidden="true"></i>
-          Confirmar radicación
-        {/if}
-      </Button>
-    </div>
-  </Modal>
-{/if}
+  <div slot="footer" class="radicar-modal__footer">
+    <Button variant="secondary" on:click={closeConfirmModal} disabled={submitting}>Cancelar</Button>
+    <Button variant="primary" on:click={submitRadicacion} disabled={submitting}>
+      {#if submitting}
+        <Loader size="sm" />
+        Radicando...
+      {:else}
+        <i class="fas fa-check" aria-hidden="true"></i>
+        Confirmar radicación
+      {/if}
+    </Button>
+  </div>
+</Modal>
 
 <style lang="scss">
   .radicar-page {
@@ -1229,6 +1256,12 @@
       color: var(--op-error);
       font-size: var(--op-font-sm);
       margin-top: var(--op-space-2);
+    }
+
+    &__meta-warning {
+      margin: var(--op-space-2) 0 0;
+      font-size: var(--op-font-xs);
+      color: var(--op-warning);
     }
 
     &__empty {
