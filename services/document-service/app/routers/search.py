@@ -21,15 +21,17 @@ import uuid
 from datetime import date
 
 import asyncpg
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 
 from app.core.clearance import resolve_caller_clearance
 from app.core.database import get_tenant_conn as get_db
 from app.schemas.search import SearchHit, SearchResponse
+from app.services.document_service import audit_search_access
 
 router = APIRouter(prefix="/api/v1/search", tags=["search"])
 
 _USER_HEADER = "X-User-Id"
+_TENANT_HEADER = "X-Tenant-Slug"
 
 _SELECT = (
     "id, tracking_number, doc_type, subject, sender_name, sender_entity, "
@@ -47,6 +49,22 @@ def _caller_id(request: Request) -> uuid.UUID | None:
         return None
 
 
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Canal de origen (X-Canal, inyectado server-side por el api-gateway,
+    D-03; un cliente no puede forjarlo — ver `documents.py::_optional_canal`).
+    Ausente => 'system' (no se audita como consulta de un usuario real)."""
+    return x_canal or "system"
+
+
+def _tenant_slug(request: Request) -> str:
+    # get_tenant_conn (dependencia de la ruta) ya garantiza que X-Tenant-Slug
+    # está presente y es un slug válido — lanza 400 antes de ejecutar el
+    # handler. El default "" es defensa muerta: NO debe alcanzar `audit.append`
+    # (donde `"" or SYSTEM_TENANT` desviaría el asiento a la cadena de SYSTEM).
+    # Gemelo de `documents.py::_tenant_slug`.
+    return request.headers.get(_TENANT_HEADER, "")
+
+
 @router.get("", response_model=SearchResponse)
 async def search_documents(
     request: Request,
@@ -60,6 +78,7 @@ async def search_documents(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     conn: asyncpg.Connection = Depends(get_db),
+    canal: str = Depends(_optional_canal),
 ) -> SearchResponse:
     conds: list[str] = []
     params: list[object] = []
@@ -149,4 +168,31 @@ async def search_documents(
         for r in rows
     ]
     response.headers["X-Total-Count"] = str(total)
+
+    # Traza AGREGADA de búsqueda (RF-BUS-10/E09; Ley 1712/2014, Decreto
+    # 1081/2015): UNA sola entrada por consulta exitosa, nunca por hit. `q`
+    # crudo NUNCA se registra (podría ser PII) — solo su presencia/longitud;
+    # de `meta.*` solo las CLAVES consultadas. Ver `audit_search_access` en
+    # `app.services.document_service` (gate + best-effort centralizados ahí;
+    # este router no pasa por `DocumentService` porque ejecuta SQL crudo
+    # directo, a diferencia de `list_documents`).
+    await audit_search_access(
+        conn,
+        tenant_slug=_tenant_slug(request),
+        filtros={
+            "q_presente": q is not None,
+            "q_len": len(q) if q else None,
+            "doc_type": doc_type,
+            "status": status,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "dest_dept_code": dest_dept_code,
+            "metadata_filter_keys": sorted(meta) if meta else None,
+        },
+        total=total,
+        page=page,
+        size=size,
+        user_id=_caller_id(request),
+        canal=canal,
+    )
     return SearchResponse(query=q, total=total, hits=hits, page=page, size=size)

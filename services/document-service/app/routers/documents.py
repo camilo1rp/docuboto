@@ -23,7 +23,7 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from app.clients.tenant_client import TenantServiceClient, TenantServiceError
 from app.core.clearance import require_permission, resolve_caller_clearance
@@ -65,6 +65,16 @@ def _get_registered_by(request: Request) -> uuid.UUID | None:
         return uuid.UUID(raw)
     except ValueError:
         return None
+
+
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Canal de origen de la petición (X-Canal, inyectado server-side por el
+    api-gateway, D-03; excluido del whitelist de client request headers en
+    `api-gateway/app/core/proxy.py::FORWARDED_REQUEST_HEADERS`, así que un
+    cliente no puede forjarlo). Ausente => 'system' (no se audita como
+    consulta de un usuario real). Gemelo de
+    `archive-service/app/routers/expedientes.py::_optional_canal`."""
+    return x_canal or "system"
 
 
 def _build_service(
@@ -142,6 +152,7 @@ async def list_documents(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    canal: str = Depends(_optional_canal),
 ) -> list[DocumentResponse]:
     service = _build_service(conn, _tenant_slug(request))
     # Filtro por campo de metadato: ?meta.<campo>=valor (E03, índice GIN).
@@ -158,6 +169,8 @@ async def list_documents(
         metadata_filter=metadata_filter or None,
         page=page,
         size=size,
+        user_id=_get_registered_by(request),
+        canal=canal,
     )
     response.headers["X-Total-Count"] = str(total)
     return documents
@@ -172,11 +185,14 @@ async def get_document_by_tracking(
     tracking_number: str,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    canal: str = Depends(_optional_canal),
 ) -> DocumentResponse:
     service = _build_service(conn, _tenant_slug(request))
     clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
     try:
-        return await service.get_by_tracking_number(tracking_number, clearance)
+        return await service.get_by_tracking_number(
+            tracking_number, clearance, user_id=_get_registered_by(request), canal=canal
+        )
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -197,11 +213,14 @@ async def get_document(
     document_id: uuid.UUID,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    canal: str = Depends(_optional_canal),
 ) -> DocumentResponse:
     service = _build_service(conn, _tenant_slug(request))
     clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
     try:
-        return await service.get_by_id(document_id, clearance)
+        return await service.get_by_id(
+            document_id, clearance, user_id=_get_registered_by(request), canal=canal
+        )
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

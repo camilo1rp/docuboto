@@ -15,9 +15,9 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from app.core.clearance import require_permission
+from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.document import DocumentResponse
 from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
@@ -43,6 +43,13 @@ def _user(request: Request) -> uuid.UUID | None:
         return uuid.UUID(raw) if raw else None
     except ValueError:
         return None
+
+
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Canal de origen (X-Canal, inyectado server-side por el api-gateway, D-03;
+    no forjable por el cliente). Ausente => 'system' (no se audita como consulta
+    de un usuario real). Gemelo de `documents.py::_optional_canal`."""
+    return x_canal or "system"
 
 
 def _service(conn, slug, tenant_client, redis) -> DocumentService:
@@ -91,6 +98,13 @@ async def listar_respuestas(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
+    canal: str = Depends(_optional_canal),
 ) -> list[RespuestaItem]:
     service = _service(conn, _slug(request), tenant_client, redis)
-    return await service.listar_respuestas(document_id)
+    user_id = _user(request)
+    # No-read-up (RF-SEG-08): el clearance del llamante acota qué Salidas
+    # vinculadas se listan (fail-closed a PUBLICA sin identidad).
+    clearance = await resolve_caller_clearance(conn, user_id)
+    return await service.listar_respuestas(
+        document_id, max_clearance=clearance, user_id=user_id, canal=canal
+    )

@@ -48,6 +48,71 @@ logger = logging.getLogger(__name__)
 _SERVICE = "document-service"
 _STREAM = "orpycamcp.document.events"
 
+# Canales que representan una consulta real de un usuario (gateway/mcp-server,
+# ADR-019/D-03) — 'system' (llamadas internas, p. ej. `crear_respuesta`
+# leyendo el antecedente vía el repositorio directo) queda excluido: no
+# ensucia la pista de acceso con ruido interno. Espejo de
+# `archive_service.ArchiveService._CANALES_AUDITABLES`.
+_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+
+# Traza AGREGADA de listado/búsqueda (RF-BUS-10/E09; Ley 1712/2014, Decreto
+# 1081/2015): `object_type`/`object_ref` son constantes DEDICADAS, distintas
+# de `object_type="radicado"` que usa la lectura individual
+# (`document.radicado_consultado`) — un listado/búsqueda no es una lectura DE
+# un radicado concreto, es de un CONJUNTO. document-service no tiene hoy un
+# equivalente a `AuditReadRepository`/`GET /historial-acceso`
+# (archive-service sí), pero se reservan dedicadas para cuando exista, y
+# para que nadie las confunda con `object_type="radicado"` al filtrar
+# `audit_log`. Acción única para listado y búsqueda (a diferencia de
+# archive-service, que las distingue con dos acciones) — spec de este
+# incremento.
+_SEARCH_OBJECT_TYPE = "radicado_busqueda"
+_SEARCH_OBJECT_REF = "listado"
+_SEARCH_ACTION = "document.radicado_busqueda"
+
+
+async def audit_search_access(
+    conn: asyncpg.Connection,
+    *,
+    tenant_slug: str,
+    filtros: dict[str, Any],
+    total: int,
+    page: int,
+    size: int,
+    user_id: uuid.UUID | None,
+    canal: str,
+) -> None:
+    """Traza AGREGADA de listado/búsqueda de radicados — función de módulo
+    (no método de `DocumentService`) porque `search_documents`
+    (`app/routers/search.py`) ejecuta SQL crudo directo sobre la conexión sin
+    pasar por la capa de servicio (a diferencia de `archive-service`, donde
+    list/search sí van por `ArchiveService`); `DocumentService.list` reusa
+    esta misma función para no duplicar la lógica de gating/best-effort.
+
+    UNA sola entrada por consulta EXITOSA, nunca por fila del resultado —
+    auditar por fila infla la cadena de hash de `public.audit_log`
+    (encadenada por tenant, `orpycamcp_common.audit`) proporcionalmente a
+    `size`. Gate y best-effort iguales a la lectura individual: sin actor
+    real (`user_id is None`) o canal no auditable, no registra; un fallo de
+    `audit.append` nunca degrada la consulta a 500.
+    """
+    if canal not in _CANALES_AUDITABLES or user_id is None:
+        return
+    try:
+        await audit.append(
+            conn,
+            tenant_slug=tenant_slug,
+            service=_SERVICE,
+            action=_SEARCH_ACTION,
+            object_type=_SEARCH_OBJECT_TYPE,
+            object_ref=_SEARCH_OBJECT_REF,
+            actor=str(user_id),
+            canal=canal,
+            payload={**filtros, "total": total, "page": page, "size": size},
+        )
+    except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+        logger.warning("audit.append (%s) failed", _SEARCH_ACTION, exc_info=True)
+
 
 class DocumentNotFoundError(Exception):
     pass
@@ -229,6 +294,8 @@ class DocumentService:
         metadata_filter: dict | None = None,
         page: int,
         size: int,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> tuple[list[DocumentResponse], int]:
         radicados, total = await self._repo.find_all(
             doc_type=doc_type,
@@ -238,23 +305,82 @@ class DocumentService:
             size=size,
             max_clearance=max_clearance,
         )
+        # Filtros estructurales tal cual (no son datos personales de quien
+        # consulta); de `metadata_filter` solo las CLAVES consultadas — los
+        # valores podrían ser PII (mismo criterio que `search_documents`).
+        await audit_search_access(
+            self._conn,
+            tenant_slug=self._slug,
+            filtros={
+                "doc_type": doc_type,
+                "status": status,
+                "metadata_filter_keys": sorted(metadata_filter) if metadata_filter else None,
+            },
+            total=total,
+            page=page,
+            size=size,
+            user_id=user_id,
+            canal=canal,
+        )
         return [_to_response(r) for r in radicados], total
 
     async def get_by_id(
-        self, document_id: uuid.UUID, max_clearance: int = 3
+        self,
+        document_id: uuid.UUID,
+        max_clearance: int = 3,
+        *,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> DocumentResponse:
         radicado = await self._repo.get_by_id(document_id, max_clearance)
         if radicado is None:
             raise DocumentNotFoundError(str(document_id))
+        await self._audit_read_access(radicado.tracking_number, user_id=user_id, canal=canal)
         return _to_response(radicado)
 
     async def get_by_tracking_number(
-        self, tracking_number: str, max_clearance: int = 3
+        self,
+        tracking_number: str,
+        max_clearance: int = 3,
+        *,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
     ) -> DocumentResponse:
         radicado = await self._repo.get_by_tracking_number(tracking_number, max_clearance)
         if radicado is None:
             raise DocumentNotFoundError(tracking_number)
+        await self._audit_read_access(radicado.tracking_number, user_id=user_id, canal=canal)
         return _to_response(radicado)
+
+    async def _audit_read_access(
+        self, tracking_number: str, *, user_id: uuid.UUID | None, canal: str
+    ) -> None:
+        """Pista de acceso (RF-BUS-10/E09; Ley 1712/2014, Decreto 1081/2015) —
+        gemelo de `ArchiveService._audit_read_access`: una lectura EXITOSA de
+        `GET /documents/{id}` o `GET /documents/by-tracking/{tracking_number}`
+        (el radicado ya pasó el filtro no-read-up de clearance) deja traza en
+        `audit_log` con el actor real y el canal de origen; 'system' (llamadas
+        internas, sin actor real) no escribe pista. Best-effort: nunca
+        degrada la lectura a 500 por un fallo de auditoría.
+
+        `user_id is None` también descarta el registro: sin actor real no hay
+        a quién atribuir la lectura.
+        """
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.radicado_consultado",
+                object_type="radicado",
+                object_ref=tracking_number,
+                actor=str(user_id),
+                canal=canal,
+            )
+        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+            logger.warning("audit.append (radicado_consultado) failed", exc_info=True)
 
     async def crear_respuesta(
         self,
@@ -283,8 +409,29 @@ class DocumentService:
         await self._repo.set_responde_a(result.id, antecedente_id)
         return result
 
-    async def listar_respuestas(self, antecedente_id: uuid.UUID) -> list[RespuestaItem]:
-        rows = await self._repo.list_respuestas(antecedente_id)
+    async def listar_respuestas(
+        self,
+        antecedente_id: uuid.UUID,
+        *,
+        max_clearance: int = 3,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> list[RespuestaItem]:
+        # No-read-up (RF-SEG-08): solo Salidas vinculadas a-nivel-o-por-debajo
+        # del clearance del llamante. La lista devuelta es CONTENIDO de radicado.
+        rows = await self._repo.list_respuestas(antecedente_id, max_clearance)
+        # Traza AGREGADA de lectura (RF-BUS-10): una entrada por consulta, no por
+        # fila. El `antecedente_id` es una referencia de radicado (no PII).
+        await audit_search_access(
+            self._conn,
+            tenant_slug=self._slug,
+            filtros={"antecedente_id": str(antecedente_id)},
+            total=len(rows),
+            page=1,
+            size=len(rows),
+            user_id=user_id,
+            canal=canal,
+        )
         return [RespuestaItem(**dict(r)) for r in rows]
 
     async def reclassify(

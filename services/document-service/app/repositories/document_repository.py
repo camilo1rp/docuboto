@@ -206,13 +206,23 @@ class DocumentRepository:
             antecedente_id,
         )
 
-    async def list_respuestas(self, antecedente_id: uuid.UUID) -> list[asyncpg.Record]:
-        """Salidas que responden al radicado dado (consulta ligera, sin mapper)."""
+    async def list_respuestas(
+        self, antecedente_id: uuid.UUID, max_clearance: int = 3
+    ) -> list[asyncpg.Record]:
+        """Salidas que responden al radicado dado (consulta ligera, sin mapper).
+
+        No-read-up (RF-SEG-08): filtra `nivel_seguridad <= max_clearance` igual
+        que todo el resto de lecturas de radicados (invariante del CLAUDE.md del
+        servicio). Sin el filtro, cualquier llamante enumeraría las Salidas
+        vinculadas (tracking/asunto/estado/fecha) sin importar su clasificación.
+        """
         return list(
             await self._conn.fetch(
                 "SELECT id, tracking_number, doc_type, subject, status, registered_at "
-                "FROM radicados WHERE responde_a = $1 ORDER BY registered_at",
+                "FROM radicados WHERE responde_a = $1 AND nivel_seguridad <= $2 "
+                "ORDER BY registered_at",
                 antecedente_id,
+                max_clearance,
             )
         )
 
