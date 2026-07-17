@@ -331,6 +331,13 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/storage/files/abc/download", state) is None
     assert _route_to_upstream("/api/v1/storage/files/abc/content", state) is None
     assert _route_to_upstream("/api/v1/storage/files/abc", state) is None
+    # /internal/* está estructuralmente fuera de /api/v1 — ningún catch-all
+    # de _route_to_upstream puede alcanzarlo por construcción (E17/F4,
+    # Incremento 1 de firma personal PKI; mismo criterio ya válido para
+    # /internal/totp/* desde el incremento TOTP).
+    assert _route_to_upstream("/internal/signing-key/sign-digest", state) is None
+    assert _route_to_upstream("/internal/signing-key/activate", state) is None
+    assert _route_to_upstream("/internal/totp/verify", state) is None
 
 
 async def test_public_verify_route_is_public_and_routed():

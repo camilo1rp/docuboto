@@ -22,6 +22,7 @@ contrato — ambos proveedores locales resuelven de forma síncrona y devuelven
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -111,6 +112,24 @@ class SignerRef:
     ``firma.ocsp_downgrade_no_responder``) — nunca sube a LTA "con OCSP" sin
     este material, y nunca bloquea LT/LTA por su ausencia salvo
     ``settings.signer_ocsp_require=True``.
+
+    ``remote_sign`` (firma electrónica PERSONAL PKI por-usuario, E17/F4,
+    Incremento 1 — custodia SERVIDOR en auth-service, postura B) es el
+    tercer modo: cuando está presente, ``key_pem`` se IGNORA por completo
+    (queda ``b""``) y ``LocalSigner.sign`` usa la técnica de "firma remota"
+    validada en el Paso 0 del incremento — un par RSA EFÍMERO, desechable,
+    solo para que ``signxml``/``XAdESSigner`` complete ``ds:SignedInfo`` con
+    el certificado REAL del usuario en ``KeyInfo`` (``cert_pem``); el
+    ``ds:SignatureValue`` real lo produce ESTA callable, invocada con el
+    SHA-256 de ``C14N-exclusiva(ds:SignedInfo)`` — nunca con el documento
+    completo, y la clave privada del usuario NUNCA entra en el proceso de
+    signature-service (vive cifrada en auth-service, se descifra allí en
+    memoria por el tiempo mínimo indispensable de firmar ese único digest —
+    ver ``app.core.http_clients.sign_digest_remote`` y
+    ``app.core.signing_keys.sign_digest`` en auth-service). ÉSTE es el seam
+    a un HSM futuro: un proveedor HSM reemplazaría el CUERPO de esta
+    callable (una llamada PKCS#11/KMS en vez de un POST a auth-service) sin
+    tocar ``LocalSigner`` ni el contrato ``SignerRef`` en absoluto.
     """
 
     cert_pem: bytes
@@ -126,6 +145,10 @@ class SignerRef:
     crl_der: bytes | None = None
     ocsp_cert_pem: bytes | None = None
     ocsp_key_pem: bytes | None = None
+    # Firma personal PKI por-usuario (E17/F4, Incremento 1) — ver la nota
+    # extensa arriba. `None` (default) preserva el camino existente
+    # (`key_pem` en proceso, sello institucional o HMAC nativo) sin cambios.
+    remote_sign: Callable[[bytes], Awaitable[bytes]] | None = None
 
 
 @dataclass(slots=True)

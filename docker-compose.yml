@@ -222,6 +222,11 @@ services:
       # 4.3.2.4, reconciliación del sellado del índice). Dev-only — NUNCA
       # este valor en producción.
       - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
+      # Firma personal PKI por-usuario (E17/F4, Incremento 1) — llamadas
+      # DIRECTAS a auth-service (Q3, mismo patrón que AUTH_SERVICE_URL del
+      # 2FA OTP-correo/TOTP): POST /internal/signing-key/sign-digest. Mismo
+      # secreto que auth-service.SIGNING_KEY_INTERNAL_TOKEN. Dev-only.
+      - SIGNING_KEY_INTERNAL_TOKEN=${SIGNING_KEY_INTERNAL_TOKEN:-orpycamcp_signing_key_internal_dev}
     volumes:
       # Solo lectura: signature-service nunca escribe en los sellos montados.
       # NUNCA se monta ./secrets/ca-authority (clave privada de la CA local de
@@ -282,6 +287,17 @@ services:
       - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
       - KEYCLOAK_CLIENT_ID=auth-service
       - KEYCLOAK_CLIENT_SECRET=change-me-in-production
+      # Firma personal PKI por-usuario (E17/F4, Incremento 1) — clave AES-256
+      # (base64) que cifra en reposo la clave privada de cada usuario
+      # (app/core/signing_keys.py), SEPARADA de TOTP_ENCRYPTION_KEY y del
+      # SIGNATURE_SECRET de signature-service. Vacía por defecto (igual que
+      # TOTP_ENCRYPTION_KEY): /me/signing-key/enroll falla cerrado (500)
+      # hasta configurarla — ver services/auth-service/.env.example.
+      - SIGNING_KEY_ENCRYPTION_KEY=${SIGNING_KEY_ENCRYPTION_KEY:-}
+      # D-02: secreto compartido con signature-service (mismo patrón que
+      # SIGNATURE_INTERNAL_TOKEN) — protege POST /internal/signing-key/*.
+      # Dev-only — NUNCA este valor en producción.
+      - SIGNING_KEY_INTERNAL_TOKEN=${SIGNING_KEY_INTERNAL_TOKEN:-orpycamcp_signing_key_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

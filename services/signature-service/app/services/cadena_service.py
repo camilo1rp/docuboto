@@ -27,26 +27,36 @@ institucional del índice (/sign-xml, otro router) NO pasa por este gate.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
+from base64 import b64decode
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
 from fastapi import HTTPException, status
+from lxml import etree
 
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
     OtpEmailDeliveryError,
+    SignDigestRemoteError,
+    SignDigestRemoteUnavailableError,
     SignerEmailError,
+    SigningKeyStatusUnavailableError,
     TotpVerifyUnavailableError,
     get_signer_email,
+    get_signing_key_status_remote,
     send_otp_email,
+    sign_digest_remote,
     verify_totp,
 )
 from app.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
 from app.core.redis_client import get_redis
+from app.providers.base import SignedDoc, SignerRef
+from app.providers.local import LocalSigner
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.challenge_repository import ChallengeRepository
 from app.repositories.firma_repository import FirmaRepository
@@ -62,6 +72,8 @@ from app.schemas.cadena import (
     TurnoItem,
 )
 from app.services import signer
+
+_PERSONAL_ENVELOPE_NS = "urn:orpyca:firma-personal"
 
 logger = logging.getLogger("signature.cadena")
 
@@ -98,6 +110,24 @@ def _build_response(sol: asyncpg.Record, turnos: list[asyncpg.Record]) -> Solici
         items=items,
         created_at=sol["created_at"],
     )
+
+
+def _build_personal_envelope(*, objeto_tipo: str, objeto_id: str, payload_bytes: bytes) -> bytes:
+    """Envoltorio XML mínimo, enveloped-firmable, para la firma PERSONAL PKI
+    por-usuario (E17/F4, Incremento 1) — la cadena de firma secuencial firma
+    payloads que NO son XML en general (un hash hex, o el literal
+    "objeto_tipo:objeto_id"; ver ``firmar()``), pero ``LocalSigner``
+    (``app.providers.local``) solo sabe producir XAdES enveloped sobre un
+    documento XML. Este envoltorio es el punto de contacto entre ambos: el
+    ``payload_bytes`` que ya se firma hoy (nativa, HMAC) se embebe TAL CUAL
+    como el texto del elemento raíz, así que ``huella_de_contenido`` sigue
+    significando exactamente lo mismo para ambos proveedores.
+    """
+    root = etree.Element(f"{{{_PERSONAL_ENVELOPE_NS}}}acto", nsmap={None: _PERSONAL_ENVELOPE_NS})
+    root.set("objetoTipo", objeto_tipo)
+    root.set("objetoId", objeto_id)
+    root.text = payload_bytes.decode("utf-8", errors="replace")
+    return etree.tostring(root, xml_declaration=False, encoding="UTF-8")
 
 
 class CadenaFirmaService:
@@ -515,6 +545,23 @@ class CadenaFirmaService:
 
         The firma row + turn update + solicitud state change + audit entry
         all commit in a single transaction (RF-FIR-14 atomicity).
+
+        --- Firma PERSONAL PKI por-usuario (E17/F4, Incremento 1) ---
+        Before the 2FA gate, queries auth-service (``GET
+        /internal/signing-key/status``) for the actor's own signing-key
+        status. If ``estado == "activo"``, this act is signed with the
+        actor's PERSONAL certificate (XAdES-B/T, provider
+        ``xades_personal``) INSTEAD of the HMAC nativa — ``_gate_2fa``/
+        ``_gate_2fa_totp`` (OTP-correo/local TOTP verify) are bypassed
+        entirely for this path: ``body.totp_code`` is required and consumed
+        ATOMICALLY at auth-service, together with the signature itself (see
+        ``_firmar_personal``/``app.core.http_clients.sign_digest_remote``) —
+        not by this service's own TOTP verification. A status-check failure
+        (auth-service unreachable) degrades to the nativa path
+        (``firma_personal_require_xades`` is declared but NOT enforced in
+        this increment — see ``app/core/config.py``); an actor without an
+        ``activo`` cert always falls back to nativa, unchanged from before
+        this increment (full backward compatibility).
         """
         sol = await self._get_or_404(solicitud_id)
         # No-read-up gate: 404 before any other guard so actor cannot infer
@@ -581,59 +628,141 @@ class CadenaFirmaService:
                     },
                 )
 
-            # 2FA gate (E06 Inc.2, RF-FIR-13) — must run BEFORE signer.firmar().
-            # On failure, _gate_2fa RETURNS (never raises) so any durable state
-            # change it already made (attempt counter, expirado/bloqueado
-            # transitions) survives the commit below — even though the signature
-            # itself is skipped. See _gate_2fa docstring for why raising here
-            # would be wrong (it would roll back those changes too).
-            #
-            # Mandatory (not disable-able via firma_2fa_required) once the
-            # object is above PUBLICA (nivel_seguridad >= 2): a global
-            # kill-switch must not be able to silently drop the second factor
-            # for RESERVADA/CLASIFICADA acts (DUR 1074/2015 Cap. 47 — grado de
-            # confiabilidad apropiado a las circunstancias). The flag remains
-            # a real switch only at PUBLICA / for test environments.
-            if settings.firma_2fa_required or sol["nivel_seguridad"] >= 2:
-                otp_fail, consumed_challenge = await self._gate_2fa(
-                    solicitud_id, actor, sol, payload_opcional, authorization
-                )
+            # Payload priority: solicitud.payload_sha256 > request.payload_xml > identifier fallback.
+            # huella_de_contenido=False marca el caso de "sellado de identificador": se firma
+            # "objeto_tipo:objeto_id", NO el contenido → no detecta alteración del documento
+            # (DUR 1074/2015 art. 2.2.2.47.4.2). Se audita el flag para trazar el grado de prueba.
+            # Resuelto ANTES del gate porque AMBOS caminos (personal/nativa) lo necesitan.
+            if sol["payload_sha256"]:
+                payload_bytes = sol["payload_sha256"].encode()
+                huella_de_contenido = True
+            elif payload_opcional and payload_opcional.payload_xml:
+                payload_bytes = payload_opcional.payload_xml.encode()
+                huella_de_contenido = True
+            else:
+                payload_bytes = f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
+                huella_de_contenido = False
+
+            # Firma PERSONAL PKI por-usuario (E17/F4, Incremento 1) — ver la
+            # nota de docstring "Firma PERSONAL...". Resuelto ANTES del gate
+            # 2FA nativo: si el actor tiene un cert 'activo', ESTE es el
+            # único camino de firma para este acto (bypasea _gate_2fa por
+            # completo) — nunca ambos.
+            personal_status = await self._resolve_personal_signing_status(authorization)
+            personal_signed: SignedDoc | None = None
+
+            if personal_status is not None:
+                totp_code = payload_opcional.totp_code if payload_opcional else None
+                if not totp_code:
+                    otp_fail = HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "2fa_requerido",
+                            "detail": "totp_code is required for personal signing (RF-FIR-13)",
+                            "status": 409,
+                        },
+                    )
+                else:
+                    try:
+                        personal_signed = await self._firmar_personal(
+                            sol=sol,
+                            payload_bytes=payload_bytes,
+                            authorization=authorization,
+                            totp_code=totp_code,
+                            cert_pem=personal_status["cert_pem"],
+                        )
+                    except HTTPException as exc:
+                        otp_fail = exc
+                    else:
+                        consumed_challenge = {
+                            "challenge_id": None,
+                            "factor_tipo": "totp",
+                            "hash_documento": sol["payload_sha256"],
+                            "consumido_at": datetime.now(timezone.utc),
+                        }
+            else:
+                # Fallback nativa — comportamiento SIN CAMBIOS desde antes de
+                # este incremento (2FA gate, E06 Inc.2, RF-FIR-13). On
+                # failure, _gate_2fa RETURNS (never raises) so any durable
+                # state change it already made (attempt counter,
+                # expirado/bloqueado transitions) survives the commit below
+                # — even though the signature itself is skipped. See
+                # _gate_2fa docstring for why raising here would be wrong
+                # (it would roll back those changes too).
+                #
+                # Mandatory (not disable-able via firma_2fa_required) once
+                # the object is above PUBLICA (nivel_seguridad >= 2): a
+                # global kill-switch must not be able to silently drop the
+                # second factor for RESERVADA/CLASIFICADA acts (DUR
+                # 1074/2015 Cap. 47 — grado de confiabilidad apropiado a las
+                # circunstancias). The flag remains a real switch only at
+                # PUBLICA / for test environments.
+                if settings.firma_2fa_required or sol["nivel_seguridad"] >= 2:
+                    otp_fail, consumed_challenge = await self._gate_2fa(
+                        solicitud_id, actor, sol, payload_opcional, authorization
+                    )
 
             if otp_fail is None:
                 # Server-generated timestamp — never from the client (RF-FIR-12).
                 sello_dt = datetime.now(timezone.utc)
                 sello_iso = sello_dt.isoformat()
 
-                # Payload priority: solicitud.payload_sha256 > request.payload_xml > identifier fallback.
-                # huella_de_contenido=False marca el caso de "sellado de identificador": se firma
-                # "objeto_tipo:objeto_id", NO el contenido → no detecta alteración del documento
-                # (DUR 1074/2015 art. 2.2.2.47.4.2). Se audita el flag para trazar el grado de prueba.
-                if sol["payload_sha256"]:
-                    payload_bytes = sol["payload_sha256"].encode()
-                    huella_de_contenido = True
-                elif payload_opcional and payload_opcional.payload_xml:
-                    payload_bytes = payload_opcional.payload_xml.encode()
-                    huella_de_contenido = True
-                else:
-                    payload_bytes = f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
-                    huella_de_contenido = False
-
-                sign_result = signer.firmar(
-                    payload_bytes, str(actor), sello_iso, settings.signature_secret
-                )
-
-                firma_row = await FirmaRepository(self._conn).insert(
-                    {
-                        "objeto_tipo": sol["objeto_tipo"],
-                        "objeto_id": sol["objeto_id"],
-                        "formato_solicitado": None,
-                        "firmante_id": actor,
-                        "payload_sha256": sign_result["payload_sha256"],
-                        "firma_blob": sign_result["firma_blob"],
-                        "provider": sign_result["provider"],
-                        "sello_tiempo": sello_dt,
+                if personal_signed is not None:
+                    sign_result = {
+                        "payload_sha256": personal_signed.payload_sha256,
+                        "firma_blob": personal_signed.signature_value_b64,
+                        "provider": personal_signed.provider,
                     }
-                )
+                    tsa_timestamp_iso = personal_signed.extra.get("tsa_timestamp")
+                    firma_row = await FirmaRepository(self._conn).insert(
+                        {
+                            "objeto_tipo": sol["objeto_tipo"],
+                            "objeto_id": sol["objeto_id"],
+                            "formato_solicitado": None,
+                            "firmante_id": actor,
+                            "payload_sha256": personal_signed.payload_sha256,
+                            "firma_blob": personal_signed.signature_value_b64,
+                            "provider": personal_signed.provider,
+                            "sello_tiempo": sello_dt,
+                            "certificado_pem": personal_signed.certificado_pem or None,
+                            "nivel_conformidad": personal_signed.nivel_conformidad,
+                            "xades_level": personal_signed.xades_level,
+                            "tipo_firma": "personal",
+                            "certificado_fingerprint": personal_signed.certificado_fingerprint,
+                            "signed_xml_sha256": hashlib.sha256(
+                                personal_signed.signed_xml
+                            ).hexdigest(),
+                            "tsa_token": personal_signed.extra.get("tsa_token"),
+                            "tsa_timestamp": (
+                                datetime.fromisoformat(tsa_timestamp_iso)
+                                if tsa_timestamp_iso
+                                else None
+                            ),
+                            "tsa_cert_fingerprint": personal_signed.extra.get(
+                                "tsa_cert_fingerprint"
+                            ),
+                            "tsa_acreditado": personal_signed.extra.get(
+                                "tsa_acreditado", False
+                            ),
+                        }
+                    )
+                else:
+                    sign_result = signer.firmar(
+                        payload_bytes, str(actor), sello_iso, settings.signature_secret
+                    )
+
+                    firma_row = await FirmaRepository(self._conn).insert(
+                        {
+                            "objeto_tipo": sol["objeto_tipo"],
+                            "objeto_id": sol["objeto_id"],
+                            "formato_solicitado": None,
+                            "firmante_id": actor,
+                            "payload_sha256": sign_result["payload_sha256"],
+                            "firma_blob": sign_result["firma_blob"],
+                            "provider": sign_result["provider"],
+                            "sello_tiempo": sello_dt,
+                        }
+                    )
                 firma_id: uuid.UUID = firma_row["id"]
 
                 ok = await self._repo.marcar_turno(turno["id"], "firmado", firma_id=firma_id)
@@ -710,6 +839,99 @@ class CadenaFirmaService:
             raise otp_fail
 
         return await self.get(solicitud_id, actor)
+
+    # ------------------------------------------------------------------
+    # Firma PERSONAL PKI por-usuario (E17/F4, Incremento 1)
+    # ------------------------------------------------------------------
+
+    async def _resolve_personal_signing_status(self, authorization: str | None) -> dict | None:
+        """Consulta ``GET /internal/signing-key/status`` (auth-service) para
+        el ACTOR (identidad derivada del ``authorization`` reenviado, D1) y
+        devuelve el body si tiene un cert ``activo`` disponible, o ``None``
+        si no (fallback nativa — sin cambios desde antes de este incremento).
+
+        FAIL-OPEN a nativa ante un fallo de infraestructura
+        (``SigningKeyStatusUnavailableError``) — ``firma_personal_require_xades``
+        está declarado pero NO se aplica en este incremento (ver
+        ``app/core/config.py``): un auth-service caído nunca bloquea la
+        cadena de firma, solo le impide subir a ``xades_personal`` para ese
+        acto en particular.
+        """
+        if not authorization:
+            return None
+        try:
+            body = await get_signing_key_status_remote(authorization)
+        except SigningKeyStatusUnavailableError:
+            logger.warning(
+                "No se pudo consultar signing-key/status; fallback a firma nativa",
+                exc_info=True,
+            )
+            return None
+        if body.get("estado") != "activo" or not body.get("cert_pem"):
+            return None
+        return body
+
+    async def _firmar_personal(
+        self,
+        *,
+        sol: asyncpg.Record,
+        payload_bytes: bytes,
+        authorization: str | None,
+        totp_code: str,
+        cert_pem: str,
+    ) -> SignedDoc:
+        """Produce una firma XAdES-B/T PERSONAL (E17/F4, Incremento 1) —
+        envuelve ``payload_bytes`` en un XML mínimo (``_build_personal_envelope``)
+        y delega en ``LocalSigner`` (proveedor generalizado, ver
+        ``app.providers.local``) con un ``SignerRef.remote_sign`` que llama a
+        ``sign_digest_remote`` — el TOTP se verifica-y-consume ATÓMICAMENTE
+        en auth-service, junto con el uso de la clave, NUNCA por
+        ``_gate_2fa`` de este servicio (D1 del contrato de firma personal).
+
+        Lanza ``HTTPException`` (NUNCA otra excepción) en cualquier fallo —
+        el llamante (``firmar()``) la captura y la trata exactamente como un
+        fallo de ``_gate_2fa`` (devuelto, no lanzado dentro de la
+        transacción ambiente).
+        """
+
+        async def _remote_sign(digest: bytes) -> bytes:
+            try:
+                result = await sign_digest_remote(authorization, digest, totp_code)
+            except SignDigestRemoteUnavailableError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": "canal_firma_personal_no_disponible",
+                        "detail": str(exc),
+                        "status": 503,
+                    },
+                ) from exc
+            except SignDigestRemoteError as exc:
+                # auth-service ya formatea el detail en la forma
+                # {"error", "detail", "status"} — se reenvía tal cual
+                # (mismos códigos: 422 signing_key_no_activa/totp_no_activo,
+                # 423 totp_bloqueado, 401 totp_incorrecto).
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            return b64decode(result["signature_value_b64"])
+
+        envelope = _build_personal_envelope(
+            objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"], payload_bytes=payload_bytes
+        )
+        signer_ref = SignerRef(
+            cert_pem=cert_pem.encode(),
+            key_pem=b"",
+            remote_sign=_remote_sign,
+            tipo_firma="personal",
+            nivel_conformidad="xades_personal_no_acreditado",
+            # RF-FIR-15: la CA de usuarios de este incremento (scripts/gen-user-cert.sh)
+            # nunca tiene acreditación ONAC — mismo criterio que el sello institucional.
+            acreditado=False,
+        )
+        provider = LocalSigner()
+        prepared = await provider.prepare(
+            envelope, objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"]
+        )
+        return await provider.sign(prepared, signer_ref)
 
     async def _gate_2fa(
         self,

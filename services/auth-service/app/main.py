@@ -34,6 +34,8 @@ from app.routers.context import router as context_router
 from app.routers.health import router as health_router
 from app.routers.rbac import pick_router as rbac_pick_router
 from app.routers.rbac import router as rbac_router
+from app.routers.signing_key import internal_router as signing_key_internal_router
+from app.routers.signing_key import router as signing_key_router
 from app.routers.totp import internal_router as totp_internal_router
 from app.routers.totp import router as totp_router
 from app.routers.urd import router as urd_router
@@ -62,6 +64,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "totp_encryption_key sin configurar — /me/totp/enroll fallará (500) "
             "hasta que se defina (AES-256, 32 bytes en base64)"
         )
+    if not settings.signing_key_encryption_key:
+        logger.warning(
+            "signing_key_encryption_key sin configurar — /me/signing-key/enroll "
+            "fallará (500) hasta que se defina (AES-256, 32 bytes en base64)"
+        )
     yield
     logger.info("auth-service shutting down")
     await service.close()
@@ -88,6 +95,8 @@ app.include_router(context_router)
 app.include_router(clearance_router)
 app.include_router(totp_router)  # /api/v1/auth/me/totp — público vía gateway
 app.include_router(totp_internal_router)  # /internal/totp — NUNCA vía gateway
+app.include_router(signing_key_router)  # /api/v1/auth/me/signing-key — público vía gateway
+app.include_router(signing_key_internal_router)  # /internal/signing-key — NUNCA vía gateway
 app.include_router(audit_router)
 app.include_router(health_router)
 

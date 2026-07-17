@@ -26,6 +26,7 @@ queda un challenge huérfano cuyo OTP jamás llegó al firmante.
 from __future__ import annotations
 
 import uuid
+from base64 import b64encode
 
 import httpx
 
@@ -47,6 +48,35 @@ class TotpVerifyUnavailableError(RuntimeError):
     el llamante (``CadenaFirmaService._gate_2fa``) traduce esto en un 503
     ``canal_2fa_no_disponible`` que aborta la firma.
     """
+
+
+class SigningKeyStatusUnavailableError(RuntimeError):
+    """auth-service no respondió (o respondió con error de infraestructura)
+    al consultar ``GET /internal/signing-key/status``. FAIL-CLOSED: el
+    llamante (``CadenaFirmaService.firmar``) NO puede simplemente asumir "sin
+    cert activo" ante un fallo de red — eso confundiría "el usuario no tiene
+    firma personal" con "auth-service está caído" y degradaría en silencio a
+    HMAC nativo cuando el actor SÍ tiene un cert activo. Se traduce en un 503
+    ``canal_firma_personal_no_disponible``."""
+
+
+class SignDigestRemoteUnavailableError(RuntimeError):
+    """Fallo de red/timeout/5xx al llamar ``POST /internal/signing-key/sign-digest``
+    (auth-service) — FAIL-CLOSED, nunca cae en silencio a otro proveedor. El
+    llamante lo traduce en 503 ``canal_firma_personal_no_disponible``."""
+
+
+class SignDigestRemoteError(RuntimeError):
+    """auth-service respondió con un error de NEGOCIO (422 sin cert activo,
+    401 TOTP incorrecto, 423 TOTP bloqueado) a ``sign-digest`` — a diferencia
+    de :class:`SignDigestRemoteUnavailableError`, esto es una respuesta
+    válida que el llamante debe mapear a su propio código HTTP (mismo
+    criterio que ``verify_totp``/``_gate_2fa_totp`` para el 2FA por TOTP)."""
+
+    def __init__(self, status_code: int, detail: dict) -> None:
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"auth-service sign-digest -> HTTP {status_code}: {detail}")
 
 
 async def get_signer_email(authorization: str | None) -> str:
@@ -198,3 +228,107 @@ async def verify_totp(
             f"auth-service → HTTP {resp.status_code} al verificar TOTP: {resp.text[:200]}"
         )
     return resp.json()
+
+
+async def get_signing_key_status_remote(authorization: str | None) -> dict:
+    """Consulta ``GET /internal/signing-key/status`` (auth-service) para el
+    firmante autenticado — usado por ``CadenaFirmaService.firmar()`` para
+    decidir entre el camino ``xades_personal`` (``estado == "activo"``) y el
+    fallback nativo HMAC (E17/F4, Incremento 1).
+
+    Reenvía el ``Authorization`` TAL CUAL (D1 — auth-service deriva la
+    identidad del propio bearer, nunca de un parámetro que este servicio
+    pudiera mandar) MÁS ``X-Internal-Token`` (demuestra que el llamador es
+    signature-service — doble gate, mismo patrón que ``sign_digest_remote``).
+
+    FAIL-CLOSED: cualquier fallo de red/timeout/HTTP inesperado se traduce
+    en :class:`SigningKeyStatusUnavailableError` — nunca se interpreta un
+    fallo de infraestructura como "sin cert activo" (ver la nota de esa
+    excepción).
+    """
+    if not authorization:
+        raise SigningKeyStatusUnavailableError("Authorization header missing")
+    headers = {
+        "Authorization": authorization,
+        "X-Internal-Token": settings.signing_key_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.auth_service_url, timeout=settings.signing_key_sign_timeout_seconds
+        ) as client:
+            resp = await client.get("/internal/signing-key/status", headers=headers)
+    except httpx.RequestError as exc:
+        raise SigningKeyStatusUnavailableError(f"auth-service inalcanzable: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise SigningKeyStatusUnavailableError(
+            f"auth-service → HTTP {resp.status_code} al consultar signing-key/status: "
+            f"{resp.text[:200]}"
+        )
+    return resp.json()
+
+
+async def sign_digest_remote(
+    authorization: str | None, digest: bytes, totp_code: str
+) -> dict:
+    """Firma remota (E17/F4, Incremento 1) — ``POST
+    /internal/signing-key/sign-digest`` (auth-service). ``digest`` es el
+    SHA-256 de ``C14N-exclusiva(ds:SignedInfo)`` (ver
+    ``app.providers.local.LocalSigner.sign``, técnica validada en el Paso 0
+    del incremento) — NUNCA el documento completo, y la clave privada del
+    usuario NUNCA transita por signature-service ni por esta función: solo
+    el digest de ida y la firma cruda de vuelta.
+
+    Doble gate saliente: ``Authorization`` reenviado TAL CUAL (D1 — identidad
+    SIEMPRE del bearer del firmante, nunca de un ``user_id`` que este
+    servicio pudiera enviar, cierra IDOR) MÁS ``X-Internal-Token``.
+
+    ``totp_code`` viaja en el body — auth-service lo verifica-y-consume
+    atómicamente JUNTO con la firma, en su PROPIA transacción (D1 del
+    contrato de firma personal): a diferencia del 2FA por TOTP del
+    OTP-correo/TOTP nativo de este servicio (``_gate_2fa_totp``), aquí NO hay
+    un paso de verificación separado en signature-service — el factor y el
+    uso de la clave se unen del lado de auth-service.
+
+    Devuelve el body JSON de auth-service en éxito (``signature_value_b64``,
+    ``certificado_pem``, ``certificado_fingerprint``, ``serial``,
+    ``not_after``). Lanza :class:`SignDigestRemoteUnavailableError`
+    (fail-closed, red/timeout/5xx) o :class:`SignDigestRemoteError`
+    (respuesta de negocio 4xx — el llamante la mapea a su propio código,
+    mismo patrón que ``_gate_2fa_totp`` con ``verify_totp``).
+    """
+    if not authorization:
+        raise SignDigestRemoteUnavailableError("Authorization header missing")
+    headers = {
+        "Authorization": authorization,
+        "X-Internal-Token": settings.signing_key_internal_token,
+    }
+    body = {
+        "digest_b64": b64encode(digest).decode("ascii"),
+        "alg": "RSA-SHA256",
+        "prehashed": True,
+        "totp_code": totp_code,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.auth_service_url, timeout=settings.signing_key_sign_timeout_seconds
+        ) as client:
+            resp = await client.post(
+                "/internal/signing-key/sign-digest", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise SignDigestRemoteUnavailableError(f"auth-service inalcanzable: {exc}") from exc
+
+    if resp.status_code == 200:
+        return resp.json()
+    if resp.status_code >= 500:
+        raise SignDigestRemoteUnavailableError(
+            f"auth-service → HTTP {resp.status_code} al firmar el digest: {resp.text[:200]}"
+        )
+    try:
+        detail = resp.json().get("detail", {})
+    except Exception:  # noqa: BLE001 — cuerpo no-JSON, fail-closed con detalle vacío
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {"detail": detail}
+    raise SignDigestRemoteError(resp.status_code, detail)

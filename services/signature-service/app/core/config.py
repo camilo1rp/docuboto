@@ -220,5 +220,28 @@ class Settings(BaseSettings):
     # cualquier token — NUNCA commitear el valor real.
     signature_internal_token: str = ""
 
+    # --- Firma electrónica PERSONAL PKI por-usuario (E17/F4, Incremento 1) ---
+    # Custodia SERVIDOR (postura B, auth-service — app/core/signing_keys.py),
+    # marco honesto "no acreditado" (mismo nivel legal art. 7 Ley 527/1999
+    # que la firma electrónica simple). CadenaFirmaService.firmar() consulta
+    # GET /internal/signing-key/status (auth-service) para decidir entre el
+    # camino xades_personal (cert activo) y el fallback nativo HMAC — ver
+    # app.core.http_clients.sign_digest_remote / get_signing_key_status_remote.
+    # Mismo secreto que auth-service.SIGNING_KEY_INTERNAL_TOKEN (D-02).
+    signing_key_internal_token: str = ""
+    # Timeout agresivo para las llamadas a /internal/signing-key/* — mismo
+    # criterio fail-closed que TOTP_VERIFY_TIMEOUT_SECONDS: cualquier fallo
+    # de red/timeout se traduce en 503 canal_2fa_no_disponible, y el actor
+    # NUNCA cae en silencio al camino nativo por un simple timeout (eso solo
+    # ocurre cuando GET /status responde limpiamente "no_activo"/"revocado").
+    signing_key_sign_timeout_seconds: float = 5.0
+    # Kill-switch (NO forzado en Inc.1 — ver CLAUDE.md de este incremento):
+    # False (default) preserva el comportamiento actual — un actor SIN cert
+    # activo cae al HMAC nativo sin más. True exigiría xades_personal para
+    # todo actor con PERM_FIRMA (fuera de alcance del Inc.1: requeriría
+    # bloquear la firma de quien aún no completó el enroll+emisión offline;
+    # reservado para un incremento futuro que lo implemente de verdad).
+    firma_personal_require_xades: bool = False
+
 
 settings = Settings()

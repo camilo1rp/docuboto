@@ -177,13 +177,20 @@ async def verify(
             detail={"error": "firma_not_found", "detail": str(payload.firma_id), "status": 404},
         )
 
-    if row.get("provider") == "xades_local":
+    # xades_personal (E17/F4, Incremento 1 — firma personal PKI por-usuario)
+    # verifica con EXACTAMENTE el mismo verify_xades que xades_local: la
+    # cadena de confianza vive en el certificado embebido (KeyInfo), no en el
+    # `provider` — para xades_personal, `ca_fingerprint`/`ocsp_responder_fingerprint`
+    # son siempre None (nunca escala a LT/LTA en este incremento), así que
+    # verify_xades simplemente se queda en XAdES-B/T, sin rama especial aquí.
+    if row.get("provider") in ("xades_local", "xades_personal"):
+        provider_name = row["provider"]
         fingerprint = row.get("certificado_fingerprint")
         if not fingerprint:
             return VerifyResponse(
                 firma_id=row["id"],
                 valida=False,
-                provider="xades_local",
+                provider=provider_name,
                 xades_level=row.get("xades_level"),
                 nivel_conformidad=row.get("nivel_conformidad"),
                 acreditado=False,
@@ -202,7 +209,7 @@ async def verify(
             return VerifyResponse(
                 firma_id=row["id"],
                 valida=False,
-                provider="xades_local",
+                provider=provider_name,
                 xades_level=row.get("xades_level"),
                 nivel_conformidad=row.get("nivel_conformidad"),
                 acreditado=False,
@@ -218,7 +225,7 @@ async def verify(
         return VerifyResponse(
             firma_id=row["id"],
             valida=outcome.valida,
-            provider="xades_local",
+            provider=provider_name,
             # El nivel REALMENTE verificado para ESTE documento (RT-16, Pieza
             # 6.4) — nunca el `xades_level` "intencionado" al firmar. Se cae
             # al persistido en la fila solo si `verify_xades` no llegó a

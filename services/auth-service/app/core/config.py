@@ -74,6 +74,41 @@ class Settings(BaseSettings):
     # alternativo dentro de ese gate, nunca un requisito adicional propio.
     totp_requerido_por_nivel: bool = False
 
+    # --- Firma electrónica PERSONAL PKI por-usuario (E17/F4, Incremento 1) ---
+    # Clave AES-256 (32 bytes, base64) para cifrar en reposo la clave privada
+    # de firma personal (app/core/signing_keys.py, AESGCM) — SEPARADA de
+    # totp_encryption_key (secreto distinto, propósito distinto) y del
+    # signature_secret HMAC de signature-service (servicio distinto). Vacía en
+    # dev por defecto: enroll/sign-digest fallan explícitamente (fail-closed,
+    # ver signing_key_encryption_key_bytes) hasta configurarla.
+    signing_key_encryption_key: str = ""
+    # Token compartido D-02 para POST /internal/signing-key/sign-digest —
+    # SOLO signature-service lo llama, servicio-a-servicio, NUNCA vía gateway
+    # (misma familia de gate que app.core.internal_auth en otros servicios).
+    # Vacío (default) hace que la ruta responda 503 fail-closed en vez de
+    # aceptar cualquier token. NUNCA commitear el valor real.
+    signing_key_internal_token: str = ""
+
+    def signing_key_encryption_key_bytes(self) -> bytes:
+        """Decodifica ``signing_key_encryption_key`` (base64) a 32 bytes
+        crudos (AES-256). Lanza ``RuntimeError`` explícito si falta o no mide
+        32 bytes — nunca cae a una clave derivada o implícita (RF-SEG), mismo
+        criterio que :meth:`totp_encryption_key_bytes`."""
+        import base64
+        import binascii
+
+        if not self.signing_key_encryption_key:
+            raise RuntimeError(
+                "signing_key_encryption_key no configurada — requerida para /me/signing-key/*"
+            )
+        try:
+            key = base64.b64decode(self.signing_key_encryption_key, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("signing_key_encryption_key no es base64 válido") from exc
+        if len(key) != 32:
+            raise RuntimeError("signing_key_encryption_key debe decodificar a 32 bytes (AES-256)")
+        return key
+
     def totp_encryption_key_bytes(self) -> bytes:
         """Decodifica ``totp_encryption_key`` (base64) a 32 bytes crudos (AES-256).
 

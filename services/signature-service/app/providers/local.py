@@ -134,6 +134,7 @@ from datetime import UTC, datetime
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
@@ -473,7 +474,23 @@ def _insert_archive_timestamp(
 
 
 class LocalSigner:
-    """Proveedor ``xades_local``: XAdES-B enveloped con el sello institucional."""
+    """Proveedor ``xades_local``/``xades_personal``: XAdES-B/-T enveloped.
+
+    Generalizado en E17/F4 Incremento 1 para servir DOS actores con el MISMO
+    código de construcción XAdES (TSA/LT/OCSP incluidos, sin duplicar nada de
+    eso): el sello institucional del tenant (``key_pem`` en proceso,
+    ``signer.remote_sign is None`` — comportamiento sin cambios desde Inc.1)
+    y la firma PERSONAL por-usuario (``signer.remote_sign`` presente — ver la
+    nota extensa en ``app.providers.base.SignerRef``). La rama personal usa
+    la técnica de "firma remota" validada en el Paso 0 del incremento: un par
+    RSA EFÍMERO desechable solo para que ``signxml`` complete
+    ``ds:SignedInfo`` con el certificado REAL del usuario en ``KeyInfo``
+    (``always_add_key_value=False`` — sin esto, ``XAdESSigner`` embebe
+    también un ``ds:KeyValue`` derivado de la clave EFÍMERA, que
+    ``XAdESVerifier`` rechaza por ambigüedad con ``X509Data`` — hallazgo del
+    Paso 0); el ``ds:SignatureValue`` real lo produce ``remote_sign`` sobre
+    el SHA-256 de ``C14N-exclusiva(ds:SignedInfo)`` — la clave privada del
+    usuario NUNCA entra en este proceso."""
 
     async def prepare(
         self,
@@ -502,15 +519,55 @@ class LocalSigner:
             digest_algorithm=_DIGEST_ALG,
             c14n_algorithm=_C14N_ALG,
         )
-        signed_root = xades_signer.sign(
-            root,
-            key=signer.key_pem,
-            passphrase=signer.key_password,
-            cert=signer.cert_pem,
-        )
 
-        sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
-        signature_value_b64 = (sig_value_el.text or "") if sig_value_el is not None else ""
+        if signer.remote_sign is not None:
+            # --- Firma PERSONAL PKI por-usuario (E17/F4, Inc.1) — técnica de
+            # firma remota validada en el Paso 0 (tests/test_personal_signing_smoke.py) ---
+            ephemeral_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            ephemeral_pem = ephemeral_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            # `always_add_key_value=False`: sin esto, `XAdESSigner` (que por
+            # defecto fija `always_add_key_value=True`, a diferencia de
+            # `XMLSigner` base) embebe un `ds:KeyValue` derivado de la clave
+            # EFÍMERA junto al `ds:X509Data` del cert REAL — `XAdESVerifier`
+            # rechaza esa combinación como ambigua (hallazgo del Paso 0).
+            signed_root = xades_signer.sign(
+                root,
+                key=ephemeral_pem,
+                cert=signer.cert_pem,
+                always_add_key_value=False,
+            )
+            del ephemeral_key, ephemeral_pem  # REGLA no-fuga: descartada apenas se usa
+
+            signed_info_el = signed_root.find(
+                ".//ds:Signature/ds:SignedInfo", namespaces=_DS_NS
+            )
+            if signed_info_el is None:  # pragma: no cover — signxml siempre produce SignedInfo
+                raise ValueError("signed_info_no_encontrado")
+            signed_info_digest = hashlib.sha256(
+                etree.tostring(signed_info_el, method="c14n", exclusive=True)
+            ).digest()
+            real_signature = await signer.remote_sign(signed_info_digest)
+
+            sig_value_el = signed_root.find(
+                ".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS
+            )
+            if sig_value_el is None:  # pragma: no cover — signxml siempre produce SignatureValue
+                raise ValueError("signature_value_no_encontrado")
+            sig_value_el.text = b64encode(real_signature).decode("ascii")
+            signature_value_b64 = sig_value_el.text
+        else:
+            signed_root = xades_signer.sign(
+                root,
+                key=signer.key_pem,
+                passphrase=signer.key_password,
+                cert=signer.cert_pem,
+            )
+            sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
+            signature_value_b64 = (sig_value_el.text or "") if sig_value_el is not None else ""
 
         xades_level = SignatureFormat.XADES_B.value
         nivel_conformidad = signer.nivel_conformidad
@@ -659,7 +716,7 @@ class LocalSigner:
             certificado_pem=signer.cert_pem.decode(),
             xades_level=xades_level,
             nivel_conformidad=nivel_conformidad,
-            provider="xades_local",
+            provider="xades_personal" if signer.remote_sign is not None else "xades_local",
             certificado_fingerprint=cert_fingerprint(signer.cert_pem),
             extra=extra,
         )
