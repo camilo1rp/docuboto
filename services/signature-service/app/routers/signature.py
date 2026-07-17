@@ -42,6 +42,7 @@ from app.core.config import settings
 from app.core.database import get_tenant_conn
 from app.core.events import publish_indice_firmado
 from app.core.keys import SealNotFoundError, load_seal
+from app.core.ocsp import OcspMaterialRequiredError
 from app.core.redis_client import get_redis
 from app.core.tsa import TsaUnavailableError
 from app.providers import get_provider
@@ -186,6 +187,22 @@ async def sign_xml(
                 "status": 503,
             },
         ) from exc
+    except OcspMaterialRequiredError as exc:
+        # Fallo de infraestructura (OCSP stapled, RF-FIR-15): con
+        # settings.signer_ocsp_require=True, la ausencia de material de
+        # responder OCSP (ocsp.crt/ocsp.key) tumba la firma completa — mismo
+        # trato que LtMaterialRequiredError. Con el flag en False (default),
+        # el proveedor NO lanza esta excepción: degrada en
+        # silencio-pero-observable (ver `firma.ocsp_downgrade_no_responder`
+        # más abajo).
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "ocsp_material_required",
+                "detail": str(exc),
+                "status": 503,
+            },
+        ) from exc
 
     minio_key_firmado: str | None = None
     if provider_name == "xades_local":
@@ -238,6 +255,18 @@ async def sign_xml(
         datetime.fromisoformat(archive_timestamp_at_iso) if archive_timestamp_at_iso else None
     )
 
+    # OCSP stapled (RF-FIR-15) — presentes en `signed.extra` SOLO cuando
+    # LocalSigner realmente construyó una BasicOCSPResponse
+    # (settings.signer_ocsp_enabled=True Y material de responder OCSP
+    # montado); ausentes para cualquier otro caso (columnas nullable,
+    # migración 014).
+    ocsp_produced_at_iso = signed.extra.get("ocsp_produced_at")
+    ocsp_produced_at_dt = datetime.fromisoformat(ocsp_produced_at_iso) if ocsp_produced_at_iso else None
+    ocsp_this_update_iso = signed.extra.get("ocsp_this_update")
+    ocsp_this_update_dt = datetime.fromisoformat(ocsp_this_update_iso) if ocsp_this_update_iso else None
+    ocsp_next_update_iso = signed.extra.get("ocsp_next_update")
+    ocsp_next_update_dt = datetime.fromisoformat(ocsp_next_update_iso) if ocsp_next_update_iso else None
+
     # La firma persistida y su traza inmutable deben ser atómicas (RF-FIR-14):
     # si `_audit.append` fallara DESPUÉS del INSERT, sin esta transacción
     # asyncpg ya habría auto-commiteado el INSERT de `firma` y la firma
@@ -280,6 +309,13 @@ async def sign_xml(
                 "archive_tsa_cert_fingerprint": signed.extra.get("archive_tsa_cert_fingerprint"),
                 "revocation_provenance": signed.extra.get("revocation_provenance"),
                 "archive_timestamp_token": signed.extra.get("archive_timestamp_token"),
+                "ocsp_present": signed.extra.get("ocsp_present", False),
+                "ocsp_responder_fingerprint": signed.extra.get("ocsp_responder_fingerprint"),
+                "ocsp_cert_status": signed.extra.get("ocsp_cert_status"),
+                "ocsp_produced_at": ocsp_produced_at_dt,
+                "ocsp_this_update": ocsp_this_update_dt,
+                "ocsp_next_update": ocsp_next_update_dt,
+                "ocsp_response_der": signed.extra.get("ocsp_response_der"),
             }
         )
 
@@ -321,6 +357,17 @@ async def sign_xml(
                     "ca_fingerprint": signed.extra.get("ca_fingerprint"),
                     "archive_timestamp_present": signed.extra.get("archive_timestamp_present", False),
                     "revocation_provenance": signed.extra.get("revocation_provenance"),
+                    # (OCSP stapled, RF-FIR-15) Gemelo del residual que el
+                    # sello de tiempo cerró en Inc.4: presentes solo cuando
+                    # LocalSigner realmente construyó una BasicOCSPResponse
+                    # (ausentes para cualquier otro caso, igual que en la fila
+                    # `firma`, migración 014). Sin `acreditado` propio aquí —
+                    # el responder es delegado, no acreditado ONAC (ver
+                    # docstring de app.core.ocsp, "Conformidad"); no se
+                    # sobre-declara, mismo criterio que `tsa_acreditado` arriba.
+                    "ocsp_present": signed.extra.get("ocsp_present", False),
+                    "ocsp_cert_status": signed.extra.get("ocsp_cert_status"),
+                    "ocsp_responder_fingerprint": signed.extra.get("ocsp_responder_fingerprint"),
                 },
             )
 
@@ -345,6 +392,31 @@ async def sign_xml(
                         "xades_level": signed.xades_level,
                         "signer_lt_enabled": settings.signer_lt_enabled,
                         "motivo": "sin_material_ca_local",
+                    },
+                )
+
+            # Evento de auditoría DEDICADO para la degradación observable de
+            # OCSP (RF-FIR-15) — análogo a `firma.lt_downgrade_no_ca`:
+            # settings.signer_ocsp_enabled=True pero el tenant no tiene
+            # material de responder OCSP (ocsp.crt/ocsp.key) montado — la
+            # firma XAdES-LT/LTA se produjo igual (sin OCSPValues). Nunca se
+            # emite si signer_ocsp_enabled=False (el feature está apagado,
+            # no es una degradación) ni si la firma nunca llegó al bloque LT
+            # (p. ej. degradó antes a XAdES-T por falta de material CA).
+            if signed.extra.get("ocsp_downgrade_no_responder"):
+                await _audit.append(
+                    conn,
+                    tenant_slug=tenant_slug,
+                    service=_SERVICE,
+                    action="firma.ocsp_downgrade_no_responder",
+                    object_type=payload.objeto_tipo,
+                    object_ref=str(payload.objeto_id) if payload.objeto_id else None,
+                    actor=str(firmante_id),
+                    payload={
+                        "firma_id": str(row["id"]),
+                        "xades_level": signed.xades_level,
+                        "signer_ocsp_enabled": settings.signer_ocsp_enabled,
+                        "motivo": "sin_material_responder_ocsp",
                     },
                 )
 
@@ -410,6 +482,7 @@ async def sign_xml(
         archive_timestamp_present=d.get("archive_timestamp_present", False),
         revocation_provenance=d.get("revocation_provenance"),
         crl_next_update=d.get("crl_next_update"),
+        ocsp_present=d.get("ocsp_present", False),
     )
 
 
@@ -482,6 +555,7 @@ async def verify(
             fingerprint,
             expected_tsa_fingerprint=row.get("tsa_cert_fingerprint"),
             expected_ca_fingerprint=row.get("ca_fingerprint"),
+            expected_ocsp_responder_fingerprint=row.get("ocsp_responder_fingerprint"),
         )
         return VerifyResponse(
             firma_id=row["id"],
@@ -503,6 +577,8 @@ async def verify(
             archive_timestamp_present=outcome.archive_timestamp_present,
             revocation_provenance=outcome.revocation_provenance,
             crl_next_update=outcome.crl_next_update,
+            ocsp_present=outcome.ocsp_present,
+            ocsp_cert_status=outcome.ocsp_cert_status,
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
@@ -577,4 +653,5 @@ async def get_firma(
         archive_timestamp_present=d.get("archive_timestamp_present", False),
         revocation_provenance=d.get("revocation_provenance"),
         crl_next_update=d.get("crl_next_update"),
+        ocsp_present=d.get("ocsp_present", False),
     )

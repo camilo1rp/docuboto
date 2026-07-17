@@ -179,5 +179,33 @@ class Settings(BaseSettings):
     # conformidad estricta y no toleran ninguna firma sin LT/LTA.
     signer_lt_require: bool = False
 
+    # --- OCSP stapled en XAdES-LT (E06, RF-FIR-15) ---
+    # Kill-switch: `False` por defecto (comportamiento idéntico a antes de este
+    # incremento — XAdES-LT/LTA sin OCSPValues). En `True`, `LocalSigner.sign`
+    # intenta añadir `xades:OCSPValues` (ADITIVO a la CRL, nunca en su lugar)
+    # cuando el sello institucional del tenant (o `_dev/`) trae también el par
+    # del responder OCSP delegado (`ocsp.crt`/`ocsp.key`,
+    # `scripts/gen-dev-ocsp-responder.sh`) — ver `app.core.keys.load_seal`.
+    # Solo tiene efecto DENTRO del bloque XAdES-LT (requiere además
+    # `signer_lt_enabled=True` y material `ca.crt`/`crl.der` montado): OCSP es
+    # material de validación a largo plazo, igual que la CRL que complementa.
+    signer_ocsp_enabled: bool = False
+    # Con `signer_ocsp_enabled=True`, este flag decide qué hacer si el tenant
+    # NO tiene material de responder OCSP montado: `False` (default) degrada
+    # en silencio-pero-observable (`firma.ocsp_downgrade_no_responder` en
+    # audit_log, ver `app.routers.signature`) — la firma XAdES-LT/LTA se
+    # produce igual, solo sin OCSPValues; `True` hace fallar `/sign-xml` con
+    # 503 (`ocsp_material_required`) — fail-closed para despliegues que
+    # exigen OCSP stapled sin excepción.
+    signer_ocsp_require: bool = False
+    # Passphrase opcional de la clave privada del responder OCSP (vacío = sin
+    # cifrar, el caso de scripts/gen-dev-ocsp-responder.sh). NUNCA commitear
+    # el valor real.
+    signer_ocsp_key_password: str = ""
+    # Vigencia (`nextUpdate - thisUpdate`, en días) de cada respuesta OCSP
+    # producida por `app.core.ocsp.build_ocsp_response` — corta a propósito
+    # (material de desarrollo, sin responder acreditado real detrás).
+    signer_ocsp_validity_days: int = Field(default=7, ge=1)
+
 
 settings = Settings()

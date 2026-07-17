@@ -86,6 +86,13 @@ class FirmaResponse(BaseModel):
     revocation_provenance: str | None = None
     crl_next_update: datetime | None = None
 
+    # --- OCSP stapled en XAdES-LT (RF-FIR-15) — False para firmas que no
+    # incluyen xades:OCSPValues (kill-switch signer_ocsp_enabled=False, o
+    # sin material de responder OCSP montado — ver
+    # firma.ocsp_downgrade_no_responder en audit_log). Por simetría con
+    # lt_material_present/archive_timestamp_present, migración 014.
+    ocsp_present: bool = False
+
 
 class VerifyRequest(BaseModel):
     """``payload_xml`` es el XML de entrada a verificar.
@@ -127,3 +134,10 @@ class VerifyResponse(BaseModel):
     archive_timestamp_present: bool = False
     revocation_provenance: str | None = None
     crl_next_update: datetime | None = None
+
+    # --- OCSP stapled en XAdES-LT (RF-FIR-15) — reflejan el nivel REALMENTE
+    # verificado para ESTE documento (app.providers.local.VerifyOutcome):
+    # False/None cuando la firma no lleva xades:OCSPValues (retrocompat), no
+    # cuando la verificación falló por otra causa.
+    ocsp_present: bool = False
+    ocsp_cert_status: str | None = None

@@ -103,6 +103,25 @@ XAdES-T: degradación OBSERVABLE (``firma.lt_downgrade_no_ca`` en
 ACREDITADO" (RF-FIR-15): ``acreditado`` sigue SIEMPRE ``False`` — la CA es de
 desarrollo, sin acreditación ONAC, y la propia TSA que sella el
 ``ArchiveTimeStamp`` es autofirmada (no emitida por esa CA).
+
+--- OCSP stapled en XAdES-LT (E06, RF-FIR-15) ---
+Con ``settings.signer_ocsp_enabled=True`` (default ``False``) Y el tenant con
+material de responder OCSP delegado montado (``ocsp.crt``/``ocsp.key``,
+``app.core.keys.load_seal`` — ``scripts/gen-dev-ocsp-responder.sh``), el
+mismo bloque XAdES-LT añade ``xades:OCSPValues/xades:EncapsulatedOCSPValue``
+como HIJO del ``xades:RevocationValues`` YA creado por
+:func:`_insert_revocation_values` — DESPUÉS de ``xades:CRLValues``, ANTES de
+``_insert_archive_timestamp`` (así el ``ArchiveTimeStamp`` lo cubre sin tocar
+:func:`_archive_ts_covered_bytes`, que canonicaliza ``RevocationValues``
+completo — CRL Y OCSP, ver ``app.core.ocsp``). Es ADITIVO a la CRL, nunca la
+reemplaza: XAdES-LT sigue exigiendo ``ca.crt``/``crl.der`` montados; sin
+material CA no hay bloque LT y por lo tanto tampoco OCSP, sin importar este
+flag. Sin material del responder OCSP, la firma XAdES-LT/LTA se produce
+igual (degradación OBSERVABLE — ``firma.ocsp_downgrade_no_responder`` en
+``app.routers.signature``), nunca en silencio ni bloqueante salvo
+``settings.signer_ocsp_require=True``. OCSP nunca cambia ``xades_level`` ni
+``acreditado`` — ver ``app.core.ocsp`` para el detalle de construcción y
+verificación de la ``BasicOCSPResponse``.
 """
 
 from __future__ import annotations
@@ -119,7 +138,7 @@ from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
 
-from app.core import tsa
+from app.core import ocsp, tsa
 from app.core.config import settings
 from app.core.keys import cert_fingerprint
 from app.providers.base import PreparedDoc, SignatureFormat, SignedDoc, SignerRef
@@ -218,6 +237,13 @@ class VerifyOutcome:
     archive_timestamp_present: bool = False
     revocation_provenance: str | None = None
     crl_next_update: datetime | None = None
+    # --- OCSP stapled en XAdES-LT (RF-FIR-15) — False/None cuando la firma no
+    # lleva xades:OCSPValues (retrocompat: XAdES-LT/LTA sin OCSP, o el
+    # kill-switch signer_ocsp_enabled=False en el momento de firmar). Solo se
+    # evalúa dentro del camino LT/LTA (después de que CRL/cadena ya validaron)
+    # — ver verify_xades.
+    ocsp_present: bool = False
+    ocsp_cert_status: str | None = None
 
 
 def _c14n_element(el: etree._Element) -> bytes:
@@ -299,10 +325,15 @@ def _insert_certificate_values(unsigned_sig_props: etree._Element, ca_cert_der: 
     encapsulated_cert.text = b64encode(ca_cert_der).decode("ascii")
 
 
-def _insert_revocation_values(unsigned_sig_props: etree._Element, crl_der: bytes) -> None:
+def _insert_revocation_values(unsigned_sig_props: etree._Element, crl_der: bytes) -> etree._Element:
     """Incrusta ``xades:RevocationValues/xades:CRLValues`` (XAdES-LT, Pieza 4).
 
     Una única CRL de la CA local de desarrollo (``crl.der``, DER en base64).
+
+    Devuelve el elemento ``xades:RevocationValues`` recién creado — el gate
+    OCSP (``settings.signer_ocsp_enabled``, ver :func:`_insert_ocsp_values`)
+    lo reutiliza para añadir ``xades:OCSPValues`` como HIJO del MISMO
+    ``RevocationValues`` (nunca uno separado), DESPUÉS de ``CRLValues``.
     """
     revocation_values = etree.SubElement(
         unsigned_sig_props, f"{{{_XADES_NS_URI}}}RevocationValues"
@@ -310,6 +341,23 @@ def _insert_revocation_values(unsigned_sig_props: etree._Element, crl_der: bytes
     crl_values = etree.SubElement(revocation_values, f"{{{_XADES_NS_URI}}}CRLValues")
     encapsulated_crl = etree.SubElement(crl_values, f"{{{_XADES_NS_URI}}}EncapsulatedCRLValue")
     encapsulated_crl.text = b64encode(crl_der).decode("ascii")
+    return revocation_values
+
+
+def _insert_ocsp_values(revocation_values_el: etree._Element, ocsp_der: bytes) -> None:
+    """Incrusta ``xades:OCSPValues/xades:EncapsulatedOCSPValue`` (OCSP stapled
+    en XAdES-LT, RF-FIR-15) como HIJO de ``revocation_values_el`` — el MISMO
+    ``xades:RevocationValues`` que :func:`_insert_revocation_values` ya pobló
+    con ``xades:CRLValues``, DESPUÉS de éste (ADITIVO, nunca lo reemplaza).
+
+    Al insertarse ANTES de :func:`_insert_archive_timestamp`, queda cubierto
+    por el ``ArchiveTimeStamp`` sin cambiar
+    :func:`_archive_ts_covered_bytes` — esa función ya canonicaliza el
+    ``RevocationValues`` completo (CRL y, si está presente, OCSP).
+    """
+    ocsp_values = etree.SubElement(revocation_values_el, f"{{{_XADES_NS_URI}}}OCSPValues")
+    encapsulated_ocsp = etree.SubElement(ocsp_values, f"{{{_XADES_NS_URI}}}EncapsulatedOCSPValue")
+    encapsulated_ocsp.text = b64encode(ocsp_der).decode("ascii")
 
 
 def _archive_ts_covered_bytes(signed_root: etree._Element) -> bytes:
@@ -493,9 +541,56 @@ class LocalSigner:
                     crl = x509.load_der_x509_crl(signer.crl_der)
 
                     _insert_certificate_values(unsigned_sig_props, ca_der)
-                    _insert_revocation_values(unsigned_sig_props, signer.crl_der)
+                    rev_el = _insert_revocation_values(unsigned_sig_props, signer.crl_der)
+
+                    # --- OCSP stapled (RF-FIR-15) — ver nota de módulo
+                    # "OCSP stapled en XAdES-LT". ADITIVO a la CRL ya
+                    # insertada arriba: nunca cambia xades_level/nivel_conformidad
+                    # por sí solo, y su ausencia nunca bloquea LT/LTA salvo
+                    # settings.signer_ocsp_require=True.
+                    if settings.signer_ocsp_enabled:
+                        if signer.ocsp_cert_pem and signer.ocsp_key_pem:
+                            embedded_seal_cert = x509.load_pem_x509_certificate(signer.cert_pem)
+                            responder_cert = x509.load_pem_x509_certificate(signer.ocsp_cert_pem)
+                            responder_key = serialization.load_pem_private_key(
+                                signer.ocsp_key_pem,
+                                password=(
+                                    settings.signer_ocsp_key_password.encode()
+                                    if settings.signer_ocsp_key_password
+                                    else None
+                                ),
+                            )
+                            ocsp_resp = ocsp.build_ocsp_response(
+                                embedded_seal_cert, ca_cert, responder_cert, responder_key, crl=crl
+                            )
+                            _insert_ocsp_values(rev_el, ocsp_resp.response_der)
+                            extra.update(
+                                {
+                                    "ocsp_present": True,
+                                    "ocsp_responder_fingerprint": ocsp_resp.responder_cert_fingerprint,
+                                    "ocsp_cert_status": ocsp_resp.cert_status,
+                                    "ocsp_produced_at": ocsp_resp.produced_at.isoformat(),
+                                    "ocsp_this_update": ocsp_resp.this_update.isoformat(),
+                                    "ocsp_next_update": (
+                                        ocsp_resp.next_update.isoformat() if ocsp_resp.next_update else None
+                                    ),
+                                    "ocsp_response_der": b64encode(ocsp_resp.response_der).decode("ascii"),
+                                    "ocsp_downgrade_no_responder": False,
+                                }
+                            )
+                        else:
+                            # Degradación OBSERVABLE (mismo patrón que
+                            # lt_downgrade_no_ca): la firma XAdES-LT/LTA se
+                            # produce igual, solo sin OCSPValues — el router
+                            # audita `firma.ocsp_downgrade_no_responder`. El
+                            # fail-closed de `signer_ocsp_require` NO se decide
+                            # aquí (ver comprobación unificada tras el bloque
+                            # LT completo, que también cubre el caso "sin CA").
+                            extra["ocsp_downgrade_no_responder"] = True
+
                     # SIEMPRE el último — cubre TODO lo insertado hasta aquí
-                    # (SignatureTimeStamp + CertificateValues + RevocationValues).
+                    # (SignatureTimeStamp + CertificateValues + RevocationValues,
+                    # incluido OCSPValues si se insertó arriba).
                     archive_token = _insert_archive_timestamp(signed_root, unsigned_sig_props)
 
                     xades_level = SignatureFormat.XADES_LTA.value
@@ -534,6 +629,27 @@ class LocalSigner:
                             "CA local (ca.crt/crl.der) montado junto a su sello institucional"
                         )
 
+            # --- OCSP obligatorio (RF-FIR-15) — comprobación UNIFICADA ---
+            # `signer_ocsp_require=True` presupone que hay LT (OCSP es
+            # aditivo a LT, ver docstring de módulo "OCSP stapled en
+            # XAdES-LT"): si NO se produjo una respuesta OCSP real
+            # (`extra["ocsp_present"]`), da igual la causa — falta material de
+            # CA local (rama `else` de arriba, `lt_downgrade_no_ca`) o falta
+            # el par de responder OCSP (`ocsp_downgrade_no_responder`) — debe
+            # fallar cerrado igual. Colocarla FUERA del bloque `if
+            # signer.ca_cert_pem and signer.crl_der:` es lo que cubre AMBOS
+            # caminos de degradación en un solo lugar (antes solo el segundo
+            # disparaba el 503).
+            if (
+                settings.signer_ocsp_enabled
+                and settings.signer_ocsp_require
+                and not extra.get("ocsp_present")
+            ):
+                raise ocsp.OcspMaterialRequiredError(
+                    "signer_ocsp_require=True pero no se produjo respuesta OCSP "
+                    "(falta material de CA local o de responder OCSP)"
+                )
+
         signed_xml = etree.tostring(signed_root, xml_declaration=False, encoding="UTF-8")
 
         return SignedDoc(
@@ -564,6 +680,7 @@ def verify_xades(
     expected_fingerprint: str,
     expected_tsa_fingerprint: str | None = None,
     expected_ca_fingerprint: str | None = None,
+    expected_ocsp_responder_fingerprint: str | None = None,
 ) -> VerifyOutcome:
     """Verifica una firma XAdES-B/-T/-LT/-LTA enveloped (E06, RF-FIR-15).
 
@@ -627,6 +744,14 @@ def verify_xades(
          (RT-16, Pieza 6.2). ``nextUpdate`` vencido se EXPONE
          (``VerifyOutcome.crl_next_update``) pero NO invalida por sí solo la
          firma en este perfil no acreditado (las CRL de desarrollo caducan).
+      e. (OCSP stapled, RF-FIR-15) SI la firma lleva
+         ``xades:RevocationValues/xades:OCSPValues``, se verifica la
+         ``BasicOCSPResponse`` embebida (``app.core.ocsp.verify_ocsp_response``,
+         pinning contra ``expected_ocsp_responder_fingerprint`` —
+         ``firma.ocsp_responder_fingerprint``) — fail-closed si no valida.
+         AUSENTE: sin cambios (retrocompat exacta, XAdES-LT válida sobre CRL
+         sola). Nunca cambia ``xades_level``/``acreditado`` por sí solo — solo
+         puebla ``VerifyOutcome.ocsp_present``/``ocsp_cert_status``.
 
     Si además hay ``xadesv141:ArchiveTimeStamp``, se reconstruye el conjunto
     cubierto (:func:`_archive_ts_covered_bytes`, MISMA función que al firmar)
@@ -784,6 +909,35 @@ def verify_xades(
     # desarrollo — ver docstring de la función).
     crl_next_update = crl.next_update_utc
 
+    # (e, OCSP stapled — RF-FIR-15) ADITIVO a la CRL ya validada arriba:
+    # AUSENTE == sin cambios (retrocompat exacta, LT válida sobre CRL sola,
+    # ver app.core.ocsp). PRESENTE-pero-inválido SÍ invalida la firma
+    # completa (fail-closed) — mismo criterio que CertificateValues/
+    # RevocationValues, a diferencia del XAdES-T "puro" ausente.
+    ocsp_present = False
+    ocsp_cert_status: str | None = None
+    ocsp_values_el = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
+        "/xades:RevocationValues/xades:OCSPValues/xades:EncapsulatedOCSPValue",
+        namespaces=_XADES_NS,
+    )
+    if ocsp_values_el is not None and (ocsp_values_el.text or "").strip():
+        try:
+            ocsp_response_der = b64decode(ocsp_values_el.text.strip())
+        except Exception as exc:  # noqa: BLE001 — fail-closed
+            return VerifyOutcome(False, False, f"ocsp_ilegible: {exc}")
+
+        ocsp_outcome = ocsp.verify_ocsp_response(
+            ocsp_response_der,
+            seal_cert=embedded_cert,
+            ca_cert=ca_cert,
+            expected_responder_fingerprint=expected_ocsp_responder_fingerprint,
+        )
+        if not ocsp_outcome.valido:
+            return VerifyOutcome(False, False, f"ocsp_invalido: {ocsp_outcome.motivo}")
+        ocsp_present = True
+        ocsp_cert_status = ocsp_outcome.cert_status
+
     xades_level = SignatureFormat.XADES_LT.value
 
     # (ArchiveTimeStamp, XAdES-LTA) — Pieza 5/6.3.
@@ -822,4 +976,6 @@ def verify_xades(
         # con una CA acreditada ONAC (RF-FIR-15, Pieza 7).
         revocation_provenance="dev",
         crl_next_update=crl_next_update,
+        ocsp_present=ocsp_present,
+        ocsp_cert_status=ocsp_cert_status,
     )

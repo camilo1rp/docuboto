@@ -118,6 +118,14 @@ def load_seal(tenant_slug: str) -> SignerRef:
     error — ``ca_cert_pem``/``crl_der`` quedan en ``None`` y
     ``LocalSigner.sign`` se mantiene en XAdES-T (ver ``settings.signer_lt_enabled``).
 
+    También resuelve el par OPCIONAL del responder OCSP delegado (OCSP
+    stapled en XAdES-LT) — ``ocsp.crt``/``ocsp.key``
+    (``scripts/gen-dev-ocsp-responder.sh``) — del MISMO directorio, con el
+    mismo criterio de no-mezcla. Ausencia no es un error —
+    ``ocsp_cert_pem``/``ocsp_key_pem`` quedan en ``None`` y
+    ``LocalSigner.sign`` omite ``xades:OCSPValues`` (ver
+    ``settings.signer_ocsp_enabled``).
+
     Raises:
         ValueError: slug inválido (el router lo traduce a 400/500 según el
             contexto de la petición).
@@ -141,6 +149,9 @@ def load_seal(tenant_slug: str) -> SignerRef:
     cert_pem, key_pem = pair
     _public_cert_cache[slug] = cert_pem
 
+    ocsp_pair = _read_pair(resolved_dir, stem="ocsp")
+    ocsp_cert_pem, ocsp_key_pem = ocsp_pair if ocsp_pair is not None else (None, None)
+
     return SignerRef(
         cert_pem=cert_pem,
         key_pem=key_pem,
@@ -150,6 +161,8 @@ def load_seal(tenant_slug: str) -> SignerRef:
         acreditado=False,
         ca_cert_pem=_read_optional_file(resolved_dir / "ca.crt"),
         crl_der=_read_optional_file(resolved_dir / "crl.der"),
+        ocsp_cert_pem=ocsp_cert_pem,
+        ocsp_key_pem=ocsp_key_pem,
     )
 
 

@@ -260,6 +260,66 @@ def _lt_signer_ref(cert_pem: bytes, key_pem: bytes, ca_cert_pem: bytes, crl_der:
     )
 
 
+def _issue_ocsp_responder(
+    ca_key, ca_cert: x509.Certificate, *, cn: str = "orpycamcp-dev-ocsp-responder"
+) -> tuple[bytes, bytes]:
+    """Responder OCSP DELEGADO efímero — EKU ``id-kp-OCSPSigning`` +
+    ``id-pkix-ocsp-nocheck`` (RFC 6960 §4.2.2.2), emitido por ``ca_cert``.
+    Mismo espíritu que ``scripts/gen-dev-ocsp-responder.sh`` pero en memoria
+    (``cryptography``, sin openssl CLI ni filesystem)."""
+    from cryptography.x509 import OCSPNoCheck
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=397))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.OCSP_SIGNING]), critical=False)
+        .add_extension(OCSPNoCheck(), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem
+
+
+def _lt_ocsp_signer_ref(
+    cert_pem: bytes,
+    key_pem: bytes,
+    ca_cert_pem: bytes,
+    crl_der: bytes,
+    ocsp_cert_pem: bytes,
+    ocsp_key_pem: bytes,
+) -> SignerRef:
+    """``SignerRef`` con material LT/LTA Y del responder OCSP delegado —
+    mismo patrón que ``_lt_signer_ref``, extendido con
+    ``ocsp_cert_pem``/``ocsp_key_pem`` (co-ubicados por
+    ``app.core.keys.load_seal`` en el mismo directorio del sello)."""
+    return SignerRef(
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        key_password=None,
+        tipo_firma="sello_sistema",
+        nivel_conformidad="xades_b_no_acreditado",
+        acreditado=False,
+        ca_cert_pem=ca_cert_pem,
+        crl_der=crl_der,
+        ocsp_cert_pem=ocsp_cert_pem,
+        ocsp_key_pem=ocsp_key_pem,
+    )
+
+
 INDICE_XML = (
     b'<indice xmlns="urn:orpyca:indice">'
     b'<expediente id="exp-1">Contenido original</expediente>'
@@ -312,6 +372,13 @@ class _FakeFirmaTable:
                 archive_tsa_cert_fingerprint,
                 revocation_provenance,
                 archive_timestamp_token,
+                ocsp_present,
+                ocsp_responder_fingerprint,
+                ocsp_cert_status,
+                ocsp_produced_at,
+                ocsp_this_update,
+                ocsp_next_update,
+                ocsp_response_der,
             ) = args
             row = {
                 "id": uuid.uuid4(),
@@ -345,6 +412,13 @@ class _FakeFirmaTable:
                 "archive_tsa_cert_fingerprint": archive_tsa_cert_fingerprint,
                 "revocation_provenance": revocation_provenance,
                 "archive_timestamp_token": archive_timestamp_token,
+                "ocsp_present": ocsp_present,
+                "ocsp_responder_fingerprint": ocsp_responder_fingerprint,
+                "ocsp_cert_status": ocsp_cert_status,
+                "ocsp_produced_at": ocsp_produced_at,
+                "ocsp_this_update": ocsp_this_update,
+                "ocsp_next_update": ocsp_next_update,
+                "ocsp_response_der": ocsp_response_der,
             }
             self.rows[str(row["id"])] = row
             return row
@@ -1797,3 +1871,351 @@ async def test_xades_lt_seal_issued_by_ca_a_fails_verification_with_ca_b_materia
     assert vbody["valida"] is False
     assert vbody["motivo"] is not None
     assert vbody["motivo"].startswith("cadena_seal_ca_invalida")
+
+
+# ---------------------------------------------------------------------------
+# OCSP stapled en XAdES-LT (E06, RF-FIR-15) — material de responder OCSP
+# delegado, ADITIVO a la CRL ya cubierta por los tests LT/LTA de arriba.
+# ---------------------------------------------------------------------------
+#
+# `settings.signer_ocsp_enabled` es `False` por defecto (kill-switch) — cada
+# test que ejercita este camino lo activa explícitamente vía monkeypatch,
+# junto a `signer_lt_enabled=True` (OCSP solo tiene efecto DENTRO del bloque
+# XAdES-LT). El material CA/CRL/responder se genera enteramente en memoria
+# (`_generate_ca`/`_issue_seal_signed_by_ca`/`_build_crl`/
+# `_issue_ocsp_responder`) — nunca toca el filesystem ni
+# `scripts/gen-dev-ocsp-responder.sh`.
+
+
+@pytest.mark.asyncio
+async def test_ocsp_sign_embeds_ocsp_values_and_archive_timestamp_still_covers(
+    signature_env, monkeypatch
+) -> None:
+    """(a) Con `signer_lt_enabled=True` + `signer_ocsp_enabled=True` y ambos
+    materiales (CA/CRL y responder OCSP) montados, el XML firmado lleva
+    `xades:OCSPValues` como HIJO de `xades:RevocationValues`, DESPUÉS de
+    `xades:CRLValues` — y el `ArchiveTimeStamp` SIGUE cubriendo/validando
+    (no se rompe `_archive_ts_covered_bytes` al insertar OCSP antes de él).
+    `/verify` reporta `ocsp_present=True`/`ocsp_cert_status='good'` sin
+    cambiar `xades_level` (sigue XAdES-LTA)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    ocsp_cert_pem, ocsp_key_pem = _issue_ocsp_responder(ca_key, ca_cert)
+    install_seal(
+        _lt_ocsp_signer_ref(
+            seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der, ocsp_cert_pem, ocsp_key_pem
+        )
+    )
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["xades_level"] == "XAdES-LTA"
+    assert body["ocsp_present"] is True
+
+    signed_xml = uploads[0]["content"]
+    root = etree.fromstring(signed_xml)
+    ns = {
+        "ds": "http://www.w3.org/2000/09/xmldsig#",
+        "xades": "http://uri.etsi.org/01903/v1.3.2#",
+        "xadesv141": "http://uri.etsi.org/01903/v1.4.1#",
+    }
+    rev_values = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:RevocationValues",
+        namespaces=ns,
+    )
+    assert rev_values is not None
+    children_tags = [etree.QName(c).localname for c in rev_values]
+    # CRLValues PRIMERO, OCSPValues DESPUÉS — mismo RevocationValues, aditivo.
+    assert children_tags == ["CRLValues", "OCSPValues"]
+
+    ocsp_encapsulated = rev_values.find(
+        "xades:OCSPValues/xades:EncapsulatedOCSPValue", namespaces=ns
+    )
+    assert ocsp_encapsulated is not None and ocsp_encapsulated.text
+    assert len(b64decode(ocsp_encapsulated.text.strip())) > 0
+
+    # El ArchiveTimeStamp sigue presente y su cobertura no se rompió.
+    archive_ts = root.find(
+        ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties/xadesv141:ArchiveTimeStamp",
+        namespaces=ns,
+    )
+    assert archive_ts is not None
+
+    firma_id = body["firma_id"]
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    assert verify_resp.status_code == 200
+    vbody = verify_resp.json()
+    assert vbody["valida"] is True
+    assert vbody["xades_level"] == "XAdES-LTA"  # OCSP no cambia el nivel
+    assert vbody["ocsp_present"] is True
+    assert vbody["ocsp_cert_status"] == "good"
+    assert vbody["motivo"] is None
+
+
+@pytest.mark.asyncio
+async def test_ocsp_retrocompat_lt_signature_without_ocsp_still_verifies(
+    signature_env, monkeypatch
+) -> None:
+    """(b) Retrocompatibilidad: una firma XAdES-LT/LTA SIN OCSPValues (el
+    kill-switch `signer_ocsp_enabled=False`, comportamiento previo a este
+    incremento) verifica EXACTAMENTE igual, con `ocsp_present=False` — nunca
+    un fallo por ausencia."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    # `docker-compose.yml` de desarrollo activa SIGNER_OCSP_ENABLED=true por
+    # defecto (ver contrato del incremento) — se fija explícitamente en False
+    # aquí para ejercitar el kill-switch real, en vez de asumir el default de
+    # código (que solo aplica sin ese override de entorno).
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", False)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["xades_level"] == "XAdES-LTA"
+    assert body["ocsp_present"] is False
+
+    signed_xml = uploads[0]["content"]
+    assert b"OCSPValues" not in signed_xml
+
+    verify_resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": body["firma_id"], "payload_xml": signed_xml.decode()},
+        headers=TENANT_HEADERS,
+    )
+    vbody = verify_resp.json()
+    assert vbody["valida"] is True
+    assert vbody["xades_level"] == "XAdES-LTA"
+    assert vbody["ocsp_present"] is False
+    assert vbody["ocsp_cert_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_ocsp_downgrade_no_responder_material_stays_lta_and_audits(
+    signature_env, monkeypatch
+) -> None:
+    """(c) `signer_ocsp_enabled=True` pero el tenant NO tiene
+    ocsp.crt/ocsp.key montado (el caso normal fuera de
+    `scripts/gen-dev-ocsp-responder.sh`) -> degradación OBSERVABLE: la firma
+    XAdES-LT/LTA se produce IGUAL (nunca falla), sin OCSPValues, y queda una
+    entrada de auditoría DEDICADA `firma.ocsp_downgrade_no_responder`."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    # Material LT sin responder OCSP (ocsp_cert_pem/ocsp_key_pem ausentes).
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["xades_level"] == "XAdES-LTA"
+    assert body["ocsp_present"] is False
+
+    audit_calls = [
+        c for c in conn.execute.call_args_list if "INSERT INTO public.audit_log" in str(c.args[0])
+    ]
+    actions = [c.args[5] for c in audit_calls]
+    assert "firma.ocsp_downgrade_no_responder" in actions
+    downgrade_payload = json.loads(
+        next(c for c in audit_calls if c.args[5] == "firma.ocsp_downgrade_no_responder").args[8]
+    )
+    assert downgrade_payload["xades_level"] == "XAdES-LTA"
+    assert downgrade_payload["signer_ocsp_enabled"] is True
+    assert downgrade_payload["motivo"] == "sin_material_responder_ocsp"
+
+
+@pytest.mark.asyncio
+async def test_ocsp_disabled_kill_switch_never_audits_downgrade(
+    signature_env, monkeypatch
+) -> None:
+    """`signer_ocsp_enabled=False` (default de código) es simplemente el
+    feature apagado — NUNCA es una "degradación": no debe emitirse
+    `firma.ocsp_downgrade_no_responder`, incluso con LT/LTA activo."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    # `docker-compose.yml` de desarrollo activa SIGNER_OCSP_ENABLED=true por
+    # defecto — se fija explícitamente en False para ejercitar el kill-switch
+    # real (ver misma nota en test_ocsp_retrocompat_lt_signature_without_ocsp).
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", False)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    assert resp.json()["xades_level"] == "XAdES-LTA"
+
+    audit_calls = [
+        c for c in conn.execute.call_args_list if "INSERT INTO public.audit_log" in str(c.args[0])
+    ]
+    actions = [c.args[5] for c in audit_calls]
+    assert "firma.ocsp_downgrade_no_responder" not in actions
+
+
+@pytest.mark.asyncio
+async def test_ocsp_require_without_responder_material_returns_503(
+    signature_env, monkeypatch
+) -> None:
+    """(d) `signer_ocsp_require=True` + sin material de responder OCSP -> 503
+    `ocsp_material_required`, fail-closed — la fila `firma` NUNCA llega a
+    persistirse (mismo trato que `signer_lt_require=True`)."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_require", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "ocsp_material_required"
+    assert table.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_ocsp_require_without_ca_material_returns_503(signature_env, monkeypatch) -> None:
+    """(d bis, hallazgo Sec/Baja auditoría OCSP) `signer_ocsp_require=True`
+    presupone LT: si el tenant NO tiene NI material de CA local montado
+    (``ca_cert_pem``/``crl_der`` ausentes — la firma degradaría a XAdES-T,
+    ``lt_downgrade_no_ca``), el 503 `ocsp_material_required` debe dispararse
+    IGUAL — antes de esta corrección el `raise` vivía anidado dentro del
+    bloque LT y nunca se alcanzaba en este camino, así que un operador con
+    OCSP obligatorio pero sin CA obtenía una firma XAdES-T silenciosa en vez
+    del fail-closed esperado."""
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_require", True)
+
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))  # sin ca_cert_pem/crl_der
+
+    resp = await _sign_indice(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "ocsp_material_required"
+    assert table.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_ocsp_revoked_seal_reported_by_verify(signature_env, monkeypatch) -> None:
+    """(e) Coherencia CRL<->OCSP: un sello cuyo serial SÍ aparece en la CRL
+    ya es rechazado por la comprobación CRL de XAdES-LT
+    (`certificado_sello_revocado`, ver test LT existente) ANTES de llegar a
+    evaluar OCSP — pero la respuesta OCSP embebida, si se inspeccionara
+    fuera de banda, también declararía `REVOKED` (mismo serial, misma CRL).
+    Aquí se verifica esto último de forma directa (sin pasar por /verify,
+    que nunca llega a evaluar OCSP por el corte temprano en la CRL)."""
+    from app.providers.base import PreparedDoc
+    from app.providers.local import LocalSigner
+
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
+    monkeypatch.setattr(settings, "signer_timestamp_enabled", True)
+
+    tsa_cert_pem, tsa_key_pem = _generate_tsa_cert()
+    monkeypatch.setattr(
+        tsa_module, "load_tsa_seal", lambda: _tsa_signer_ref(tsa_cert_pem, tsa_key_pem)
+    )
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert, revoked_serials=(seal_cert.serial_number,))
+    ocsp_cert_pem, ocsp_key_pem = _issue_ocsp_responder(ca_key, ca_cert)
+    signer_ref = _lt_ocsp_signer_ref(
+        seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der, ocsp_cert_pem, ocsp_key_pem
+    )
+
+    prepared = PreparedDoc(xml_bytes=INDICE_XML, objeto_tipo="indice", objeto_id="exp-1")
+    signed = await LocalSigner().sign(prepared, signer_ref)
+
+    assert signed.extra["ocsp_present"] is True
+    assert signed.extra["ocsp_cert_status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_ocsp_verify_pins_responder_fingerprint(monkeypatch) -> None:
+    """(f) Pinning (mismo patrón que
+    `test_xades_lt_verify_pins_ca_fingerprint`): sin
+    `expected_ocsp_responder_fingerprint` (fila legacy/sin OCSP) o con uno
+    que no coincide con el responder REALMENTE embebido, `verify_xades`
+    falla-cerrado. Llamada directa a la función (no vía HTTP)."""
+    from app.providers.base import PreparedDoc
+    from app.providers.local import LocalSigner, verify_xades
+
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
+    monkeypatch.setattr(settings, "signer_timestamp_enabled", True)
+
+    ca_key, ca_cert = _generate_ca()
+    seal_cert_pem, seal_key_pem, seal_cert = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    crl_der = _build_crl(ca_key, ca_cert)
+    ocsp_cert_pem, ocsp_key_pem = _issue_ocsp_responder(ca_key, ca_cert)
+
+    tsa_cert_pem, tsa_key_pem = _generate_tsa_cert()
+    monkeypatch.setattr(
+        tsa_module, "load_tsa_seal", lambda: _tsa_signer_ref(tsa_cert_pem, tsa_key_pem)
+    )
+
+    prepared = PreparedDoc(xml_bytes=INDICE_XML, objeto_tipo="indice", objeto_id="exp-1")
+    signer_ref = _lt_ocsp_signer_ref(
+        seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der, ocsp_cert_pem, ocsp_key_pem
+    )
+    signed = await LocalSigner().sign(prepared, signer_ref)
+    assert signed.extra["ocsp_present"] is True
+
+    fp = cert_fingerprint(seal_cert_pem)
+    correct_ocsp_fp = signed.extra["ocsp_responder_fingerprint"]
+
+    outcome_ok = verify_xades(
+        signed.signed_xml,
+        fp,
+        expected_tsa_fingerprint=signed.extra["tsa_cert_fingerprint"],
+        expected_ca_fingerprint=signed.extra["ca_fingerprint"],
+        expected_ocsp_responder_fingerprint=correct_ocsp_fp,
+    )
+    assert outcome_ok.valida is True
+    assert outcome_ok.ocsp_present is True
+    assert outcome_ok.ocsp_cert_status == "good"
+
+    outcome_missing = verify_xades(
+        signed.signed_xml,
+        fp,
+        expected_tsa_fingerprint=signed.extra["tsa_cert_fingerprint"],
+        expected_ca_fingerprint=signed.extra["ca_fingerprint"],
+        expected_ocsp_responder_fingerprint=None,
+    )
+    assert outcome_missing.valida is False
+    assert outcome_missing.motivo == "ocsp_invalido: ocsp_responder_fingerprint_no_registrado"
+
+    outcome_mismatch = verify_xades(
+        signed.signed_xml,
+        fp,
+        expected_tsa_fingerprint=signed.extra["tsa_cert_fingerprint"],
+        expected_ca_fingerprint=signed.extra["ca_fingerprint"],
+        expected_ocsp_responder_fingerprint="0" * 64,
+    )
+    assert outcome_mismatch.valida is False
+    assert outcome_mismatch.motivo == "ocsp_invalido: ocsp_responder_fingerprint_no_coincide"

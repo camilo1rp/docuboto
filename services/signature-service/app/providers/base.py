@@ -99,6 +99,18 @@ class SignerRef:
     distintos. ``None`` cuando ese material no está montado (el caso normal
     fuera de ``scripts/gen-dev-ca.sh``): ``LocalSigner.sign`` entonces se
     queda en XAdES-T, nunca sube a LT/LTA (RF-FIR-15, degradación observable).
+
+    ``ocsp_cert_pem``/``ocsp_key_pem`` (OCSP stapled en XAdES-LT —
+    ``app.core.keys.load_seal``, ``app.core.ocsp``) son el par del responder
+    OCSP DELEGADO (``ocsp.crt``/``ocsp.key``, EKU ``id-kp-OCSPSigning`` +
+    extensión ``id-pkix-ocsp-nocheck``), co-ubicados en el MISMO directorio
+    que sirvió el sello y el material CA/CRL — nunca mezclados entre
+    tenants. ``None`` cuando ese material no está montado (el caso normal
+    fuera de ``scripts/gen-dev-ocsp-responder.sh``): ``LocalSigner.sign``
+    entonces omite ``xades:OCSPValues`` (degradación observable,
+    ``firma.ocsp_downgrade_no_responder``) — nunca sube a LTA "con OCSP" sin
+    este material, y nunca bloquea LT/LTA por su ausencia salvo
+    ``settings.signer_ocsp_require=True``.
     """
 
     cert_pem: bytes
@@ -112,6 +124,8 @@ class SignerRef:
     acreditado: bool = False
     ca_cert_pem: bytes | None = None
     crl_der: bytes | None = None
+    ocsp_cert_pem: bytes | None = None
+    ocsp_key_pem: bytes | None = None
 
 
 @dataclass(slots=True)

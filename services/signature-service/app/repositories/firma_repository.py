@@ -23,7 +23,9 @@ _COLS = (
     "tsa_token, tsa_timestamp, tsa_cert_fingerprint, tsa_acreditado, "
     "lt_material_present, ca_fingerprint, crl_fingerprint, crl_this_update, "
     "crl_next_update, archive_timestamp_present, archive_timestamp_at, "
-    "archive_tsa_cert_fingerprint, revocation_provenance, archive_timestamp_token"
+    "archive_tsa_cert_fingerprint, revocation_provenance, archive_timestamp_token, "
+    "ocsp_present, ocsp_responder_fingerprint, ocsp_cert_status, ocsp_produced_at, "
+    "ocsp_this_update, ocsp_next_update, ocsp_response_der"
 )
 
 
@@ -64,6 +66,17 @@ class FirmaRepository:
         ``firma.lt_downgrade_no_ca``) — mismo patrón aditivo que las columnas
         de migraciones anteriores. Ninguno de estos campos transporta material
         PRIVADO (RT-16): solo certificados/CRL públicos, huellas y fechas.
+
+        Los campos OCSP (``ocsp_present``, ``ocsp_responder_fingerprint``,
+        ``ocsp_cert_status``, ``ocsp_produced_at``, ``ocsp_this_update``,
+        ``ocsp_next_update``, ``ocsp_response_der``; migración 014) son
+        ``None``/``False`` para cualquier firma sin ``xades:OCSPValues``
+        (``nativa``, XAdES-B/-T/-LT/-LTA sin OCSP, kill-switch
+        ``settings.signer_ocsp_enabled=False``, o degradación
+        ``firma.ocsp_downgrade_no_responder``) — mismo patrón aditivo.
+        ``ocsp_response_der`` es la ``BasicOCSPResponse`` DER en base64 —
+        material PÚBLICO (igual que ``archive_timestamp_token``), NUNCA la
+        clave privada del responder OCSP.
         """
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma (objeto_tipo, objeto_id, formato_solicitado,
@@ -74,9 +87,13 @@ class FirmaRepository:
                 lt_material_present, ca_fingerprint, crl_fingerprint,
                 crl_this_update, crl_next_update, archive_timestamp_present,
                 archive_timestamp_at, archive_tsa_cert_fingerprint,
-                revocation_provenance, archive_timestamp_token)
+                revocation_provenance, archive_timestamp_token,
+                ocsp_present, ocsp_responder_fingerprint, ocsp_cert_status,
+                ocsp_produced_at, ocsp_this_update, ocsp_next_update,
+                ocsp_response_der)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-                        $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+                        $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
+                        $33,$34,$35,$36)
                 RETURNING {_COLS}""",
             data["objeto_tipo"],
             data.get("objeto_id"),
@@ -107,6 +124,13 @@ class FirmaRepository:
             data.get("archive_tsa_cert_fingerprint"),
             data.get("revocation_provenance"),
             data.get("archive_timestamp_token"),
+            data.get("ocsp_present", False),
+            data.get("ocsp_responder_fingerprint"),
+            data.get("ocsp_cert_status"),
+            data.get("ocsp_produced_at"),
+            data.get("ocsp_this_update"),
+            data.get("ocsp_next_update"),
+            data.get("ocsp_response_der"),
         )
         assert row is not None
         return row
