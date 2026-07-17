@@ -198,6 +198,36 @@ class DocumentRepository:
         radicado.anexos = await self._get_anexos(radicado.id)
         return radicado
 
+    async def get_anexo_for_download(
+        self, document_id: uuid.UUID, file_id: uuid.UUID, max_clearance: int
+    ) -> tuple[Anexo, str, int] | None:
+        """Resuelve, en UNA sola consulta, los tres requisitos de la descarga
+        mediada de anexos (D-02, RF-SEG-08): el radicado existe, es visible
+        al `max_clearance` del llamante (no-read-up) y `file_id` es
+        efectivamente un anexo de ESE radicado (join, no dos lookups
+        separados) — así los tres caminos de denegación convergen en el
+        MISMO `None` → el router responde el MISMO 404 neutro para los tres,
+        sin oráculo de "existe pero no es tuyo" vs "no existe".
+        """
+        row = await self._conn.fetchrow(
+            """
+            SELECT a.id, a.radicado_id, a.file_id, a.filename, a.file_size,
+                   a.mime_type, a.created_at, a.tipo_anexo, a.es_principal, a.folios,
+                   r.tracking_number, r.nivel_seguridad
+            FROM anexos a
+            JOIN radicados r ON r.id = a.radicado_id
+            WHERE r.id = $1 AND a.file_id = $2 AND r.nivel_seguridad <= $3
+            """,
+            document_id,
+            file_id,
+            max_clearance,
+        )
+        if row is None:
+            return None
+        # tracking_number + nivel_seguridad se devuelven para el asiento de
+        # descarga (RF-BUS-10): auditar el acceso al CONTENIDO, no solo al metadato.
+        return _row_to_anexo(row), row["tracking_number"], row["nivel_seguridad"]
+
     async def set_responde_a(self, respuesta_id: uuid.UUID, antecedente_id: uuid.UUID) -> None:
         """Enlaza una Salida con su antecedente de Entrada (respuesta rápida)."""
         await self._conn.execute(

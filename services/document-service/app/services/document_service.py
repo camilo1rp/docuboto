@@ -27,7 +27,7 @@ from orpycamcp_common import audit, events
 
 from app.clients.tenant_client import TenantServiceClient
 from app.core.clearance import resolve_caller_clearance
-from app.models.document import Radicado
+from app.models.document import Anexo, Radicado
 from app.repositories.document_repository import (
     DocumentRepository,
     InvalidTenantSlugError,
@@ -340,6 +340,71 @@ class DocumentService:
             raise DocumentNotFoundError(str(document_id))
         await self._audit_read_access(radicado.tracking_number, user_id=user_id, canal=canal)
         return _to_response(radicado)
+
+    async def get_anexo_for_download(
+        self,
+        document_id: uuid.UUID,
+        file_id: uuid.UUID,
+        max_clearance: int,
+        *,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> Anexo:
+        """Resuelve el anexo a descargar respetando no-read-up (RF-SEG-08) y
+        deja pista de acceso al CONTENIDO (RF-BUS-10).
+
+        `DocumentNotFoundError` cubre los tres caminos de denegación: radicado
+        inexistente, radicado por encima del clearance del llamante, y
+        `file_id` que no pertenece a `document_id` — el router los traduce
+        TODOS al mismo 404 neutro (ver `app/repositories/document_repository.py
+        ::get_anexo_for_download`).
+        """
+        found = await self._repo.get_anexo_for_download(document_id, file_id, max_clearance)
+        if found is None:
+            raise DocumentNotFoundError(str(document_id))
+        anexo, tracking_number, nivel_seguridad = found
+        # Auditar la DESCARGA (acceso al contenido documental, más fuerte que la
+        # lectura del metadato) — la autorización ya pasó; best-effort, gated.
+        await self._audit_download_access(
+            tracking_number,
+            file_id=file_id,
+            nivel_seguridad=nivel_seguridad,
+            user_id=user_id,
+            canal=canal,
+        )
+        return anexo
+
+    async def _audit_download_access(
+        self,
+        tracking_number: str,
+        *,
+        file_id: uuid.UUID,
+        nivel_seguridad: int,
+        user_id: uuid.UUID | None,
+        canal: str,
+    ) -> None:
+        """Pista de acceso al CONTENIDO de un anexo (RF-BUS-10; Ley 594/2000
+        art. 22; Ley 1712/2014): una descarga AUTORIZADA (ya pasó no-read-up)
+        deja traza en `audit_log` con actor/canal + `nivel_seguridad` del
+        radicado — el evento probatorio relevante es la descarga del fichero,
+        no solo la lectura del metadato. Best-effort (nunca degrada la descarga)
+        y gated por canal/actor real, gemelo de `_audit_read_access`."""
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.anexo_descargado",
+                object_type="radicado",
+                object_ref=tracking_number,
+                actor=str(user_id),
+                canal=canal,
+                payload={"file_id": str(file_id), "nivel_seguridad": nivel_seguridad},
+            )
+        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+            logger.warning("audit.append (anexo_descargado) failed", exc_info=True)
 
     async def get_by_tracking_number(
         self,

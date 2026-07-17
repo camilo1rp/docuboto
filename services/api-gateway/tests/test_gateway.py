@@ -292,6 +292,11 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/assistant/message": "http://mcp:8009",
         # E21: solo /search del knowledge-service se expone vía gateway.
         "/api/v1/knowledge/search": "http://knowledge:8011",
+        # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
+        # del storage-service se expone (el frontend sube directo);
+        # /preservacion/ sigue expuesto (fuera del alcance de esta remediación).
+        "/api/v1/storage/upload": "http://storage:8005",
+        "/api/v1/preservacion/proteger-indice": "http://storage:8005",
     }
     for path, expected in cases.items():
         assert _route_to_upstream(path, state) == expected, path
@@ -302,6 +307,13 @@ async def test_route_to_upstream_domain_prefixes():
     # /ingest es interno (X-Internal-Token) y NUNCA debe enrutarse desde el exterior.
     assert _route_to_upstream("/api/v1/knowledge/ingest", state) is None
     assert _route_to_upstream("/api/v1/knowledge", state) is None
+    # D-02: la descarga directa de storage-service YA NO se enruta — pasa
+    # SIEMPRE por el mediador de document-service (RF-SEG-08). Ídem metadata
+    # y el stream de bytes interno (`/content`), ambos protegidos por
+    # X-Internal-Token en storage-service.
+    assert _route_to_upstream("/api/v1/storage/files/abc/download", state) is None
+    assert _route_to_upstream("/api/v1/storage/files/abc/content", state) is None
+    assert _route_to_upstream("/api/v1/storage/files/abc", state) is None
 
 
 async def test_public_verify_route_is_public_and_routed():

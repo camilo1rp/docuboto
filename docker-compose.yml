@@ -186,6 +186,10 @@ services:
       # una clave compartida entre tenants.
       - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
       - STORAGE_SERVICE_URL=http://storage-service:8005
+      # D-02: mismo secreto compartido que document-service/archive-service —
+      # enviado por `app/clients/storage_client.py` de forma preventiva (hoy
+      # solo usa `POST /upload`, que no está gateado). Dev-only.
+      - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       # Sello de tiempo XAdES-T (RT-16, Inc.4) — ver el volumen más abajo y
       # scripts/gen-dev-tsa-cert.sh para generar el par de desarrollo.
       - SIGNER_TIMESTAMP_ENABLED=${SIGNER_TIMESTAMP_ENABLED:-true}
@@ -308,6 +312,12 @@ services:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_SERVICE_URL=http://storage-service:8005
+      # D-02 (remediación no-read-up en anexos, RF-SEG-08): secreto compartido
+      # que storage-service exige en X-Internal-Token para servir bytes de un
+      # anexo — ver `app/clients/storage_client.py`. Dev-only; el mismo valor
+      # se repite en storage-service (INTERNAL_SERVICE_TOKEN) y en
+      # archive-service/signature-service más abajo. NUNCA este valor en producción.
+      - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       - TENANT_SERVICE_URL=http://tenant-service:8002
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
@@ -332,6 +342,11 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      # D-02: mismo secreto compartido que document-service/signature-service
+      # (ver el comentario en document-service más arriba) — archive-service
+      # lo usa en `app/clients/storage_client.py` para descargar el índice
+      # firmado (`GET /files/{id}/download`, ahora gateado en storage-service).
+      - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -358,6 +373,12 @@ services:
       - MINIO_ACCESS_KEY=orpycamcp
       - MINIO_SECRET_KEY=orpycamcp_dev
       - MINIO_USE_SSL=false
+      # D-02 (remediación no-read-up en anexos, RF-SEG-08): exigido en
+      # X-Internal-Token por los endpoints que sirven bytes/URL/metadata de un
+      # archivo (`app/routers/storage.py::_require_internal_token`). Mismo
+      # valor que STORAGE_INTERNAL_TOKEN en document/archive/signature-service.
+      # Dev-only — NUNCA este valor en producción.
+      - INTERNAL_SERVICE_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:

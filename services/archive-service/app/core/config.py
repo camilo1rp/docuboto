@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     # verificación XAdES-B real (E06 Inc.1) — signature_client.verify recibe
     # el XML firmado, no el XML en claro (ver app/clients/storage_client.py).
     storage_service_url: str = "http://storage-service:8005"
+    # Token compartido D-02 (remediación no-read-up en anexos, RF-SEG-08):
+    # storage-service exige X-Internal-Token en `GET /files/{id}/download`
+    # (el endpoint que este servicio usa para descargar el índice YA FIRMADO,
+    # ver app/clients/storage_client.py). Mismo secreto que
+    # `storage-service.INTERNAL_SERVICE_TOKEN`. Vacío (default) hace que
+    # storage-service rechace la llamada con 401 (fail-closed) — NUNCA
+    # commitear el valor real.
+    storage_internal_token: str = ""
     service_port: int = 8004
     log_level: str = "info"
 

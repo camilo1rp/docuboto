@@ -8,10 +8,11 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 import uuid
+from urllib.parse import quote
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import settings
 from app.core.database import get_db_conn
@@ -40,6 +41,52 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             },
         )
     return x_tenant_slug
+
+
+def _require_internal_token(
+    x_internal_token: str | None = Header(default=None),
+) -> None:
+    """D-02 (remediación no-read-up en anexos): solo servicios internos pueden
+    leer bytes/URL/metadata de un archivo.
+
+    Gatea los endpoints que servirían el CONTENIDO de un anexo si se llamaran
+    directamente (presigned download, stream de bytes, metadata) — la
+    mediación real del clearance (RF-SEG-08) vive en document-service
+    (`GET /documents/{id}/anexos/{file_id}/download`), que reenvía este mismo
+    token. `/upload` queda fuera: el frontend sube directo.
+
+    Fail-closed (mismo patrón que `knowledge-service`): si
+    INTERNAL_SERVICE_TOKEN no está configurado, TODAS las llamadas se
+    rechazan (401) — no hay modo "abierto" por omisión.
+    """
+    configured = settings.internal_service_token
+    if not configured:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "internal_access_not_configured",
+                "detail": "Este endpoint requiere INTERNAL_SERVICE_TOKEN configurado",
+                "status": 401,
+            },
+        )
+    if x_internal_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "missing_internal_token",
+                "detail": "Se requiere el header X-Internal-Token",
+                "status": 401,
+            },
+        )
+    if x_internal_token != configured:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "invalid_internal_token",
+                "detail": "Token de servicio interno inválido",
+                "status": 403,
+            },
+        )
 
 
 def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
@@ -192,6 +239,7 @@ async def list_file_versions(
     "/files/{file_id}",
     response_model=FileResponse,
     summary="Get file metadata",
+    dependencies=[Depends(_require_internal_token)],
 )
 async def get_file_metadata(
     file_id: uuid.UUID,
@@ -216,6 +264,7 @@ async def get_file_metadata(
     "/files/{file_id}/download",
     response_model=PresignedUrlResponse,
     summary="Get presigned download URL",
+    dependencies=[Depends(_require_internal_token)],
 )
 async def get_presigned_url(
     file_id: uuid.UUID,
@@ -234,6 +283,59 @@ async def get_presigned_url(
             },
         )
     return result
+
+
+@router.get(
+    "/files/{file_id}/content",
+    summary="Stream the raw bytes of a file (internal mediation, D-02)",
+    dependencies=[Depends(_require_internal_token)],
+)
+async def get_file_content(
+    file_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> StreamingResponse:
+    """Hace stream de los bytes crudos de un archivo — SOLO para mediadores
+    internos (document-service, RF-SEG-08). Nunca se expone al exterior: la
+    URL presigned de `/download` bastaría para un cliente de confianza, pero
+    un mediador que decide el clearance por-request necesita los BYTES, no
+    una URL que el llamante podría reenviar sin pasar por el gate.
+    """
+    service = StorageService(conn, tenant_slug)
+    result = await service.get_object_stream(file_id)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "file_not_found",
+                "detail": f"File {file_id} not found",
+                "status": 404,
+            },
+        )
+    record, chunks = result
+    # Content-Disposition a prueba de inyección (RFC 6266): filename es controlado
+    # por el cliente en la subida; un `"`/CR/LF sin sanear rompe la cabecera.
+    _ascii = (
+        record.filename.encode("ascii", "ignore")
+        .decode("ascii")
+        .replace('"', "")
+        .replace("\r", "")
+        .replace("\n", "")
+        .strip()
+        or "download"
+    )
+    headers = {
+        "Content-Disposition": (
+            f"attachment; filename=\"{_ascii}\"; filename*=UTF-8''{quote(record.filename)}"
+        ),
+    }
+    if record.file_size is not None:
+        headers["Content-Length"] = str(record.file_size)
+    return StreamingResponse(
+        chunks,
+        media_type=record.mime_type or "application/octet-stream",
+        headers=headers,
+    )
 
 
 @router.delete(

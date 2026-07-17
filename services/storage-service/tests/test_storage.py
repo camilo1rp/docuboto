@@ -44,8 +44,10 @@ from httpx import AsyncClient
 
 from tests.conftest import (
     FILE_ID,
+    INTERNAL_HEADERS,
     TENANT_HEADERS,
     make_file_record,
+    minio_get_object_stream,
 )
 
 _FILE_CONTENT = b"PDF content here"
@@ -143,7 +145,7 @@ async def test_get_file_metadata(
 
     response = await client.get(
         f"/api/v1/storage/files/{FILE_ID}",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 200
@@ -167,7 +169,7 @@ async def test_get_file_not_found(
 
     response = await client.get(
         f"/api/v1/storage/files/{uuid.uuid4()}",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 404
@@ -190,7 +192,7 @@ async def test_get_presigned_url(
 
     response = await client.get(
         f"/api/v1/storage/files/{FILE_ID}/download",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 200
@@ -198,6 +200,49 @@ async def test_get_presigned_url(
     assert body["url"] == "http://minio/presigned-url"
     assert body["expires_in"] == 3600
     mock_minio.presigned_get_object.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/storage/files/{file_id}/content — internal byte stream (D-02)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_file_content_streams_bytes(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """El mediador (document-service) pide los BYTES, no una presigned URL."""
+    client, mock_conn, mock_minio = client_with_conn
+    record = make_file_record(file_id=FILE_ID)
+    mock_conn.fetchrow.return_value = record
+    mock_minio.get_object = minio_get_object_stream(_FILE_CONTENT)
+
+    response = await client.get(
+        f"/api/v1/storage/files/{FILE_ID}/content",
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.content == _FILE_CONTENT
+    assert response.headers["content-type"] == record["mime_type"]
+    assert _FILENAME in response.headers["content-disposition"]
+    mock_minio.get_object.assert_awaited_once_with(record["bucket"], record["object_key"])
+
+
+@pytest.mark.asyncio
+async def test_get_file_content_not_found(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchrow.return_value = None
+
+    response = await client.get(
+        f"/api/v1/storage/files/{uuid.uuid4()}/content",
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "file_not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +321,7 @@ async def test_get_soft_deleted_file_returns_404(
 
     response = await client.get(
         f"/api/v1/storage/files/{FILE_ID}",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 404

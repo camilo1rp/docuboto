@@ -21,10 +21,14 @@ to avoid FastAPI matching the literal string "by-tracking" as a UUID.
 
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
+from app.clients import storage_client
 from app.clients.tenant_client import TenantServiceClient, TenantServiceError
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
@@ -65,6 +69,26 @@ def _get_registered_by(request: Request) -> uuid.UUID | None:
         return uuid.UUID(raw)
     except ValueError:
         return None
+
+
+def _content_disposition(filename: str) -> str:
+    """Cabecera `Content-Disposition` a prueba de inyección (RFC 6266).
+
+    `filename` lo controla el cliente en la subida; sin sanear, un `"` rompe la
+    quoted-string (inyecta parámetros) y un CR/LF revienta la cabecera. Se emite
+    un fallback ASCII entrecomillado saneado + `filename*=UTF-8''<pct-encoded>`
+    para el nombre real (Unicode).
+    """
+    ascii_fallback = (
+        filename.encode("ascii", "ignore")
+        .decode("ascii")
+        .replace('"', "")
+        .replace("\r", "")
+        .replace("\n", "")
+        .strip()
+        or "download"
+    )
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
@@ -230,6 +254,86 @@ async def get_document(
                 "status": 404,
             },
         )
+
+
+@router.get(
+    "/{document_id}/anexos/{file_id}/download",
+    summary="Download an attachment, mediated by clearance (RF-SEG-08, D-02)",
+)
+async def download_anexo(
+    document_id: uuid.UUID,
+    file_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    canal: str = Depends(_optional_canal),
+) -> StreamingResponse:
+    """Único punto de descarga de anexos hacia el exterior.
+
+    document-service MEDIA la descarga: resuelve el clearance del llamante
+    contra el `nivel_seguridad` VIGENTE del radicado (sin lag — nunca se
+    denormaliza la clasificación al anexo/`files`) y verifica que `file_id`
+    es efectivamente un anexo de `document_id`. Solo entonces pide los BYTES
+    a storage-service (nunca una presigned URL — el cliente podría reenviarla
+    y saltarse este gate) y los retransmite con streaming real.
+
+    Todos los caminos de denegación devuelven el MISMO 404 neutro: radicado
+    inexistente, sobre-clearance (no-read-up) y `file_id` ajeno al radicado
+    quedan indistinguibles para el llamante — cierra el oráculo cruzado que
+    tenía la descarga directa a storage-service.
+    """
+    tenant_slug = _tenant_slug(request)
+    service = _build_service(conn, tenant_slug)
+    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
+    try:
+        anexo = await service.get_anexo_for_download(
+            document_id,
+            file_id,
+            clearance,
+            user_id=_get_registered_by(request),
+            canal=canal,
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "document_not_found",
+                "detail": f"Document '{document_id}' not found",
+                "status": 404,
+            },
+        )
+
+    try:
+        stream = await storage_client.open_content_stream(
+            tenant_slug=tenant_slug, file_id=anexo.file_id
+        )
+    except storage_client.StorageContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "storage_unavailable",
+                "detail": str(exc),
+                "status": 503,
+            },
+        )
+    if stream is None:
+        # El objeto ya no existe en storage (purgado) aunque el anexo siga
+        # referenciado — mismo 404 neutro, no se distingue de "no autorizado".
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "document_not_found",
+                "detail": f"Document '{document_id}' not found",
+                "status": 404,
+            },
+        )
+
+    headers = {"Content-Disposition": _content_disposition(anexo.filename)}
+    return StreamingResponse(
+        stream.aiter_bytes(),
+        media_type=anexo.mime_type or "application/octet-stream",
+        headers=headers,
+        background=BackgroundTask(stream.aclose),
+    )
 
 
 @router.get(

@@ -25,7 +25,11 @@
  *   Los anexos de cada radicado están embebidos en expediente.radicados[].
  *   No existe un endpoint "listar todos los anexos de un expediente" en el backend;
  *   se construye iterando expediente.radicados[].anexos[] en el cliente.
- *   Para descargar un archivo: GET /api/v1/storage/files/{file_id}/download
+ *   Para descargar un archivo (D-02, RF-SEG-08): la descarga directa a
+ *   storage-service quedó cerrada (retirada del gateway). Ahora la MEDIA
+ *   document-service, con no-read-up contra el nivel_seguridad del radicado
+ *   dueño del anexo (`radicado_id`):
+ *     GET /api/v1/documents/{document_id}/anexos/{file_id}/download
  *
  * Nota de flujo/historial por radicado:
  *   El workflow-service expone GET /api/v1/workflows/{radicado_id}/events (por radicado,

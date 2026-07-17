@@ -19,9 +19,11 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app.core import config as cfg_module
 from app.core.database import get_db_conn
 from app.main import app
 
@@ -30,6 +32,15 @@ TENANT_HEADERS = {
     "X-Tenant-Slug": TENANT_SLUG,
     "X-User-Id": str(uuid.uuid4()),
 }
+
+# Token compartido D-02: los endpoints que sirven bytes/URL/metadata de un
+# archivo (download presigned, content, metadata) lo exigen en
+# X-Internal-Token. Los fixtures de abajo lo configuran por defecto para que
+# los tests existentes (que ejercen esos endpoints como si fueran el mediador
+# interno) no tengan que conocer el detalle; los tests del propio gate D-02
+# (`test_internal_token_gate.py`) manipulan `cfg_module.settings` directamente.
+TEST_INTERNAL_TOKEN = "test-storage-internal-token-xxx"
+INTERNAL_HEADERS = {**TENANT_HEADERS, "X-Internal-Token": TEST_INTERNAL_TOKEN}
 
 FILE_ID = uuid.uuid4()
 SHA256 = "a" * 64
@@ -144,6 +155,28 @@ def minio_get_object(content: bytes) -> AsyncMock:
     return AsyncMock(return_value=obj)
 
 
+def minio_get_object_stream(content: bytes) -> AsyncMock:
+    """Mock de `Minio.get_object` para el streaming real (`iter_chunked`).
+
+    Distinto de `minio_get_object` (que mockea `.read()`, usado por
+    `verify_integrity` para recalcular el hash del objeto ENTERO):
+    `StorageService.get_object_stream` (D-02, `GET /files/{id}/content`)
+    consume `.content.iter_chunked(...)`, la superficie real de
+    `aiohttp.ClientResponse` que devuelve miniopy_async — se mockea aparte
+    porque `async for chunk in response.content.iter_chunked(n)` exige que
+    la llamada devuelva un async-iterator, no una corrutina.
+    """
+
+    async def _iter_chunked(_chunk_size: int):
+        yield content
+
+    obj = MagicMock()
+    obj.content = MagicMock()
+    obj.content.iter_chunked = MagicMock(side_effect=lambda n: _iter_chunked(n))
+    obj.close = MagicMock()
+    return AsyncMock(return_value=obj)
+
+
 def _minio_patches(mock_minio: MagicMock):
     """
     Patch get_minio in all modules that import it at module level.
@@ -164,8 +197,17 @@ def _minio_patches(mock_minio: MagicMock):
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, MagicMock], None]:
-    """Yields (client, mock_conn, mock_minio) so tests can configure mocks per-call."""
+async def client_with_conn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncGenerator[tuple[AsyncClient, AsyncMock, MagicMock], None]:
+    """Yields (client, mock_conn, mock_minio) so tests can configure mocks per-call.
+
+    D-02: configura INTERNAL_SERVICE_TOKEN por defecto (TEST_INTERNAL_TOKEN) —
+    la mayoría de los tests que usan este fixture ejercen endpoints ahora
+    gateados (metadata/download/content) como si fueran el mediador interno;
+    los tests del gate en sí lo desconfiguran/lo pisan explícitamente.
+    """
+    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
     mock_conn = _make_mock_conn()
     mock_minio = _make_mock_minio()
 
@@ -183,8 +225,9 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, Mag
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client() -> AsyncGenerator[AsyncClient, None]:
+async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient, None]:
     """Simple client fixture — use when you don't need to configure mock internals."""
+    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
     mock_conn = _make_mock_conn()
     mock_minio = _make_mock_minio()
 

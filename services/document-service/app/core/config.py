@@ -21,6 +21,13 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
     storage_service_url: str = "http://storage-service:8005"
+    # Token compartido D-02 (remediación no-read-up en anexos, RF-SEG-08):
+    # enviado en X-Internal-Token al pedir bytes de un anexo a storage-service
+    # (`app/clients/storage_client.py`). Mismo secreto que
+    # `storage-service.INTERNAL_SERVICE_TOKEN`. Vacío (default) hace que
+    # storage-service rechace la llamada con 401 (fail-closed) — NUNCA
+    # commitear el valor real.
+    storage_internal_token: str = ""
     tenant_service_url: str = "http://tenant-service:8002"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"

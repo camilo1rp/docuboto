@@ -123,6 +123,17 @@ class Settings(BaseSettings):
             )
         return warnings
 
+    # Token de servicio interno (D-02, mismo patrón que knowledge-service):
+    # exigido en X-Internal-Token por los endpoints que sirven BYTES/URL de un
+    # archivo (`GET /files/{id}/download` presigned, `GET /files/{id}/content`,
+    # `GET /files/{id}` metadata) — una presigned URL o los bytes crudos
+    # entregados sin mediación saltarían el gate de clearance de
+    # document-service (RF-SEG-08). `/upload` NO se gatea: el frontend sube
+    # directo. Fail-closed: vacío (default) rechaza TODAS las llamadas a esos
+    # endpoints con 401 — mismo criterio que `internal_service_token` de
+    # knowledge-service. NUNCA loguear el valor real.
+    internal_service_token: str = ""
+
     # Formatos admitidos en la subida (RF-DIG-04). CSV de MIME types; "*" = todos.
     allowed_mime_types: str = (
         "application/pdf,"

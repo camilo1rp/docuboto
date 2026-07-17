@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     # URL del storage-service (E06 Inc.1 → E07): destino del XML firmado del
     # índice electrónico (app/clients/storage_client.py).
     storage_service_url: str = "http://storage-service:8005"
+    # Token compartido D-02 (remediación no-read-up en anexos, RF-SEG-08):
+    # mismo secreto que `storage-service.INTERNAL_SERVICE_TOKEN`, enviado en
+    # X-Internal-Token por `app/clients/storage_client.py` en cualquier
+    # llamada a storage-service que quede protegida por ese gate. Hoy
+    # `upload_signed_xml` solo usa `POST /upload` (sin gatear), pero se envía
+    # de forma preventiva/uniforme con archive-service — si storage-service
+    # amplía el gate a `/upload` en el futuro, este cliente ya está listo.
+    # Vacío (default) = sin efecto mientras `/upload` no lo exija.
+    storage_internal_token: str = ""
 
     # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
     # How many days to keep Redis DLQ entries before XTRIM MINID pruning.

@@ -145,29 +145,37 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Descarga de anexo (URL pre-firmada via gateway — E07)
+  // Descarga de anexo (mediada por document-service — E07, RF-SEG-08, D-02)
   // ---------------------------------------------------------------------------
   /**
-   * Obtiene la URL pre-firmada de descarga vía el endpoint local y la abre en nueva pestaña.
-   * El endpoint /expedientes/[id]/api/download/[fileId] lee la cookie httpOnly en el servidor.
+   * Descarga el anexo vía el endpoint local, que retransmite el streaming
+   * mediado por document-service (GET /api/v1/documents/{document_id}/anexos/{file_id}/download).
+   * Necesita el `documentId` del RADICADO dueño del anexo (no el expediente):
+   * document-service aplica el no-read-up contra el nivel_seguridad del radicado.
+   * El endpoint local /expedientes/[id]/api/download/[documentId]/[fileId] lee
+   * la cookie httpOnly en el servidor.
+   * @param {string} documentId - radicado_id dueño del anexo
    * @param {string} fileId
    * @param {string} filename
    */
-  async function handleDownloadAnexo(fileId, filename) {
+  async function handleDownloadAnexo(documentId, fileId, filename) {
     try {
-      const res = await fetch(`/expedientes/${expediente.id}/api/download/${fileId}`);
-      const result = await res.json();
-      if (!res.ok) throw result;
-      const url = result?.url ?? result?.download_url ?? result;
-      if (typeof url !== "string") throw new Error("La respuesta no contiene una URL válida.");
+      const res = await fetch(
+        `/expedientes/${expediente.id}/api/download/${documentId}/${fileId}`,
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw err;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
-      a.target = "_blank";
-      a.rel = "noreferrer";
       a.click();
+      URL.revokeObjectURL(url);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo obtener el enlace de descarga.");
+      notifyError(err?.detail ?? "No se pudo descargar el anexo.");
     }
   }
 
@@ -239,9 +247,16 @@
   };
   $: statusLabel = STATUS_LABELS[expediente?.status] ?? expediente?.status;
 
-  // Recopilar todos los anexos desde los radicados vinculados (no hay endpoint agregado)
+  // Recopilar todos los anexos desde los radicados vinculados (no hay endpoint agregado).
+  // document_id = r.radicado_id: el radicado DUEÑO del anexo, requerido por el
+  // contrato de descarga mediada (document-service aplica el no-read-up contra
+  // SU nivel_seguridad, no el del expediente).
   $: allAnexos = (expediente?.radicados ?? []).flatMap((r) =>
-    (r.anexos ?? []).map((a) => ({ ...a, tracking_number: r.tracking_number })),
+    (r.anexos ?? []).map((a) => ({
+      ...a,
+      tracking_number: r.tracking_number,
+      document_id: r.radicado_id,
+    })),
   );
 </script>
 
@@ -572,8 +587,9 @@
         {:else}
           <p class="exp-panel__info">
             <i class="fas fa-info-circle" aria-hidden="true"></i>
-            Los anexos se obtienen de los radicados vinculados. El enlace de descarga usa la URL presignada
-            del storage-service (GET /api/v1/storage/files/{"{"}file_id{"}"}/download).
+            Los anexos se obtienen de los radicados vinculados. La descarga la media
+            document-service, que aplica el control de acceso del radicado dueño del anexo (GET
+            /api/v1/documents/{"{"}document_id{"}"}/anexos/{"{"}file_id{"}"}/download).
           </p>
           <div class="exp-table-wrap" role="region" aria-label="Listado de anexos">
             <table class="exp-table" aria-label="Anexos del expediente">
@@ -606,12 +622,13 @@
                       {/if}
                     </td>
                     <td>
-                      <!-- Descarga vía URL pre-firmada (GET /api/v1/storage/files/{id}/download) -->
+                      <!-- Descarga mediada por document-service (GET /api/v1/documents/{document_id}/anexos/{file_id}/download) -->
                       <button
                         type="button"
                         class="exp-action-link"
                         aria-label="Descargar {anexo.filename}"
-                        on:click={() => handleDownloadAnexo(anexo.file_id, anexo.filename)}
+                        on:click={() =>
+                          handleDownloadAnexo(anexo.document_id, anexo.file_id, anexo.filename)}
                       >
                         <i class="fas fa-download" aria-hidden="true"></i> Descargar
                       </button>

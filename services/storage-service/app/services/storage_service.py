@@ -29,6 +29,7 @@ Soft-delete vs. purge (D-04, constitución inv. 12):
 import hashlib
 import io
 import uuid
+from collections.abc import AsyncIterator
 from datetime import timedelta
 
 import asyncpg
@@ -217,6 +218,37 @@ class StorageService:
             expires=timedelta(seconds=expiry_seconds),
         )
         return PresignedUrlResponse(url=url, expires_in=expiry_seconds)
+
+    async def get_object_stream(
+        self, file_id: uuid.UUID, chunk_size: int = 65536
+    ) -> tuple[FileRecord, AsyncIterator[bytes]] | None:
+        """Devuelve ``(record, generador de bytes)`` para hacer streaming del objeto.
+
+        D-02: alimenta ``GET /files/{id}/content`` — SOLO para mediadores
+        internos (document-service, tras su propio gate de clearance
+        RF-SEG-08). A diferencia de `verify_integrity` (que carga el objeto
+        COMPLETO en memoria para recalcular el hash), aquí se hace streaming
+        real sobre ``aiohttp.ClientResponse.content`` (lo que devuelve
+        miniopy_async), sin acumular el archivo entero en memoria de
+        storage-service.
+        """
+        record = await self._repo.get_by_id(file_id)
+        if record is None:
+            return None
+
+        minio = get_minio()
+        response = await minio.get_object(record.bucket, record.object_key)
+
+        async def _chunks() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in response.content.iter_chunked(chunk_size):
+                    yield chunk
+            finally:
+                close = getattr(response, "close", None)
+                if close is not None:
+                    close()
+
+        return record, _chunks()
 
     async def verify_integrity(self, file_id: uuid.UUID) -> IntegrityResponse | None:
         """Reverifica el SHA-256 del objeto en MinIO contra el registrado (RF-DIG-02).

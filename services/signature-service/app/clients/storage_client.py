@@ -62,7 +62,13 @@ async def upload_signed_xml(
     nombre (p. ej. un reintento de firma sin cambios), donde la reconstrucción
     sigue siendo válida.
     """
-    headers = {"X-Tenant-Slug": tenant_slug}
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        # D-02: `/upload` no está gateado hoy (el frontend también sube
+        # directo), pero se envía de forma preventiva/uniforme con
+        # archive-service (ver `settings.storage_internal_token` docstring).
+        "X-Internal-Token": settings.storage_internal_token,
+    }
     if uploaded_by is not None:
         headers["X-User-Id"] = str(uploaded_by)
     files = {"file": (filename, content, "application/xml")}

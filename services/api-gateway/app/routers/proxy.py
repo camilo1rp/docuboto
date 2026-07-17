@@ -53,8 +53,14 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/prestamos/", app_state.archive_service_url),
         ("/api/v1/fuid", app_state.archive_service_url),
         ("/api/v1/transferencias/", app_state.archive_service_url),
-        # storage-service
-        ("/api/v1/storage/", app_state.storage_service_url),
+        # storage-service — SOLO /upload se expone (el frontend sube directo).
+        # D-02 (remediación no-read-up en anexos, RF-SEG-08): los endpoints
+        # que sirven bytes/URL/metadata de un archivo (download presigned,
+        # content, metadata) quedan protegidos por X-Internal-Token en
+        # storage-service y NO se enrutan desde el exterior — la descarga
+        # pasa SIEMPRE por el mediador de document-service
+        # (`GET /api/v1/documents/{id}/anexos/{file_id}/download`).
+        ("/api/v1/storage/upload", app_state.storage_service_url),
         ("/api/v1/preservacion/", app_state.storage_service_url),
         # workflow-service
         ("/api/v1/workflows/", app_state.workflow_service_url),

@@ -36,7 +36,7 @@ import { GET as templatesGet } from "./(app)/radicar/api/templates/+server.js";
 import { GET as firmasGet } from "./(app)/firmas/api/+server.js";
 import { GET as borradoresGet, POST as borradoresPost } from "./(app)/borradores/api/+server.js";
 import { GET as busquedaGet } from "./(app)/busqueda/api/+server.js";
-import { GET as descargaGet } from "./(app)/expedientes/[id]/api/download/[fileId]/+server.js";
+import { GET as descargaGet } from "./(app)/expedientes/[id]/api/download/[documentId]/[fileId]/+server.js";
 import { GET as metadataTemplatesGet } from "./(app)/expedientes/api/metadata-templates/+server.js";
 
 // Proxies de escritura — anular, reclasificar, firmar/rechazar, transferir, radicar.
@@ -104,10 +104,14 @@ describe("Proxies BFF — 401 sin locals.accessToken (D-05)", () => {
     expect((await res.json()).error).toBe("unauthenticated");
   });
 
-  it("expedientes/[id]/api/download/[fileId] GET → 401 unauthenticated", async () => {
+  it("expedientes/[id]/api/download/[documentId]/[fileId] GET → 401 unauthenticated (antes del allowlist UUID)", async () => {
     const res = await descargaGet({
       locals: NO_SESSION_LOCALS,
-      params: { id: "exp-1", fileId: "file-1" },
+      params: {
+        id: "exp-1",
+        documentId: "11111111-1111-1111-1111-111111111111",
+        fileId: "22222222-2222-2222-2222-222222222222",
+      },
     });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe("unauthenticated");
