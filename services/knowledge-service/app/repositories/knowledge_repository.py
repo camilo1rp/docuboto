@@ -15,6 +15,8 @@ import json
 
 import asyncpg
 
+from app.core.clearance import CLASIFICADA
+
 
 class KnowledgeRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
@@ -74,6 +76,14 @@ class KnowledgeRepository:
         de reclasificación (``update_nivel_by_source``) es la ÚNICA que puede bajar
         el nivel, porque ahí el nivel nuevo es la fuente de verdad explícita del
         evento, no un valor potencialmente obsoleto.
+
+        ``voided`` (purga PERMANENTE por anulación, migración 006) queda
+        DELIBERADAMENTE fuera de la lista de columnas del INSERT y del SET del
+        ``ON CONFLICT``: en el INSERT (fila nueva) toma el DEFAULT de la tabla
+        (``false``); en el CONFLICT (fila existente) queda intacta — un `created`
+        JAMÁS debe des-voidear un chunk (ver el guard en
+        ``ingestion.ingest_radicado_created`` y ``KnowledgeRepository.void_by_source``,
+        que sí puede escribir ``voided = true``).
         """
         row = await self._conn.fetchrow(
             """
@@ -171,6 +181,27 @@ class KnowledgeRepository:
             source_ref,
         )
 
+    async def get_chunk_state(
+        self, source_type: str, source_ref: str
+    ) -> asyncpg.Record | None:
+        """Lee (``nivel_seguridad``, ``voided``) del chunk ACTUAL, o `None` si no
+        existe aún.
+
+        Sustituye a `get_nivel_by_source` como lectura previa de
+        `ingestion.ingest_radicado_created`: además del nivel EFECTIVO (mismo cálculo
+        que ya hacía `get_nivel_by_source`), necesita saber si el radicado fue
+        ANULADO — `voided = true` es un marcador PERMANENTE (migración 006): un
+        `created` reprocesado tras la anulación (redelivery at-least-once, en
+        cualquier orden respecto al evento `annulled`) NUNCA debe re-indexar el
+        chunk. Ver `void_by_source` y el guard en `ingest_radicado_created`.
+        """
+        return await self._conn.fetchrow(
+            "SELECT nivel_seguridad, voided FROM knowledge_chunk "
+            "WHERE source_type = $1 AND source_ref = $2",
+            source_type,
+            source_ref,
+        )
+
     async def tombstone_by_source(
         self, source_type: str, source_ref: str, nivel_seguridad: int
     ) -> asyncpg.Record:
@@ -227,10 +258,14 @@ class KnowledgeRepository:
     async def delete_by_source(self, source_type: str, source_ref: str) -> str:
         """Purga DEFINITIVA del chunk indexado (borra la fila).
 
-        NO la usa la reclasificación (ver `tombstone_by_source` y su docstring
-        para el porqué: un DELETE anula el candado GREATEST de `upsert_chunk`).
-        Queda disponible para un futuro flujo de anulación/expurgo real del
-        radicado, donde no retener ni siquiera la fila-centinela es lo correcto.
+        NO la usa la reclasificación NI la anulación (ver `tombstone_by_source` /
+        `void_by_source` y sus docstrings para el porqué: un DELETE anula el
+        candado GREATEST de `upsert_chunk` y, para la anulación, permitiría que un
+        `created` redelivered DESPUÉS del DELETE reinserte la fila desde cero SIN
+        `voided` — el DELETE borraría el propio marcador permanente que hace la
+        purga irreversible). Queda disponible para un futuro expurgo físico real
+        (purga total del historial, fuera de este MVP), donde no retener ni
+        siquiera la fila-centinela es lo correcto.
         """
         tag: str = await self._conn.execute(
             "DELETE FROM knowledge_chunk WHERE source_type = $1 AND source_ref = $2",
@@ -238,6 +273,59 @@ class KnowledgeRepository:
             source_ref,
         )
         return tag
+
+    async def void_by_source(self, source_type: str, source_ref: str) -> asyncpg.Record:
+        """Purga PERMANENTE por anulación de radicado (residual "purga-en-anulación",
+        E21; hallazgo archival-compliance-auditor): UPSERT-con-centinela GEMELO de
+        `tombstone_by_source`, pero con dos diferencias deliberadas:
+
+          1. Fija ``voided = true`` — a diferencia del tombstone por nivel
+             (reversible: una desclasificación posterior puede reembeber vía
+             `update_nivel_by_source`), la anulación es TERMINAL (Ley 594/2000 — un
+             radicado anulado no se des-anula). `ingest_radicado_created` SIEMPRE
+             respeta `voided` incondicionalmente (SKIP total, ver su docstring);
+             ninguna ruta de creación/reclasificación vuelve a poner `voided=false`.
+          2. Fija ``nivel_seguridad = GREATEST(actual, CLASIFICADA)`` — fail-safe al
+             nivel MÁXIMO (en vez de recibir el nivel como parámetro, como sí hace
+             `tombstone_by_source`): el evento `document.radicado.annulled` no
+             transporta `nivel_seguridad` (payload mínimo, ver `document_service.py`
+             `_emit_annulled`), así que ante la duda el centinela queda al nivel
+             más restrictivo — nunca visible por debajo de CLASIFICADA aunque el
+             filtro `NOT voided` de `search` ya lo excluye por completo.
+
+        INSERT (fila ausente — `annulled` llegó antes que `created`): deja un
+        centinela `voided=true` desde el nacimiento. CONFLICT (fila presente):
+        marca `voided=true` y purga el contenido (texto/embedding/metadata) — el
+        material ya pudo haber salido hacia un proveedor externo de embeddings y no
+        debe permanecer expuesto a un re-embed futuro. La fila NUNCA se borra
+        (ver `delete_by_source`) ni `voided` se limpia — es, junto con `search`
+        (``AND NOT voided``) y el guard de `ingest_radicado_created`, la garantía
+        de que la purga es permanente sea cual sea el orden de entrega
+        created↔annulled.
+        """
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO knowledge_chunk
+                (source_type, source_ref, texto, embedding, metadata, acl,
+                 nivel_seguridad, voided)
+            VALUES ($1, $2, '', NULL, '{}'::jsonb, '{}'::jsonb, $3, true)
+            ON CONFLICT (source_type, source_ref) DO UPDATE
+               SET texto           = '',
+                   embedding       = NULL,
+                   metadata        = '{}'::jsonb,
+                   voided          = true,
+                   nivel_seguridad = GREATEST(
+                       knowledge_chunk.nivel_seguridad, EXCLUDED.nivel_seguridad
+                   ),
+                   updated_at      = now()
+            RETURNING id, source_type, source_ref, created_at
+            """,
+            source_type,
+            source_ref,
+            CLASIFICADA,
+        )
+        assert row is not None
+        return row
 
     async def search(
         self,
@@ -258,9 +346,15 @@ class KnowledgeRepository:
         ``embedding IS NOT NULL`` excluye los TOMBSTONES (`tombstone_by_source`):
         una fila-centinela sin material derivado nunca es un resultado de búsqueda,
         sea cual sea su `nivel_seguridad`/clearance del llamante.
+
+        ``NOT voided`` excluye además los chunks purgados PERMANENTEMENTE por
+        anulación (`void_by_source`) — defensa en profundidad: un chunk voided ya
+        queda sin `embedding` (lo excluye la condición anterior), pero esta
+        condición lo hace EXPLÍCITO y a prueba de que alguna ruta futura deje un
+        `voided=true` con `embedding` no nulo.
         """
         params: list[object] = [embedding_literal]
-        conds: list[str] = ["embedding IS NOT NULL"]
+        conds: list[str] = ["embedding IS NOT NULL", "NOT voided"]
 
         # D-02: filtro sobre la columna de primera clase, no sobre JSONB.
         params.append(max_clearance)

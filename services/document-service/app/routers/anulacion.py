@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, status
 
 from app.core.clearance import require_permission
-from app.core.database import get_tenant_conn
+from app.core.database import get_redis, get_tenant_conn
 from app.schemas.anulacion import (
     AnulacionDecision,
     AnulacionResponse,
@@ -27,6 +28,8 @@ from app.services.anulacion_service import AnulacionService
 
 router = APIRouter(prefix="/api/v1/documents", tags=["anulacion"])
 
+_TENANT_HEADER = "X-Tenant-Slug"
+
 
 def _actor(request: Request) -> uuid.UUID | None:
     raw = request.headers.get("X-User-Id")
@@ -34,6 +37,11 @@ def _actor(request: Request) -> uuid.UUID | None:
         return uuid.UUID(raw) if raw else None
     except ValueError:
         return None
+
+
+def _tenant_slug(request: Request) -> str:
+    # get_tenant_conn ya garantiza que el header está presente y es válido.
+    return request.headers.get(_TENANT_HEADER, "")
 
 
 @router.post(
@@ -71,8 +79,11 @@ async def aprobar_anulacion(
     payload: AnulacionDecision,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    redis: Any = Depends(get_redis),
 ) -> AnulacionResponse:
-    return await AnulacionService(conn).aprobar(document_id, payload, _actor(request))
+    return await AnulacionService(conn, redis).aprobar(
+        document_id, payload, _actor(request), tenant_slug=_tenant_slug(request)
+    )
 
 
 @router.post(

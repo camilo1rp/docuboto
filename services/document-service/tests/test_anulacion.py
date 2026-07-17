@@ -7,8 +7,15 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Tests de anulación de radicado en dos pasos (paridad legado)."""
+"""Tests de anulación de radicado en dos pasos (paridad legado).
 
+Incluye la emisión del evento `document.radicado.annulled` al aprobar (residual
+"purga-en-anulación", E21) — gemelo de los tests de emisión de
+`test_documents.py`/`test_reclassify.py`: solo `aprobar` publica; `solicitar` y
+`rechazar` no cambian el estado del radicado y no emiten nada.
+"""
+
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -160,3 +167,106 @@ async def test_rechazar_sin_permiso_403(client_with_conn) -> None:
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
+
+
+# ---------------------------------------------------------------------------
+# Residual "purga-en-anulación" (E21): document.radicado.annulled al aprobar.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aprobar_emite_evento_annulled(client_with_redis) -> None:
+    """Aprobar la anulación publica `document.radicado.annulled` en
+    orpycamcp.document.events (ADR-010) — gemelo de `_emit_created`.
+    knowledge-service lo consume para purgar PERMANENTEMENTE el chunk indexado."""
+    client, mock_conn, fake_redis = client_with_redis
+    rid = uuid.uuid4()
+    tracking = "2026-DEMO-E-000042"
+    mock_conn.fetchrow.side_effect = [
+        _anulacion_row(radicado_id=rid, estado="solicitada"),
+        _anulacion_row(
+            radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
+        ),
+    ]
+    mock_conn.fetchval.return_value = tracking  # get_tracking_number
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/aprobar",
+        json={"observacion": "Procede"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    assert fake_redis.xadd.await_count == 1
+    stream, fields = fake_redis.xadd.await_args.args
+    assert stream == "orpycamcp.document.events"
+    assert fields["event_type"] == "document.radicado.annulled"
+    assert fields["tenant_slug"] == TENANT_HEADERS["X-Tenant-Slug"]
+    assert fields["dedup_key"] == f"{tracking}:annulled"
+    payload = json.loads(fields["payload"])
+    assert payload == {"id": str(rid), "tracking_number": tracking}
+
+
+@pytest.mark.asyncio
+async def test_rechazar_no_emite_evento(client_with_redis) -> None:
+    """Rechazar NO cambia el estado del radicado: no publica ningún evento."""
+    client, mock_conn, fake_redis = client_with_redis
+    rid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _anulacion_row(radicado_id=rid, estado="solicitada"),
+        _anulacion_row(
+            radicado_id=rid, estado="rechazada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
+        ),
+    ]
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/rechazar",
+        json={"observacion": "No procede"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    fake_redis.xadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_solicitar_no_emite_evento(client_with_redis) -> None:
+    """Solicitar (paso 1) tampoco cambia el estado del radicado: sin evento."""
+    client, mock_conn, fake_redis = client_with_redis
+    rid = uuid.uuid4()
+    mock_conn.fetchval.return_value = "registered"  # radicado_status → vigente
+    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion",
+        json={"causal": "ANU-ERR", "motivo": "Error de radicación"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 201
+    fake_redis.xadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_aprobar_evento_best_effort_no_revierte_anulacion(client_with_redis) -> None:
+    """Si Redis falla al publicar, la anulación NO se revierte (evento best-effort,
+    gemelo de `test_create_document_survives_event_failure`)."""
+    client, mock_conn, fake_redis = client_with_redis
+    fake_redis.xadd.side_effect = RuntimeError("redis down")
+    rid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _anulacion_row(radicado_id=rid, estado="solicitada"),
+        _anulacion_row(
+            radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
+        ),
+    ]
+    mock_conn.fetchval.return_value = "2026-DEMO-E-000099"
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/aprobar",
+        json={"observacion": "Procede"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200  # la anulación se aplicó pese al fallo de Redis
+    assert resp.json()["estado"] == "aprobada"

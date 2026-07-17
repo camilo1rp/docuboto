@@ -42,6 +42,15 @@ class AnulacionRepository:
     async def radicado_status(self, radicado_id: uuid.UUID) -> str | None:
         return await self._conn.fetchval("SELECT status FROM radicados WHERE id = $1", radicado_id)
 
+    async def get_tracking_number(self, radicado_id: uuid.UUID) -> str | None:
+        """Usado tras aprobar la anulación para publicar `document.radicado.annulled`
+        (el sobre del evento, gemelo de `_emit_created`, necesita el tracking_number
+        del radicado — `radicado_anulacion` no lo guarda). Consulta separada
+        deliberada: no ensancha el contrato de `decide()` (que ya está en producción)."""
+        return await self._conn.fetchval(
+            "SELECT tracking_number FROM radicados WHERE id = $1", radicado_id
+        )
+
     async def insert_solicitud(
         self,
         *,

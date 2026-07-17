@@ -42,6 +42,17 @@ insertaba el chunk sub-clasificado a su nivel de nacimiento. Ahora
 `update_nivel_by_source` es también un UPSERT-con-centinela (ver su docstring en
 `KnowledgeRepository`): deja un centinela cuando la fila no existe, y fija el
 nivel EXACTO (sin GREATEST, permite bajas legítimas) cuando sí existe.
+
+Residual "purga-en-anulación" cerrado (hallazgo archival-compliance-auditor): un
+radicado ANULADO seguía siendo consultable en el índice semántico porque el único
+mecanismo de exclusión era el tombstone POR NIVEL, reversible a propósito (una
+desclasificación legítima debe poder reembeberlo). La anulación es TERMINAL (Ley
+594/2000 — el radicado no se des-anula), así que necesita su PROPIO marcador
+permanente: `voided` (migración 006, `KnowledgeRepository.void_by_source`).
+`ingest_radicado_created` ahora lee también `voided` (vía `get_chunk_state`, que
+sustituye a `get_nivel_by_source` como lectura previa) y hace SKIP TOTAL si el
+chunk ya está voided — bajo CUALQUIER orden de entrega respecto al evento
+`document.radicado.annulled` (`void_radicado`, nuevo handler de este módulo).
 """
 
 from __future__ import annotations
@@ -82,13 +93,20 @@ async def ingest_radicado_created(
     Un `created` reprocesado TARDE (redelivery at-least-once) puede traer un nivel
     más BAJO que el que un `reclassified` posterior ya aplicó al chunk (el evento
     `created` original no conoce esa reclasificación futura). Por eso, ANTES de
-    embeber, se lee el nivel actual del chunk (si existe,
-    `KnowledgeRepository.get_nivel_by_source`) y se calcula
+    embeber, se lee el estado actual del chunk (si existe,
+    `KnowledgeRepository.get_chunk_state`) y se calcula
     `nivel_efectivo = max(nivel_del_evento, nivel_existente)`: es ese nivel
     EFECTIVO — no el crudo del evento — el que decide si se embebe (D-02) y el que
     se persiste. El `search_path` ya fija el tenant y el worker procesa
     secuencialmente dentro de su consumer-group (sin concurrencia intra-tenant),
     así que este read-then-write es seguro.
+
+    PURGA PERMANENTE por anulación (residual "purga-en-anulación", ver docstring
+    del módulo): si el chunk ya existe y está `voided` (radicado ANULADO), este
+    `created` — llegue en el orden que llegue, incluso un redelivery muy tardío —
+    hace SKIP TOTAL: no embebe, no des-voidea, no toca el chunk. La anulación es
+    TERMINAL, así que este guard no admite excepciones (a diferencia del guard de
+    nivel, que sí puede reembeber material tras una desclasificación).
     """
     tracking_number = payload.get("tracking_number")
     nivel = payload.get("nivel_seguridad")
@@ -102,7 +120,30 @@ async def ingest_radicado_created(
         nivel = CLASIFICADA
 
     repo = KnowledgeRepository(conn)
-    nivel_existente = await repo.get_nivel_by_source(_SOURCE_TYPE, tracking_number)
+    state = await repo.get_chunk_state(_SOURCE_TYPE, tracking_number)
+
+    if state is not None and state["voided"]:
+        # El radicado fue ANULADO (evento `document.radicado.annulled` ya
+        # procesado, o el centinela voided fue dejado por un `annulled` que llegó
+        # ANTES que este `created`). El estado `anulado` es TERMINAL — no hay
+        # "nivel efectivo" que calcular ni material que embeber: SKIP incondicional.
+        await audit.append(
+            conn,
+            tenant_slug=tenant_slug,
+            service=_SERVICE,
+            action="knowledge.ingest_skipped_voided",
+            object_type=_SOURCE_TYPE,
+            object_ref=tracking_number,
+            actor="system",
+            canal="system",
+            payload={
+                "nivel_seguridad": nivel,
+                "motivo": "radicado_anulado_purga_permanente",
+            },
+        )
+        return
+
+    nivel_existente = state["nivel_seguridad"] if state is not None else None
     nivel_efectivo = max(nivel, nivel_existente) if nivel_existente is not None else nivel
 
     if not is_embeddable(nivel_efectivo, settings.embedding_provider):
@@ -234,3 +275,25 @@ async def apply_reclassification(
         await repo.tombstone_by_source(_SOURCE_TYPE, tracking_number, nuevo)
     else:
         await repo.update_nivel_by_source(_SOURCE_TYPE, tracking_number, nuevo)
+
+
+async def void_radicado(conn: asyncpg.Connection, *, tenant_slug: str, payload: dict) -> None:
+    """Aplica un `document.radicado.annulled` (residual "purga-en-anulación", E21):
+    purga PERMANENTE del chunk indexado del radicado anulado.
+
+    A diferencia de `apply_reclassification` (que puede subir Y bajar el nivel de
+    un chunk, porque una reclasificación siempre es potencialmente reversible), la
+    anulación de un radicado es TERMINAL (Ley 594/2000 — el radicado no se
+    des-anula): `void_by_source` marca `voided = true` de forma permanente, y
+    `ingest_radicado_created` respeta ese marcador incondicionalmente (SKIP total,
+    ver su docstring) sin importar el orden de entrega respecto a este evento
+    (idempotente: reprocesar el mismo `annulled` repite la misma UPSERT sin efecto
+    adicional).
+
+    El payload del evento es mínimo (`{id, tracking_number}`, ver
+    `document_service.py::AnulacionService._emit_annulled`) — no hay `nivel` que
+    leer aquí; el fail-safe al nivel máximo vive en `void_by_source`.
+    """
+    tracking_number = payload.get("tracking_number")
+    repo = KnowledgeRepository(conn)
+    await repo.void_by_source(_SOURCE_TYPE, tracking_number)

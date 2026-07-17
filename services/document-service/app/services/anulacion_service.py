@@ -12,14 +12,24 @@ Anulación de radicado en dos pasos (paridad legado).
 
 Solicitar → (aprobar | rechazar). La ley prohíbe borrar: al aprobar, el radicado
 pasa a `anulado` (el número se conserva). A lo sumo una solicitud activa por radicado.
+
+Al APROBAR se publica `document.radicado.annulled` (best-effort, gemelo de
+`DocumentService._emit_created`) — knowledge-service (E21) lo consume para purgar
+PERMANENTEMENTE el chunk indexado del radicado anulado (residual
+"purga-en-anulación": un radicado ANULADO no debe seguir siendo consultable en el
+índice semántico). Solicitar/rechazar NO emiten evento: solo aprobar cambia el
+estado del radicado.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
+from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
+from orpycamcp_common import events
 
 from app.repositories.anulacion_repository import AnulacionRepository
 from app.schemas.anulacion import (
@@ -28,14 +38,19 @@ from app.schemas.anulacion import (
     AnulacionSolicitud,
 )
 
+logger = logging.getLogger(__name__)
+
+_STREAM = "orpycamcp.document.events"
+
 
 def _resp(row) -> AnulacionResponse:
     return AnulacionResponse(**dict(row))
 
 
 class AnulacionService:
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(self, conn: asyncpg.Connection, redis: Any | None = None) -> None:
         self._repo = AnulacionRepository(conn)
+        self._redis = redis
 
     async def solicitar(
         self,
@@ -83,6 +98,7 @@ class AnulacionService:
         aprobar: bool,
         payload: AnulacionDecision,
         decidido_por: uuid.UUID | None,
+        tenant_slug: str | None = None,
     ) -> AnulacionResponse:
         active = await self._repo.get_active(radicado_id)
         if active is None:
@@ -101,11 +117,49 @@ class AnulacionService:
             decidido_por=decidido_por,
             observacion=payload.observacion,
         )
+        # `repo.decide` ya commiteó (UPDATE radicado_anulacion + UPDATE radicados
+        # en una sola transacción). El evento es best-effort y SOLO se publica al
+        # aprobar — solicitar/rechazar no cambian el estado del radicado.
+        if aprobar:
+            tracking_number = await self._repo.get_tracking_number(radicado_id)
+            await self._emit_annulled(radicado_id, tracking_number, tenant_slug, decidido_por)
         return _resp(row)
 
-    async def aprobar(self, radicado_id, payload, decidido_por) -> AnulacionResponse:
+    async def _emit_annulled(
+        self,
+        radicado_id: uuid.UUID,
+        tracking_number: str | None,
+        tenant_slug: str | None,
+        actor_id: uuid.UUID | None,
+    ) -> None:
+        if self._redis is None or not tracking_number or not tenant_slug:
+            return
+        try:
+            await events.emit(
+                self._redis,
+                _STREAM,
+                "document.radicado.annulled",
+                tenant_slug=tenant_slug,
+                actor=str(actor_id) if actor_id else None,
+                dedup_key=f"{tracking_number}:annulled",
+                payload={"id": str(radicado_id), "tracking_number": tracking_number},
+            )
+        except Exception:  # noqa: BLE001 — evento best-effort: nunca revierte la anulación.
+            logger.warning(
+                "No se pudo publicar el evento de anulación %s",
+                tracking_number,
+                exc_info=True,
+            )
+
+    async def aprobar(
+        self, radicado_id, payload, decidido_por, tenant_slug: str | None = None
+    ) -> AnulacionResponse:
         return await self._decidir(
-            radicado_id, aprobar=True, payload=payload, decidido_por=decidido_por
+            radicado_id,
+            aprobar=True,
+            payload=payload,
+            decidido_por=decidido_por,
+            tenant_slug=tenant_slug,
         )
 
     async def rechazar(self, radicado_id, payload, decidido_por) -> AnulacionResponse:

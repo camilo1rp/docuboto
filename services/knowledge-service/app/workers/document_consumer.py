@@ -12,8 +12,11 @@ Worker: consume `orpycamcp.document.events` y auto-puebla el índice pgvector (E
 
 Por cada `document.radicado.created` embebe el texto derivado (subject/remitente) y
 lo indexa respetando ACL/RF-SEG-08 (fail-closed, ver `app/services/ingestion.py`).
-Por cada `document.radicado.reclassified` actualiza o purga el chunk indexado. Usa
-el sobre canónico de `orpycamcp_common` y un grupo de consumidores PROPIO
+Por cada `document.radicado.reclassified` actualiza o purga el chunk indexado. Por
+cada `document.radicado.annulled` purga PERMANENTEMENTE el chunk indexado
+(residual "purga-en-anulación", `ingestion.void_radicado`) — a diferencia de
+`reclassified`, esta purga no es reversible: el radicado anulado no se des-anula.
+Usa el sobre canónico de `orpycamcp_common` y un grupo de consumidores PROPIO
 ("knowledge-ingest") — Redis Streams entrega una copia independiente del stream a
 cada consumer-group, así que este worker no compite con el de workflow-service
 (auto-distribución) sobre el mismo stream.
@@ -73,7 +76,11 @@ GROUP = settings.knowledge_ingest_group
 CONSUMER = "knowledge-service-1"
 _SERVICE = "knowledge-service"
 
-_HANDLED_EVENT_TYPES = ("document.radicado.created", "document.radicado.reclassified")
+_HANDLED_EVENT_TYPES = (
+    "document.radicado.created",
+    "document.radicado.reclassified",
+    "document.radicado.annulled",
+)
 
 # Cadencia del barrido de reclamación de la PEL (segundos).
 # Contrato: min_idle (60 s) > RECLAIM_INTERVAL (30 s) > block timeout (5 s) —
@@ -102,10 +109,12 @@ async def _handle(data: dict) -> None:
             await ingestion.ingest_radicado_created(
                 conn, tenant_slug=tenant_slug, payload=payload
             )
-        else:
+        elif event_type == "document.radicado.reclassified":
             await ingestion.apply_reclassification(
                 conn, tenant_slug=tenant_slug, payload=payload
             )
+        else:  # "document.radicado.annulled"
+            await ingestion.void_radicado(conn, tenant_slug=tenant_slug, payload=payload)
 
 
 async def _trace_malformed_event(

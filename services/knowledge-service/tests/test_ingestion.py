@@ -16,11 +16,14 @@ Cubre `app/services/ingestion.py`:
   - created cuyo chunk YA existe a un nivel más alto (fuga cerrada, hallazgo
     tenant-security-auditor #1) → nivel EFECTIVO = max(evento, existente); si el
     efectivo no es embebible, tombstonea y NO reenvía al proveedor externo.
+  - created cuyo chunk YA existe voided (residual "purga-en-anulación") → SKIP
+    TOTAL, incondicional, sin importar el nivel del evento.
   - reclassified sube a Reservado + proveedor externo → tombstone_by_source (R1).
   - reclassified a Pública (o proveedor stub) → update_nivel_by_source exacto.
   - reclassified sin nivel_nuevo → fail-closed a CLASIFICADA (#3) + asiento
     best-effort `knowledge.reclassify_malformed_failclose` en audit_log (#Media).
   - fallo del repositorio (embed/BD) → la excepción propaga (el worker no ackea).
+  - annulled → void_radicado purga PERMANENTEMENTE el chunk (voided=true).
 """
 
 from __future__ import annotations
@@ -37,14 +40,22 @@ TENANT = "demo"
 TRACKING = "2026-DEMO-E-000001"
 
 
-def _mock_repo(MockRepo, *, nivel_existente: int | None = None):
+def _mock_repo(MockRepo, *, nivel_existente: int | None = None, voided: bool = False):
     """Cablea un KnowledgeRepository mockeado con los AsyncMock necesarios."""
     mock_repo = MockRepo.return_value
     mock_repo.get_nivel_by_source = AsyncMock(return_value=nivel_existente)
+    mock_repo.get_chunk_state = AsyncMock(
+        return_value=(
+            {"nivel_seguridad": nivel_existente, "voided": voided}
+            if nivel_existente is not None or voided
+            else None
+        )
+    )
     mock_repo.upsert_chunk = AsyncMock()
     mock_repo.tombstone_by_source = AsyncMock()
     mock_repo.update_nivel_by_source = AsyncMock()
     mock_repo.delete_by_source = AsyncMock()
+    mock_repo.void_by_source = AsyncMock()
     return mock_repo
 
 
@@ -70,7 +81,7 @@ async def test_ingest_embeddable_upserts_with_derived_text_and_level() -> None:
         mock_repo = _mock_repo(MockRepo, nivel_existente=None)
         await ingestion.ingest_radicado_created(conn, tenant_slug=TENANT, payload=payload)
 
-    mock_repo.get_nivel_by_source.assert_awaited_once_with("radicado", TRACKING)
+    mock_repo.get_chunk_state.assert_awaited_once_with("radicado", TRACKING)
     mock_repo.upsert_chunk.assert_awaited_once()
     kw = mock_repo.upsert_chunk.await_args.kwargs
     assert kw["source_type"] == "radicado"
@@ -230,6 +241,82 @@ async def test_ingest_repository_failure_propagates() -> None:
         mock_repo.upsert_chunk = AsyncMock(side_effect=OSError("db down"))
         with pytest.raises(OSError, match="db down"):
             await ingestion.ingest_radicado_created(conn, tenant_slug=TENANT, payload=payload)
+
+
+# ---------------------------------------------------------------------------
+# Residual "purga-en-anulación" (E21, hallazgo archival-compliance-auditor):
+# created respeta voided incondicionalmente; annulled purga PERMANENTEMENTE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_skips_totally_when_chunk_already_voided() -> None:
+    """El chunk ya fue purgado por anulación (`voided=true`, `void_by_source`
+    procesado antes, en cualquier orden). Este `created` — sea la ingesta
+    original tardía o un redelivery at-least-once — hace SKIP TOTAL: no embebe,
+    no des-voidea (no llama upsert_chunk NI tombstone_by_source), y deja traza."""
+    conn = AsyncMock()
+    payload = {
+        "tracking_number": TRACKING,
+        "nivel_seguridad": PUBLICA,
+        "subject": "contenido que nunca debe reindexarse",
+    }
+
+    with (
+        patch("app.services.ingestion.KnowledgeRepository") as MockRepo,
+        patch("app.services.ingestion.embed") as mock_embed,
+        patch("app.services.ingestion.audit") as mock_audit,
+    ):
+        mock_repo = _mock_repo(MockRepo, nivel_existente=CLASIFICADA, voided=True)
+        mock_audit.append = AsyncMock()
+        await ingestion.ingest_radicado_created(conn, tenant_slug=TENANT, payload=payload)
+
+    mock_embed.assert_not_called()
+    mock_repo.upsert_chunk.assert_not_called()
+    mock_repo.tombstone_by_source.assert_not_called()
+    mock_repo.void_by_source.assert_not_called()  # created nunca escribe voided
+    mock_audit.append.assert_awaited_once()
+    kw = mock_audit.append.call_args.kwargs
+    assert kw["tenant_slug"] == TENANT
+    assert kw["action"] == "knowledge.ingest_skipped_voided"
+    assert kw["object_type"] == "radicado"
+    assert kw["object_ref"] == TRACKING
+    assert kw["actor"] == "system"
+    assert kw["payload"]["motivo"] == "radicado_anulado_purga_permanente"
+
+
+@pytest.mark.asyncio
+async def test_ingest_skips_when_voided_regardless_of_evento_nivel() -> None:
+    """El SKIP por voided es INCONDICIONAL — no depende del nivel del evento (ni
+    siquiera un evento a nivel bajo con proveedor stub, que normalmente SÍ sería
+    embebible, escapa del guard)."""
+    conn = AsyncMock()
+    payload = {"tracking_number": TRACKING, "nivel_seguridad": PUBLICA, "subject": "x"}
+
+    with (
+        patch("app.services.ingestion.KnowledgeRepository") as MockRepo,
+        patch("app.services.ingestion.audit") as mock_audit,
+    ):
+        mock_repo = _mock_repo(MockRepo, nivel_existente=PUBLICA, voided=True)
+        mock_audit.append = AsyncMock()
+        await ingestion.ingest_radicado_created(conn, tenant_slug=TENANT, payload=payload)
+
+    mock_repo.upsert_chunk.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_void_radicado_purges_chunk_permanently() -> None:
+    """`void_radicado` (handler de `document.radicado.annulled`) delega en
+    `void_by_source` — purga PERMANENTE, sin cálculo de nivel EFECTIVO (el evento
+    no transporta nivel_seguridad; el fail-safe vive en el repositorio)."""
+    conn = AsyncMock()
+    payload = {"id": "doc-id-1", "tracking_number": TRACKING}
+
+    with patch("app.services.ingestion.KnowledgeRepository") as MockRepo:
+        mock_repo = _mock_repo(MockRepo)
+        await ingestion.void_radicado(conn, tenant_slug=TENANT, payload=payload)
+
+    mock_repo.void_by_source.assert_awaited_once_with("radicado", TRACKING)
 
 
 @pytest.mark.asyncio

@@ -235,6 +235,42 @@ async def test_handle_dispatches_reclassified_to_apply() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_dispatches_annulled_to_void() -> None:
+    """Residual "purga-en-anulación" (E21): `document.radicado.annulled` despacha
+    a `ingestion.void_radicado`, NUNCA a `ingest_radicado_created` ni a
+    `apply_reclassification` — es su propio handler, no un caso más del `else`
+    genérico que antes solo cubría `reclassified`."""
+    from app.workers import document_consumer
+
+    fields = _fields(
+        "document.radicado.annulled",
+        payload={"id": "doc-id-1", "tracking_number": TRACKING},
+    )
+    fake_conn = AsyncMock()
+
+    with (
+        patch.object(document_consumer, "acquire_tenant", return_value=_AcquireTenantCtx(fake_conn)),
+        patch(
+            "app.workers.document_consumer.ingestion.void_radicado", AsyncMock()
+        ) as mock_void,
+        patch(
+            "app.workers.document_consumer.ingestion.ingest_radicado_created", AsyncMock()
+        ) as mock_ingest,
+        patch(
+            "app.workers.document_consumer.ingestion.apply_reclassification", AsyncMock()
+        ) as mock_apply,
+    ):
+        await document_consumer._handle(fields)
+
+    mock_void.assert_awaited_once()
+    kw = mock_void.await_args.kwargs
+    assert kw["tenant_slug"] == TENANT
+    assert kw["payload"]["tracking_number"] == TRACKING
+    mock_ingest.assert_not_called()
+    mock_apply.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_handle_ignores_unrelated_event_types() -> None:
     """Eventos que no son created/reclassified se ignoran (return → XACK normal)."""
     from app.workers import document_consumer

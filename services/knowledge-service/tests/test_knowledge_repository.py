@@ -8,7 +8,8 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """Tests unitarios del repositorio de conocimiento (E21): upsert idempotente
-(ON CONFLICT + GREATEST), fijación exacta de nivel, y purga por source.
+(ON CONFLICT + GREATEST), fijación exacta de nivel, purga por source, y purga
+PERMANENTE por anulación (`voided`, migración 006).
 
 Nota de alcance: con una conexión mockeada no se puede ejercitar la garantía real
 de Postgres (unicidad + GREATEST evaluados en el servidor); estos tests verifican
@@ -67,6 +68,35 @@ async def test_upsert_chunk_is_idempotent_on_conflict_and_uses_greatest() -> Non
     assert "knowledge_chunk.nivel_seguridad" in sql
     assert "EXCLUDED.nivel_seguridad" in sql
     assert "::vector" in sql
+
+
+@pytest.mark.asyncio
+async def test_upsert_chunk_never_touches_voided_column() -> None:
+    """`upsert_chunk` (ruta `created`) no debe poder des-voidear un chunk: ni la
+    lista de columnas del INSERT ni el SET del ON CONFLICT mencionan `voided` —
+    en el INSERT toma el DEFAULT de la tabla (false), en el CONFLICT queda
+    intacta (residual "purga-en-anulación", ver `void_by_source`)."""
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {
+        "id": uuid.uuid4(),
+        "source_type": "radicado",
+        "source_ref": "2026-DEMO-E-000001",
+        "created_at": NOW,
+    }
+    repo = KnowledgeRepository(conn)
+
+    await repo.upsert_chunk(
+        source_type="radicado",
+        source_ref="2026-DEMO-E-000001",
+        texto="hola",
+        embedding_literal="[0.1,0.2]",
+        metadata={},
+        acl={},
+        nivel_seguridad=1,
+    )
+
+    sql = conn.fetchrow.call_args.args[0]
+    assert "voided" not in sql
 
 
 @pytest.mark.asyncio
@@ -138,6 +168,32 @@ async def test_get_nivel_by_source_returns_none_when_absent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_chunk_state_reads_nivel_and_voided() -> None:
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"nivel_seguridad": 2, "voided": False}
+    repo = KnowledgeRepository(conn)
+
+    result = await repo.get_chunk_state("radicado", "2026-DEMO-E-000001")
+
+    assert result == {"nivel_seguridad": 2, "voided": False}
+    conn.fetchrow.assert_called_once()
+    sql = conn.fetchrow.call_args.args[0]
+    assert "nivel_seguridad" in sql and "voided" in sql
+    assert conn.fetchrow.call_args.args[1:] == ("radicado", "2026-DEMO-E-000001")
+
+
+@pytest.mark.asyncio
+async def test_get_chunk_state_returns_none_when_absent() -> None:
+    conn = AsyncMock()
+    conn.fetchrow.return_value = None
+    repo = KnowledgeRepository(conn)
+
+    result = await repo.get_chunk_state("radicado", "does-not-exist")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_tombstone_by_source_upserts_with_greatest_and_clears_material() -> None:
     """Fix #1 (tenant-security-auditor): tombstone_by_source es un UPSERT (no un
     UPDATE) que vacía texto/embedding/metadata pero conserva la fila con el nivel
@@ -182,3 +238,52 @@ async def test_search_excludes_tombstones_via_embedding_not_null() -> None:
     conn.fetch.assert_called_once()
     sql = conn.fetch.call_args.args[0]
     assert "embedding IS NOT NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_voided() -> None:
+    """Residual "purga-en-anulación": `search` excluye explícitamente los chunks
+    voided (defensa en profundidad junto a `embedding IS NOT NULL`)."""
+    conn = AsyncMock()
+    conn.fetch.return_value = []
+    repo = KnowledgeRepository(conn)
+
+    await repo.search(
+        embedding_literal="[0.1,0.2]", top_k=5, max_clearance=3, acl_filter=None
+    )
+
+    sql = conn.fetch.call_args.args[0]
+    assert "NOT voided" in sql
+
+
+@pytest.mark.asyncio
+async def test_void_by_source_upserts_voided_true_and_clears_material() -> None:
+    """Residual "purga-en-anulación" (E21): `void_by_source` es un UPSERT-con-
+    centinela GEMELO de `tombstone_by_source` — fija `voided = true` de forma
+    PERMANENTE (nunca se limpia) y vacía el material derivado, con GREATEST
+    fail-safe al nivel máximo (CLASIFICADA) porque el evento `annulled` no
+    transporta nivel_seguridad."""
+    conn = AsyncMock()
+    cid = uuid.uuid4()
+    conn.fetchrow.return_value = {
+        "id": cid,
+        "source_type": "radicado",
+        "source_ref": "2026-DEMO-E-000001",
+        "created_at": NOW,
+    }
+    repo = KnowledgeRepository(conn)
+
+    row = await repo.void_by_source("radicado", "2026-DEMO-E-000001")
+
+    assert row["source_ref"] == "2026-DEMO-E-000001"
+    conn.fetchrow.assert_called_once()
+    sql = conn.fetchrow.call_args.args[0]
+    args = conn.fetchrow.call_args.args
+    assert "ON CONFLICT (source_type, source_ref) DO UPDATE" in sql
+    assert "voided" in sql and "true" in sql
+    assert "GREATEST(" in sql
+    assert "knowledge_chunk.nivel_seguridad" in sql
+    assert "embedding" in sql and "NULL" in sql
+    assert "texto" in sql
+    # Fail-safe al nivel máximo (CLASIFICADA=3): el evento annulled no trae nivel.
+    assert args[1:] == ("radicado", "2026-DEMO-E-000001", 3)
