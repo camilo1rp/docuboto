@@ -31,6 +31,7 @@ import pytest
 import app.core.config as config_module
 from app.services.aip_builder import _PREMIS_NS, AipDocMaterial
 from tests.conftest import (
+    INTERNAL_HEADERS,
     TENANT_HEADERS,
     TENANT_SLUG,
     make_file_record,
@@ -723,8 +724,12 @@ async def test_empaquetar_aip_premis_invalid_blocks_upload(
 
 @pytest.mark.asyncio
 async def test_get_aip_returns_real_location_fields(client_with_conn) -> None:
+    """E10 Increment C: `GET /aip/{id}` ya NO se gatea por
+    `USUA_PERM_EXPEDIENTE` (storage-service no conoce el `nivel_seguridad`
+    del expediente) — es un endpoint INTERNO (X-Internal-Token, D-02); el
+    no-read-up real vive en archive-service (`GET /expedientes/{id}/aip`,
+    ver `test_aip_internal_gate.py` para el gate en sí)."""
     client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
     mock_conn.fetchrow.return_value = {
@@ -745,7 +750,7 @@ async def test_get_aip_returns_real_location_fields(client_with_conn) -> None:
         "legal_hold": False,
     }
 
-    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=TENANT_HEADERS)
+    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -755,17 +760,17 @@ async def test_get_aip_returns_real_location_fields(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_aip_forbidden_without_permission(client_with_conn) -> None:
+async def test_get_aip_without_internal_token_is_401(client_with_conn) -> None:
     """El PREMIS embebido inventaría nombres/SHA-256/tamaños de TODOS los
-    documentos del expediente — sin este gate, cualquier llamador con JWT
-    válido del tenant (cualquier rol) podía cosecharlo, incluido el de
-    expedientes clasificados (hallazgo de auditoría Increment B, RF-SEG-08)."""
+    documentos del expediente — sin X-Internal-Token, 401 ANTES de tocar la
+    BD (D-02, E10 Increment C: reemplaza el gate por-permiso, que no conocía
+    el `nivel_seguridad` del expediente, RF-SEG-08)."""
     client, mock_conn, mock_minio = client_with_conn
-    _deny_permission(mock_conn)
 
     resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=TENANT_HEADERS)
 
-    assert resp.status_code == 403
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "missing_internal_token"
     mock_conn.fetchrow.assert_not_called()
 
 
@@ -777,7 +782,6 @@ async def test_get_aip_stub_row_returns_200_with_null_fields(client_with_conn) -
     Antes `AipResponse` los declaraba NOT NULL y esto lanzaba un 500
     (hallazgo de auditoría Increment B)."""
     client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
     aip_id = uuid.uuid4()
     mock_conn.fetchrow.return_value = {
         "id": aip_id,
@@ -797,7 +801,7 @@ async def test_get_aip_stub_row_returns_200_with_null_fields(client_with_conn) -
         "legal_hold": False,
     }
 
-    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=TENANT_HEADERS)
+    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 200, resp.text
     body = resp.json()

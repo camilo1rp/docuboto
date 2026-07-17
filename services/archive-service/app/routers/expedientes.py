@@ -28,6 +28,7 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    AipResponse,
     BatchLinkRequest,
     BatchLinkResult,
     ExpedienteCreate,
@@ -281,6 +282,34 @@ async def get_expediente(
 ) -> ExpedienteResponse:
     service = ArchiveService(conn, tenant_slug)
     return await service.get_expediente(expediente_id, user_id, canal=canal)
+
+
+@router.get(
+    "/{expediente_id}/aip",
+    response_model=AipResponse,
+    summary="AIP de preservación del expediente, mediado (no-read-up, E10/RF-SEG-08)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def get_aip(
+    expediente_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> AipResponse:
+    """Único punto de acceso EXTERNO al AIP de preservación: `GET
+    /preservacion/aip/{id}` en storage-service ahora exige `X-Internal-Token`
+    (D-02) — el gateway lo enruta pero NO reenvía ese token, así que una
+    llamada externa directa recibe 401; este endpoint es la única vía externa.
+    Resuelve el clearance del llamante contra el `nivel_seguridad` VIGENTE del
+    expediente (storage-service no lo modela) y SOLO ENTONCES media la lectura
+    hacia storage-service — 404 neutro si el expediente no existe, no es
+    visible para el llamante, o simplemente no tiene AIP empaquetado
+    (RF-SEG-08, ver `ArchiveService.get_aip`). La lectura exitosa deja pista de
+    acceso (`archive.aip_consultado`, RF-BUS-10)."""
+    service = ArchiveService(conn, tenant_slug)
+    aip = await service.get_aip(expediente_id, user_id, canal)
+    return AipResponse(**aip)
 
 
 @router.get(

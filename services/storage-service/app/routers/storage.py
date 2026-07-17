@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import settings
 from app.core.database import get_db_conn
+from app.core.internal_auth import require_internal_token as _require_internal_token
 from app.schemas.storage import (
     FileResponse,
     IntegrityResponse,
@@ -43,50 +44,15 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _require_internal_token(
-    x_internal_token: str | None = Header(default=None),
-) -> None:
-    """D-02 (remediación no-read-up en anexos): solo servicios internos pueden
-    leer bytes/URL/metadata de un archivo.
-
-    Gatea los endpoints que servirían el CONTENIDO de un anexo si se llamaran
-    directamente (presigned download, stream de bytes, metadata) — la
-    mediación real del clearance (RF-SEG-08) vive en document-service
-    (`GET /documents/{id}/anexos/{file_id}/download`), que reenvía este mismo
-    token. `/upload` queda fuera: el frontend sube directo.
-
-    Fail-closed (mismo patrón que `knowledge-service`): si
-    INTERNAL_SERVICE_TOKEN no está configurado, TODAS las llamadas se
-    rechazan (401) — no hay modo "abierto" por omisión.
-    """
-    configured = settings.internal_service_token
-    if not configured:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "internal_access_not_configured",
-                "detail": "Este endpoint requiere INTERNAL_SERVICE_TOKEN configurado",
-                "status": 401,
-            },
-        )
-    if x_internal_token is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "missing_internal_token",
-                "detail": "Se requiere el header X-Internal-Token",
-                "status": 401,
-            },
-        )
-    if x_internal_token != configured:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "invalid_internal_token",
-                "detail": "Token de servicio interno inválido",
-                "status": 403,
-            },
-        )
+# `_require_internal_token` (D-02, remediación no-read-up en anexos): solo
+# servicios internos pueden leer bytes/URL/metadata de un archivo directamente
+# de storage-service — ver `app/core/internal_auth.py` para el detalle
+# (extraído de aquí para que `routers/preservacion.py` lo reutilice, E10
+# Increment C). Gatea los endpoints que servirían el CONTENIDO de un anexo si
+# se llamaran directamente (presigned download, stream de bytes, metadata) —
+# la mediación real del clearance (RF-SEG-08) vive en document-service
+# (`GET /documents/{id}/anexos/{file_id}/download`), que reenvía este mismo
+# token. `/upload` queda fuera: el frontend sube directo.
 
 
 def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:

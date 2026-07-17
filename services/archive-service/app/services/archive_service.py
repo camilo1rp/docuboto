@@ -76,6 +76,22 @@ _SEARCH_OBJECT_TYPE = "expediente_busqueda"
 _SEARCH_OBJECT_REF = "listado"
 
 
+def _expediente_not_found(expediente_id: uuid.UUID) -> HTTPException:
+    """Cuerpo 404 NEUTRO, reutilizado por `get_expediente`/`get_aip` — misma
+    forma exacta para "no existe", "existe pero por encima del clearance del
+    llamante" y (en `get_aip`) "es visible pero no tiene AIP empaquetado
+    todavía": ningún camino de denegación/ausencia es distinguible de otro
+    (no-read-up, RF-SEG-08)."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "error": "expediente_not_found",
+            "detail": f"Expediente {expediente_id} not found",
+            "status": 404,
+        },
+    )
+
+
 def _safe_uuid(value: str | None) -> uuid.UUID | None:
     """Parseo defensivo para columnas UUID de identidad (`expediente_eventos.actor`)
     pobladas a partir de un parámetro `str | None` histórico (`firmante`/`actor`
@@ -366,6 +382,90 @@ class ArchiveService:
             )
         await self._audit_read_access(expediente.code, user_id=user_id, canal=canal)
         return _to_expediente_response(expediente)
+
+    async def get_aip(
+        self,
+        expediente_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> dict:
+        """Lectura mediada del AIP de preservación digital (E10 Increment C,
+        cierre del no-read-up en `GET /preservacion/aip/{id}` de
+        storage-service, RF-SEG-08). storage-service no modela
+        `nivel_seguridad` sobre `aip` (solo conoce `expediente_id` como
+        string libre, ver `storage-service/migrations/tenant/004_aip.sql`) —
+        archive-service SÍ conoce la clasificación VIGENTE del expediente, así
+        que resuelve el clearance del llamante y confirma visibilidad ANTES de
+        mediar la llamada a storage-service, mismo criterio no-read-up que
+        `get_expediente` (nunca la clasificación cacheada/denormalizada — la
+        VIGENTE, resuelta en cada lectura).
+
+        `expediente_id` (el UUID de este servicio) se pasa a storage-service
+        como `str(expediente.id)` — ver el docstring de
+        `app.clients.storage_client.get_aip` para el contrato de ese string
+        con un futuro empaquetador.
+
+        404 NEUTRO (`_expediente_not_found`) en los dos caminos de
+        denegación/ausencia: expediente inexistente o por encima del
+        clearance del llamante, Y expediente visible pero SIN AIP empaquetado
+        todavía — misma forma de respuesta en ambos, para que no exista un
+        oráculo de "¿hay un AIP para este expediente clasificado?". Un fallo
+        de storage-service (red, timeout, HTTP inesperado) es ortogonal a la
+        autorización y se traduce a 503, no a un 404 que confundiría "no
+        autorizado" con "servicio caído".
+        """
+        max_clearance = await self._repo.caller_clearance(user_id)
+        expediente = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
+        if expediente is None:
+            raise _expediente_not_found(expediente_id)
+
+        from app.clients import storage_client  # perezoso, mismo patrón que index_service.py
+
+        try:
+            aip = await storage_client.get_aip(
+                tenant_slug=self._tenant_slug, expediente_id=str(expediente.id)
+            )
+        except storage_client.StorageAipError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "storage_unavailable",
+                    "detail": str(exc),
+                    "status": 503,
+                },
+            ) from exc
+        if aip is None:
+            raise _expediente_not_found(expediente_id)
+        # Pista de acceso a material clasificado (RF-BUS-10; Ley 594/2000 art. 22):
+        # la lectura del AIP divulga el inventario documental completo del
+        # expediente — se audita como acceso fuerte, gemelo de `_audit_read_access`
+        # pero con acción propia para distinguirla de la lectura del metadato.
+        await self._audit_aip_access(expediente.code, user_id=user_id, canal=canal)
+        return aip
+
+    async def _audit_aip_access(
+        self, code: str, *, user_id: uuid.UUID | None, canal: str
+    ) -> None:
+        """Pista de acceso al AIP (RF-BUS-10) — gemelo de `_audit_read_access`
+        con acción `archive.aip_consultado`. Best-effort y gated por canal/actor
+        real; sin actor real (canal 'system' o `user_id is None`) no escribe."""
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.aip_consultado",
+                object_type="expediente",
+                object_ref=code,
+                actor=str(user_id),
+                canal=canal,
+            )
+        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+            logger.warning("audit.append (aip_consultado) failed", exc_info=True)
 
     async def _audit_read_access(
         self, code: str, *, user_id: uuid.UUID | None, canal: str

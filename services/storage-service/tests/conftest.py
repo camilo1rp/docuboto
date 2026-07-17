@@ -115,6 +115,45 @@ def make_worm_row(
     }
 
 
+def make_aip_row(
+    *,
+    aip_id: uuid.UUID | None = None,
+    expediente_id: str = "EXP-1",
+    aip_sha256: str = SHA256,
+    indice_sha256: str | None = SHA256,
+    num_documentos: int = 1,
+    estado: str = "completo",
+    created_at: datetime | None = None,
+    bucket: str | None = f"orpycamcp-{TENANT_SLUG}-preservation",
+    object_key: str | None = None,
+    aip_bytes: int | None = 4096,
+    formato: str = "application/zip",
+    retain_until: datetime | None = None,
+    retention_mode: str | None = "COMPLIANCE",
+    legal_hold: bool = False,
+) -> dict:
+    """Fila cruda de `aip` (mismas columnas que `_AIP_COLS`), para mockear
+    `PreservacionRepository.latest_aip` en tests de `GET /preservacion/aip/{id}`
+    (E10 Increment C, gate D-02)."""
+    return {
+        "id": aip_id or uuid.uuid4(),
+        "expediente_id": expediente_id,
+        "premis_xml": "<premis/>",
+        "aip_sha256": aip_sha256,
+        "indice_sha256": indice_sha256,
+        "num_documentos": num_documentos,
+        "estado": estado,
+        "created_at": created_at or NOW,
+        "bucket": bucket,
+        "object_key": object_key or f"{expediente_id}/aip.zip",
+        "aip_bytes": aip_bytes,
+        "formato": formato,
+        "retain_until": retain_until or (NOW + timedelta(days=1825)),
+        "retention_mode": retention_mode,
+        "legal_hold": legal_hold,
+    }
+
+
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None

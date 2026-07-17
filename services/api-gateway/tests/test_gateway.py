@@ -297,6 +297,16 @@ async def test_route_to_upstream_domain_prefixes():
         # /preservacion/ sigue expuesto (fuera del alcance de esta remediación).
         "/api/v1/storage/upload": "http://storage:8005",
         "/api/v1/preservacion/proteger-indice": "http://storage:8005",
+        # E10 Increment C: /preservacion/aip/{id} SIGUE enrutando por el mismo
+        # prefijo blanket (el gateway no distingue sub-rutas) — el gate real
+        # ahora vive en storage-service (X-Internal-Token, D-02): una llamada
+        # externa a este path llega al upstream pero storage-service la
+        # rechaza con 401 porque el gateway NUNCA reenvía X-Internal-Token
+        # (no está en FORWARDED_REQUEST_HEADERS). El único acceso EXTERNO
+        # legítimo al AIP pasa por el mediador de archive-service:
+        # GET /api/v1/expedientes/{id}/aip (ver archive-service/app/routers/
+        # expedientes.py::get_aip).
+        "/api/v1/preservacion/aip/EXP-2024-0001": "http://storage:8005",
     }
     for path, expected in cases.items():
         assert _route_to_upstream(path, state) == expected, path
@@ -384,6 +394,37 @@ async def test_client_x_canal_header_is_not_forwarded(test_client):
     # Client-supplied X-Canal must not reach the upstream.
     assert forwarded.get("X-Canal") != "mcp", (
         "Client-supplied X-Canal must be discarded at the gateway"
+    )
+
+
+async def test_client_x_internal_token_header_is_not_forwarded(test_client):
+    """E10 Increment C: un cliente externo NO puede forjar X-Internal-Token
+    para alcanzar `GET /preservacion/aip/{id}` directamente en storage-service
+    (D-02) — el gateway enruta el prefijo blanket `/api/v1/preservacion/`
+    (sin distinguir sub-rutas), pero `X-Internal-Token` no está en
+    `FORWARDED_REQUEST_HEADERS`, así que aunque un cliente lo envíe, storage-
+    service nunca lo recibe y responde 401 fail-closed. El único acceso
+    EXTERNO legítimo al AIP es el mediador `GET /api/v1/expedientes/{id}/aip`
+    de archive-service."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=401,
+            json={"detail": {"error": "missing_internal_token"}},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    await client.get(
+        "/api/v1/preservacion/aip/EXP-2024-0001",
+        headers={"Authorization": "Bearer valid-token", "X-Internal-Token": "forged"},
+    )
+
+    forwarded = http_client.request.call_args.kwargs["headers"]
+    assert "X-Internal-Token" not in forwarded, (
+        "Client-supplied X-Internal-Token must never reach an upstream service"
     )
 
 

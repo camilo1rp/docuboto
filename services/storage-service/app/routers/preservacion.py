@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
+from app.core.internal_auth import require_internal_token
 from app.core.minio_client import ObjectLockNotEnabledError
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.schemas.preservacion import (
@@ -177,19 +178,31 @@ async def empaquetar_aip(
 @router.get(
     "/aip/{expediente_id}",
     response_model=AipResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+    dependencies=[Depends(require_internal_token)],
 )
 async def get_aip(
     expediente_id: str,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> AipResponse:
-    """Requiere `USUA_PERM_EXPEDIENTE` (min_crud=1, lectura): el AIP embebe
-    `premis_xml` con nombres originales, SHA-256 y tamaños de TODOS los
-    documentos del expediente — sin este gate, cualquier llamador con un JWT
-    válido del tenant (cualquier rol) podía cosechar ese inventario, incluido
-    el de expedientes clasificados (hallazgo de auditoría Increment B,
-    RF-SEG-08)."""
+    """Endpoint INTERNO (D-02, `X-Internal-Token`) — no enrutado desde el
+    exterior por el gateway (sigue bajo el prefijo blanket
+    `/api/v1/preservacion/`, pero cualquier llamada externa carece del
+    token y recibe 401 automáticamente).
+
+    El AIP embebe `premis_xml` con nombres originales, SHA-256 y tamaños de
+    TODOS los documentos del expediente: antes estaba gateado solo por
+    `require_permission("USUA_PERM_EXPEDIENTE", min_crud=1)`, que NO conoce
+    el `nivel_seguridad` del expediente (storage-service no lo modela, ver
+    `migrations/tenant/004_aip.sql`) — cualquier portador del permiso con
+    clearance bajo podía cosechar el inventario de un expediente CLASIFICADO
+    (hallazgo de auditoría Increment B/C, RF-SEG-08). El no-read-up real
+    ahora se aplica AGUAS ARRIBA, en archive-service (dueño de la
+    clasificación vigente del expediente):
+    `GET /api/v1/expedientes/{expediente_id}/aip`, único punto de acceso
+    EXTERNO al AIP — resuelve el clearance del llamante, confirma que el
+    expediente es visible para él (404 neutro si no) y SOLO ENTONCES media
+    esta llamada con el token interno."""
     row = await PreservacionRepository(conn, tenant_slug).latest_aip(expediente_id)
     if row is None:
         raise HTTPException(

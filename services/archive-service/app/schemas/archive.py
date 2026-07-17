@@ -471,3 +471,35 @@ class RolAutorizado(BaseModel):
     grupo: str
     clearance_max: int = Field(alias="clearanceMax")
     crud: int
+
+
+class AipResponse(BaseModel):
+    """Espejo del `AipResponse` de storage-service (E10), reexpuesto por el
+    endpoint mediado `GET /expedientes/{id}/aip` — único punto de acceso
+    EXTERNO al AIP tras el cierre del no-read-up (RF-SEG-08, E10 Increment C):
+    `GET /preservacion/aip/{id}` en storage-service ahora exige
+    `X-Internal-Token` y ya no es alcanzable desde el gateway.
+
+    Mismos campos que `storage-service.app.schemas.preservacion.AipResponse`
+    (deserializados del JSON que devuelve `app.clients.storage_client.get_aip`) —
+    duplicado deliberadamente (no se comparte el paquete de schemas entre
+    servicios, ADR-002) en vez de reexportar `dict[str, Any]` sin tipar, para
+    que un cambio de forma en storage-service rompa la validación aquí en vez
+    de filtrarse silenciosamente al cliente del gateway.
+    """
+
+    id: uuid.UUID
+    expediente_id: str
+    aip_sha256: str
+    indice_sha256: str | None = None
+    num_documentos: int
+    estado: str
+    created_at: datetime
+    premis_xml: str
+    bucket: str | None = None
+    object_key: str | None = None
+    aip_bytes: int | None = None
+    formato: str
+    retain_until: datetime | None = None
+    retention_mode: str | None = None
+    legal_hold: bool
