@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
 
@@ -130,8 +130,13 @@ async def test_record_evento_forbidden_without_permission(client_with_conn) -> N
 
 @pytest.mark.asyncio
 async def test_list_eventos(client_with_conn) -> None:
+    """E10 Increment C (continuación): `GET /eventos` ya NO se gatea por
+    `USUA_PERM_EXPEDIENTE` (storage-service no conoce el `nivel_seguridad`
+    del expediente) — es un endpoint INTERNO (X-Internal-Token, D-02); el
+    no-read-up real vive en archive-service (`GET /expedientes/{id}/
+    preservacion/eventos`, ver `test_eventos_internal_gate.py` para el gate
+    en sí)."""
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.return_value = True  # check_permission → concedido
     mock_conn.fetch.return_value = [
         {
             "id": uuid.uuid4(),
@@ -145,20 +150,23 @@ async def test_list_eventos(client_with_conn) -> None:
             "ts": NOW,
         },
     ]
-    resp = await client.get("/api/v1/preservacion/eventos?object_ref=exp-1", headers=TENANT_HEADERS)
+    resp = await client.get(
+        "/api/v1/preservacion/eventos?object_ref=exp-1", headers=INTERNAL_HEADERS
+    )
     assert resp.status_code == 200
     assert resp.json()[0]["tipo"] == "INGESTA"
 
 
 @pytest.mark.asyncio
-async def test_list_eventos_forbidden_without_permission(client_with_conn) -> None:
-    """GET /eventos ya filtra `hash_before`/`hash_after`/`object_ref` por
-    expediente — mismo gate de lectura que `GET /aip/{expediente_id}`
-    (hallazgo de auditoría Increment B)."""
+async def test_list_eventos_without_internal_token_is_401(client_with_conn) -> None:
+    """GET /eventos filtra `hash_before`/`hash_after`/`object_ref` por
+    expediente — sin X-Internal-Token, 401 ANTES de tocar la BD (D-02, E10
+    Increment C: reemplaza el gate por-permiso, que no conocía el
+    `nivel_seguridad` del expediente, RF-SEG-08)."""
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.return_value = False  # check_permission → denegado
     resp = await client.get("/api/v1/preservacion/eventos?object_ref=exp-1", headers=TENANT_HEADERS)
-    assert resp.status_code == 403
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "missing_internal_token"
     mock_conn.fetch.assert_not_called()
 
 

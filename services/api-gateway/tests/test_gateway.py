@@ -307,6 +307,13 @@ async def test_route_to_upstream_domain_prefixes():
         # GET /api/v1/expedientes/{id}/aip (ver archive-service/app/routers/
         # expedientes.py::get_aip).
         "/api/v1/preservacion/aip/EXP-2024-0001": "http://storage:8005",
+        # Continuación E10 Increment C (RF-SEG-08): mismo criterio que
+        # /preservacion/aip/{id} — /preservacion/eventos SIGUE enrutando por
+        # el prefijo blanket, pero storage-service ahora exige
+        # X-Internal-Token (D-02) y el gateway nunca lo reenvía. El único
+        # acceso EXTERNO legítimo es el mediador de archive-service:
+        # GET /api/v1/expedientes/{id}/preservacion/eventos.
+        "/api/v1/preservacion/eventos": "http://storage:8005",
     }
     for path, expected in cases.items():
         assert _route_to_upstream(path, state) == expected, path
@@ -422,6 +429,36 @@ async def test_client_x_internal_token_header_is_not_forwarded(test_client):
         headers={"Authorization": "Bearer valid-token", "X-Internal-Token": "forged"},
     )
 
+    forwarded = http_client.request.call_args.kwargs["headers"]
+    assert "X-Internal-Token" not in forwarded, (
+        "Client-supplied X-Internal-Token must never reach an upstream service"
+    )
+
+
+async def test_client_x_internal_token_header_is_not_forwarded_for_eventos(test_client):
+    """Continuación E10 Increment C (RF-SEG-08): mismo caso que el AIP, pero
+    para `GET /preservacion/eventos` — un cliente externo NO puede forjar
+    X-Internal-Token para alcanzarlo directamente en storage-service (D-02).
+    El único acceso EXTERNO legítimo a los eventos de UN expediente es el
+    mediador `GET /api/v1/expedientes/{id}/preservacion/eventos` de
+    archive-service."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=401,
+            json={"detail": {"error": "missing_internal_token"}},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    response = await client.get(
+        "/api/v1/preservacion/eventos?object_ref=EXP-2024-0001",
+        headers={"Authorization": "Bearer valid-token", "X-Internal-Token": "forged"},
+    )
+
+    assert response.status_code == 401
     forwarded = http_client.request.call_args.kwargs["headers"]
     assert "X-Internal-Token" not in forwarded, (
         "Client-supplied X-Internal-Token must never reach an upstream service"

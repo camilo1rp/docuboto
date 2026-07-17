@@ -40,6 +40,15 @@ falló" (``StorageAipError``, el router lo traduce a 503) porque el llamador
 necesita esa distinción para decidir el código de respuesta — aunque el 404 de
 "no hay AIP" y el 404 de "expediente no visible" SE FUNDEN en el mismo 404
 neutro en `ArchiveService.get_aip` (no-read-up, ver ese método).
+
+`list_eventos` (continuación de E10 Increment C, RF-SEG-08) cierra el MISMO
+tipo de fuga sobre `GET /preservacion/eventos?object_ref=`: ese endpoint
+también exige ahora `X-Internal-Token`, y SOLO
+`ArchiveService.get_eventos_preservacion` (mismo mediador que `get_aip`)
+puede alcanzarlo. A diferencia de `get_aip` (que distingue "no hay AIP" de
+"storage-service falló"), aquí storage-service SIEMPRE responde 200 con una
+lista (vacía si no hay eventos) — no hay 404 legítimo que distinguir; solo
+``StorageEventosError`` ante un fallo real de infraestructura.
 """
 
 from __future__ import annotations
@@ -55,6 +64,11 @@ logger = logging.getLogger(__name__)
 
 class StorageAipError(Exception):
     """storage-service no respondió (o respondió con error) al pedir el AIP."""
+
+
+class StorageEventosError(Exception):
+    """storage-service no respondió (o respondió con error) al pedir los
+    eventos de preservación de un objeto."""
 
 
 async def download_signed_xml(*, tenant_slug: str, minio_key_firmado: str) -> str | None:
@@ -141,5 +155,51 @@ async def get_aip(*, tenant_slug: str, expediente_id: str) -> dict | None:
         raise StorageAipError(
             f"storage-service → HTTP {resp.status_code} al pedir el AIP de "
             f"{expediente_id}: {resp.text[:300]!r}"
+        )
+    return resp.json()
+
+
+async def list_eventos(*, tenant_slug: str, object_ref: str) -> list[dict]:
+    """Obtiene los eventos PREMIS de preservación de ``object_ref`` desde
+    storage-service (continuación de E10 Increment C, único llamador
+    legítimo de ``GET /preservacion/eventos`` tras el cierre D-02 de ese
+    endpoint).
+
+    ``object_ref`` es ``str(Expediente.id)`` (mismo criterio que ``get_aip``)
+    — el filtro es exacto: eventos keyed por ``file_id``/``aip`` id del
+    expediente NO se incluyen en este MVP (refinamiento semántico diferido,
+    ver ``ArchiveService.get_eventos_preservacion``).
+
+    Devuelve ``[]`` si no hay eventos para ese ``object_ref`` (storage-service
+    responde 200 con lista vacía, nunca 404 para esta variante) — a
+    diferencia de ``get_aip``, no hay aquí un caso "ausente" que fundir con
+    el 404 de no-read-up.
+
+    Lanza ``StorageEventosError`` ante cualquier fallo (red, timeout, HTTP
+    distinto de 200) — el llamador (``ArchiveService.get_eventos_preservacion``)
+    lo traduce a 503, ortogonal a la autorización.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(
+                "/api/v1/preservacion/eventos",
+                params={"object_ref": object_ref},
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise StorageEventosError(
+            f"storage-service inalcanzable al pedir los eventos de preservación: {exc}"
+        ) from exc
+
+    if resp.status_code != 200:
+        raise StorageEventosError(
+            f"storage-service → HTTP {resp.status_code} al pedir los eventos de "
+            f"{object_ref}: {resp.text[:300]!r}"
         )
     return resp.json()

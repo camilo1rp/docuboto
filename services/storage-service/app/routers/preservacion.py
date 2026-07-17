@@ -233,13 +233,32 @@ async def record_evento(
 @router.get(
     "/eventos",
     response_model=list[EventoResponse],
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+    dependencies=[Depends(require_internal_token)],
 )
 async def list_eventos(
     object_ref: str | None = Query(default=None),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[EventoResponse]:
+    """Endpoint INTERNO (D-02, `X-Internal-Token`) — mismo patrón que
+    `get_aip` (E10 Increment C). Con `object_ref=` devuelve los eventos PREMIS
+    (fixity/WORM: tipos + timestamps) de UN objeto (expediente/file/AIP);
+    ese inventario de actividad ya estaba gateado solo por
+    `require_permission("USUA_PERM_EXPEDIENTE", min_crud=1)`, que NO conoce
+    el `nivel_seguridad` del expediente (storage-service no lo modela) —
+    cualquier portador del permiso con clearance bajo podía confirmar la
+    existencia y ver la actividad de preservación de un expediente
+    CLASIFICADO. El no-read-up real ahora se aplica AGUAS ARRIBA, en
+    archive-service (dueño de la clasificación vigente):
+    `GET /api/v1/expedientes/{expediente_id}/preservacion/eventos`, único
+    punto de acceso EXTERNO a los eventos de UN expediente — resuelve el
+    clearance del llamante, confirma que el expediente es visible (404
+    neutro si no) y SOLO ENTONCES media esta llamada con el token interno.
+
+    Sin `object_ref=` devuelve TODOS los eventos del tenant (enumeración) —
+    esa variante tenant-wide queda puramente interna, sin mediador externo
+    equivalente (no hay endpoint que agregue "todos los eventos" fuera de
+    storage-service en este incremento)."""
     rows = await PreservacionRepository(conn, tenant_slug).list_eventos(object_ref)
     return [_evento_response(r) for r in rows]
 

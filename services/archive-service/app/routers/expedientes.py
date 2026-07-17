@@ -31,6 +31,7 @@ from app.schemas.archive import (
     AipResponse,
     BatchLinkRequest,
     BatchLinkResult,
+    EventoPreservacionResponse,
     ExpedienteCreate,
     ExpedienteDisposicionResult,
     ExpedienteEventoResponse,
@@ -310,6 +311,41 @@ async def get_aip(
     service = ArchiveService(conn, tenant_slug)
     aip = await service.get_aip(expediente_id, user_id, canal)
     return AipResponse(**aip)
+
+
+@router.get(
+    "/{expediente_id}/preservacion/eventos",
+    response_model=list[EventoPreservacionResponse],
+    summary="Eventos PREMIS de preservación del expediente, mediado (no-read-up, E10/RF-SEG-08)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def get_eventos_preservacion(
+    expediente_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[EventoPreservacionResponse]:
+    """Único punto de acceso EXTERNO a los eventos de preservación de UN
+    expediente: `GET /preservacion/eventos` en storage-service ahora exige
+    `X-Internal-Token` (D-02) — el gateway lo enruta pero NO reenvía ese
+    token, así que una llamada externa directa recibe 401; este endpoint es
+    la única vía externa. Resuelve el clearance del llamante contra el
+    `nivel_seguridad` VIGENTE del expediente (storage-service no lo modela) y
+    SOLO ENTONCES media la lectura hacia storage-service, filtrando por
+    `object_ref=str(expediente_id)` — 404 neutro si el expediente no existe o
+    no es visible para el llamante (RF-SEG-08, ver
+    `ArchiveService.get_eventos_preservacion`). Una lista vacía es una
+    respuesta legítima (expediente visible sin actividad de preservación
+    todavía), no un 404. La lectura exitosa deja pista de acceso
+    (`archive.preservacion_eventos_consultados`, RF-BUS-10).
+
+    Alcance: solo los eventos keyed por `object_ref=expediente_id`; los
+    eventos keyed por `file_id`/`aip` id de documentos de este expediente NO
+    se incluyen en este MVP (refinamiento semántico diferido)."""
+    service = ArchiveService(conn, tenant_slug)
+    eventos = await service.get_eventos_preservacion(expediente_id, user_id, canal)
+    return [EventoPreservacionResponse(**e) for e in eventos]
 
 
 @router.get(

@@ -503,3 +503,28 @@ class AipResponse(BaseModel):
     retain_until: datetime | None = None
     retention_mode: str | None = None
     legal_hold: bool
+
+
+class EventoPreservacionResponse(BaseModel):
+    """Espejo del `EventoResponse` de storage-service (E10), reexpuesto por el
+    endpoint mediado `GET /expedientes/{id}/preservacion/eventos` — único
+    punto de acceso EXTERNO a los eventos PREMIS de UN expediente tras el
+    cierre del no-read-up (RF-SEG-08, continuación de E10 Increment C):
+    `GET /preservacion/eventos` en storage-service ahora exige
+    `X-Internal-Token` y ya no es alcanzable desde el gateway.
+
+    Mismos campos que `storage-service.app.schemas.preservacion.EventoResponse`
+    (deserializados del JSON que devuelve
+    `app.clients.storage_client.list_eventos`) — duplicado deliberadamente
+    (no se comparte el paquete de schemas entre servicios, ADR-002), mismo
+    criterio que `AipResponse`."""
+
+    id: uuid.UUID
+    object_ref: str
+    tipo: str
+    resultado: str
+    hash_before: str | None = None
+    hash_after: str | None = None
+    detalle: dict[str, Any] = Field(default_factory=dict)
+    agente: str | None = None
+    ts: datetime
