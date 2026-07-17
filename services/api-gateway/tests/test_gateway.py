@@ -272,6 +272,7 @@ async def test_route_to_upstream_domain_prefixes():
         notification_service_url="http://notification:8007",
         signature_service_url="http://signature:8008",
         mcp_service_url="http://mcp:8009",
+        knowledge_service_url="http://knowledge:8011",
         assistant_proxy_timeout=180.0,
     )
     cases = {
@@ -289,6 +290,8 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/workflow/rules/eval": "http://workflow:8006",
         # E18: el asistente conversacional enruta al mcp-server.
         "/api/v1/assistant/message": "http://mcp:8009",
+        # E21: solo /search del knowledge-service se expone vía gateway.
+        "/api/v1/knowledge/search": "http://knowledge:8011",
     }
     for path, expected in cases.items():
         assert _route_to_upstream(path, state) == expected, path
@@ -296,6 +299,9 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/unknown", state) is None
     # El catálogo/protocolo MCP NO se expone por el gateway (solo /assistant/).
     assert _route_to_upstream("/api/v1/mcp/tools", state) is None
+    # /ingest es interno (X-Internal-Token) y NUNCA debe enrutarse desde el exterior.
+    assert _route_to_upstream("/api/v1/knowledge/ingest", state) is None
+    assert _route_to_upstream("/api/v1/knowledge", state) is None
 
 
 async def test_public_verify_route_is_public_and_routed():
@@ -316,6 +322,7 @@ async def test_public_verify_route_is_public_and_routed():
         notification_service_url="http://notification:8007",
         signature_service_url="http://signature:8008",
         mcp_service_url="http://mcp:8009",
+        knowledge_service_url="http://knowledge:8011",
         assistant_proxy_timeout=180.0,
     )
     assert _route_to_upstream("/api/v1/public/demo/verify/abc", state) == "http://document:8003"

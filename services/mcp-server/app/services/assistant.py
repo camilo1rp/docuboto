@@ -71,6 +71,11 @@ REGLA DE NO-INVENCION (critica -- el radicado es prueba documental legal):
   falsa sobre un registro oficial.
 - Si no tienes una herramienta para lo que se pide (p.ej. un reporte estadistico agregado), dilo
   honestamente ("no tengo una herramienta para eso todavia"); NO finjas el resultado.
+- La herramienta `buscar_conocimiento` consulta un INDICE SEMANTICO DERIVADO (una copia advisoria,
+  no la fuente de verdad): sus fragmentos son PISTAS para orientar, pueden estar desactualizados
+  respecto al registro oficial (un radicado reclasificado, anulado o corregido). Preséntalos como
+  pistas ("segun la base de conocimiento...") y, para cualquier HECHO concreto, CONFIRMA contra la
+  fuente autoritativa con `consultar_radicado`/`consultar_expediente` antes de afirmarlo.
 
 CONFIDENCIALIDAD SIN ORACULO (RF-SEG-08, Ley 1712/2014):
 - Operas con los permisos del usuario; cada herramienta revalida su RBAC/clearance en el backend.
@@ -157,6 +162,25 @@ _TOOL_ARGS: dict[str, tuple[dict[str, dict[str, Any]], list[str]]] = {
     "consultar_fuid": (
         {"transferencia_id": {"type": "string", "format": "uuid", "description": "UUID de la transferencia."}},
         ["transferencia_id"],
+    ),
+    # E21: NO se expone `acl` -- el knowledge-service impone el techo de clearance
+    # server-side desde X-User-Id (RF-SEG-08); exponerlo al modelo sería superficie
+    # de mando innecesaria (ver docstring de módulo / spec de integración E18↔E21).
+    "buscar_conocimiento": (
+        {
+            "query": {
+                "type": "string",
+                "minLength": 2,
+                "description": "Consulta en lenguaje natural para recuperar fragmentos relevantes de la base de conocimiento.",
+            },
+            "top_k": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Número máximo de fragmentos a devolver (por defecto 5 si se omite).",
+            },
+        },
+        ["query"],
     ),
 }
 
@@ -304,10 +328,19 @@ async def _execute_tool(
         # gate 412 -- pero si por error de programación una write se colara en
         # tools_by_name, queda bloqueada en vez de auto-confirmada.
         dispatcher.authorize(tool, permissions=permissions, is_root=is_root, confirm_write=False)
+        # Whitelist del input al esquema DECLARADO de la tool antes de despachar:
+        # `additionalProperties:False` solo es advisory para el modelo, no se aplica
+        # server-side; sin esto, el modelo (o una inyección desde el contenido de un
+        # radicado) podría colar claves NO declaradas en el body de un POST -- p.ej.
+        # un `acl` en `buscar_conocimiento` para intentar estrechar/ampliar el
+        # filtro. El techo de clearance server-side ya lo impediría, pero el
+        # contrato ofrecido debe ser el contrato despachado (defensa en profundidad).
+        allowed = set(to_anthropic_schema(tool)["input_schema"]["properties"])
+        safe_input = {k: v for k, v in (block.input or {}).items() if k in allowed}
         resp = await dispatcher.dispatch(
             gateway_client,
             tool,
-            dict(block.input or {}),
+            safe_input,
             authorization=authorization,
             tenant_slug=tenant_slug,
         )

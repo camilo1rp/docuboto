@@ -72,6 +72,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # mcp-server — asistente conversacional (E18/ADR-019). El catálogo/protocolo
         # MCP (/api/v1/mcp, /mcp) NO se expone al exterior por el gateway a propósito.
         ("/api/v1/assistant/", app_state.mcp_service_url),
+        # knowledge-service (E21) — SOLO /search se expone; /ingest es interno
+        # (X-Internal-Token) y NO se enruta.
+        ("/api/v1/knowledge/search", app_state.knowledge_service_url),
     ]
     # Also match exact prefix without trailing slash
     for prefix, base_url in routing:

@@ -27,7 +27,9 @@ from app.services.assistant import (
     ConversationState,
     IdentityError,
     run_turn,
+    to_anthropic_schema,
 )
+from app.tools import catalog
 from tests._assistant_fakes import (
     FakeAnthropic,
     Response,
@@ -367,3 +369,133 @@ async def test_identidad_gateway_caido_da_502() -> None:
     with pytest.raises(IdentityError) as ei:
         await _run(anthropic=anthropic, gateway=gateway)
     assert ei.value.status == 502
+
+
+# -- E21: buscar_conocimiento (integración knowledge-service) --------
+
+
+@pytest.mark.asyncio
+async def test_buscar_conocimiento_se_ofrece_a_cualquier_usuario() -> None:
+    # permission=None + write=False -> visible incluso sin permisos especiales
+    # (espejo negativo de test_write_tool_excluida_del_conjunto_ofrecido).
+    anthropic = FakeAnthropic([Response([text_block("ok")], "end_turn")])
+    gateway = make_gateway(permissions=[])
+
+    await _run(anthropic=anthropic, gateway=gateway)
+
+    offered = {t["name"] for t in anthropic.messages.calls[0]["tools"]}
+    assert "buscar_conocimiento" in offered
+
+
+@pytest.mark.asyncio
+async def test_buscar_conocimiento_despacha_post_al_gateway_con_token_del_usuario() -> None:
+    anthropic = FakeAnthropic(
+        [
+            Response(
+                [tool_use_block("t1", "buscar_conocimiento", {"query": "tutela salud", "top_k": 3})],
+                "tool_use",
+            ),
+            Response([text_block("Encontré fragmentos relevantes.")], "end_turn"),
+        ]
+    )
+    tool_response = httpx.Response(
+        200,
+        json=[
+            {
+                "id": "chunk-1",
+                "source_type": "radicado",
+                "source_ref": "2024-ICETEX-E-001234",
+                "texto": "fragmento relevante",
+                "metadata": {},
+                "score": 0.9,
+            }
+        ],
+    )
+    gateway = make_gateway(permissions=[], tool_response=tool_response)
+
+    resp = await _run(anthropic=anthropic, gateway=gateway)
+
+    assert "fragmentos" in resp.message.texto
+    # el dispatcher tradujo la tool a POST /api/v1/knowledge/search con el body
+    # {query, top_k}, propagando Authorization + X-Tenant-Slug del usuario.
+    assert gateway.post.await_count == 1
+    call = gateway.post.await_args
+    assert call.args[0] == "/api/v1/knowledge/search"
+    assert call.kwargs["json"] == {"query": "tutela salud", "top_k": 3}
+    assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert call.kwargs["headers"]["X-Tenant-Slug"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_input_no_declarado_se_descarta_antes_de_despachar() -> None:
+    # Defensa en profundidad: el modelo (o una inyección) cuela un `acl` NO
+    # declarado en el schema de buscar_conocimiento -> se descarta del body
+    # despachado (el techo de clearance server-side ya lo impediría, pero el
+    # contrato ofrecido debe ser el despachado).
+    anthropic = FakeAnthropic(
+        [
+            Response(
+                [
+                    tool_use_block(
+                        "t1",
+                        "buscar_conocimiento",
+                        {"query": "algo", "acl": {"nivel_seguridad": 3}, "otra": "x"},
+                    )
+                ],
+                "tool_use",
+            ),
+            Response([text_block("ok")], "end_turn"),
+        ]
+    )
+    gateway = make_gateway(permissions=[], tool_response=httpx.Response(200, json=[]))
+
+    await _run(anthropic=anthropic, gateway=gateway)
+
+    body = gateway.post.await_args.kwargs["json"]
+    assert body == {"query": "algo"}  # `acl` y `otra` (no declaradas) descartadas
+
+
+def test_buscar_conocimiento_schema_no_expone_acl() -> None:
+    tool = catalog.get_tool("buscar_conocimiento")
+    assert tool is not None
+    schema = to_anthropic_schema(tool)
+    input_schema = schema["input_schema"]
+
+    assert input_schema["required"] == ["query"]
+    assert "acl" not in input_schema["properties"]
+    assert input_schema["properties"]["query"]["minLength"] == 2
+    assert input_schema["properties"]["top_k"]["minimum"] == 1
+    assert input_schema["properties"]["top_k"]["maximum"] == 20
+    assert input_schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_buscar_conocimiento_403_404_colapsan_a_generico() -> None:
+    # No-oráculo (RF-SEG-08): igual que las demás tools de lectura, un 403/404
+    # del knowledge-service no debe filtrar "existe pero está clasificado".
+    for status in (403, 404):
+        anthropic = FakeAnthropic(
+            [
+                Response(
+                    [tool_use_block("t1", "buscar_conocimiento", {"query": "x"})],
+                    "tool_use",
+                ),
+                Response([text_block("No encontré resultados.")], "end_turn"),
+            ]
+        )
+        gateway = make_gateway(
+            permissions=[], tool_response=httpx.Response(status, json={"detail": "clasificado"})
+        )
+        conversations: dict = {}
+
+        resp = await _run(anthropic=anthropic, gateway=gateway, conversations=conversations)
+
+        state = conversations[("demo", "user-1", resp.conversation_id)]
+        tr = [
+            b
+            for m in state.messages
+            if isinstance(m["content"], list)
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        ][0]
+        assert tr["content"] == '{"error": "no_encontrado"}'

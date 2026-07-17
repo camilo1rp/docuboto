@@ -107,6 +107,19 @@ CATALOG: tuple[Tool, ...] = (
         path_params=("transferencia_id",),
         epic="E12",
     ),
+    Tool(
+        name="buscar_conocimiento",
+        description=(
+            "Búsqueda semántica sobre la base de conocimiento documental: devuelve fragmentos "
+            "relevantes (con su fuente) para una consulta en lenguaje natural. Solo recupera "
+            "fragmentos que el usuario tiene autorizado ver."
+        ),
+        method="POST",
+        path="/api/v1/knowledge/search",
+        permission=None,
+        write=False,
+        epic="E21",
+    ),
 )
 
 _BY_NAME: dict[str, Tool] = {t.name: t for t in CATALOG}

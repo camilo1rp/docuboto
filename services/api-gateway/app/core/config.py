@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     notification_service_url: str = "http://notification-service:8007"
     signature_service_url: str = "http://signature-service:8008"
     mcp_service_url: str = "http://mcp-server:8009"
+    knowledge_service_url: str = "http://knowledge-service:8011"
 
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"

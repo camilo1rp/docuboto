@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.notification_service_url = settings.notification_service_url
     app.state.signature_service_url = settings.signature_service_url
     app.state.mcp_service_url = settings.mcp_service_url
+    app.state.knowledge_service_url = settings.knowledge_service_url
     app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
     app.state.rate_limit_per_ip = settings.rate_limit_per_ip
     app.state.rate_limit_global = settings.rate_limit_global
