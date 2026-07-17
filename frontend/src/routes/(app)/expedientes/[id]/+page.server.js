@@ -22,9 +22,13 @@
  *   4. Ubicación   → GET /api/v1/expedientes/{id}/unidades  (UnidadDeExpediente[], E17)
  *
  * Nota de anexos (E07):
- *   Los anexos de cada radicado están embebidos en expediente.radicados[].
- *   No existe un endpoint "listar todos los anexos de un expediente" en el backend;
- *   se construye iterando expediente.radicados[].anexos[] en el cliente.
+ *   expediente.radicados[] (archive-service) NO trae los anexos embebidos —
+ *   solo tracking_number/added_at/radicado_id. Los anexos viven en
+ *   document-service y no hay un endpoint "listar todos los anexos de un
+ *   expediente"; el panel Anexos del cliente los pide bajo demanda, por
+ *   radicado (carga perezosa al expandir), vía el proxy local
+ *   /expedientes/[id]/api/anexos/[documentId]:
+ *     GET /api/v1/documents/{document_id}/anexos
  *   Para descargar un archivo (D-02, RF-SEG-08): la descarga directa a
  *   storage-service quedó cerrada (retirada del gateway). Ahora la MEDIA
  *   document-service, con no-read-up contra el nivel_seguridad del radicado

@@ -374,6 +374,21 @@ class DocumentService:
         )
         return anexo
 
+    async def list_anexos(
+        self, document_id: uuid.UUID, max_clearance: int
+    ) -> list[Anexo]:
+        """Lista los anexos de un radicado respetando no-read-up (RF-SEG-08).
+
+        `DocumentNotFoundError` (→ 404 neutro) si el radicado no existe o supera
+        el clearance del llamante — indistinguible. Un radicado visible sin
+        anexos devuelve `[]`. NO se audita por-consulta (es una composición de
+        metadatos, no el acceso al contenido; la DESCARGA sí deja asiento).
+        """
+        anexos = await self._repo.list_anexos_for_document(document_id, max_clearance)
+        if anexos is None:
+            raise DocumentNotFoundError(str(document_id))
+        return anexos
+
     async def _audit_download_access(
         self,
         tracking_number: str,

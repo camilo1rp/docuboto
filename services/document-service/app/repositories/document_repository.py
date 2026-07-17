@@ -451,6 +451,34 @@ class DocumentRepository:
             nivel,
         )
 
+    async def list_anexos_for_document(
+        self, document_id: uuid.UUID, max_clearance: int
+    ) -> list[Anexo] | None:
+        """Lista los anexos de un radicado respetando no-read-up (RF-SEG-08).
+
+        `None` si el radicado no existe o está por encima del clearance del
+        llamante (el router lo traduce a 404 neutro, sin revelar existencia).
+        Un radicado VISIBLE sin anexos devuelve `[]` (200) — el LEFT JOIN
+        distingue "visible-sin-anexos" (una fila con `a.id` NULL) de
+        "no-visible" (cero filas), sin un segundo lookup ni oráculo.
+        """
+        rows = await self._conn.fetch(
+            """
+            SELECT a.id, a.radicado_id, a.file_id, a.filename, a.file_size,
+                   a.mime_type, a.created_at, a.tipo_anexo, a.es_principal, a.folios
+            FROM radicados r
+            LEFT JOIN anexos a ON a.radicado_id = r.id
+            WHERE r.id = $1 AND r.nivel_seguridad <= $2
+            ORDER BY a.created_at ASC
+            """,
+            document_id,
+            max_clearance,
+        )
+        if not rows:
+            return None  # radicado inexistente o sobre-clearance → 404 neutro
+        # `a.id` NULL = radicado visible sin anexos → lista vacía.
+        return [_row_to_anexo(r) for r in rows if r["id"] is not None]
+
     async def _get_anexos(self, radicado_id: uuid.UUID) -> list[Anexo]:
         rows = await self._conn.fetch(
             """

@@ -15,7 +15,7 @@
   Una vista con 5 pestañas internas:
     0 — Resumen       → metadatos + radicados vinculados
     1 — Índice (E15)  → IndiceResponse (JSON y descarga XML)
-    2 — Anexos (E07)  → archivos embebidos en los radicados del expediente
+    2 — Anexos (E07)  → por radicado, cargados bajo demanda desde document-service
     3 — Flujo/Hist.   → eventos del expediente (hoja de ruta E02 §9)
     4 — Físico (E17)  → unidades de conservación + signatura
 
@@ -37,6 +37,7 @@
   import Modal from "$lib/components/ui/Modal.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import Loader from "$lib/components/ui/Loader.svelte";
 
   import { permissions } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
@@ -160,9 +161,7 @@
    */
   async function handleDownloadAnexo(documentId, fileId, filename) {
     try {
-      const res = await fetch(
-        `/expedientes/${expediente.id}/api/download/${documentId}/${fileId}`,
-      );
+      const res = await fetch(`/expedientes/${expediente.id}/api/download/${documentId}/${fileId}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw err;
@@ -247,17 +246,85 @@
   };
   $: statusLabel = STATUS_LABELS[expediente?.status] ?? expediente?.status;
 
-  // Recopilar todos los anexos desde los radicados vinculados (no hay endpoint agregado).
-  // document_id = r.radicado_id: el radicado DUEÑO del anexo, requerido por el
-  // contrato de descarga mediada (document-service aplica el no-read-up contra
-  // SU nivel_seguridad, no el del expediente).
-  $: allAnexos = (expediente?.radicados ?? []).flatMap((r) =>
-    (r.anexos ?? []).map((a) => ({
-      ...a,
-      tracking_number: r.tracking_number,
-      document_id: r.radicado_id,
-    })),
-  );
+  // ---------------------------------------------------------------------------
+  // Anexos por radicado (E07) — carga perezosa, panel Anexos
+  // ---------------------------------------------------------------------------
+  // `expediente.radicados[]` (archive-service) NO trae los anexos embebidos —
+  // solo tracking_number/added_at/radicado_id. Los anexos viven en
+  // document-service; se piden UNO A UNO por radicado, al expandirlo, vía el
+  // proxy local /expedientes/[id]/api/anexos/[documentId] (D-05). Perezoso en
+  // vez de eager: un expediente puede tener decenas de radicados y no todos
+  // se van a inspeccionar — pedir los anexos de todos al abrir la vista sería
+  // N llamadas normalmente descartadas.
+  //
+  // Estado por radicado_id: { status: 'idle'|'loading'|'loaded'|'empty'|'error',
+  //                            items: Anexo[], errorMsg: string|null }
+  /** @type {Record<string, {status: string, items: any[], errorMsg: string|null}>} */
+  let anexosState = {};
+  /** @type {Set<string>} */
+  let expandedRadicados = new Set();
+
+  /** @param {string} documentId - radicado_id */
+  async function loadAnexos(documentId) {
+    const current = anexosState[documentId];
+    if (current && current.status !== "error") return; // ya cargado o cargando
+    anexosState = {
+      ...anexosState,
+      [documentId]: { status: "loading", items: [], errorMsg: null },
+    };
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/anexos/${documentId}`);
+      if (res.status === 404) {
+        anexosState = {
+          ...anexosState,
+          [documentId]: {
+            status: "error",
+            items: [],
+            errorMsg: "Los anexos de este radicado no están disponibles.",
+          },
+        };
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        anexosState = {
+          ...anexosState,
+          [documentId]: {
+            status: "error",
+            items: [],
+            errorMsg: err?.detail ?? "No se pudieron cargar los anexos.",
+          },
+        };
+        return;
+      }
+      const items = await res.json();
+      anexosState = {
+        ...anexosState,
+        [documentId]: { status: items.length ? "loaded" : "empty", items, errorMsg: null },
+      };
+    } catch {
+      anexosState = {
+        ...anexosState,
+        [documentId]: {
+          status: "error",
+          items: [],
+          errorMsg: "No se pudo conectar para cargar los anexos.",
+        },
+      };
+    }
+  }
+
+  /** @param {string} documentId - radicado_id */
+  function toggleRadicadoAnexos(documentId) {
+    const next = new Set(expandedRadicados);
+    if (next.has(documentId)) {
+      next.delete(documentId);
+    } else {
+      next.add(documentId);
+      loadAnexos(documentId);
+    }
+    expandedRadicados = next;
+  }
 </script>
 
 <svelte:head>
@@ -425,16 +492,6 @@
                     {rad.tracking_number}
                   </a>
                   <span class="exp-radicado-list__date">{fmtDate(rad.added_at)}</span>
-                  {#if rad.anexos?.length}
-                    <span
-                      class="exp-radicado-list__anexos"
-                      title="{rad.anexos.length} anexo(s)"
-                      aria-label="{rad.anexos.length} anexos"
-                    >
-                      <i class="fas fa-paperclip" aria-hidden="true"></i>
-                      {rad.anexos.length}
-                    </span>
-                  {/if}
                 </div>
               {/each}
             </div>
@@ -575,69 +632,123 @@
       <Card>
         <h2 slot="header" class="op-card-title">
           Anexos
-          <span class="exp-count-badge">{allAnexos.length}</span>
+          <span
+            class="exp-count-badge"
+            aria-label="{expediente?.radicados?.length ?? 0} radicado(s)"
+            >{expediente?.radicados?.length ?? 0}</span
+          >
         </h2>
 
-        {#if !allAnexos.length}
+        {#if !expediente?.radicados?.length}
           <EmptyState
             icon="fa-paperclip"
-            title="Sin anexos"
-            description="Los radicados de este expediente no tienen archivos adjuntos registrados."
+            title="Sin radicados"
+            description="Este expediente no tiene radicados vinculados de los que listar anexos."
           />
         {:else}
           <p class="exp-panel__info">
             <i class="fas fa-info-circle" aria-hidden="true"></i>
-            Los anexos se obtienen de los radicados vinculados. La descarga la media
-            document-service, que aplica el control de acceso del radicado dueño del anexo (GET
-            /api/v1/documents/{"{"}document_id{"}"}/anexos/{"{"}file_id{"}"}/download).
+            Expanda un radicado para consultar sus anexos. Se cargan bajo demanda desde document-service,
+            que aplica el control de acceso del radicado dueño del anexo (GET /api/v1/documents/{"{"}document_id{"}"}/anexos).
+            La descarga la media el mismo servicio (GET /api/v1/documents/{"{"}document_id{"}"}/anexos/{"{"}file_id{"}"}/download).
           </p>
-          <div class="exp-table-wrap" role="region" aria-label="Listado de anexos">
-            <table class="exp-table" aria-label="Anexos del expediente">
-              <thead>
-                <tr>
-                  <th scope="col">Radicado</th>
-                  <th scope="col">Archivo</th>
-                  <th scope="col">Tipo</th>
-                  <th scope="col">Tamaño</th>
-                  <th scope="col">Principal</th>
-                  <th scope="col">Acción</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each allAnexos as anexo (anexo.file_id)}
-                  <tr>
-                    <td>
-                      <a href="/bandeja?q={anexo.tracking_number}" class="exp-link"
-                        >{anexo.tracking_number}</a
+
+          <ul class="exp-anexos-accordion" aria-label="Radicados del expediente">
+            {#each expediente.radicados as rad (rad.radicado_id)}
+              {@const state = anexosState[rad.radicado_id]}
+              {@const expanded = expandedRadicados.has(rad.radicado_id)}
+              <li class="exp-anexos-accordion__item">
+                <button
+                  type="button"
+                  class="exp-anexos-accordion__trigger"
+                  aria-expanded={expanded}
+                  aria-controls="anexos-panel-{rad.radicado_id}"
+                  on:click={() => toggleRadicadoAnexos(rad.radicado_id)}
+                >
+                  <i
+                    class="fas {expanded ? 'fa-chevron-down' : 'fa-chevron-right'}"
+                    aria-hidden="true"
+                  ></i>
+                  <span class="exp-anexos-accordion__radicado">{rad.tracking_number}</span>
+                  <span class="exp-anexos-accordion__date">{fmtDate(rad.added_at)}</span>
+                  {#if state?.status === "loaded"}
+                    <span class="exp-count-badge">{state.items.length}</span>
+                  {/if}
+                </button>
+
+                {#if expanded}
+                  <div id="anexos-panel-{rad.radicado_id}" class="exp-anexos-accordion__panel">
+                    {#if state?.status === "loading"}
+                      <Loader size="sm" label="Cargando anexos…" />
+                    {:else if state?.status === "error"}
+                      <p class="exp-anexos-error" role="status" aria-live="polite">
+                        <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+                        {state.errorMsg}
+                      </p>
+                    {:else if state?.status === "empty"}
+                      <p class="exp-anexos-empty" role="status" aria-live="polite">
+                        Este radicado no tiene anexos.
+                      </p>
+                    {:else if state?.status === "loaded"}
+                      <div
+                        class="exp-table-wrap"
+                        role="region"
+                        aria-label="Anexos de {rad.tracking_number}"
                       >
-                    </td>
-                    <td class="exp-filename" title={anexo.filename}>{anexo.filename}</td>
-                    <td>{anexo.mime_type ?? "—"}</td>
-                    <td>{fmtBytes(anexo.file_size)}</td>
-                    <td>
-                      {#if anexo.es_principal}
-                        <i class="fas fa-check-circle exp-icon--success" aria-label="Principal"></i>
-                      {:else}
-                        <span aria-label="No es el documento principal">—</span>
-                      {/if}
-                    </td>
-                    <td>
-                      <!-- Descarga mediada por document-service (GET /api/v1/documents/{document_id}/anexos/{file_id}/download) -->
-                      <button
-                        type="button"
-                        class="exp-action-link"
-                        aria-label="Descargar {anexo.filename}"
-                        on:click={() =>
-                          handleDownloadAnexo(anexo.document_id, anexo.file_id, anexo.filename)}
-                      >
-                        <i class="fas fa-download" aria-hidden="true"></i> Descargar
-                      </button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
+                        <table class="exp-table" aria-label="Anexos de {rad.tracking_number}">
+                          <thead>
+                            <tr>
+                              <th scope="col">Archivo</th>
+                              <th scope="col">Tipo</th>
+                              <th scope="col">Tamaño</th>
+                              <th scope="col">Principal</th>
+                              <th scope="col">Acción</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {#each state.items as anexo (anexo.file_id)}
+                              <tr>
+                                <td class="exp-filename" title={anexo.filename}>{anexo.filename}</td
+                                >
+                                <td>{anexo.mime_type ?? "—"}</td>
+                                <td>{fmtBytes(anexo.file_size)}</td>
+                                <td>
+                                  {#if anexo.es_principal}
+                                    <i
+                                      class="fas fa-check-circle exp-icon--success"
+                                      aria-label="Principal"
+                                    ></i>
+                                  {:else}
+                                    <span aria-label="No es el documento principal">—</span>
+                                  {/if}
+                                </td>
+                                <td>
+                                  <!-- Descarga mediada por document-service -->
+                                  <button
+                                    type="button"
+                                    class="exp-action-link"
+                                    aria-label="Descargar {anexo.filename}"
+                                    on:click={() =>
+                                      handleDownloadAnexo(
+                                        rad.radicado_id,
+                                        anexo.file_id,
+                                        anexo.filename,
+                                      )}
+                                  >
+                                    <i class="fas fa-download" aria-hidden="true"></i> Descargar
+                                  </button>
+                                </td>
+                              </tr>
+                            {/each}
+                          </tbody>
+                        </table>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
         {/if}
       </Card>
     </div>
@@ -1116,14 +1227,6 @@
       color: var(--op-text-secondary);
       margin-left: auto;
     }
-
-    &__anexos {
-      font-size: var(--op-font-xs);
-      color: var(--op-text-secondary);
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
   }
 
   // =========================================================================
@@ -1253,6 +1356,88 @@
 
   .exp-icon--success {
     color: var(--op-success);
+  }
+
+  // =========================================================================
+  // Anexos — accordion por radicado (carga perezosa)
+  // =========================================================================
+
+  .exp-anexos-accordion {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-2);
+
+    &__item {
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius-sm);
+      overflow: hidden;
+    }
+
+    &__trigger {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      width: 100%;
+      padding: var(--op-space-2) var(--op-space-3);
+      background: var(--op-bg);
+      border: none;
+      cursor: pointer;
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+      text-align: left;
+
+      &:hover {
+        background: var(--op-primary-light);
+      }
+
+      &:focus-visible {
+        outline: 2px solid var(--op-primary);
+        outline-offset: -2px;
+      }
+
+      i.fa-chevron-right,
+      i.fa-chevron-down {
+        color: var(--op-text-secondary);
+        font-size: var(--op-font-xs);
+        width: 12px;
+      }
+    }
+
+    &__radicado {
+      font-family: monospace;
+      font-weight: var(--op-weight-bold);
+    }
+
+    &__date {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+      margin-left: auto;
+    }
+
+    &__panel {
+      padding: var(--op-space-3);
+      border-top: 1px solid var(--op-border);
+      background: var(--op-surface);
+    }
+  }
+
+  .exp-anexos-error {
+    font-size: var(--op-font-sm);
+    color: var(--op-error-fg);
+    margin: 0;
+
+    i {
+      margin-right: var(--op-space-1);
+    }
+  }
+
+  .exp-anexos-empty {
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+    margin: 0;
   }
 
   // =========================================================================

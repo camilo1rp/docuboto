@@ -322,3 +322,54 @@ async def test_download_anexo_sin_canal_no_audita(client_with_conn, monkeypatch)
 
     assert resp.status_code == 200
     append.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Listado de anexos GET /{document_id}/anexos — gateado por clearance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_anexos_success(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    a1 = make_anexo_record(radicado_id=DOC_ID)
+    a1["file_id"] = FILE_ID
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3)]  # clearance
+    mock_conn.fetch.side_effect = [[a1]]  # list_anexos_for_document (LEFT JOIN)
+
+    resp = await client.get(f"/api/v1/documents/{DOC_ID}/anexos", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["file_id"] == str(FILE_ID)
+    # el clearance real llegó al SQL del listado (no-read-up)
+    assert mock_conn.fetch.call_args.args[2] == 3
+
+
+@pytest.mark.asyncio
+async def test_list_anexos_visible_sin_anexos_es_lista_vacia(client_with_conn) -> None:
+    # radicado visible pero sin anexos: el LEFT JOIN da una fila con a.id NULL → [].
+    client, mock_conn = client_with_conn
+    null_row = make_anexo_record(radicado_id=DOC_ID)
+    null_row["id"] = None  # marca de "sin anexo" del LEFT JOIN
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3)]
+    mock_conn.fetch.side_effect = [[null_row]]
+
+    resp = await client.get(f"/api/v1/documents/{DOC_ID}/anexos", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_anexos_over_clearance_o_inexistente_es_neutral_404(client_with_conn) -> None:
+    # radicado inexistente o sobre-clearance: cero filas → 404 neutro (no-oráculo).
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=1)]
+    mock_conn.fetch.side_effect = [[]]
+
+    resp = await client.get(f"/api/v1/documents/{DOC_ID}/anexos", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "document_not_found"

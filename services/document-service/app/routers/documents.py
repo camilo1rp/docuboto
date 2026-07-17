@@ -33,6 +33,7 @@ from app.clients.tenant_client import TenantServiceClient, TenantServiceError
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.document import (
+    AnexoResponse,
     DispositionResponse,
     DispositionUpdate,
     DocumentCreate,
@@ -254,6 +255,33 @@ async def get_document(
                 "status": 404,
             },
         )
+
+
+@router.get(
+    "/{document_id}/anexos",
+    response_model=list[AnexoResponse],
+    summary="List a radicado's attachments, gated by clearance (RF-SEG-08)",
+)
+async def list_anexos(
+    document_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[AnexoResponse]:
+    """Lista los anexos de un radicado (metadatos: nombre, tamaño, tipo…) para
+    poblar el panel de anexos; el fichero se obtiene con el endpoint de
+    descarga mediada. No-read-up: un radicado inexistente o por encima del
+    clearance del llamante devuelve el MISMO 404 neutro (no-oráculo).
+    """
+    service = _build_service(conn, _tenant_slug(request))
+    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
+    try:
+        anexos = await service.list_anexos(document_id, clearance)
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
+        )
+    return [AnexoResponse.model_validate(a) for a in anexos]
 
 
 @router.get(
