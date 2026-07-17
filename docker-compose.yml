@@ -224,16 +224,23 @@ services:
 
   knowledge-service:
     # Capa de conocimiento (E21, ADR-006): pgvector por tenant, advisoria/derivada.
-    build: ./services/knowledge-service
+    # Contexto en la raíz para incluir shared/ (ADR-010): el worker de ingesta
+    # consume orpycamcp.document.events y audita con orpycamcp_common.
+    build:
+      context: .
+      dockerfile: services/knowledge-service/Dockerfile
     container_name: orpycamcp-knowledge
     ports:
       - "19011:8011"
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://redis:6379/0
     networks:
       - orpycamcp-net
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: "no"
     mem_limit: 2g

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import HTTPException, Request, status
@@ -32,6 +33,12 @@ async def close_pool() -> None:
         _pool = None
 
 
+def get_pool() -> asyncpg.Pool:
+    if _pool is None:
+        raise RuntimeError("DB pool not initialised")
+    return _pool
+
+
 def _schema(slug: str) -> str:
     if not slug or not _SLUG_RE.match(slug):
         raise HTTPException(
@@ -49,6 +56,23 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
     schema = _schema(request.headers.get("X-Tenant-Slug", ""))
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
+        await conn.execute(f'SET search_path = "{schema}", public')
+        try:
+            yield conn
+        finally:
+            await conn.execute("SET search_path = public")
+
+
+@asynccontextmanager
+async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión con search_path al tenant (worker de ingesta event-driven, E21).
+
+    Espejo de ``workflow-service`` ``acquire_tenant``: el consumer no tiene
+    request HTTP, así que resuelve el tenant del sobre del evento (emitido por
+    document-service, que ya lo valida en su propio flujo HTTP).
+    """
+    schema = _schema(tenant_slug)
+    async with get_pool().acquire() as conn:
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
             yield conn

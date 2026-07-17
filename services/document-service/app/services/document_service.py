@@ -249,6 +249,9 @@ class DocumentService:
                     "sender_entity": radicado.sender_entity,
                     "pages": radicado.pages,
                     "due_date": radicado.due_date.isoformat() if radicado.due_date else None,
+                    # E21: propagación de ACL vía evento (fail-closed) — knowledge-service
+                    # deriva el nivel del chunk de aquí; nunca hace fetch-back al radicado.
+                    "nivel_seguridad": radicado.nivel_seguridad,
                 },
             )
         except Exception:  # noqa: BLE001 — evento best-effort

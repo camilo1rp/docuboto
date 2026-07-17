@@ -24,7 +24,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.core.clearance import RESERVADA, resolve_caller_clearance
+from app.core.clearance import is_embeddable, resolve_caller_clearance
 from app.core.config import settings
 from app.core.database import get_tenant_conn
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -85,9 +85,10 @@ def _guard_external_llm(nivel_seguridad: int) -> None:
 
     Material con nivel >= RESERVADA (2) sólo puede embeberse con el proveedor local
     (stub o modelo on-premise). Si está configurado un proveedor externo, la ingesta
-    falla con 403 antes de llamar al proveedor.
+    falla con 403 antes de llamar al proveedor. Envuelve el predicado puro
+    ``is_embeddable`` (E21), compartido con el worker de ingesta event-driven.
     """
-    if nivel_seguridad >= RESERVADA and settings.embedding_provider != "stub":
+    if not is_embeddable(nivel_seguridad, settings.embedding_provider):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={

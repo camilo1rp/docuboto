@@ -29,6 +29,18 @@ RESERVADA = 2
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
 
 
+def is_embeddable(nivel_seguridad: int, provider: str) -> bool:
+    """Predicado PURO compartido por el router HTTP (`/ingest`) y el worker de
+    ingesta event-driven (E21) — D-02 / RF-SEG-08.
+
+    Material Reservado/Clasificado (``nivel_seguridad >= RESERVADA``) solo puede
+    embeberse con el proveedor local (``"stub"``); un proveedor externo lo
+    bloquea. El router traduce ``False`` en 403; el consumer lo traduce en un
+    SKIP auditado (no es un fallo del pipeline, es política — no va a DLQ).
+    """
+    return not (nivel_seguridad >= RESERVADA and provider != "stub")
+
+
 async def resolve_caller_clearance(
     conn: asyncpg.Connection, user_id: uuid.UUID | None
 ) -> int:

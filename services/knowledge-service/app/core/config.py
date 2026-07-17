@@ -14,10 +14,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
+    redis_url: str = "redis://redis:6379/0"
 
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    # E21: grupo de consumidores PROPIO sobre orpycamcp.document.events. Distinto
+    # del grupo de workflow-service (auto-distribución) — Redis Streams entrega una
+    # copia independiente del stream a cada consumer-group, así que ambos servicios
+    # consumen el mismo stream sin competir entre sí.
+    knowledge_ingest_group: str = "knowledge-ingest"
 
     # Proveedor de embeddings (ADR-006: pluggable, local por defecto).
     embedding_provider: str = "stub"

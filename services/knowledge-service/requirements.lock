@@ -1,5 +1,3 @@
---index-url https://pypi.org/simple
-
 annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
@@ -9,6 +7,8 @@ anyio==4.14.1
     #   httpx
     #   starlette
     #   watchfiles
+async-timeout==5.0.1
+    # via redis
 asyncpg==0.31.0
     # via -r services/knowledge-service/requirements.txt
 certifi==2026.6.17
@@ -53,6 +53,7 @@ pytest==9.1.1
     # via
     #   -r services/knowledge-service/requirements.txt
     #   pytest-asyncio
+    #   pytest-timeout
 pytest-asyncio==1.4.0
     # via -r services/knowledge-service/requirements.txt
 pytest-timeout==2.4.0
@@ -63,6 +64,8 @@ python-dotenv==1.2.2
     #   uvicorn
 pyyaml==6.0.3
     # via uvicorn
+redis==8.0.1
+    # via -r services/knowledge-service/requirements.txt
 starlette==1.3.1
     # via fastapi
 typing-extensions==4.15.0

@@ -34,6 +34,7 @@ from tests.conftest import (
     RADICADO_ID,
     TENANT_HEADERS,
     TENANT_SLUG,
+    TRACKING_NUMBER,
     USER_ID,
     make_event_record,
     make_step_record,
@@ -240,7 +241,24 @@ async def test_get_flow_history_audits_with_radicado_object_ref(client_with_conn
     assert args[4] == "api"
     assert args[5] == "workflow.hoja_ruta_consultada"
     assert args[6] == "radicado"
-    assert args[7] == str(RADICADO_ID)
+    # object_ref = tracking_number (clave de negocio) cuando la lectura no es vacía
+    assert args[7] == TRACKING_NUMBER
+
+
+@pytest.mark.asyncio
+async def test_get_flow_history_empty_falls_back_to_radicado_id(client_with_conn) -> None:
+    # Hoja de ruta vacía (radicado sin pasos / por encima del clearance): no hay
+    # tracking_number disponible -> object_ref cae al UUID (se registra el intento).
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = []
+    headers = {**TENANT_HEADERS, "X-Canal": "api"}
+
+    response = await client.get(f"/api/v1/workflows/{RADICADO_ID}/history", headers=headers)
+
+    assert response.status_code == 200
+    inserts = _audit_insert_calls(mock_conn)
+    assert len(inserts) == 1  # se audita el intento aunque la hoja esté vacía
+    assert inserts[0].args[7] == str(RADICADO_ID)  # fallback al UUID
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +367,7 @@ async def test_get_current_step_audits_with_radicado_object_ref(client_with_conn
     assert args[4] == "ui"
     assert args[5] == "workflow.tramite_consultado"
     assert args[6] == "radicado"
-    assert args[7] == str(RADICADO_ID)
+    assert args[7] == TRACKING_NUMBER
 
 
 @pytest.mark.asyncio
@@ -419,7 +437,7 @@ async def test_get_flow_events_audits_once_per_query(client_with_conn) -> None:
     assert args[4] == "mcp"
     assert args[5] == "workflow.tramite_consultado"
     assert args[6] == "radicado"
-    assert args[7] == str(RADICADO_ID)
+    assert args[7] == TRACKING_NUMBER
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -17,17 +18,32 @@ from fastapi import FastAPI
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.core.redis_client import close_redis, init_redis
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
+from app.workers import document_consumer
 
 logging.basicConfig(level=settings.log_level.upper())
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    logger.info("knowledge-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
+    await init_redis(settings.redis_url)
+    # Ingesta event-driven (E21): auto-puebla el índice pgvector consumiendo
+    # orpycamcp.document.events (patrón exacto de workflow-service main.py).
+    consumer_task = asyncio.create_task(document_consumer.run())
     yield
+    logger.info("knowledge-service shutting down")
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
     await close_pool()
+    await close_redis()
 
 
 app = FastAPI(

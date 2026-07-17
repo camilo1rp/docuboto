@@ -164,7 +164,9 @@ class WorkflowService:
         max_clearance = await self._repo.caller_clearance(user_id)
         steps = await self._repo.get_history(radicado_id, max_clearance=max_clearance)
         tracking_number = steps[0].tracking_number if steps else ""
-        await self._audit_hoja_ruta_access(radicado_id=radicado_id, user_id=user_id, canal=canal)
+        await self._audit_hoja_ruta_access(
+            radicado_id=radicado_id, user_id=user_id, canal=canal, tracking_number=tracking_number
+        )
         return FlowHistoryResponse(
             radicado_id=radicado_id,
             tracking_number=tracking_number,
@@ -190,7 +192,11 @@ class WorkflowService:
         max_clearance = await self._repo.caller_clearance(user_id)
         rows = await self._repo.list_flow_events(radicado_id, max_clearance)
         await self._audit_hoja_ruta_access(
-            radicado_id=radicado_id, user_id=user_id, canal=canal, action=_TRAMITE_ACTION
+            radicado_id=radicado_id,
+            user_id=user_id,
+            canal=canal,
+            action=_TRAMITE_ACTION,
+            tracking_number=rows[0]["tracking_number"] if rows else None,
         )
         return [_to_event_response(r) for r in rows]
 
@@ -402,7 +408,11 @@ class WorkflowService:
         if step is None:
             raise _no_active_step_error(radicado_id)
         await self._audit_hoja_ruta_access(
-            radicado_id=radicado_id, user_id=user_id, canal=canal, action=_TRAMITE_ACTION
+            radicado_id=radicado_id,
+            user_id=user_id,
+            canal=canal,
+            action=_TRAMITE_ACTION,
+            tracking_number=step.tracking_number,
         )
         return _to_response(step)
 
@@ -500,6 +510,7 @@ class WorkflowService:
         user_id: uuid.UUID | None,
         canal: str,
         action: str = _HOJA_RUTA_ACTION,
+        tracking_number: str | None = None,
     ) -> None:
         """Traza de la lectura de UN radicado concreto (RF-BUS-10): UNA entrada por
         consulta, ``object_ref`` = el radicado consultado (gemelo de
@@ -510,9 +521,16 @@ class WorkflowService:
         `get_current`/`get_events` pasan `_TRAMITE_ACTION` para distinguir en el
         historial de auditoría una consulta puntual del trámite de la hoja de
         ruta completa.
+
+        ``object_ref`` prefiere el ``tracking_number`` (clave de negocio, gemela de
+        `code`/`tracking_number` que usan archive/document — permite correlacionar
+        "quién accedió al radicado X" cross-servicio) y cae al UUID solo cuando la
+        lectura resultó VACÍA (radicado sin pasos / por encima del clearance), donde
+        no hay tracking disponible pero igual se registra el intento.
         """
         if canal not in _CANALES_AUDITABLES or user_id is None:
             return
+        object_ref = tracking_number or str(radicado_id)
         try:
             await audit.append(
                 self._conn,
@@ -520,7 +538,7 @@ class WorkflowService:
                 service=_SERVICE,
                 action=action,
                 object_type="radicado",
-                object_ref=str(radicado_id),
+                object_ref=object_ref,
                 actor=str(user_id),
                 canal=canal,
             )
