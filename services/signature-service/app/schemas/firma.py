@@ -14,7 +14,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
 
 
 class SignXmlRequest(BaseModel):
@@ -41,20 +43,39 @@ class SignXmlRequest(BaseModel):
 
 class InternalSignIndiceRequest(BaseModel):
     """Payload de ``POST /internal/sign-indice`` (reconciliación del sellado
-    del índice, residual Ac. AGN 001/2024 art. 4.3.2.4).
+    del índice, residual Ac. AGN 001/2024 art. 4.3.2.4; generalizada en H-H
+    E06/F4 para el acta de transferencia).
 
     Gateada SOLO por ``require_internal_token`` (X-Internal-Token, D-02) —
     NUNCA ``PERM_FIRMA``/``X-User-Id``. A diferencia de ``SignXmlRequest``,
-    no lleva ``objeto_tipo``: la ruta lo fija a ``"indice"`` de forma
-    hardwired (``app/routers/signature.py::sign_indice_internal``) — el
-    llamador no puede elegirlo, así que estructuralmente esta ruta NUNCA
-    puede firmar la cadena personal ni ningún otro tipo de objeto.
+    ``objeto_tipo`` está ACOTADO al allow-set institucional
+    (``XADES_ELIGIBLE_OBJETO_TIPOS`` — índice/acta de transferencia, validado
+    abajo) en vez de aceptar cualquier valor: el llamador NUNCA puede elegir
+    un tipo arbitrario, así que estructuralmente esta ruta jamás puede firmar
+    la cadena personal ni ningún objeto fuera de ese conjunto. Default
+    ``"indice"`` — retrocompat total con el llamador preexistente
+    (``archive-service/app/jobs/indice_reconciliation.py``), que nunca envía
+    este campo.
+
+    ``indice_id`` es OPCIONAL (antes obligatorio): el acta de transferencia
+    no tiene un índice electrónico propio que versionar — solo el índice
+    (``objeto_tipo="indice"``) lo puebla.
     """
 
     payload_xml: str = Field(..., min_length=1)
+    objeto_tipo: str = Field(default="indice", max_length=40)
     objeto_id: str
-    indice_id: str
+    indice_id: str | None = None
     version: int
+
+    @field_validator("objeto_tipo")
+    @classmethod
+    def _objeto_tipo_en_allow_set(cls, v: str) -> str:
+        if v not in XADES_ELIGIBLE_OBJETO_TIPOS:
+            raise ValueError(
+                f"objeto_tipo debe ser uno de {sorted(XADES_ELIGIBLE_OBJETO_TIPOS)}"
+            )
+        return v
 
 
 class FirmaResponse(BaseModel):

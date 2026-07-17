@@ -79,7 +79,7 @@ class FirmaRepository:
         clave privada del responder OCSP.
         """
         row = await self._conn.fetchrow(
-            f"""INSERT INTO firma (objeto_tipo, objeto_id, formato_solicitado,
+            f"""INSERT INTO firma (id, objeto_tipo, objeto_id, formato_solicitado,
                 firmante_id, payload_sha256, firma_blob, provider, sello_tiempo,
                 certificado_pem, minio_key_firmado, nivel_conformidad, xades_level,
                 tipo_firma, certificado_fingerprint, signed_xml_sha256,
@@ -91,10 +91,12 @@ class FirmaRepository:
                 ocsp_present, ocsp_responder_fingerprint, ocsp_cert_status,
                 ocsp_produced_at, ocsp_this_update, ocsp_next_update,
                 ocsp_response_der)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                VALUES (COALESCE($1, gen_random_uuid()),
+                        $2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
                         $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
-                        $33,$34,$35,$36)
+                        $33,$34,$35,$36,$37)
                 RETURNING {_COLS}""",
+            data.get("id"),
             data["objeto_tipo"],
             data.get("objeto_id"),
             data.get("formato_solicitado"),

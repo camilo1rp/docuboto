@@ -17,6 +17,7 @@ ya no admite documentos). El FUID (E17) acompaña la transferencia como entregab
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -28,12 +29,14 @@ from orpycamcp_common import audit
 
 from app.core.actor import Actor
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
+from app.core.config import settings
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.fisico_repository import FisicoRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
+    TransferenciaActaFirmaInfo,
     TransferenciaActaResponse,
     TransferenciaCreate,
     TransferenciaRechazo,
@@ -695,6 +698,14 @@ class TransferenciaService:
                         "congelada_at": fuid.generado_ts,
                     }
                 )
+                # H-H (E06/F4): fila de bookkeeping del sellado del acta,
+                # DENTRO de la MISMA tx que `insert_acta` -- escritura LOCAL
+                # de BD (sin HTTP, preserva la atomicidad H-A/H-I). Garantiza
+                # que TODA acta recibida tenga su fila `transferencia_acta_firma`
+                # aunque el proceso muera entre este commit y el intento de
+                # sellado post-commit (`_sellar_acta_post_commit`, más abajo,
+                # FUERA de la tx) -- el job de reconciliación converge igual.
+                await self._repo.insert_acta_firma_pendiente(transferencia_id)
                 # `audit.append` LO ÚLTIMO dentro de la tx -- DOS asientos porque
                 # el acto muta DOS objetos (transferencia + expediente); dejar
                 # solo uno incompletaría la serie de auditoría del `object_type`
@@ -781,7 +792,130 @@ class TransferenciaService:
                     "audit.append(archive.transferencia_recibida_failed) failed", exc_info=True
                 )
             raise
+        # H-H (E06/F4): sellado SÍNCRONO ACOTADO del acta, SIEMPRE post-commit
+        # (fuera de la tx de arriba, mismo patrón que
+        # `IndexService.firmar_indice_close`) -- best-effort, atribuido al
+        # RECEPTOR (`row["decidida_por"]`, ya congelado en el acta). Nunca
+        # bloquea `recibir()`: el acta ya quedó íntegra y su SHA anclado en
+        # `audit_log` dentro de la tx que acaba de comprometerse.
+        await self._sellar_acta_post_commit(
+            transferencia_id, acta_xml=acta_xml, indice_version=fx.version, actor=actor
+        )
         return _resp(row)
+
+    async def _sellar_acta_post_commit(
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        acta_xml: str,
+        indice_version: int,
+        actor: Actor,
+    ) -> None:
+        """Intento SÍNCRONO ACOTADO del sellado XAdES del acta (H-H, E06/F4)
+        -- gemelo de `IndexService.firmar_indice_close`, pero atribuido al
+        humano que RECIBE la transferencia (no al que cierra el expediente).
+        `objeto_id=transferencia_id`, `version=indice_version` (la versión
+        del índice PINNEADA dentro de la tx de recepción -- el acta no tiene
+        versión propia), `indice_id=None`.
+
+        SIEMPRE llamado FUERA de cualquier `conn.transaction()` de
+        `recibir()` -- el sellado es HTTP y nunca debe vivir dentro de una tx
+        (preserva H-A/H-I). `actor_id` nunca está ausente aquí: `require_actor`
+        ya lo exigió para alcanzar `recibir()` (a diferencia del cierre de
+        expediente, que sí puede llegar sin `actor_id` -- ver
+        `IndexService._current_signable_or_none`).
+
+        Desenlaces (idénticos a `firmar_indice_close`):
+        - éxito → `transferencia_acta_firma` pasa a 'firmado', asiento
+          `archive.acta_firmada` (`origen='manual'`).
+        - `seal_absent` → degrada de inmediato, SIN reintentar (firmar es
+          estructuralmente imposible ahora mismo).
+        - `transient` tras agotar los intentos síncronos → degrada.
+        Ambas degradaciones convergen vía el job de reconciliación
+        (segunda fase de `app/jobs/indice_reconciliation.py`) o el reintento
+        manual `POST /transferencias/{id}/acta/firmar`.
+
+        El XML del acta (`acta_xml`) NUNCA se altera aquí -- el sello cubre
+        exactamente el `acta_fuid_xml` ya anclado por `recibir()`; el XML
+        FIRMADO es un artefacto DERIVADO en MinIO (enveloped, la referencia
+        del `<ds:Signature>` resuelve al mismo contenido).
+        """
+        from app.clients import signature_client
+
+        max_attempts = max(1, settings.acta_sign_max_sync_attempts)
+        for attempt in range(1, max_attempts + 1):
+            outcome = await signature_client.sign_xml_outcome(
+                tenant_slug=self._tenant,
+                actor_id=actor.audit_actor,
+                payload_xml=acta_xml,
+                objeto_tipo="acta_transferencia",
+                objeto_id=str(transferencia_id),
+                indice_id=None,
+                version=indice_version,
+            )
+            if outcome.signed is not None:
+                async with self._conn.transaction():
+                    affected = await self._repo.mark_acta_firmada(
+                        transferencia_id,
+                        firma_id=outcome.signed.firma_id,
+                        minio_key=outcome.signed.minio_key_firmado,
+                        xades_level=outcome.signed.xades_level,
+                        acreditado=outcome.signed.acreditado,
+                    )
+                    # S1 (RF-FIR-14, gemelo de `firmar_indice_close`):
+                    # `affected=0` -> otro proceso (típicamente el job de
+                    # reconciliación) ya marcó 'firmado' esta misma fila entre
+                    # la resolución de `acta_xml` y este UPDATE -- el sello
+                    # recién obtenido queda huérfano; NO se escribe el asiento
+                    # fantasma.
+                    if affected:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant,
+                            service=_SERVICE,
+                            action="archive.acta_firmada",
+                            object_type="transferencia_acta",
+                            object_ref=str(transferencia_id),
+                            actor=actor.audit_actor,
+                            payload={
+                                "transferencia_id": str(transferencia_id),
+                                "firma_id": str(outcome.signed.firma_id),
+                                "origen": "manual",
+                            },
+                        )
+                return
+            if outcome.seal_absent:
+                await self._marcar_acta_pendiente_audited(
+                    transferencia_id, actor_id=actor.audit_actor, motivo="sello_ausente"
+                )
+                return
+            # `transient`: reintenta solo si quedan intentos -- sin sleep tras
+            # el ÚLTIMO intento.
+            if attempt < max_attempts:
+                await asyncio.sleep(settings.acta_sign_sync_delay_seconds)
+
+        await self._marcar_acta_pendiente_audited(
+            transferencia_id, actor_id=actor.audit_actor, motivo="sellado_xades_no_obtenido"
+        )
+
+    async def _marcar_acta_pendiente_audited(
+        self, transferencia_id: uuid.UUID, *, actor_id: str | None, motivo: str
+    ) -> None:
+        """Marca 'pendiente_firma' (re-armando el backoff) y su asiento de
+        auditoría como un ÚNICO acto (H5, gemela de
+        `IndexService._mark_pendiente_audited`)."""
+        async with self._conn.transaction():
+            await self._repo.mark_acta_firma_pendiente(transferencia_id, last_error=motivo)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant,
+                service=_SERVICE,
+                action="archive.acta_firma_pendiente",
+                object_type="transferencia_acta",
+                object_ref=str(transferencia_id),
+                actor=actor_id,
+                payload={"transferencia_id": str(transferencia_id), "motivo": motivo},
+            )
 
     async def rechazar(
         self,
@@ -946,7 +1080,11 @@ class TransferenciaService:
         )
 
     async def acta(
-        self, transferencia_id: uuid.UUID, user_id: uuid.UUID | None = None
+        self,
+        transferencia_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        *,
+        verify: bool = False,
     ) -> TransferenciaActaResponse:
         """Devuelve el ACTA DE ENTREGA ya CONGELADA (E12 H-I) -- NUNCA la
         regenera; a diferencia de `fuid()` (que sí genera al vuelo sobre el
@@ -1001,4 +1139,131 @@ class TransferenciaService:
                     "status": 404,
                 },
             )
-        return TransferenciaActaResponse(**dict(acta), expediente_id=row["expediente_id"])
+        firma_row = await self._repo.get_acta_firma(transferencia_id)
+        firma_info = await self._build_firma_info(firma_row, verify=verify)
+        return TransferenciaActaResponse(
+            **dict(acta), expediente_id=row["expediente_id"], firma=firma_info
+        )
+
+    async def _build_firma_info(
+        self, firma_row: asyncpg.Record | None, *, verify: bool
+    ) -> TransferenciaActaFirmaInfo:
+        """Bloque `firma` de `GET /transferencias/{id}/acta` (H-H, E06/F4).
+
+        `presente`/`xades_level`/`acreditado`/`motivo(=last_error)` son
+        campos BARATOS, leídos directamente de `transferencia_acta_firma`
+        (sin llamada externa). `valida` es `None` salvo `verify=True`: en ese
+        caso se descarga el XML YA FIRMADO de MinIO (mismo patrón mediado,
+        D-02, que `IndexService.verify`) y se pide a signature-service
+        `/verify` -- best-effort, nunca declara conforme lo que no pudo
+        verificar (RF-FIR-15)."""
+        if firma_row is None or firma_row["estado"] != "firmado":
+            return TransferenciaActaFirmaInfo(
+                presente=False,
+                xades_level=firma_row["xades_level"] if firma_row else None,
+                acreditado=bool(firma_row["acreditado"]) if firma_row else False,
+                motivo=firma_row["last_error"] if firma_row else None,
+            )
+        info = TransferenciaActaFirmaInfo(
+            presente=True,
+            xades_level=firma_row["xades_level"],
+            acreditado=bool(firma_row["acreditado"]),
+        )
+        if not verify:
+            return info
+        from app.clients import signature_client, storage_client
+
+        signed_xml: str | None = None
+        if firma_row["minio_key_firmado"]:
+            signed_xml = await storage_client.download_signed_xml(
+                tenant_slug=self._tenant,
+                minio_key_firmado=firma_row["minio_key_firmado"],
+            )
+        if signed_xml is None:
+            info.valida = False
+            info.motivo = "signed_xml_unavailable"
+            return info
+        resultado = await signature_client.verify(
+            tenant_slug=self._tenant,
+            firma_id=str(firma_row["firma_id"]),
+            payload_xml=signed_xml,
+        )
+        if resultado is None:
+            info.valida = False
+            info.motivo = "signature_service_unreachable"
+            return info
+        info.valida = resultado.valida
+        info.motivo = resultado.motivo
+        return info
+
+    async def firmar_acta_retry(
+        self, transferencia_id: uuid.UUID, actor: Actor
+    ) -> TransferenciaActaResponse:
+        """Reintento MANUAL explícito del sellado del acta (H-H, Parte 5) --
+        `POST /transferencias/{id}/acta/firmar`, gemelo de
+        `IndexService.firmar_indice_retry`:
+        - 404 si la transferencia no existe, o si aún no tiene acta congelada
+          (nunca se recibió, o fue rechazada).
+        - 409 si el acta ya está sellada (inmutable) -- idempotente, no un
+          error de negocio.
+        - 503 si el sellado sigue sin poder obtenerse (el acta permanece o
+          vuelve a 'pendiente_firma', reintentable de nuevo más tarde).
+
+        RE-ARMA el backoff (`reconcile_agotado` -> False) SIEMPRE antes de
+        reintentar -- vía `_sellar_acta_post_commit`/
+        `_marcar_acta_pendiente_audited` si degrada de nuevo, mismo criterio
+        C1 que el índice: un acta agotada cuyo reintento manual vuelve a
+        fallar no debe quedar invisible ni para el job ni para el operador.
+        """
+        row = await self._repo.get(transferencia_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "transferencia_not_found",
+                    "detail": str(transferencia_id),
+                    "status": 404,
+                },
+            )
+        acta = await self._repo.get_acta(transferencia_id)
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "acta_not_found",
+                    "detail": (
+                        "La transferencia aún no tiene acta de entrega "
+                        "(se congela al recibirla)"
+                    ),
+                    "status": 404,
+                },
+            )
+        firma_row = await self._repo.get_acta_firma(transferencia_id)
+        if firma_row is not None and firma_row["estado"] == "firmado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "acta_ya_firmada",
+                    "detail": "El acta de entrega ya está sellada (inmutable)",
+                    "status": 409,
+                },
+            )
+        await self._sellar_acta_post_commit(
+            transferencia_id,
+            acta_xml=acta["acta_fuid_xml"],
+            indice_version=acta["indice_version"] or 0,
+            actor=actor,
+        )
+        firma_row = await self._repo.get_acta_firma(transferencia_id)
+        if firma_row is None or firma_row["estado"] != "firmado":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "acta_signing_failed",
+                    "detail": (
+                        "signature-service no pudo sellar el acta; queda pendiente_firma"
+                    ),
+                    "status": 503,
+                },
+            )
+        return await self.acta(transferencia_id, actor.id)

@@ -343,6 +343,7 @@ class _FakeFirmaTable:
         q = query.strip()
         if q.startswith("INSERT INTO firma"):
             (
+                firma_id_param,
                 objeto_tipo,
                 objeto_id,
                 formato_solicitado,
@@ -381,7 +382,12 @@ class _FakeFirmaTable:
                 ocsp_response_der,
             ) = args
             row = {
-                "id": uuid.uuid4(),
+                # Espeja `COALESCE($1, gen_random_uuid())` del repositorio real
+                # (S1): si el llamador pre-generó el id (xades_local, para que
+                # el filename en MinIO lo incluya ANTES del upload) esta fila
+                # debe conservar EXACTAMENTE ese id — no uno nuevo — para que
+                # el round-trip firma -> verify siga atando la key correcta.
+                "id": firma_id_param if firma_id_param is not None else uuid.uuid4(),
                 "objeto_tipo": objeto_tipo,
                 "objeto_id": objeto_id,
                 "formato_solicitado": formato_solicitado,

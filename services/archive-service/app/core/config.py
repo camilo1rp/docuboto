@@ -64,6 +64,23 @@ class Settings(BaseSettings):
     # (fail-closed, mal-configurado) — NUNCA commitear el valor real.
     signature_internal_token: str = ""
 
+    # --- Firma XAdES del acta de transferencia (H-H, E06/F4) ---
+    # Kill-switch del loop de reconciliación DEDICADO del acta (segunda fase
+    # de app/jobs/indice_reconciliation.py) -- independiente de
+    # `indice_reconciliation_enabled`.
+    acta_reconciliation_enabled: bool = True
+    # Cadencia (segundos) entre barridas del loop del acta -- MAYOR que la
+    # del índice por diseño (900s vs 300s): el sellado del acta es aditivo
+    # (el acta ya es íntegra y su SHA está anclado en audit_log desde
+    # `recibir()`), menos urgente que el índice electrónico.
+    acta_reconciliation_interval_seconds: int = 900
+    # Intento síncrono ACOTADO al recibir la transferencia
+    # (`TransferenciaService._sellar_acta_post_commit`) antes de degradar a
+    # 'pendiente_firma' -- mismo criterio que `close_sign_max_sync_attempts`
+    # (un `seal_absent` degrada de inmediato SIN consumir estos reintentos).
+    acta_sign_max_sync_attempts: int = 2
+    acta_sign_sync_delay_seconds: float = 1.0
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

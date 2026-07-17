@@ -44,12 +44,14 @@ import urllib.parse
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
 import pytest_asyncio
 
 from app.core.database import tenant_schema
+from app.services.transferencia_service import TransferenciaService
 from migrations import runner
 
 # Mismo cálculo que `migrations/runner.py:33` — DSN "pelado" (driver psycopg-style)
@@ -461,3 +463,27 @@ async def tenant_ctx(
         # que este test deje ahí quedan inertes porque el `tenant_slug` (=slug) es
         # único por test — no colisiona con ningún otro run.
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _no_real_http_acta_sign() -> AsyncGenerator[None, None]:
+    """H-H (E06/F4): `TransferenciaService.recibir` intenta el sellado
+    SÍNCRONO ACOTADO del acta POST-COMMIT (`_sellar_acta_post_commit`, HTTP a
+    signature-service) — igual que el resto de este tier (ver docstring del
+    módulo), NO hay signature-service real levantado aquí. Sin este no-op por
+    defecto, CADA test que llama a `recibir()` (la mayoría de este directorio,
+    no solo los de H-H) pagaría 2 intentos HTTP realmente fallidos
+    (resolución DNS de "signature-service" inalcanzable) más el sleep entre
+    intentos -- ruido y lentitud sin señal, ya que ninguno de esos tests
+    versa sobre el sellado del acta en sí.
+
+    `autouse=True` a nivel de módulo/función (no de sesión): cada test recibe
+    su PROPIO `AsyncMock` -- ningún `await_count` se arrastra entre tests. Los
+    tests que SÍ necesitan observar/controlar este sellado (`tests/
+    test_transferencia_acta_firma_atomicity.py`) lo sobrescriben con su
+    propio `with patch.object(...)` anidado, que gana mientras esté activo y
+    se restaura a este no-op al salir del bloque `with`."""
+    with patch.object(
+        TransferenciaService, "_sellar_acta_post_commit", new=AsyncMock(return_value=None)
+    ):
+        yield

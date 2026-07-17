@@ -160,6 +160,11 @@ async def transferencia_fuid(
 )
 async def transferencia_acta(
     transferencia_id: uuid.UUID,
+    # H-H (E06/F4): cómputo on-demand del bloque `firma.valida` (descarga del
+    # XML firmado + signature-service /verify) -- default False, esta lectura
+    # NO re-verifica salvo que se pida explícitamente (los campos baratos de
+    # `firma` sí viajan siempre).
+    verify: bool = Query(default=False),
     tenant_slug: str = Depends(_require_tenant),
     # Lectura, no acto de custodia (RF-SEG-08, mismo gating que `/fuid`):
     # `optional_actor` no exige `X-User-Id` (anónimo -> clearance PUBLICA).
@@ -167,5 +172,22 @@ async def transferencia_acta(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaActaResponse:
     return await TransferenciaService(conn, tenant_slug).acta(
-        transferencia_id, actor.id if actor else None
+        transferencia_id, actor.id if actor else None, verify=verify
+    )
+
+
+@router.post(
+    "/{transferencia_id}/acta/firmar",
+    response_model=TransferenciaActaResponse,
+    summary="Reintento manual del sellado XAdES del acta de entrega (H-H, E06/F4)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
+async def transferencia_acta_firmar(
+    transferencia_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> TransferenciaActaResponse:
+    return await TransferenciaService(conn, tenant_slug).firmar_acta_retry(
+        transferencia_id, actor
     )

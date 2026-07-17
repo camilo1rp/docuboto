@@ -44,6 +44,7 @@ from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from app.repositories.index_repository import IndexRepository
+from app.repositories.transferencia_repository import TransferenciaRepository
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +273,185 @@ async def run_once() -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Segunda fase — sellado del ACTA DE TRANSFERENCIA (H-H, E06/F4)
+# ---------------------------------------------------------------------------
+#
+# Gemela de la fase del índice de arriba, para `transferencia_acta_firma`
+# (migración 026) en vez de `expediente_indice`. Se mantiene como función
+# INDEPENDIENTE (`run_once_actas`, no fusionada dentro de `run_once`) por dos
+# motivos: (1) cadencia PROPIA y MENOR (ver
+# `settings.acta_reconciliation_interval_seconds`, `app/main.py` la agenda en
+# un loop de fondo aparte) — el sellado del acta es aditivo (el acta ya es
+# íntegra y su SHA está anclado en `audit_log` desde
+# `TransferenciaService.recibir`), menos urgente que el índice; (2) preserva
+# INTACTA la superficie de `run_once()` que ya cubren
+# `tests/test_indice_reconciliation.py` (conteos exactos del summary,
+# aislamiento por-tenant/por-índice) — fusionarlas habría obligado a
+# namespacar las claves del summary o arriesgado alterar ese contrato ya
+# probado. Advisory lock en un namespace DISTINTO
+# (`orpycamcp:archive:acta_reconcile`) para no colisionar con la barrida del
+# índice si ambos loops coincidieran en el mismo instante.
+
+
+async def _reconciliar_acta(conn: asyncpg.Connection, slug: str, row: asyncpg.Record) -> str:
+    """Intenta sellar UN acta 'pendiente_firma' (gemela de
+    `_reconciliar_indice`). Devuelve 'sellado', 'fallido' (backoff
+    programado) o 'agotado' (`reconcile_agotado=TRUE`, permanece
+    'pendiente_firma' hasta reintento manual — NUNCA se inventa
+    conformidad)."""
+    repo = TransferenciaRepository(conn, slug)
+    outcome = await signature_client.sign_indice_internal(
+        tenant_slug=slug,
+        payload_xml=row["acta_fuid_xml"],
+        objeto_id=str(row["transferencia_id"]),
+        indice_id=None,
+        version=row["indice_version"] or 0,
+        objeto_tipo="acta_transferencia",
+    )
+
+    if outcome.signed is not None:
+        async with conn.transaction():
+            affected = await repo.mark_acta_firmada(
+                row["transferencia_id"],
+                firma_id=outcome.signed.firma_id,
+                minio_key=outcome.signed.minio_key_firmado,
+                xades_level=outcome.signed.xades_level,
+                acreditado=outcome.signed.acreditado,
+            )
+            # Idempotencia real (gemela de `_reconciliar_indice`): `affected
+            # == 0` -> otra conexión (otra instancia del job, o un reintento
+            # manual concurrente vía POST /transferencias/{id}/acta/firmar)
+            # ya firmó esta MISMA fila entre el listado y este UPDATE — NO se
+            # escribe un asiento `archive.acta_firmada` fantasma.
+            if affected:
+                await audit.append(
+                    conn,
+                    tenant_slug=slug,
+                    service=_SERVICE,
+                    action="archive.acta_firmada",
+                    object_type="transferencia_acta",
+                    object_ref=str(row["transferencia_id"]),
+                    actor=str(SYSTEM_RECONCILER_ID),
+                    canal="system",
+                    payload={
+                        "transferencia_id": str(row["transferencia_id"]),
+                        "firma_id": str(outcome.signed.firma_id),
+                        "origen": "reconciliation",
+                    },
+                )
+        return "sellado"
+
+    intentos_tras_este = int(row["reconcile_intentos"]) + 1
+    agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+    motivo = "sello_ausente" if outcome.seal_absent else "sellado_xades_no_obtenido"
+    proximo_at = (
+        None
+        if agotado
+        else datetime.now(tz=UTC) + timedelta(seconds=_next_backoff_seconds(intentos_tras_este))
+    )
+
+    if agotado:
+        async with conn.transaction():
+            await repo.bump_acta_firma_intento(
+                row["transferencia_id"], proximo_at=proximo_at, last_error=motivo, agotado=agotado
+            )
+            await audit.append(
+                conn,
+                tenant_slug=slug,
+                service=_SERVICE,
+                action="archive.acta_reconcile_agotado",
+                object_type="transferencia_acta",
+                object_ref=str(row["transferencia_id"]),
+                actor=str(SYSTEM_RECONCILER_ID),
+                canal="system",
+                payload={
+                    "transferencia_id": str(row["transferencia_id"]),
+                    "reconcile_intentos": intentos_tras_este,
+                    "motivo": motivo,
+                },
+            )
+        return "agotado"
+
+    await repo.bump_acta_firma_intento(
+        row["transferencia_id"], proximo_at=proximo_at, last_error=motivo, agotado=agotado
+    )
+    return "fallido"
+
+
+async def run_once_actas() -> dict[str, int]:
+    """Una barrida completa de sellado de ACTAS 'pendiente_firma' (H-H,
+    E06/F4) — gemela de `run_once()` (índice). Fallos por-tenant o por-acta
+    quedan aislados (WARNING, no abortan el resto de la barrida)."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "sellados": 0, "fallidos": 0, "agotados": 0}
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:acta_reconcile'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    logger.debug(
+                        "Reconciliación del acta: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+                    continue
+                try:
+                    rows = await TransferenciaRepository(conn, slug).list_acta_firmas_pendientes(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        try:
+                            resultado = await _reconciliar_acta(conn, slug, row)
+                        except Exception:
+                            logger.warning(
+                                "Fallo reconciliando acta de transferencia_id=%s tenant=%s "
+                                "— se omite esta acta en esta barrida",
+                                row["transferencia_id"],
+                                slug,
+                                exc_info=True,
+                            )
+                            summary["fallidos"] += 1
+                            continue
+                        if resultado == "sellado":
+                            summary["sellados"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:acta_reconcile'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación del acta para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+
+    logger.info(
+        "Reconciliación del sellado del acta completada: "
+        "pendientes_vistos=%d sellados=%d fallidos=%d agotados=%d tenants=%d",
+        summary["pendientes_vistos"],
+        summary["sellados"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Standalone entry point
 # ---------------------------------------------------------------------------
 
@@ -284,6 +464,7 @@ async def _main() -> None:
     await create_pool(settings.database_url_asyncpg)
     try:
         await run_once()
+        await run_once_actas()
     finally:
         await close_pool()
 

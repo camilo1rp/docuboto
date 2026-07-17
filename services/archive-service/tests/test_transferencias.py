@@ -13,15 +13,32 @@ import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.services.transferencia_service import TransferenciaService
 from tests.conftest import (
     TENANT_HEADERS,
     USER_ID,
     make_expediente_record,
     make_radicado_link_record,
 )
+
+# H-H (E06/F4): `recibir()` intenta el sellado SÍNCRONO ACOTADO del acta
+# POST-COMMIT (`TransferenciaService._sellar_acta_post_commit`, vía HTTP a
+# signature-service) — mismo criterio que los tests de `close_expediente`
+# mockean `IndexService.firmar_indice_close` (ver `test_expediente_lifecycle.py`):
+# los tests de ESTE módulo que no versan sobre el sellado del acta mockean
+# esta frontera para no depender de un signature-service real ni pagar el
+# `acta_sign_sync_delay_seconds` de un reintento transitorio real. Función
+# (no un objeto único a nivel de módulo): cada `with` necesita su PROPIO
+# `AsyncMock` -- un único mock reutilizado entre tests acumularía
+# `await_count` de llamadas de tests anteriores.
+def _mock_sellar_acta():
+    return patch.object(
+        TransferenciaService, "_sellar_acta_post_commit", new=AsyncMock(return_value=None)
+    )
 
 NOW = datetime.now(tz=UTC)
 
@@ -149,10 +166,11 @@ async def test_enviar_then_recibir_freezes_expediente(client_with_conn) -> None:
         make_expediente_record(exp_id=exp_id, exp_status="transferred"),
     ]
     mock_conn.fetch.return_value = []
-    rec = await client.post(
-        f"/api/v1/transferencias/{tid}/recibir",
-        headers={**TENANT_HEADERS, "X-Username": "jefe"},
-    )
+    with _mock_sellar_acta():
+        rec = await client.post(
+            f"/api/v1/transferencias/{tid}/recibir",
+            headers={**TENANT_HEADERS, "X-Username": "jefe"},
+        )
     assert rec.status_code == 200
     assert rec.json()["estado"] == "recibida"
 
@@ -754,6 +772,26 @@ def _acta_row(**kw) -> dict:
     return base
 
 
+def _acta_firma_row(**kw) -> dict:
+    """Fila de `transferencia_acta_firma` (migración 026, H-H E06/F4)."""
+    base = {
+        "transferencia_id": uuid.uuid4(),
+        "estado": "pendiente_firma",
+        "firma_id": None,
+        "minio_key_firmado": None,
+        "xades_level": None,
+        "acreditado": False,
+        "last_error": None,
+        "reconcile_intentos": 0,
+        "reconcile_proximo_at": None,
+        "reconcile_agotado": False,
+        "created_at": NOW,
+        "firmado_at": None,
+    }
+    base.update(kw)
+    return base
+
+
 @pytest.mark.asyncio
 async def test_recibir_congela_acta_de_entrega(client_with_conn) -> None:
     """H-I: `recibir()` inserta en `transferencia_acta` DENTRO de la tx --
@@ -790,13 +828,14 @@ async def test_recibir_congela_acta_de_entrega(client_with_conn) -> None:
     ]
     mock_conn.fetch.return_value = []  # _get_radicados / get_items / fuid_inventory
 
-    resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
+    with _mock_sellar_acta() as mock_sellar:
+        resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
     assert resp.status_code == 200
 
     acta_call = next(
         c
         for c in mock_conn.execute.call_args_list
-        if isinstance(c.args[0], str) and "INSERT INTO transferencia_acta" in c.args[0]
+        if isinstance(c.args[0], str) and c.args[0].startswith("INSERT INTO transferencia_acta (")
     )
     cols = acta_call.args[0].split("(", 2)[1].split(")", 1)[0].split(", ")
     data = dict(zip(cols, acta_call.args[1:]))
@@ -816,12 +855,29 @@ async def test_recibir_congela_acta_de_entrega(client_with_conn) -> None:
     # `congelada_at` == el `generado` embebido en el propio XML.
     assert data["congelada_at"].isoformat() in data["acta_fuid_xml"]
 
+    # H-H (E06/F4): `insert_acta_firma_pendiente` DENTRO de la MISMA tx que
+    # `insert_acta` -- toda acta recibida tiene su fila de firma-tracking.
+    firma_pendiente_call = next(
+        c
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO transferencia_acta_firma" in c.args[0]
+    )
+    assert firma_pendiente_call.args[1] == tid
+    # El sellado síncrono ACOTADO se intenta SIEMPRE post-commit (fuera de la
+    # tx) -- best-effort, atribuido al RECEPTOR (X-User-Id de la petición).
+    mock_sellar.assert_awaited_once()
+    assert mock_sellar.await_args.args == (tid,)
+    call_kwargs = mock_sellar.await_args.kwargs
+    assert call_kwargs["indice_version"] == 0
+    assert call_kwargs["actor"].id == USER_ID
+
 
 @pytest.mark.asyncio
 async def test_transferencia_acta_get_after_recibir(client_with_conn) -> None:
     """`GET /acta` sirve el snapshot YA CONGELADO (`repo.get_acta`), NUNCA lo
     regenera: secuencia `repo.get(transferencia)` -> `caller_clearance` ->
-    `get_expediente_by_id` (no-read-up) -> `repo.get_acta`."""
+    `get_expediente_by_id` (no-read-up) -> `repo.get_acta` -> `repo.get_acta_firma`
+    (H-H, E06/F4 — bloque `firma` aditivo)."""
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True
     tid = uuid.uuid4()
@@ -831,6 +887,7 @@ async def test_transferencia_acta_get_after_recibir(client_with_conn) -> None:
         None,  # caller_clearance: usuario no resoluble -> PUBLICA(1)
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
+        _acta_firma_row(transferencia_id=tid, estado="pendiente_firma"),
     ]
     mock_conn.fetch.return_value = []  # _get_radicados
 
@@ -840,6 +897,7 @@ async def test_transferencia_acta_get_after_recibir(client_with_conn) -> None:
     assert body["transferencia_id"] == str(tid)
     assert body["expediente_id"] == str(exp_id)
     assert body["acta_fuid_sha256"] == "a" * 64
+    assert body["firma"]["presente"] is False
 
 
 @pytest.mark.asyncio

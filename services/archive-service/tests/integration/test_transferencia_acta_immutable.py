@@ -170,7 +170,18 @@ async def test_acta_trigger_rechaza_truncate(
     _e1, t1_id, _x1, _s1 = await _recibir_y_obtener_acta(conn, slug, "itest acta truncate uno")
     _e2, t2_id, _x2, _s2 = await _recibir_y_obtener_acta(conn, slug, "itest acta truncate dos")
 
-    with pytest.raises(asyncpg.exceptions.PostgresError, match=_REJECT_MATCH):
+    # H-H (E06/F4, migración 026): `transferencia_acta_firma` referencia esta
+    # tabla por FK -- un `TRUNCATE` sin `CASCADE` ahora es rechazado por
+    # Postgres ANTES de que el trigger STATEMENT dedicado (append-only)
+    # siquiera se evalúe ("cannot truncate a table referenced in a foreign
+    # key constraint"), una guarda ADICIONAL, no una regresión: el resultado
+    # observable sigue siendo el mismo (nada se borra). El trigger
+    # append-only sigue siendo la defensa que dispara con `TRUNCATE ...
+    # CASCADE` (ver el test siguiente).
+    with pytest.raises(
+        asyncpg.exceptions.PostgresError,
+        match=rf"{_REJECT_MATCH}|foreign key constraint",
+    ):
         await conn.execute(f'TRUNCATE "{schema}".transferencia_acta')
 
     count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".transferencia_acta')

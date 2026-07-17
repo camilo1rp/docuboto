@@ -39,6 +39,7 @@ from fastapi import HTTPException, status
 
 from app.clients import storage_client
 from app.core.config import settings
+from app.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
 from app.core.events import publish_indice_firmado
 from app.core.keys import SealNotFoundError, load_seal
 from app.core.ocsp import OcspMaterialRequiredError
@@ -62,10 +63,21 @@ except ImportError:  # pragma: no cover — common not installed in some test en
 _SERVICE = "signature-service"
 logger = logging.getLogger(__name__)
 
+# Prefijo del filename subido a storage-service (H-H, E06/F4) — clave EXACTA
+# de `XADES_ELIGIBLE_OBJETO_TIPOS`: el único punto que necesita distinguir
+# `objeto_tipo` dentro del tramo `xades_local` además del evento Redis más
+# abajo. Indexación directa (no `.get`): `provider_name == "xades_local"`
+# implica `payload.objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS` por
+# construcción de `_select_provider_name`, así que esta clave SIEMPRE existe.
+_MINIO_FILENAME_PREFIX = {"indice": "indice", "acta_transferencia": "acta-transferencia"}
+
 
 def _select_provider_name(objeto_tipo: str) -> str:
-    """'xades_local' solo para índices con el proveedor habilitado; 'nativa' en el resto."""
-    if objeto_tipo == "indice" and settings.signer_provider == "xades_local":
+    """'xades_local' solo para `objeto_tipo` del allow-set institucional
+    (`XADES_ELIGIBLE_OBJETO_TIPOS` — índice, y desde H-H el acta de
+    transferencia) con el proveedor habilitado; 'nativa' en el resto,
+    comportamiento sin cambios desde antes de este incremento."""
+    if objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS and settings.signer_provider == "xades_local":
         return "xades_local"
     return "nativa"
 
@@ -194,8 +206,20 @@ async def sign_payload(
         ) from exc
 
     minio_key_firmado: str | None = None
+    firma_id: uuid.UUID | None = None
     if provider_name == "xades_local":
-        filename = f"indice-{payload.objeto_id}-v{payload.version or 0}-firmado.xml"
+        # Generado ACÁ (no dejado al DEFAULT de columna en el INSERT de más
+        # abajo) para que el nombre del objeto en MinIO incluya el firma_id
+        # ANTES de subir (S1, corrección de verify bajo carrera): dos
+        # sellados exitosos concurrentes de la misma entidad (intento
+        # síncrono post-commit vs. job de reconciliación) ya NO compiten por
+        # la misma key — cada firma sube su PROPIO XML y `minio_key_firmado`
+        # queda coherente con el `id` real de su fila (ver
+        # FirmaRepository.insert, que usa este valor en vez de
+        # `gen_random_uuid()` cuando se provee).
+        firma_id = uuid.uuid4()
+        prefix = _MINIO_FILENAME_PREFIX[payload.objeto_tipo]
+        filename = f"{prefix}-{payload.objeto_id}-v{payload.version or 0}-{firma_id}-firmado.xml"
         try:
             minio_key_firmado = await storage_client.upload_signed_xml(
                 tenant_slug=tenant_slug,
@@ -269,6 +293,7 @@ async def sign_payload(
     async with conn.transaction():
         row = await FirmaRepository(conn).insert(
             {
+                "id": firma_id,
                 "objeto_tipo": payload.objeto_tipo,
                 "objeto_id": payload.objeto_id,
                 "formato_solicitado": payload.formato,
@@ -434,8 +459,12 @@ async def sign_payload(
             )
 
     # Evento best-effort — un fallo de Redis nunca revierte ni bloquea una firma
-    # ya persistida (ver docstring de app.core.events).
-    if provider_name == "xades_local":
+    # ya persistida (ver docstring de app.core.events). GATEADO por tipo
+    # (H-H, E06/F4): `firma.indice.firmado` tiene un ÚNICO consumidor (E15,
+    # el índice electrónico) — el acta de transferencia NO tiene consumidor
+    # de este evento, así que NUNCA se publica para `objeto_tipo=
+    # "acta_transferencia"` (evita fabricar un evento sin oyente).
+    if provider_name == "xades_local" and payload.objeto_tipo == "indice":
         try:
             await publish_indice_firmado(
                 get_redis(),

@@ -105,16 +105,19 @@ async def sign_indice_internal(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> FirmaResponse:
-    """Sellado del índice ATRIBUIDO A SISTEMA — reconciliación (residual Ac.
-    AGN 001/2024 art. 4.3.2.4, ver archive-service `app/jobs/indice_reconciliation.py`).
+    """Sellado del índice electrónico o del acta de transferencia ATRIBUIDO A
+    SISTEMA — reconciliación (residual Ac. AGN 001/2024 art. 4.3.2.4, ver
+    archive-service `app/jobs/indice_reconciliation.py`; generalizada en H-H
+    E06/F4 para `transferencia_acta`).
 
     Gate SOLO `require_internal_token` (X-Internal-Token, D-02) — NUNCA
-    `require_permission`/`get_actor`: el llamador es el job de
-    reconciliación de archive-service, no un usuario humano. `objeto_tipo`
-    queda HARDWIRED a `"indice"` (el llamador no puede elegirlo, a diferencia
-    de `SignXmlRequest.objeto_tipo` en `/sign-xml`) — estructuralmente esta
+    `require_permission`/`get_actor`: el llamador es un job de reconciliación
+    de archive-service, no un usuario humano. `objeto_tipo` está ACOTADO al
+    allow-set institucional (`InternalSignIndiceRequest`, validado en el
+    schema) — el llamador NUNCA puede elegir un tipo arbitrario, a diferencia
+    de `SignXmlRequest.objeto_tipo` en `/sign-xml` — estructuralmente esta
     ruta NUNCA puede firmar la cadena personal (`/requests/{id}/sign`) ni
-    ningún otro tipo de objeto.
+    ningún objeto fuera de ese conjunto.
 
     `firmante_id=SYSTEM_RECONCILER_ID` (`app/core/constants.py`) y
     `origen="reconciliation"` en el asiento `firma.creada` — distinguible del
@@ -126,7 +129,7 @@ async def sign_indice_internal(
     tenant_slug: str = request.headers.get("X-Tenant-Slug", "")
     sign_request = SignXmlRequest(
         payload_xml=payload.payload_xml,
-        objeto_tipo="indice",
+        objeto_tipo=payload.objeto_tipo,
         objeto_id=payload.objeto_id,
         formato="XAdES",
         indice_id=payload.indice_id,

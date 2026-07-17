@@ -188,23 +188,37 @@ async def sign_xml_outcome(
     actor_id: str,
     payload_xml: str,
     objeto_id: str,
-    indice_id: str,
+    indice_id: str | None,
     version: int,
+    objeto_tipo: str = "indice",
 ) -> SignOutcome:
     """Gemelo ESTRUCTURADO de `sign_xml` (residual Ac. AGN 001/2024 art.
-    4.3.2.4) — usado EXCLUSIVAMENTE por
-    `IndexService.firmar_indice_close` (control compensatorio del cierre,
-    intento síncrono ACOTADO): a diferencia de `sign_xml`, que colapsa TODO
-    fallo a `None`, aquí se distingue `seal_absent` (no reintentar) de
-    `transient` (reintentar) — ver `SignOutcome`.
+    4.3.2.4) — usado por `IndexService.firmar_indice_close` (control
+    compensatorio del cierre) y, desde H-H (E06/F4), por
+    `TransferenciaService._sellar_acta_post_commit` (sellado síncrono
+    acotado del acta de entrega tras `recibir()`): a diferencia de
+    `sign_xml`, que colapsa TODO fallo a `None`, aquí se distingue
+    `seal_absent` (no reintentar) de `transient` (reintentar) — ver
+    `SignOutcome`.
+
+    `objeto_tipo` (default `"indice"`, retrocompat total con el único
+    llamador preexistente) selecciona el tipo de objeto sellado —
+    signature-service solo produce XAdES real para el allow-set
+    institucional (`indice`/`acta_transferencia`, ver
+    `signature-service/app/core/constants.py::XADES_ELIGIBLE_OBJETO_TIPOS`);
+    cualquier otro valor cae a HMAC 'nativa' del lado del servidor. `version`
+    para el acta es `indice_version` (versión del índice PINNEADA en la tx de
+    recepción, no una versión propia del acta); `indice_id=None` — el acta no
+    tiene índice electrónico propio que versionar.
 
     Mismo endpoint/cuerpo/headers que `sign_xml` (`POST /sign-xml`,
-    `X-User-Id` — sellado ATRIBUIDO al humano que cierra el expediente); NO
-    usa la ruta interna de reconciliación (ver `sign_indice_internal`).
+    `X-User-Id` — sellado ATRIBUIDO al humano que cierra el expediente o
+    recibe la transferencia); NO usa la ruta interna de reconciliación (ver
+    `sign_indice_internal`).
     """
     body = {
         "payload_xml": payload_xml,
-        "objeto_tipo": "indice",
+        "objeto_tipo": objeto_tipo,
         "objeto_id": objeto_id,
         "formato": "XAdES",
         "indice_id": indice_id,
@@ -216,9 +230,11 @@ async def sign_xml_outcome(
             base_url=settings.signature_service_url, timeout=10.0
         ) as client:
             resp = await client.post("/api/v1/signature/sign-xml", json=body, headers=headers)
-            return _outcome_from_response(resp, contexto="sign-xml (cierre)")
+            return _outcome_from_response(resp, contexto=f"sign-xml ({objeto_tipo})")
     except httpx.RequestError as exc:
-        logger.warning("signature-service inalcanzable al firmar índice (cierre): %s", exc)
+        logger.warning(
+            "signature-service inalcanzable al firmar %s (sign-xml): %s", objeto_tipo, exc
+        )
         return SignOutcome(signed=None, transient=True)
 
 
@@ -227,13 +243,21 @@ async def sign_indice_internal(
     tenant_slug: str,
     payload_xml: str,
     objeto_id: str,
-    indice_id: str,
+    indice_id: str | None,
     version: int,
+    objeto_tipo: str = "indice",
 ) -> SignOutcome:
-    """Solicita el sellado del índice vía la ruta INTERNA de reconciliación
-    (residual Ac. AGN 001/2024 art. 4.3.2.4, signature-service
+    """Solicita el sellado vía la ruta INTERNA de reconciliación (residual
+    Ac. AGN 001/2024 art. 4.3.2.4, signature-service
     `POST /internal/sign-indice`, gate D-02) — usado EXCLUSIVAMENTE por
-    `app/jobs/indice_reconciliation.py`.
+    `app/jobs/indice_reconciliation.py` (índice Y, desde H-H E06/F4, acta de
+    transferencia).
+
+    `objeto_tipo` (default `"indice"`, retrocompat total: el llamador
+    preexistente `_reconciliar_indice` nunca lo pasa) viaja en el body —
+    signature-service lo valida contra su allow-set institucional
+    (`InternalSignIndiceRequest`, fail-closed 422 fuera de él). `indice_id`
+    es `None` para el acta (sin índice electrónico propio que versionar).
 
     SIN `X-User-Id` (no hay actor humano detrás): `X-Internal-Token`
     (`settings.signature_internal_token`) en su lugar — signature-service
@@ -245,6 +269,7 @@ async def sign_indice_internal(
     `transient` y dejar que el backoff del propio job reintente.
     """
     body = {
+        "objeto_tipo": objeto_tipo,
         "payload_xml": payload_xml,
         "objeto_id": objeto_id,
         "indice_id": indice_id,
@@ -261,10 +286,12 @@ async def sign_indice_internal(
             resp = await client.post(
                 "/api/v1/signature/internal/sign-indice", json=body, headers=headers
             )
-            return _outcome_from_response(resp, contexto="internal/sign-indice (reconciliación)")
+            return _outcome_from_response(
+                resp, contexto=f"internal/sign-indice ({objeto_tipo}, reconciliación)"
+            )
     except httpx.RequestError as exc:
         logger.warning(
-            "signature-service inalcanzable al reconciliar el sellado del índice: %s", exc
+            "signature-service inalcanzable al reconciliar el sellado de %s: %s", objeto_tipo, exc
         )
         return SignOutcome(signed=None, transient=True)
 

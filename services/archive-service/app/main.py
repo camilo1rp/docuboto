@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
+from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
 from app.routers.batch import router as batch_router
 from app.routers.expedientes import router as expedientes_router
 from app.routers.fisico import router as fisico_router
@@ -62,6 +63,23 @@ async def _indice_reconciliation_loop() -> None:
         await asyncio.sleep(settings.indice_reconciliation_interval_seconds)
 
 
+async def _acta_reconciliation_loop() -> None:
+    """Loop de fondo GEMELO (H-H, E06/F4) para el sellado del acta de
+    transferencia — cadencia PROPIA y MENOR
+    (`settings.acta_reconciliation_interval_seconds`, default mayor que la
+    del índice: el sellado del acta es aditivo, menos urgente). Igual que
+    `_indice_reconciliation_loop`, el loop NUNCA muere por una excepción."""
+    while True:
+        try:
+            await _reconcile_actas_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación del sellado del acta",
+                exc_info=True,
+            )
+        await asyncio.sleep(settings.acta_reconciliation_interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("archive-service starting up")
@@ -69,12 +87,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     reconcile_task: asyncio.Task[None] | None = None
     if settings.indice_reconciliation_enabled:
         reconcile_task = asyncio.create_task(_indice_reconciliation_loop())
+    acta_reconcile_task: asyncio.Task[None] | None = None
+    if settings.acta_reconciliation_enabled:
+        acta_reconcile_task = asyncio.create_task(_acta_reconciliation_loop())
     yield
     logger.info("archive-service shutting down")
     if reconcile_task is not None:
         reconcile_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await reconcile_task
+    if acta_reconcile_task is not None:
+        acta_reconcile_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await acta_reconcile_task
     await close_pool()
 
 

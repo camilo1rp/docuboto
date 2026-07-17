@@ -44,3 +44,15 @@ DLQ_GROUP = "signature-service"
 # de constantes de dominio). Cambiar este valor en un solo lado rompe la
 # atribución sin que ningún tipo lo detecte — verificar ambos si se rota.
 SYSTEM_RECONCILER_ID = uuid.UUID("00000000-0000-0000-0000-000000005ec1")
+
+# Allow-set de `objeto_tipo` elegibles para el proveedor XAdES institucional
+# (H-H, E06/F4 — firma del acta de transferencia): `signing_service.
+# _select_provider_name` solo produce XAdES-B/T/LT/LTA real para estos dos
+# tipos (con `settings.signer_provider == "xades_local"`); cualquier otro
+# `objeto_tipo` cae SIEMPRE al HMAC 'nativa', igual que antes de este
+# incremento. También es el allow-set que valida `InternalSignIndiceRequest.
+# objeto_tipo` (`app/schemas/firma.py`) — la ruta interna de reconciliación
+# (`POST /internal/sign-indice`, gate `require_internal_token`) NUNCA puede
+# sellar un tipo de objeto fuera de este conjunto, aunque el body JSON lo
+# declare.
+XADES_ELIGIBLE_OBJETO_TIPOS = frozenset({"indice", "acta_transferencia"})

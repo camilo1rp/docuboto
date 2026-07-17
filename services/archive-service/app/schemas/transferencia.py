@@ -71,6 +71,24 @@ class TransferenciaResponse(BaseModel):
     rechazada_at: datetime | None = None
 
 
+class TransferenciaActaFirmaInfo(BaseModel):
+    """Estado del sellado XAdES del acta de entrega (H-H, E06/F4) --
+    aditivo/retrocompat sobre `TransferenciaActaResponse` (migración 026,
+    `transferencia_acta_firma`, tabla MUTABLE hermana del acta append-only).
+
+    `presente=True` cuando `estado='firmado'`. `valida` es SIEMPRE `None`
+    salvo que el llamante pida `?verify=true` (cómputo on-demand: descarga
+    el XML firmado + `signature-service /verify` -- ver
+    `TransferenciaService._build_firma_info`); por defecto esta lectura NO
+    re-verifica, mismos campos baratos que ya persiste `transferencia_acta_firma`."""
+
+    presente: bool
+    valida: bool | None = None
+    xades_level: str | None = None
+    acreditado: bool = False
+    motivo: str | None = None
+
+
 class TransferenciaActaResponse(BaseModel):
     """Acta de entrega CONGELADA (E12 H-I, Ac. AGN 001/2024 Anexo FUID) --
     devuelta tal cual se escribió al recibir la transferencia, nunca
@@ -93,3 +111,7 @@ class TransferenciaActaResponse(BaseModel):
     # validación) queda diferido en roadmap.
     indice_version: int | None = None
     congelada_at: datetime
+    # H-H (E06/F4): estado del sellado XAdES del acta -- aditivo, SIEMPRE
+    # presente en la respuesta (calculado por el servicio, nunca un campo
+    # crudo de `transferencia_acta`).
+    firma: TransferenciaActaFirmaInfo
