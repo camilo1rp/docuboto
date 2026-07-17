@@ -35,6 +35,7 @@ from app.core.database import get_db_conn
 from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
     IndiceFirmarResult,
+    IndicePendienteFirma,
     IndiceResponse,
     IndiceVerifyResponse,
     IndiceVersionSummary,
@@ -336,3 +337,37 @@ async def rebuild_indice(
         # (expediente closed/transferred), que no dispone de un valor real.
         xsd_version=None,
     )
+
+
+@router.get(
+    "/indices/pendientes-firma",
+    response_model=list[IndicePendienteFirma],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def list_indices_pendientes_firma(
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[IndicePendienteFirma]:
+    """Visibilidad operacional de índices pendientes de sellado (residual Ac.
+    AGN 001/2024 art. 4.3.2.4) — para que ningún índice sin firmar quede
+    silenciado en `audit_log`: complementa al job de reconciliación
+    (`app/jobs/indice_reconciliation.py`) y al reintento manual
+    (`POST /{expediente_id}/indice/firmar`) con visibilidad directa,
+    incluidos los `reconcile_agotado=TRUE` que requieren intervención humana.
+
+    No-read-up (RF-SEG-08): filtra por el clearance real del llamante, igual
+    que `GET /expedientes` (`IndexService.list_pendientes_firma`).
+
+    Bajo `/indices/...` (no `/{expediente_id}/...`): no colisiona con ninguna
+    ruta de este router — todas exigen un segundo segmento literal
+    (`indice`, `indice.xml`, ...) distinto de `pendientes-firma`.
+    """
+    items, total = await IndexService(conn, tenant_slug).list_pendientes_firma(
+        page=page, size=size, user_id=user_id
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items

@@ -377,6 +377,20 @@ class IndiceFirmarResult(BaseModel):
     acreditado: bool = False
 
 
+class IndicePendienteFirma(BaseModel):
+    """Fila de `GET /expedientes/indices/pendientes-firma` (residual Ac. AGN
+    001/2024 art. 4.3.2.4, reconciliación) — visibilidad operacional
+    complementaria a `audit_log` para el archivista, no-read-up (RF-SEG-08)."""
+
+    indice_id: uuid.UUID
+    expediente_id: uuid.UUID
+    expediente_code: str
+    version: int
+    reconcile_intentos: int
+    reconcile_agotado: bool
+    reconcile_ultimo_error: str | None = None
+
+
 class RetentionSchedule(BaseModel):
     serie_id: uuid.UUID
     code: str

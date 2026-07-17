@@ -24,6 +24,7 @@ queda como evolutivo.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -33,12 +34,14 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
+from app.core.config import settings
 from app.models.archive import Expediente
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.schemas.archive import (
     IndiceFixityResult,
     IndiceItemResponse,
+    IndicePendienteFirma,
     IndiceResponse,
     IndiceVerifyDoc,
     IndiceVerifyFirma,
@@ -472,7 +475,7 @@ class IndexService:
         vuelta en `ArchiveService.close_expediente`) — un fallo entre ambos dejaba el
         índice marcado sin que quedara traza alguna del porqué."""
         async with self._conn.transaction():
-            await self._index.mark_pendiente(indice_id)
+            await self._index.mark_pendiente(indice_id, motivo=motivo)
             await audit.append(
                 self._conn,
                 tenant_slug=tenant_slug,
@@ -483,6 +486,35 @@ class IndexService:
                 actor=actor_id,
                 payload={"expediente_id": str(expediente_id), "motivo": motivo},
             )
+
+    async def _current_signable_or_none(
+        self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
+    ) -> object | None:
+        """Prelude común a `firmar_indice`/`firmar_indice_close`: resuelve la
+        versión vigente del índice y aplica el gate de `actor_id`
+        (RF-FIR-11/12). Devuelve `None` en dos casos que el llamante debe
+        tratar idénticamente (sin más que hacer):
+        - nada que firmar (índice inexistente, o ya `'firmado'` — inmutable).
+        - falta `actor_id`: se corta ANTES de intentar ninguna llamada HTTP
+          (signature-service exige X-User-Id y respondería 401), degradando
+          de inmediato a 'pendiente_firma' (motivo='sin_actor_id', auditado).
+
+        Factorizado para que el control compensatorio del cierre
+        (`firmar_indice_close`) comparta EXACTAMENTE esta resolución con el
+        camino de un único intento (`firmar_indice`, usado por el reintento
+        manual `POST /indice/firmar`) sin duplicar la lógica ni el orden de
+        las llamadas a BD que ya asumen los tests existentes.
+        """
+        current = await self._index.get_current(expediente_id)
+        if current is None or current["estado"] == "firmado":
+            return None
+        if not actor_id:
+            await self._mark_pendiente_audited(
+                current["id"], expediente_id, tenant_slug=tenant_slug,
+                actor_id=actor_id, motivo="sin_actor_id",
+            )
+            return None
+        return current
 
     async def firmar_indice(
         self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
@@ -511,17 +543,23 @@ class IndexService:
         llamada HTTP a signature-service ya ocurrió (o se decidió no
         intentarla) ANTES de cada bloque, así que este tramo es 100% DB — no
         hay HTTP dentro de la tx.
+
+        Asiento fantasma bajo carrera (S1, RF-FIR-14): `mark_signed` casa 0
+        filas si OTRO proceso (el job de reconciliación, u otra instancia de
+        este mismo reintento) ya marcó 'firmado' esta fila entre la lectura de
+        `current` y este UPDATE. En ese caso el `signed` obtenido aquí es un
+        sello REAL pero HUÉRFANO (nunca queda persistido como el `firma_id`
+        vigente del índice): NO se escribe el asiento (atribuiría al humano
+        un sello del sistema, o viceversa) y se reporta 409 — el mismo
+        desenlace idempotente que `firmar_indice_retry` ya reporta cuando el
+        índice YA estaba firmado antes de intentar nada.
         """
         from app.clients import signature_client
 
-        current = await self._index.get_current(expediente_id)
-        if current is None or current["estado"] == "firmado":
-            return None
-        if not actor_id:
-            await self._mark_pendiente_audited(
-                current["id"], expediente_id, tenant_slug=tenant_slug,
-                actor_id=actor_id, motivo="sin_actor_id",
-            )
+        current = await self._current_signable_or_none(
+            expediente_id, tenant_slug=tenant_slug, actor_id=actor_id
+        )
+        if current is None:
             return None
         signed = await signature_client.sign_xml(
             tenant_slug=tenant_slug,
@@ -538,18 +576,139 @@ class IndexService:
             )
             return None
         async with self._conn.transaction():
-            await self._index.mark_signed(current["id"], signed.firma_id, signed.minio_key_firmado)
-            await audit.append(
-                self._conn,
-                tenant_slug=tenant_slug,
-                service=_SERVICE,
-                action="archive.indice_firmado",
-                object_type="expediente_indice",
-                object_ref=str(expediente_id),
-                actor=actor_id,
-                payload={"expediente_id": str(expediente_id), "firma_id": str(signed.firma_id)},
+            affected = await self._index.mark_signed(
+                current["id"], signed.firma_id, signed.minio_key_firmado
+            )
+            if affected:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=tenant_slug,
+                    service=_SERVICE,
+                    action="archive.indice_firmado",
+                    object_type="expediente_indice",
+                    object_ref=str(expediente_id),
+                    actor=actor_id,
+                    payload={
+                        "expediente_id": str(expediente_id),
+                        "firma_id": str(signed.firma_id),
+                        "origen": "manual",
+                    },
+                )
+        if not affected:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "indice_ya_firmado",
+                    "detail": "El índice vigente ya está firmado (inmutable)",
+                    "status": 409,
+                },
             )
         return signed
+
+    async def firmar_indice_close(
+        self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
+    ) -> SignedIndice | None:
+        """Control compensatorio del sellado en el CIERRE (residual Ac. AGN
+        001/2024 art. 4.3.2.4) — invocado por `ArchiveService.close_expediente`,
+        post-commit (RT-16), EN VEZ de `firmar_indice`.
+
+        A diferencia de `firmar_indice` (un único intento, best-effort, usado
+        por el reintento manual `POST /indice/firmar` vía `firmar_indice_retry`),
+        aquí se intenta el sellado SÍNCRONAMENTE hasta
+        `settings.close_sign_max_sync_attempts` veces (default 2, con
+        `settings.close_sign_sync_delay_seconds` ~1s entre intentos) ANTES de
+        degradar — el cierre del expediente NUNCA se bloquea (el UPDATE de
+        transición ya se comprometió, ver `close_expediente`), pero un fallo
+        transitorio de red no debe degradar de inmediato si un segundo
+        intento un segundo después habría bastado. 2×~1s es el tope por
+        diseño: este control NO debe alargar peligrosamente el request.
+
+        Dictamen (archival-compliance-auditor) — distingue el MOTIVO del
+        fallo, vía `signature_client.sign_xml_outcome` (resultado
+        ESTRUCTURADO, a diferencia de `sign_xml` que colapsa todo fallo a
+        `None`):
+        - éxito → índice 'firmado' EN el cierre (art. 4.3.2.4 síncrono).
+        - `seal_absent` (sello institucional AUSENTE) → degrada de inmediato,
+          SIN reintentar: firmar es estructuralmente imposible en este
+          instante — un segundo intento un segundo después no cambia nada.
+          Motivo del asiento 'sello_ausente'; converge vía el job de
+          reconciliación (`app/jobs/indice_reconciliation.py`) o el reintento
+          manual, cuando el sello se aprovisione.
+        - `transient` tras agotar los intentos síncronos → degrada. Motivo
+          'sellado_xades_no_obtenido' (el mismo que `firmar_indice`) — el
+          job de reconciliación converge con backoff exponencial.
+
+        Atomicidad efecto<->asiento (H5, igual que `firmar_indice`): cada
+        desenlace (firmado / pendiente_firma) se marca junto con su propio
+        asiento en una única `conn.transaction()`. El sellado HTTP en sí
+        (incluidos los reintentos síncronos de este método) sigue siendo
+        100% posterior al commit de `close_expediente` — no hay HTTP dentro
+        de ninguna transacción.
+        """
+        from app.clients import signature_client
+
+        current = await self._current_signable_or_none(
+            expediente_id, tenant_slug=tenant_slug, actor_id=actor_id
+        )
+        if current is None:
+            return None
+
+        max_attempts = max(1, settings.close_sign_max_sync_attempts)
+        for attempt in range(1, max_attempts + 1):
+            outcome = await signature_client.sign_xml_outcome(
+                tenant_slug=tenant_slug,
+                actor_id=actor_id,
+                payload_xml=current["xml"],
+                objeto_id=str(expediente_id),
+                indice_id=str(current["id"]),
+                version=current["version"],
+            )
+            if outcome.signed is not None:
+                async with self._conn.transaction():
+                    affected = await self._index.mark_signed(
+                        current["id"], outcome.signed.firma_id, outcome.signed.minio_key_firmado
+                    )
+                    if affected:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=tenant_slug,
+                            service=_SERVICE,
+                            action="archive.indice_firmado",
+                            object_type="expediente_indice",
+                            object_ref=str(expediente_id),
+                            actor=actor_id,
+                            payload={
+                                "expediente_id": str(expediente_id),
+                                "firma_id": str(outcome.signed.firma_id),
+                                "origen": "close",
+                            },
+                        )
+                # S1 (RF-FIR-14): `affected=0` -> otro proceso (típicamente
+                # el job de reconciliación, ver `app/jobs/indice_reconciliation.py`)
+                # ya había marcado 'firmado' esta misma fila entre la lectura
+                # de `current` y este UPDATE -- el sello recién obtenido queda
+                # huérfano y NO se escribe el asiento fantasma. El cierre del
+                # expediente NUNCA se bloquea por esto (best-effort, RT-16):
+                # se degrada a `None`, idéntico a cualquier otra rama de este
+                # método -- `ArchiveService.close_expediente` ya ignora el
+                # valor de retorno.
+                return outcome.signed if affected else None
+            if outcome.seal_absent:
+                await self._mark_pendiente_audited(
+                    current["id"], expediente_id, tenant_slug=tenant_slug,
+                    actor_id=actor_id, motivo="sello_ausente",
+                )
+                return None
+            # `transient`: reintenta solo si quedan intentos — sin sleep tras
+            # el ÚLTIMO intento (no alargar el request para nada).
+            if attempt < max_attempts:
+                await asyncio.sleep(settings.close_sign_sync_delay_seconds)
+
+        await self._mark_pendiente_audited(
+            current["id"], expediente_id, tenant_slug=tenant_slug,
+            actor_id=actor_id, motivo="sellado_xades_no_obtenido",
+        )
+        return None
 
     async def firmar_indice_retry(
         self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
@@ -596,6 +755,40 @@ class IndexService:
                 },
             )
         return signed
+
+    async def list_pendientes_firma(
+        self, *, page: int, size: int, user_id: uuid.UUID | None
+    ) -> tuple[list[IndicePendienteFirma], int]:
+        """Visibilidad operacional de índices 'pendiente_firma' (residual Ac.
+        AGN 001/2024 art. 4.3.2.4, `GET /expedientes/indices/pendientes-firma`)
+        — para que ningún índice sin firmar quede silenciado en `audit_log`:
+        un archivista puede consultar directamente lo que el job de
+        reconciliación (`app/jobs/indice_reconciliation.py`) todavía no ha
+        convergido, incluidos los `reconcile_agotado=TRUE` que requieren
+        intervención manual.
+
+        No-read-up (RF-SEG-08): resuelve el clearance real del llamante y
+        delega el filtrado en `IndexRepository.list_pending_signature_page`
+        — mismo criterio (`nivel_seguridad <= clearance`) que
+        `ArchiveRepository.list_expedientes`.
+        """
+        clearance = await self._archive.caller_clearance(user_id)
+        rows, total = await self._index.list_pending_signature_page(
+            max_clearance=clearance, offset=(page - 1) * size, limit=size
+        )
+        items = [
+            IndicePendienteFirma(
+                indice_id=r["indice_id"],
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                version=r["version"],
+                reconcile_intentos=r["reconcile_intentos"],
+                reconcile_agotado=r["reconcile_agotado"],
+                reconcile_ultimo_error=r["reconcile_ultimo_error"],
+            )
+            for r in rows
+        ]
+        return items, total
 
     def _fixity_from_row(self, exp: Expediente, row, items) -> IndiceFixityResult:
         """Comparación de huellas pura-BD sobre un `row`/`items` YA obtenidos

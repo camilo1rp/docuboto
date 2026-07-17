@@ -16,6 +16,8 @@ Responsibilities:
 - Tenant-isolated storage: PostgreSQL schema per tenant (SET search_path)
 """
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -25,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.routers.batch import router as batch_router
 from app.routers.expedientes import router as expedientes_router
 from app.routers.fisico import router as fisico_router
@@ -42,12 +45,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _indice_reconciliation_loop() -> None:
+    """Loop de fondo (residual Ac. AGN 001/2024 art. 4.3.2.4): barre todos
+    los tenants activos cada `indice_reconciliation_interval_seconds`. Un
+    fallo de UNA barrida (p. ej. Postgres momentáneamente inalcanzable)
+    queda contenido aquí — el loop NUNCA muere por una excepción, solo
+    reintenta en la siguiente iteración."""
+    while True:
+        try:
+            await _reconcile_indices_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación del sellado del índice",
+                exc_info=True,
+            )
+        await asyncio.sleep(settings.indice_reconciliation_interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("archive-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
+    reconcile_task: asyncio.Task[None] | None = None
+    if settings.indice_reconciliation_enabled:
+        reconcile_task = asyncio.create_task(_indice_reconciliation_loop())
     yield
     logger.info("archive-service shutting down")
+    if reconcile_task is not None:
+        reconcile_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reconcile_task
     await close_pool()
 
 

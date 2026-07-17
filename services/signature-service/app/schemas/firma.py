@@ -39,6 +39,24 @@ class SignXmlRequest(BaseModel):
     version: int | None = None
 
 
+class InternalSignIndiceRequest(BaseModel):
+    """Payload de ``POST /internal/sign-indice`` (reconciliación del sellado
+    del índice, residual Ac. AGN 001/2024 art. 4.3.2.4).
+
+    Gateada SOLO por ``require_internal_token`` (X-Internal-Token, D-02) —
+    NUNCA ``PERM_FIRMA``/``X-User-Id``. A diferencia de ``SignXmlRequest``,
+    no lleva ``objeto_tipo``: la ruta lo fija a ``"indice"`` de forma
+    hardwired (``app/routers/signature.py::sign_indice_internal``) — el
+    llamador no puede elegirlo, así que estructuralmente esta ruta NUNCA
+    puede firmar la cadena personal ni ningún otro tipo de objeto.
+    """
+
+    payload_xml: str = Field(..., min_length=1)
+    objeto_id: str
+    indice_id: str
+    version: int
+
+
 class FirmaResponse(BaseModel):
     firma_id: uuid.UUID
     objeto_tipo: str

@@ -854,19 +854,22 @@ class ArchiveService:
         SIN evento ni asiento de auditoría, de forma permanente e
         irreproducible (el reintento choca con 409 `invalid_status_transition`).
 
-        El sellado XAdES-B (`firmar_indice`) es HTTP y queda deliberadamente
-        FUERA de la transacción, tras el commit, best-effort (RT-16): (a) un
-        POST no se revierte con ROLLBACK — si el sello se emite y la tx
-        aborta, signature-service ya lo tendría marcado sobre una fila
-        revertida; (b) mantener la tx abierta durante la latencia HTTP
-        retendría el `pg_advisory_xact_lock` del tenant que `audit.append`
-        toma internamente, serializando TODA la auditoría del tenant. Por
-        eso el asiento 'archive.expediente_closed' (dentro de la tx, lo
-        último) NO puede afirmar `indice_estado`/`firma_id` del sellado —
-        ese resultado aún no existe en el instante del commit (RF-FIR-15,
-        no sobre-declarar) — y el desenlace del sellado se audita aparte,
-        después, en su propio asiento **dentro** de `IndexService.firmar_indice`
-        (atómico con la marca de estado del índice — ver su docstring, H5).
+        El sellado XAdES-B (`firmar_indice_close`) es HTTP y queda
+        deliberadamente FUERA de la transacción, tras el commit, best-effort
+        (RT-16): (a) un POST no se revierte con ROLLBACK — si el sello se
+        emite y la tx aborta, signature-service ya lo tendría marcado sobre
+        una fila revertida; (b) mantener la tx abierta durante la latencia
+        HTTP (incluidos los reintentos síncronos acotados del control
+        compensatorio, residual Ac. AGN 001/2024 art. 4.3.2.4) retendría el
+        `pg_advisory_xact_lock` del tenant que `audit.append` toma
+        internamente, serializando TODA la auditoría del tenant. Por eso el
+        asiento 'archive.expediente_closed' (dentro de la tx, lo último) NO
+        puede afirmar `indice_estado`/`firma_id` del sellado — ese resultado
+        aún no existe en el instante del commit (RF-FIR-15, no
+        sobre-declarar) — y el desenlace del sellado se audita aparte,
+        después, en su propio asiento **dentro** de
+        `IndexService.firmar_indice_close` (atómico con la marca de estado
+        del índice — ver su docstring, H5).
 
         Traza de intentos denegados (H6): el Modelo de Requisitos SGDEA exige
         que la pista registre también los intentos DENEGADOS de alterar el
@@ -1014,10 +1017,20 @@ class ArchiveService:
         # --- fuera de la tx (ya comprometida), best-effort (RT-16): sellado
         # XAdES-B vía HTTP a signature-service. Un fallo aquí NUNCA bloquea
         # ni revierte el cierre, que ya es un hecho consumado — el desenlace
-        # (firmado / pendiente_firma) se audita DENTRO de `firmar_indice`,
+        # (firmado / pendiente_firma) se audita DENTRO de `firmar_indice_close`,
         # atómico con la marca de estado del índice (H5) — ya no aquí, dos
         # commits distintos para el mismo par efecto+asiento.
-        await index.firmar_indice(expediente_id, tenant_slug=self._tenant_slug, actor_id=actor_id)
+        # `firmar_indice_close` (residual Ac. AGN 001/2024 art. 4.3.2.4, no
+        # `firmar_indice` a secas): control compensatorio con intento
+        # síncrono ACOTADO + degradación diferenciada por motivo
+        # (`seal_absent` no reintenta, `transient` reintenta hasta agotar
+        # `settings.close_sign_max_sync_attempts`) — ver su docstring en
+        # `IndexService`. `firmar_indice` (un único intento) sigue siendo el
+        # usado por el reintento manual (`firmar_indice_retry` /
+        # `POST /indice/firmar`).
+        await index.firmar_indice_close(
+            expediente_id, tenant_slug=self._tenant_slug, actor_id=actor_id
+        )
         # No re-lee vía `get_expediente`: ese método resuelve el clearance del
         # llamante (`caller_clearance(user_id)`), y aquí no se propaga
         # `user_id` — hacerlo devolvería 404 espurio para un archivista con

@@ -217,6 +217,11 @@ services:
       # (degradación observable, firma.ocsp_downgrade_no_responder).
       - SIGNER_OCSP_ENABLED=${SIGNER_OCSP_ENABLED:-true}
       - SIGNER_OCSP_REQUIRE=${SIGNER_OCSP_REQUIRE:-false}
+      # D-02: mismo secreto que archive-service.SIGNATURE_INTERNAL_TOKEN —
+      # protege POST /internal/sign-indice (residual Ac. AGN 001/2024 art.
+      # 4.3.2.4, reconciliación del sellado del índice). Dev-only — NUNCA
+      # este valor en producción.
+      - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
     volumes:
       # Solo lectura: signature-service nunca escribe en los sellos montados.
       # NUNCA se monta ./secrets/ca-authority (clave privada de la CA local de
@@ -357,6 +362,11 @@ services:
       - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      # D-02: mismo secreto que signature-service.SIGNATURE_INTERNAL_TOKEN —
+      # el job de reconciliación del sellado del índice (residual Ac. AGN
+      # 001/2024 art. 4.3.2.4, app/jobs/indice_reconciliation.py) lo usa para
+      # llamar signature-service POST /internal/sign-indice. Dev-only.
+      - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

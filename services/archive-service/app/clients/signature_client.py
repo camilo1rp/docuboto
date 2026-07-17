@@ -29,6 +29,7 @@ import uuid
 from dataclasses import dataclass
 
 import httpx
+from fastapi import status
 
 from app.core.config import settings
 
@@ -52,6 +53,32 @@ class SignedIndice:
     tipo_firma: str | None
     acreditado: bool
     certificado_fingerprint: str | None
+
+
+@dataclass(slots=True)
+class SignOutcome:
+    """Resultado ESTRUCTURADO de un intento de sellado (residual Ac. AGN
+    001/2024 art. 4.3.2.4, reconciliación) — distingue el MOTIVO del fallo
+    para que el control compensatorio del cierre
+    (`IndexService.firmar_indice_close`) y el job de reconciliación
+    (`app/jobs/indice_reconciliation.py`) decidan si reintentar
+    (`transient`) o degradar sin reintentar (`seal_absent`).
+
+    Tipo ADITIVO — `sign_xml` (usado por `firmar_indice`/
+    `firmar_indice_retry`) sigue colapsando todo fallo a `None`, SIN
+    cambios: `sign_xml_outcome`/`sign_indice_internal` son funciones NUEVAS,
+    no un reemplazo.
+
+    Exactamente uno de los tres queda "poblado": `signed` (éxito),
+    `seal_absent=True` (503 `signing_seal_unavailable` — sello institucional
+    ausente, firmar es estructuralmente imposible ahora mismo) o
+    `transient=True` (cualquier otro fallo: HTTP no-2xx, timeout, servicio
+    inalcanzable — puede resolverse solo con reintentar más tarde).
+    """
+
+    signed: SignedIndice | None
+    seal_absent: bool = False
+    transient: bool = False
 
 
 @dataclass(slots=True)
@@ -115,6 +142,131 @@ async def sign_xml(
     except httpx.RequestError as exc:
         logger.warning("signature-service inalcanzable al firmar índice: %s", exc)
     return None
+
+
+def _outcome_from_signed_response(data: dict) -> SignedIndice:
+    """Deserializa el cuerpo 2xx de `/sign-xml`/`/internal/sign-indice` en un
+    `SignedIndice` — factorizado fuera de `sign_xml`/`sign_xml_outcome`/
+    `sign_indice_internal` (misma forma de respuesta, `FirmaResponse` de
+    signature-service) para no triplicar el mapeo campo a campo."""
+    return SignedIndice(
+        firma_id=uuid.UUID(data["firma_id"]),
+        minio_key_firmado=data.get("minio_key_firmado"),
+        nivel_conformidad=data.get("nivel_conformidad"),
+        xades_level=data.get("xades_level"),
+        tipo_firma=data.get("tipo_firma"),
+        acreditado=bool(data.get("acreditado", False)),
+        certificado_fingerprint=data.get("certificado_fingerprint"),
+    )
+
+
+def _outcome_from_response(resp: httpx.Response, *, contexto: str) -> SignOutcome:
+    """Traduce una respuesta HTTP de signature-service a un `SignOutcome`
+    ESTRUCTURADO (residual Ac. AGN 001/2024 art. 4.3.2.4) — compartido por
+    `sign_xml_outcome` (`/sign-xml`) y `sign_indice_internal`
+    (`/internal/sign-indice`): mismo criterio de clasificación en ambas rutas
+    (`signing_seal_unavailable` → `seal_absent`; cualquier otro no-2xx →
+    `transient`)."""
+    if resp.status_code in (200, 201):
+        return SignOutcome(signed=_outcome_from_signed_response(resp.json()))
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        try:
+            detail = resp.json().get("detail", {})
+        except ValueError:
+            detail = {}
+        error = detail.get("error") if isinstance(detail, dict) else None
+        if error == "signing_seal_unavailable":
+            logger.warning("signature-service: sello institucional ausente (%s)", contexto)
+            return SignOutcome(signed=None, seal_absent=True)
+    logger.warning("signature-service → HTTP %s (%s, transient)", resp.status_code, contexto)
+    return SignOutcome(signed=None, transient=True)
+
+
+async def sign_xml_outcome(
+    *,
+    tenant_slug: str,
+    actor_id: str,
+    payload_xml: str,
+    objeto_id: str,
+    indice_id: str,
+    version: int,
+) -> SignOutcome:
+    """Gemelo ESTRUCTURADO de `sign_xml` (residual Ac. AGN 001/2024 art.
+    4.3.2.4) — usado EXCLUSIVAMENTE por
+    `IndexService.firmar_indice_close` (control compensatorio del cierre,
+    intento síncrono ACOTADO): a diferencia de `sign_xml`, que colapsa TODO
+    fallo a `None`, aquí se distingue `seal_absent` (no reintentar) de
+    `transient` (reintentar) — ver `SignOutcome`.
+
+    Mismo endpoint/cuerpo/headers que `sign_xml` (`POST /sign-xml`,
+    `X-User-Id` — sellado ATRIBUIDO al humano que cierra el expediente); NO
+    usa la ruta interna de reconciliación (ver `sign_indice_internal`).
+    """
+    body = {
+        "payload_xml": payload_xml,
+        "objeto_tipo": "indice",
+        "objeto_id": objeto_id,
+        "formato": "XAdES",
+        "indice_id": indice_id,
+        "version": version,
+    }
+    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.signature_service_url, timeout=10.0
+        ) as client:
+            resp = await client.post("/api/v1/signature/sign-xml", json=body, headers=headers)
+            return _outcome_from_response(resp, contexto="sign-xml (cierre)")
+    except httpx.RequestError as exc:
+        logger.warning("signature-service inalcanzable al firmar índice (cierre): %s", exc)
+        return SignOutcome(signed=None, transient=True)
+
+
+async def sign_indice_internal(
+    *,
+    tenant_slug: str,
+    payload_xml: str,
+    objeto_id: str,
+    indice_id: str,
+    version: int,
+) -> SignOutcome:
+    """Solicita el sellado del índice vía la ruta INTERNA de reconciliación
+    (residual Ac. AGN 001/2024 art. 4.3.2.4, signature-service
+    `POST /internal/sign-indice`, gate D-02) — usado EXCLUSIVAMENTE por
+    `app/jobs/indice_reconciliation.py`.
+
+    SIN `X-User-Id` (no hay actor humano detrás): `X-Internal-Token`
+    (`settings.signature_internal_token`) en su lugar — signature-service
+    atribuye el sellado a `SYSTEM_RECONCILER_ID`
+    (`app/core/constants.py`, MISMO valor literal en ambos servicios).
+    Timeout más generoso que `sign_xml`/`sign_xml_outcome` (15s vs 10s): el
+    job corre en background, sin presión de latencia de un request HTTP de
+    usuario — puede permitirse esperar un poco más antes de degradar a
+    `transient` y dejar que el backoff del propio job reintente.
+    """
+    body = {
+        "payload_xml": payload_xml,
+        "objeto_id": objeto_id,
+        "indice_id": indice_id,
+        "version": version,
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.signature_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.signature_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/signature/internal/sign-indice", json=body, headers=headers
+            )
+            return _outcome_from_response(resp, contexto="internal/sign-indice (reconciliación)")
+    except httpx.RequestError as exc:
+        logger.warning(
+            "signature-service inalcanzable al reconciliar el sellado del índice: %s", exc
+        )
+        return SignOutcome(signed=None, transient=True)
 
 
 async def verify(

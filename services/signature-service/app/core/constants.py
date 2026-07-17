@@ -28,4 +28,19 @@ an import cycle (and ``GROUP`` would not exist yet at that point in
 
 from __future__ import annotations
 
+import uuid
+
 DLQ_GROUP = "signature-service"
+
+# Actor atribuido a las firmas del índice producidas por el job de
+# reconciliación de archive-service (`app/jobs/indice_reconciliation.py`) vía
+# la ruta interna `POST /internal/sign-indice` (residual Ac. AGN 001/2024 art.
+# 4.3.2.4) — NUNCA un usuario humano; distingue en `audit_log`/`firma.firmante_id`
+# un sellado diferido-por-el-sistema de uno manual (`/sign-xml`, X-User-Id real).
+#
+# MISMO valor literal que `archive-service/app/core/constants.py::SYSTEM_RECONCILER_ID`
+# — ambos servicios deben coincidir byte a byte; no hay una fuente única
+# compartida entre microservicios independientes (ADR-003, sin librería común
+# de constantes de dominio). Cambiar este valor en un solo lado rompe la
+# atribución sin que ningún tipo lo detecte — verificar ambos si se rota.
+SYSTEM_RECONCILER_ID = uuid.UUID("00000000-0000-0000-0000-000000005ec1")

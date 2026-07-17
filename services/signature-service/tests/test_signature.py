@@ -105,7 +105,7 @@ async def test_sign_xml_happy_path(client_with_conn) -> None:
     which needs a mounted seal — see tests/test_sign_xml_xades.py for that
     coverage. This test keeps exercising the preexisting HMAC 'nativa' path
     end-to-end through the router, which any objeto_tipo other than "indice"
-    still selects (app.routers.signature._select_provider_name).
+    still selects (app.services.signing_service._select_provider_name).
     """
     client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)

@@ -19,7 +19,7 @@ ver la sección "XAdES-T" más abajo para los tests dedicados.
 
 No se toca el filesystem ni se depende de ``scripts/gen-dev-signing-cert.sh``
 ni ``scripts/gen-dev-tsa-cert.sh``: cada test genera su propio par de claves
-RSA-2048 efímero (``cryptography``) y parchea ``app.routers.signature.load_seal``
+RSA-2048 efímero (``cryptography``) y parchea ``app.services.signing_service.load_seal``
 (sello institucional) / ``app.core.tsa.load_tsa_seal`` (TSA) directamente — el
 mismo patrón que documenta la memoria del proyecto para pruebas de este
 proveedor. El upload a storage-service también se mockea
@@ -472,7 +472,7 @@ async def signature_env(client_with_conn, monkeypatch):
 
     def _install_seal(seal):
         if isinstance(seal, SignerRef):
-            monkeypatch.setattr("app.routers.signature.load_seal", lambda slug: seal)
+            monkeypatch.setattr("app.services.signing_service.load_seal", lambda slug: seal)
         else:
 
             def _dispatch(slug: str) -> SignerRef:
@@ -480,7 +480,7 @@ async def signature_env(client_with_conn, monkeypatch):
                     raise SealNotFoundError(f"no seal montado para tenant {slug!r}")
                 return seal[slug]
 
-            monkeypatch.setattr("app.routers.signature.load_seal", _dispatch)
+            monkeypatch.setattr("app.services.signing_service.load_seal", _dispatch)
 
     def _install_tsa_seal(seal):
         if seal is None:

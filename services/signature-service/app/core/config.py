@@ -207,5 +207,18 @@ class Settings(BaseSettings):
     # (material de desarrollo, sin responder acreditado real detrás).
     signer_ocsp_validity_days: int = Field(default=7, ge=1)
 
+    # --- Reconciliación del sellado del índice (residual Ac. AGN 001/2024
+    # art. 4.3.2.4) --- Token compartido servicio-a-servicio (D-02, mismo
+    # patrón que `storage_internal_token`) que protege
+    # `POST /internal/sign-indice` (`app/core/internal_auth.py`,
+    # `app/routers/signature.py`): archive-service lo usa desde su job de
+    # reconciliación (`app/jobs/indice_reconciliation.py`) para pedir el
+    # sellado del índice ATRIBUIDO A SISTEMA (`SYSTEM_RECONCILER_ID`,
+    # `app/core/constants.py`), sin `X-User-Id`. Mismo secreto que
+    # `archive-service.SIGNATURE_INTERNAL_TOKEN`. Vacío (default) hace que la
+    # ruta responda 503 fail-closed (mal-configurada) en vez de aceptar
+    # cualquier token — NUNCA commitear el valor real.
+    signature_internal_token: str = ""
+
 
 settings = Settings()

@@ -34,7 +34,7 @@ def _patch_index_service():
 
     return (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
-        patch.object(IndexService, "firmar_indice", new=AsyncMock(return_value=None)),
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
     )
 
 

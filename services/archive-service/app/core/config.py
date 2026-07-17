@@ -35,6 +35,35 @@ class Settings(BaseSettings):
     service_port: int = 8004
     log_level: str = "info"
 
+    # --- Reconciliación del sellado del índice electrónico (residual Ac.
+    # AGN 001/2024 art. 4.3.2.4) — ver app/jobs/indice_reconciliation.py ---
+    # Kill-switch: True (default) arranca el loop de reconciliación en el
+    # lifespan de app/main.py.
+    indice_reconciliation_enabled: bool = True
+    # Cadencia (segundos) entre barridas del loop.
+    indice_reconciliation_interval_seconds: int = 300
+    # Índices 'pendiente_firma' procesados como máximo por tenant y barrida.
+    indice_reconciliation_batch_size: int = 50
+    # Reintentos del job antes de marcar `reconcile_agotado=TRUE` (permanece
+    # 'pendiente_firma', requiere intervención manual — POST /indice/firmar).
+    indice_reconciliation_max_intentos: int = 8
+    # Backoff exponencial: `min(cap, base * 2**intentos)`.
+    indice_reconciliation_backoff_base_seconds: int = 60
+    indice_reconciliation_backoff_cap_seconds: int = 86400
+    # Intento síncrono ACOTADO en el cierre (`IndexService.firmar_indice_close`)
+    # antes de degradar a 'pendiente_firma' por fallo transitorio — un `seal_absent`
+    # degrada de inmediato SIN consumir estos reintentos (ver el docstring del
+    # método). 2 intentos × ~1s es el tope por diseño: el cierre del expediente
+    # no debe alargarse peligrosamente por este control compensatorio.
+    close_sign_max_sync_attempts: int = 2
+    close_sign_sync_delay_seconds: float = 1.0
+    # D-02: mismo secreto compartido que signature-service.SIGNATURE_INTERNAL_TOKEN
+    # — enviado por app/clients/signature_client.py::sign_indice_internal (SIN
+    # X-User-Id) hacia signature-service `POST /internal/sign-indice`. Vacío
+    # (default) hace que signature-service rechace la llamada con 503
+    # (fail-closed, mal-configurado) — NUNCA commitear el valor real.
+    signature_internal_token: str = ""
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

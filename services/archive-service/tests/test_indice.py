@@ -1423,6 +1423,10 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     firma_id = uuid.uuid4()
     row = {"id": uuid.uuid4(), "estado": "pendiente_firma", "xml": "<indice/>", "version": 1}
     mock_conn.fetchrow.side_effect = [row, row]
+    # S1: `mark_signed` debe reportar `affected=1` (ganó la carrera) para que
+    # el asiento se escriba y el endpoint devuelva 200 — el default del mock
+    # (`execute.return_value = None`) simularía una carrera perdida (409).
+    mock_conn.execute.return_value = "UPDATE 1"
 
     from app.clients.signature_client import SignedIndice
 
@@ -1449,6 +1453,95 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     assert body["firma_id"] == str(firma_id)
     assert body["minio_key_firmado"] == "file-id/indice.xml"
     assert body["acreditado"] is False
+
+
+@pytest.mark.asyncio
+async def test_firmar_indice_lost_race_raises_409_no_phantom_audit(client_with_conn) -> None:
+    """S1 (RF-FIR-14): si `mark_signed` casa 0 filas -- OTRO proceso (el job
+    de reconciliación, u otra instancia de este mismo reintento) ya marcó
+    'firmado' esta fila entre la lectura de `current` y este UPDATE -- el
+    sello obtenido en ESTA llamada es real pero HUÉRFANO: NO se escribe el
+    asiento `archive.indice_firmado` (fantasma, atribuiría al humano un
+    sello del sistema o viceversa) y se reporta 409, el mismo desenlace
+    idempotente que `firmar_indice_retry` ya usa cuando el índice YA estaba
+    firmado antes de intentar nada — NUNCA un 500."""
+    client, mock_conn = client_with_conn  # noqa: F841
+    from app.services.index_service import IndexService
+
+    exp_id = uuid.uuid4()
+    svc = IndexService(mock_conn, "demo")
+    row = {"id": uuid.uuid4(), "estado": "vigente", "xml": "<indice/>", "version": 1}
+    mock_conn.fetchrow.return_value = row
+    mock_conn.execute.return_value = "UPDATE 0"  # perdió la carrera
+
+    from app.clients import signature_client
+    from app.clients.signature_client import SignedIndice
+
+    signed = SignedIndice(
+        firma_id=uuid.uuid4(),
+        minio_key_firmado="file-id/indice.xml",
+        nivel_conformidad="xades_b_no_acreditado",
+        xades_level="XAdES-B",
+        tipo_firma="sello_sistema",
+        acreditado=False,
+        certificado_fingerprint="ab:cd",
+    )
+
+    with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=signed)):
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4()))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"] == "indice_ya_firmado"
+    audit_calls = [
+        c
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert audit_calls == []
+
+
+@pytest.mark.asyncio
+async def test_firmar_endpoint_exito_audit_origen_manual(client_with_conn) -> None:
+    """C3: el asiento `archive.indice_firmado` del reintento MANUAL distingue
+    su origen (`origen="manual"`) del cierre (`"close"`) y la reconciliación
+    (`"reconciliation"`)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE + PERM_FIRMA granted
+    exp_id = uuid.uuid4()
+    row = {"id": uuid.uuid4(), "estado": "pendiente_firma", "xml": "<indice/>", "version": 1}
+    mock_conn.fetchrow.side_effect = [row, row]
+    mock_conn.execute.return_value = "UPDATE 1"
+
+    from app.clients.signature_client import SignedIndice
+
+    signed = SignedIndice(
+        firma_id=uuid.uuid4(),
+        minio_key_firmado="file-id/indice.xml",
+        nivel_conformidad="xades_b_no_acreditado",
+        xades_level="XAdES-B",
+        tipo_firma="sello_sistema",
+        acreditado=False,
+        certificado_fingerprint="ab:cd",
+    )
+
+    with patch("app.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)):
+        resp = await client.post(
+            f"/api/v1/expedientes/{exp_id}/indice/firmar",
+            headers=TENANT_HEADERS,
+        )
+
+    assert resp.status_code == 200
+    import json
+
+    audit_calls = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    payload = json.loads(audit_calls[0][8])
+    assert payload["origen"] == "manual"
 
 
 # ---------------------------------------------------------------------------

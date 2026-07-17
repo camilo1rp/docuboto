@@ -17,6 +17,7 @@ del índice y su snapshot de items atómicamente. La versión vigente es MAX(ver
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import asyncpg
 
@@ -69,23 +70,60 @@ class IndexRepository:
         indice_id: uuid.UUID,
         firma_id: uuid.UUID,
         minio_key_firmado: str | None = None,
-    ) -> None:
+    ) -> int:
         """Marca la versión del índice como firmada e inmutable (E06 Inc.1).
 
         Defensa en profundidad: el `WHERE` excluye explícitamente filas ya
         `'firmado'` — un índice sellado es inmutable y no debe re-escribirse
-        (aunque `IndexService.firmar_indice` ya evita llamar aquí dos veces
-        sobre el mismo índice, esta cláusula lo garantiza también a nivel BD).
+        (aunque `IndexService.firmar_indice`/`firmar_indice_close` ya evitan
+        llamar aquí dos veces sobre el mismo índice, esta cláusula lo
+        garantiza también a nivel BD).
+
+        Resetea el backoff de reconciliación (residual Ac. AGN 001/2024 art.
+        4.3.2.4, migración 025): un índice recién firmado ya no tiene NADA
+        pendiente que reconciliar — sin este reset, un índice que hubiera
+        acumulado intentos antes de firmarse (p. ej. sellado manual mientras
+        el job ya lo había reintentado un par de veces) dejaría basura
+        (`reconcile_intentos`/`reconcile_ultimo_error` obsoletos) visible en
+        `GET /expedientes/indices/pendientes-firma` si alguna vez volviera a
+        degradarse en una versión FUTURA del índice (nueva fila, pero un
+        operador leyendo el histórico podría confundirse).
+
+        Devuelve el número de filas afectadas (0 o 1, parseado del status
+        tag `"UPDATE n"` de asyncpg) — el job de reconciliación
+        (`app/jobs/indice_reconciliation.py::_reconciliar_indice`) lo usa
+        para distinguir "yo firmé esta fila" (1) de "perdí la carrera, otra
+        conexión ya la había firmado" (0, el `WHERE estado <> 'firmado'` no
+        casó ninguna fila) — en el segundo caso NO se escribe un asiento de
+        auditoría fantasma sobre un efecto que esta llamada no produjo. Los
+        demás llamadores (`IndexService.firmar_indice`/`firmar_indice_close`)
+        ignoran el valor de retorno sin efecto — no rompe su comportamiento.
         """
-        await self._conn.execute(
+        tag = await self._conn.execute(
             "UPDATE expediente_indice SET estado='firmado', firma_id=$2, "
-            "minio_key_firmado=$3 WHERE id=$1 AND estado <> 'firmado'",
+            "minio_key_firmado=$3, reconcile_intentos=0, reconcile_agotado=FALSE, "
+            "reconcile_proximo_at=NULL, reconcile_ultimo_error=NULL "
+            "WHERE id=$1 AND estado <> 'firmado'",
             indice_id,
             firma_id,
             minio_key_firmado,
         )
+        try:
+            return int(tag.split()[-1])
+        except (AttributeError, ValueError, IndexError):
+            # asyncpg SIEMPRE devuelve una etiqueta de estado real
+            # ("UPDATE 0"/"UPDATE 1") — este fallback SOLO protege contra
+            # mocks de test cuyo `conn.execute` no configura un valor de
+            # retorno realista (default `None` en `tests/conftest.py::
+            # _make_mock_conn`, usado por decenas de tests que nunca antes
+            # necesitaron que `mark_signed` devolviera nada). Fail-safe: 0
+            # filas afectadas — el job de reconciliación simplemente no
+            # auditará un efecto que no puede confirmar, nunca una excepción
+            # sin capturar por un detalle de mock ajeno a lo que ese test
+            # quería ejercitar.
+            return 0
 
-    async def mark_pendiente(self, indice_id: uuid.UUID) -> None:
+    async def mark_pendiente(self, indice_id: uuid.UUID, *, motivo: str) -> None:
         """Marca la versión como 'pendiente_firma' (E06 Inc.1, RT-16).
 
         Decisión del usuario: si el sellado XAdES-B falla, el índice queda en
@@ -98,12 +136,167 @@ class IndexRepository:
         a `'pendiente_firma'` (protege la misma invariante que la migración
         015 / `regenerate`, aunque los llamadores actuales solo invocan esto
         sobre índices no firmados).
+
+        `motivo` (residual Ac. AGN 001/2024 art. 4.3.2.4, migración 025) se
+        persiste en `reconcile_ultimo_error` y `reconcile_proximo_at` se fija
+        a `now()` — TODA degradación queda de inmediato elegible para
+        `IndexRepository.list_pending_signature` (el job de reconciliación no
+        tiene que esperar un primer `bump_intento` para recogerla) y visible
+        con su motivo en `GET /expedientes/indices/pendientes-firma` incluso
+        antes de que el job la toque.
+
+        Re-arma el backoff (`reconcile_agotado=FALSE, reconcile_intentos=0`,
+        E06/Ac. AGN 001/2024 art. 4.3.2.4, hallazgo C1): esta función SOLO la
+        invoca `IndexService` (nunca el job — el job degrada vía
+        `bump_intento`, que sí incrementa/agota), es decir, cada llamada aquí
+        es una degradación humana-adyacente (cierre nuevo del expediente, o
+        reintento manual `POST /indice/firmar`). Si un índice había quedado
+        `reconcile_agotado=TRUE` (excluido del job) y un archivista corrige la
+        causa raíz y reintenta manualmente, ese reintento debe volver a hacer
+        al índice elegible para la convergencia automática aunque el propio
+        intento manual también falle — sin este reset, un retry manual fallido
+        dejaba el índice agotado E inalcanzable tanto para el job como
+        (aparentemente) para el operador, hasta un segundo retry manual con
+        ÉXITO.
         """
         await self._conn.execute(
-            "UPDATE expediente_indice SET estado='pendiente_firma' WHERE id=$1 "
-            "AND estado <> 'firmado'",
+            "UPDATE expediente_indice SET estado='pendiente_firma', "
+            "reconcile_ultimo_error=$2, reconcile_proximo_at=now(), "
+            "reconcile_agotado=FALSE, reconcile_intentos=0 "
+            "WHERE id=$1 AND estado <> 'firmado'",
             indice_id,
+            motivo,
         )
+
+    async def list_pending_signature(self, limit: int) -> list[asyncpg.Record]:
+        """Índices 'pendiente_firma' elegibles para el job de reconciliación
+        (residual Ac. AGN 001/2024 art. 4.3.2.4, `app/jobs/indice_reconciliation.py`).
+
+        Solo la versión VIGENTE (`DISTINCT ON (expediente_id) ... ORDER BY
+        version DESC`, el índice es append-only) de expedientes `closed`/
+        `transferred` — un índice `pendiente_firma` de un expediente todavía
+        `open` no puede ocurrir en la práctica (el sellado solo se intenta al
+        cierre), pero el filtro por `status` es defensa en profundidad, no
+        una suposición. Excluye `reconcile_agotado=TRUE` (requiere
+        intervención manual, el job ya no debe malgastar cupo HTTP en ellos)
+        y respeta el backoff (`reconcile_proximo_at IS NULL OR <= now()`).
+
+        Orden `reconcile_proximo_at NULLS FIRST`: los recién degradados
+        (elegibles de inmediato, ver `mark_pendiente`) se procesan antes que
+        los que ya vienen arrastrando backoff — sin este orden, un índice con
+        `reconcile_proximo_at` muy en el pasado (tras varios ciclos de
+        `bump_intento`) podría acaparar el batch indefinidamente frente a uno
+        recién llegado si ambos entraran por PK/insert order.
+        """
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT vigente.id, vigente.expediente_id, vigente.version, vigente.xml,
+                       vigente.reconcile_intentos, vigente.reconcile_agotado,
+                       vigente.reconcile_ultimo_error, e.code AS expediente_code
+                FROM (
+                    SELECT DISTINCT ON (expediente_id) *
+                    FROM expediente_indice
+                    ORDER BY expediente_id, version DESC
+                ) vigente
+                JOIN expedientes e ON e.id = vigente.expediente_id
+                WHERE vigente.estado = 'pendiente_firma'
+                  AND e.status IN ('closed', 'transferred')
+                  AND vigente.reconcile_agotado = FALSE
+                  AND (vigente.reconcile_proximo_at IS NULL OR vigente.reconcile_proximo_at <= now())
+                ORDER BY vigente.reconcile_proximo_at ASC NULLS FIRST
+                LIMIT $1
+                """,
+                limit,
+            )
+        )
+
+    async def bump_intento(
+        self,
+        indice_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Registra un intento de sellado FALLIDO del job de reconciliación
+        (residual Ac. AGN 001/2024 art. 4.3.2.4): incrementa
+        `reconcile_intentos` atómicamente en el propio UPDATE (sin lectura
+        previa — evita una carrera lectura-modificación-escritura si dos
+        instancias del job procesaran el mismo índice, aunque el advisory
+        lock por-tenant del job ya debería impedirlo en la práctica) y fija
+        `reconcile_proximo_at`/`reconcile_ultimo_error`/`reconcile_agotado`
+        con los valores que decidió el llamador.
+
+        `proximo_at=None` es válido para la fila `agotado=True` (ya no hay
+        "próximo intento" que programar — permanece `pendiente_firma`
+        indefinidamente hasta intervención manual).
+        """
+        await self._conn.execute(
+            "UPDATE expediente_indice SET reconcile_intentos = reconcile_intentos + 1, "
+            "reconcile_proximo_at = $2, reconcile_ultimo_error = $3, reconcile_agotado = $4 "
+            "WHERE id = $1",
+            indice_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    async def list_pending_signature_page(
+        self, *, max_clearance: int, offset: int, limit: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Listado operacional PAGINADO de índices 'pendiente_firma' para el
+        archivista (residual Ac. AGN 001/2024 art. 4.3.2.4,
+        `GET /expedientes/indices/pendientes-firma`) — visibilidad
+        complementaria a `audit_log` (ningún índice sin firmar queda
+        silenciado).
+
+        No-read-up (RF-SEG-08): filtra por `e.nivel_seguridad <= $max_clearance`,
+        mismo criterio que `ArchiveRepository.list_expedientes`. A diferencia
+        de `list_pending_signature` (consumida por el job, sin gate de
+        clearance — el sistema puede/debe sellar cualquier índice pendiente
+        sin importar su nivel), este método SÍ redacta por clearance del
+        llamante porque expone metadatos de expedientes clasificados
+        (`expediente_code`) a un usuario humano.
+        """
+        where = (
+            "vigente.estado = 'pendiente_firma' "
+            "AND e.status IN ('closed', 'transferred') "
+            "AND e.nivel_seguridad <= $1"
+        )
+        total = await self._conn.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT DISTINCT ON (expediente_id) expediente_id, estado
+                FROM expediente_indice
+                ORDER BY expediente_id, version DESC
+            ) vigente
+            JOIN expedientes e ON e.id = vigente.expediente_id
+            WHERE {where}
+            """,
+            max_clearance,
+        )
+        rows = await self._conn.fetch(
+            f"""
+            SELECT vigente.id AS indice_id, vigente.expediente_id, vigente.version,
+                   vigente.reconcile_intentos, vigente.reconcile_agotado,
+                   vigente.reconcile_ultimo_error, e.code AS expediente_code
+            FROM (
+                SELECT DISTINCT ON (expediente_id) *
+                FROM expediente_indice
+                ORDER BY expediente_id, version DESC
+            ) vigente
+            JOIN expedientes e ON e.id = vigente.expediente_id
+            WHERE {where}
+            ORDER BY vigente.expediente_id
+            LIMIT $2 OFFSET $3
+            """,
+            max_clearance,
+            limit,
+            offset,
+        )
+        return list(rows), total or 0
 
     async def get_items(self, indice_id: uuid.UUID) -> list[asyncpg.Record]:
         return list(

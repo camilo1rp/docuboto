@@ -48,7 +48,7 @@ async def test_close_applies_trd_disposition(client_with_conn) -> None:
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
-        patch.object(IndexService, "firmar_indice", new=AsyncMock(return_value=None)),
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
     ):
         resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -60,7 +60,7 @@ async def test_close_applies_trd_disposition(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_close_forwards_x_user_id_as_actor_id(client_with_conn) -> None:
     """Regresión del bugfix (E06 Inc.1): el cierre reenvía X-User-Id como
-    `actor_id` a `IndexService.firmar_indice` (antes se perdía → 401
+    `actor_id` a `IndexService.firmar_indice_close` (antes se perdía → 401
     permanente en signature-service)."""
     client, mock_conn = client_with_conn
     exp_id = uuid.uuid4()
@@ -74,7 +74,7 @@ async def test_close_forwards_x_user_id_as_actor_id(client_with_conn) -> None:
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
-        patch.object(IndexService, "firmar_indice", new=AsyncMock(return_value=None)) as mock_firmar,
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)) as mock_firmar,
     ):
         resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -83,14 +83,19 @@ async def test_close_forwards_x_user_id_as_actor_id(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_sin_firma_audita_indice_pendiente(client_with_conn) -> None:
+async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeypatch) -> None:
     """Si el sellado no se obtiene al cierre, queda traza: se emite
     'archive.indice_firma_pendiente' (ADR-010).
 
-    Se mockea `signature_client.sign_xml` (la frontera HTTP), NO `firmar_indice`:
-    ese asiento y el `mark_pendiente` que lo acompaña viven DENTRO de
-    `firmar_indice`, comprometidos juntos (H5) — mockear el método entero
-    borraría de la prueba justo el efecto que se quiere observar.
+    Se mockea `signature_client.sign_xml_outcome` (la frontera HTTP), NO
+    `firmar_indice_close`: ese asiento y el `mark_pendiente` que lo acompaña
+    viven DENTRO de `firmar_indice_close`, comprometidos juntos (H5) —
+    mockear el método entero borraría de la prueba justo el efecto que se
+    quiere observar. `close_sign_max_sync_attempts` se acota a 1 (monkeypatch
+    de settings) para que el control compensatorio agote su único intento
+    síncrono sin `asyncio.sleep` real entre intentos — el test verifica el
+    DESENLACE (degradación + auditoría), no el reintento acotado en sí
+    (cubierto aparte por los tests dedicados de `firmar_indice_close`).
 
     El payload de 'archive.expediente_closed' NO puede declarar el estado del
     índice: se commitea ANTES de intentar el sellado, así que afirmar ahí
@@ -111,11 +116,18 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn) -> None
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, indice_vigente]
     mock_conn.fetch.return_value = []
 
+    from app.clients.signature_client import SignOutcome
+    from app.core.config import settings as archive_settings
     from app.services.index_service import IndexService
+
+    monkeypatch.setattr(archive_settings, "close_sign_max_sync_attempts", 1)
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
-        patch("app.clients.signature_client.sign_xml", new=AsyncMock(return_value=None)),
+        patch(
+            "app.clients.signature_client.sign_xml_outcome",
+            new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
+        ),
     ):
         resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -146,6 +158,10 @@ async def test_firmar_indice_marca_firmado(client_with_conn) -> None:
     svc = IndexService(mock_conn, "demo")
     # get_current → índice vigente; mark_signed → execute
     mock_conn.fetchrow.return_value = {"id": uuid.uuid4(), "estado": "vigente", "xml": "<indice/>", "version": 1}
+    # S1: `mark_signed` debe reportar `affected=1` (ganó la carrera) para que
+    # el asiento `archive.indice_firmado` se escriba — el default del mock
+    # (`execute.return_value = None`) simularía una carrera perdida.
+    mock_conn.execute.return_value = "UPDATE 1"
 
     signed = SignedIndice(
         firma_id=firma_id,
@@ -246,7 +262,7 @@ async def test_close_expediente_audit_uses_real_regenerate_result_not_redacted(
     )
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock(return_value=fake_rebuild)),
-        patch.object(IndexService, "firmar_indice", new=AsyncMock(return_value=None)),
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
     ):
         resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
     assert resp.status_code == 200
