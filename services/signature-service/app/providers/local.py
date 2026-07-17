@@ -590,7 +590,18 @@ class LocalSigner:
             }
 
             # --- XAdES-LT/LTA (RT-16) — ver nota de módulo "XAdES-LT/LTA" ---
-            if settings.signer_lt_enabled:
+            # `signer.remote_sign is None` acota este bloque al SELLO
+            # INSTITUCIONAL (Inc.1/4): la firma PERSONAL (`remote_sign`
+            # presente) NUNCA debe entrar aquí, aunque también traiga
+            # `signer.ca_cert_pem` poblado (Incremento 2 — ver el `elif` de
+            # abajo) — este material es la sub-CA de USUARIOS, no la CA
+            # local del sello, y nunca lleva `crl_der` (la revocación
+            # personal es en línea, no por CRL — RF-FIR-15/E17 Inc.2), así
+            # que sin este guard caería en la rama `else` de abajo
+            # (`lt_downgrade_no_ca`) y podría hacer FALLAR la firma personal
+            # entera si `settings.signer_lt_require=True` está pensado solo
+            # para el sello institucional.
+            if signer.remote_sign is None and settings.signer_lt_enabled:
                 if signer.ca_cert_pem and signer.crl_der:
                     unsigned_sig_props = _get_or_create_unsigned_sig_props(signed_root)
                     ca_cert = x509.load_pem_x509_certificate(signer.ca_cert_pem)
@@ -685,6 +696,36 @@ class LocalSigner:
                             "signer_lt_require=True pero el tenant no tiene material de "
                             "CA local (ca.crt/crl.der) montado junto a su sello institucional"
                         )
+            elif signer.remote_sign is not None and signer.ca_cert_pem:
+                # --- Anclaje de la sub-CA de USUARIOS (E17/F4, Incremento 2,
+                # Baja #4) — firma PERSONAL únicamente. Embebe SOLO
+                # `xades:CertificateValues` con el certificado de la sub-CA
+                # que emitió el leaf del usuario (`signer.ca_cert_pem`, PEM
+                # provisto por auth-service en `sign-digest`, ver
+                # `app.services.cadena_service._firmar_personal`) — a
+                # PROPÓSITO, SIN el resto del camino LT
+                # (`RevocationValues`/`ArchiveTimeStamp`): la revocación de
+                # una clave personal se resuelve EN LÍNEA, contra
+                # `GET /internal/signing-key/revocation-status`
+                # (`verify_xades` NUNCA hace I/O — esa llamada la hace el
+                # ROUTER en `/verify`), no por una CRL embebida. `xades_level`
+                # se queda en XAdES-T: este material NO escala a "XAdES-LT"
+                # (ese nivel implica el paquete LT completo del sello
+                # institucional, que aquí nunca se produce).
+                unsigned_sig_props = _get_or_create_unsigned_sig_props(signed_root)
+                user_ca_cert = x509.load_pem_x509_certificate(signer.ca_cert_pem)
+                _insert_certificate_values(
+                    unsigned_sig_props,
+                    user_ca_cert.public_bytes(serialization.Encoding.DER),
+                )
+                # MISMA clave que el `extra["ca_fingerprint"]` institucional
+                # de arriba (nunca ambas ramas se ejecutan a la vez, ver el
+                # `if/elif`) — así `cadena_service._firmar_personal` no
+                # necesita distinguir el origen al persistir
+                # `firma.ca_fingerprint` (columna EXISTENTE, reutilizada,
+                # misma semántica de "ancla de confianza de la CA/sub-CA
+                # embebida" en ambos casos).
+                extra["ca_fingerprint"] = user_ca_cert.fingerprint(hashes.SHA256()).hex()
 
             # --- OCSP obligatorio (RF-FIR-15) — comprobación UNIFICADA ---
             # `signer_ocsp_require=True` presupone que hay LT (OCSP es
@@ -696,9 +737,12 @@ class LocalSigner:
             # fallar cerrado igual. Colocarla FUERA del bloque `if
             # signer.ca_cert_pem and signer.crl_der:` es lo que cubre AMBOS
             # caminos de degradación en un solo lugar (antes solo el segundo
-            # disparaba el 503).
+            # disparaba el 503). `signer.remote_sign is None`: este
+            # requisito es exclusivo del sello institucional — la firma
+            # personal nunca produce (ni necesita) OCSP stapled.
             if (
-                settings.signer_ocsp_enabled
+                signer.remote_sign is None
+                and settings.signer_ocsp_enabled
                 and settings.signer_ocsp_require
                 and not extra.get("ocsp_present")
             ):
@@ -738,6 +782,7 @@ def verify_xades(
     expected_tsa_fingerprint: str | None = None,
     expected_ca_fingerprint: str | None = None,
     expected_ocsp_responder_fingerprint: str | None = None,
+    expected_user_ca_fingerprint: str | None = None,
 ) -> VerifyOutcome:
     """Verifica una firma XAdES-B/-T/-LT/-LTA enveloped (E06, RF-FIR-15).
 
@@ -821,6 +866,21 @@ def verify_xades(
     verificado para ESTE ``signed_xml`` (no el que se INTENTÓ al firmar) —
     retrocompatible: una firma XAdES-B/-T sin CertificateValues se reporta
     igual que antes de este incremento.
+
+    (RAMA PERSONAL, E17/F4 Incremento 2, Baja #4) ``expected_user_ca_fingerprint``
+    activa una rama SEPARADA de la LT institucional de arriba, para firmas
+    ``xades_personal`` que embeben ``xades:CertificateValues`` con la sub-CA
+    de usuarios (SIN ``RevocationValues``/``ArchiveTimeStamp`` — ver
+    ``LocalSigner.sign``): valida basicConstraints/keyUsage/vigencia de esa
+    sub-CA, la cadena leaf→sub-CA (``verify_directly_issued_by``) y el pin
+    contra ``expected_user_ca_fingerprint`` (``firma.ca_fingerprint``,
+    misma columna que el ancla LT institucional — nunca ambos parámetros se
+    usan a la vez). Sigue SIN hacer I/O de red — la revocación en línea
+    (``GET /internal/signing-key/revocation-status``) la resuelve el
+    ROUTER, combinándola con este resultado. Una firma ``xades_personal`` de
+    Incremento 1 (sin ``CertificateValues``) NUNCA llega a esta rama —
+    retrocompat exacta, grandfather ESTRUCTURAL por FORMA del XML, no por un
+    flag de versión.
     """
     try:
         root = _parse_no_doctype(signed_xml)
@@ -907,10 +967,57 @@ def verify_xades(
         )
 
     try:
-        ca_cert = x509.load_der_x509_certificate(b64decode(cert_values_el.text.strip()))
+        embedded_ca_cert = x509.load_der_x509_certificate(b64decode(cert_values_el.text.strip()))
     except Exception as exc:  # noqa: BLE001 — fail-closed
         return VerifyOutcome(False, False, f"ca_certificado_ilegible: {exc}")
 
+    if expected_user_ca_fingerprint is not None:
+        # --- RAMA PERSONAL (E17/F4, Incremento 2, Baja #4) — SEPARADA del
+        # camino LT del sello institucional de abajo. Gobernada por
+        # `expected_user_ca_fingerprint` presente (el router SOLO lo pasa
+        # para filas `provider='xades_personal'`, ver
+        # `app.routers.signature.verify`): una firma PERSONAL nunca cae en
+        # el bloque institucional de más abajo (que INVALIDA sin
+        # `RevocationValues` embebido — el "punto de máximo riesgo" de este
+        # incremento). NUNCA exige `RevocationValues`/`ArchiveTimeStamp` —
+        # la revocación de una clave personal se resuelve EN LÍNEA
+        # (`GET /internal/signing-key/revocation-status`, llamada del
+        # ROUTER, nunca de aquí — esta función sigue siendo PURA, sin I/O).
+        # `xades_level` se queda en "XAdES-T": este material no representa
+        # el paquete LT completo del sello, así que nunca se sobre-declara
+        # "XAdES-LT" para una firma personal.
+        sub_ca_fingerprint = embedded_ca_cert.fingerprint(hashes.SHA256()).hex()
+        if sub_ca_fingerprint != expected_user_ca_fingerprint:
+            return VerifyOutcome(False, False, "user_ca_fingerprint_no_coincide")
+        try:
+            sub_ca_bc = embedded_ca_cert.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            )
+        except x509.ExtensionNotFound:
+            return VerifyOutcome(False, False, "user_ca_sin_basic_constraints")
+        if not sub_ca_bc.value.ca:
+            return VerifyOutcome(False, False, "user_ca_basic_constraints_no_es_ca")
+        try:
+            sub_ca_ku = embedded_ca_cert.extensions.get_extension_for_class(x509.KeyUsage)
+        except x509.ExtensionNotFound:
+            return VerifyOutcome(False, False, "user_ca_sin_key_usage")
+        if not sub_ca_ku.value.key_cert_sign:
+            return VerifyOutcome(False, False, "user_ca_sin_key_usage_cert_sign")
+        if not (
+            embedded_ca_cert.not_valid_before_utc <= now <= embedded_ca_cert.not_valid_after_utc
+        ):
+            return VerifyOutcome(False, False, "user_ca_certificado_fuera_de_vigencia")
+        try:
+            embedded_cert.verify_directly_issued_by(embedded_ca_cert)
+        except Exception as exc:  # noqa: BLE001 — fail-closed
+            return VerifyOutcome(False, False, f"cadena_personal_ca_invalida: {exc}")
+        return VerifyOutcome(
+            True, False, None,
+            sello_tiempo_valido=True, tsa_timestamp=tsa_timestamp, xades_level=xades_level,
+        )
+
+    # --- Camino institucional (sello del tenant) — SIN CAMBIOS ---
+    ca_cert = embedded_ca_cert
     ca_fingerprint = ca_cert.fingerprint(hashes.SHA256()).hex()
     if not expected_ca_fingerprint:
         return VerifyOutcome(False, False, "ca_fingerprint_no_registrado")

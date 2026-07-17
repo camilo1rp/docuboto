@@ -35,12 +35,13 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from httpx import ASGITransport, AsyncClient
 
 from app.core.database import get_tenant_conn
 from app.core.http_clients import SignDigestRemoteError
 from app.main import app
+from app.providers.base import SignerRef
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import FIRMA_ID, SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.test_cadena_2fa import _patch_audit
@@ -57,23 +58,83 @@ def _clear() -> None:
     app.dependency_overrides.clear()
 
 
-def _issue_user_cert() -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
-    """CA de USUARIOS de test en memoria (NO ``scripts/gen-user-cert.sh``) —
-    mismo espíritu que ``tests/test_sign_xml_xades.py``."""
-    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+def _generate_sub_ca(cn: str = "ca-usuarios-test") -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+    """Sub-CA de usuarios de test en memoria (E17/F4, Incremento 2) —
+    ``basicConstraints CA:TRUE`` + ``keyUsage keyCertSign``, mismo espíritu
+    que ``scripts/gen-user-cert.sh``."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = datetime.now(UTC)
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ca-usuarios-test")])
-    ca_cert = (
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
         x509.CertificateBuilder()
-        .subject_name(ca_name)
-        .issuer_name(ca_name)
-        .public_key(ca_key.public_key())
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(days=1))
         .not_valid_after(now + timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .sign(ca_key, hashes.SHA256())
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(key, hashes.SHA256())
     )
+    return key, cert
+
+
+def _generate_tsa_cert(cn: str = "orpycamcp-dev-tsa") -> tuple[bytes, bytes]:
+    """Par TSA efímero en memoria (EKU ``id-kp-timeStamping`` crítico,
+    RFC 3161 §2.3) — la rama de anclaje personal solo se ejercita bajo
+    XAdES-T (mismo prerrequisito que el bloque LT institucional)."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=365))
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=True
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem
+
+
+def _issue_user_cert(
+    *,
+    ca_key: rsa.RSAPrivateKey | None = None,
+    ca_cert: x509.Certificate | None = None,
+) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+    """CA de USUARIOS de test en memoria (NO ``scripts/gen-user-cert.sh``) —
+    mismo espíritu que ``tests/test_sign_xml_xades.py``. ``ca_key``/``ca_cert``
+    (Incremento 2): cuando se pasan, el leaf se emite con ESA sub-CA —
+    default: genera una ad-hoc DISTINTA en cada llamada (comportamiento
+    preexistente, sigue sirviendo a los tests que no ejercitan el anclaje)."""
+    if ca_key is None or ca_cert is None:
+        ca_key, ca_cert = _generate_sub_ca()
+    now = datetime.now(UTC)
     user_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "OPERADOR")])
     user_cert = (
@@ -102,8 +163,17 @@ def _patch_sign_digest_remote(
     *,
     private_key: rsa.RSAPrivateKey | None = None,
     cert_pem: str | None = None,
+    ca_cert_pem: str | None = None,
     error: Exception | None = None,
 ) -> AsyncMock:
+    """``ca_cert_pem`` (E17/F4, Incremento 2, Baja #4): cuando se pasa,
+    simula que auth-service ancló el leaf a una sub-CA (``sign-digest``
+    devuelve el PEM de esa sub-CA) — ``_firmar_personal`` lo consume y
+    ``LocalSigner.sign`` recomputa su huella (nunca confía en
+    ``ca_fingerprint`` del body a ciegas, ver el docstring de
+    ``CadenaFirmaService._firmar_personal``), así que el body de
+    ``sign-digest`` NO necesita transportar ``ca_fingerprint`` por separado
+    en este fake."""
     if error is not None:
         mock = AsyncMock(side_effect=error)
     else:
@@ -119,6 +189,7 @@ def _patch_sign_digest_remote(
                 "certificado_fingerprint": "deadbeef",
                 "serial": "ab12",
                 "not_after": None,
+                "ca_cert_pem": ca_cert_pem,
             }
 
         mock = AsyncMock(side_effect=_fake_sign)
@@ -229,6 +300,148 @@ async def test_sign_with_active_personal_cert_produces_xades_personal(
         payload = firmado_calls[0].kwargs["payload"]
         assert payload["factor_tipo"] == "totp"
         assert payload["challenge_id"] is None
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_sign_with_anchored_personal_cert_persists_ca_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E17/F4, Incremento 2 (Baja #4): cuando ``sign-digest`` devuelve
+    ``ca_cert_pem`` (leaf anclado a la sub-CA de usuarios),
+    ``_firmar_personal`` lo consume, ``LocalSigner.sign`` embebe
+    ``xades:CertificateValues`` y ``firmar()`` persiste
+    ``firma.ca_fingerprint`` (columna EXISTENTE reutilizada) — end-to-end a
+    través de ``POST /requests/{id}/sign``, no solo a nivel de proveedor."""
+    _patch_audit(monkeypatch)
+    ca_key, ca_cert = _generate_sub_ca()
+    user_key, user_cert = _issue_user_cert(ca_key=ca_key, ca_cert=ca_cert)
+    cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
+    ca_cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_sign_digest_remote(
+        monkeypatch, private_key=user_key, cert_pem=cert_pem, ca_cert_pem=ca_cert_pem
+    )
+
+    # La rama de anclaje personal solo se ejercita bajo XAdES-T (mismo
+    # prerrequisito que el bloque LT institucional) — instala una TSA
+    # efímera en memoria, sin tocar el filesystem.
+    tsa_cert_pem, tsa_key_pem = _generate_tsa_cert()
+    monkeypatch.setattr(
+        "app.core.tsa.load_tsa_seal",
+        lambda: SignerRef(cert_pem=tsa_cert_pem, key_pem=tsa_key_pem, key_password=None),
+    )
+
+    conn = _make_conn()
+    sol = _sol_row()
+    sol_firmado = _sol_row(estado="firmado")
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+
+    captured_insert: dict = {}
+    queue = [sol, {}, turno, turno]
+    tail = [None, sol_firmado, {}]
+
+    async def _fetchrow_router(query, *args, **kwargs):
+        if "INSERT INTO firma" in query:
+            captured_insert["provider"] = args[7]
+            captured_insert["xades_level"] = args[12]
+            captured_insert["firma_blob"] = args[6]
+            captured_insert["ca_fingerprint"] = args[21]
+            row = dict(_FIRMA_PERSONAL_ROW_TEMPLATE)
+            row.update(
+                payload_sha256=args[5],
+                firma_blob=args[6],
+                provider=args[7],
+                certificado_pem=args[9],
+                xades_level=args[12],
+            )
+            return row
+        if queue:
+            return queue.pop(0)
+        return tail.pop(0)
+
+    conn.fetchval.side_effect = [True, 1]
+    conn.fetchrow.side_effect = _fetchrow_router
+    conn.fetch.return_value = [turno]
+    conn.execute.side_effect = _exec_sig
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                json={"totp_code": "123456"},
+                headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["estado"] == "firmado"
+
+        assert captured_insert["provider"] == "xades_personal"
+        assert captured_insert["xades_level"] == "XAdES-T"
+        # Recomputada por LocalSigner.sign a partir del PEM recibido — nunca
+        # confía en un ca_fingerprint del body de sign-digest a ciegas
+        # (ese body de este fake ni siquiera lo transporta, ver
+        # _patch_sign_digest_remote).
+        assert captured_insert["ca_fingerprint"] == ca_cert.fingerprint(hashes.SHA256()).hex()
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_sign_with_active_personal_cert_no_ca_cert_pem_leaves_ca_fingerprint_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grandfather Incremento 1: sin ``ca_cert_pem`` en la respuesta de
+    ``sign-digest`` (leaf no anclado, o TOTP/auth-service anterior a
+    Incremento 2), ``firma.ca_fingerprint`` se queda ``None`` — nunca falla
+    la firma por esto, retrocompat exacta."""
+    _patch_audit(monkeypatch)
+    user_key, user_cert = _issue_user_cert()
+    cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
+
+    from app.core.config import settings as signature_settings
+
+    monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
+
+    conn = _make_conn()
+    sol = _sol_row()
+    sol_firmado = _sol_row(estado="firmado")
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+
+    captured_insert: dict = {}
+    queue = [sol, {}, turno, turno]
+    tail = [None, sol_firmado, {}]
+
+    async def _fetchrow_router(query, *args, **kwargs):
+        if "INSERT INTO firma" in query:
+            captured_insert["ca_fingerprint"] = args[21]
+            row = dict(_FIRMA_PERSONAL_ROW_TEMPLATE)
+            row.update(payload_sha256=args[5], firma_blob=args[6], provider=args[7])
+            return row
+        if queue:
+            return queue.pop(0)
+        return tail.pop(0)
+
+    conn.fetchval.side_effect = [True, 1]
+    conn.fetchrow.side_effect = _fetchrow_router
+    conn.fetch.return_value = [turno]
+    conn.execute.side_effect = _exec_sig
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                json={"totp_code": "123456"},
+                headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert captured_insert["ca_fingerprint"] is None
     finally:
         _clear()
 
@@ -458,6 +671,17 @@ async def test_verify_dispatches_xades_personal(
     from app.core.config import settings as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
+    # E17/F4, Incremento 2 (A2): /verify SIEMPRE consulta revocation-status
+    # en línea para una firma xades_personal cuya cripto ya validó — incluso
+    # una fila SIN ancla de sub-CA (ca_fingerprint=None, grandfather de
+    # Incremento 1), porque la huella de revocación es certificado_fingerprint
+    # (siempre poblada), no ca_fingerprint. Mockeada "vigente" aquí para
+    # preservar el comportamiento previo de este test — la rama de
+    # revocación tiene su propia cobertura en test_verify_revocacion_status_*.
+    monkeypatch.setattr(
+        "app.routers.signature.get_signing_key_revocation_status_remote",
+        AsyncMock(return_value={"status": "vigente"}),
+    )
 
     user_key, user_cert = _issue_user_cert()
     signed_xml, signed = await _sign_personal_envelope_for_verify_test(user_key, user_cert)
@@ -501,6 +725,11 @@ async def test_verify_dispatches_xades_personal(
     assert body["provider"] == "xades_personal"
     assert body["valida"] is True
     assert body["acreditado"] is False
+    # Incremento 2 — grandfather Inc.1 (ca_fingerprint=None): sigue
+    # verificando igual, PERO ahora consulta revocation-status igual (por
+    # certificado_fingerprint, no por ca_fingerprint).
+    assert body["firma_criptograficamente_valida"] is True
+    assert body["revocacion_status"] == "vigente"
 
     # Alterar el contenido → inválida (misma detección criptográfica que xades_local).
     tampered = signed_xml.replace(b"abc123", b"ZZZZZZ")
@@ -510,6 +739,9 @@ async def test_verify_dispatches_xades_personal(
         headers=TENANT_HEADERS,
     )
     assert resp2.json()["valida"] is False
+    # Cripto ya inválida -> nunca se llega a consultar revocación.
+    assert resp2.json()["firma_criptograficamente_valida"] is False
+    assert resp2.json()["revocacion_status"] is None
 
 
 @pytest.mark.asyncio

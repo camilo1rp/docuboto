@@ -86,6 +86,13 @@ echo ""
 
 mkdir -p "$CA_DIR" "$OUT_DIR"
 
+# Espejo PÚBLICO de la sub-CA (E17/F4, Incremento 2 — Baja #4): auth-service
+# monta SOLO este directorio (./secrets/ca-users-public, ver
+# docker-compose.yml -> SIGNING_KEY_CA_USERS_CERT_PATH) para verificar
+# leaf.verify_directly_issued_by(sub_ca) en /internal/signing-key/activate —
+# NUNCA $CA_DIR (que contiene ca-users.key) se monta en ningún contenedor.
+CA_PUBLIC_DIR="$PROJECT_ROOT/secrets/ca-users-public"
+
 if [ -f "$CA_KEY" ] && [ -f "$CA_CERT" ]; then
     echo "Reutilizando sub-CA de USUARIOS existente en: $CA_DIR"
 else
@@ -105,6 +112,11 @@ else
     chmod 600 "$CA_KEY"
     chmod 644 "$CA_CERT"
 fi
+
+mkdir -p "$CA_PUBLIC_DIR"
+cp "$CA_CERT" "$CA_PUBLIC_DIR/ca-users.crt"
+chmod 644 "$CA_PUBLIC_DIR/ca-users.crt"
+echo "  Espejo público actualizado: $CA_PUBLIC_DIR/ca-users.crt (auth-service la monta desde aquí)"
 
 echo ""
 echo "Emitiendo certificado de firma personal (825 días, NO ACREDITADO)..."

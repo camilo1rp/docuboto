@@ -180,3 +180,21 @@ class VerifyResponse(BaseModel):
     # cuando la verificación falló por otra causa.
     ocsp_present: bool = False
     ocsp_cert_status: str | None = None
+
+    # --- Revocación de la firma personal (E17/F4, Incremento 2, A2) ---
+    # `firma_criptograficamente_valida` es el veredicto de
+    # `app.providers.local.verify_xades` (criptografía + cadena/anclaje),
+    # SIN la dimensión de revocación — para NUNCA "difamar la cripto": una
+    # revocación no dice que la firma fue falsificada, dice que la clave del
+    # firmante ya no está vigente. `valida` (arriba) SÍ incorpora la
+    # revocación cuando aplica: para `provider='xades_personal'`,
+    # `valida = firma_criptograficamente_valida AND revocacion_status == 'vigente'`.
+    # Para `provider != 'xades_personal'` (sello institucional/HMAC nativo),
+    # la revocación no aplica — `revocacion_status` queda `None` y
+    # `firma_criptograficamente_valida == valida` siempre.
+    firma_criptograficamente_valida: bool = False
+    # `vigente`/`revocado`/`no_verificable` (canal de revocación caído) /
+    # `desconocido` (huella no encontrada — otro tenant, forjada, o el
+    # usuario titular fue borrado por CASCADE; fail-closed, NUNCA `vigente`
+    # en ese caso) — `None` cuando no aplica (firma no personal).
+    revocacion_status: str | None = None

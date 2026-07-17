@@ -153,6 +153,54 @@ def decrypt_private_key(ciphertext: bytes, *, nonce: bytes, key: bytes, aad: byt
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Sub-CA de usuarios (E17/F4, Incremento 2 — anclaje, cierra la Baja #4)
+# ---------------------------------------------------------------------------
+
+
+class UserCaNotConfiguredError(RuntimeError):
+    """``signing_key_ca_users_cert_path`` no está configurada, o el archivo
+    montado no es un certificado X.509 legible. FAIL-CLOSED — el llamante
+    (``SigningKeyService.activar_certificado``) lo traduce en un 503: sin la
+    sub-CA montada, NINGÚN certificado puede activarse (no hay contra qué
+    anclar la cadena), nunca se degrada en silencio a "confiar en cualquier
+    emisor"."""
+
+
+def load_user_ca_certificate() -> x509.Certificate:
+    """Carga el certificado PÚBLICO de la sub-CA de usuarios desde
+    ``settings.signing_key_ca_users_cert_path`` (``ca-users.crt``, montada
+    read-only) — NUNCA su clave privada, que este servicio no necesita ni
+    debe tener acceso a: solo verifica cadenas, no emite certificados.
+
+    Releído en CADA llamada (sin caché) — es un archivo público de bajo
+    volumen de lectura (solo en ``activar_certificado``, una operación
+    administrativa/offline, no el camino caliente de firma), así que la
+    simplicidad de "siempre la versión en disco" pesa más que el ahorro de
+    una relectura ocasional.
+    """
+    from app.core.config import settings  # local import: evita el ciclo config<->signing_keys
+
+    path = settings.signing_key_ca_users_cert_path
+    if not path:
+        raise UserCaNotConfiguredError(
+            "signing_key_ca_users_cert_path no configurada — requerida para "
+            "activar certificados de firma personal"
+        )
+    try:
+        with open(path, "rb") as fh:
+            pem_bytes = fh.read()
+        return x509.load_pem_x509_certificate(pem_bytes)
+    except OSError as exc:
+        raise UserCaNotConfiguredError(
+            f"no se pudo leer la sub-CA de usuarios en '{path}': {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise UserCaNotConfiguredError(
+            f"el archivo en '{path}' no es un certificado X.509 PEM válido: {exc}"
+        ) from exc
+
+
 def sign_digest(private_key: rsa.RSAPrivateKey, digest: bytes) -> bytes:
     """Firma un digest SHA-256 YA CALCULADO por el llamante (``Prehashed``) —
     NUNCA recibe el documento completo, ni siquiera dentro de este proceso:

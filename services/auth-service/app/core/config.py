@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     # Vacío (default) hace que la ruta responda 503 fail-closed en vez de
     # aceptar cualquier token. NUNCA commitear el valor real.
     signing_key_internal_token: str = ""
+    # --- Anclaje de la sub-CA de usuarios (E17/F4, Incremento 2 — cierra la
+    # Baja #4) --- Ruta al certificado PÚBLICO de la sub-CA que emite los
+    # certificados de firma personal (``scripts/gen-user-cert.sh`` en
+    # producción). Montada READ-ONLY junto al contenedor de auth-service —
+    # JAMÁS la ``ca.key`` de ninguna CA (ni la de usuarios ni ninguna otra):
+    # este servicio solo necesita el cert público para verificar
+    # ``leaf.verify_directly_issued_by(sub_ca)`` en ``activar_certificado``,
+    # nunca para firmar/emitir. Vacía por defecto: la activación de un
+    # certificado falla explícitamente (503) hasta que se configure — ver
+    # ``app.core.signing_keys.load_user_ca_certificate``.
+    signing_key_ca_users_cert_path: str = ""
 
     def signing_key_encryption_key_bytes(self) -> bytes:
         """Decodifica ``signing_key_encryption_key`` (base64) a 32 bytes

@@ -298,6 +298,19 @@ services:
       # SIGNATURE_INTERNAL_TOKEN) — protege POST /internal/signing-key/*.
       # Dev-only — NUNCA este valor en producción.
       - SIGNING_KEY_INTERNAL_TOKEN=${SIGNING_KEY_INTERNAL_TOKEN:-orpycamcp_signing_key_internal_dev}
+      # Anclaje de la sub-CA de usuarios (E17/F4, Incremento 2 — Baja #4):
+      # SOLO el certificado PÚBLICO (ver el volumen más abajo y
+      # scripts/gen-user-cert.sh, que la genera/reutiliza en
+      # ./secrets/ca-authority-users y espeja SOLO ca-users.crt — NUNCA
+      # ca-users.key — a ./secrets/ca-users-public). Sin este archivo
+      # montado, /internal/signing-key/activate falla cerrado (503).
+      - SIGNING_KEY_CA_USERS_CERT_PATH=/run/secrets/ca-users-public/ca-users.crt
+    volumes:
+      # Solo lectura, SOLO el cert público de la sub-CA de usuarios — la
+      # clave privada (ca-users.key) vive exclusivamente en
+      # ./secrets/ca-authority-users, en el host, y JAMÁS se monta en
+      # ningún contenedor (ver scripts/gen-user-cert.sh).
+      - ./secrets/ca-users-public:/run/secrets/ca-users-public:ro
     networks:
       - orpycamcp-net
     depends_on:

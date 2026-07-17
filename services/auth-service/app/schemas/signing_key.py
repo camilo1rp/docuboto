@@ -33,12 +33,64 @@ def _validate_totp_code(v: str) -> str:
     return v
 
 
+class SigningKeyEnrollRequest(BaseModel):
+    """Body de ``POST /me/signing-key/enroll`` (E17/F4, Incremento 2).
+
+    ``step_up_totp_code`` es requerido SOLO cuando ya existe una credencial
+    ``activo`` (re-enrolar la revoca de inmediato — cierra el residual
+    step-up de Incremento 1) — verificado-y-consumido vía ``TotpService``,
+    igual que ``load_and_sign_digest``/``DELETE /me/signing-key``. Sin
+    credencial previa, o con una ``pendiente_emision`` (nunca firmó nada),
+    NO se exige — mismo criterio que antes de este incremento.
+    """
+
+    step_up_totp_code: str | None = Field(default=None)
+
+    @field_validator("step_up_totp_code")
+    @classmethod
+    def _validate_step_up(cls, v: str | None) -> str | None:
+        return _validate_totp_code(v) if v is not None else v
+
+
 class SigningKeyEnrollResponse(BaseModel):
     """``POST /me/signing-key/enroll`` — el CSR es material PÚBLICO; la clave
     privada NUNCA aparece aquí ni en ningún otro response de este router."""
 
     estado: Literal["pendiente_emision"] = "pendiente_emision"
     csr_pem: str
+
+
+class SigningKeyRevokeRequest(BaseModel):
+    """Body de ``DELETE /me/signing-key`` (self-revoke, E17/F4, Incremento 2).
+
+    ``step_up_totp_code`` es SIEMPRE requerido (a diferencia del re-enroll,
+    que solo lo exige sobre una credencial ``activo``): revocar es un acto
+    destructivo explícito sobre la propia capacidad de firma, gateado por el
+    segundo factor del titular — verificado-y-consumido vía ``TotpService``,
+    igual que ``load_and_sign_digest``. ``motivo`` es texto libre opcional,
+    nunca material de firma.
+    """
+
+    step_up_totp_code: str = Field(...)
+    motivo: str | None = Field(default=None, max_length=500)
+
+    @field_validator("step_up_totp_code")
+    @classmethod
+    def _validate_step_up(cls, v: str) -> str:
+        return _validate_totp_code(v)
+
+
+class SigningKeyRevokeResponse(BaseModel):
+    estado: Literal["revocado"] = "revocado"
+
+
+class AdminSigningKeyRevokeRequest(BaseModel):
+    """Body de ``POST /admin/users/{user_id}/signing-key/revoke`` — gateado
+    por ``USUA_PERM_ADMIN`` (router-level), sin step-up TOTP propio (el
+    permiso administrativo ya es el gate; el TOTP del admin, si lo tiene, no
+    es relevante para revocar la clave de OTRO usuario)."""
+
+    motivo: str | None = Field(default=None, max_length=500)
 
 
 class SigningKeyStatusResponse(BaseModel):
@@ -95,10 +147,39 @@ class InternalActivateSigningKeyRequest(BaseModel):
 class InternalSignDigestResponse(BaseModel):
     """Respuesta de ``POST /internal/signing-key/sign-digest`` — SOLO
     material público: la firma cruda (no la clave), el certificado y su
-    huella. NUNCA la clave privada, ni siquiera cifrada."""
+    huella. NUNCA la clave privada, ni siquiera cifrada.
+
+    ``ca_cert_pem``/``ca_fingerprint`` (E17/F4, Incremento 2 — Baja #4): el
+    certificado PÚBLICO de la sub-CA de usuarios que emitió ESTE leaf y su
+    huella — persistidos en ``auth_user_signing_key`` desde
+    ``activar_certificado`` (nunca releídos del filesystem aquí), para que
+    signature-service pueda embeber ``xades:CertificateValues`` de la sub-CA
+    en la firma y anclar ``firma.ca_fingerprint`` sin tener que confiar en
+    cualquier CA que el llamante le presente. ``None`` para una fila
+    'activo' emitida ANTES de este incremento (grandfather estructural, sin
+    ``user_ca_fingerprint`` que resolver) — el llamante entonces produce una
+    firma personal SIN anclaje, idéntica en forma a las de Incremento 1.
+    """
 
     signature_value_b64: str
     certificado_pem: str
     certificado_fingerprint: str
     serial: str | None = None
     not_after: datetime | None = None
+    ca_cert_pem: str | None = None
+    ca_fingerprint: str | None = None
+
+
+class SigningKeyRevocationStatusResponse(BaseModel):
+    """``GET /internal/signing-key/revocation-status`` (signature-service,
+    D-02) — SOLO el estado de revocación por huella de certificado LEAF.
+    NUNCA el certificado, la clave (ni cifrada) o cualquier otro material —
+    ver el docstring del router para el contrato completo.
+
+    ``desconocido`` (fail-closed): la huella no se encontró en ESTE tenant
+    (otro tenant, forjada, o el usuario titular fue borrado por CASCADE) —
+    NUNCA se reporta ``vigente`` en ese caso.
+    """
+
+    status: Literal["vigente", "revocado", "desconocido"]
+    revocado_at: datetime | None = None

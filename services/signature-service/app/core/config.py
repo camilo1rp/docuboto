@@ -242,6 +242,26 @@ class Settings(BaseSettings):
     # bloquear la firma de quien aún no completó el enroll+emisión offline;
     # reservado para un incremento futuro que lo implemente de verdad).
     firma_personal_require_xades: bool = False
+    # --- Revocación de la firma personal (E17/F4, Incremento 2 — A2) ---
+    # Fail-closed (default True): si GET /internal/signing-key/revocation-status
+    # (auth-service) no responde o falla, /verify reporta `valida=False`,
+    # `motivo="revocacion_no_verificable"` para firmas `xades_personal` — la
+    # verificación NUNCA asume "vigente" ante un canal caído. `False`
+    # (opt-in fail-open, NO recomendado) degrada a `revocacion_status=None`
+    # sin afectar `valida` — reservado para entornos donde auth-service es
+    # sabidamente inalcanzable pero se quiere seguir viendo la validez
+    # criptográfica pura.
+    #
+    # RIESGO (Baja de auditoría #2, Incremento 2): `False` (fail-open) es
+    # SOLO ante caída del canal — pero mientras auth-service esté
+    # inalcanzable, un certificado REVOCADO se reportará `valida=True`
+    # (el chequeo de revocación se omite, no falla; la validez criptográfica
+    # pura no distingue "revocado" de "vigente"). Ponerlo en `False` implica
+    # aceptar esa ventana a cambio de disponibilidad. NO recomendado para
+    # `nivel_seguridad>=2` — ese nivel exige 2FA gate SIEMPRE (ver
+    # `firma_2fa_required` arriba) y debería exigir igual certeza de
+    # revocación.
+    verify_personal_revocation_require: bool = True
 
 
 settings = Settings()

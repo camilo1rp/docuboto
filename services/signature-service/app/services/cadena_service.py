@@ -744,6 +744,14 @@ class CadenaFirmaService:
                             "tsa_acreditado": personal_signed.extra.get(
                                 "tsa_acreditado", False
                             ),
+                            # Anclaje de la sub-CA de usuarios (Incremento 2,
+                            # Baja #4) — columna EXISTENTE reutilizada, misma
+                            # semántica que el ancla LT institucional (nunca
+                            # ambas la pueblan a la vez, ver
+                            # app.providers.local.LocalSigner.sign). None si
+                            # el leaf no tenía sub-CA anclada (grandfather
+                            # Incremento 1) — la firma queda igual que antes.
+                            "ca_fingerprint": personal_signed.extra.get("ca_fingerprint"),
                         }
                     )
                 else:
@@ -892,6 +900,19 @@ class CadenaFirmaService:
         el llamante (``firmar()``) la captura y la trata exactamente como un
         fallo de ``_gate_2fa`` (devuelto, no lanzado dentro de la
         transacción ambiente).
+
+        --- Anclaje de la sub-CA de usuarios (E17/F4, Incremento 2, Baja #4) ---
+        ``sign-digest`` (auth-service) puede devolver ``ca_cert_pem`` (el PEM
+        PÚBLICO de la sub-CA que emitió ESTE leaf, ``None`` para una
+        credencial 'activo' anclada ANTES de este incremento — grandfather
+        estructural). ``_remote_sign`` lo escribe en ``signer_ref.ca_cert_pem``
+        DENTRO del cierre — mutación del MISMO objeto ``SignerRef`` que
+        ``LocalSigner.sign`` ya sostiene como ``signer`` — ANTES de que ese
+        método llegue al bloque que lo lee (después de ``await
+        signer.remote_sign(...)``, más abajo en la misma función), así que la
+        lectura ve el valor recién puesto. Sin ``ca_cert_pem``, el campo se
+        queda en ``None`` (default de ``SignerRef``) y la firma se produce
+        SIN anclaje, exactamente como en Incremento 1.
         """
 
         async def _remote_sign(digest: bytes) -> bytes:
@@ -912,6 +933,14 @@ class CadenaFirmaService:
                 # (mismos códigos: 422 signing_key_no_activa/totp_no_activo,
                 # 423 totp_bloqueado, 401 totp_incorrecto).
                 raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            ca_cert_pem = result.get("ca_cert_pem")
+            if ca_cert_pem:
+                # Ver nota de docstring "Anclaje de la sub-CA...": mutación
+                # del mismo `SignerRef` que `LocalSigner.sign` lee más abajo.
+                # `LocalSigner.sign` RECOMPUTA la huella a partir de este PEM
+                # (nunca confía en `result.get("ca_fingerprint")` a ciegas)
+                # antes de persistirla como `firma.ca_fingerprint`.
+                signer_ref.ca_cert_pem = ca_cert_pem.encode()
             return b64decode(result["signature_value_b64"])
 
         envelope = _build_personal_envelope(

@@ -40,6 +40,10 @@ from app.core.clearance import get_actor, require_permission
 from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import get_tenant_conn
+from app.core.http_clients import (
+    SigningKeyRevocationStatusUnavailableError,
+    get_signing_key_revocation_status_remote,
+)
 from app.core.internal_auth import require_internal_token
 from app.providers.local import verify_xades
 from app.repositories.firma_repository import FirmaRepository
@@ -147,6 +151,7 @@ async def sign_indice_internal(
 @router.post("/verify", response_model=VerifyResponse)
 async def verify(
     payload: VerifyRequest,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> VerifyResponse:
     """
@@ -166,6 +171,18 @@ async def verify(
       sello registrado al firmar y, si hay ``SignatureTimeStamp``, huella del
       certificado de la TSA contra el ``tsa_cert_fingerprint`` persistido —
       Inc.4, fail-closed cuando la fila no lo tiene registrado).
+    - Firmas ``provider='xades_personal'`` (E17/F4): mismo ``verify_xades``,
+      pero ``row["ca_fingerprint"]`` (si está poblado — Incremento 2, Baja
+      #4) se pasa como ``expected_user_ca_fingerprint`` — NUNCA como
+      ``expected_ca_fingerprint`` (esa rama es exclusiva del sello
+      institucional) — para activar la RAMA PERSONAL de ``verify_xades``.
+      Si la firma cripto+cadena valida, ADEMÁS se consulta
+      ``GET /internal/signing-key/revocation-status`` (auth-service, en
+      línea, NUNCA cacheado) por ``certificado_fingerprint`` — el veredicto
+      final ``valida`` incorpora ese resultado (ver
+      ``VerifyResponse.revocacion_status``/``firma_criptograficamente_valida``).
+      Una firma ``xades_personal`` de Incremento 1 (``ca_fingerprint=NULL``)
+      NUNCA activa la rama personal de ``verify_xades`` — retrocompat exacta.
     - Firmas ``provider='nativa'``: recomputa el HMAC con firmante_id y
       sello_tiempo almacenados en BD y lo compara con la firma_blob
       registrada (comportamiento sin cambios desde antes del Incremento 1).
@@ -177,14 +194,9 @@ async def verify(
             detail={"error": "firma_not_found", "detail": str(payload.firma_id), "status": 404},
         )
 
-    # xades_personal (E17/F4, Incremento 1 — firma personal PKI por-usuario)
-    # verifica con EXACTAMENTE el mismo verify_xades que xades_local: la
-    # cadena de confianza vive en el certificado embebido (KeyInfo), no en el
-    # `provider` — para xades_personal, `ca_fingerprint`/`ocsp_responder_fingerprint`
-    # son siempre None (nunca escala a LT/LTA en este incremento), así que
-    # verify_xades simplemente se queda en XAdES-B/T, sin rama especial aquí.
     if row.get("provider") in ("xades_local", "xades_personal"):
         provider_name = row["provider"]
+        is_personal = provider_name == "xades_personal"
         fingerprint = row.get("certificado_fingerprint")
         if not fingerprint:
             return VerifyResponse(
@@ -219,12 +231,65 @@ async def verify(
             payload.payload_xml.encode(),
             fingerprint,
             expected_tsa_fingerprint=row.get("tsa_cert_fingerprint"),
-            expected_ca_fingerprint=row.get("ca_fingerprint"),
+            # `ca_fingerprint` (misma columna, dos semánticas mutuamente
+            # excluyentes por `provider`, ver docstring de la función): ancla
+            # LT institucional para xades_local, ancla de la sub-CA de
+            # usuarios para xades_personal — NUNCA ambos kwargs a la vez.
+            expected_ca_fingerprint=(None if is_personal else row.get("ca_fingerprint")),
             expected_ocsp_responder_fingerprint=row.get("ocsp_responder_fingerprint"),
+            expected_user_ca_fingerprint=(row.get("ca_fingerprint") if is_personal else None),
         )
+
+        # `firma_criptograficamente_valida`: el veredicto de `verify_xades`
+        # a secas (criptografía + cadena/anclaje), SIN la dimensión de
+        # revocación — NUNCA difama la cripto por un canal de revocación
+        # caído (ver docstring de `VerifyResponse`).
+        firma_criptograficamente_valida = outcome.valida
+        valida = outcome.valida
+        motivo = outcome.motivo
+        revocacion_status: str | None = None
+
+        # Revocación en línea (A2, Incremento 2) — SOLO firmas personales
+        # cuya cripto+cadena YA validó (revocar no tiene sentido evaluarlo
+        # sobre una firma ya inválida por otra causa, y evita una llamada de
+        # red innecesaria). `verify_xades` sigue siendo PURA — esta llamada
+        # vive aquí, en el router.
+        if is_personal and outcome.valida:
+            tenant_slug = request.headers.get("X-Tenant-Slug", "")
+            try:
+                status_body = await get_signing_key_revocation_status_remote(
+                    fingerprint, tenant_slug
+                )
+                revocacion_status = status_body.get("status", "desconocido")
+            except SigningKeyRevocationStatusUnavailableError:
+                logger.warning(
+                    "No se pudo consultar signing-key/revocation-status para "
+                    "firma_id=%s; aplicando verify_personal_revocation_require",
+                    row["id"],
+                    exc_info=True,
+                )
+                revocacion_status = "no_verificable"
+                if settings.verify_personal_revocation_require:
+                    valida = False
+                    motivo = "revocacion_no_verificable"
+                # Fail-open (opt-in, NO default): la cripto ya validó, así
+                # que `valida` se queda en True — solo se informa el canal
+                # caído vía `revocacion_status`, sin invalidar.
+            else:
+                if revocacion_status != "vigente":
+                    valida = False
+                    motivo = (
+                        "certificado_revocado"
+                        if revocacion_status == "revocado"
+                        # `desconocido` fail-closed (huella no encontrada en
+                        # este tenant — otro tenant, forjada, o el titular
+                        # borrado por CASCADE): NUNCA se reporta `vigente`.
+                        else "certificado_desconocido"
+                    )
+
         return VerifyResponse(
             firma_id=row["id"],
-            valida=outcome.valida,
+            valida=valida,
             provider=provider_name,
             # El nivel REALMENTE verificado para ESTE documento (RT-16, Pieza
             # 6.4) — nunca el `xades_level` "intencionado" al firmar. Se cae
@@ -233,7 +298,7 @@ async def verify(
             xades_level=outcome.xades_level or row.get("xades_level"),
             nivel_conformidad=row.get("nivel_conformidad"),
             acreditado=outcome.acreditado,
-            motivo=outcome.motivo,
+            motivo=motivo,
             # (Inc.4) None cuando la firma no lleva SignatureTimeStamp (no
             # aplica, no es un fallo) — ver app.providers.local.VerifyOutcome.
             sello_tiempo_valido=outcome.sello_tiempo_valido,
@@ -244,6 +309,8 @@ async def verify(
             crl_next_update=outcome.crl_next_update,
             ocsp_present=outcome.ocsp_present,
             ocsp_cert_status=outcome.ocsp_cert_status,
+            firma_criptograficamente_valida=firma_criptograficamente_valida,
+            revocacion_status=revocacion_status,
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
@@ -267,6 +334,10 @@ async def verify(
         nivel_conformidad=row.get("nivel_conformidad"),
         acreditado=False,
         motivo=None if valida else "hmac_no_coincide",
+        # 'nativa' no tiene dimensión de revocación (Incremento 2 es
+        # exclusivo de xades_personal) — firma_criptograficamente_valida
+        # coincide SIEMPRE con valida, revocacion_status no aplica (None).
+        firma_criptograficamente_valida=valida,
     )
 
 

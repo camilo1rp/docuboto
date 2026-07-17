@@ -52,10 +52,15 @@ from app.core.internal_auth import require_internal_token
 from app.core.security import validate_token
 from app.repositories.rbac_repository import RBACRepository
 from app.schemas.signing_key import (
+    AdminSigningKeyRevokeRequest,
     InternalActivateSigningKeyRequest,
     InternalSignDigestRequest,
     InternalSignDigestResponse,
+    SigningKeyEnrollRequest,
     SigningKeyEnrollResponse,
+    SigningKeyRevocationStatusResponse,
+    SigningKeyRevokeRequest,
+    SigningKeyRevokeResponse,
     SigningKeyStatusResponse,
 )
 from app.services.signing_key_service import SigningKeyService
@@ -63,6 +68,16 @@ from app.services.signing_key_service import SigningKeyService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/auth/me/signing-key", tags=["signing-key"])
+# Admin: gateado por USUA_PERM_ADMIN a nivel de router (E17/F4, Incremento 2)
+# — DISTINTO de `router` (identidad SIEMPRE propia, get_caller) y de
+# `internal_router` (X-Internal-Token, service-to-service). Prefijo separado
+# de `app.routers.rbac.router` (que también cubre `/api/v1/auth`) para
+# mantener el ciclo de vida de la firma personal en este módulo.
+admin_router = APIRouter(
+    prefix="/api/v1/auth/admin/users",
+    tags=["signing-key-admin"],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 internal_router = APIRouter(prefix="/internal/signing-key", tags=["signing-key-internal"])
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -161,6 +176,7 @@ async def _resolve_bearer_user(
     dependencies=[Depends(require_permission("PERM_FIRMA"))],
 )
 async def enroll_signing_key(
+    payload: SigningKeyEnrollRequest,
     request: Request,
     response: Response,
     caller: Caller = Depends(get_caller),
@@ -168,7 +184,9 @@ async def enroll_signing_key(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> SigningKeyEnrollResponse:
     tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
-    result = await SigningKeyService(conn).enroll(caller.user_id, tenant_slug)
+    result = await SigningKeyService(conn).enroll(
+        caller.user_id, tenant_slug, payload.step_up_totp_code
+    )
     # No hay secreto en el body (el CSR es público), pero se mantiene la
     # misma disciplina que /me/totp/enroll por defensa en profundidad.
     response.headers["Cache-Control"] = "no-store"
@@ -185,6 +203,53 @@ async def get_signing_key_status(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SigningKeyStatusResponse:
     return await SigningKeyService(conn).get_status(caller.user_id)
+
+
+@router.delete(
+    "",
+    response_model=SigningKeyRevokeResponse,
+    summary="Self-revoke the caller's signing-key credential (step-up TOTP always required)",
+)
+async def revoke_signing_key(
+    payload: SigningKeyRevokeRequest,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> SigningKeyRevokeResponse:
+    """E17/F4, Incremento 2 (A2 — revocación por estado en BD, sin CRL
+    offline). ``ca.key`` de ninguna CA se toca aquí: revocar es un simple
+    cambio de ``estado`` + asiento, verificado por
+    ``GET /internal/signing-key/revocation-status``."""
+    tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
+    await SigningKeyService(conn).revoke_self(
+        caller.user_id, tenant_slug, payload.step_up_totp_code, motivo=payload.motivo
+    )
+    return SigningKeyRevokeResponse(estado="revocado")
+
+
+# ---------------------------------------------------------------------------
+# Admin — /api/v1/auth/admin/users/{user_id}/signing-key/* (USUA_PERM_ADMIN)
+# ---------------------------------------------------------------------------
+
+
+@admin_router.post(
+    "/{user_id}/signing-key/revoke",
+    response_model=SigningKeyRevokeResponse,
+    summary="Admin-revoke another user's signing-key credential (USUA_PERM_ADMIN)",
+)
+async def admin_revoke_signing_key(
+    user_id: uuid.UUID,
+    payload: AdminSigningKeyRevokeRequest,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> SigningKeyRevokeResponse:
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    await SigningKeyService(conn).revoke_admin(
+        user_id, tenant_slug, caller.user_id, motivo=payload.motivo
+    )
+    return SigningKeyRevokeResponse(estado="revocado")
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +285,17 @@ async def internal_sign_digest(
                 detail={"error": "digest_invalido", "detail": "digest_b64 is not valid base64", "status": 422},
             ) from None
 
-        signature_der, cert_pem, fingerprint, serial, not_after = await SigningKeyService(
-            conn
-        ).load_and_sign_digest(user_id, tenant_slug, digest, payload.totp_code)
+        (
+            signature_der,
+            cert_pem,
+            fingerprint,
+            serial,
+            not_after,
+            ca_cert_pem,
+            ca_fingerprint,
+        ) = await SigningKeyService(conn).load_and_sign_digest(
+            user_id, tenant_slug, digest, payload.totp_code
+        )
 
         return InternalSignDigestResponse(
             signature_value_b64=b64encode(signature_der).decode("ascii"),
@@ -230,6 +303,8 @@ async def internal_sign_digest(
             certificado_fingerprint=fingerprint,
             serial=serial,
             not_after=not_after,
+            ca_cert_pem=ca_cert_pem,
+            ca_fingerprint=ca_fingerprint,
         )
     finally:
         try:
@@ -286,6 +361,39 @@ async def internal_activate_signing_key(
         return await SigningKeyService(conn).activar_certificado(
             payload.user_id, payload.cert_pem, tenant_slug
         )
+    finally:
+        try:
+            await conn.execute("SET search_path = public")
+        except Exception:
+            pass
+
+
+@internal_router.get(
+    "/revocation-status",
+    response_model=SigningKeyRevocationStatusResponse,
+    dependencies=[Depends(require_internal_token)],
+    summary="Revocation status of a leaf certificate by fingerprint (signature-service only)",
+)
+async def internal_signing_key_revocation_status(
+    certificado_fingerprint: str,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> SigningKeyRevocationStatusResponse:
+    """A2 (revocación por estado en BD + chequeo en línea, E17/F4 Incremento
+    2) — signature-service consulta esto en CADA ``/verify`` de una firma
+    ``xades_personal``. Gate SOLO ``X-Internal-Token`` (sin Bearer: no hay un
+    firmante interactivo detrás de una consulta de verificación pública) MÁS
+    ``X-Tenant-Slug`` (fija el ``search_path`` — una huella de OTRO tenant
+    nunca aparece en esta búsqueda, fail-closed -> ``desconocido``, NUNCA
+    ``vigente``). Devuelve SOLO ``{status, revocado_at}`` — jamás
+    cert/clave. Fuera de ``/api/v1`` — inalcanzable vía api-gateway, igual
+    que el resto de ``internal_router``.
+    """
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    schema = tenant_schema(tenant_slug)
+    await conn.execute(f'SET search_path = "{schema}", public')
+    try:
+        return await SigningKeyService(conn).revocation_status(certificado_fingerprint)
     finally:
         try:
             await conn.execute("SET search_path = public")

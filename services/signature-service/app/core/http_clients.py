@@ -66,6 +66,17 @@ class SignDigestRemoteUnavailableError(RuntimeError):
     llamante lo traduce en 503 ``canal_firma_personal_no_disponible``."""
 
 
+class SigningKeyRevocationStatusUnavailableError(RuntimeError):
+    """auth-service no respondió (o respondió con error de infraestructura)
+    al consultar ``GET /internal/signing-key/revocation-status`` (E17/F4,
+    Incremento 2, A2). El llamante (``app.routers.signature.verify``) NO
+    puede asumir "vigente" ante este fallo — ver
+    ``settings.verify_personal_revocation_require``: por defecto (fail-closed)
+    se traduce en ``valida=False``/``motivo="revocacion_no_verificable"``
+    (sin difamar la cripto: ``firma_criptograficamente_valida`` se mantiene
+    aparte)."""
+
+
 class SignDigestRemoteError(RuntimeError):
     """auth-service respondió con un error de NEGOCIO (422 sin cert activo,
     401 TOTP incorrecto, 423 TOTP bloqueado) a ``sign-digest`` — a diferencia
@@ -332,3 +343,48 @@ async def sign_digest_remote(
     if not isinstance(detail, dict):
         detail = {"detail": detail}
     raise SignDigestRemoteError(resp.status_code, detail)
+
+
+async def get_signing_key_revocation_status_remote(fingerprint: str, tenant_slug: str) -> dict:
+    """Consulta ``GET /internal/signing-key/revocation-status`` (auth-service,
+    E17/F4 Incremento 2, A2 — revocación por estado en BD + chequeo en
+    línea, SIN CRL offline) para el certificado LEAF ``fingerprint`` de una
+    firma ``xades_personal`` — llamado por ``POST /verify``
+    (``app.routers.signature``) en CADA verificación, nunca cacheado (la
+    revocación debe ser observable de inmediato).
+
+    A diferencia de ``sign_digest_remote``/``get_signing_key_status_remote``,
+    NO reenvía ``Authorization`` — ``/verify`` es una consulta pública sin
+    firmante interactivo detrás; el gate es SOLO ``X-Internal-Token`` MÁS
+    ``X-Tenant-Slug`` (auth-service fija el ``search_path`` con ese header:
+    una huella de OTRO tenant nunca resuelve ``vigente``, fail-closed).
+
+    Devuelve el body JSON de auth-service tal cual (``status``,
+    ``revocado_at``). Lanza :class:`SigningKeyRevocationStatusUnavailableError`
+    (fail-closed, red/timeout/HTTP inesperado) — el llamante decide cómo
+    degradar según ``settings.verify_personal_revocation_require``.
+    """
+    headers = {
+        "X-Internal-Token": settings.signing_key_internal_token,
+        "X-Tenant-Slug": tenant_slug,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.auth_service_url, timeout=settings.signing_key_sign_timeout_seconds
+        ) as client:
+            resp = await client.get(
+                "/internal/signing-key/revocation-status",
+                params={"certificado_fingerprint": fingerprint},
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise SigningKeyRevocationStatusUnavailableError(
+            f"auth-service inalcanzable: {exc}"
+        ) from exc
+
+    if resp.status_code != 200:
+        raise SigningKeyRevocationStatusUnavailableError(
+            f"auth-service → HTTP {resp.status_code} al consultar "
+            f"revocation-status: {resp.text[:200]}"
+        )
+    return resp.json()

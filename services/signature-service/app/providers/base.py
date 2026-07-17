@@ -101,6 +101,18 @@ class SignerRef:
     fuera de ``scripts/gen-dev-ca.sh``): ``LocalSigner.sign`` entonces se
     queda en XAdES-T, nunca sube a LT/LTA (RF-FIR-15, degradación observable).
 
+    REUTILIZACIÓN para la firma PERSONAL (E17/F4, Incremento 2, Baja #4):
+    cuando ``remote_sign`` está presente, ``ca_cert_pem`` transporta en cambio
+    el PEM de la sub-CA de USUARIOS que emitió el leaf (poblado por
+    ``app.services.cadena_service._firmar_personal`` desde el
+    ``sign-digest`` de auth-service, NUNCA desde ``app.core.keys.load_seal``)
+    — y ``crl_der`` se queda SIEMPRE ``None`` (la revocación personal es en
+    línea, no por CRL). ``LocalSigner.sign`` distingue ambos usos por
+    ``remote_sign is None`` (institucional) vs. ``remote_sign is not None``
+    (personal): la firma personal NUNCA entra al bloque LT institucional de
+    abajo, solo embebe ``xades:CertificateValues`` de la sub-CA — ver la nota
+    de módulo "XAdES-LT/LTA" en ``app.providers.local`` para el resto.
+
     ``ocsp_cert_pem``/``ocsp_key_pem`` (OCSP stapled en XAdES-LT —
     ``app.core.keys.load_seal``, ``app.core.ocsp``) son el par del responder
     OCSP DELEGADO (``ocsp.crt``/``ocsp.key``, EKU ``id-kp-OCSPSigning`` +
