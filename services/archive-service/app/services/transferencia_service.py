@@ -1298,12 +1298,17 @@ class TransferenciaService:
         actor: Actor,
         totp_code: str,
         authorization: str | None,
+        rol_solicitado: str | None = None,
     ) -> TransferenciaActaFirmaPersonalResponse:
         """`POST /transferencias/{id}/acta/firmar-personal` — firma PERSONAL
-        PKI del receptor (rol DERIVADO: siempre `'recibe'` en este
-        incremento; `'entrega'`/co-firma del remitente queda deuda Inc.2),
-        paso EXPLÍCITO posterior a `recibir()` — NUNCA lo bloquea ni lo
-        sustituye.
+        PKI de una PARTE del acta: el REMITENTE (rol `'entrega'`) o el
+        RECEPTOR (rol `'recibe'`). El rol se DERIVA de la identidad congelada
+        (`enviada_por`/`decidida_por`), nunca lo declara el cliente
+        (`rol_solicitado` solo SELECCIONA entre los roles que la identidad ya
+        otorga — p. ej. desempata el auto-traslado en que la misma persona
+        envió y recibió). Paso EXPLÍCITO posterior a `recibir()` — NUNCA lo
+        bloquea ni lo sustituye; ambos roles se firman en cualquier orden e
+        independientemente (Inc.2 generaliza el Inc.1 de solo-receptor).
 
         `authorization` es el header `Authorization` TAL CUAL llegó a esta
         petición — reenviado a signature-service (D1: el TOTP se
@@ -1387,36 +1392,76 @@ class TransferenciaService:
                 },
             )
 
-        # Cotejo del receptor REAL (hallazgo Alta, auditoría de seguridad):
-        # el rol 'recibe' representa a QUIEN RECIBIÓ la transferencia
-        # (`transferencias.decidida_por`, fijado atómicamente por
-        # `recibir()`) — sin este chequeo, cualquier archivista del tenant
-        # con USUA_PERM_EXPEDIENTE crud>=3 y clearance de lectura del
-        # expediente (pero que NO fue quien recibió) podría firmar el acta
-        # como 'recibe', y por UNIQUE(transferencia_id, rol) + la
-        # idempotencia de lectura de arriba, bloquear PERMANENTEMENTE al
-        # receptor legítimo (tabla append-only, sin revocación de fila).
-        # Colocado DESPUÉS de `acta is None` y ANTES de la idempotencia/
-        # `sign_personal`: un no-receptor recibe 403 sin filtrarse la firma
-        # ajena vía idempotencia ni quemarse un TOTP. `decidida_por` (TEXT,
-        # `str(uuid)`) vs. `actor.audit_actor` (`str(actor.id)`) — misma
-        # representación que puebla `Actor.audit_actor` en `recibir()`. No
-        # abre oráculo: quien llega aquí ya pasó el no-read-up y puede leer
-        # el expediente / ver la transferencia por GET.
-        if row["decidida_por"] != actor.audit_actor:
+        # Derivación del rol desde la IDENTIDAD congelada (hallazgo Alta de la
+        # auditoría de seguridad de Inc.1, generalizado a AMBOS roles en
+        # Inc.2). El rol es función de `enviada_por`/`decidida_por` (columnas
+        # que `enviar()`/`recibir()` fijaron atómicamente), NUNCA un dato de
+        # autoridad que aporte el cliente: `rol_solicitado` solo SELECCIONA
+        # entre los roles que la identidad ya otorga, jamás concede uno. Un
+        # tercero (ni remitente ni receptor) recibe 403 pase lo que pase en el
+        # param. Sin este cotejo, cualquier archivista con USUA_PERM_EXPEDIENTE
+        # crud>=3 + clearance podría firmar un rol y, por
+        # UNIQUE(transferencia_id, rol) + la idempotencia de lectura de arriba,
+        # bloquear PERMANENTEMENTE a la parte legítima (tabla append-only, sin
+        # revocación de fila). Colocado DESPUÉS de `acta is None` y ANTES de la
+        # idempotencia/`sign_personal`: un no-parte recibe 403 sin filtrarse la
+        # firma ajena ni quemarse un TOTP. Comparación TEXT `str(uuid)` vs.
+        # `actor.audit_actor` (`str(actor.id)`), misma representación que
+        # puebla las columnas en `enviar()`/`recibir()`.
+        roles: set[str] = set()
+        if actor.audit_actor == row["enviada_por"]:
+            roles.add("entrega")
+        if actor.audit_actor == row["decidida_por"]:
+            roles.add("recibe")
+        if not roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
-                    "error": "firmante_no_es_receptor",
+                    "error": "firmante_no_es_parte",
                     "detail": (
-                        "Solo el receptor de la transferencia puede firmar el acta "
-                        "como rol 'recibe'"
+                        "Solo el remitente (rol 'entrega') o el receptor (rol "
+                        "'recibe') de la transferencia pueden firmar el acta"
                     ),
                     "status": 403,
                 },
             )
-
-        rol = "recibe"
+        if rol_solicitado is not None and rol_solicitado not in roles:
+            # El param NO puede conceder un rol que la identidad no otorga.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "firmante_no_es_parte",
+                    "detail": (
+                        f"La identidad del firmante no corresponde al rol "
+                        f"'{rol_solicitado}' en esta transferencia"
+                    ),
+                    "status": 403,
+                },
+            )
+        if len(roles) == 1:
+            rol = next(iter(roles))
+        else:
+            # Auto-traslado: la MISMA persona envió y recibió
+            # (`enviada_por == decidida_por`) — su identidad da derecho a AMBOS
+            # roles, firmados como dos actos independientes (el UNIQUE por rol
+            # lo admite). Aquí `rol_solicitado` es OBLIGATORIO para desambiguar
+            # cuál se firma. Consecuencia declarada (RF-FIR-15): firmante único
+            # en ambos lados ⇒ SIN control dual (separación de funciones),
+            # coherente con el perfil art. 7 no acreditado.
+            if rol_solicitado is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "rol_requerido",
+                        "detail": (
+                            "El firmante es a la vez remitente y receptor de "
+                            "esta transferencia; indique 'rol' ('entrega' o "
+                            "'recibe') a firmar"
+                        ),
+                        "status": 400,
+                    },
+                )
+            rol = rol_solicitado
         existente = await self._repo.get_acta_firma_personal(transferencia_id, rol=rol)
         if existente is not None:
             # Idempotente: NUNCA se re-firma ni se re-quema el TOTP para un
@@ -1581,9 +1626,21 @@ class TransferenciaService:
                 )
             )
 
-        receptor_presente = any(pr["rol"] == "recibe" for pr in personal_rows)
-        if receptor_presente:
-            completitud: str = "firmada_receptor"
+        # Derivación FACTUAL de la completitud personal (Inc.2): se reporta la
+        # presencia real de cada rol — NUNCA se colapsa una firma ya producida
+        # a `firma_personal_pendiente` (eso ocultaría un hecho y qué parte
+        # firmó). `firma_personal_pendiente` solo aplica cuando NO hay firma
+        # alguna y el gate exige alguna para este nivel. Los dos roles se
+        # firman en cualquier orden (order-independence), de ahí el espejo
+        # `firmada_remitente`/`firmada_receptor`.
+        tiene_recibe = any(pr["rol"] == "recibe" for pr in personal_rows)
+        tiene_entrega = any(pr["rol"] == "entrega" for pr in personal_rows)
+        if tiene_recibe and tiene_entrega:
+            completitud: str = "firmada_completa"
+        elif tiene_recibe:
+            completitud = "firmada_receptor"
+        elif tiene_entrega:
+            completitud = "firmada_remitente"
         elif _firma_personal_gate_activo(exp.nivel_seguridad):
             completitud = "firma_personal_pendiente"
         else:
@@ -1593,10 +1650,25 @@ class TransferenciaService:
             f.valida for f in firmas_personales
         )
 
+        # Auto-traslado (observación de conformidad, dictamen del auditor
+        # archivístico): la MISMA identidad envió y recibió → si llega a
+        # `firmada_completa`, ambas firmas personales son de la misma persona,
+        # SIN control dual (separación de funciones). Se EXPONE el hecho para
+        # que un auditor lo vea sin cotejar UUIDs; el par de roles del FUID no
+        # exige personas naturales distintas (Ac. AGN 042/2002; el control dual
+        # es best-practice MECI/ISO 15489, no prohibición norma-nivel), así que
+        # NO se impide — solo se señala. `enviada_por`/`decidida_por` son
+        # no-NULL en un acta ya congelada (estado 'recibida').
+        auto_traslado = (
+            row["enviada_por"] is not None
+            and row["enviada_por"] == row["decidida_por"]
+        )
+
         return TransferenciaActaVerificacionResponse(
             sello=sello_info,
             firmas_personales=firmas_personales,
             completitud=completitud,  # type: ignore[arg-type]
             valida=valida_total,
             acreditado=False,
+            auto_traslado=auto_traslado,
         )

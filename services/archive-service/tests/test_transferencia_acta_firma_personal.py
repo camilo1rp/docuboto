@@ -361,12 +361,12 @@ async def test_firmar_personal_channel_unavailable_returns_503() -> None:
 
 @pytest.mark.asyncio
 async def test_firmar_personal_non_receiver_returns_403_no_totp_burned() -> None:
-    """Hallazgo Alta (auditoría de seguridad): un actor con permiso/clearance
-    suficientes pero que NO es `transferencias.decidida_por` (el receptor
-    real que congeló `recibir()`) intenta firmar el acta como rol 'recibe'
-    -- debe recibir 403 `firmante_no_es_receptor` SIN llegar a
+    """Hallazgo Alta (auditoría de seguridad, generalizado a ambos roles en
+    Inc.2): un actor con permiso/clearance suficientes pero que NO es ni
+    `enviada_por` (remitente) ni `decidida_por` (receptor) intenta firmar el
+    acta -- debe recibir 403 `firmante_no_es_parte` SIN llegar a
     `signature_client.sign_personal` (TOTP no quemado) y SIN insertar fila
-    (idempotencia nunca filtra la firma ajena: el chequeo del receptor va
+    (idempotencia nunca filtra la firma ajena: el cotejo de identidad va
     ANTES del chequeo de idempotencia)."""
     conn = _mock_conn()
     tid = uuid.uuid4()
@@ -391,7 +391,7 @@ async def test_firmar_personal_non_receiver_returns_403_no_totp_burned() -> None
             await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
 
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail["error"] == "firmante_no_es_receptor"
+    assert exc_info.value.detail["error"] == "firmante_no_es_parte"
     mock_sign.assert_not_called()
 
     insert_calls = [
@@ -591,3 +591,381 @@ async def test_acta_verificacion_no_read_up_404() -> None:
         await svc.acta_verificacion(tid, USER_ID)
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["error"] == "expediente_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Inc.2 — firma del REMITENTE (rol 'entrega'), derivación de rol, completitud
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_remitente_signs_as_entrega() -> None:
+    """Inc.2: quien ENVIÓ (`enviada_por`) firma el acta como rol 'entrega' --
+    el rol se DERIVA de la identidad congelada, no del cliente. Airtight: se
+    captura el payload del insert para comprobar que el rol derivado ('entrega')
+    fluye hasta la escritura (no un hardcode 'recibe')."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    inserted = _personal_row(transferencia_id=tid, rol="entrega")
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(USER_ID),
+            decidida_por=str(uuid.uuid4()),
+        ),
+        None,  # caller_clearance
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        None,  # get_acta_firma_personal(rol='entrega') -> aún no firmado
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)
+
+    with (
+        patch.object(
+            TransferenciaRepository,
+            "insert_acta_firma_personal",
+            new=AsyncMock(return_value=inserted),
+        ) as mock_insert,
+        patch(
+            "app.clients.signature_client.sign_personal",
+            new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
+        ) as mock_sign,
+    ):
+        result = await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
+
+    mock_sign.assert_awaited_once()
+    assert result.rol == "entrega"
+    # El rol DERIVADO llega al insert (no un hardcode):
+    assert mock_insert.await_args.args[0]["rol"] == "entrega"
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_tercero_ni_remitente_ni_receptor_403() -> None:
+    """Un tercero cuya identidad NO casa ni con `enviada_por` ni con
+    `decidida_por` (ambos poblados con otras personas) recibe 403
+    `firmante_no_es_parte` sin firmar."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(uuid.uuid4()),
+            decidida_por=str(uuid.uuid4()),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)  # ni remitente ni receptor
+
+    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "firmante_no_es_parte"
+    mock_sign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_rol_param_no_concede_rol_ajeno_403() -> None:
+    """El `rol` param NUNCA concede un rol: un receptor (roles={'recibe'}) que
+    pide explícitamente 'entrega' recibe 403 sin firmar (no reintroduce el
+    hallazgo Alta por la vía del param)."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(uuid.uuid4()),
+            decidida_por=str(USER_ID),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)  # es receptor, NO remitente
+
+    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_personal(
+                tid, actor, "123456", "Bearer faketoken", rol_solicitado="entrega"
+            )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "firmante_no_es_parte"
+    mock_sign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_autotraslado_sin_rol_requiere_desempate_400() -> None:
+    """Auto-traslado (`enviada_por == decidida_por`): la identidad da derecho a
+    AMBOS roles -> el `rol` param es OBLIGATORIO para desambiguar; sin él, 400
+    `rol_requerido` sin firmar."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(USER_ID),
+            decidida_por=str(USER_ID),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)
+
+    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["error"] == "rol_requerido"
+    mock_sign.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_autotraslado_con_rol_firma_el_indicado() -> None:
+    """Auto-traslado con `rol='entrega'`: firma ese rol (el UNIQUE por rol
+    admite luego firmar 'recibe' como acto independiente)."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    inserted = _personal_row(transferencia_id=tid, rol="entrega")
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(USER_ID),
+            decidida_por=str(USER_ID),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        None,  # idempotencia rol='entrega' -> aún no
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)
+
+    with (
+        patch.object(
+            TransferenciaRepository,
+            "insert_acta_firma_personal",
+            new=AsyncMock(return_value=inserted),
+        ) as mock_insert,
+        patch(
+            "app.clients.signature_client.sign_personal",
+            new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
+        ),
+    ):
+        result = await svc.firmar_personal(
+            tid, actor, "123456", "Bearer faketoken", rol_solicitado="entrega"
+        )
+
+    assert result.rol == "entrega"
+    assert mock_insert.await_args.args[0]["rol"] == "entrega"
+
+
+@pytest.mark.asyncio
+async def test_acta_verificacion_firmada_remitente_only_entrega() -> None:
+    """Solo el remitente firmó ('entrega') -> completitud 'firmada_remitente'
+    (espejo por order-independence)."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="recibida"),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        _acta_firma_row(
+            transferencia_id=tid,
+            estado="firmado",
+            xades_level="XAdES-T",
+            minio_key_firmado="file-id/acta-firmado.xml",
+        ),
+    ]
+    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid, rol="entrega")]]
+    svc = _service(conn)
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<xml/>"),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True,
+                    nivel_conformidad="xades_personal_no_acreditado",
+                    acreditado=False,
+                    motivo=None,
+                    revocacion_status="vigente",
+                )
+            ),
+        ),
+    ):
+        result = await svc.acta_verificacion(tid, USER_ID)
+
+    assert result.completitud == "firmada_remitente"
+    assert len(result.firmas_personales) == 1
+    assert result.firmas_personales[0].rol == "entrega"
+
+
+@pytest.mark.asyncio
+async def test_acta_verificacion_firmada_completa_ambos_roles() -> None:
+    """Ambas partes firmaron ('entrega' + 'recibe') -> completitud
+    'firmada_completa', `valida` compone las dos verificaciones."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="recibida"),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        _acta_firma_row(
+            transferencia_id=tid,
+            estado="firmado",
+            xades_level="XAdES-T",
+            minio_key_firmado="file-id/acta-firmado.xml",
+        ),
+    ]
+    conn.fetch.side_effect = [
+        [],
+        [
+            _personal_row(transferencia_id=tid, rol="entrega"),
+            _personal_row(transferencia_id=tid, rol="recibe"),
+        ],
+    ]
+    svc = _service(conn)
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<xml/>"),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True,
+                    nivel_conformidad="xades_personal_no_acreditado",
+                    acreditado=False,
+                    motivo=None,
+                    revocacion_status="vigente",
+                )
+            ),
+        ),
+    ):
+        result = await svc.acta_verificacion(tid, USER_ID)
+
+    assert result.completitud == "firmada_completa"
+    assert len(result.firmas_personales) == 2
+    assert {f.rol for f in result.firmas_personales} == {"entrega", "recibe"}
+    assert result.valida is True
+
+
+@pytest.mark.asyncio
+async def test_acta_verificacion_auto_traslado_flag_cuando_mismo_firmante() -> None:
+    """Observación de conformidad: `enviada_por == decidida_por` (auto-traslado)
+    se expone como `auto_traslado=True` para que el auditor vea la ausencia de
+    control dual sin cotejar UUIDs."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(USER_ID),
+            decidida_por=str(USER_ID),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        _acta_firma_row(
+            transferencia_id=tid,
+            estado="firmado",
+            xades_level="XAdES-T",
+            minio_key_firmado="file-id/acta-firmado.xml",
+        ),
+    ]
+    conn.fetch.side_effect = [
+        [],
+        [
+            _personal_row(transferencia_id=tid, rol="entrega", firmante_id=USER_ID),
+            _personal_row(transferencia_id=tid, rol="recibe", firmante_id=USER_ID),
+        ],
+    ]
+    svc = _service(conn)
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<xml/>"),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True,
+                    nivel_conformidad="xades_personal_no_acreditado",
+                    acreditado=False,
+                    motivo=None,
+                    revocacion_status="vigente",
+                )
+            ),
+        ),
+    ):
+        result = await svc.acta_verificacion(tid, USER_ID)
+
+    assert result.completitud == "firmada_completa"
+    assert result.auto_traslado is True
+
+
+@pytest.mark.asyncio
+async def test_acta_verificacion_auto_traslado_false_partes_distintas() -> None:
+    """Partes distintas -> `auto_traslado=False` (control dual presente)."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            enviada_por=str(uuid.uuid4()),
+            decidida_por=str(USER_ID),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        _acta_firma_row(transferencia_id=tid, estado="firmado", xades_level="XAdES-T"),
+    ]
+    conn.fetch.side_effect = [[], []]
+    svc = _service(conn)
+
+    result = await svc.acta_verificacion(tid, USER_ID)
+
+    assert result.auto_traslado is False

@@ -199,7 +199,7 @@ async def transferencia_acta_firmar(
 @router.post(
     "/{transferencia_id}/acta/firmar-personal",
     response_model=TransferenciaActaFirmaPersonalResponse,
-    summary="Firma PERSONAL PKI del receptor sobre el acta de entrega (E17/F4, Incremento 1)",
+    summary="Firma PERSONAL PKI de una parte (remitente/receptor) sobre el acta de entrega (E17/F4)",
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def transferencia_acta_firmar_personal(
@@ -212,7 +212,7 @@ async def transferencia_acta_firmar_personal(
 ) -> TransferenciaActaFirmaPersonalResponse:
     authorization = request.headers.get("Authorization")
     return await TransferenciaService(conn, tenant_slug).firmar_personal(
-        transferencia_id, actor, payload.totp_code, authorization
+        transferencia_id, actor, payload.totp_code, authorization, payload.rol
     )
 
 

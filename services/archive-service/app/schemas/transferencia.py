@@ -118,12 +118,19 @@ class TransferenciaActaResponse(BaseModel):
 
 
 class FirmarPersonalRequest(BaseModel):
-    """Body de `POST /transferencias/{id}/acta/firmar-personal` (E17/F4,
-    Incremento 1) -- el `totp_code` del propio receptor, verificado-y-
+    """Body de `POST /transferencias/{id}/acta/firmar-personal` (E17/F4) -- el
+    `totp_code` de la propia PARTE (remitente o receptor), verificado-y-
     consumido ATÓMICAMENTE por auth-service junto con la firma (D1 del
-    contrato de firma personal, signature-service)."""
+    contrato de firma personal, signature-service).
+
+    `rol` es OPCIONAL y solo desempata el AUTO-TRASLADO (misma persona envió y
+    recibió): NUNCA concede un rol -- el rol efectivo se deriva de la identidad
+    congelada (`enviada_por`/`decidida_por`) en el servicio. Fuera del
+    auto-traslado se ignora si coincide con la identidad y se rechaza (403) si
+    no."""
 
     totp_code: str = Field(min_length=1, max_length=32)
+    rol: Literal["entrega", "recibe"] | None = None
 
 
 class TransferenciaActaFirmaPersonalResponse(BaseModel):
@@ -160,24 +167,41 @@ class TransferenciaActaFirmaPersonalVerif(BaseModel):
 
 
 class TransferenciaActaVerificacionResponse(BaseModel):
-    """`GET /transferencias/{id}/acta/verificacion` (E17/F4 Inc.1) -- compone
-    la verificación del sello institucional (siempre presente si el acta se
-    selló) y de cada firma personal presente. `completitud` refleja el
-    ROL 'recibe' (único implementado en Inc.1); 'entrega' (Inc.2) queda
-    representable en `firmas_personales` sin afectar aún la `completitud`."""
+    """`GET /transferencias/{id}/acta/verificacion` (E17/F4) -- compone la
+    verificación del sello institucional (siempre presente si el acta se
+    selló) y de cada firma personal presente. `completitud` refleja la
+    presencia FACTUAL de las firmas personales de las dos partes del FUID
+    (remitente 'entrega' + receptor 'recibe'), que se firman en cualquier
+    orden (Inc.2)."""
 
     sello: TransferenciaActaFirmaInfo
     firmas_personales: list[TransferenciaActaFirmaPersonalVerif]
-    # 'sellada' -- solo el sello institucional (gate en 'off', o firma
-    #   personal simplemente no producida todavía y el gate no la exige).
-    # 'firmada_receptor' -- el receptor YA firmó personalmente.
+    # 'sellada' -- solo el sello institucional (gate en 'off', o ninguna firma
+    #   personal producida todavía y el gate no la exige).
     # 'firma_personal_pendiente' -- el gate (`acta_firma_personal_require`)
-    #   exige la firma del receptor para el nivel_seguridad de este
-    #   expediente y todavía no se produjo.
-    completitud: Literal["sellada", "firmada_receptor", "firma_personal_pendiente"]
+    #   exige firma personal para el nivel_seguridad de este expediente y
+    #   NINGUNA parte ha firmado todavía.
+    # 'firmada_receptor' -- solo el receptor ('recibe') firmó personalmente.
+    # 'firmada_remitente' -- solo el remitente ('entrega') firmó personalmente.
+    # 'firmada_completa' -- AMBAS partes firmaron personalmente (bajo el gate
+    #   `clasificados`/`todos`, el veredicto de conformidad exige este estado).
+    completitud: Literal[
+        "sellada",
+        "firma_personal_pendiente",
+        "firmada_receptor",
+        "firmada_remitente",
+        "firmada_completa",
+    ]
     # Cripto+revocación de TODO lo presente (sello + firmas personales
     # presentes) -- vacuously True si no hay nada que verificar más allá del
     # sello. `False` si el sello no está presente/válido, o si CUALQUIER
     # firma personal presente no valida.
     valida: bool
     acreditado: bool = False
+    # Auto-traslado: la MISMA identidad envió y recibió la transferencia
+    # (`enviada_por == decidida_por`). Si además `completitud=='firmada_completa'`,
+    # ambas firmas personales son de la misma persona -> SIN control dual
+    # (separación de funciones). Se expone como OBSERVACIÓN de conformidad
+    # (dictamen del auditor archivístico) -- el par de roles del FUID no exige
+    # personas naturales distintas, así que no se impide, solo se señala.
+    auto_traslado: bool = False
