@@ -130,7 +130,7 @@ class FirmarPersonalRequest(BaseModel):
     no."""
 
     totp_code: str = Field(min_length=1, max_length=32)
-    rol: Literal["entrega", "recibe"] | None = None
+    rol: Literal["entrega", "recibe", "elabora"] | None = None
 
 
 class TransferenciaActaFirmaPersonalResponse(BaseModel):
@@ -139,7 +139,7 @@ class TransferenciaActaFirmaPersonalResponse(BaseModel):
     sobre el sello institucional (`TransferenciaActaFirmaInfo`)."""
 
     transferencia_id: uuid.UUID
-    rol: Literal["recibe", "entrega"]
+    rol: Literal["recibe", "entrega", "elabora"]
     firmante_id: uuid.UUID
     firma_id: uuid.UUID
     minio_key_firmado: str | None = None
@@ -154,7 +154,7 @@ class TransferenciaActaFirmaPersonalVerif(BaseModel):
     """Bloque por-rol de `GET /acta/verificacion` -- cripto+revocación
     verificadas ON-DEMAND (nunca cacheadas), gemelo del bloque `sello`."""
 
-    rol: Literal["recibe", "entrega"]
+    rol: Literal["recibe", "entrega", "elabora"]
     firmante_id: uuid.UUID
     # `None` cuando no se pudo verificar (XML firmado no descargable, o
     # signature-service inalcanzable) -- NUNCA se infiere `True` por defecto.
@@ -205,3 +205,8 @@ class TransferenciaActaVerificacionResponse(BaseModel):
     # (dictamen del auditor archivístico) -- el par de roles del FUID no exige
     # personas naturales distintas, así que no se impide, solo se señala.
     auto_traslado: bool = False
+    # Firma personal del ELABORADOR ("Elaborado por" del FUID = quien creó la
+    # transferencia, Inc.3). ORTOGONAL a `completitud`: el elaborador es un
+    # firmante ADITIVO, no una parte del traspaso, así que su firma NO
+    # condiciona `firmada_completa` (entrega+recibe) -- se reporta aparte.
+    elaborador_firmado: bool = False

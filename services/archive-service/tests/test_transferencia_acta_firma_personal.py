@@ -969,3 +969,168 @@ async def test_acta_verificacion_auto_traslado_false_partes_distintas() -> None:
     result = await svc.acta_verificacion(tid, USER_ID)
 
     assert result.auto_traslado is False
+
+
+# ---------------------------------------------------------------------------
+# Inc.3 — firma del ELABORADOR (rol 'elabora'), eje ortogonal elaborador_firmado
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_elaborador_signs_as_elabora() -> None:
+    """Inc.3: quien CREÓ la transferencia (`creada_por`) firma como rol
+    'elabora' ("Elaborado por" del FUID) -- rol derivado de la identidad."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    inserted = _personal_row(transferencia_id=tid, rol="elabora")
+    conn.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            creada_por=str(USER_ID),
+            enviada_por=str(uuid.uuid4()),
+            decidida_por=str(uuid.uuid4()),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        None,  # idempotencia rol='elabora' -> aún no
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)
+
+    with (
+        patch.object(
+            TransferenciaRepository,
+            "insert_acta_firma_personal",
+            new=AsyncMock(return_value=inserted),
+        ) as mock_insert,
+        patch(
+            "app.clients.signature_client.sign_personal",
+            new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
+        ),
+    ):
+        result = await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
+
+    assert result.rol == "elabora"
+    assert mock_insert.await_args.args[0]["rol"] == "elabora"
+
+
+@pytest.mark.asyncio
+async def test_acta_verificacion_elaborador_firmado_ortogonal_a_completitud() -> None:
+    """El elaborador es ADITIVO: firmar 'elabora' pone `elaborador_firmado=True`
+    pero NO cambia `completitud` (que sigue siendo el eje de las dos PARTES);
+    con solo 'elabora' y gate off, completitud='sellada'."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="recibida"),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        _acta_firma_row(
+            transferencia_id=tid,
+            estado="firmado",
+            xades_level="XAdES-T",
+            minio_key_firmado="file-id/acta-firmado.xml",
+        ),
+    ]
+    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid, rol="elabora")]]
+    svc = _service(conn)
+
+    with (
+        patch(
+            "app.clients.storage_client.download_signed_xml",
+            new=AsyncMock(return_value="<xml/>"),
+        ),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True,
+                    nivel_conformidad="xades_personal_no_acreditado",
+                    acreditado=False,
+                    motivo=None,
+                    revocacion_status="vigente",
+                )
+            ),
+        ),
+    ):
+        result = await svc.acta_verificacion(tid, USER_ID)
+
+    assert result.elaborador_firmado is True
+    assert result.completitud == "sellada"  # elaborador NO cuenta para completitud
+    assert result.firmas_personales[0].rol == "elabora"
+
+
+@pytest.mark.asyncio
+async def test_firmar_personal_tres_roles_coincidentes_requiere_rol() -> None:
+    """Los TRES responsables son la misma persona (`creada_por == enviada_por ==
+    decidida_por`): la identidad da derecho a los 3 roles -> `rol` obligatorio
+    (400 sin él); con `rol='elabora'` firma ese."""
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+
+    def _rows():
+        return [
+            _transfer_row(
+                id=tid,
+                expediente_id=exp_id,
+                estado="recibida",
+                creada_por=str(USER_ID),
+                enviada_por=str(USER_ID),
+                decidida_por=str(USER_ID),
+            ),
+            None,
+            make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+            _acta_row(transferencia_id=tid),
+        ]
+
+    # Sin rol -> 400 rol_requerido, sin firmar.
+    conn.fetchrow.side_effect = _rows()
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)
+    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["error"] == "rol_requerido"
+    mock_sign.assert_not_called()
+
+    # Con rol='elabora' -> firma ese.
+    conn2 = _mock_conn()
+    inserted = _personal_row(transferencia_id=tid, rol="elabora")
+    conn2.fetchrow.side_effect = [
+        _transfer_row(
+            id=tid,
+            expediente_id=exp_id,
+            estado="recibida",
+            creada_por=str(USER_ID),
+            enviada_por=str(USER_ID),
+            decidida_por=str(USER_ID),
+        ),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        None,
+    ]
+    svc2 = _service(conn2)
+    with (
+        patch.object(
+            TransferenciaRepository,
+            "insert_acta_firma_personal",
+            new=AsyncMock(return_value=inserted),
+        ),
+        patch(
+            "app.clients.signature_client.sign_personal",
+            new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
+        ),
+    ):
+        result = await svc2.firmar_personal(
+            tid, actor, "123456", "Bearer faketoken", rol_solicitado="elabora"
+        )
+    assert result.rol == "elabora"

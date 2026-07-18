@@ -1413,14 +1413,22 @@ class TransferenciaService:
             roles.add("entrega")
         if actor.audit_actor == row["decidida_por"]:
             roles.add("recibe")
+        if actor.audit_actor == row["creada_por"]:
+            # Elaborador ("Elaborado por" del FUID, Inc.3) = quien CREÓ la
+            # transferencia. Firmante ADITIVO (no parte del traspaso); la
+            # comparación es segura ante `creada_por` NULL porque
+            # `actor.audit_actor` es siempre un UUID canónico no vacío
+            # (`require_actor` fail-closed) y `str == None` es False.
+            roles.add("elabora")
         if not roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "firmante_no_es_parte",
                     "detail": (
-                        "Solo el remitente (rol 'entrega') o el receptor (rol "
-                        "'recibe') de la transferencia pueden firmar el acta"
+                        "Solo el elaborador (rol 'elabora'), el remitente (rol "
+                        "'entrega') o el receptor (rol 'recibe') de la "
+                        "transferencia pueden firmar el acta"
                     ),
                     "status": 403,
                 },
@@ -1635,6 +1643,11 @@ class TransferenciaService:
         # `firmada_remitente`/`firmada_receptor`.
         tiene_recibe = any(pr["rol"] == "recibe" for pr in personal_rows)
         tiene_entrega = any(pr["rol"] == "entrega" for pr in personal_rows)
+        # Elaborador (Inc.3): firmante ADITIVO, ORTOGONAL a `completitud` (que
+        # sigue siendo el eje de las dos PARTES del traspaso, entrega+recibe) —
+        # se expone como booleano aparte para no explotar el Literal ni romper
+        # el contrato de 5 valores de Inc.2.
+        tiene_elabora = any(pr["rol"] == "elabora" for pr in personal_rows)
         if tiene_recibe and tiene_entrega:
             completitud: str = "firmada_completa"
         elif tiene_recibe:
@@ -1646,6 +1659,12 @@ class TransferenciaService:
         else:
             completitud = "sellada"
 
+        # `valida` compone la cripto+revocación de TODO lo presente, incluida la
+        # firma ADITIVA del elaborador: los dos ejes de ortogonalidad DIFIEREN —
+        # el elaborador NO cuenta para `completitud` (traspaso = entrega+recibe)
+        # pero SÍ para `valida` (un cert de elaborador revocado → `valida=false`
+        # aun con `firmada_completa`). Es fail-closed deliberado: si una firma
+        # presente no valida, el veredicto agregado del acta no puede ser True.
         valida_total = bool(sello_info.presente and sello_info.valida) and all(
             f.valida for f in firmas_personales
         )
@@ -1671,4 +1690,5 @@ class TransferenciaService:
             valida=valida_total,
             acreditado=False,
             auto_traslado=auto_traslado,
+            elaborador_firmado=tiene_elabora,
         )
