@@ -31,6 +31,7 @@ import hashlib
 import logging
 import uuid
 from base64 import b64decode
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
@@ -128,6 +129,37 @@ def _build_personal_envelope(*, objeto_tipo: str, objeto_id: str, payload_bytes:
     root.set("objetoId", objeto_id)
     root.text = payload_bytes.decode("utf-8", errors="replace")
     return etree.tostring(root, xml_declaration=False, encoding="UTF-8")
+
+
+@dataclass(slots=True)
+class _PersonalSigningStatus:
+    """Resolución de tres estados de ``GET /internal/signing-key/status``
+    (E17/F4, Incremento 3 — antes colapsaba a ``dict | None``, ver
+    ``CadenaFirmaService._resolve_personal_signing_status``).
+
+    - ``body`` no ``None``            -> cert ``activo`` disponible (ruta XAdES).
+    - ``body is None, disponible=True``  -> auth-service alcanzable, SIN cert activo
+      (actor no enrolado, o ``Authorization`` ausente en la petición entrante).
+    - ``body is None, disponible=False`` -> auth-service inalcanzable
+      (``SigningKeyStatusUnavailableError``) — canal caído, no "sin cert".
+    """
+
+    body: dict | None
+    disponible: bool
+
+
+def _xades_gate_activo(nivel_seguridad: int) -> bool:
+    """Predicado del gate ``firma_personal_require_xades`` (E17/F4, Incremento 3).
+
+    Decide SOLO si un cert personal ausente/inaccesible puede caer a nativa
+    para este acto — nunca altera la ruta cuando el cert SÍ está activo.
+    """
+    modo = settings.firma_personal_require_xades
+    if modo == "todos":
+        return True
+    if modo == "clasificados":
+        return nivel_seguridad >= 2
+    return False  # "off"
 
 
 class CadenaFirmaService:
@@ -556,12 +588,21 @@ class CadenaFirmaService:
         entirely for this path: ``body.totp_code`` is required and consumed
         ATOMICALLY at auth-service, together with the signature itself (see
         ``_firmar_personal``/``app.core.http_clients.sign_digest_remote``) —
-        not by this service's own TOTP verification. A status-check failure
-        (auth-service unreachable) degrades to the nativa path
-        (``firma_personal_require_xades`` is declared but NOT enforced in
-        this increment — see ``app/core/config.py``); an actor without an
-        ``activo`` cert always falls back to nativa, unchanged from before
-        this increment (full backward compatibility).
+        not by this service's own TOTP verification.
+
+        --- Gate XAdES (E17/F4, Incremento 3 — cierra Baja #3 del Inc.2) ---
+        With ``settings.firma_personal_require_xades == "off"`` (default), a
+        missing cert or an unreachable auth-service both degrade to the
+        nativa path — byte-identical to Inc.1/2. With the gate ACTIVE for
+        this act's ``nivel_seguridad`` (see ``_xades_gate_activo``), the two
+        cases are told apart and BOTH deny the act instead of degrading:
+        no active cert -> 422 ``firma_xades_requerida``; auth-service
+        unreachable -> 503 ``canal_firma_personal_no_disponible``
+        (fail-closed). The denial always runs BEFORE ``_firmar_personal``/
+        ``_gate_2fa`` — no 2FA factor is ever verified-or-consumed for an
+        act the gate is going to reject — and always writes an atomic
+        ``firma.xades_requerida_denegada`` audit entry in the same ambient
+        transaction.
         """
         sol = await self._get_or_404(solicitud_id)
         # No-read-up gate: 404 before any other guard so actor cannot infer
@@ -648,10 +689,26 @@ class CadenaFirmaService:
             # 2FA nativo: si el actor tiene un cert 'activo', ESTE es el
             # único camino de firma para este acto (bypasea _gate_2fa por
             # completo) — nunca ambos.
-            personal_status = await self._resolve_personal_signing_status(authorization)
+            #
+            # Gate XAdES (E17/F4, Incremento 3, cierra Baja #3 del Inc.2):
+            # decidido ANTES de resolver el estado personal para que la
+            # rama de denegación pueda distinguir "sin cert" de "canal
+            # caído" — pero la denegación en sí (más abajo) corre ANTES de
+            # invocar _firmar_personal/_gate_2fa, así que ningún factor 2FA
+            # se consume en un acto que el gate va a rechazar.
+            gate_activo = _xades_gate_activo(sol["nivel_seguridad"])
+            # NOTA (auditoría E17/F4 Inc.3): esta llamada HTTP a auth-service
+            # (GET /internal/signing-key/status, timeout signing_key_sign_timeout_seconds)
+            # se ejecuta con el row-lock de turno_activo_for_update ya tomado. Patrón
+            # heredado de Inc.1/2 (_gate_2fa ya hacía IO en-tx) — Inc.3 no añade IO
+            # nueva en la rama de denegación, solo reutiliza este resultado. No afecta
+            # aislamiento de tenant ni autorización; seguimiento fuera de alcance:
+            # resolver el estado personal ANTES de abrir la transacción para no
+            # extender el hold del lock hasta el timeout bajo lentitud de auth-service.
+            personal_res = await self._resolve_personal_signing_status(authorization)
             personal_signed: SignedDoc | None = None
 
-            if personal_status is not None:
+            if personal_res.body is not None:
                 totp_code = payload_opcional.totp_code if payload_opcional else None
                 if not totp_code:
                     otp_fail = HTTPException(
@@ -669,7 +726,7 @@ class CadenaFirmaService:
                             payload_bytes=payload_bytes,
                             authorization=authorization,
                             totp_code=totp_code,
-                            cert_pem=personal_status["cert_pem"],
+                            cert_pem=personal_res.body["cert_pem"],
                         )
                     except HTTPException as exc:
                         otp_fail = exc
@@ -680,6 +737,64 @@ class CadenaFirmaService:
                             "hash_documento": sol["payload_sha256"],
                             "consumido_at": datetime.now(timezone.utc),
                         }
+            elif gate_activo:
+                # DENEGACIÓN por gate — NO se llama a _firmar_personal ni a
+                # _gate_2fa: ningún OTP/TOTP se verifica ni se consume (el
+                # contador anti-replay de auth-service nunca se toca en un
+                # acto que se va a rechazar). El asiento se escribe AQUÍ,
+                # dentro de la txn ambiente, y commitea atómicamente con el
+                # resto (igual que firma.turno_firmado) — otp_fail se asigna
+                # (nunca raise) para que el `async with` de abajo termine de
+                # commitear antes de levantarlo, tras el bloque (:846-847).
+                motivo = (
+                    "sin_certificado_activo"
+                    if personal_res.disponible
+                    else "canal_status_no_disponible"
+                )
+                if _AUDIT_AVAILABLE:
+                    await _audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="firma.xades_requerida_denegada",
+                        object_type=sol["objeto_tipo"],
+                        object_ref=sol["objeto_id"],
+                        actor=str(actor),
+                        payload={
+                            "solicitud_id": str(solicitud_id),
+                            "nivel_seguridad": sol["nivel_seguridad"],
+                            "gate_modo": settings.firma_personal_require_xades,
+                            "motivo": motivo,
+                            "factor_consumido": False,
+                        },
+                    )
+                if personal_res.disponible:
+                    otp_fail = HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "firma_xades_requerida",
+                            "detail": (
+                                "This act requires a personal XAdES certificate under "
+                                "the current gate (firma_personal_require_xades); the "
+                                "caller has no active certificate. Complete the offline "
+                                "personal certificate enrollment/issuance to sign this act."
+                            ),
+                            "status": 422,
+                        },
+                    )
+                else:
+                    otp_fail = HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={
+                            "error": "canal_firma_personal_no_disponible",
+                            "detail": (
+                                "Could not verify the caller's personal signing-key "
+                                "status (auth-service); the XAdES gate for this act "
+                                "requires this check to succeed (fail-closed)."
+                            ),
+                            "status": 503,
+                        },
+                    )
             else:
                 # Fallback nativa — comportamiento SIN CAMBIOS desde antes de
                 # este incremento (2FA gate, E06 Inc.2, RF-FIR-13). On
@@ -852,32 +967,42 @@ class CadenaFirmaService:
     # Firma PERSONAL PKI por-usuario (E17/F4, Incremento 1)
     # ------------------------------------------------------------------
 
-    async def _resolve_personal_signing_status(self, authorization: str | None) -> dict | None:
+    async def _resolve_personal_signing_status(
+        self, authorization: str | None
+    ) -> _PersonalSigningStatus:
         """Consulta ``GET /internal/signing-key/status`` (auth-service) para
         el ACTOR (identidad derivada del ``authorization`` reenviado, D1) y
-        devuelve el body si tiene un cert ``activo`` disponible, o ``None``
-        si no (fallback nativa — sin cambios desde antes de este incremento).
+        devuelve una resolución de TRES estados (E17/F4, Incremento 3 — antes
+        colapsaba "sin cert" y "canal caído" al mismo ``None``, ver
+        ``_PersonalSigningStatus``).
 
-        FAIL-OPEN a nativa ante un fallo de infraestructura
-        (``SigningKeyStatusUnavailableError``) — ``firma_personal_require_xades``
-        está declarado pero NO se aplica en este incremento (ver
-        ``app/core/config.py``): un auth-service caído nunca bloquea la
-        cadena de firma, solo le impide subir a ``xades_personal`` para ese
-        acto en particular.
+        Sin ``Authorization`` reenviado, no hay forma de identificar al actor
+        ante auth-service para este canal — se resuelve ``disponible=True,
+        body=None`` (mismo bucket que "sin cert activo"): NO es un fallo de
+        infraestructura ajeno, es una precondición del propio acto (ver
+        ``_xades_gate_activo`` — bajo el gate, el llamante recibe 422
+        ``firma_xades_requerida``, no 503).
+
+        Con el gate ``'off'`` (default), AMBOS casos ``body=None`` siguen
+        cayendo a la firma nativa en ``firmar()`` — retrocompat exacta con el
+        fail-open de Inc.1/2. Con el gate activo para el nivel del acto,
+        ``firmar()`` distingue ``disponible`` para elegir 422 vs 503 (ver
+        ``app/core/config.py::firma_personal_require_xades``).
         """
         if not authorization:
-            return None
+            return _PersonalSigningStatus(body=None, disponible=True)
         try:
             body = await get_signing_key_status_remote(authorization)
         except SigningKeyStatusUnavailableError:
             logger.warning(
-                "No se pudo consultar signing-key/status; fallback a firma nativa",
+                "No se pudo consultar signing-key/status; fallback a firma nativa "
+                "(o denegación bajo gate — ver _xades_gate_activo)",
                 exc_info=True,
             )
-            return None
+            return _PersonalSigningStatus(body=None, disponible=False)
         if body.get("estado") != "activo" or not body.get("cert_pem"):
-            return None
-        return body
+            return _PersonalSigningStatus(body=None, disponible=True)
+        return _PersonalSigningStatus(body=body, disponible=True)
 
     async def _firmar_personal(
         self,
@@ -1391,7 +1516,12 @@ class CadenaFirmaService:
         A failure on one item does NOT abort the rest. Each result carries
         'firmado' on success or 'omitido' with the error code as detalle
         (includes 2FA failures: 2fa_requerido, otp_incorrecto, challenge_*,
-        totp_incorrecto, totp_no_activo, totp_bloqueado).
+        totp_incorrecto, totp_no_activo, totp_bloqueado; and, under the
+        XAdES gate — E17/F4 Incremento 3 — firma_xades_requerida,
+        canal_firma_personal_no_disponible). The gate is re-evaluated
+        PER ITEM inside each item's own firmar() call: a certificate
+        satisfying one item never covers another, and each denied item
+        gets its own atomic audit entry.
         """
         resultados: list[ResultadoLoteItem] = []
         for item in items:

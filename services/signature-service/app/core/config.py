@@ -7,7 +7,9 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -235,13 +237,50 @@ class Settings(BaseSettings):
     # NUNCA cae en silencio al camino nativo por un simple timeout (eso solo
     # ocurre cuando GET /status responde limpiamente "no_activo"/"revocado").
     signing_key_sign_timeout_seconds: float = 5.0
-    # Kill-switch (NO forzado en Inc.1 — ver CLAUDE.md de este incremento):
-    # False (default) preserva el comportamiento actual — un actor SIN cert
-    # activo cae al HMAC nativo sin más. True exigiría xades_personal para
-    # todo actor con PERM_FIRMA (fuera de alcance del Inc.1: requeriría
-    # bloquear la firma de quien aún no completó el enroll+emisión offline;
-    # reservado para un incremento futuro que lo implemente de verdad).
-    firma_personal_require_xades: bool = False
+    # --- Gate XAdES de la firma personal (E17/F4, Incremento 3 — cierra Baja #3 del Inc.2) ---
+    # Controla si un certificado personal ausente o inaccesible puede caer a HMAC
+    # nativa (comportamiento histórico) o debe RECHAZAR el acto. Tres valores:
+    #
+    #   "off"          (default) — fail-open a nativa: actor sin cert -> HMAC; auth
+    #                  caído -> HMAC. Comportamiento byte-idéntico a Inc.1/2. NO sube
+    #                  el aseguramiento de no-repudio; la firma clasificada puede
+    #                  degradar en silencio. Postura out-of-the-box.
+    #   "clasificados" — exige XAdES personal para nivel_seguridad>=2 (RESERVADA/
+    #                  CLASIFICADA): actor sin cert -> 422 firma_xades_requerida;
+    #                  auth caído -> 503 canal_firma_personal_no_disponible
+    #                  (fail-closed). nivel 1 (PÚBLICA) conserva el fallback nativo.
+    #                  RECOMENDADO **una vez completo el enrolamiento de los firmantes
+    #                  con clearance>=2**. OJO: la emisión del cert es OFFLINE por-usuario
+    #                  (NO autoservicio, a diferencia del 2FA cuyo nivel>=2 SÍ es
+    #                  incondicional, ver firma_2fa_required) — habilitarlo antes de
+    #                  tener enrolados BLOQUEA la firma clasificada de quien no tenga cert.
+    #   "todos"        — exige XAdES personal para TODA firma de la cadena, sin fallback
+    #                  HMAC en ningún nivel.
+    #
+    # Retrocompat: el env FIRMA_PERSONAL_REQUIRE_XADES admite el bool histórico —
+    # false/0/no/"" -> "off"; true/1/yes -> "todos". Un valor no reconocido ABORTA
+    # el arranque (fail-fast), nunca cae a "off" en silencio.
+    firma_personal_require_xades: Literal["off", "clasificados", "todos"] = "off"
+
+    @field_validator("firma_personal_require_xades", mode="before")
+    @classmethod
+    def _coerce_firma_personal_require_xades(cls, v: object) -> str:
+        if isinstance(v, bool):
+            return "todos" if v else "off"
+        if v is None:
+            return "off"
+        s = str(v).strip().lower()
+        if s in ("false", "0", "no", ""):
+            return "off"
+        if s in ("true", "1", "yes"):
+            return "todos"
+        if s in ("off", "clasificados", "todos"):
+            return s
+        raise ValueError(
+            "firma_personal_require_xades debe ser uno de 'off'/'clasificados'/"
+            f"'todos' (o un bool legacy true/false), recibido {v!r}"
+        )
+
     # --- Revocación de la firma personal (E17/F4, Incremento 2 — A2) ---
     # Fail-closed (default True): si GET /internal/signing-key/revocation-status
     # (auth-service) no responde o falla, /verify reporta `valida=False`,
