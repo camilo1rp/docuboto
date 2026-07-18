@@ -193,7 +193,11 @@ def _patch_sign_digest_remote(
             }
 
         mock = AsyncMock(side_effect=_fake_sign)
-    monkeypatch.setattr("app.services.cadena_service.sign_digest_remote", mock)
+    # `sign_digest_remote` es invocado desde el closure `_remote_sign` de
+    # `app.services.personal_signing.sign_personal_xml` (extract-method
+    # E17/F4 Incremento 1, reutilizado por `CadenaFirmaService._firmar_personal`
+    # — ver su docstring) — NO desde `cadena_service` directamente.
+    monkeypatch.setattr("app.services.personal_signing.sign_digest_remote", mock)
     return mock
 
 

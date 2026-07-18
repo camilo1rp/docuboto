@@ -30,7 +30,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from base64 import b64decode
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -43,21 +42,17 @@ from app.core.config import settings
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
     OtpEmailDeliveryError,
-    SignDigestRemoteError,
-    SignDigestRemoteUnavailableError,
     SignerEmailError,
     SigningKeyStatusUnavailableError,
     TotpVerifyUnavailableError,
     get_signer_email,
     get_signing_key_status_remote,
     send_otp_email,
-    sign_digest_remote,
     verify_totp,
 )
 from app.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
 from app.core.redis_client import get_redis
-from app.providers.base import SignedDoc, SignerRef
-from app.providers.local import LocalSigner
+from app.providers.base import SignedDoc
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.challenge_repository import ChallengeRepository
 from app.repositories.firma_repository import FirmaRepository
@@ -73,6 +68,7 @@ from app.schemas.cadena import (
     TurnoItem,
 )
 from app.services import signer
+from app.services.personal_signing import sign_personal_xml
 
 _PERSONAL_ENVELOPE_NS = "urn:orpyca:firma-personal"
 
@@ -1026,66 +1022,29 @@ class CadenaFirmaService:
         fallo de ``_gate_2fa`` (devuelto, no lanzado dentro de la
         transacción ambiente).
 
-        --- Anclaje de la sub-CA de usuarios (E17/F4, Incremento 2, Baja #4) ---
-        ``sign-digest`` (auth-service) puede devolver ``ca_cert_pem`` (el PEM
-        PÚBLICO de la sub-CA que emitió ESTE leaf, ``None`` para una
-        credencial 'activo' anclada ANTES de este incremento — grandfather
-        estructural). ``_remote_sign`` lo escribe en ``signer_ref.ca_cert_pem``
-        DENTRO del cierre — mutación del MISMO objeto ``SignerRef`` que
-        ``LocalSigner.sign`` ya sostiene como ``signer`` — ANTES de que ese
-        método llegue al bloque que lo lee (después de ``await
-        signer.remote_sign(...)``, más abajo en la misma función), así que la
-        lectura ve el valor recién puesto. Sin ``ca_cert_pem``, el campo se
-        queda en ``None`` (default de ``SignerRef``) y la firma se produce
-        SIN anclaje, exactamente como en Incremento 1.
+        Extract-method (E17/F4 Incremento 1, ruta ``POST /sign-personal``):
+        el cuerpo criptográfico (construcción del ``SignerRef``/``remote_sign``
+        + delegación en ``LocalSigner``, incluido el anclaje de la sub-CA de
+        usuarios — Incremento 2, Baja #4) vive ahora en
+        ``app.services.personal_signing.sign_personal_xml``, COMPARTIDO con
+        ``PersonalSigningService.sign`` (firma personal del acta de
+        transferencia, un payload que YA es XML válido, sin el envoltorio
+        ``_build_personal_envelope`` que este método SÍ necesita para el
+        hash/identificador no-XML de un turno de la cadena). Este método solo
+        aporta el envoltorio — el resto es IDÉNTICO byte a byte al
+        comportamiento preexistente.
         """
-
-        async def _remote_sign(digest: bytes) -> bytes:
-            try:
-                result = await sign_digest_remote(authorization, digest, totp_code)
-            except SignDigestRemoteUnavailableError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={
-                        "error": "canal_firma_personal_no_disponible",
-                        "detail": str(exc),
-                        "status": 503,
-                    },
-                ) from exc
-            except SignDigestRemoteError as exc:
-                # auth-service ya formatea el detail en la forma
-                # {"error", "detail", "status"} — se reenvía tal cual
-                # (mismos códigos: 422 signing_key_no_activa/totp_no_activo,
-                # 423 totp_bloqueado, 401 totp_incorrecto).
-                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-            ca_cert_pem = result.get("ca_cert_pem")
-            if ca_cert_pem:
-                # Ver nota de docstring "Anclaje de la sub-CA...": mutación
-                # del mismo `SignerRef` que `LocalSigner.sign` lee más abajo.
-                # `LocalSigner.sign` RECOMPUTA la huella a partir de este PEM
-                # (nunca confía en `result.get("ca_fingerprint")` a ciegas)
-                # antes de persistirla como `firma.ca_fingerprint`.
-                signer_ref.ca_cert_pem = ca_cert_pem.encode()
-            return b64decode(result["signature_value_b64"])
-
         envelope = _build_personal_envelope(
             objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"], payload_bytes=payload_bytes
         )
-        signer_ref = SignerRef(
-            cert_pem=cert_pem.encode(),
-            key_pem=b"",
-            remote_sign=_remote_sign,
-            tipo_firma="personal",
-            nivel_conformidad="xades_personal_no_acreditado",
-            # RF-FIR-15: la CA de usuarios de este incremento (scripts/gen-user-cert.sh)
-            # nunca tiene acreditación ONAC — mismo criterio que el sello institucional.
-            acreditado=False,
+        return await sign_personal_xml(
+            xml_bytes=envelope,
+            objeto_tipo=sol["objeto_tipo"],
+            objeto_id=sol["objeto_id"],
+            authorization=authorization,
+            totp_code=totp_code,
+            cert_pem=cert_pem,
         )
-        provider = LocalSigner()
-        prepared = await provider.prepare(
-            envelope, objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"]
-        )
-        return await provider.sign(prepared, signer_ref)
 
     async def _gate_2fa(
         self,

@@ -7,6 +7,8 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -80,6 +82,23 @@ class Settings(BaseSettings):
     # (un `seal_absent` degrada de inmediato SIN consumir estos reintentos).
     acta_sign_max_sync_attempts: int = 2
     acta_sign_sync_delay_seconds: float = 1.0
+
+    # --- Firma PERSONAL PKI por-usuario del acta (E17/F4, Incremento 1) ---
+    # Gate de CONFORMIDAD (nunca bloquea `recibir()`, ver
+    # `TransferenciaService.firmar_personal`/`acta_verificacion`): decide si
+    # la ausencia de la firma personal del receptor degrada la
+    # `completitud` reportada por `GET /acta/verificacion` a
+    # `firma_personal_pendiente` -- espeja `firma_personal_require_xades`
+    # de signature-service (mismos tres valores, mismo criterio por
+    # `nivel_seguridad` del expediente).
+    #   "off"          (default) -- la firma personal es SIEMPRE opcional;
+    #                  con el sello institucional solo, `completitud` queda
+    #                  en 'sellada'.
+    #   "clasificados" -- exige la firma del receptor para expedientes
+    #                  nivel_seguridad>=2 (RESERVADA/CLASIFICADA); nivel 1
+    #                  (PÚBLICA) conserva 'sellada' como suficiente.
+    #   "todos"        -- exige la firma del receptor para TODA transferencia.
+    acta_firma_personal_require: Literal["off", "clasificados", "todos"] = "off"
 
     @property
     def database_url_asyncpg(self) -> str:

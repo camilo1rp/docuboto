@@ -14,14 +14,17 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from app.core.actor import Actor, optional_actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
+    FirmarPersonalRequest,
+    TransferenciaActaFirmaPersonalResponse,
     TransferenciaActaResponse,
+    TransferenciaActaVerificacionResponse,
     TransferenciaCreate,
     TransferenciaRechazo,
     TransferenciaResponse,
@@ -190,4 +193,43 @@ async def transferencia_acta_firmar(
 ) -> TransferenciaActaResponse:
     return await TransferenciaService(conn, tenant_slug).firmar_acta_retry(
         transferencia_id, actor
+    )
+
+
+@router.post(
+    "/{transferencia_id}/acta/firmar-personal",
+    response_model=TransferenciaActaFirmaPersonalResponse,
+    summary="Firma PERSONAL PKI del receptor sobre el acta de entrega (E17/F4, Incremento 1)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
+async def transferencia_acta_firmar_personal(
+    transferencia_id: uuid.UUID,
+    payload: FirmarPersonalRequest,
+    request: Request,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> TransferenciaActaFirmaPersonalResponse:
+    authorization = request.headers.get("Authorization")
+    return await TransferenciaService(conn, tenant_slug).firmar_personal(
+        transferencia_id, actor, payload.totp_code, authorization
+    )
+
+
+@router.get(
+    "/{transferencia_id}/acta/verificacion",
+    response_model=TransferenciaActaVerificacionResponse,
+    summary="Verificación agregada (sello + firmas personales) del acta de entrega (E17/F4)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def transferencia_acta_verificacion(
+    transferencia_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    # Lectura, no acto de custodia (RF-SEG-08, mismo gating que `/acta`):
+    # `optional_actor` no exige `X-User-Id` (anónimo -> clearance PUBLICA).
+    actor: Actor | None = Depends(optional_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> TransferenciaActaVerificacionResponse:
+    return await TransferenciaService(conn, tenant_slug).acta_verificacion(
+        transferencia_id, actor.id if actor else None
     )

@@ -37,7 +37,10 @@ from app.repositories.transferencia_repository import TransferenciaRepository
 from app.schemas.fisico import FuidResponse
 from app.schemas.transferencia import (
     TransferenciaActaFirmaInfo,
+    TransferenciaActaFirmaPersonalResponse,
+    TransferenciaActaFirmaPersonalVerif,
     TransferenciaActaResponse,
+    TransferenciaActaVerificacionResponse,
     TransferenciaCreate,
     TransferenciaRechazo,
     TransferenciaResponse,
@@ -71,6 +74,23 @@ _TIPO_ARCHIVO_ESPERADO: dict[str, tuple[str, str]] = {
 
 def _resp(row) -> TransferenciaResponse:
     return TransferenciaResponse(**dict(row))
+
+
+def _firma_personal_gate_activo(nivel_seguridad: int) -> bool:
+    """Predicado del gate `acta_firma_personal_require` (E17/F4, Incremento
+    1) -- espeja `signature-service.app.services.cadena_service.
+    _xades_gate_activo`. Decide únicamente si la AUSENCIA de la firma
+    personal del receptor degrada `completitud` a
+    `firma_personal_pendiente` en `GET /acta/verificacion` -- NUNCA bloquea
+    `recibir()` ni `POST /acta/firmar-personal` (la firma personal siempre
+    puede producirse, gated o no; este predicado solo afecta el VEREDICTO
+    de completitud reportado)."""
+    modo = settings.acta_firma_personal_require
+    if modo == "todos":
+        return True
+    if modo == "clasificados":
+        return nivel_seguridad >= 2
+    return False  # "off"
 
 
 class TransferenciaService:
@@ -1267,3 +1287,316 @@ class TransferenciaService:
                 },
             )
         return await self.acta(transferencia_id, actor.id)
+
+    # ------------------------------------------------------------------
+    # Firma PERSONAL PKI por-usuario del acta (E17/F4, Incremento 1)
+    # ------------------------------------------------------------------
+
+    async def firmar_personal(
+        self,
+        transferencia_id: uuid.UUID,
+        actor: Actor,
+        totp_code: str,
+        authorization: str | None,
+    ) -> TransferenciaActaFirmaPersonalResponse:
+        """`POST /transferencias/{id}/acta/firmar-personal` — firma PERSONAL
+        PKI del receptor (rol DERIVADO: siempre `'recibe'` en este
+        incremento; `'entrega'`/co-firma del remitente queda deuda Inc.2),
+        paso EXPLÍCITO posterior a `recibir()` — NUNCA lo bloquea ni lo
+        sustituye.
+
+        `authorization` es el header `Authorization` TAL CUAL llegó a esta
+        petición — reenviado a signature-service (D1: el TOTP se
+        verifica-y-consume contra el bearer del propio receptor, nunca
+        contra un `user_id` que este servicio pudiera declarar).
+
+        Autoriza IGUAL que `recibir` (mismo scoping/permiso,
+        `USUA_PERM_EXPEDIENTE min_crud=3`, router) MÁS un gate no-read-up
+        real sobre el expediente (a diferencia de `recibir`, que trata la
+        custodia como ortogonal a lectura — aquí SÍ se resuelve el
+        clearance real del actor, mismo criterio que `acta()`/`fuid()`):
+        404 neutro, indistinguible de una transferencia inexistente, para un
+        actor que no puede LEER el expediente referenciado.
+
+        Idempotencia (sin re-firmar, sin re-quemar TOTP): si YA existe una
+        fila `(transferencia_id, rol='recibe')`, se devuelve tal cual —
+        NUNCA se llama de nuevo a signature-service para ese rol.
+
+        Riesgo firma-huérfana/TOTP-quemado (misma clase S1 que el sello
+        institucional, ver `_sellar_acta_post_commit`): signature-service
+        minta `firma_id` y CONSUME el TOTP ANTES de que este método
+        persista la fila local — si la petición muriera entre esos dos
+        pasos, la firma quedaría íntegra y auditada en `audit_log` de
+        signature-service, pero SIN fila local aquí. `insert_acta_firma_personal`
+        es idempotente sobre `(transferencia_id, rol)`: un reintento del
+        MISMO usuario, al no encontrar fila local, volvería a llamar a
+        signature-service (nuevo TOTP, nueva `firma_id`) — el `firma_id`
+        huérfano anterior queda solo como traza forense en signature-service
+        (log de advertencia aquí), nunca bloquea el reintento.
+        """
+        row = await self._repo.get(transferencia_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "transferencia_not_found",
+                    "detail": str(transferencia_id),
+                    "status": 404,
+                },
+            )
+        # No-read-up (RF-SEG-08): la firma personal del receptor es un acto
+        # deliberadamente ligado a la capacidad de LEER el expediente que se
+        # está firmando (a diferencia de `recibir`, custodia ortogonal) —
+        # mismo criterio que `acta()`/`fuid()`.
+        caller_clearance = await self._archive.caller_clearance(actor.id)
+        exp = await self._archive.get_expediente_by_id(
+            row["expediente_id"], max_clearance=caller_clearance
+        )
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "status": 404,
+                },
+            )
+        if row["estado"] != "recibida":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "transferencia_no_recibida",
+                    "detail": (
+                        "El acta de entrega solo puede firmarse personalmente una vez "
+                        "recibida la transferencia"
+                    ),
+                    "status": 409,
+                },
+            )
+        acta = await self._repo.get_acta(transferencia_id)
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "acta_not_found",
+                    "detail": (
+                        "La transferencia aún no tiene acta de entrega "
+                        "(se congela al recibirla)"
+                    ),
+                    "status": 404,
+                },
+            )
+
+        # Cotejo del receptor REAL (hallazgo Alta, auditoría de seguridad):
+        # el rol 'recibe' representa a QUIEN RECIBIÓ la transferencia
+        # (`transferencias.decidida_por`, fijado atómicamente por
+        # `recibir()`) — sin este chequeo, cualquier archivista del tenant
+        # con USUA_PERM_EXPEDIENTE crud>=3 y clearance de lectura del
+        # expediente (pero que NO fue quien recibió) podría firmar el acta
+        # como 'recibe', y por UNIQUE(transferencia_id, rol) + la
+        # idempotencia de lectura de arriba, bloquear PERMANENTEMENTE al
+        # receptor legítimo (tabla append-only, sin revocación de fila).
+        # Colocado DESPUÉS de `acta is None` y ANTES de la idempotencia/
+        # `sign_personal`: un no-receptor recibe 403 sin filtrarse la firma
+        # ajena vía idempotencia ni quemarse un TOTP. `decidida_por` (TEXT,
+        # `str(uuid)`) vs. `actor.audit_actor` (`str(actor.id)`) — misma
+        # representación que puebla `Actor.audit_actor` en `recibir()`. No
+        # abre oráculo: quien llega aquí ya pasó el no-read-up y puede leer
+        # el expediente / ver la transferencia por GET.
+        if row["decidida_por"] != actor.audit_actor:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "firmante_no_es_receptor",
+                    "detail": (
+                        "Solo el receptor de la transferencia puede firmar el acta "
+                        "como rol 'recibe'"
+                    ),
+                    "status": 403,
+                },
+            )
+
+        rol = "recibe"
+        existente = await self._repo.get_acta_firma_personal(transferencia_id, rol=rol)
+        if existente is not None:
+            # Idempotente: NUNCA se re-firma ni se re-quema el TOTP para un
+            # rol ya firmado.
+            return TransferenciaActaFirmaPersonalResponse(**dict(existente))
+
+        from app.clients import signature_client
+
+        outcome = await signature_client.sign_personal(
+            tenant_slug=self._tenant,
+            authorization=authorization,
+            actor_id=actor.audit_actor,
+            payload_xml=acta["acta_fuid_xml"],
+            objeto_tipo="acta_transferencia_personal",
+            objeto_id=str(transferencia_id),
+            totp_code=totp_code,
+            firmante_id=actor.audit_actor,
+        )
+        if outcome.unavailable:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "canal_firma_personal_no_disponible",
+                    "detail": "signature-service no está disponible para la firma personal",
+                    "status": 503,
+                },
+            )
+        if outcome.rejected is not None:
+            status_code, detail = outcome.rejected
+            raise HTTPException(status_code=status_code, detail=detail)
+
+        signed = outcome.signed
+        assert signed is not None  # exactamente uno de los tres queda poblado
+
+        async with self._conn.transaction():
+            inserted = await self._repo.insert_acta_firma_personal(
+                {
+                    "transferencia_id": transferencia_id,
+                    "rol": rol,
+                    "firmante_id": actor.id,
+                    "firma_id": signed.firma_id,
+                    "minio_key_firmado": signed.minio_key_firmado,
+                    "xades_level": signed.xades_level,
+                    "ca_fingerprint": None,
+                    "acreditado": signed.acreditado,
+                }
+            )
+            if inserted is not None:
+                # H5 (atomicidad efecto<->asiento): solo la escritura GANADORA
+                # de la carrera (ver docstring de `insert_acta_firma_personal`)
+                # deja asiento — nunca un `archive.acta_firmada_personal`
+                # fantasma sobre un efecto que esta llamada no produjo.
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant,
+                    service=_SERVICE,
+                    action="archive.acta_firmada_personal",
+                    object_type="transferencia_acta",
+                    object_ref=str(transferencia_id),
+                    actor=actor.audit_actor,
+                    payload={
+                        "transferencia_id": str(transferencia_id),
+                        "rol": rol,
+                        "firma_id": str(signed.firma_id),
+                        "xades_level": signed.xades_level,
+                    },
+                )
+
+        if inserted is None:
+            # Carrera perdida (mismo rol firmado concurrentemente por OTRA
+            # petición que sí ganó la escritura local) — el `firma_id` recién
+            # obtenido queda huérfano en signature-service (traza forense,
+            # misma clase S1 que el sello institucional); NUNCA se re-lanza
+            # como error, se devuelve la fila GANADORA (idéntica semántica
+            # de negocio: el rol ya está firmado).
+            logger.warning(
+                "transferencia_acta_firma_personal: firma_id=%s quedó huérfana "
+                "(carrera perdida) para transferencia_id=%s rol=%s",
+                signed.firma_id,
+                transferencia_id,
+                rol,
+            )
+            inserted = await self._repo.get_acta_firma_personal(transferencia_id, rol=rol)
+            assert inserted is not None
+
+        return TransferenciaActaFirmaPersonalResponse(**dict(inserted))
+
+    async def acta_verificacion(
+        self, transferencia_id: uuid.UUID, user_id: uuid.UUID | None = None
+    ) -> TransferenciaActaVerificacionResponse:
+        """`GET /transferencias/{id}/acta/verificacion` (E17/F4, Incremento
+        1) — compone la verificación cripto+revocación del sello
+        institucional (`verify(sello)`) y de cada firma personal presente
+        (`verify(firma personal)`), ON-DEMAND (nunca cacheada). No-read-up
+        idéntico a `TransferenciaService.acta` (contenido, no custodia)."""
+        row = await self._repo.get(transferencia_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "transferencia_not_found",
+                    "detail": str(transferencia_id),
+                    "status": 404,
+                },
+            )
+        caller_clearance = await self._archive.caller_clearance(user_id)
+        exp = await self._archive.get_expediente_by_id(
+            row["expediente_id"], max_clearance=caller_clearance
+        )
+        if exp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "status": 404,
+                },
+            )
+        acta = await self._repo.get_acta(transferencia_id)
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "acta_not_found",
+                    "detail": (
+                        "La transferencia aún no tiene acta de entrega "
+                        "(se congela al recibirla)"
+                    ),
+                    "status": 404,
+                },
+            )
+
+        firma_row = await self._repo.get_acta_firma(transferencia_id)
+        sello_info = await self._build_firma_info(firma_row, verify=True)
+
+        personal_rows = await self._repo.list_acta_firma_personal(transferencia_id)
+        firmas_personales: list[TransferenciaActaFirmaPersonalVerif] = []
+        for pr in personal_rows:
+            valida: bool | None = None
+            revocacion_status: str | None = None
+            if pr["minio_key_firmado"]:
+                from app.clients import signature_client, storage_client
+
+                signed_xml = await storage_client.download_signed_xml(
+                    tenant_slug=self._tenant, minio_key_firmado=pr["minio_key_firmado"]
+                )
+                if signed_xml is not None:
+                    resultado = await signature_client.verify(
+                        tenant_slug=self._tenant,
+                        firma_id=str(pr["firma_id"]),
+                        payload_xml=signed_xml,
+                    )
+                    if resultado is not None:
+                        valida = resultado.valida
+                        revocacion_status = resultado.revocacion_status
+            firmas_personales.append(
+                TransferenciaActaFirmaPersonalVerif(
+                    rol=pr["rol"],
+                    firmante_id=pr["firmante_id"],
+                    valida=valida,
+                    revocacion_status=revocacion_status,
+                )
+            )
+
+        receptor_presente = any(pr["rol"] == "recibe" for pr in personal_rows)
+        if receptor_presente:
+            completitud: str = "firmada_receptor"
+        elif _firma_personal_gate_activo(exp.nivel_seguridad):
+            completitud = "firma_personal_pendiente"
+        else:
+            completitud = "sellada"
+
+        valida_total = bool(sello_info.presente and sello_info.valida) and all(
+            f.valida for f in firmas_personales
+        )
+
+        return TransferenciaActaVerificacionResponse(
+            sello=sello_info,
+            firmas_personales=firmas_personales,
+            completitud=completitud,  # type: ignore[arg-type]
+            valida=valida_total,
+            acreditado=False,
+        )

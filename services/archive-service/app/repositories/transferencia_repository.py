@@ -45,6 +45,17 @@ _ACTA_FIRMA_COLS = (
     "created_at, firmado_at"
 )
 
+# Migración 027 (E17/F4 Incremento 1 -- firma PERSONAL PKI por-usuario del
+# acta): tabla ADITIVA sobre `transferencia_acta_firma` (sello institucional,
+# migración 026) -- 1:N por transferencia (una fila por `rol` firmante,
+# hoy solo 'recibe'), estrictamente append-only (sin columnas reconcile_*:
+# la firma personal exige un TOTP interactivo, nunca se reconcilia en
+# background).
+_ACTA_FIRMA_PERSONAL_COLS = (
+    "id, transferencia_id, rol, firmante_id, firma_id, minio_key_firmado, "
+    "xades_level, ca_fingerprint, acreditado, creada_en"
+)
+
 # Columnas que `update_estado` NUNCA acepta en `assignments`: `estado` tiene su
 # propio parámetro (para que la guarda `expected_estado` quede visible en la
 # firma, no enterrada en un dict libre) y `id` identifica la fila, no un valor
@@ -298,6 +309,56 @@ class TransferenciaRepository:
             proximo_at,
             last_error,
             agotado,
+        )
+
+    # -----------------------------------------------------------------
+    # transferencia_acta_firma_personal (E17/F4 Inc.1) -- firma PERSONAL
+    # PKI por-usuario, ADITIVA sobre el sello institucional, append-only
+    # -----------------------------------------------------------------
+
+    async def get_acta_firma_personal(
+        self, transferencia_id: uuid.UUID, *, rol: str
+    ) -> asyncpg.Record | None:
+        """Fila de firma personal para UN rol -- `None` si ese rol aún no
+        firmó (idempotencia de `firmar_personal`: una fila existente
+        significa "ya firmado", nunca se re-firma ni se re-quema el TOTP)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_ACTA_FIRMA_PERSONAL_COLS} FROM transferencia_acta_firma_personal "
+            "WHERE transferencia_id = $1 AND rol = $2",
+            transferencia_id,
+            rol,
+        )
+
+    async def list_acta_firma_personal(self, transferencia_id: uuid.UUID) -> list[asyncpg.Record]:
+        """Todas las firmas personales de una transferencia (hoy, a lo sumo
+        una: 'recibe'; 'entrega' queda representable para el Inc.2 -- deuda)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                f"SELECT {_ACTA_FIRMA_PERSONAL_COLS} FROM transferencia_acta_firma_personal "
+                "WHERE transferencia_id = $1 ORDER BY rol",
+                transferencia_id,
+            )
+        )
+
+    async def insert_acta_firma_personal(self, data: dict) -> asyncpg.Record | None:
+        """Inserta la fila de firma personal -- `ON CONFLICT (transferencia_id,
+        rol) DO NOTHING`: bajo una carrera manual-vs-manual (dos peticiones
+        concurrentes de `firmar_personal` para el MISMO rol, ambas ya
+        pasaron el chequeo de idempotencia de lectura y ambas firmaron con
+        signature-service, ver `TransferenciaService.firmar_personal`), solo
+        UNA gana la escritura local -- `None` para la perdedora, que NUNCA
+        debe escribir un asiento `archive.acta_firmada_personal` fantasma
+        (misma clase de riesgo S1 que `mark_acta_firmada`)."""
+        await self._sp()
+        cols = list(data.keys())
+        ph = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+        return await self._conn.fetchrow(
+            f"INSERT INTO transferencia_acta_firma_personal ({', '.join(cols)}) "
+            f"VALUES ({ph}) ON CONFLICT (transferencia_id, rol) DO NOTHING "
+            f"RETURNING {_ACTA_FIRMA_PERSONAL_COLS}",
+            *data.values(),
         )
 
     async def list_acta_firmas_pendientes(self, limit: int) -> list[asyncpg.Record]:

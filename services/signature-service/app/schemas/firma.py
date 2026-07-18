@@ -78,6 +78,38 @@ class InternalSignIndiceRequest(BaseModel):
         return v
 
 
+class SignPersonalRequest(BaseModel):
+    """Solicitud de ``POST /sign-personal`` (E17/F4, Incremento 1 — firma
+    PERSONAL PKI por-usuario de un ``payload_xml`` ARBITRARIO, p. ej. el acta
+    de entrega de transferencia congelada por archive-service).
+
+    A diferencia de ``SignXmlRequest`` (sello institucional/nativo), este
+    payload SIEMPRE se firma con el certificado PERSONAL del actor
+    autenticado (``X-User-Id``/JWT — ``Depends(get_actor)``, nunca
+    ``require_internal_token``): requiere que el actor tenga una credencial
+    de firma personal 'activo' (``GET /internal/signing-key/status``,
+    auth-service) y un ``totp_code`` válido, verificado-y-consumido
+    ATÓMICAMENTE junto con la firma (D1 del contrato de firma personal, ver
+    ``app.services.personal_signing``).
+
+    ``firmante_id`` es OPCIONAL y puramente defensivo: cuando el llamante lo
+    declara (p. ej. archive-service, que resuelve su propio ``actor.id`` por
+    separado de la cabecera ``Authorization`` que reenvía), el servicio
+    exige que coincida con el actor derivado del JWT (403
+    ``firmante_no_coincide`` en caso contrario) — nunca sustituye la
+    identidad, solo la corrobora (defensa en profundidad ante un bug de
+    reenvío de cabeceras aguas arriba).
+    """
+
+    payload_xml: str = Field(..., min_length=1)
+    objeto_tipo: str = Field(..., min_length=1, max_length=40)
+    objeto_id: str = Field(..., min_length=1)
+    totp_code: str = Field(..., min_length=1)
+    firmante_id: uuid.UUID | None = None
+    indice_id: str | None = None
+    version: int | None = None
+
+
 class FirmaResponse(BaseModel):
     firma_id: uuid.UUID
     objeto_tipo: str

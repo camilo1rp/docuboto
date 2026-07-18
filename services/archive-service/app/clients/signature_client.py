@@ -89,6 +89,12 @@ class VerifyResult:
     nivel_conformidad: str | None
     acreditado: bool
     motivo: str | None
+    # `revocacion_status` (E17/F4 Incremento 2, A2) -- SOLO poblado para
+    # firmas `provider='xades_personal'` (`vigente`/`revocado`/
+    # `no_verificable`/`desconocido`); `None` para el sello institucional o
+    # HMAC nativo (no aplica, ver signature-service `VerifyResponse`).
+    # ADITIVO, opcional: no rompe ningún llamante preexistente que no lo lea.
+    revocacion_status: str | None = None
 
 
 async def sign_xml(
@@ -326,8 +332,120 @@ async def verify(
                     nivel_conformidad=data.get("nivel_conformidad"),
                     acreditado=bool(data.get("acreditado", False)),
                     motivo=data.get("motivo"),
+                    revocacion_status=data.get("revocacion_status"),
                 )
             logger.warning("signature-service → HTTP %s al verificar índice", resp.status_code)
     except httpx.RequestError as exc:
         logger.warning("signature-service inalcanzable al verificar índice: %s", exc)
     return None
+
+
+@dataclass(slots=True)
+class SignedPersonal:
+    """Espejo (subconjunto) del `FirmaResponse` de `POST /sign-personal`
+    (E17/F4 Incremento 1, ``provider='xades_personal'``)."""
+
+    firma_id: uuid.UUID
+    minio_key_firmado: str | None
+    xades_level: str | None
+    acreditado: bool
+    certificado_fingerprint: str | None
+    nivel_conformidad: str | None
+
+
+@dataclass(slots=True)
+class SignPersonalOutcome:
+    """Resultado ESTRUCTURADO de `POST /sign-personal` (E17/F4 Incremento 1).
+
+    A diferencia del sello institucional (`SignOutcome`, best-effort — un
+    fallo simplemente degrada el objeto a `pendiente_firma`), la firma
+    PERSONAL es un acto INTERACTIVO: requiere el TOTP del propio usuario, así
+    que NUNCA se degrada en silencio — el llamante
+    (`TransferenciaService.firmar_personal`) propaga el resultado al usuario
+    tal cual.
+
+    Exactamente uno de los tres queda poblado:
+    - `signed` -- éxito.
+    - `rejected` -- respuesta de NEGOCIO de signature-service, `(status_code,
+      detail)` reenviado VERBATIM (422 `sin_certificado_activo`, 401
+      `totp_incorrecto`, 403 `firmante_no_coincide`, 409 `2fa_requerido`,
+      404 `object_not_found`, ...) — mismo criterio que `SignDigestRemoteError`
+      en signature-service.
+    - `unavailable=True` -- canal caído (red/timeout/5xx) — fail-closed 503.
+    """
+
+    signed: SignedPersonal | None
+    rejected: tuple[int, dict] | None = None
+    unavailable: bool = False
+
+
+async def sign_personal(
+    *,
+    tenant_slug: str,
+    authorization: str | None,
+    actor_id: str,
+    payload_xml: str,
+    objeto_tipo: str,
+    objeto_id: str,
+    totp_code: str,
+    firmante_id: str | None = None,
+) -> SignPersonalOutcome:
+    """Solicita la firma PERSONAL PKI por-usuario de `payload_xml` (E17/F4
+    Incremento 1, `POST /signature/sign-personal`) — primer consumidor: el
+    acta de entrega de transferencia (`TransferenciaService.firmar_personal`).
+
+    Reenvía el `Authorization` bearer TAL CUAL (D1 — signature-service lo
+    necesita para verificar-y-consumir el TOTP en auth-service; sin él la
+    llamada falla 401/503 del lado de signature-service, nunca se sustituye
+    por `actor_id`). `firmante_id` (opcional, defensivo): el propio
+    `actor.id` del receptor — signature-service lo corrobora contra el actor
+    derivado del bearer (403 `firmante_no_coincide` si no coincide).
+    """
+    body: dict = {
+        "payload_xml": payload_xml,
+        "objeto_tipo": objeto_tipo,
+        "objeto_id": objeto_id,
+        "totp_code": totp_code,
+    }
+    if firmante_id is not None:
+        body["firmante_id"] = firmante_id
+    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    if authorization:
+        headers["Authorization"] = authorization
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.signature_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/signature/sign-personal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "signature-service inalcanzable al firmar personalmente (%s): %s", objeto_tipo, exc
+        )
+        return SignPersonalOutcome(signed=None, unavailable=True)
+
+    if resp.status_code in (200, 201):
+        data = resp.json()
+        return SignPersonalOutcome(
+            signed=SignedPersonal(
+                firma_id=uuid.UUID(data["firma_id"]),
+                minio_key_firmado=data.get("minio_key_firmado"),
+                xades_level=data.get("xades_level"),
+                acreditado=bool(data.get("acreditado", False)),
+                certificado_fingerprint=data.get("certificado_fingerprint"),
+                nivel_conformidad=data.get("nivel_conformidad"),
+            )
+        )
+    if resp.status_code >= 500:
+        logger.warning(
+            "signature-service → HTTP %s al firmar personalmente (%s)", resp.status_code, objeto_tipo
+        )
+        return SignPersonalOutcome(signed=None, unavailable=True)
+    try:
+        detail = resp.json().get("detail", {})
+    except ValueError:
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {"detail": detail}
+    return SignPersonalOutcome(signed=None, rejected=(resp.status_code, detail))

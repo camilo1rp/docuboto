@@ -115,3 +115,69 @@ class TransferenciaActaResponse(BaseModel):
     # presente en la respuesta (calculado por el servicio, nunca un campo
     # crudo de `transferencia_acta`).
     firma: TransferenciaActaFirmaInfo
+
+
+class FirmarPersonalRequest(BaseModel):
+    """Body de `POST /transferencias/{id}/acta/firmar-personal` (E17/F4,
+    Incremento 1) -- el `totp_code` del propio receptor, verificado-y-
+    consumido ATÓMICAMENTE por auth-service junto con la firma (D1 del
+    contrato de firma personal, signature-service)."""
+
+    totp_code: str = Field(min_length=1, max_length=32)
+
+
+class TransferenciaActaFirmaPersonalResponse(BaseModel):
+    """Firma PERSONAL PKI por-usuario de un ROL del acta (E17/F4 Inc.1) --
+    fila de `transferencia_acta_firma_personal` (migración 027), ADITIVA
+    sobre el sello institucional (`TransferenciaActaFirmaInfo`)."""
+
+    transferencia_id: uuid.UUID
+    rol: Literal["recibe", "entrega"]
+    firmante_id: uuid.UUID
+    firma_id: uuid.UUID
+    minio_key_firmado: str | None = None
+    xades_level: str | None = None
+    # RF-FIR-15: SIEMPRE False en este incremento (art. 7 Ley 527/1999, no
+    # acreditada ONAC) -- nunca insinúa firma digital cualificada (art. 28).
+    acreditado: bool = False
+    creada_en: datetime
+
+
+class TransferenciaActaFirmaPersonalVerif(BaseModel):
+    """Bloque por-rol de `GET /acta/verificacion` -- cripto+revocación
+    verificadas ON-DEMAND (nunca cacheadas), gemelo del bloque `sello`."""
+
+    rol: Literal["recibe", "entrega"]
+    firmante_id: uuid.UUID
+    # `None` cuando no se pudo verificar (XML firmado no descargable, o
+    # signature-service inalcanzable) -- NUNCA se infiere `True` por defecto.
+    valida: bool | None = None
+    # `vigente`/`revocado`/`no_verificable`/`desconocido` (ver
+    # signature-service `VerifyResponse.revocacion_status`) -- `None` si la
+    # cripto ya falló (no tiene sentido evaluar revocación) o el canal no
+    # respondió.
+    revocacion_status: str | None = None
+
+
+class TransferenciaActaVerificacionResponse(BaseModel):
+    """`GET /transferencias/{id}/acta/verificacion` (E17/F4 Inc.1) -- compone
+    la verificación del sello institucional (siempre presente si el acta se
+    selló) y de cada firma personal presente. `completitud` refleja el
+    ROL 'recibe' (único implementado en Inc.1); 'entrega' (Inc.2) queda
+    representable en `firmas_personales` sin afectar aún la `completitud`."""
+
+    sello: TransferenciaActaFirmaInfo
+    firmas_personales: list[TransferenciaActaFirmaPersonalVerif]
+    # 'sellada' -- solo el sello institucional (gate en 'off', o firma
+    #   personal simplemente no producida todavía y el gate no la exige).
+    # 'firmada_receptor' -- el receptor YA firmó personalmente.
+    # 'firma_personal_pendiente' -- el gate (`acta_firma_personal_require`)
+    #   exige la firma del receptor para el nivel_seguridad de este
+    #   expediente y todavía no se produjo.
+    completitud: Literal["sellada", "firmada_receptor", "firma_personal_pendiente"]
+    # Cripto+revocación de TODO lo presente (sello + firmas personales
+    # presentes) -- vacuously True si no hay nada que verificar más allá del
+    # sello. `False` si el sello no está presente/válido, o si CUALQUIER
+    # firma personal presente no valida.
+    valida: bool
+    acreditado: bool = False

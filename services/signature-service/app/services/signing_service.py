@@ -69,7 +69,21 @@ logger = logging.getLogger(__name__)
 # abajo. Indexación directa (no `.get`): `provider_name == "xades_local"`
 # implica `payload.objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS` por
 # construcción de `_select_provider_name`, así que esta clave SIEMPRE existe.
-_MINIO_FILENAME_PREFIX = {"indice": "indice", "acta_transferencia": "acta-transferencia"}
+#
+# `acta_transferencia_personal` (E17/F4, Incremento 1) es AJENA al tramo
+# `xades_local`/`XADES_ELIGIBLE_OBJETO_TIPOS` de arriba — la usa
+# `app.services.personal_signing.PersonalSigningService.sign`
+# (`POST /sign-personal`), que sube a MinIO con el mismo esquema determinista
+# `{prefix}-{objeto_id}-v{version}-{firma_id}-firmado.xml` (patrón H-H) pero
+# NUNCA indexa este dict directamente (usa `.get(objeto_tipo, objeto_tipo)`,
+# tolerante a cualquier `objeto_tipo` arbitrario que declare el llamante —
+# `/sign-personal` no está acotado a un allow-set, a diferencia de
+# `/internal/sign-indice`).
+_MINIO_FILENAME_PREFIX = {
+    "indice": "indice",
+    "acta_transferencia": "acta-transferencia",
+    "acta_transferencia_personal": "acta-transferencia-personal",
+}
 
 
 def _select_provider_name(objeto_tipo: str) -> str:

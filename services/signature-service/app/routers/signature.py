@@ -50,11 +50,13 @@ from app.repositories.firma_repository import FirmaRepository
 from app.schemas.firma import (
     FirmaResponse,
     InternalSignIndiceRequest,
+    SignPersonalRequest,
     SignXmlRequest,
     VerifyRequest,
     VerifyResponse,
 )
 from app.services import signer, signing_service
+from app.services.personal_signing import PersonalSigningService
 
 _SERVICE = "signature-service"
 logger = logging.getLogger(__name__)
@@ -146,6 +148,38 @@ async def sign_indice_internal(
         firmante_id=SYSTEM_RECONCILER_ID,
         origen="reconciliation",
     )
+
+
+@router.post(
+    "/sign-personal",
+    response_model=FirmaResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("PERM_FIRMA"))],
+)
+async def sign_personal(
+    payload: SignPersonalRequest,
+    request: Request,
+    actor: uuid.UUID = Depends(get_actor),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> FirmaResponse:
+    """
+    Firma PERSONAL PKI por-usuario de un ``payload_xml`` ARBITRARIO (E17/F4,
+    Incremento 1) — endpoint reutilizable, primer consumidor: el acta de
+    entrega de transferencia (``archive-service``,
+    ``POST /transferencias/{id}/acta/firmar-personal``).
+
+    A diferencia de ``/sign-xml`` (sello institucional/nativo del sistema),
+    esta ruta SIEMPRE firma con el certificado PERSONAL del actor
+    autenticado — requiere una credencial 'activo' (auth-service) y un
+    ``totp_code`` válido, verificado-y-consumido atómicamente junto con la
+    firma. Gate ``PERM_FIRMA`` (mismo permiso que el resto de rutas de
+    firma) + ``X-User-Id``/JWT (``Depends(get_actor)``) — NUNCA
+    ``require_internal_token``: el llamante trae identidad y TOTP de un
+    humano real.
+    """
+    tenant_slug: str = request.headers.get("X-Tenant-Slug", "")
+    authorization = request.headers.get("Authorization")
+    return await PersonalSigningService(conn, tenant_slug).sign(payload, actor, authorization)
 
 
 @router.post("/verify", response_model=VerifyResponse)
