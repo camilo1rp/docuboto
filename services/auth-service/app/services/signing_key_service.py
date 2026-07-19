@@ -464,6 +464,19 @@ class SigningKeyService:
                         "status": 422,
                     },
                 )
+            elif row["private_key_cifrado"] is None:
+                # Defensa en profundidad: una fila con material purgado es
+                # SIEMPRE 'revocado' (CHECK chk_auth_user_signing_key_purga) y
+                # ya la filtra el `estado != 'activo'` de arriba — este guard es
+                # inalcanzable por diseño, pero nunca se intenta descifrar `None`.
+                sign_fail = HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "signing_key_no_activa",
+                        "detail": "Caller has no active personal signing key",
+                        "status": 422,
+                    },
+                )
             else:
                 totp_result = await TotpService(self._conn).verify(
                     user_id, tenant_slug, totp_code, contexto="signing-key-sign-digest"

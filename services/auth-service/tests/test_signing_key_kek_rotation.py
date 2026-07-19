@@ -93,3 +93,7 @@ def test_legacy_bytes_still_works_and_equals_v1() -> None:
     # Retrocompat: el método legacy sigue devolviendo exactamente la v1.
     s = _settings(signing_key_encryption_keys={2: _V2}, signing_key_active_version=2)
     assert s.signing_key_encryption_key_bytes() == s.signing_key_keyring()[1]
+
+
+def test_purge_after_days_default_is_30() -> None:
+    assert _settings().signing_key_purge_after_days == 30

@@ -135,8 +135,17 @@ async def _rewrap_tenant(
                 await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 repo_tx = SigningKeyRepository(conn)
                 row = await repo_tx.get_for_rewrap(p["id"])
-                if row is None or row["key_version"] == active_v:
-                    continue  # carrera con otra corrida/enroll -> idempotente
+                if (
+                    row is None
+                    or row["key_version"] == active_v
+                    or row["private_key_cifrado"] is None
+                ):
+                    # `private_key_cifrado is None`: la purga de revocadas anuló
+                    # el material entre el snapshot de `fetch_ids_to_rewrap` y
+                    # este FOR UPDATE (TOCTOU con purge_revoked_signing_keys) —
+                    # una purgada no tiene nada que re-envolver; saltarla evita
+                    # un decrypt(None). Simetría con el re-check de la purga.
+                    continue  # carrera con otra corrida/enroll/purga -> idempotente
                 old_key = keyring.get(row["key_version"])
                 if old_key is None:
                     raise RuntimeError(

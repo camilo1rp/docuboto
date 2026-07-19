@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     # re-wrap converge. Default 1 = comportamiento actual exacto. Para rotar:
     # añadir la KEK v2 al llavero, fijar esto a 2, y correr el job de re-wrap.
     signing_key_active_version: int = 1
+    # Ventana de retención (días) tras la cual el job de ops purga el MATERIAL
+    # privado de una credencial REVOCADA (E17/F4). Solo se anula la privada
+    # (irreversible); lo público queda para verificación. Colchón operacional
+    # contra revocaciones masivas erróneas, NO reversibilidad criptográfica
+    # (imposible por diseño: re-enroll genera par nuevo).
+    signing_key_purge_after_days: int = 30
     # Token compartido D-02 para POST /internal/signing-key/sign-digest —
     # SOLO signature-service lo llama, servicio-a-servicio, NUNCA vía gateway
     # (misma familia de gate que app.core.internal_auth en otros servicios).

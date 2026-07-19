@@ -78,8 +78,18 @@ class SigningKeyRepository:
         return row
 
     async def revoke(self, key_id: uuid.UUID) -> None:
+        # Supersede en re-enroll. Sella `revocado_at` (con COALESCE, por si ya
+        # lo tuviera) para que el reloj de la ventana de purga
+        # (`COALESCE(revocado_at, updated_at)`) descanse en un timestamp
+        # INMUTABLE: sin esto, el re-wrap de KEK —que hace `updated_at=now()`—
+        # reiniciaría indefinidamente la ventana de las credenciales superseded
+        # (que son la mayoría de las revocadas), anulando la minimización
+        # (hallazgo Media de seguridad). `revocado_por`/`motivo` quedan NULL:
+        # el supersede no es una revocación atribuible a un actor.
         await self._conn.execute(
-            "UPDATE auth_user_signing_key SET estado = 'revocado', updated_at = now() "
+            "UPDATE auth_user_signing_key "
+            "SET estado = 'revocado', revocado_at = COALESCE(revocado_at, now()), "
+            "    updated_at = now() "
             "WHERE id = $1",
             key_id,
         )
@@ -173,11 +183,13 @@ class SigningKeyRepository:
     # ------------------------------------------------------------------
     async def fetch_ids_to_rewrap(self, active_version: int) -> list[asyncpg.Record]:
         """IDs (con user_id/key_version) de credenciales cuya KEK NO es la
-        activa — el conjunto a re-envolver. Cualquier `estado`. Orden estable
-        por `id` para reanudabilidad determinista."""
+        activa Y que AÚN tienen material (`private_key_cifrado IS NOT NULL`) —
+        el conjunto a re-envolver. Una fila PURGADA (material NULL) no necesita
+        ninguna KEK, así que se excluye. Cualquier `estado`. Orden estable por
+        `id` para reanudabilidad determinista."""
         return await self._conn.fetch(
             "SELECT id, user_id, key_version FROM auth_user_signing_key "
-            "WHERE key_version <> $1 ORDER BY id",
+            "WHERE key_version <> $1 AND private_key_cifrado IS NOT NULL ORDER BY id",
             active_version,
         )
 
@@ -211,9 +223,44 @@ class SigningKeyRepository:
         )
 
     async def count_by_key_version(self) -> list[asyncpg.Record]:
-        """Conteo por `key_version` — el operador verifica que una versión tiene
-        conteo 0 (en TODOS los tenants) antes de retirar su KEK del llavero."""
+        """Conteo por `key_version` de filas que AÚN NECESITAN esa KEK
+        (`private_key_cifrado IS NOT NULL`) — el operador verifica que una
+        versión tiene conteo 0 (en TODOS los tenants) antes de retirar su KEK.
+        Una fila PURGADA conserva su `key_version` (forense) pero NO cuenta:
+        ya no ancla ninguna KEK, así que la purga DESBLOQUEA retiradas que las
+        revocadas anclarían."""
         return await self._conn.fetch(
             "SELECT key_version, count(*) AS n FROM auth_user_signing_key "
+            "WHERE private_key_cifrado IS NOT NULL "
             "GROUP BY key_version ORDER BY key_version"
+        )
+
+    # ------------------------------------------------------------------
+    # Purga del material privado de credenciales REVOCADAS (E17/F4).
+    # ------------------------------------------------------------------
+    async def fetch_ids_to_purge(self, purge_after_days: int) -> list[asyncpg.Record]:
+        """IDs de credenciales REVOCADAS con material aún presente cuya ventana
+        de retención venció. El reloj es ``COALESCE(revocado_at, updated_at)``:
+        ``revoke()`` (supersede en re-enroll) NO setea ``revocado_at`` (solo
+        ``updated_at``), así que sin el COALESCE la mayoría de revocadas nunca
+        se purgarían."""
+        return await self._conn.fetch(
+            "SELECT id, user_id, revocado_at FROM auth_user_signing_key "
+            "WHERE estado = 'revocado' AND private_key_cifrado IS NOT NULL "
+            "AND COALESCE(revocado_at, updated_at) < now() - make_interval(days => $1) "
+            "ORDER BY id",
+            purge_after_days,
+        )
+
+    async def purge(self, key_id: uuid.UUID) -> None:
+        """Anula el material privado (idempotente por `IS NOT NULL` aguas
+        arriba). El CHECK `chk_auth_user_signing_key_purga` exige que la fila
+        sea 'revocado' para aceptar el NULL — defensa del motor además del
+        filtro de `fetch_ids_to_purge`."""
+        await self._conn.execute(
+            "UPDATE auth_user_signing_key "
+            "SET private_key_cifrado = NULL, private_key_nonce = NULL, "
+            "    private_key_purgado_at = now(), updated_at = now() "
+            "WHERE id = $1 AND private_key_cifrado IS NOT NULL",
+            key_id,
         )
