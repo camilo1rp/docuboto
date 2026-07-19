@@ -78,6 +78,18 @@ HTTP no-2xx, timeout, servicio inalcanzable) — el llamador
 (`IndexService._bump_worm_backoff`) programa el backoff igual en ambos
 casos NO-ok (ninguno se agota de inmediato, solo tras acumular intentos),
 pero el motivo textual persistido difiere para diagnóstico operacional.
+
+`proteger_artefacto_worm`/`proteger_artefacto_worm_internal` (E10 Inc.2
+wiring, fast-follow declarado en el diseño de Inc.1) — GENERALIZACIÓN de las
+dos funciones de arriba: mismo contrato ESTRUCTURADO (`WormProtectionOutcome`),
+mismas dos identidades (`X-User-Id` real vs. `X-Internal-Token` sistema), pero
+reciben `tipo` explícito y llaman a las rutas generalizadas de storage-service
+(`POST /proteger-artefacto[-internal]`) en vez de `/proteger-indice[-internal]`.
+`proteger_indice_worm`/`proteger_indice_worm_internal` se CONSERVAN intactas
+(alias del índice, mismo criterio que storage-service mantiene
+`/proteger-indice` fijo a `tipo='indice'`) — `TransferenciaService.
+proteger_worm_acta` usa las nuevas, `IndexService.proteger_worm_indice` sigue
+usando las de siempre.
 """
 
 from __future__ import annotations
@@ -205,6 +217,87 @@ async def proteger_indice_worm_internal(
         logger.warning("storage-service inalcanzable al proteger WORM el índice: %s", exc)
         return WormProtectionOutcome(ok=False, transient=True)
     return _worm_outcome_from_response(resp, contexto="reconciliation")
+
+
+async def proteger_artefacto_worm(
+    *,
+    tenant_slug: str,
+    actor_id: str,
+    file_id: str,
+    expediente_id: str,
+    tipo: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    legal_hold: bool = False,
+) -> WormProtectionOutcome:
+    """Disparo SÍNCRONO GENERALIZADO (usuario real) — gemelo de
+    `proteger_indice_worm` que acepta `tipo` explícito y llama a
+    `POST /proteger-artefacto` (E10 Inc.2 wiring). Ver el docstring del
+    módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "legal_hold": legal_hold,
+    }
+    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/proteger-artefacto", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "storage-service inalcanzable al proteger WORM (%s, close): %s", tipo, exc
+        )
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto=f"close:{tipo}")
+
+
+async def proteger_artefacto_worm_internal(
+    *,
+    tenant_slug: str,
+    file_id: str,
+    expediente_id: str,
+    tipo: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    legal_hold: bool = False,
+) -> WormProtectionOutcome:
+    """Gemelo SISTEMA GENERALIZADO (D-02, `X-Internal-Token`) — llama a
+    `POST /proteger-artefacto-internal` (E10 Inc.2 wiring). Ver el docstring
+    del módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "legal_hold": legal_hold,
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/proteger-artefacto-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "storage-service inalcanzable al proteger WORM (%s, reconciliation): %s",
+            tipo,
+            exc,
+        )
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto=f"reconciliation:{tipo}")
 
 
 class StorageAipError(Exception):

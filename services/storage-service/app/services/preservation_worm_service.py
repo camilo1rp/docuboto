@@ -11,15 +11,22 @@
 Protección WORM del índice electrónico firmado (E10 Increment A, RF-PRE-03,
 AGN 001/2024 Art. 4.3.2.6).
 
-Sube una copia INMUTABLE (MinIO Object Lock) del índice electrónico firmado
-(E15/E06), ya presente en el bucket `-documents` vía el flujo normal de subida,
-a un bucket dedicado por tenant con retención por-objeto. storage-service NO
-conoce la TRD: el llamador (archive-service, dueño de la TRD/RF-04) aporta
-`retain_until` ya calculado (o los insumos para derivarlo).
+Sube una copia INMUTABLE (MinIO Object Lock) de un artefacto YA FIRMADO — el
+índice electrónico (E15/E06, `tipo="indice"`) o, desde E10 Inc.2 wiring, el
+acta de transferencia (H-H/E06, `tipo="acta_transferencia"`) — ya presente en
+el bucket `-documents` vía el flujo normal de subida, a un bucket dedicado por
+tenant con retención por-objeto. storage-service NO conoce la TRD: el
+llamador (archive-service, dueño de la TRD/RF-04) aporta `retain_until` ya
+calculado (o los insumos para derivarlo).
 
-El AIP real (BagIt+PREMIS, Increment B) NO se protege aquí todavía — solo el
-índice (`tipo="indice"`); el esquema de `preservacion_worm_objeto` ya admite
-`tipo="aip"` para cuando ese incremento llegue.
+`proteger_indice` (nombre conservado por compatibilidad histórica: Increment A
+solo protegía el índice) es hoy el método GENÉRICO que ambos `tipo` comparten
+— lee `payload.tipo` en vez de asumir `"indice"` (E10 Inc.2 wiring), tanto
+para el chequeo de idempotencia como para el `INSERT`/advisory lock. El AIP
+real (BagIt+PREMIS, Increment B) NO se protege aquí: usa su propio flujo
+(`AipService`, schema `AipCreate`) — el esquema de `preservacion_worm_objeto`
+ya admite `tipo="aip"`, pero `ProtegerIndiceRequest.tipo` deliberadamente no
+lo acepta (semántica de NO-singleton distinta, ver `schemas/preservacion.py`).
 """
 
 from __future__ import annotations
@@ -96,10 +103,11 @@ class PreservationWormService:
         self, payload: ProtegerIndiceRequest, actor: str | None
     ) -> tuple[ProtegerIndiceResponse, bool]:
         """Devuelve ``(respuesta, created)``: ``created=False`` significa que
-        el índice de este expediente YA estaba protegido bajo WORM — la
-        llamada fue idempotente (no se re-subió nada), mismo contrato que
-        ``StorageService.upload`` (dedup por SHA-256). El llamador HTTP
-        (``routers/preservacion.py``) traduce ``created`` a 201/200."""
+        el artefacto (`payload.tipo`) de este expediente YA estaba protegido
+        bajo WORM — la llamada fue idempotente (no se re-subió nada), mismo
+        contrato que ``StorageService.upload`` (dedup por SHA-256). El
+        llamador HTTP (``routers/preservacion.py``) traduce ``created`` a
+        201/200."""
         if not settings.preservation_enabled:
             raise PreservationDisabledError(
                 "La protección WORM está desactivada (PRESERVATION_ENABLED=false)"
@@ -114,20 +122,24 @@ class PreservationWormService:
         retain_until = payload.resolve_retain_until()
         validate_retain_until(retain_until)
 
-        # Serialización por-expediente (hallazgo Media de auditoría de
+        # Serialización por-(expediente, tipo) (hallazgo Media de auditoría de
         # seguridad): el chequeo de idempotencia de abajo impide filas
-        # duplicadas (índice único parcial `ux_..._expediente_indice`), pero NO
-        # un segundo `put_object` COMPLIANCE bajo carrera — el intento síncrono
-        # del cierre y una barrida de reconciliación concurrente pueden pasar
-        # ambos el `get_by_expediente_and_tipo` (ninguno commiteó aún) y subir
-        # DOS versiones inmutables irreversibles del mismo índice. Un advisory
-        # lock de SESIÓN por `(schema, expediente)` serializa el
+        # duplicadas (índice único parcial `ux_..._expediente_indice` /
+        # `ux_..._expediente_acta`, E10 Inc.2 wiring), pero NO un segundo
+        # `put_object` COMPLIANCE bajo carrera — el intento síncrono del cierre
+        # y una barrida de reconciliación concurrente pueden pasar ambos el
+        # `get_by_expediente_and_tipo` (ninguno commiteó aún) y subir DOS
+        # versiones inmutables irreversibles del mismo artefacto. Un advisory
+        # lock de SESIÓN por `(schema, tipo, expediente)` serializa el
         # check->put->insert: el segundo llamador espera y luego ve la fila ->
-        # corte-circuito idempotente, sin re-subir. Lock de SESIÓN (no `xact`)
-        # porque el camino de fallo de fixity DEBE persistir su evento/asiento
-        # (un rollback de `pg_advisory_xact_lock` los perdería). Se libera en el
-        # `finally`, también ante excepción.
-        lock_key = _worm_lock_key(self._tenant_slug, payload.expediente_id)
+        # corte-circuito idempotente, sin re-subir. `tipo` en la clave del lock
+        # (E10 Inc.2 wiring): sin él, proteger el índice y el acta del MISMO
+        # expediente en paralelo se serializarían innecesariamente entre sí
+        # (namespaces distintos, artefactos distintos). Lock de SESIÓN (no
+        # `xact`) porque el camino de fallo de fixity DEBE persistir su
+        # evento/asiento (un rollback de `pg_advisory_xact_lock` los perdería).
+        # Se libera en el `finally`, también ante excepción.
+        lock_key = _worm_lock_key(self._tenant_slug, payload.expediente_id, payload.tipo)
         await self._conn.execute("SELECT pg_advisory_lock($1)", lock_key)
         try:
             return await self._proteger_indice_locked(payload, actor, retain_until)
@@ -141,20 +153,22 @@ class PreservationWormService:
         retain_until: datetime,
     ) -> tuple[ProtegerIndiceResponse, bool]:
         """Cuerpo de :meth:`proteger_indice` bajo el advisory lock de sesión
-        por-expediente — todo el `check->put_object->insert` corre serializado
-        contra otra protección concurrente del MISMO índice (ver la nota del
-        llamador). `retain_until` ya viene validado."""
-        # Idempotencia (E10 Inc.1, cableado): chequeo ANTES de tocar fixity/
-        # MinIO. Respaldo en código del índice único parcial
-        # `ux_preservacion_worm_objeto_expediente_indice` (migración 009).
+        por-(expediente, tipo) — todo el `check->put_object->insert` corre
+        serializado contra otra protección concurrente del MISMO artefacto
+        (ver la nota del llamador). `retain_until` ya viene validado."""
+        # Idempotencia (E10 Inc.1/Inc.2, cableado): chequeo ANTES de tocar
+        # fixity/MinIO. Respaldo en código del índice único parcial
+        # `ux_preservacion_worm_objeto_expediente_indice` / `_expediente_acta`
+        # (migraciones 009/010).
         existing = await self._worm_repo.get_by_expediente_and_tipo(
-            payload.expediente_id, "indice"
+            payload.expediente_id, payload.tipo
         )
         if existing is not None:
             logger.info(
-                "Protección WORM ya existe para expediente_id=%s tipo=indice "
+                "Protección WORM ya existe para expediente_id=%s tipo=%s "
                 "(idempotente, sin re-subir; worm_id=%s)",
                 payload.expediente_id,
+                payload.tipo,
                 existing["id"],
             )
             return _worm_row_to_response(existing), False
@@ -191,6 +205,7 @@ class PreservationWormService:
                     "hash_after": actual_sha256,
                     "detalle": {
                         "file_id": str(payload.file_id),
+                        "tipo": payload.tipo,
                         "motivo": "sha256_mismatch",
                     },
                 },
@@ -250,7 +265,7 @@ class PreservationWormService:
 
         row = await self._worm_repo.insert(
             expediente_id=payload.expediente_id,
-            tipo="indice",
+            tipo=payload.tipo,
             bucket=bucket,
             object_key=object_key,
             version_id=version_id,
@@ -267,7 +282,7 @@ class PreservationWormService:
                 "tipo": "FIJACION",
                 "resultado": "ok",
                 "hash_after": actual_sha256,
-                "detalle": {"file_id": str(payload.file_id)},
+                "detalle": {"file_id": str(payload.file_id), "tipo": payload.tipo},
             },
             agente=actor,
         )
@@ -278,6 +293,7 @@ class PreservationWormService:
                 "resultado": "ok",
                 "hash_after": actual_sha256,
                 "detalle": {
+                    "tipo": payload.tipo,
                     "bucket": bucket,
                     "object_key": object_key,
                     "retain_until": retain_until.isoformat(),
@@ -297,6 +313,7 @@ class PreservationWormService:
             actor=actor,
             payload={
                 "expediente_id": payload.expediente_id,
+                "tipo": payload.tipo,
                 "bucket": bucket,
                 "object_key": object_key,
                 "retain_until": retain_until.isoformat(),
@@ -308,7 +325,7 @@ class PreservationWormService:
         return ProtegerIndiceResponse(
             id=row["id"],
             expediente_id=payload.expediente_id,
-            tipo="indice",
+            tipo=payload.tipo,
             bucket=bucket,
             object_key=object_key,
             version_id=version_id,
@@ -321,12 +338,19 @@ class PreservationWormService:
         ), True
 
 
-def _worm_lock_key(tenant_slug: str, expediente_id: str) -> int:
+def _worm_lock_key(tenant_slug: str, expediente_id: str, tipo: str = "indice") -> int:
     """Clave estable (bigint firmado de 64 bits) para el advisory lock de
-    sesión que serializa la protección WORM por `(tenant, expediente)`. SHA-256
-    determinista (NO `hash()`, que varía por proceso) → 8 bytes → int con
-    signo, en el rango de `pg_advisory_lock(bigint)`."""
-    digest = hashlib.sha256(f"worm:indice:{tenant_slug}:{expediente_id}".encode()).digest()
+    sesión que serializa la protección WORM por `(tenant, tipo, expediente)`.
+    `tipo` en la clave (E10 Inc.2 wiring, antes fija a `"indice"`): proteger el
+    índice y el acta del MISMO expediente son artefactos independientes, no
+    deben competir por el mismo lock. Default `"indice"` preserva el contrato
+    histórico del único caller que existía antes de esta generalización (el
+    caller real, `proteger_indice()`, siempre pasa `payload.tipo`
+    explícitamente — el default solo importa para invocaciones legacy/tests
+    que aún no conocen `tipo`). SHA-256 determinista (NO `hash()`, que varía
+    por proceso) → 8 bytes → int con signo, en el rango de
+    `pg_advisory_lock(bigint)`."""
+    digest = hashlib.sha256(f"worm:{tipo}:{tenant_slug}:{expediente_id}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
 

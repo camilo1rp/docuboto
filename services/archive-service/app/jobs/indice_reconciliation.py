@@ -47,6 +47,7 @@ from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.services.backoff import next_backoff_seconds
 from app.services.index_service import IndexService
+from app.services.transferencia_service import TransferenciaService
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +569,120 @@ async def run_once_worm() -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Cuarta fase — cableado WORM/Object-Lock del ACTA (E10 Inc.2 wiring)
+# ---------------------------------------------------------------------------
+#
+# Converge las actas que quedaron 'firmado' (H-H, E06/F4) sin que su copia
+# WORM en storage-service se haya confirmado todavía (el disparo síncrono tras
+# el sellado, dentro de `TransferenciaService._sellar_acta_post_commit`, es
+# best-effort y puede fallar por lo mismo que cualquier llamada HTTP:
+# storage-service inalcanzable, PRESERVATION_ENABLED=false en ese instante,
+# TRD sin retención resoluble). Gemela EXACTA de la tercera fase
+# (`run_once_worm`, índice) para `transferencia_acta_firma` (migración 030)
+# en vez de `expediente_indice` — fast-follow declarado en el diseño de
+# Inc.1 ("Acta = generalizar"). Se agenda en el MISMO ciclo/cadencia que
+# `run_once_actas` (`app/main.py::_acta_reconciliation_loop`,
+# `settings.acta_reconciliation_interval_seconds`) — mismo criterio que ató
+# `run_once_worm` al ciclo del índice: tan estrechamente acoplada a "el acta
+# ya quedó 'firmado'" que no amerita kill-switch/intervalo propio.
+#
+# Reutiliza `TransferenciaService.proteger_worm_acta` (el MISMO método que
+# usa el disparo síncrono post-commit, con `origen="reconciliation"`) para no
+# duplicar la derivación de retención TRD ni la marca atómica+asiento —
+# `_reconciliar_worm_acta` es un adaptador delgado, mismo rol que
+# `_reconciliar_worm` arriba.
+
+
+async def _reconciliar_worm_acta(conn: asyncpg.Connection, slug: str, row: asyncpg.Record) -> str:
+    """Intenta proteger bajo WORM UNA acta 'firmado' pendiente. Devuelve
+    'protegido', 'fallido'/'pendiente' (backoff programado) o 'agotado'
+    (`worm_reconcile_agotado=TRUE`, permanece sin proteger hasta
+    intervención manual — NUNCA se inventa conformidad)."""
+    service = TransferenciaService(conn, slug)
+    return await service.proteger_worm_acta(
+        row["transferencia_id"], actor_id=None, origen="reconciliation"
+    )
+
+
+async def run_once_actas_worm() -> dict[str, int]:
+    """Una barrida completa: por cada tenant activo, hasta
+    `indice_reconciliation_batch_size` actas 'firmado' sin proteger bajo
+    WORM. Fallos por-tenant o por-acta quedan aislados (WARNING, no abortan
+    el resto de la barrida) — mismo patrón que `run_once_worm`."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                # Namespace de advisory lock PROPIO (`acta_worm_reconcile`,
+                # distinto de `indice_reconcile`/`acta_reconcile`/
+                # `worm_reconcile`) — esta fase puede correr en el mismo ciclo
+                # que `run_once_actas()` sin competir por el mismo lock.
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:acta_worm_reconcile'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    logger.debug(
+                        "Reconciliación WORM del acta: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+                    continue
+                try:
+                    rows = await TransferenciaRepository(conn, slug).list_worm_pending_actas(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        try:
+                            resultado = await _reconciliar_worm_acta(conn, slug, row)
+                        except Exception:
+                            logger.warning(
+                                "Fallo reconciliando WORM acta de transferencia_id=%s "
+                                "tenant=%s — se omite esta acta en esta barrida",
+                                row["transferencia_id"],
+                                slug,
+                                exc_info=True,
+                            )
+                            summary["fallidos"] += 1
+                            continue
+                        if resultado == "protegido":
+                            summary["protegidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:acta_worm_reconcile'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del acta para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+
+    logger.info(
+        "Reconciliación WORM del acta completada: "
+        "pendientes_vistos=%d protegidos=%d fallidos=%d agotados=%d tenants=%d",
+        summary["pendientes_vistos"],
+        summary["protegidos"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Standalone entry point
 # ---------------------------------------------------------------------------
 
@@ -582,6 +697,7 @@ async def _main() -> None:
         await run_once()
         await run_once_actas()
         await run_once_worm()
+        await run_once_actas_worm()
     finally:
         await close_pool()
 

@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
+from app.jobs.indice_reconciliation import run_once_actas_worm as _reconcile_actas_worm_once
 from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
 from app.routers.batch import router as batch_router
 from app.routers.expedientes import router as expedientes_router
@@ -84,13 +85,28 @@ async def _acta_reconciliation_loop() -> None:
     transferencia — cadencia PROPIA y MENOR
     (`settings.acta_reconciliation_interval_seconds`, default mayor que la
     del índice: el sellado del acta es aditivo, menos urgente). Igual que
-    `_indice_reconciliation_loop`, el loop NUNCA muere por una excepción."""
+    `_indice_reconciliation_loop`, el loop NUNCA muere por una excepción.
+
+    Incluye la 4ª fase (E10 Inc.2 wiring, cableado WORM del acta,
+    `run_once_actas_worm`) en el MISMO ciclo/cadencia que el sellado — mismo
+    criterio que ató `run_once_worm` al ciclo del índice
+    (`_indice_reconciliation_loop`): tan estrechamente acoplada a "el acta ya
+    quedó 'firmado'" que no amerita kill-switch/intervalo propio. Un fallo en
+    la fase WORM tampoco debe impedir que la siguiente iteración reintente el
+    sellado."""
     while True:
         try:
             await _reconcile_actas_once()
         except Exception:
             logger.warning(
                 "Fallo en la barrida de reconciliación del sellado del acta",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_actas_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del acta",
                 exc_info=True,
             )
         await asyncio.sleep(settings.acta_reconciliation_interval_seconds)

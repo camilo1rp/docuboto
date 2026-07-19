@@ -21,7 +21,8 @@ import asyncio
 import hashlib
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -45,6 +46,7 @@ from app.schemas.transferencia import (
     TransferenciaRechazo,
     TransferenciaResponse,
 )
+from app.services.backoff import next_backoff_seconds
 # `_fuid_to_xml` (E12 H-I): reusada TAL CUAL, sin duplicar la serialización
 # canónica (C14N) -- es el mismo cuerpo que congela el acta de entrega.
 from app.services.fisico_service import FisicoService, _fuid_to_xml
@@ -903,6 +905,21 @@ class TransferenciaService:
                                 "origen": "manual",
                             },
                         )
+                if affected:
+                    # E10 Inc.2 wiring: cableado WORM del acta recién firmada,
+                    # FUERA de la tx que acaba de comprometerse arriba (mismo
+                    # motivo que el propio sellado corre fuera de la tx de
+                    # recepción/cierre -- ver `IndexService.
+                    # firmar_indice_close`, cuyo cableado del índice sigue
+                    # exactamente este mismo patrón). Cubre AMBOS llamadores de
+                    # este método (`recibir()` y `firmar_acta_retry()`), ambos
+                    # con un actor humano real. Si `affected` es 0 (carrera
+                    # perdida, ver arriba), NO se dispara aquí:
+                    # `run_once_actas_worm` (4ª fase de reconciliación)
+                    # converge de todos modos.
+                    await self.proteger_worm_acta(
+                        transferencia_id, actor_id=actor.audit_actor, origen="close"
+                    )
                 return
             if outcome.seal_absent:
                 await self._marcar_acta_pendiente_audited(
@@ -1692,3 +1709,238 @@ class TransferenciaService:
             auto_traslado=auto_traslado,
             elaborador_firmado=tiene_elabora,
         )
+
+    # -- E10 Inc.2 wiring: cableado WORM/Object-Lock del acta -----------
+    #
+    # Espejo EXACTO de `IndexService.proteger_worm_indice` (E10 Inc.1, ver ese
+    # docstring para el contrato completo) -- fast-follow declarado en el
+    # diseño de Inc.1 ("Acta = generalizar"). Reusa la ruta generalizada de
+    # storage-service (`POST /proteger-artefacto[-internal]`, `tipo=
+    # 'acta_transferencia'`) vía `app.clients.storage_client.
+    # proteger_artefacto_worm[_internal]`.
+
+    async def _resolve_worm_retention_acta(
+        self,
+        transferencia_id: uuid.UUID,
+        expediente_id: uuid.UUID,
+        *,
+        firmado_at: datetime | None,
+    ) -> tuple[int, date] | None:
+        """Deriva ``(retencion_anios_total, fecha_inicio)`` de la TRD del
+        EXPEDIENTE de la transferencia para el cableado WORM del acta (E10
+        Inc.2 wiring, AGN 001/2024 Art. 4.3.2.6) -- MISMA fórmula que
+        `IndexService._resolve_worm_retention` (suma de las dos fases,
+        `archivo_gestion_years` + `archivo_central_years`), pero con
+        ``fecha_inicio`` = la fecha de FIRMA del acta (``firmado_at``), NO la
+        de cierre del expediente: el acta puede sellarse mucho después del
+        cierre (transferencia primaria/secundaria, Ley 594/2000 art. 23) --
+        anclar la retención al cierre del expediente subestimaría el plazo
+        real de custodia de ESTE artefacto derivado.
+
+        Fail-closed (``None``) en cualquier caso dudoso: ``firmado_at``
+        ausente (no debería ocurrir con `estado='firmado'`, ver
+        `TransferenciaRepository.mark_acta_firmada`, pero no se asume),
+        expediente inexistente, sin `trd_serie_id`, serie no encontrada, o el
+        total fuera del rango ``[1, 100]`` años que exige `RetentionMixin` del
+        lado de storage-service -- misma defensa en profundidad que su gemela
+        del índice.
+        """
+        if firmado_at is None:
+            return None
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
+        if exp is None or exp.trd_serie_id is None:
+            return None
+        serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
+        if serie is None:
+            return None
+        total = (serie.archivo_gestion_years or 0) + (serie.archivo_central_years or 0)
+        if not (1 <= total <= 100):
+            return None
+        return total, firmado_at.date()
+
+    async def _bump_worm_backoff_acta(
+        self, transferencia_id: uuid.UUID, *, intentos_previos: int, motivo: str
+    ) -> Literal["pendiente", "agotado"]:
+        """Registra un intento fallido de cableado WORM del acta (backoff
+        exponencial, MISMO umbral `indice_reconciliation_max_intentos` que el
+        índice -- eje independiente, ver migración 030) -- gemelo de
+        `IndexService._bump_worm_backoff`. `intentos_previos` viene del `row`
+        YA leído por el llamador (`worm_reconcile_intentos`) -- no se
+        re-consulta."""
+        intentos_tras_este = intentos_previos + 1
+        agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        await self._repo.bump_acta_worm_reconcile_intento(
+            transferencia_id, proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado
+        )
+        if agotado:
+            # Best-effort (mismo patrón que `audit.append_denial`): la
+            # visibilidad operacional de un agotamiento nunca debe convertir
+            # un fallo de cableado (ya de por sí best-effort) en un 500.
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant,
+                    service=_SERVICE,
+                    action="archive.acta_worm_reconcile_agotado",
+                    object_type="transferencia_acta",
+                    object_ref=str(transferencia_id),
+                    actor=None,
+                    canal="system",
+                    payload={"reconcile_intentos": intentos_tras_este, "motivo": motivo},
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca degrada el resultado.
+                logger.warning(
+                    "audit.append(archive.acta_worm_reconcile_agotado) failed", exc_info=True
+                )
+            return "agotado"
+        return "pendiente"
+
+    async def proteger_worm_acta(
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        actor_id: str | None,
+        origen: Literal["close", "reconciliation"],
+    ) -> Literal["protegido", "pendiente", "agotado", "omitido"]:
+        """Cableado WORM/Object-Lock del acta de transferencia YA FIRMADA (E10
+        Inc.2 wiring, AGN 001/2024 Art. 4.3.2.6) — espejo EXACTO de
+        `IndexService.proteger_worm_indice` (ver ese docstring para el
+        contrato completo): tras confirmarse el sellado XAdES del acta —
+        síncronamente dentro de `_sellar_acta_post_commit` (`origen="close"`,
+        cubre TANTO el camino automático de `recibir()` como el reintento
+        manual `firmar_acta_retry()`, que comparten ese único método) o vía
+        la 4ª fase de reconciliación (`run_once_actas_worm`,
+        `app/jobs/indice_reconciliation.py`, `origen="reconciliation"`).
+
+        Best-effort, NUNCA lanza — mismo patrón que su gemelo del índice: el
+        sellado del acta ya es un hecho consumado, este cableado NUNCA lo
+        bloquea ni lo revierte. Fuera de cualquier `conn.transaction()` del
+        llamador — la llamada HTTP a storage-service no debe correr dentro de
+        una tx.
+
+        Frontera de confianza (D-02, igual que el índice): `file_id` se
+        deriva SIEMPRE de `transferencia_acta_firma.minio_key_firmado`
+        (formato ``"{file_id}/{filename}"``), nunca de una entrada externa.
+
+        Devuelve el desenlace para que el llamador (job de reconciliación)
+        lleve su propio resumen; el disparo síncrono ignora el valor de
+        retorno (mismo criterio que `firmar_indice_close`).
+        """
+        try:
+            firma_row = await self._repo.get_acta_firma_worm(transferencia_id)
+            if firma_row is None or firma_row["estado"] != "firmado":
+                return "omitido"
+            if firma_row["worm_protegido_at"] is not None:
+                return "omitido"
+            if not firma_row["minio_key_firmado"]:
+                logger.warning(
+                    "Cableado WORM: acta de transferencia_id=%s sin minio_key_firmado, "
+                    "se omite",
+                    transferencia_id,
+                )
+                return "omitido"
+            file_id = firma_row["minio_key_firmado"].split("/", 1)[0]
+
+            transferencia = await self._repo.get(transferencia_id)
+            if transferencia is None:
+                return "omitido"
+
+            retention = await self._resolve_worm_retention_acta(
+                transferencia_id,
+                transferencia["expediente_id"],
+                firmado_at=firma_row["firmado_at"],
+            )
+            if retention is None:
+                return await self._bump_worm_backoff_acta(
+                    transferencia_id,
+                    intentos_previos=int(firma_row["worm_reconcile_intentos"]),
+                    motivo="trd_sin_retencion",
+                )
+            retencion_anios, fecha_inicio = retention
+
+            from app.clients import storage_client
+
+            expediente_id_str = str(transferencia["expediente_id"])
+            if origen == "close" and actor_id:
+                outcome = await storage_client.proteger_artefacto_worm(
+                    tenant_slug=self._tenant,
+                    actor_id=actor_id,
+                    file_id=file_id,
+                    expediente_id=expediente_id_str,
+                    tipo="acta_transferencia",
+                    retencion_anios=retencion_anios,
+                    fecha_inicio=fecha_inicio,
+                )
+            else:
+                outcome = await storage_client.proteger_artefacto_worm_internal(
+                    tenant_slug=self._tenant,
+                    file_id=file_id,
+                    expediente_id=expediente_id_str,
+                    tipo="acta_transferencia",
+                    retencion_anios=retencion_anios,
+                    fecha_inicio=fecha_inicio,
+                )
+
+            if outcome.ok:
+                async with self._conn.transaction():
+                    affected = await self._repo.mark_acta_worm_protegido(
+                        transferencia_id, outcome.worm_object_id
+                    )
+                    # Idempotencia real (mismo patrón S1 que `mark_acta_firmada`):
+                    # `affected == 0` -> otra llamada concurrente (el disparo
+                    # síncrono post-commit corriendo en paralelo con esta
+                    # barrida, o dos barridas solapadas) ya marcó protegido
+                    # ESTA misma acta. NO se escribe un asiento fantasma sobre
+                    # un efecto que esta llamada no produjo.
+                    if affected:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant,
+                            service=_SERVICE,
+                            action="archive.acta_worm_protegido",
+                            object_type="transferencia_acta",
+                            object_ref=str(transferencia_id),
+                            actor=actor_id,
+                            canal="system" if origen == "reconciliation" else "api",
+                            payload={
+                                "transferencia_id": str(transferencia_id),
+                                "expediente_id": expediente_id_str,
+                                "worm_object_id": (
+                                    str(outcome.worm_object_id)
+                                    if outcome.worm_object_id
+                                    else None
+                                ),
+                                "retencion_anios": retencion_anios,
+                                "origen": origen,
+                            },
+                        )
+                return "protegido" if affected else "omitido"
+
+            motivo = "worm_disabled" if outcome.disabled else "worm_no_confirmado"
+            return await self._bump_worm_backoff_acta(
+                transferencia_id,
+                intentos_previos=int(firma_row["worm_reconcile_intentos"]),
+                motivo=motivo,
+            )
+        except Exception:
+            logger.warning(
+                "Cableado WORM del acta falló (best-effort), transferencia_id=%s origen=%s",
+                transferencia_id,
+                origen,
+                exc_info=True,
+            )
+            return "pendiente"

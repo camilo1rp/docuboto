@@ -45,6 +45,16 @@ _ACTA_FIRMA_COLS = (
     "created_at, firmado_at"
 )
 
+# E10 Inc.2 wiring (migración 030): estado del cableado WORM del acta —
+# ORTOGONAL a `estado`/`reconcile_*` de arriba (esas son del SELLADO XAdES).
+# Columnas aparte en vez de sumarlas a `_ACTA_FIRMA_COLS`: solo
+# `get_acta_firma_worm`/`list_worm_pending_actas` (consumidores del cableado
+# WORM) las necesitan — mismo criterio que `IndexRepository._WORM_COLS`.
+_ACTA_FIRMA_WORM_COLS = (
+    "worm_protegido_at, worm_object_id, worm_reconcile_intentos, "
+    "worm_reconcile_proximo_at, worm_reconcile_ultimo_error, worm_reconcile_agotado"
+)
+
 # Migración 027 (E17/F4 Incremento 1 -- firma PERSONAL PKI por-usuario del
 # acta): tabla ADITIVA sobre `transferencia_acta_firma` (sello institucional,
 # migración 026) -- 1:N por transferencia (una fila por `rol` firmante,
@@ -381,6 +391,111 @@ class TransferenciaRepository:
                   AND taf.reconcile_agotado = false
                   AND (taf.reconcile_proximo_at IS NULL OR taf.reconcile_proximo_at <= now())
                 ORDER BY taf.reconcile_proximo_at ASC NULLS FIRST
+                LIMIT $1
+                """,
+                limit,
+            )
+        )
+
+    # -----------------------------------------------------------------
+    # E10 Inc.2 wiring: cableado WORM del acta -- espejo EXACTO de
+    # `IndexRepository.get_by_id`/`mark_worm_protegido`/
+    # `bump_worm_reconcile_intento`/`list_worm_pending`.
+    # -----------------------------------------------------------------
+
+    async def get_acta_firma_worm(self, transferencia_id: uuid.UUID) -> asyncpg.Record | None:
+        """Fila de `transferencia_acta_firma` con las columnas del cableado
+        WORM (`_ACTA_FIRMA_WORM_COLS`) incluidas -- usada por
+        `TransferenciaService.proteger_worm_acta` (disparo síncrono
+        post-commit Y 4ª fase de reconciliación) para leer
+        `minio_key_firmado`/`estado`/`firmado_at`/`worm_protegido_at` de la
+        MISMA fila que se acaba de firmar (gemela de `IndexRepository.
+        get_by_id`)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_ACTA_FIRMA_COLS}, {_ACTA_FIRMA_WORM_COLS} "
+            "FROM transferencia_acta_firma WHERE transferencia_id = $1",
+            transferencia_id,
+        )
+
+    async def mark_acta_worm_protegido(
+        self, transferencia_id: uuid.UUID, worm_object_id: uuid.UUID
+    ) -> int:
+        """Marca la copia WORM del acta como confirmada (E10 Inc.2 wiring,
+        gemela de `IndexRepository.mark_worm_protegido`).
+
+        Defensa en profundidad (mismo patrón que `mark_acta_firmada`): el
+        `WHERE` excluye filas ya protegidas -- `worm_protegido_at` se fija UNA
+        sola vez, nunca se re-escribe. Devuelve el número de filas afectadas
+        (0 o 1): `TransferenciaService.proteger_worm_acta` lo usa para no
+        escribir un asiento `archive.acta_worm_protegido` fantasma si OTRA
+        llamada concurrente (el disparo síncrono post-commit vs. la barrida de
+        reconciliación corriendo en paralelo) ya ganó la carrera.
+        """
+        await self._sp()
+        tag = await self._conn.execute(
+            "UPDATE transferencia_acta_firma SET worm_protegido_at = now(), "
+            "worm_object_id = $2 WHERE transferencia_id = $1 AND worm_protegido_at IS NULL",
+            transferencia_id,
+            worm_object_id,
+        )
+        try:
+            return int(tag.split()[-1])
+        except (AttributeError, ValueError, IndexError):
+            # Mismo fallback defensivo que `mark_acta_firmada` -- solo protege
+            # mocks de test cuyo `conn.execute` no configura un valor de
+            # retorno realista.
+            return 0
+
+    async def bump_acta_worm_reconcile_intento(
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Registra un intento FALLIDO de protección WORM del acta (E10 Inc.2
+        wiring) -- gemelo de `IndexRepository.bump_worm_reconcile_intento`:
+        incrementa `worm_reconcile_intentos` atómicamente en el propio UPDATE
+        y fija `worm_reconcile_proximo_at`/`worm_reconcile_ultimo_error`/
+        `worm_reconcile_agotado` con lo que decidió el llamador."""
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma SET "
+            "worm_reconcile_intentos = worm_reconcile_intentos + 1, "
+            "worm_reconcile_proximo_at = $2, worm_reconcile_ultimo_error = $3, "
+            "worm_reconcile_agotado = $4 WHERE transferencia_id = $1",
+            transferencia_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    async def list_worm_pending_actas(self, limit: int) -> list[asyncpg.Record]:
+        """Actas 'firmado' elegibles para `run_once_actas_worm` (4ª fase de
+        reconciliación, E10 Inc.2 wiring): sin proteger todavía
+        (`worm_protegido_at IS NULL`), no agotadas, y con el backoff cumplido
+        -- gemela de `IndexRepository.list_worm_pending`.
+
+        Sin `DISTINCT ON`: el acta es 1:1 por transferencia (no versiona como
+        el índice), a lo sumo una fila por `transferencia_id` puede llegar a
+        `estado='firmado'`.
+        """
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT taf.transferencia_id, taf.minio_key_firmado, t.expediente_id,
+                       taf.worm_reconcile_intentos, taf.worm_reconcile_agotado,
+                       taf.worm_reconcile_ultimo_error
+                FROM transferencia_acta_firma taf
+                JOIN transferencias t ON t.id = taf.transferencia_id
+                WHERE taf.estado = 'firmado'
+                  AND taf.worm_protegido_at IS NULL
+                  AND taf.worm_reconcile_agotado = FALSE
+                  AND (taf.worm_reconcile_proximo_at IS NULL OR taf.worm_reconcile_proximo_at <= now())
+                ORDER BY taf.worm_reconcile_proximo_at ASC NULLS FIRST
                 LIMIT $1
                 """,
                 limit,

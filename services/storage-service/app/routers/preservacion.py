@@ -321,10 +321,17 @@ async def proteger_indice(
     Idempotente (E10 Inc.1): una segunda llamada para el MISMO
     `expediente_id` devuelve 200 con la fila YA protegida (sin re-subir,
     ver `PreservationWormService.proteger_indice`) en vez de 201 — mismo
-    patrón que la deduplicación por SHA-256 de `POST /storage/files`."""
+    patrón que la deduplicación por SHA-256 de `POST /storage/files`.
+
+    Alias FIJO de `tipo='indice'` (E10 Inc.2 wiring: la ruta generalizada es
+    `POST /proteger-artefacto`) — `tipo` se fuerza aquí SIEMPRE,
+    independientemente de lo que el body declare, para que este endpoint
+    conserve su contrato histórico intacto sin importar el llamador."""
     service = PreservationWormService(conn, tenant_slug)
     try:
-        response, created = await service.proteger_indice(payload, actor=_actor(request))
+        response, created = await service.proteger_indice(
+            payload.model_copy(update={"tipo": "indice"}), actor=_actor(request)
+        )
     except (
         PreservationDisabledError,
         FileNotFoundForPreservationError,
@@ -366,7 +373,81 @@ async def proteger_indice_internal(
     `auth_users` de este tenant) — `require_permission` la rechazaría SIEMPRE
     con 403, dejando cualquier índice degradado a `pendiente` de forma
     permanente. Actor fijo (`SYSTEM_RECONCILER_ID`), NUNCA derivado de
-    headers del llamador (`X-Username`/`X-User-Id` no viajan en esta ruta)."""
+    headers del llamador (`X-Username`/`X-User-Id` no viajan en esta ruta).
+
+    Alias FIJO de `tipo='indice'` (E10 Inc.2 wiring, mismo criterio que
+    `POST /proteger-indice` de arriba): `tipo` se fuerza aquí SIEMPRE."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        response, created = await service.proteger_indice(
+            payload.model_copy(update={"tipo": "indice"}), actor=str(SYSTEM_RECONCILER_ID)
+        )
+    except (
+        PreservationDisabledError,
+        FileNotFoundForPreservationError,
+        InvalidRetentionError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+    ) as exc:
+        raise _map_proteger_indice_error(exc) from exc
+    http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))
+
+
+@router.post(
+    "/proteger-artefacto",
+    response_model=ProtegerIndiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Protege bajo WORM (MinIO Object Lock) un artefacto firmado de un "
+        "expediente -- índice o acta de transferencia (E10 Inc.2 wiring)"
+    ),
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
+async def proteger_artefacto(
+    payload: ProtegerIndiceRequest,
+    request: Request,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> JSONResponse:
+    """Generalización de `POST /proteger-indice` (E10 Inc.2 wiring, fast-follow
+    declarado en el diseño de Inc.1): mismo servicio/idempotencia, pero
+    `payload.tipo` decide el artefacto ('indice' o 'acta_transferencia') en
+    vez de fijarlo el router. `/proteger-indice` se conserva INTACTO como
+    alias fijo -- ningún llamador existente necesita migrar."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        response, created = await service.proteger_indice(payload, actor=_actor(request))
+    except (
+        PreservationDisabledError,
+        FileNotFoundForPreservationError,
+        InvalidRetentionError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+    ) as exc:
+        raise _map_proteger_indice_error(exc) from exc
+    http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))
+
+
+@router.post(
+    "/proteger-artefacto-internal",
+    response_model=ProtegerIndiceResponse,
+    summary=(
+        "Gemelo INTERNO (D-02) de POST /proteger-artefacto -- disparo SISTEMA "
+        "del cableado WORM de un artefacto (E10 Inc.2 wiring)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def proteger_artefacto_internal(
+    payload: ProtegerIndiceRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> JSONResponse:
+    """Generalización de `POST /proteger-indice-internal` -- mismo criterio
+    (actor fijo `SYSTEM_RECONCILER_ID`, NUNCA derivado de headers) que su
+    gemelo público de arriba, para la 4ª fase de reconciliación
+    (`run_once_actas_worm`, archive-service) del acta de transferencia."""
     service = PreservationWormService(conn, tenant_slug)
     try:
         response, created = await service.proteger_indice(

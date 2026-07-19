@@ -256,7 +256,12 @@ class EventoResponse(BaseModel):
 
 
 class ProtegerIndiceRequest(RetentionMixin):
-    """Protege bajo WORM el índice electrónico firmado ya subido a `files`.
+    """Protege bajo WORM un artefacto YA FIRMADO subido a `files` — el índice
+    electrónico (`tipo='indice'`, Increment A) o, desde E10 Inc.2 wiring
+    (fast-follow declarado en el diseño de Inc.1), el acta de transferencia
+    (`tipo='acta_transferencia'`). Nombre de la clase conservado por
+    compatibilidad histórica (`/proteger-indice` sigue siendo un alias fijo a
+    `tipo='indice'`) aunque hoy sirve a ambos artefactos vía `/proteger-artefacto`.
 
     El `object_key`/bucket/hash conocido se resuelven internamente a partir de
     `file_id` (la fila de `files` en el bucket -documents) — el llamador NO puede
@@ -270,17 +275,31 @@ class ProtegerIndiceRequest(RetentionMixin):
     Contrato `file_id` ↔ `expediente_id` (hallazgo de auditoría Increment A):
     `files` NO tiene, en este incremento, un enlace a expediente/documento —
     storage-service no puede verificar por sí mismo que `file_id` sea
-    efectivamente el índice electrónico firmado DEL `expediente_id` declarado.
-    Ese vínculo es responsabilidad exclusiva del llamador: el contrato del
-    gateway establece que **solo archive-service** invoca este endpoint, y que
-    garantiza (a) `file_id` referencia el índice firmado (E15/E06) y (b)
-    `expediente_id` es el identificador CANÓNICO que también usará al llamar
-    la disposición final (mismo string, ver `canonicalize_expediente_id`).
+    efectivamente el artefacto firmado DEL `expediente_id` declarado. Ese
+    vínculo es responsabilidad exclusiva del llamador: el contrato del gateway
+    establece que **solo archive-service** invoca este endpoint, y que
+    garantiza (a) `file_id` referencia el artefacto firmado correspondiente al
+    `tipo` declarado (E15/E06 para 'indice', H-H/E06 para 'acta_transferencia')
+    y (b) `expediente_id` es el identificador CANÓNICO que también usará al
+    llamar la disposición final (mismo string, ver `canonicalize_expediente_id`).
     Como COMPLIANCE es irreversible, un error aquí no es corregible después.
+
+    Unicidad por `(expediente_id, tipo)` (índices únicos parciales, migraciones
+    009/010): tanto el índice como el acta son, en la práctica, SINGLETON por
+    expediente — el ciclo de vida `open -> closed -> transferred` (TERMINAL) y
+    `ux_transferencias_activa_por_expediente` (archive-service, migración 024)
+    garantizan que un expediente alcanza acta congelada A LO SUMO UNA VEZ.
     """
 
     file_id: uuid.UUID
     expediente_id: str = Field(..., min_length=1, max_length=255)
+    # E10 Inc.2 wiring: generaliza el artefacto protegido -- 'indice' es el
+    # default para no romper ningún llamador existente (`/proteger-indice`
+    # NUNCA declara `tipo` en el body, lo fija el router antes de invocar el
+    # servicio). 'aip' NO es un valor válido aquí a propósito: el AIP real usa
+    # su propio schema `AipCreate` (Increment B), con su propia semántica de
+    # NO-singleton (re-empaquetable), ver la migración 009.
+    tipo: Literal["indice", "acta_transferencia"] = "indice"
 
     @field_validator("expediente_id")
     @classmethod
