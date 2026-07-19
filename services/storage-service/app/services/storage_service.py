@@ -37,6 +37,7 @@ from orpycamcp_common import audit
 
 from app.core.config import settings
 from app.core.minio_client import Minio, get_minio
+from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 from app.models.file_record import FileRecord
 from app.repositories.file_repository import FileRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
@@ -324,9 +325,15 @@ class StorageService:
 
         `expediente_id` identifies the case file this purge belongs to — the WORM
         gate (E10 Increment A) rejects the ENTIRE purge for that expediente while
-        its protected índice is still under active retention or legal hold, even
-        if `file_id` itself is not the protected object: disposition is an
-        all-or-nothing act for a given expediente under the same TRD.
+        a CONTENT WORM object (índice/aip) is under active retention, or while
+        ANY WORM object (content or control instrument) is under `legal_hold`,
+        even if `file_id` itself is not the protected object. Retention on a
+        CONTROL INSTRUMENT (acta_transferencia — see
+        `app.core.preservacion_tipos.CONTROL_INSTRUMENT_TIPOS`) does NOT block
+        content disposition: E10 Inc.2 remedy, the acta survives the content as
+        evidence of the act (Ley 594/2000 art. 26 + elimination procedure
+        Ac. AGN 004/2013 art. 22) and must not postpone disposition mandated by
+        the TRD (Ley 594 arts. 24-26).
 
         Returns False if no record exists (already purged or never existed).
         Raises `WormLockActiveError` if the expediente is still under WORM lock.
@@ -343,7 +350,9 @@ class StorageService:
             return False
 
         worm_repo = PreservacionWormRepository(self._conn, self._tenant_slug)
-        active_lock = await worm_repo.active_lock_for_expediente(expediente_id)
+        active_lock = await worm_repo.active_lock_for_expediente(
+            expediente_id, exclude_retention_tipos=tuple(CONTROL_INSTRUMENT_TIPOS)
+        )
         if active_lock is not None:
             await audit.append(
                 self._conn,

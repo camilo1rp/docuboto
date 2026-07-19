@@ -11,11 +11,13 @@
 Repositorio de objetos protegidos bajo WORM real (E10 Increment A).
 
 ``preservacion_worm_objeto`` es la constancia de que una copia inmutable (MinIO
-Object Lock) de un artefacto (hoy: el índice electrónico firmado) fue subida con
-una retención derivada de la TRD. Alimenta el gate de disposición final
-(``StorageService.purge_for_disposition``): mientras exista una fila activa
-(``retain_until`` futuro o ``legal_hold``) para un expediente, su purga física
-queda bloqueada.
+Object Lock) de un artefacto (índice electrónico firmado, acta de transferencia)
+fue subida con una retención derivada de la TRD. Alimenta el gate de disposición
+final (``StorageService.purge_for_disposition``): mientras exista una fila activa
+(``legal_hold``, o ``retain_until`` futuro para un ``tipo`` de CONTENIDO) para un
+expediente, su purga física queda bloqueada. Los tipos de INSTRUMENTO DE CONTROL
+(``app/core/preservacion_tipos.CONTROL_INSTRUMENT_TIPOS``) quedan excluidos del
+bloqueo por retención — no del bloqueo por ``legal_hold``.
 
 search_path al tenant en cada método (gemelo de ``PreservacionRepository``).
 """
@@ -99,22 +101,36 @@ class PreservacionWormRepository:
             tipo,
         )
 
-    async def active_lock_for_expediente(self, expediente_id: str) -> asyncpg.Record | None:
+    async def active_lock_for_expediente(
+        self,
+        expediente_id: str,
+        exclude_retention_tipos: tuple[str, ...] = (),
+    ) -> asyncpg.Record | None:
         """Devuelve una fila que SIGUE bloqueando la disposición, si existe.
 
-        "Activa" = ``retain_until`` en el futuro O ``legal_hold = true``. Usada
-        exclusivamente por el gate de ``purge_for_disposition`` — su ausencia NO
-        prueba que el expediente nunca tuvo protección WORM, solo que ya expiró
-        (o nunca se protegió).
+        "Activa" = ``legal_hold = true`` (freeze global incondicional, sea cual
+        sea ``tipo``: litigio/investigación, Ac. 060/2001 — nunca tiene bypass)
+        O ``retain_until`` en el futuro para un ``tipo`` que NO esté en
+        ``exclude_retention_tipos``. Por defecto (``()``) el comportamiento es
+        all-or-nothing, igual que antes de E10 Inc.2 remedio; el gate de
+        ``purge_for_disposition`` pasa ``CONTROL_INSTRUMENT_TIPOS`` para que la
+        retención del acta/FUID (instrumento de control) no postergue la
+        disposición del contenido (``aip``/``indice``). Fail-closed: un
+        ``tipo`` no listado en ``exclude_retention_tipos`` sigue bloqueando.
+
+        Su ausencia NO prueba que el expediente nunca tuvo protección WORM,
+        solo que ya expiró (o nunca se protegió) para los tipos considerados.
         """
         await self._sp()
         return await self._conn.fetchrow(
             f"""
             SELECT {_COLS} FROM preservacion_worm_objeto
-            WHERE expediente_id = $1 AND (retain_until > now() OR legal_hold)
+            WHERE expediente_id = $1
+              AND (legal_hold OR (retain_until > now() AND tipo <> ALL($2::text[])))
             LIMIT 1
             """,
             expediente_id,
+            list(exclude_retention_tipos),
         )
 
     async def list_for_expediente(self, expediente_id: str) -> list[asyncpg.Record]:
