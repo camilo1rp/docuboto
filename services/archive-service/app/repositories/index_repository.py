@@ -29,6 +29,17 @@ _INDICE_COLS = (
     "generado_por, generado_ts"
 )
 
+# E10 Inc.1 (migración 029): estado del cableado WORM del índice — ORTOGONAL
+# a `estado`/`reconcile_*` de arriba (esas son del SELLADO XAdES-B). Columnas
+# aparte en vez de sumarlas a `_INDICE_COLS`: solo `get_by_id`/
+# `list_worm_pending` (consumidores del cableado WORM) las necesitan —
+# `get_current`/`get_version` (consumidos por rutas de lectura/verify/fixity
+# ya probadas) no ganan columnas que no usan.
+_WORM_COLS = (
+    "worm_protegido_at, worm_object_id, worm_reconcile_intentos, "
+    "worm_reconcile_proximo_at, worm_reconcile_ultimo_error, worm_reconcile_agotado"
+)
+
 
 class IndexRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
@@ -297,6 +308,102 @@ class IndexRepository:
             offset,
         )
         return list(rows), total or 0
+
+    # -- E10 Inc.1: cableado WORM del índice --------------------------------
+
+    async def get_by_id(self, indice_id: uuid.UUID) -> asyncpg.Record | None:
+        """Fila del índice por `id`, con las columnas del cableado WORM
+        (`_WORM_COLS`) incluidas — usada por
+        `IndexService.proteger_worm_indice` (disparo síncrono del cierre Y
+        3ra fase de reconciliación) para leer `minio_key_firmado`/`estado`/
+        `worm_protegido_at` de la MISMA versión que se acaba de firmar, sin
+        asumir que sigue siendo la vigente de `expediente_id` (aunque en la
+        práctica lo es: `estado='firmado'` es terminal, ver `regenerate`)."""
+        return await self._conn.fetchrow(
+            f"SELECT {_INDICE_COLS}, {_WORM_COLS} FROM expediente_indice WHERE id = $1",
+            indice_id,
+        )
+
+    async def mark_worm_protegido(self, indice_id: uuid.UUID, worm_object_id: uuid.UUID) -> int:
+        """Marca la copia WORM del índice como confirmada (E10 Inc.1).
+
+        Defensa en profundidad (mismo patrón que `mark_signed`): el `WHERE`
+        excluye filas ya protegidas — `worm_protegido_at` se fija UNA sola
+        vez, nunca se re-escribe. Devuelve el número de filas afectadas (0 o
+        1): `IndexService.proteger_worm_indice` lo usa para no escribir un
+        asiento `archive.indice_worm_protegido` fantasma si OTRA llamada
+        concurrente (el disparo síncrono del cierre vs. la barrida de
+        reconciliación corriendo en paralelo) ya ganó la carrera.
+        """
+        tag = await self._conn.execute(
+            "UPDATE expediente_indice SET worm_protegido_at = now(), worm_object_id = $2 "
+            "WHERE id = $1 AND worm_protegido_at IS NULL",
+            indice_id,
+            worm_object_id,
+        )
+        try:
+            return int(tag.split()[-1])
+        except (AttributeError, ValueError, IndexError):
+            # Mismo fallback defensivo que `mark_signed` — solo protege mocks
+            # de test cuyo `conn.execute` no configura un valor de retorno
+            # realista.
+            return 0
+
+    async def bump_worm_reconcile_intento(
+        self,
+        indice_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Registra un intento FALLIDO de protección WORM (E10 Inc.1) —
+        gemelo de `bump_intento` (sellado XAdES-B) para el eje del cableado
+        WORM: incrementa `worm_reconcile_intentos` atómicamente en el propio
+        UPDATE y fija `worm_reconcile_proximo_at`/`worm_reconcile_ultimo_error`/
+        `worm_reconcile_agotado` con lo que decidió el llamador."""
+        await self._conn.execute(
+            "UPDATE expediente_indice SET "
+            "worm_reconcile_intentos = worm_reconcile_intentos + 1, "
+            "worm_reconcile_proximo_at = $2, worm_reconcile_ultimo_error = $3, "
+            "worm_reconcile_agotado = $4 WHERE id = $1",
+            indice_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    async def list_worm_pending(self, limit: int) -> list[asyncpg.Record]:
+        """Índices 'firmado' elegibles para `run_once_worm` (3ra fase de
+        reconciliación, E10 Inc.1): sin proteger todavía
+        (`worm_protegido_at IS NULL`), no agotados, y con el backoff
+        cumplido.
+
+        Sin `DISTINCT ON (expediente_id)` (a diferencia de
+        `list_pending_signature`): `estado='firmado'` es TERMINAL por
+        expediente — `regenerate` rechaza con 409 crear una versión nueva
+        sobre un índice ya firmado (ver su docstring) — así que a lo sumo
+        una fila por `expediente_id` puede llegar a `estado='firmado'`, nunca
+        hay ambigüedad de "cuál versión" que resolver aquí.
+        """
+        return list(
+            await self._conn.fetch(
+                f"""
+                SELECT ei.id, ei.expediente_id, ei.minio_key_firmado,
+                       ei.worm_reconcile_intentos, ei.worm_reconcile_agotado,
+                       ei.worm_reconcile_ultimo_error, e.code AS expediente_code
+                FROM expediente_indice ei
+                JOIN expedientes e ON e.id = ei.expediente_id
+                WHERE ei.estado = 'firmado'
+                  AND ei.worm_protegido_at IS NULL
+                  AND ei.worm_reconcile_agotado = FALSE
+                  AND (ei.worm_reconcile_proximo_at IS NULL OR ei.worm_reconcile_proximo_at <= now())
+                ORDER BY ei.worm_reconcile_proximo_at ASC NULLS FIRST
+                LIMIT $1
+                """,
+                limit,
+            )
+        )
 
     async def get_items(self, indice_id: uuid.UUID) -> list[asyncpg.Record]:
         return list(

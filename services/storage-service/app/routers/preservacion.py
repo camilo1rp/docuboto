@@ -15,8 +15,10 @@ import json
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 
 from app.core.clearance import require_permission
+from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import get_db_conn
 from app.core.internal_auth import require_internal_token
 from app.core.minio_client import ObjectLockNotEnabledError
@@ -263,6 +265,38 @@ async def list_eventos(
     return [_evento_response(r) for r in rows]
 
 
+def _map_proteger_indice_error(exc: Exception) -> HTTPException:
+    """Traduce las excepciones de `PreservationWormService.proteger_indice` a
+    HTTP — compartido por la ruta pública (RBAC) y la interna (D-02, Inc.1)
+    para no duplicar el mapeo dos veces."""
+    if isinstance(exc, PreservationDisabledError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
+        )
+    if isinstance(exc, FileNotFoundForPreservationError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
+        )
+    if isinstance(exc, InvalidRetentionError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        )
+    if isinstance(exc, FixityMismatchError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
+        )
+    if isinstance(exc, ObjectLockNotEnabledError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
+        )
+    raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
+
+
 @router.post(
     "/proteger-indice",
     response_model=ProtegerIndiceResponse,
@@ -278,36 +312,73 @@ async def proteger_indice(
     request: Request,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
-) -> ProtegerIndiceResponse:
+) -> JSONResponse:
     """Sube una copia inmutable del índice electrónico firmado ya presente en
     `files` (bucket -documents) al bucket WORM del tenant, con retención
     derivada de la TRD del llamador (archive-service). Operación de alto
-    privilegio e irreversible: min_crud=3, igual que otras disposiciones."""
+    privilegio e irreversible: min_crud=3, igual que otras disposiciones.
+
+    Idempotente (E10 Inc.1): una segunda llamada para el MISMO
+    `expediente_id` devuelve 200 con la fila YA protegida (sin re-subir,
+    ver `PreservationWormService.proteger_indice`) en vez de 201 — mismo
+    patrón que la deduplicación por SHA-256 de `POST /storage/files`."""
     service = PreservationWormService(conn, tenant_slug)
     try:
-        return await service.proteger_indice(payload, actor=_actor(request))
-    except PreservationDisabledError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
-        ) from exc
-    except FileNotFoundForPreservationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
-        ) from exc
-    except InvalidRetentionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
-        ) from exc
-    except FixityMismatchError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
-        ) from exc
-    except ObjectLockNotEnabledError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
-        ) from exc
+        response, created = await service.proteger_indice(payload, actor=_actor(request))
+    except (
+        PreservationDisabledError,
+        FileNotFoundForPreservationError,
+        InvalidRetentionError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+    ) as exc:
+        raise _map_proteger_indice_error(exc) from exc
+    http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))
+
+
+@router.post(
+    "/proteger-indice-internal",
+    response_model=ProtegerIndiceResponse,
+    summary=(
+        "Gemelo INTERNO (D-02) de POST /proteger-indice — disparo SISTEMA del "
+        "cableado WORM del índice desde archive-service (E10 Inc.1)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def proteger_indice_internal(
+    payload: ProtegerIndiceRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> JSONResponse:
+    """Mismo servicio/idempotencia que `POST /proteger-indice`, con OTRA
+    puerta de autorización: `X-Internal-Token` (D-02) en vez de
+    `require_permission(min_crud=3)` — mismo patrón que `/internal/sign-indice`
+    de signature-service.
+
+    Existe porque el disparo del cableado WORM (`IndexService.
+    proteger_worm_indice`, archive-service) tiene DOS orígenes con identidad
+    muy distinta: (a) el intento síncrono tras el sellado del índice al
+    cierre (`origen="close"`), que SÍ tiene un `X-User-Id` real — el usuario
+    que cerró el expediente, ya validado `min_crud=3` por `close_expediente`
+    — y llama a la ruta pública de arriba; (b) la 3ra fase de reconciliación
+    (`run_once_worm`), que actúa con `SYSTEM_RECONCILER_ID` (sin fila en
+    `auth_users` de este tenant) — `require_permission` la rechazaría SIEMPRE
+    con 403, dejando cualquier índice degradado a `pendiente` de forma
+    permanente. Actor fijo (`SYSTEM_RECONCILER_ID`), NUNCA derivado de
+    headers del llamador (`X-Username`/`X-User-Id` no viajan en esta ruta)."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        response, created = await service.proteger_indice(
+            payload, actor=str(SYSTEM_RECONCILER_ID)
+        )
+    except (
+        PreservationDisabledError,
+        FileNotFoundForPreservationError,
+        InvalidRetentionError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+    ) as exc:
+        raise _map_proteger_indice_error(exc) from exc
+    http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))

@@ -45,6 +45,8 @@ from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
+from app.services.backoff import next_backoff_seconds
+from app.services.index_service import IndexService
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +72,14 @@ async def list_active_tenants(pool: asyncpg.Pool) -> list[str]:
 def _next_backoff_seconds(intentos_tras_este_fallo: int) -> int:
     """`min(cap, base * 2**intentos)` — mismo patrón de backoff exponencial
     documentado en el contrato (E06/ADR-021 Fase 4 usa la misma fórmula para
-    el DLQ)."""
-    base = settings.indice_reconciliation_backoff_base_seconds
-    cap = settings.indice_reconciliation_backoff_cap_seconds
-    # Acota el exponente (no el resultado) para no desbordar un int nativo
-    # con un `reconcile_intentos` anómalamente alto — `min(cap, ...)` ya
-    # acota el resultado final, esto es defensa adicional sobre el propio
-    # cálculo de la potencia.
-    return min(cap, base * (2 ** min(intentos_tras_este_fallo, 20)))
+    el DLQ). Delgado sobre `app.services.backoff.next_backoff_seconds`
+    (extraído para que `IndexService.proteger_worm_indice` también la use,
+    ver ese módulo) con los settings de ESTE job."""
+    return next_backoff_seconds(
+        intentos_tras_este_fallo,
+        base=settings.indice_reconciliation_backoff_base_seconds,
+        cap=settings.indice_reconciliation_backoff_cap_seconds,
+    )
 
 
 async def _reconciliar_indice(
@@ -452,6 +454,120 @@ async def run_once_actas() -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Tercera fase — cableado WORM/Object-Lock del ÍNDICE (E10 Inc.1)
+# ---------------------------------------------------------------------------
+#
+# Converge los índices que quedaron 'firmado' (E06 Inc.1) sin que su copia
+# WORM en storage-service se haya confirmado todavía (el disparo síncrono
+# tras el sellado, dentro de `IndexService.firmar_indice_close`, es
+# best-effort y puede fallar por lo mismo que cualquier llamada HTTP:
+# storage-service inalcanzable, PRESERVATION_ENABLED=false en ese instante,
+# TRD sin retención resoluble). Independiente de `run_once()` (fase del
+# SELLADO): un índice puede estar 'firmado' y con
+# `reconcile_agotado=TRUE` del sellado sin que eso afecte esta fase —
+# `worm_reconcile_*` es un eje de backoff completamente aparte
+# (`worm_protegido_at`/`worm_reconcile_*`, migración 029).
+#
+# Reutiliza `IndexService.proteger_worm_indice` (el MISMO método que usa el
+# disparo síncrono del cierre, con `origen="reconciliation"`) para no
+# duplicar la derivación de retención TRD ni la marca atómica+asiento —
+# `_reconciliar_worm` es un adaptador delgado que solo interpreta el
+# resultado devuelto para el `summary` del barrido, mismo rol que
+# `_reconciliar_indice`/`_reconciliar_acta` arriba.
+
+
+async def _reconciliar_worm(conn: asyncpg.Connection, slug: str, row: asyncpg.Record) -> str:
+    """Intenta proteger bajo WORM UN índice 'firmado' pendiente. Devuelve
+    'protegido', 'fallido'/'pendiente' (backoff programado) o 'agotado'
+    (`worm_reconcile_agotado=TRUE`, permanece sin proteger hasta
+    intervención manual — NUNCA se inventa conformidad)."""
+    index = IndexService(conn, slug)
+    resultado = await index.proteger_worm_indice(
+        row["expediente_id"], row["id"], actor_id=None, origen="reconciliation"
+    )
+    return resultado
+
+
+async def run_once_worm() -> dict[str, int]:
+    """Una barrida completa: por cada tenant activo, hasta
+    `indice_reconciliation_batch_size` índices 'firmado' sin proteger bajo
+    WORM. Fallos por-tenant o por-índice quedan aislados (WARNING, no
+    abortan el resto de la barrida) — mismo patrón que `run_once()`."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                # Namespace de advisory lock PROPIO (`worm_reconcile`, distinto
+                # de `indice_reconcile`/`acta_reconcile`) — esta fase puede
+                # correr en el mismo ciclo que `run_once()` sin competir por
+                # el mismo lock.
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:worm_reconcile'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    logger.debug(
+                        "Reconciliación WORM: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+                    continue
+                try:
+                    rows = await IndexRepository(conn).list_worm_pending(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        try:
+                            resultado = await _reconciliar_worm(conn, slug, row)
+                        except Exception:
+                            logger.warning(
+                                "Fallo reconciliando WORM indice_id=%s (expediente_id=%s) "
+                                "tenant=%s — se omite este índice en esta barrida",
+                                row["id"],
+                                row["expediente_id"],
+                                slug,
+                                exc_info=True,
+                            )
+                            summary["fallidos"] += 1
+                            continue
+                        if resultado == "protegido":
+                            summary["protegidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:worm_reconcile'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+
+    logger.info(
+        "Reconciliación WORM del índice completada: "
+        "pendientes_vistos=%d protegidos=%d fallidos=%d agotados=%d tenants=%d",
+        summary["pendientes_vistos"],
+        summary["protegidos"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Standalone entry point
 # ---------------------------------------------------------------------------
 
@@ -465,6 +581,7 @@ async def _main() -> None:
     try:
         await run_once()
         await run_once_actas()
+        await run_once_worm()
     finally:
         await close_pool()
 

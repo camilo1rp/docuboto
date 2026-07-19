@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
+from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
 from app.routers.batch import router as batch_router
 from app.routers.expedientes import router as expedientes_router
 from app.routers.fisico import router as fisico_router
@@ -51,13 +52,28 @@ async def _indice_reconciliation_loop() -> None:
     los tenants activos cada `indice_reconciliation_interval_seconds`. Un
     fallo de UNA barrida (p. ej. Postgres momentáneamente inalcanzable)
     queda contenido aquí — el loop NUNCA muere por una excepción, solo
-    reintenta en la siguiente iteración."""
+    reintenta en la siguiente iteración.
+
+    Incluye la 3ra fase (E10 Inc.1, cableado WORM del índice,
+    `run_once_worm`) en el MISMO ciclo/cadencia que el sellado — está
+    tan estrechamente acoplada a "el índice ya quedó 'firmado'" que no
+    amerita un kill-switch/intervalo propio (a diferencia del acta, que sí
+    tiene cadencia dedicada por ser aditiva y menos urgente, ver
+    `_acta_reconciliation_loop`). Un fallo en la fase WORM tampoco debe
+    impedir que la siguiente iteración reintente el sellado."""
     while True:
         try:
             await _reconcile_indices_once()
         except Exception:
             logger.warning(
                 "Fallo en la barrida de reconciliación del sellado del índice",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del índice",
                 exc_info=True,
             )
         await asyncio.sleep(settings.indice_reconciliation_interval_seconds)

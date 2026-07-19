@@ -49,17 +49,162 @@ puede alcanzarlo. A diferencia de `get_aip` (que distingue "no hay AIP" de
 "storage-service falló"), aquí storage-service SIEMPRE responde 200 con una
 lista (vacía si no hay eventos) — no hay 404 legítimo que distinguir; solo
 ``StorageEventosError`` ante un fallo real de infraestructura.
+
+`proteger_indice_worm`/`proteger_indice_worm_internal` (E10 Inc.1, cableado
+WORM del índice) — gemelo ESTRUCTURADO al estilo de
+`signature_client.sign_xml_outcome`/`sign_indice_internal`: dos funciones,
+no una con un flag, porque tienen credenciales e identidad DISTINTAS:
+
+- `proteger_indice_worm` la usa `IndexService.proteger_worm_indice` con
+  `origen="close"` (disparo síncrono tras el sellado, dentro de
+  `firmar_indice_close`) — envía `X-User-Id=actor_id`, el usuario que YA
+  pasó el gate `min_crud=3` de `close_expediente` en ESTE servicio, y que
+  supera el MISMO chequeo en storage-service porque ambos leen la misma
+  tabla `auth_users`/`auth_permissions` del tenant (Postgres único
+  compartido, ADR-002). Llama a la ruta PÚBLICA `POST /proteger-indice`
+  (RBAC `require_permission(min_crud=3)`).
+- `proteger_indice_worm_internal` la usa `origen="reconciliation"` (3ra
+  fase de `app/jobs/indice_reconciliation.py::run_once_worm`) — SIN
+  `X-User-Id` real (actúa con `SYSTEM_RECONCILER_ID`, que no tiene fila en
+  `auth_users`; `require_permission` la rechazaría SIEMPRE con 403). Llama
+  a la ruta INTERNA `POST /proteger-indice-internal` (D-02,
+  `X-Internal-Token`), mismo patrón que `sign_indice_internal`.
+
+Ambas devuelven `WormProtectionOutcome` (nunca lanzan): distinguen `ok`
+(éxito, incluida la respuesta idempotente 200 de una segunda llamada),
+`disabled` (503 `preservation_disabled` — PRESERVATION_ENABLED=false en
+storage-service en este instante) de `transient` (cualquier otro fallo:
+HTTP no-2xx, timeout, servicio inalcanzable) — el llamador
+(`IndexService._bump_worm_backoff`) programa el backoff igual en ambos
+casos NO-ok (ninguno se agota de inmediato, solo tras acumular intentos),
+pero el motivo textual persistido difiere para diagnóstico operacional.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
+from dataclasses import dataclass
+from datetime import date
 
 import httpx
+from fastapi import status
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class WormProtectionOutcome:
+    """Resultado ESTRUCTURADO de un intento de cableado WORM del índice (E10
+    Inc.1) — exactamente uno de los tres queda "poblado": `ok=True` (éxito,
+    `worm_object_id` poblado), `disabled=True` (503 `preservation_disabled`)
+    o `transient=True` (cualquier otro fallo — reintentable)."""
+
+    ok: bool
+    worm_object_id: uuid.UUID | None = None
+    disabled: bool = False
+    transient: bool = False
+
+
+def _worm_outcome_from_response(resp: httpx.Response, *, contexto: str) -> WormProtectionOutcome:
+    """Traduce una respuesta HTTP de storage-service a un
+    `WormProtectionOutcome` — compartido por `proteger_indice_worm`
+    (`/proteger-indice`) y `proteger_indice_worm_internal`
+    (`/proteger-indice-internal`), mismo criterio que
+    `signature_client._outcome_from_response`."""
+    if resp.status_code in (200, 201):
+        try:
+            data = resp.json()
+            worm_object_id = uuid.UUID(data["id"])
+        except (ValueError, KeyError, TypeError):
+            logger.warning(
+                "storage-service → respuesta 2xx sin 'id' válido al proteger WORM (%s)",
+                contexto,
+            )
+            return WormProtectionOutcome(ok=False, transient=True)
+        return WormProtectionOutcome(ok=True, worm_object_id=worm_object_id)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "storage-service: protección WORM deshabilitada (PRESERVATION_ENABLED=false, %s)",
+            contexto,
+        )
+        return WormProtectionOutcome(ok=False, disabled=True)
+    logger.warning(
+        "storage-service → HTTP %s al proteger WORM el índice (%s, transient)",
+        resp.status_code,
+        contexto,
+    )
+    return WormProtectionOutcome(ok=False, transient=True)
+
+
+async def proteger_indice_worm(
+    *,
+    tenant_slug: str,
+    actor_id: str,
+    file_id: str,
+    expediente_id: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    legal_hold: bool = False,
+) -> WormProtectionOutcome:
+    """Disparo SÍNCRONO (usuario real, `origen="close"`) — ver el docstring
+    del módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "legal_hold": legal_hold,
+    }
+    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/proteger-indice", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al proteger WORM el índice: %s", exc)
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto="close")
+
+
+async def proteger_indice_worm_internal(
+    *,
+    tenant_slug: str,
+    file_id: str,
+    expediente_id: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    legal_hold: bool = False,
+) -> WormProtectionOutcome:
+    """Gemelo SISTEMA (D-02, `X-Internal-Token`, `origen="reconciliation"`) —
+    ver el docstring del módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "legal_hold": legal_hold,
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/proteger-indice-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al proteger WORM el índice: %s", exc)
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto="reconciliation")
 
 
 class StorageAipError(Exception):

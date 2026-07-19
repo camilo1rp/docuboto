@@ -99,6 +99,7 @@ def make_worm_row(
     retention_mode: str = "COMPLIANCE",
     legal_hold: bool = False,
     created_at: datetime | None = None,
+    file_id: uuid.UUID | None = None,
 ) -> dict:
     return {
         "id": worm_id or uuid.uuid4(),
@@ -112,6 +113,10 @@ def make_worm_row(
         "retention_mode": retention_mode,
         "legal_hold": legal_hold,
         "created_at": created_at or NOW,
+        # E10 Inc.1 (migración 009): `file_id` NULLABLE (filas anteriores a
+        # esa migración quedan NULL) — el default `None` aquí cubre AMBOS
+        # casos sin que cada test tenga que declararlo explícitamente.
+        "file_id": file_id,
     }
 
 

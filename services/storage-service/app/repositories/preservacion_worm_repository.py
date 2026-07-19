@@ -22,13 +22,14 @@ search_path al tenant en cada método (gemelo de ``PreservacionRepository``).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 import asyncpg
 
 _COLS = (
     "id, expediente_id, tipo, bucket, object_key, version_id, sha256, "
-    "retain_until, retention_mode, legal_hold, created_at"
+    "retain_until, retention_mode, legal_hold, created_at, file_id"
 )
 
 
@@ -52,14 +53,15 @@ class PreservacionWormRepository:
         retain_until: datetime,
         retention_mode: str,
         legal_hold: bool,
+        file_id: uuid.UUID | None = None,
     ) -> asyncpg.Record:
         await self._sp()
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO preservacion_worm_objeto
                 (expediente_id, tipo, bucket, object_key, version_id, sha256,
-                 retain_until, retention_mode, legal_hold)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 retain_until, retention_mode, legal_hold, file_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING {_COLS}
             """,
             expediente_id,
@@ -71,9 +73,31 @@ class PreservacionWormRepository:
             retain_until,
             retention_mode,
             legal_hold,
+            file_id,
         )
         assert row is not None
         return row
+
+    async def get_by_expediente_and_tipo(
+        self, expediente_id: str, tipo: str
+    ) -> asyncpg.Record | None:
+        """Cualquier fila (activa o ya expirada) registrada para
+        ``(expediente_id, tipo)`` — respaldo en código del índice único parcial
+        ``ux_preservacion_worm_objeto_expediente_indice`` (migración 009,
+        `tipo='indice'` solamente): `PreservationWormService.proteger_indice`
+        la consulta ANTES de tocar MinIO para que una segunda llamada al mismo
+        expediente (reintento tras timeout, o carrera intento-síncrono vs.
+        barrida de reconciliación) sea idempotente (200, sin re-subir) en vez
+        de fallar con `UniqueViolationError` a mitad de un `put_object`
+        COMPLIANCE ya irreversible."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM preservacion_worm_objeto "
+            "WHERE expediente_id = $1 AND tipo = $2 "
+            "ORDER BY created_at DESC LIMIT 1",
+            expediente_id,
+            tipo,
+        )
 
     async def active_lock_for_expediente(self, expediente_id: str) -> asyncpg.Record | None:
         """Devuelve una fila que SIGUE bloqueando la disposición, si existe.

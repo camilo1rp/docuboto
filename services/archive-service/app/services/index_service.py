@@ -27,8 +27,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
@@ -38,6 +38,7 @@ from app.core.config import settings
 from app.models.archive import Expediente
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
+from app.services.backoff import next_backoff_seconds
 from app.schemas.archive import (
     IndiceFixityResult,
     IndiceItemResponse,
@@ -692,6 +693,18 @@ class IndexService:
                 # se degrada a `None`, idéntico a cualquier otra rama de este
                 # método -- `ArchiveService.close_expediente` ya ignora el
                 # valor de retorno.
+                if affected:
+                    # E10 Inc.1: cableado WORM del índice recién firmado, FUERA
+                    # de la tx que acaba de comprometerse arriba (mismo motivo
+                    # que el propio sellado corre fuera de la tx del cierre —
+                    # ver el docstring de `firmar_indice_close`). Si `affected`
+                    # es 0 (carrera perdida, ver arriba), NO se dispara aquí:
+                    # `run_once_worm` (3ra fase de reconciliación) converge de
+                    # todos modos, ese índice ya quedó 'firmado' con
+                    # `worm_protegido_at IS NULL`.
+                    await self.proteger_worm_indice(
+                        expediente_id, current["id"], actor_id=actor_id, origen="close"
+                    )
                 return outcome.signed if affected else None
             if outcome.seal_absent:
                 await self._mark_pendiente_audited(
@@ -981,3 +994,212 @@ class IndexService:
             )
             for r in rows
         ], total
+
+    # -- E10 Inc.1: cableado WORM/Object-Lock del índice ----------------
+
+    async def _resolve_worm_retention(
+        self, expediente_id: uuid.UUID
+    ) -> tuple[int, date] | None:
+        """Deriva ``(retencion_anios_total, fecha_inicio=fecha_cierre)`` de la
+        TRD del expediente para el cableado WORM (E10 Inc.1, AGN 001/2024
+        Art. 4.3.2.6) — ``retencion_anios_total`` es la suma de las DOS fases
+        (`archivo_gestion_years` + `archivo_central_years`), mismo cálculo
+        que `ArchiveService.compute_retention` (que reporta cada fase por
+        separado; aquí solo interesa el TOTAL que exige `RetentionMixin` de
+        storage-service).
+
+        Fail-closed (``None``) en cualquier caso dudoso: expediente
+        inexistente, sin `closed_at` (no debería invocarse antes del cierre,
+        pero no se asume), sin `trd_serie_id`, serie no encontrada, o el
+        total fuera del rango ``[1, 100]`` años que exige `RetentionMixin`
+        del lado de storage-service (defensa en profundidad — doble
+        validación en ambos extremos del cableado, igual que
+        `validate_retain_until` ya hace del lado de storage-service)."""
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
+        if exp is None or exp.closed_at is None or exp.trd_serie_id is None:
+            return None
+        serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
+        if serie is None:
+            return None
+        total = (serie.archivo_gestion_years or 0) + (serie.archivo_central_years or 0)
+        if not (1 <= total <= 100):
+            return None
+        return total, exp.closed_at.date()
+
+    async def _bump_worm_backoff(
+        self, indice_id: uuid.UUID, *, intentos_previos: int, motivo: str
+    ) -> Literal["pendiente", "agotado"]:
+        """Registra un intento fallido de cableado WORM (backoff exponencial,
+        mismo umbral `indice_reconciliation_max_intentos` que el sellado
+        XAdES-B — eje independiente, ver migración 029). `intentos_previos`
+        viene del `row` YA leído por el llamador (`worm_reconcile_intentos`)
+        — no se re-consulta, evita una lectura extra en el camino caliente."""
+        intentos_tras_este = intentos_previos + 1
+        agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        await self._index.bump_worm_reconcile_intento(
+            indice_id, proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado
+        )
+        if agotado:
+            # Best-effort (mismo patrón que `audit.append_denial`): la
+            # visibilidad operacional de un agotamiento nunca debe convertir
+            # un fallo de cableado (ya de por sí best-effort) en un 500.
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.indice_worm_reconcile_agotado",
+                    object_type="expediente_indice",
+                    object_ref=str(indice_id),
+                    actor=None,
+                    canal="system",
+                    payload={"reconcile_intentos": intentos_tras_este, "motivo": motivo},
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca degrada el resultado.
+                logger.warning(
+                    "audit.append(indice_worm_reconcile_agotado) failed", exc_info=True
+                )
+            return "agotado"
+        return "pendiente"
+
+    async def proteger_worm_indice(
+        self,
+        expediente_id: uuid.UUID,
+        indice_id: uuid.UUID,
+        *,
+        actor_id: str | None,
+        origen: Literal["close", "reconciliation"],
+    ) -> Literal["protegido", "pendiente", "agotado", "omitido"]:
+        """Cableado WORM/Object-Lock del índice YA FIRMADO (E10 Inc.1, AGN
+        001/2024 Art. 4.3.2.6): tras confirmarse el sellado XAdES-B —
+        síncronamente dentro de `firmar_indice_close` (`origen="close"`), o
+        vía `mark_signed` en la 3ra fase de reconciliación
+        (`origen="reconciliation"`, `app/jobs/indice_reconciliation.py::
+        run_once_worm`) — dispara la protección inmutable en storage-service.
+
+        Best-effort, NUNCA lanza (best-effort real: cualquier excepción no
+        prevista queda contenida aquí, no solo los fallos HTTP esperados) —
+        mismo patrón que `firmar_indice_close`: el cierre del expediente ya
+        es un hecho consumado, este cableado NUNCA lo bloquea ni lo revierte.
+        Fuera de cualquier `conn.transaction()` del llamador — la llamada
+        HTTP a storage-service no debe correr dentro de una tx (mismo motivo
+        que `firmar_indice_close`: no se puede revertir un POST con
+        ROLLBACK, y retendría el advisory lock de auditoría del tenant
+        durante la latencia HTTP).
+
+        Frontera de confianza (D-02): `file_id` se deriva SIEMPRE de
+        `expediente_indice.minio_key_firmado` (formato `"{file_id}/
+        {filename}"`, ver `storage_client.download_signed_xml`) — nunca de
+        una entrada externa al servicio.
+
+        Devuelve el desenlace para que el llamador (job de reconciliación)
+        lleve su propio resumen; el disparo síncrono del cierre ignora el
+        valor de retorno (ya lo tenía así con `firmar_indice_close`)."""
+        try:
+            row = await self._index.get_by_id(indice_id)
+            if row is None or row["estado"] != "firmado":
+                return "omitido"
+            if row["worm_protegido_at"] is not None:
+                return "omitido"
+            if not row["minio_key_firmado"]:
+                logger.warning(
+                    "Cableado WORM: índice %s (expediente_id=%s) sin "
+                    "minio_key_firmado, se omite",
+                    indice_id,
+                    expediente_id,
+                )
+                return "omitido"
+            file_id = row["minio_key_firmado"].split("/", 1)[0]
+
+            retention = await self._resolve_worm_retention(expediente_id)
+            if retention is None:
+                return await self._bump_worm_backoff(
+                    indice_id,
+                    intentos_previos=int(row["worm_reconcile_intentos"]),
+                    motivo="trd_sin_retencion",
+                )
+            retencion_anios, fecha_inicio = retention
+
+            from app.clients import storage_client
+
+            if origen == "close" and actor_id:
+                outcome = await storage_client.proteger_indice_worm(
+                    tenant_slug=self._tenant_slug,
+                    actor_id=actor_id,
+                    file_id=file_id,
+                    expediente_id=str(expediente_id),
+                    retencion_anios=retencion_anios,
+                    fecha_inicio=fecha_inicio,
+                )
+            else:
+                outcome = await storage_client.proteger_indice_worm_internal(
+                    tenant_slug=self._tenant_slug,
+                    file_id=file_id,
+                    expediente_id=str(expediente_id),
+                    retencion_anios=retencion_anios,
+                    fecha_inicio=fecha_inicio,
+                )
+
+            if outcome.ok:
+                async with self._conn.transaction():
+                    affected = await self._index.mark_worm_protegido(
+                        indice_id, outcome.worm_object_id
+                    )
+                    # Idempotencia real (mismo patrón S1 que `mark_signed`):
+                    # `affected == 0` -> otra llamada concurrente (el disparo
+                    # síncrono del cierre corriendo en paralelo con esta
+                    # barrida, o dos barridas solapadas) ya marcó protegido
+                    # este MISMO índice entre la lectura de `row` y este
+                    # UPDATE. NO se escribe un asiento fantasma sobre un
+                    # efecto que esta llamada no produjo.
+                    if affected:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant_slug,
+                            service=_SERVICE,
+                            action="archive.indice_worm_protegido",
+                            object_type="expediente_indice",
+                            object_ref=str(expediente_id),
+                            actor=actor_id,
+                            canal="system" if origen == "reconciliation" else "api",
+                            payload={
+                                "expediente_id": str(expediente_id),
+                                "worm_object_id": (
+                                    str(outcome.worm_object_id)
+                                    if outcome.worm_object_id
+                                    else None
+                                ),
+                                "retencion_anios": retencion_anios,
+                                "origen": origen,
+                            },
+                        )
+                return "protegido" if affected else "omitido"
+
+            motivo = "worm_disabled" if outcome.disabled else "worm_no_confirmado"
+            return await self._bump_worm_backoff(
+                indice_id, intentos_previos=int(row["worm_reconcile_intentos"]), motivo=motivo
+            )
+        except Exception:
+            logger.warning(
+                "Cableado WORM del índice falló (best-effort), expediente_id=%s "
+                "indice_id=%s origen=%s",
+                expediente_id,
+                indice_id,
+                origen,
+                exc_info=True,
+            )
+            return "pendiente"

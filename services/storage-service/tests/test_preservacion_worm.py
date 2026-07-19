@@ -27,7 +27,14 @@ import pytest
 from miniopy_async import S3Error  # type: ignore[attr-defined]
 
 import app.core.config as config_module
-from tests.conftest import TENANT_HEADERS, TENANT_SLUG, make_file_record, make_worm_row
+from app.core.constants import SYSTEM_RECONCILER_ID
+from tests.conftest import (
+    INTERNAL_HEADERS,
+    TENANT_HEADERS,
+    TENANT_SLUG,
+    make_file_record,
+    make_worm_row,
+)
 
 _INDICE_XML = b"<indice>firmado</indice>"
 _INDICE_SHA256 = hashlib.sha256(_INDICE_XML).hexdigest()
@@ -83,6 +90,7 @@ async def test_proteger_indice_happy_path(client_with_conn) -> None:
 
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
+        None,  # PreservacionWormRepository.get_by_expediente_and_tipo (idempotencia: nada previo)
         record,  # FileRepository.get_by_id_any_state
         worm_row,  # PreservacionWormRepository.insert (RETURNING)
         {"id": uuid.uuid4()},  # insert_evento FIJACION ok
@@ -159,6 +167,7 @@ async def test_proteger_indice_happy_path_direct_retain_until(client_with_conn) 
 
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
+        None,
         record,
         worm_row,
         {"id": uuid.uuid4()},
@@ -192,7 +201,9 @@ async def test_proteger_indice_legal_hold_true_reaches_minio_and_audit(client_wi
     worm_row = make_worm_row(expediente_id="EXP-1", object_key=record["object_key"], legal_hold=True)
 
     _grant_permission(mock_conn)
-    mock_conn.fetchrow.side_effect = [record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}]
+    mock_conn.fetchrow.side_effect = [
+        None, record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}
+    ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
     resp = await client.post(
@@ -246,7 +257,9 @@ async def test_proteger_indice_provisions_bucket_when_absent(client_with_conn) -
     worm_row = make_worm_row(object_key=record["object_key"])
 
     _grant_permission(mock_conn)
-    mock_conn.fetchrow.side_effect = [record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}]
+    mock_conn.fetchrow.side_effect = [
+        None, record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}
+    ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
     mock_minio.bucket_exists = AsyncMock(return_value=False)
 
@@ -271,7 +284,10 @@ async def test_proteger_indice_bucket_exists_without_lock_is_rejected(client_wit
     record = _file_record(file_id)
 
     _grant_permission(mock_conn)
-    mock_conn.fetchrow.return_value = record
+    # side_effect (no return_value constante): la 1ra llamada es la
+    # idempotencia (get_by_expediente_and_tipo, debe dar `None` — sin fila
+    # previa), la 2da es FileRepository.get_by_id_any_state.
+    mock_conn.fetchrow.side_effect = [None, record]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
     mock_minio.get_object_lock_config = AsyncMock(
         side_effect=S3Error(
@@ -302,7 +318,8 @@ async def test_proteger_indice_fixity_mismatch_blocks_upload(client_with_conn) -
     record = _file_record(file_id)
 
     _grant_permission(mock_conn)
-    mock_conn.fetchrow.side_effect = [record, {"id": uuid.uuid4()}]  # file + evento FIJACION fallo
+    # idempotencia (None) + file + evento FIJACION fallo
+    mock_conn.fetchrow.side_effect = [None, record, {"id": uuid.uuid4()}]
     mock_minio.get_object = _minio_get_object(b"contenido alterado, no coincide")
 
     resp = await client.post(
@@ -350,6 +367,7 @@ async def test_proteger_indice_canonicalizes_expediente_id_whitespace(client_wit
 
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
+        None,
         record,
         worm_row,
         {"id": uuid.uuid4()},
@@ -456,7 +474,9 @@ async def test_proteger_indice_bucket_name_derived_from_claim_not_body(client_wi
     worm_row = make_worm_row(object_key=record["object_key"])
 
     _grant_permission(mock_conn)
-    mock_conn.fetchrow.side_effect = [record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}]
+    mock_conn.fetchrow.side_effect = [
+        None, record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}
+    ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
     payload = _base_payload(file_id)
@@ -489,3 +509,239 @@ async def test_proteger_indice_disabled_by_feature_flag(client_with_conn, monkey
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "preservation_disabled"
     mock_conn.fetchrow.assert_not_called()
+
+
+# ── Idempotencia (E10 Inc.1 — cierre del cableado WORM) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_second_call_is_idempotent_no_reupload(client_with_conn) -> None:
+    """Segunda llamada al MISMO `expediente_id` (reintento tras timeout, o
+    carrera intento-síncrono-vs-barrida): NO vuelve a tocar fixity/MinIO, NO
+    inserta una segunda fila WORM — devuelve la fila YA protegida, 200 (no
+    201)."""
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    existing_worm_id = uuid.uuid4()
+    existing_file_id = uuid.uuid4()
+    existing = make_worm_row(
+        worm_id=existing_worm_id, expediente_id="EXP-1", object_key=f"{existing_file_id}/indice.xml"
+    )
+    existing["file_id"] = existing_file_id
+
+    _grant_permission(mock_conn)
+    mock_conn.fetchrow.side_effect = [existing]  # get_by_expediente_and_tipo: YA existe
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice",
+        json=_base_payload(file_id),
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == str(existing_worm_id)
+    assert body["expediente_id"] == "EXP-1"
+
+    # Ni fixity (get_object) ni la subida (put_object) se tocan.
+    mock_minio.get_object.assert_not_called()
+    mock_minio.put_object.assert_not_awaited()
+    mock_minio.make_bucket.assert_not_awaited()
+
+    # Solo UNA consulta de BD (el chequeo de idempotencia) — nada de INSERT.
+    insert_calls = [
+        c
+        for c in mock_conn.fetchrow.call_args_list
+        if c.args and "INSERT INTO preservacion_worm_objeto" in c.args[0]
+    ]
+    assert insert_calls == []
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_second_call_different_expediente_is_not_idempotent(
+    client_with_conn,
+) -> None:
+    """La idempotencia es POR `expediente_id` — un segundo `proteger-indice`
+    para un expediente DISTINTO (aunque el mismo file_id/tenant) sigue
+    subiendo normalmente (201), no se confunde con el candado del primero."""
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    record = _file_record(file_id)
+    worm_row = make_worm_row(expediente_id="EXP-2", object_key=record["object_key"])
+
+    _grant_permission(mock_conn)
+    mock_conn.fetchrow.side_effect = [
+        None,  # get_by_expediente_and_tipo(EXP-2, indice) -- nada previo
+        record,
+        worm_row,
+        {"id": uuid.uuid4()},
+        {"id": uuid.uuid4()},
+    ]
+    mock_minio.get_object = _minio_get_object(_INDICE_XML)
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice",
+        json=_base_payload(file_id, expediente_id="EXP-2"),
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    mock_minio.put_object.assert_awaited_once()
+
+
+# ── Ruta interna (D-02, SYSTEM_RECONCILER_ID) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_internal_happy_path_uses_system_actor(client_with_conn) -> None:
+    """`POST /proteger-indice-internal` (X-Internal-Token, sin X-User-Id) usa
+    el mismo servicio/idempotencia — la única diferencia es la puerta de
+    autorización y que el actor de auditoría es SIEMPRE SYSTEM_RECONCILER_ID,
+    nunca derivado de headers del llamador."""
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    record = _file_record(file_id)
+    worm_row = make_worm_row(expediente_id="EXP-3", object_key=record["object_key"])
+
+    mock_conn.fetchrow.side_effect = [
+        None,
+        record,
+        worm_row,
+        {"id": uuid.uuid4()},
+        {"id": uuid.uuid4()},
+    ]
+    mock_minio.get_object = _minio_get_object(_INDICE_XML)
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice-internal",
+        json=_base_payload(file_id, expediente_id="EXP-3"),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+
+    audit_inserts = [
+        c
+        for c in mock_conn.execute.call_args_list
+        if c.args and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_inserts) == 1
+    assert audit_inserts[0].args[3] == str(SYSTEM_RECONCILER_ID)
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_internal_rejects_without_token(client_with_conn) -> None:
+    """Sin `X-Internal-Token` (o uno incorrecto), la ruta interna rechaza —
+    NUNCA cae de vuelta silenciosamente a algún modo "abierto"."""
+    client, mock_conn, mock_minio = client_with_conn
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice-internal",
+        json=_base_payload(uuid.uuid4()),
+        headers=TENANT_HEADERS,  # sin X-Internal-Token
+    )
+
+    assert resp.status_code == 401
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_internal_second_call_is_idempotent(client_with_conn) -> None:
+    """Mismo contrato de idempotencia que la ruta pública — la 3ra fase de
+    reconciliación (`run_once_worm`) puede reintentar sin re-subir."""
+    client, mock_conn, mock_minio = client_with_conn
+    existing = make_worm_row(expediente_id="EXP-4")
+
+    mock_conn.fetchrow.side_effect = [existing]
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice-internal",
+        json=_base_payload(uuid.uuid4(), expediente_id="EXP-4"),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 200, resp.text
+    mock_minio.put_object.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Advisory lock de sesión por-expediente (hallazgo Media de auditoría): serializa
+# check->put_object->insert para no duplicar objetos WORM irreversibles bajo la
+# carrera síncrono-vs-reconciliación.
+# ---------------------------------------------------------------------------
+
+
+def test_worm_lock_key_is_deterministic_and_in_range() -> None:
+    from app.services.preservation_worm_service import _worm_lock_key
+
+    k1 = _worm_lock_key("icetex", "EXP-1")
+    k2 = _worm_lock_key("icetex", "EXP-1")
+    assert k1 == k2  # estable (SHA-256, no hash() por-proceso)
+    assert _worm_lock_key("icetex", "EXP-2") != k1  # por expediente
+    assert _worm_lock_key("otro", "EXP-1") != k1  # por tenant
+    assert -(2**63) <= k1 < 2**63  # rango de pg_advisory_lock(bigint)
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_acquires_and_releases_advisory_lock(client_with_conn) -> None:
+    """El happy path toma pg_advisory_lock y lo libera (pg_advisory_unlock) con
+    la MISMA clave — serialización por-expediente del check->put->insert."""
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    record = _file_record(file_id)
+    worm_row = make_worm_row(expediente_id="EXP-1", object_key=record["object_key"])
+
+    _grant_permission(mock_conn)
+    mock_conn.fetchrow.side_effect = [
+        None,  # get_by_expediente_and_tipo
+        record,  # get_by_id_any_state
+        worm_row,  # insert RETURNING
+        {"id": uuid.uuid4()},  # FIJACION ok
+        {"id": uuid.uuid4()},  # WORM ok
+    ]
+    mock_minio.get_object = _minio_get_object(_INDICE_XML)
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice",
+        json=_base_payload(file_id),
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+
+    lock_calls = [
+        c for c in mock_conn.execute.call_args_list
+        if c.args and "pg_advisory_lock" in c.args[0]
+    ]
+    unlock_calls = [
+        c for c in mock_conn.execute.call_args_list
+        if c.args and "pg_advisory_unlock" in c.args[0]
+    ]
+    assert len(lock_calls) == 1
+    assert len(unlock_calls) == 1
+    assert lock_calls[0].args[1] == unlock_calls[0].args[1]  # misma clave
+
+
+@pytest.mark.asyncio
+async def test_proteger_indice_releases_lock_on_idempotent_shortcircuit(client_with_conn) -> None:
+    """Aun cuando el índice YA está protegido (corte-circuito idempotente, sin
+    subir), el lock adquirido se libera en el `finally`."""
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    existing = make_worm_row(expediente_id="EXP-1", object_key="EXP-1/indice.xml")
+
+    _grant_permission(mock_conn)
+    mock_conn.fetchrow.side_effect = [existing]  # get_by_expediente_and_tipo: YA existe
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-indice",
+        json=_base_payload(file_id),
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    mock_minio.put_object.assert_not_awaited()  # no re-sube
+
+    unlock_calls = [
+        c for c in mock_conn.execute.call_args_list
+        if c.args and "pg_advisory_unlock" in c.args[0]
+    ]
+    assert len(unlock_calls) == 1  # liberado pese al corte-circuito

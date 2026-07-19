@@ -300,3 +300,7 @@ class ProtegerIndiceResponse(BaseModel):
     retention_mode: str
     legal_hold: bool
     created_at: datetime
+    # `None` solo para filas insertadas ANTES de la migración 009 (Inc.1) —
+    # cualquier fila nueva SIEMPRE lo trae (`ProtegerIndiceRequest.file_id` es
+    # obligatorio).
+    file_id: uuid.UUID | None = None
