@@ -164,3 +164,56 @@ class SigningKeyRepository:
             "ORDER BY created_at DESC LIMIT 1",
             fingerprint,
         )
+
+    # ------------------------------------------------------------------
+    # Rotación de la KEK de custodia (E17/F4) — re-wrap del material privado.
+    # A diferencia del resto del repo, estos métodos IGNORAN `estado`: también
+    # se re-envuelven las filas 'revocado' (conservan valor forense y, si se
+    # dejaran atrás, anclarían la KEK vieja para siempre impidiendo retirarla).
+    # ------------------------------------------------------------------
+    async def fetch_ids_to_rewrap(self, active_version: int) -> list[asyncpg.Record]:
+        """IDs (con user_id/key_version) de credenciales cuya KEK NO es la
+        activa — el conjunto a re-envolver. Cualquier `estado`. Orden estable
+        por `id` para reanudabilidad determinista."""
+        return await self._conn.fetch(
+            "SELECT id, user_id, key_version FROM auth_user_signing_key "
+            "WHERE key_version <> $1 ORDER BY id",
+            active_version,
+        )
+
+    async def get_for_rewrap(self, key_id: uuid.UUID) -> asyncpg.Record | None:
+        """Fila completa bajo ``FOR UPDATE`` (serializa contra enroll/firma),
+        de CUALQUIER estado — el re-wrap debe llamarse dentro de una tx."""
+        return await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM auth_user_signing_key WHERE id = $1 FOR UPDATE",
+            key_id,
+        )
+
+    async def rewrap(
+        self,
+        key_id: uuid.UUID,
+        *,
+        private_key_cifrado: bytes,
+        private_key_nonce: bytes,
+        key_version: int,
+    ) -> None:
+        """Persiste el material RE-ENVUELTO (ciphertext + nonce NUEVOS + versión
+        de la KEK activa). No toca `estado`, `cert_pem` ni ninguna otra columna."""
+        await self._conn.execute(
+            "UPDATE auth_user_signing_key "
+            "SET private_key_cifrado = $2, private_key_nonce = $3, "
+            "    key_version = $4, updated_at = now() "
+            "WHERE id = $1",
+            key_id,
+            private_key_cifrado,
+            private_key_nonce,
+            key_version,
+        )
+
+    async def count_by_key_version(self) -> list[asyncpg.Record]:
+        """Conteo por `key_version` — el operador verifica que una versión tiene
+        conteo 0 (en TODOS los tenants) antes de retirar su KEK del llavero."""
+        return await self._conn.fetch(
+            "SELECT key_version, count(*) AS n FROM auth_user_signing_key "
+            "GROUP BY key_version ORDER BY key_version"
+        )

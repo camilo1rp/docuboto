@@ -10,6 +10,23 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _decode_aes256(b64: str, label: str) -> bytes:
+    """Decodifica un base64 a exactamente 32 bytes (AES-256) o lanza
+    ``RuntimeError`` explícito — criterio único compartido por todas las claves
+    AES del servicio (KEK de custodia y su llavero de rotación). Nunca cae a una
+    clave derivada/implícita (RF-SEG)."""
+    import base64
+    import binascii
+
+    try:
+        key = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError(f"{label} no es base64 válido") from exc
+    if len(key) != 32:
+        raise RuntimeError(f"{label} debe decodificar a 32 bytes (AES-256)")
+    return key
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -82,6 +99,17 @@ class Settings(BaseSettings):
     # dev por defecto: enroll/sign-digest fallan explícitamente (fail-closed,
     # ver signing_key_encryption_key_bytes) hasta configurarla.
     signing_key_encryption_key: str = ""
+    # --- Rotación de la KEK de custodia (E17/F4) --- Llavero de KEKs
+    # ADICIONALES (versiones >= 2). `signing_key_encryption_key` (arriba) es
+    # SIEMPRE la versión 1 (congelada, retrocompat byte). Formato: JSON en env
+    # con {version: base64-32B}, p. ej. `{"2": "<base64>"}`. NUNCA redefinir la
+    # versión 1 aquí (reservada al campo legacy). Cada valor se valida a 32
+    # bytes AES-256 fail-closed (ver signing_key_keyring).
+    signing_key_encryption_keys: dict[int, str] = {}
+    # Versión de KEK que cifra las ESCRITURAS nuevas (enroll) y a la que el
+    # re-wrap converge. Default 1 = comportamiento actual exacto. Para rotar:
+    # añadir la KEK v2 al llavero, fijar esto a 2, y correr el job de re-wrap.
+    signing_key_active_version: int = 1
     # Token compartido D-02 para POST /internal/signing-key/sign-digest —
     # SOLO signature-service lo llama, servicio-a-servicio, NUNCA vía gateway
     # (misma familia de gate que app.core.internal_auth en otros servicios).
@@ -102,23 +130,50 @@ class Settings(BaseSettings):
 
     def signing_key_encryption_key_bytes(self) -> bytes:
         """Decodifica ``signing_key_encryption_key`` (base64) a 32 bytes
-        crudos (AES-256). Lanza ``RuntimeError`` explícito si falta o no mide
-        32 bytes — nunca cae a una clave derivada o implícita (RF-SEG), mismo
-        criterio que :meth:`totp_encryption_key_bytes`."""
-        import base64
-        import binascii
-
+        crudos (AES-256) — la KEK **versión 1**. Lanza ``RuntimeError``
+        explícito si falta o no mide 32 bytes — nunca cae a una clave derivada
+        o implícita (RF-SEG), mismo criterio que :meth:`totp_encryption_key_bytes`."""
         if not self.signing_key_encryption_key:
             raise RuntimeError(
                 "signing_key_encryption_key no configurada — requerida para /me/signing-key/*"
             )
-        try:
-            key = base64.b64decode(self.signing_key_encryption_key, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise RuntimeError("signing_key_encryption_key no es base64 válido") from exc
-        if len(key) != 32:
-            raise RuntimeError("signing_key_encryption_key debe decodificar a 32 bytes (AES-256)")
-        return key
+        return _decode_aes256(self.signing_key_encryption_key, "signing_key_encryption_key")
+
+    # --- Llavero de KEKs para la rotación de custodia (E17/F4) ---
+    # La rotación NO cambia el AAD (tenant+user); solo re-envuelve la privada
+    # bajo una KEK nueva. Fail-closed en cada método: nunca se firma ni se
+    # arranca un re-wrap con una versión de KEK que no resuelva a 32 bytes.
+    def signing_key_keyring(self) -> dict[int, bytes]:
+        """Llavero completo {version: 32B}. La v1 sale del campo legacy; las
+        v>=2 del JSON ``signing_key_encryption_keys``. Fail-closed por entrada;
+        la clave 1 en el JSON está prohibida (reservada al campo legacy)."""
+        ring: dict[int, bytes] = {1: self.signing_key_encryption_key_bytes()}
+        for raw_ver, b64 in self.signing_key_encryption_keys.items():
+            ver = int(raw_ver)
+            if ver <= 1:
+                raise RuntimeError(
+                    "signing_key_encryption_keys: la versión <=1 está reservada al "
+                    "campo signing_key_encryption_key (no redefinir aquí)"
+                )
+            ring[ver] = _decode_aes256(b64, f"signing_key_encryption_keys[{ver}]")
+        return ring
+
+    def signing_key_for_version(self, version: int) -> bytes:
+        """KEK de una versión concreta (la de la fila al descifrar). Fail-closed
+        si esa versión no está cargada — NUNCA se firma con otra KEK."""
+        ring = self.signing_key_keyring()
+        if version not in ring:
+            raise RuntimeError(
+                f"KEK versión {version} no cargada (fail-closed) — no se puede "
+                "descifrar/firmar esta credencial"
+            )
+        return ring[version]
+
+    def signing_key_active_key(self) -> tuple[int, bytes]:
+        """(versión_activa, KEK_activa) para cifrar escrituras nuevas. Lanza si
+        la versión activa no tiene KEK cargada."""
+        v = self.signing_key_active_version
+        return v, self.signing_key_for_version(v)
 
     def totp_encryption_key_bytes(self) -> bytes:
         """Decodifica ``totp_encryption_key`` (base64) a 32 bytes crudos (AES-256).

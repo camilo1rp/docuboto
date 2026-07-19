@@ -210,9 +210,11 @@ class SigningKeyService:
         private_key_pem = private_key_to_pem(key)
 
         aad = build_aad(tenant_slug=tenant_slug, user_id=str(user_id))
-        ciphertext, nonce = encrypt_private_key(
-            private_key_pem, key=settings.signing_key_encryption_key_bytes(), aad=aad
-        )
+        # Cifra con la KEK ACTIVA del llavero (rotación de custodia, E17/F4) y
+        # persiste su versión — hasta que se rote, activa=1 = comportamiento
+        # exacto anterior. El re-wrap converge las filas viejas a esta versión.
+        active_version, active_key = settings.signing_key_active_key()
+        ciphertext, nonce = encrypt_private_key(private_key_pem, key=active_key, aad=aad)
 
         sign_fail: HTTPException | None = None
         async with self._conn.transaction():
@@ -233,7 +235,7 @@ class SigningKeyService:
                     private_key_nonce=nonce,
                     subject_dn=subject.rfc4514_string(),
                     cargo=cargo,
-                    key_version=1,
+                    key_version=active_version,
                 )
 
         if sign_fail is not None:
@@ -470,10 +472,20 @@ class SigningKeyService:
                     sign_fail = _map_totp_failure(totp_result)
                 else:
                     aad = build_aad(tenant_slug=tenant_slug, user_id=str(user_id))
+                    # Selecciona la KEK por la VERSIÓN de la fila (llavero de
+                    # rotación) — fail-closed si esa versión no está cargada
+                    # (un retiro prematuro aborta la firma, nunca firma con
+                    # otra KEK). Sin rotación, key_version=1 = la KEK legacy.
+                    # El RuntimeError aquí propaga fuera de la tx → rollback que
+                    # también revierte el TOTP recién consumido (asimétrico con
+                    # la ruta de fallo-TOTP, que lo preserva). Aceptable: no hay
+                    # nada que firmar (KEK ausente) y solo ocurre si el operador
+                    # violó el invariante de retirada — una ventana de replay
+                    # sobre un acto imposible, no un bypass.
                     private_key_pem = decrypt_private_key(
                         row["private_key_cifrado"],
                         nonce=row["private_key_nonce"],
-                        key=settings.signing_key_encryption_key_bytes(),
+                        key=settings.signing_key_for_version(row["key_version"]),
                         aad=aad,
                     )
                     private_key = load_private_key_pem(private_key_pem)
