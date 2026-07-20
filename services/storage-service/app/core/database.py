@@ -19,7 +19,14 @@ _pool: asyncpg.Pool | None = None
 # archive-service/document-service `_SLUG_RE`, ADR-002/012). Introducido para el
 # gate RBAC de preservación WORM (`core/clearance.py`), donde el nombre del bucket
 # WORM se deriva de este mismo slug — nunca del body de la petición.
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
+#
+# Público (no `_SLUG_RE`) porque es la fuente única canónica del servicio:
+# `app.repositories.file_repository.FileRepository` y
+# `app.repositories.preservacion_repository.PreservacionRepository` la
+# reusan en vez de duplicar la regex (remediación de auditoría Media, E07 —
+# antes `FileRepository` tenía su propia regex sin guiones, que rechazaba
+# la forma canónica y habitual de un `tenant_slug`).
+TENANT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
 
 
 def tenant_schema(slug: str) -> str:
@@ -28,7 +35,7 @@ def tenant_schema(slug: str) -> str:
     Normaliza guiones a guiones bajos. Úsese SIEMPRE entrecomillado:
     ``f'SET search_path TO "{tenant_schema(slug)}", public'``.
     """
-    if not slug or not _SLUG_RE.match(slug):
+    if not slug or not TENANT_SLUG_RE.match(slug):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={

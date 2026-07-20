@@ -483,6 +483,7 @@ async def empaquetar_aip_internal(
     retencion_anios: int,
     fecha_inicio: date,
     legal_hold: bool = False,
+    pdfa_profile: str | None = None,
 ) -> AipPackagingOutcome:
     """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST /preservacion/aip`
     — único llamador: `AipWiringService` (reconciliación-only, actúa con
@@ -499,7 +500,14 @@ async def empaquetar_aip_internal(
 
     `documentos` ya viene armado por el llamador con la forma que exige
     `AipCreate.documentos` (`[{"document_id": ..., "nombre": ..., "file_id":
-    ...}, ...]`) — este cliente no valida su contenido, solo lo reenvía."""
+    ...}, ...]`) — este cliente no valida su contenido, solo lo reenvía.
+
+    `pdfa_profile` (E10 debt "perfil PDF/A por serie", RF-FIR-15): resuelto
+    por el llamador (`AipWiringService._resolve_aip_pdfa_profile`) a partir
+    de `trd_series.pdfa_profile` de la serie del expediente. `None` = la
+    serie no tiene política propia -- se omite del payload y storage-service
+    cae a su default global (`AipCreate.pdfa_profile` es opcional,
+    retrocompat)."""
     body: dict = {
         "expediente_id": expediente_id,
         "documentos": documentos,
@@ -509,6 +517,8 @@ async def empaquetar_aip_internal(
     }
     if indice_file_id is not None:
         body["indice_file_id"] = str(indice_file_id)
+    if pdfa_profile is not None:
+        body["pdfa_profile"] = pdfa_profile
     headers = {
         "X-Tenant-Slug": tenant_slug,
         "X-Internal-Token": settings.storage_internal_token,

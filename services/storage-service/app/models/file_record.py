@@ -31,3 +31,10 @@ class FileRecord:
     # NULL → active; NOT NULL → logically deleted (pending TRD disposition).
     deleted_at: datetime | None = None
     deleted_by: uuid.UUID | None = None
+    # Veredicto PDF/A durable del objeto (E10 C2b follow-up, ingesta E07,
+    # migración 013). NULL/"pendiente" = no terminal (ver
+    # `app/services/pdfa_ingest_service.py`); reusado por
+    # `AipService.empaquetar_aip` si el perfil coincide.
+    pdfa_status: str | None = None
+    pdfa_profile: str | None = None
+    pdfa_checked_at: datetime | None = None

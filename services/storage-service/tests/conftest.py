@@ -65,6 +65,12 @@ def make_file_record(
     # Soft-delete fields (D-04): NULL means active; NOT NULL means logically deleted.
     deleted_at: datetime | None = None,
     deleted_by: uuid.UUID | None = None,
+    # PDF/A ingest verdict (E10 C2b follow-up, migración 013): NULL by
+    # default (matches a row from before this increment / a non-PDF file /
+    # the gate disabled).
+    pdfa_status: str | None = None,
+    pdfa_profile: str | None = None,
+    pdfa_checked_at: datetime | None = None,
 ) -> dict:
     fid = file_id or FILE_ID
     return {
@@ -83,6 +89,9 @@ def make_file_record(
         "replaces_id": replaces_id,
         "deleted_at": deleted_at,
         "deleted_by": deleted_by,
+        "pdfa_status": pdfa_status,
+        "pdfa_profile": pdfa_profile,
+        "pdfa_checked_at": pdfa_checked_at,
     }
 
 

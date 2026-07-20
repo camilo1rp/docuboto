@@ -528,6 +528,7 @@ class ArchiveRepository:
         parent_id: uuid.UUID | None = None,
         archivo_gestion_years: int | None = None,
         archivo_central_years: int | None = None,
+        pdfa_profile: str | None = None,
     ) -> TrdSerie:
         await self._set_search_path()
         # Si no se indican las dos fases, se derivan de los campos previos.
@@ -541,9 +542,10 @@ class ArchiveRepository:
             """
             INSERT INTO trd_series (
                 code, name, description, retention_years, total_retention,
-                disposition, parent_id, archivo_gestion_years, archivo_central_years
+                disposition, parent_id, archivo_gestion_years, archivo_central_years,
+                pdfa_profile
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
             """,
             code,
@@ -555,6 +557,7 @@ class ArchiveRepository:
             parent_id,
             agest,
             acentral,
+            pdfa_profile,
         )
         return _row_to_trd_serie(row)
 
@@ -610,6 +613,7 @@ class ArchiveRepository:
         total_retention: int | None,
         disposition: str | None,
         is_active: bool | None,
+        pdfa_profile: str | None = None,
     ) -> TrdSerie | None:
         await self._set_search_path()
 
@@ -640,6 +644,10 @@ class ArchiveRepository:
         if is_active is not None:
             assignments.append(f"is_active = ${idx}")
             params.append(is_active)
+            idx += 1
+        if pdfa_profile is not None:
+            assignments.append(f"pdfa_profile = ${idx}")
+            params.append(pdfa_profile)
             idx += 1
 
         if not assignments:
@@ -871,4 +879,5 @@ def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
         archivo_central_years=row["archivo_central_years"],
         version=row["version"],
         valid_from=row["valid_from"],
+        pdfa_profile=row["pdfa_profile"],
     )

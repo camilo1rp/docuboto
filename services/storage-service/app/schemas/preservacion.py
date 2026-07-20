@@ -167,15 +167,37 @@ class AipCreate(RetentionMixin):
     """Empaqueta un AIP (BagIt real + PREMIS v3) y lo sube al bucket WORM.
 
     `indice_file_id` es opcional: si se aporta, el índice electrónico firmado
-    (ya presente en `files`) se embebe en el Bag como tag file
-    (`indice-firmado.xml`), con su propia fixity recalculada — redundante con
-    la protección directa de `POST /proteger-indice` (Increment A), correcto
-    para preservación (PIEZA 4).
+    (ya presente en `files`) se embebe en el Bag — como tag file
+    (`indice-firmado.xml`) cuando `documentos` no está vacío, o como PAYLOAD
+    (`data/indice-firmado.xml`) cuando `documentos` SÍ está vacío (E10 AIP
+    wiring follow-up, expedientes 100% físicos — ver
+    `app.services.aip_builder._is_indice_only_mode`) — con su propia fixity
+    recalculada.
+
+    `documentos` admite lista VACÍA (`min_length=0`, desde el follow-up
+    índice-only): un expediente sin anexos digitales sigue siendo
+    empaquetable en un AIP OAIS legítimo cuyo único objeto sustantivo es el
+    índice electrónico firmado. `_check_at_least_one_payload` (abajo) es la
+    única restricción real — un AIP totalmente vacío (sin documentos NI
+    índice) se rechaza con 422: no sería un paquete OAIS, sería un Bag
+    empty-payload inválido por RFC 8493 (`aip_builder.EmptyPayloadBagError`
+    es la defensa en profundidad del lado del builder para esta misma regla).
     """
 
     expediente_id: str = Field(..., min_length=1, max_length=255)
-    documentos: list[AipDocInput] = Field(..., min_length=1)
+    documentos: list[AipDocInput] = Field(..., min_length=0)
     indice_file_id: uuid.UUID | None = None
+    # E10 debt "perfil PDF/A por serie" (RF-FIR-15): resuelto por
+    # archive-service a partir de `trd_series.pdfa_profile` -- cruza la
+    # frontera de confianza archive-service -> storage-service, ver
+    # `AipService._resolve_pdfa_profile`. Deliberadamente PERMISIVO aquí (sin
+    # whitelist Pydantic): un valor fuera de `_VALID_FLAVOURS`
+    # (`app/services/pdfa/subprocess_verapdf.py`) NO debe rechazar el AIP
+    # completo con un 422 -- el contrato fail-closed (RF-FIR-15, invalid !=
+    # default) es que el validador PDF/A degrade ESOS documentos a
+    # `not_evaluated`, no que el empaquetado entero aborte. `None` = sin
+    # política de serie, cae al default global (`settings.pdfa_profile`).
+    pdfa_profile: str | None = Field(default=None, max_length=32)
 
     @field_validator("expediente_id")
     @classmethod
@@ -188,10 +210,29 @@ class AipCreate(RetentionMixin):
         # un duplicado colapsaría dos documentos en una sola entrada del ZIP
         # mientras `num_files`/`Payload-Oxum`/PREMIS seguirían contando ambos
         # (hallazgo de auditoría Increment B: AIP inconsistente/incompleto).
+        # Con `documentos=[]` (índice-only) la lista de nombres es vacía —
+        # `len([]) == len(set())` es trivialmente cierto, no hace falta un
+        # caso especial.
         nombres = [doc.nombre for doc in self.documentos]
         if len(nombres) != len(set(nombres)):
             raise ValueError(
                 "Los 'nombre' de 'documentos' deben ser únicos dentro del AIP"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_at_least_one_payload(self) -> AipCreate:
+        # E10 AIP wiring follow-up (índice-only): `documentos` ahora admite
+        # lista vacía, pero un AIP completamente vacío (sin documentos NI
+        # índice) no es un paquete OAIS válido -- sería un Bag empty-payload,
+        # inválido por RFC 8493 (ver `aip_builder.EmptyPayloadBagError`, la
+        # defensa en profundidad equivalente del lado del builder). Rechazar
+        # aquí, en la capa Pydantic, evita siquiera intentar el empaquetado.
+        if not self.documentos and self.indice_file_id is None:
+            raise ValueError(
+                "AipCreate requiere al menos uno de 'documentos' (no vacío) "
+                "o 'indice_file_id' -- un AIP sin documentos ni índice no es "
+                "un paquete OAIS válido"
             )
         return self
 

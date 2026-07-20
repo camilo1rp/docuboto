@@ -11,7 +11,16 @@ import uuid
 from urllib.parse import quote
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import settings
@@ -21,6 +30,10 @@ from app.schemas.storage import (
     FileResponse,
     IntegrityResponse,
     PresignedUrlResponse,
+)
+from app.services.pdfa_ingest_service import (
+    PdfaNonConformantError,
+    run_ingest_validation_background,
 )
 from app.services.storage_service import (
     NotCurrentVersionError,
@@ -72,6 +85,8 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
 )
 async def upload_file(
     file: UploadFile,
+    request: Request,
+    background_tasks: BackgroundTasks,
     tenant_slug: str = Depends(_require_tenant),
     uploaded_by: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
@@ -79,7 +94,7 @@ async def upload_file(
     content = await file.read()
     service = StorageService(conn, tenant_slug)
     try:
-        response, created = await service.upload(
+        response, created, schedule_pdfa_validation = await service.upload(
             filename=file.filename or "unknown",
             mime_type=file.content_type,
             content=content,
@@ -93,6 +108,34 @@ async def upload_file(
                 "detail": str(exc),
                 "status": 415,
             },
+        )
+    except PdfaNonConformantError as exc:
+        # Modo estricto opt-in (PRESERVATION_PDFA_INGEST_MODE=strict): el
+        # archivo NUNCA se persistió (ni MinIO ni BD) — ver
+        # StorageService.upload. 422 sobre non_conformant, sin filtrar
+        # detalle interno del validador en la respuesta al cliente.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "pdfa_non_conformant",
+                "detail": str(exc),
+                "status": 422,
+            },
+        )
+    if schedule_pdfa_validation:
+        # E10 C2b follow-up (modo advisory, MVP `BackgroundTask`): corre
+        # DESPUÉS de enviar la respuesta al cliente — `tenant_slug` es el
+        # MISMO valor validado del header `X-Tenant-Slug` de ESTA petición
+        # (nunca del body), capturado aquí explícitamente porque la
+        # conexión `conn` (y su search_path) ya se habrá devuelto al pool
+        # para cuando este task corra (FastAPI cierra las dependencias
+        # `yield` antes de ejecutar los BackgroundTasks) — el worker
+        # adquiere su PROPIA conexión del pool y fija su propio search_path.
+        background_tasks.add_task(
+            run_ingest_validation_background,
+            request.app.state.db_pool,
+            tenant_slug,
+            response.id,
         )
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))

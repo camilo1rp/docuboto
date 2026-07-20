@@ -185,17 +185,30 @@ async def test_intentar_empaquetar_transferred_is_elegible() -> None:
     service = _service(conn)
     exp = _expediente(status="transferred", radicados=[])
     _wire_happy_path_prereqs(service, exp=exp)
-    service._aip.mark_omitido = AsyncMock(return_value=1)
+    service._resolve_aip_retention = AsyncMock(return_value=(5, date(2026, 1, 1)))
+    service._aip.mark_empaquetado = AsyncMock(return_value=1)
+    aip_id = uuid.uuid4()
 
-    with patch(
-        "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
-        new=AsyncMock(return_value={}),
-    ), patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()):
+    with (
+        patch(
+            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=aip_id)),
+        ) as mock_storage,
+        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()),
+    ):
         resultado = await service.intentar_empaquetar(exp.id)
 
-    # Sin radicados vigentes -> 0 documentos -> 'omitido', pero NUNCA
-    # 'pendiente' por "expediente_no_elegible".
-    assert resultado == "omitido"
+    # Sin radicados vigentes -> 0 documentos -> AIP índice-only (E10 AIP
+    # wiring follow-up, kill-switch `aip_indice_only_enabled` default ON) ->
+    # 'empaquetado', NUNCA 'pendiente' por "expediente_no_elegible" ni
+    # 'omitido' (ese resultado solo se produce con el kill-switch en OFF,
+    # ver `test_intentar_empaquetar_zero_anexos_marks_omitido_and_audits`).
+    assert resultado == "empaquetado"
+    assert mock_storage.await_args.kwargs["documentos"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -341,12 +354,21 @@ async def test_intentar_empaquetar_only_radicados_vigentes_contribute() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 0 anexos digitales -> 'omitido' (TERMINAL, ni siquiera llama a storage)
+# 0 anexos digitales, kill-switch índice-only en OFF -> 'omitido' (TERMINAL,
+# ni siquiera llama a storage) -- comportamiento PREVIO al follow-up E10 AIP
+# wiring, preservado como ventana de transición/seguro operacional. Con el
+# kill-switch en su default (ON), el mismo escenario produce un AIP
+# índice-only 'empaquetado' -- ver
+# `test_intentar_empaquetar_transferred_is_elegible` (0 documentos,
+# `mock_storage.await_args.kwargs["documentos"] == []`).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_intentar_empaquetar_zero_anexos_marks_omitido_and_audits() -> None:
+async def test_intentar_empaquetar_zero_anexos_marks_omitido_and_audits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "aip_indice_only_enabled", False)
     conn = _mock_conn()
     service = _service(conn)
     radicado = _radicado()
@@ -375,10 +397,13 @@ async def test_intentar_empaquetar_zero_anexos_marks_omitido_and_audits() -> Non
 
 
 @pytest.mark.asyncio
-async def test_intentar_empaquetar_zero_anexos_lost_race_no_phantom_audit() -> None:
-    """`mark_omitido` casa 0 filas (otra llamada concurrente ya lo marcó) ->
-    el resultado SIGUE siendo 'omitido' pero SIN escribir un asiento
-    fantasma."""
+async def test_intentar_empaquetar_zero_anexos_lost_race_no_phantom_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kill-switch OFF: `mark_omitido` casa 0 filas (otra llamada concurrente
+    ya lo marcó) -> el resultado SIGUE siendo 'omitido' pero SIN escribir un
+    asiento fantasma."""
+    monkeypatch.setattr(settings, "aip_indice_only_enabled", False)
     conn = _mock_conn()
     service = _service(conn)
     exp = _expediente(radicados=[_radicado()])

@@ -13,7 +13,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ExpedienteCreate(BaseModel):
@@ -171,6 +171,19 @@ class ExpedienteDisposicionResult(BaseModel):
 # Disposición: códigos AGN (CT/E/S/M) + valores antiguos por compatibilidad.
 _DISPOSITION = Literal["CT", "E", "S", "M", "eliminate", "conserve", "digitize", "select"]
 
+# E10 debt "perfil PDF/A por serie": MISMA whitelist que `_VALID_FLAVOURS`
+# (`storage-service/app/services/pdfa/subprocess_verapdf.py`) -- duplicada a
+# propósito (servicios independientes, archive-service no importa de
+# storage-service). Defensa Pydantic (422 legible) ANTES del CHECK de BD
+# (migración 035), que es la última línea fail-closed.
+_PDFA_PROFILES = frozenset({"1a", "1b", "2a", "2b", "2u", "3a", "3b", "3u"})
+
+
+def _validate_pdfa_profile(value: str | None) -> str | None:
+    if value is not None and value not in _PDFA_PROFILES:
+        raise ValueError(f"pdfa_profile debe ser uno de {sorted(_PDFA_PROFILES)} o null")
+    return value
+
 
 class TrdSerieCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=20)
@@ -183,6 +196,14 @@ class TrdSerieCreate(BaseModel):
     parent_id: uuid.UUID | None = None
     archivo_gestion_years: int | None = Field(default=None, ge=0)
     archivo_central_years: int | None = Field(default=None, ge=0)
+    # E10 debt: perfil PDF/A de la serie (RF-FIR-15) -- NULL = sin política
+    # propia, el AIP cae al default global de storage-service.
+    pdfa_profile: str | None = None
+
+    @field_validator("pdfa_profile")
+    @classmethod
+    def _check_pdfa_profile(cls, value: str | None) -> str | None:
+        return _validate_pdfa_profile(value)
 
 
 class TrdSerieUpdate(BaseModel):
@@ -192,6 +213,12 @@ class TrdSerieUpdate(BaseModel):
     total_retention: int | None = None
     disposition: str | None = None
     is_active: bool | None = None
+    pdfa_profile: str | None = None
+
+    @field_validator("pdfa_profile")
+    @classmethod
+    def _check_pdfa_profile(cls, value: str | None) -> str | None:
+        return _validate_pdfa_profile(value)
 
 
 class TrdSerieResponse(BaseModel):
@@ -211,6 +238,7 @@ class TrdSerieResponse(BaseModel):
     archivo_central_years: int | None = None
     version: int = 1
     valid_from: date | None = None
+    pdfa_profile: str | None = None
 
 
 class IndiceItem(BaseModel):

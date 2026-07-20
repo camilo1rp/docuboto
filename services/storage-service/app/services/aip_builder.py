@@ -75,6 +75,19 @@ class PremisValidationError(Exception):
     """
 
 
+class EmptyPayloadBagError(Exception):
+    """``build_bag`` recibió ``docs=[]`` e ``indice=None`` — produciría un Bag
+    empty-payload (``Payload-Oxum 0.0``, ``manifest-sha256.txt`` vacío),
+    INVÁLIDO por RFC 8493 (verificado empíricamente con la librería de
+    referencia ``bagit``: rechaza con ``"No manifest files found"``).
+
+    ``AipCreate`` (``app/schemas/preservacion.py``) ya rechaza este caso con
+    422 vía su ``model_validator`` — esta excepción es defensa en
+    profundidad para cualquier llamada directa a este builder que se salte
+    esa capa Pydantic.
+    """
+
+
 @dataclass(slots=True)
 class AipDocMaterial:
     """Un documento con sus BYTES reales y su fixity ya recalculada/verificada.
@@ -125,6 +138,24 @@ def validate_premis_xml(xml_text: str) -> None:
         raise PremisValidationError(f"PREMIS mal formado: {exc}") from exc
     except etree.DocumentInvalid as exc:
         raise PremisValidationError(f"PREMIS no conforme al XSD oficial v3: {exc}") from exc
+
+
+def _is_indice_only_mode(docs: list[AipDocMaterial], indice: AipDocMaterial | None) -> bool:
+    """AIP índice-only (E10 AIP wiring follow-up, expedientes 100% físicos,
+    ``docs == [] and indice is not None``): el índice electrónico firmado
+    pasa a ser el PAYLOAD del Bag (``data/{nombre}``) en vez de un tag file
+    — para un expediente sin anexos digitales, el índice es el ÚNICO objeto
+    digital sustantivo (contenido), no un metadato-sobre-contenido. Un Bag
+    con ``data/`` vacío es INVÁLIDO (RFC 8493 — ver
+    :class:`EmptyPayloadBagError`), de ahí que el índice deba ir al payload
+    y no quedarse como tag file cuando no hay otro documento.
+
+    INFERIDO (no un flag explícito) — exclusión mutua GARANTIZADA con el
+    modo normal: este modo solo puede darse con ``docs`` vacío, así que
+    nunca colisiona con el nombre fijo del índice como tag file
+    (``indice-firmado.xml``) del AIP con anexos.
+    """
+    return not docs and indice is not None
 
 
 def _sub(parent: etree._Element, tag: str, text: str | None = None) -> etree._Element:
@@ -241,6 +272,24 @@ def _build_agent_element(
     _sub(agent, "agentType", agent_type)
 
 
+# Nota afirmativa de conformidad para el evento `ingestion` del AIP índice-only
+# (E10, remediación auditoría "media" de conformidad): el PREMIS índice-only
+# ya era honesto por omisión (nunca fabrica un `object` de documento
+# inexistente) pero NO era auto-descriptivo -- sin esta nota, una institución
+# receptora del AIP podría leer "0 documentos digitales" como "expediente sin
+# anexos" en vez de "expediente cuyo contenido está en soporte FÍSICO,
+# representado por su índice electrónico firmado". Se declara vía
+# `eventDetailInformation/eventOutcomeDetail/eventOutcomeDetailNote` del
+# propio evento `ingestion` -- ambos son elementos válidos del XSD oficial de
+# PREMIS v3 (no requieren extensión del esquema; opción (b), la más barata,
+# del auditor de conformidad archivística).
+_INDICE_ONLY_INGESTION_NOTE = (
+    "AIP índice-only: expediente con soportes documentales FÍSICOS (0 anexos "
+    "digitales), representados por su índice electrónico firmado; los "
+    "documentos-objeto se referencian en el índice/FUID (Ac. AGN 060/2001, "
+    "Ac. 001/2024)."
+)
+
 # Vocabulario PREMIS de `eventOutcome` para el evento `validation` PDF/A —
 # nunca "success"/"failure" (esos quedan para ingestion/fixity check): un
 # `eventOutcome="not evaluated"` deja explícito, en el propio PDI, que la
@@ -270,8 +319,11 @@ def build_premis_v3(
     Entidades:
       - OBJECT: uno por documento (y uno más si se aporta ``indice``), con
         fixity SHA-256 recalculada, tamaño real y ubicación dentro del Bag.
-      - EVENT: un evento ``ingestion`` (empaquetado del AIP) y un evento
-        ``fixity check`` por objeto, con ``eventOutcome`` derivado del
+      - EVENT: un evento ``ingestion`` (empaquetado del AIP -- en modo
+        índice-only lleva además ``eventOutcomeDetailNote`` con la
+        declaración afirmativa de expediente físico, ver
+        ``_INDICE_ONLY_INGESTION_NOTE``) y un evento ``fixity check`` por
+        objeto, con ``eventOutcome`` derivado del
         contraste real hecho por el llamador (``fixity_outcome`` — en la
         práctica siempre "success" aquí, porque un mismatch aborta el
         empaquetado ANTES de llegar a este builder; el parámetro existe para
@@ -317,6 +369,15 @@ def build_premis_v3(
         linked_ids.append(doc.document_id)
 
     if indice is not None:
+        # Índice-only (E10 AIP wiring follow-up): el `contentLocation` sigue
+        # la ubicación REAL dentro del Bag — `data/{nombre}` (payload) cuando
+        # no hay documentos digitales, `indice-firmado.xml` (tag file) en el
+        # modo normal con anexos. Ver `_is_indice_only_mode`.
+        content_location = (
+            f"data/{indice.nombre}"
+            if _is_indice_only_mode(docs, indice)
+            else _INDICE_TAG_FILENAME
+        )
         _build_object_element(
             root,
             identifier_type="document_id",
@@ -325,7 +386,7 @@ def build_premis_v3(
             size=len(indice.content),
             mime_type=indice.mime_type or "application/xml",
             original_name=indice.nombre,
-            content_location=f"{_INDICE_TAG_FILENAME}",
+            content_location=content_location,
         )
         linked_ids.append(f"indice:{expediente_id}")
 
@@ -337,6 +398,9 @@ def build_premis_v3(
         detail=f"Empaquetado AIP del expediente {expediente_id}",
         outcome="success",
         linked_object_ids=linked_ids,
+        outcome_detail_note=(
+            _INDICE_ONLY_INGESTION_NOTE if _is_indice_only_mode(docs, indice) else None
+        ),
     )
     _build_event_element(
         root,
@@ -481,22 +545,43 @@ def build_bag(
 ) -> BagArtifact:
     """Arma el Bag REAL (RFC 8493) completo y lo serializa como ZIP.
 
-    Estructura:
+    Estructura (modo normal, ``docs`` no vacío):
       data/{nombre}              — bytes de cada documento (payload)
       bagit.txt                  — declaración de versión BagIt
       bag-info.txt                — Payload-Oxum real, fecha, organización
       manifest-sha256.txt        — fixity de cada archivo de payload
       premis.xml                  — PDI: manifiesto PREMIS v3 (tag file)
-      indice-firmado.xml         — PDI opcional: índice electrónico firmado
+      indice-firmado.xml         — PDI opcional: índice electrónico firmado (tag file)
       tagmanifest-sha256.txt     — fixity de los tag files anteriores (incluido
                                     el propio manifest-sha256.txt, RFC 8493
                                     §2.2.1: el manifiesto de payload ES UN tag
                                     file)
 
+    Modo índice-only (E10 AIP wiring follow-up, ``docs == [] and indice is
+    not None`` — expedientes 100% físicos, ver :func:`_is_indice_only_mode`):
+    el índice pasa a ``data/{nombre}`` (PAYLOAD, cubierto por
+    ``manifest-sha256.txt``, ``Payload-Oxum={len}.1``) y NO se duplica como
+    tag file — un Bag con ``data/`` vacío es INVÁLIDO por RFC 8493
+    (verificado empíricamente con la librería de referencia ``bagit``:
+    rechaza con ``"No manifest files found"``). Exclusión mutua GARANTIZADA
+    por la inferencia (solo aplica con ``docs`` vacío) — nunca colisiona con
+    el nombre fijo del índice como tag file del modo normal.
+
     Lanza :class:`PremisValidationError` si el PREMIS generado no valida
     contra el XSD oficial de PREMIS v3 — el Bag NUNCA se serializa con un PDI
-    inválido.
+    inválido. Lanza :class:`EmptyPayloadBagError` si ``docs`` está vacío Y
+    ``indice`` es ``None`` — nunca se emite un Bag empty-payload.
     """
+    if not docs and indice is None:
+        raise EmptyPayloadBagError(
+            f"build_bag(expediente_id={expediente_id!r}): 'docs' vacío e "
+            "'indice' ausente -- produciría un Bag empty-payload, inválido "
+            "por RFC 8493. Aporte al menos un documento o el índice "
+            "electrónico firmado."
+        )
+
+    indice_only = _is_indice_only_mode(docs, indice)
+
     premis_xml = build_premis_v3(
         expediente_id=expediente_id,
         docs=docs,
@@ -508,8 +593,14 @@ def build_bag(
     )
     validate_premis_xml(premis_xml)
 
+    # En modo índice-only, el índice ES el único archivo de payload —
+    # `payload_docs` es la lista de `AipDocMaterial` que va a `data/` y que
+    # cubre `manifest-sha256.txt`. En modo normal es `docs` tal cual (el
+    # índice, si viene, sigue siendo tag file más abajo).
+    payload_docs: list[AipDocMaterial] = [indice] if indice_only else docs
+
     files: dict[str, bytes] = {}
-    for doc in docs:
+    for doc in payload_docs:
         files[f"data/{doc.nombre}"] = doc.content
 
     # Payload-Oxum/num_files se derivan del conjunto REAL de entradas `data/`
@@ -518,11 +609,12 @@ def build_bag(
     # duplicados antes de llegar aquí, pero de ocurrir una colisión (llamada
     # directa a este builder, fuera del router) el conteo nunca se infla por
     # encima de lo que el ZIP contiene de verdad (hallazgo de auditoría
-    # Increment B).
+    # Increment B). En modo índice-only esto produce, por construcción,
+    # `Payload-Oxum={len(indice.content)}.1`.
     total_bytes = sum(len(content) for content in files.values())
     num_files = len(files)
 
-    manifest_bytes = manifest_sha256_txt(docs)
+    manifest_bytes = manifest_sha256_txt(payload_docs)
 
     tag_files: dict[str, bytes] = {
         _BAGIT_FILENAME: bagit_txt(),
@@ -539,7 +631,10 @@ def build_bag(
         # cubierto por `tagmanifest-sha256.txt` (RFC 8493 §2.2.1).
         _MANIFEST_FILENAME: manifest_bytes,
     }
-    if indice is not None:
+    # El índice va como tag file SOLO en modo normal — en modo índice-only ya
+    # quedó en `payload_docs`/`data/` arriba, NUNCA duplicado en ambos sitios
+    # (colisión de nombre imposible por la exclusión mutua de `indice_only`).
+    if indice is not None and not indice_only:
         tag_files[_INDICE_TAG_FILENAME] = indice.content
 
     tagmanifest_bytes = tagmanifest_sha256_txt(tag_files)

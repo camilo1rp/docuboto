@@ -58,12 +58,10 @@ _FIXED_HASH = "f" * 64
 
 
 def _schema_name(slug: str) -> str:
-    """`tenant_{slug}` sin pasar por `app.core.database.tenant_schema()`
-    (que exige guiones, no guiones bajos, en su `_SLUG_RE`) -- este archivo
-    ya sanitiza el slug a guion bajo para satisfacer la regex, MÁS estricta,
-    de `FileRepository` (ver el comentario en los tests). Misma normalización
-    final (`FileRepository._schema = f"tenant_{tenant_slug}"` con un slug ya
-    sin guiones), solo sin el `HTTPException` de por medio."""
+    """`tenant_{slug}` con la MISMA normalización que
+    `app.core.database.tenant_schema()`/`FileRepository` (guion -> guion
+    bajo) -- duplicada aquí, sin el `HTTPException` de por medio, para poder
+    verificar el schema físico desde una conexión de asyncpg cruda."""
     return f"tenant_{slug.replace('-', '_')}"
 
 
@@ -137,16 +135,12 @@ async def test_two_concurrent_empaquetados_same_content_produce_single_aip(
     lock encuentra la fila que la ganadora ya comprometió y corta-circuita en
     vez de re-subir/re-insertar."""
     slug, conn = tenant_ctx
-    # `FileRepository` (a diferencia de `PreservacionRepository`/
-    # `PreservacionWormRepository`, que normalizan '-'->'_' internamente al
-    # construir el nombre de schema) valida el slug CRUDO contra su propia
-    # regex heredada `^[a-z0-9_]+$` -- sin guiones -- ANTES de normalizar
-    # nada (gap preexistente, fuera del alcance de esta remediación). El
-    # slug que genera `tenant_ctx` ("itest-<hex8>") tiene guion, así que se
-    # sanitiza aquí (idempotente vs. `tenant_schema()`, que ya normaliza
-    # igual) para que `AipService`/`FileRepository` lo acepten sin tocar
-    # ningún código de producción.
-    slug = slug.replace("-", "_")
+    # `slug` CRUDO, con guion ("itest-<hex8>") -- remediación de auditoría
+    # Media (E07): `FileRepository` ahora valida/normaliza con la MISMA
+    # regex canónica que `app.core.database.tenant_schema()` (guion ->
+    # guion bajo), igual que `PreservacionRepository`/
+    # `PreservacionWormRepository` ya hacían -- ya no hace falta sanitizar
+    # el slug antes de construir `AipService`.
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
     expediente_id = "EXP-CONCURRENCIA-1"
 
@@ -211,8 +205,7 @@ async def test_empaquetar_aip_holds_advisory_lock_on_server_during_put_object(
     `asyncio.Event`), una TERCERA conexión que intenta el MISMO
     `pg_try_advisory_lock` (no bloqueante) para la MISMA clave debe fallar en
     adquirirlo."""
-    slug, conn = tenant_ctx
-    slug = slug.replace("-", "_")  # ver el comentario en el test anterior
+    slug, conn = tenant_ctx  # `slug` CRUDO, con guion -- ver el comentario en el test anterior
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
     expediente_id = "EXP-CONCURRENCIA-2"
 

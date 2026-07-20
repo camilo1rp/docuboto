@@ -31,6 +31,7 @@ from orpycamcp_common import audit
 from app.core.actor import Actor
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
+from app.core.constants import SYSTEM_RECONCILER_ID
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.fisico_repository import FisicoRepository
 from app.repositories.index_repository import IndexRepository
@@ -1997,7 +1998,7 @@ class TransferenciaService:
                     action="archive.acta_worm_renovacion_agotado",
                     object_type="transferencia_acta",
                     object_ref=str(transferencia_id),
-                    actor=None,
+                    actor=str(SYSTEM_RECONCILER_ID),
                     canal="system",
                     payload={"renovacion_intentos": intentos_tras_este, "motivo": motivo},
                 )
@@ -2052,7 +2053,7 @@ class TransferenciaService:
                             action="archive.acta_worm_retencion_renovada",
                             object_type="transferencia_acta",
                             object_ref=str(transferencia_id),
-                            actor=None,
+                            actor=str(SYSTEM_RECONCILER_ID),
                             canal="system",
                             payload={
                                 "transferencia_id": str(transferencia_id),

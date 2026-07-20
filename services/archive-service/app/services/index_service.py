@@ -35,6 +35,7 @@ from orpycamcp_common import audit
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
+from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.models.archive import Expediente
 from app.repositories.aip_repository import AipRepository
@@ -1357,7 +1358,7 @@ class IndexService:
                     action="archive.indice_worm_renovacion_agotado",
                     object_type="expediente_indice",
                     object_ref=str(indice_id),
-                    actor=None,
+                    actor=str(SYSTEM_RECONCILER_ID),
                     canal="system",
                     payload={"renovacion_intentos": intentos_tras_este, "motivo": motivo},
                 )
@@ -1420,7 +1421,7 @@ class IndexService:
                             action="archive.indice_worm_retencion_renovada",
                             object_type="expediente_indice",
                             object_ref=str(expediente_id),
-                            actor=None,
+                            actor=str(SYSTEM_RECONCILER_ID),
                             canal="system",
                             payload={
                                 "expediente_id": str(expediente_id),

@@ -82,4 +82,7 @@ class TrdSerie:
     archivo_gestion_years: int | None = None
     archivo_central_years: int | None = None
     version: int = 1
+    # E10 debt: perfil PDF/A de la serie (RF-FIR-15) -- NULL = sin política
+    # propia, el AIP cae al default global de storage-service.
+    pdfa_profile: str | None = None
     valid_from: date | None = None

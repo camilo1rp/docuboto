@@ -150,6 +150,7 @@ def make_trd_serie_record(
     archivo_central_years: int | None = 5,
     version: int = 1,
     valid_from=None,
+    pdfa_profile: str | None = None,
 ) -> dict:
     return {
         "id": serie_id or SERIE_ID,
@@ -166,6 +167,7 @@ def make_trd_serie_record(
         "archivo_central_years": archivo_central_years,
         "version": version,
         "valid_from": valid_from or NOW.date(),
+        "pdfa_profile": pdfa_profile,
     }
 
 

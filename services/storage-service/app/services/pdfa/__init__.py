@@ -13,9 +13,10 @@ from app.services.pdfa.factory import get_pdfa_validator
 from app.services.pdfa.runner import run_pdfa_validation
 from app.services.pdfa.stub import StubPdfaValidator
 from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
-from app.services.pdfa.types import PdfaOutcome, PdfaResult, PdfaValidator
+from app.services.pdfa.types import PDFA_RESULTADO_MAP, PdfaOutcome, PdfaResult, PdfaValidator
 
 __all__ = [
+    "PDFA_RESULTADO_MAP",
     "PdfaOutcome",
     "PdfaResult",
     "PdfaValidator",

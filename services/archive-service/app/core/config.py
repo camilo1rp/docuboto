@@ -122,6 +122,17 @@ class Settings(BaseSettings):
     # lock COMPLIANCE podría vencer antes de que una renovación tenga éxito.
     worm_renovacion_ventana_dias: int = 400
 
+    # --- AIP índice-only para expedientes 100% físicos (E10 AIP wiring
+    # follow-up) --- Kill-switch: True (default) -- cuando un expediente no
+    # tiene NINGÚN anexo digital vinculado, `AipWiringService.
+    # intentar_empaquetar` empaqueta igual un AIP OAIS cuyo único objeto
+    # sustantivo es el índice electrónico firmado (`documentos=[]`,
+    # `indice_file_id` -- ver `app.services.aip_builder._is_indice_only_mode`
+    # en storage-service). `False` restaura el comportamiento previo
+    # (`estado='omitido'`, TERMINAL, sin AIP) -- ventana de transición/seguro
+    # operacional para un consumidor que trate `omitido` como "sin AIP".
+    aip_indice_only_enabled: bool = True
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

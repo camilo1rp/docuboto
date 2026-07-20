@@ -24,19 +24,17 @@ físico de la fila solo ocurre mediante `purge()`, que se llama exclusivamente
 desde el proceso de disposición final del TRD.
 """
 
-import re
 import uuid
 
 import asyncpg
 
+from app.core.database import TENANT_SLUG_RE
 from app.models.file_record import FileRecord
-
-_SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 
 _COLS = (
     "id, filename, mime_type, file_size, sha256, bucket, object_key, "
     "uploaded_by, uploaded_at, version, is_current, root_id, replaces_id, "
-    "deleted_at, deleted_by"
+    "deleted_at, deleted_by, pdfa_status, pdfa_profile, pdfa_checked_at"
 )
 
 
@@ -46,11 +44,16 @@ class InvalidTenantSlugError(Exception):
 
 class FileRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
-        if not _SLUG_RE.match(tenant_slug):
+        # Misma regex/normalización que `app.core.database.tenant_schema()`
+        # (fuente única canónica) y `PreservacionRepository`: acepta guiones
+        # (forma canónica y habitual de un `tenant_slug`) y los normaliza a
+        # guion bajo en el nombre de schema. NO acepta `_` crudo en el slug
+        # de entrada — el guion bajo solo aparece tras la normalización.
+        if not tenant_slug or not TENANT_SLUG_RE.match(tenant_slug):
             raise InvalidTenantSlugError(f"Invalid tenant slug: {tenant_slug!r}")
         self._conn = conn
         self._slug = tenant_slug
-        self._schema = f"tenant_{tenant_slug}"
+        self._schema = f"tenant_{tenant_slug.replace('-', '_')}"
 
     async def _set_search_path(self) -> None:
         await self._conn.execute(f'SET search_path = "{self._schema}", public')
@@ -202,6 +205,43 @@ class FileRepository:
         # asyncpg returns "DELETE N"
         return result.endswith("1")
 
+    async def mark_pdfa_pending(self, file_id: uuid.UUID, *, profile: str) -> None:
+        """Marca el objeto como encolado para la validación PDF/A asíncrona
+        (E10 C2b follow-up, modo advisory) -- se llama SÍNCRONAMENTE dentro
+        de `StorageService.upload`, antes de encolar el `BackgroundTask`, para
+        que `pdfa_status` distinga "aún no evaluado" (NULL, gate apagado o no
+        es PDF) de "evaluación en curso" (pendiente) mientras el worker
+        best-effort corre. `pdfa_profile` queda fijado desde YA (el perfil
+        con el que se validará), no cuando el worker termine -- así
+        `AipService.empaquetar_aip` puede comparar perfiles aunque el worker
+        todavía no haya corrido (un `pendiente` nunca es TERMINAL, así que
+        de todos modos no se reusa, pero el perfil queda trazado).
+        """
+        await self._set_search_path()
+        await self._conn.execute(
+            "UPDATE files SET pdfa_status = 'pendiente', pdfa_profile = $2 WHERE id = $1",
+            file_id,
+            profile,
+        )
+
+    async def update_pdfa_result(
+        self, file_id: uuid.UUID, *, status: str, profile: str
+    ) -> None:
+        """Fija el veredicto TERMINAL de la validación PDF/A (E10 C2b
+        follow-up) -- llamado tanto por el camino síncrono estricto
+        (`StorageService.upload`) como por el worker asíncrono best-effort
+        (`app/services/pdfa_ingest_service.py`). `pdfa_checked_at = now()`
+        marca el instante en que el estado se volvió terminal.
+        """
+        await self._set_search_path()
+        await self._conn.execute(
+            "UPDATE files SET pdfa_status = $2, pdfa_profile = $3, pdfa_checked_at = now() "
+            "WHERE id = $1",
+            file_id,
+            status,
+            profile,
+        )
+
 
 def _row_to_file_record(row: asyncpg.Record) -> FileRecord:
     return FileRecord(
@@ -220,4 +260,7 @@ def _row_to_file_record(row: asyncpg.Record) -> FileRecord:
         replaces_id=row["replaces_id"],
         deleted_at=row["deleted_at"],
         deleted_by=row["deleted_by"],
+        pdfa_status=row["pdfa_status"],
+        pdfa_profile=row["pdfa_profile"],
+        pdfa_checked_at=row["pdfa_checked_at"],
     )

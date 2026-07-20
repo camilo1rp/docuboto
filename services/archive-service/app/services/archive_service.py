@@ -1682,6 +1682,7 @@ class ArchiveService:
             parent_id=payload.parent_id,
             archivo_gestion_years=payload.archivo_gestion_years,
             archivo_central_years=payload.archivo_central_years,
+            pdfa_profile=payload.pdfa_profile,
         )
         # Auditoría forense transversal (E08 §9, Canal A): la TRD gobierna
         # retención y disposición final (Ley 594/2000 art. 24) — su alta debe
@@ -1778,6 +1779,7 @@ class ArchiveService:
             total_retention=payload.total_retention,
             disposition=payload.disposition,
             is_active=payload.is_active,
+            pdfa_profile=payload.pdfa_profile,
         )
         # Auditoría forense transversal (E08 §9, Canal A): mutar la TRD es un
         # acto administrativo sobre el instrumento archivístico (Ley 594/2000
@@ -1910,4 +1912,5 @@ def _to_trd_response(s: TrdSerie) -> TrdSerieResponse:
         archivo_central_years=s.archivo_central_years,
         version=s.version,
         valid_from=s.valid_from,
+        pdfa_profile=s.pdfa_profile,
     )

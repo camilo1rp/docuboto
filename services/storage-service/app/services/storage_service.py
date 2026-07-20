@@ -47,6 +47,12 @@ from app.schemas.storage import (
     IntegrityResponse,
     PresignedUrlResponse,
 )
+from app.services.pdfa_ingest_service import (
+    PdfaNonConformantError,
+    looks_like_pdf,
+    record_ingest_pdfa_result,
+    validate_ingest_content,
+)
 
 _BUCKET_PREFIX = "orpycamcp"
 _SERVICE = "storage-service"
@@ -97,21 +103,77 @@ class StorageService:
         mime_type: str | None,
         content: bytes,
         uploaded_by: uuid.UUID | None,
-    ) -> tuple[FileResponse, bool]:
+    ) -> tuple[FileResponse, bool, bool]:
         """
         Upload a file, deduplicating by SHA-256 within the tenant.
 
-        Returns (FileResponse, created) where created=False means the file
-        already existed and was deduplicated — caller should respond with 200.
+        Returns (FileResponse, created, schedule_pdfa_validation):
+        - `created=False` means the file already existed and was
+          deduplicated — caller should respond with 200. Deduplicated files
+          keep whatever PDF/A verdict (if any) the ORIGINAL upload produced;
+          this call never re-validates them.
+        - `schedule_pdfa_validation=True` tells the caller (router) to
+          enqueue `app.services.pdfa_ingest_service.run_ingest_validation_background`
+          as a `BackgroundTask` AFTER responding — only true for a NEW
+          upload, gate `PRESERVATION_PDFA_VALIDATION_ENABLED` on, mode
+          advisory, and content sniffed as PDF (E10 C2b follow-up, E07).
 
         Rechaza formatos no admitidos (RF-DIG-04) antes de tocar MinIO/BD.
+
+        Validación PDF/A en ingesta (E10 Increment C2b follow-up, RF-PRE-02):
+        subordinada al master gate `PRESERVATION_PDFA_VALIDATION_ENABLED`
+        (False -> comportamiento IDÉNTICO al de antes de este follow-up,
+        ningún archivo toca `app.services.pdfa`). Con el gate activo y
+        contenido sniffed como PDF (magic bytes, nunca `mime_type`):
+        - modo **strict** (`PRESERVATION_PDFA_INGEST_MODE=strict`): valida
+          SÍNCRONO aquí mismo, ANTES de subir a MinIO/persistir la fila —
+          `non_conformant` levanta `PdfaNonConformantError` (el router lo
+          traduce a 422) y la subida NUNCA se persiste. Cualquier otro
+          resultado (conformant/not_evaluated) se registra DESPUÉS de crear
+          la fila (ya con `file_id` real).
+        - modo **advisory** (default): NO valida aquí — marca la fila
+          `pdfa_status='pendiente'` y devuelve `schedule_pdfa_validation=True`
+          para que el router encole el worker asíncrono best-effort. Nunca
+          bloquea la respuesta al cliente.
         """
         _check_format(mime_type)
         sha256 = hashlib.sha256(content).hexdigest()
 
         existing = await self._repo.find_by_sha256(sha256)
         if existing is not None:
-            return _to_response(existing), False
+            return _to_response(existing), False, False
+
+        is_pdf = looks_like_pdf(content)
+        pdfa_gate_active = settings.preservation_pdfa_validation_enabled and is_pdf
+        strict_mode = pdfa_gate_active and settings.preservation_pdfa_ingest_mode == "strict"
+
+        strict_result = None
+        if strict_mode:
+            strict_result = await validate_ingest_content(content)
+            if strict_result.outcome == "non_conformant":
+                # Rechazo ANTES de tocar MinIO/BD (modo estricto, opt-in):
+                # ningún objeto se persiste — se audita contra el SHA-256
+                # (no hay `file_id` porque el archivo nunca se crea).
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="file.pdfa_rejected_ingest",
+                    object_type="file",
+                    object_ref=sha256,
+                    actor=str(uploaded_by) if uploaded_by else None,
+                    payload={
+                        "filename": filename,
+                        "profile": strict_result.profile,
+                        "validator_agent": strict_result.validator_agent,
+                        "detalle": strict_result.detail,
+                    },
+                )
+                raise PdfaNonConformantError(
+                    f"El archivo {filename!r} no es PDF/A conforme "
+                    f"(perfil {strict_result.profile}); rechazado por "
+                    "PRESERVATION_PDFA_INGEST_MODE=strict"
+                )
 
         minio = get_minio()
         await _ensure_bucket(minio, self._bucket)
@@ -137,7 +199,26 @@ class StorageService:
             object_key=object_key,
             uploaded_by=uploaded_by,
         )
-        return _to_response(record), True
+
+        schedule_pdfa_validation = False
+        if pdfa_gate_active:
+            if strict_mode:
+                assert strict_result is not None  # conformant/not_evaluated: ya se validó arriba
+                await record_ingest_pdfa_result(
+                    self._conn,
+                    self._tenant_slug,
+                    file_id,
+                    strict_result,
+                    agente=str(uploaded_by) if uploaded_by else "ingesta-http",
+                )
+            else:
+                # Advisory (default): NO se valida aquí — solo se marca
+                # "pendiente" para que el estado sea distinguible de "nunca
+                # evaluado" mientras el worker best-effort corre.
+                await self._repo.mark_pdfa_pending(file_id, profile=settings.pdfa_profile)
+                schedule_pdfa_validation = True
+
+        return _to_response(record), True, schedule_pdfa_validation
 
     async def replace(
         self,

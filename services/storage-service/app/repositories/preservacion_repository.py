@@ -20,6 +20,9 @@ import json
 
 import asyncpg
 
+from app.core.database import TENANT_SLUG_RE
+from app.repositories.file_repository import InvalidTenantSlugError
+
 _PLAN_COLS = (
     "id, version, formatos_destino, num_copias, periodicidad_fixity_dias, "
     "politica_migracion, contingencia, creado_por, created_at"
@@ -37,6 +40,14 @@ _AIP_COLS = (
 
 class PreservacionRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+        # Defensa en profundidad (remediación de auditoría Baja, E07): el
+        # slug llega ya validado por el gateway/claim JWT, pero se valida de
+        # nuevo AQUÍ, antes de interpolarlo en `SET search_path`, con la
+        # MISMA regex canónica que `app.core.database.tenant_schema()` y
+        # `FileRepository` — nunca se confía en el slug crudo para construir
+        # SQL, sin importar de dónde venga.
+        if not tenant_slug or not TENANT_SLUG_RE.match(tenant_slug):
+            raise InvalidTenantSlugError(f"Invalid tenant slug: {tenant_slug!r}")
         self._conn = conn
         self._schema = f"tenant_{tenant_slug.replace('-', '_')}"
 

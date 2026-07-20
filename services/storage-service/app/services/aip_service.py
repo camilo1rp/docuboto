@@ -67,7 +67,8 @@ from app.repositories.preservacion_worm_repository import PreservacionWormReposi
 from app.schemas.preservacion import AipCreate, AipResponse
 from app.services.aip_builder import AipDocMaterial, aip_sha256, build_bag
 from app.services.aip_replica_service import ReplicaResult, replicate_aip
-from app.services.pdfa import PdfaResult, get_pdfa_validator, run_pdfa_validation
+from app.services.pdfa import PDFA_RESULTADO_MAP, PdfaResult, get_pdfa_validator, run_pdfa_validation
+from app.services.pdfa.subprocess_verapdf import _VALID_FLAVOURS
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
@@ -87,16 +88,81 @@ _AIP_TIPO = "aip"
 # fiable como base para decidir qué se valida — E10 Increment C2a, PIEZA 4).
 _PDF_MAGIC = b"%PDF"
 
-# `preservacion_evento.resultado` (migración 008) espejo del `PdfaResult.outcome`.
-_PDFA_RESULTADO_MAP: dict[str, str] = {
-    "conformant": "ok",
-    "non_conformant": "fallo",
-    "not_evaluated": "no_evaluado",
-}
+# E10 C2b follow-up: estados TERMINALES de `files.pdfa_status` (migración
+# 013) -- distinto de "pendiente" (encolado, worker asíncrono de ingesta
+# todavía no corrió) o NULL (nunca evaluado). Solo un veredicto TERMINAL para
+# el MISMO perfil se reusa aquí; ver `_reused_pdfa_result`.
+_TERMINAL_PDFA_STATUS = frozenset({"conformant", "non_conformant", "not_evaluated"})
+_REUSED_INGEST_AGENT = "reused/ingest-verdict"
 
 
 def _looks_like_pdf(content: bytes) -> bool:
     return content.startswith(_PDF_MAGIC)
+
+
+def _resolve_pdfa_profile(payload_profile: str | None) -> str:
+    """Resuelve el flavour PDF/A a validar (E10 debt "perfil PDF/A por
+    serie", RF-FIR-15) -- fail-closed HONESTO, `invalid != default`:
+
+    - **Ausente/null** (`AipCreate.pdfa_profile is None`, la serie TRD no
+      tiene política propia) -> default global `settings.pdfa_profile`.
+      Ruta retrocompat: ningún AIP existente cambia de comportamiento.
+    - **Presente pero fuera de `_VALID_FLAVOURS`** -> se conserva TAL CUAL
+      (NUNCA se sustituye por el default) para que
+      `PdfaValidator.validate()` lo degrade honestamente a
+      `not_evaluated` (ver `SubprocessVeraPdfValidator.validate`, que ya
+      hace exactamente esta comprobación) -- jamás se reporta conformidad
+      contra un perfil que no corrió.
+
+    Re-validación defense-in-depth: `AipCreate.pdfa_profile` cruza la
+    frontera de confianza archive-service -> storage-service (payload de un
+    endpoint interno, D-02) -- este sitio no asume que el llamador ya
+    validó el campo contra la whitelist."""
+    if payload_profile is None:
+        return settings.pdfa_profile
+    if payload_profile not in _VALID_FLAVOURS:
+        logger.warning(
+            "AipCreate.pdfa_profile=%r fuera de whitelist %s -- se conserva "
+            "sin sustituir por el default (RF-FIR-15: el validador lo "
+            "degradará a not_evaluated, nunca conformidad no evaluada)",
+            payload_profile,
+            sorted(_VALID_FLAVOURS),
+        )
+    return payload_profile
+
+
+def _reused_pdfa_result(record: FileRecord, profile: str) -> PdfaResult | None:
+    """E10 C2b follow-up (validación PDF/A en ingesta, E07): si `record`
+    (resuelto en `_resolve_and_verify`, mismo objeto que ya se descargó/
+    fijó) ya tiene un veredicto TERMINAL para el MISMO perfil que este AIP
+    exige, lo devuelve envuelto en un `PdfaResult` para que el llamador NO
+    invoque el validador (JVM/subprocess) de nuevo -- ahorra la parte cara
+    de la validación, no la fijación de bytes (que ya ocurrió igual, se
+    necesita para el payload del Bag).
+
+    Devuelve `None` si no hay nada reusable: `pdfa_status` es NULL/
+    "pendiente" (no terminal) o el perfil registrado difiere del exigido
+    aquí -- en ese caso el llamador valida como si nunca se hubiese
+    evaluado, exactamente igual que antes de este follow-up.
+    """
+    status = record.pdfa_status
+    if status not in _TERMINAL_PDFA_STATUS:
+        return None
+    if record.pdfa_profile != profile:
+        return None
+    checked_at = record.pdfa_checked_at.isoformat() if record.pdfa_checked_at else None
+    return PdfaResult(
+        outcome=status,  # type: ignore[arg-type]  # ya validado contra _TERMINAL_PDFA_STATUS
+        profile=profile,
+        validator_agent=_REUSED_INGEST_AGENT,
+        detail={
+            "motivo": (
+                "Veredicto reusado de la validación PDF/A en ingesta "
+                "(E10 C2b follow-up) -- no se re-ejecutó el validador."
+            ),
+            "pdfa_checked_at": checked_at,
+        },
+    )
 
 
 async def _download(minio, bucket: str, object_key: str) -> bytes:
@@ -217,6 +283,12 @@ class AipService:
         # negocio del documento en el expediente) — espacios de nombres
         # deliberadamente distintos, ver PIEZA 6 del contrato.
         file_ids_by_document: dict[str, uuid.UUID] = {}
+        # E10 C2b follow-up: `FileRecord` completo por documento (no solo el
+        # `file_id`), capturado en ESTE MISMO loop de resolución para que la
+        # comprobación de reuso de abajo (`_reused_pdfa_result`) no necesite
+        # una segunda consulta a `files` -- el registro ya trae
+        # `pdfa_status`/`pdfa_profile`/`pdfa_checked_at` (migración 013).
+        records_by_document: dict[str, FileRecord] = {}
         for doc_input in payload.documentos:
             record, content = await self._resolve_and_verify(
                 minio,
@@ -235,6 +307,7 @@ class AipService:
                 )
             )
             file_ids_by_document[doc_input.document_id] = doc_input.file_id
+            records_by_document[doc_input.document_id] = record
 
         # Validación PDF/A (E10 Increment C2a, RF-PRE-02) — SIEMPRE fuera de
         # `conn.transaction()` (PIEZA 4 del contrato): un validador best-effort
@@ -245,11 +318,24 @@ class AipService:
         pdfa_results: dict[str, PdfaResult] = {}
         if settings.preservation_pdfa_validation_enabled:
             validator = get_pdfa_validator(settings)
+            profile = _resolve_pdfa_profile(payload.pdfa_profile)
             for material in docs_material:
                 if not _looks_like_pdf(material.content):
                     continue
+                # E10 C2b follow-up: reusa el veredicto de la validación en
+                # INGESTA (E07, `app/services/pdfa_ingest_service.py`) si es
+                # terminal para el MISMO perfil -- se salta el validador
+                # caro (JVM/subprocess). El evento PREMIS `VALIDACION_PDFA`
+                # se sigue emitiendo por documento más abajo (mismo dict
+                # `pdfa_results`), solo cambia `validator_agent` a
+                # "reused/ingest-verdict" para que quede honesto en el
+                # rastro que NO se re-ejecutó el validador esta vez.
+                reused = _reused_pdfa_result(records_by_document[material.document_id], profile)
+                if reused is not None:
+                    pdfa_results[material.document_id] = reused
+                    continue
                 pdfa_results[material.document_id] = await run_pdfa_validation(
-                    validator, material.content, profile=settings.pdfa_profile
+                    validator, material.content, profile=profile
                 )
 
         indice_material: AipDocMaterial | None = None
@@ -461,7 +547,7 @@ class AipService:
                     {
                         "object_ref": str(file_ids_by_document[document_id]),
                         "tipo": "VALIDACION_PDFA",
-                        "resultado": _PDFA_RESULTADO_MAP[result.outcome],
+                        "resultado": PDFA_RESULTADO_MAP[result.outcome],
                         "detalle": {
                             "document_id": document_id,
                             "profile": result.profile,

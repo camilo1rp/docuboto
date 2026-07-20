@@ -31,6 +31,18 @@ YA firmado y protegido bajo WORM como `indice_file_id`) — filtrada en SQL por
 `AipRepository.list_pending`, pero también re-verificada aquí (defensa en
 profundidad, fail-closed) por si este método se invoca desde otro lugar en
 el futuro.
+
+**E10 AIP wiring follow-up — AIP índice-only para expedientes 100% físicos**
+(diseño ratificado por `orfeo-architect`, `.claude/agent-memory/orfeo-architect/
+project_aip-indice-only-fisicos-e10.md`): un expediente sin NINGÚN anexo
+digital (`documentos == []`) ya NO cae en `'omitido'` por defecto — el índice
+electrónico firmado, que en ese punto SIEMPRE está disponible (la
+precondición de arriba ya pasó), se empaqueta como el único objeto sustantivo
+del AIP (el índice ES el payload del Bag, no un tag file — ver
+`app.services.aip_builder._is_indice_only_mode` en storage-service). Kill-switch
+`settings.aip_indice_only_enabled` (default `True`): si `False`, se preserva
+el comportamiento previo (`'omitido'`, TERMINAL, sin AIP) como ventana de
+transición/seguro operacional.
 """
 
 from __future__ import annotations
@@ -104,6 +116,24 @@ class AipWiringService:
         if total is None:
             return None
         return total, exp.closed_at.date()
+
+    async def _resolve_aip_pdfa_profile(self, exp) -> str | None:
+        """Perfil PDF/A (E10 debt "perfil por serie", RF-FIR-15) de la serie
+        TRD del expediente -- gemelo de `_resolve_aip_retention`. `None` si
+        el expediente no tiene serie, la serie no existe, o la serie no tiene
+        política propia (`trd_series.pdfa_profile IS NULL`) -- en cualquiera
+        de esos casos storage-service cae a su default global
+        (`settings.pdfa_profile`), comportamiento IDÉNTICO al actual
+        (retrocompat). NO reintenta ni bloquea el empaquetado: a diferencia
+        de `_resolve_aip_retention` (cuyo `None` SÍ dispara backoff, la
+        retención es obligatoria), un perfil ausente es una configuración
+        válida, no un error transitorio."""
+        if exp.trd_serie_id is None:
+            return None
+        serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
+        if serie is None:
+            return None
+        return serie.pdfa_profile
 
     async def _bump_backoff(
         self, expediente_id: uuid.UUID, *, intentos_previos: int, motivo: str
@@ -228,12 +258,12 @@ class AipWiringService:
                         }
                     )
 
-            if not documentos:
+            if not documentos and not settings.aip_indice_only_enabled:
                 # Expediente 100% físico (o sin anexos digitales en ningún
-                # radicado vigente) — `AipCreate.documentos` exige
-                # `min_length=1`, no es construible. Su preservación ya la
-                # cubre el índice electrónico firmado+protegido bajo WORM
-                # (E10 Inc.1). TERMINAL, no reintentable.
+                # radicado vigente) CON el kill-switch índice-only en OFF —
+                # comportamiento PREVIO al follow-up: sin AIP, TERMINAL, no
+                # reintentable. Su preservación ya la cubre el índice
+                # electrónico firmado+protegido bajo WORM (E10 Inc.1).
                 async with self._conn.transaction():
                     affected = await self._aip.mark_omitido(expediente_id)
                     if affected:
@@ -253,6 +283,17 @@ class AipWiringService:
                         )
                 return "omitido"
 
+            # `documentos` puede llegar vacía aquí (expediente 100% físico,
+            # kill-switch índice-only en ON -- default): `indice_file_id`
+            # SIEMPRE está disponible en este punto (la precondición
+            # firmado+worm_protegido_at+minio_key_firmado ya pasó más arriba
+            # -- si no, se salió por `_bump_backoff` antes de llegar aquí),
+            # así que el AIP índice-only SIEMPRE es construible
+            # (`AipCreate` acepta `documentos=[]` con `indice_file_id`
+            # presente -- ver `aip_builder._is_indice_only_mode` en
+            # storage-service). `omitido` NO se produce por esta vía nueva
+            # -- solo lo produce el kill-switch OFF (arriba) o filas
+            # históricas anteriores a este follow-up.
             retention = await self._resolve_aip_retention(exp)
             if retention is None:
                 return await self._bump_backoff(
@@ -261,6 +302,7 @@ class AipWiringService:
                     motivo="trd_sin_retencion",
                 )
             retencion_anios, fecha_inicio = retention
+            pdfa_profile = await self._resolve_aip_pdfa_profile(exp)
 
             outcome = await storage_client.empaquetar_aip_internal(
                 tenant_slug=self._tenant_slug,
@@ -269,6 +311,7 @@ class AipWiringService:
                 indice_file_id=indice_file_id,
                 retencion_anios=retencion_anios,
                 fecha_inicio=fecha_inicio,
+                pdfa_profile=pdfa_profile,
             )
 
             if outcome.ok:
@@ -298,6 +341,11 @@ class AipWiringService:
                                 "aip_id": str(outcome.aip_id),
                                 "num_documentos": len(documentos),
                                 "retencion_anios": retencion_anios,
+                                # E10 AIP wiring follow-up: marca honesta para
+                                # los auditores -- distingue el AIP índice-only
+                                # (sin anexos digitales, el índice ES el
+                                # payload) del AIP con contenido real.
+                                "indice_only": not documentos,
                             },
                         )
                 return "empaquetado" if affected else "omitido"
@@ -378,7 +426,7 @@ class AipWiringService:
                     action="archive.aip_worm_renovacion_agotado",
                     object_type="expediente_aip",
                     object_ref=str(expediente_id),
-                    actor=None,
+                    actor=str(SYSTEM_RECONCILER_ID),
                     canal="system",
                     payload={"renovacion_intentos": intentos_tras_este, "motivo": motivo},
                 )
@@ -433,7 +481,7 @@ class AipWiringService:
                             action="archive.aip_worm_retencion_renovada",
                             object_type="expediente_aip",
                             object_ref=str(expediente_id),
-                            actor=None,
+                            actor=str(SYSTEM_RECONCILER_ID),
                             canal="system",
                             payload={
                                 "expediente_id": str(expediente_id),

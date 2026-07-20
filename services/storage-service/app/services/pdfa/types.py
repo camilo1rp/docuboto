@@ -29,6 +29,19 @@ from typing import Any, Literal, Protocol
 # habilita su espejo en `preservacion_evento.resultado` como 'no_evaluado').
 PdfaOutcome = Literal["conformant", "non_conformant", "not_evaluated"]
 
+# Espejo de `PdfaOutcome` al vocabulario de `preservacion_evento.resultado`
+# (migración 008: 'ok'|'fallo'|'no_evaluado'). Compartido entre
+# `app.services.aip_service` (empaquetado del AIP) y
+# `app.services.pdfa_ingest_service` (E10 Increment C2b follow-up, validación
+# en ingesta E07) — AMBOS insertan eventos `tipo=VALIDACION_PDFA` con el
+# mismo mapeo, para que el rastro PREMIS use siempre el mismo vocabulario sin
+# importar en qué punto del ciclo de vida se validó.
+PDFA_RESULTADO_MAP: dict[str, str] = {
+    "conformant": "ok",
+    "non_conformant": "fallo",
+    "not_evaluated": "no_evaluado",
+}
+
 
 @dataclass(slots=True)
 class PdfaResult:

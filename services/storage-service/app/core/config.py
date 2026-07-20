@@ -74,8 +74,24 @@ class Settings(BaseSettings):
     pdfa_validator: str = "stub"
     # Perfil PDF/A objetivo: POLÍTICA DECLARADA de la institución (no un
     # detalle implícito del validador). PDF/A-2b (ISO 19005-2) es el default
-    # razonable para documentos administrativos digitalizados.
+    # razonable para documentos administrativos digitalizados. También es el
+    # perfil usado en INGESTA (ver `preservation_pdfa_ingest_mode` abajo): en
+    # captura no se conoce todavía serie/expediente, así que no hay perfil
+    # por-serie que aplicar (E10 C2b follow-up, `app/services/pdfa_ingest_service.py`).
     pdfa_profile: str = "2b"
+    # Validación PDF/A en el flujo de INGESTA/captura de anexos (E07, E10
+    # Increment C2b follow-up) -- distinto del empaquetado del AIP (que
+    # siempre valida, si el gate `preservation_pdfa_validation_enabled` está
+    # activo). "advisory" (default): la validación corre ASÍNCRONA
+    # best-effort DESPUÉS de responder al cliente (nunca bloquea la
+    # radicación -- PDF/A es requisito de PRESERVACIÓN, Ley 594/2000 +
+    # Acuerdo AGN 060/2001, no de radicación). "strict" (opt-in): la
+    # validación corre SÍNCRONA en el propio `POST /upload` y un
+    # `non_conformant` rechaza la subida con 422 -- quien activa este modo
+    # asume el coste JVM/subprocess en el hot path. Ambos modos quedan
+    # subordinados al gate maestro `preservation_pdfa_validation_enabled`
+    # (False -> sin validación en ingesta en absoluto, cualquiera sea el modo).
+    preservation_pdfa_ingest_mode: str = "advisory"
     # E10 Increment C2b: `SubprocessVeraPdfValidator` real (veraPDF vía
     # subprocess, `app/services/pdfa/subprocess_verapdf.py`). `verapdf_binary`
     # DEBE ser una ruta absoluta a un ejecutable existente para que la
@@ -99,6 +115,17 @@ class Settings(BaseSettings):
         if lowered not in valid:
             raise ValueError(
                 f"pdfa_validator debe ser uno de {sorted(valid)}, recibido {v!r}"
+            )
+        return lowered
+
+    @field_validator("preservation_pdfa_ingest_mode")
+    @classmethod
+    def _validate_pdfa_ingest_mode(cls, v: str) -> str:
+        valid = frozenset({"advisory", "strict"})
+        lowered = v.lower()
+        if lowered not in valid:
+            raise ValueError(
+                f"preservation_pdfa_ingest_mode debe ser uno de {sorted(valid)}, recibido {v!r}"
             )
         return lowered
 

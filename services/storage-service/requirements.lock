@@ -25,6 +25,8 @@ asyncpg==0.31.0
     # via -r services/storage-service/requirements.txt
 attrs==26.1.0
     # via aiohttp
+bagit==1.9.0
+    # via -r services/storage-service/requirements.txt
 certifi==2025.11.12
     # via
     #   httpcore
