@@ -395,18 +395,19 @@ class IndicePendienteRenovacion(BaseModel):
     """Fila de `GET /expedientes/indices/pendientes-renovacion` (E10 debt --
     renovación de retención WORM para series CT, AGN 001/2024 Art. 4.3.2.6)
     -- visibilidad operacional gemela de `IndicePendienteFirma`, para que
-    ningún artefacto CT (índice o acta de transferencia) quede silenciado en
-    `audit_log` mientras su renovación está AGOTADA o EN RIESGO de vencer sin
-    renovar.
+    ningún artefacto CT (índice, acta de transferencia o AIP) quede
+    silenciado en `audit_log` mientras su renovación está AGOTADA o EN
+    RIESGO de vencer sin renovar.
 
-    `tipo` distingue el artefacto (`indice` | `acta_transferencia`) -- UN
-    endpoint combinado en vez de dos gemelos, mismo criterio de no
-    proliferación que `POST /proteger-artefacto` (storage-service, E10
-    Inc.2 wiring) generalizó sobre `POST /proteger-indice`."""
+    `tipo` distingue el artefacto (`indice` | `acta_transferencia` | `aip` --
+    este último, E10 debt, fast-follow del cableado del AIP) -- UN endpoint
+    combinado en vez de tres gemelos, mismo criterio de no proliferación que
+    `POST /proteger-artefacto` (storage-service, E10 Inc.2 wiring) generalizó
+    sobre `POST /proteger-indice`."""
 
     expediente_id: uuid.UUID
     expediente_code: str
-    tipo: Literal["indice", "acta_transferencia"]
+    tipo: Literal["indice", "acta_transferencia", "aip"]
     worm_retain_until: datetime | None
     worm_renovacion_intentos: int
     worm_renovacion_agotado: bool

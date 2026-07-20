@@ -76,12 +76,20 @@ class Settings(BaseSettings):
     # detalle implícito del validador). PDF/A-2b (ISO 19005-2) es el default
     # razonable para documentos administrativos digitalizados.
     pdfa_profile: str = "2b"
-    # Reservados para E10 Increment C2b (SubprocessVeraPdfValidator real,
-    # veraPDF vía subprocess) — SIN uso en este incremento.
+    # E10 Increment C2b: `SubprocessVeraPdfValidator` real (veraPDF vía
+    # subprocess, `app/services/pdfa/subprocess_verapdf.py`). `verapdf_binary`
+    # DEBE ser una ruta absoluta a un ejecutable existente para que la
+    # factory (`app/services/pdfa/factory.py`) active el validador real —
+    # si no, degrada honestamente a stub (dev slim sin Java, ver Dockerfile).
     verapdf_binary: str | None = None
     verapdf_timeout_seconds: int = 60
     verapdf_max_concurrency: int = 1
     verapdf_jvm_max_heap_mb: int = 512
+    # `-Xmx` acota solo el heap Java -- metaspace/native/thread-stacks quedan
+    # fuera y pueden hacer que el RSS real de la JVM exceda el heap. Esto NO
+    # reemplaza el límite de memoria del contenedor (deploy): es un segundo
+    # cinturón barato, no la garantía dura.
+    verapdf_jvm_max_metaspace_mb: int = 256
 
     @field_validator("pdfa_validator")
     @classmethod

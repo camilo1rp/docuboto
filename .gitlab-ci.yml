@@ -33,6 +33,39 @@ validate:
     paths:
       - .cache/pip/
 
+# ─── Stage: Validate — subprocess veraPDF REAL (E10 Increment C2b) ────────────
+# `SubprocessVeraPdfValidator` (services/storage-service/app/services/pdfa/
+# subprocess_verapdf.py) ejecuta un binario Java externo sobre PDFs subidos
+# por cualquier tenant -- input NO confiable. No hay veraPDF real disponible
+# en CI (requeriría bajar/instalar un JRE + el CLI en cada pipeline), así que
+# se ejercita el PLUMBING real (create_subprocess_exec, env scrubbeado,
+# killpg+timeout, parseo JSON) contra un veraPDF FALSO
+# (services/storage-service/tests/fakes/fake_verapdf.py) invocado como
+# proceso EXTERNO de verdad -- sin esto, el subprocess quedaría sin ejercitar
+# en CI pese a operar sobre input adversarial.
+storage-verapdf-subprocess:
+  stage: validate
+  image: python:3.11-slim
+  before_script:
+    - chmod +x services/storage-service/tests/fakes/fake_verapdf.py
+    # orpycamcp_common (shared/) NO está en requirements.txt (se instala
+    # aparte en el Dockerfile real, ADR-010) -- storage-service lo importa
+    # transitivamente vía app.main (cargado por tests/conftest.py), así que
+    # sin esto la sola colección de tests fallaría.
+    - pip install --quiet ./shared
+    - pip install --quiet -r services/storage-service/requirements.txt
+  variables:
+    VERAPDF_BINARY: "$CI_PROJECT_DIR/services/storage-service/tests/fakes/fake_verapdf.py"
+    PDFA_VALIDATOR: "verapdf"
+    PRESERVATION_PDFA_VALIDATION_ENABLED: "true"
+  script:
+    - cd services/storage-service
+    - pytest tests/test_subprocess_verapdf_ci_smoke.py -v --asyncio-mode=auto --tb=short
+  cache:
+    key: "pip-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip/
+
 # ─── Stage: Review (solo en Merge Requests) ───────────────────────────────────
 claude-review:
   stage: review

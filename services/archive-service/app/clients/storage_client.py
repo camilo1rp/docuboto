@@ -439,6 +439,131 @@ async def renovar_retencion_worm_internal(
     return _worm_renewal_outcome_from_response(resp, contexto=f"renovacion:{tipo}")
 
 
+@dataclass(slots=True)
+class AipPackagingOutcome:
+    """Resultado ESTRUCTURADO de un intento de empaquetado del AIP (E10 debt,
+    cableado del AIP al cierre del expediente) — mismo criterio de
+    "exactamente un flag poblado" que `WormProtectionOutcome`: `ok=True`
+    (éxito, `aip_id` poblado — el `id` de la fila `aip` en storage-service,
+    ver `AipResponse`), `fixity_mismatch=True` (409 — la fixity REAL de un
+    anexo, `files.sha256` capturado en storage-service al momento de la
+    SUBIDA original, ya no coincide con los bytes que descarga y re-hashea
+    `AipService._resolve_and_verify` al empaquetar; `payload.documentos`
+    (`AipDocInput`, ver `app/services/aip_wiring_service.py`) solo aporta
+    `document_id`/`nombre`/`file_id` — NO lleva ningún hash propio, la
+    comparación es siempre contra `files.sha256`, nunca contra un valor
+    aportado por este cliente), `disabled=True` (503 `preservation_disabled`)
+    o `transient=True` (cualquier otro fallo — reintentable).
+
+    `retain_until` (E10 debt: extensión de la renovación WORM al AIP) se
+    añade AQUÍ, mismo criterio que `WormProtectionOutcome.retain_until` —
+    `AipWiringService.intentar_empaquetar` la necesita para poblar el espejo
+    `expediente_aip.worm_retain_until` (migración 034) al confirmar el
+    empaquetado. `AipResponse.retain_until` SIEMPRE viene poblado en un 201
+    real (`AipService.empaquetar_aip` la resuelve de `payload.
+    resolve_retain_until()` antes de construir la respuesta) — un fallo al
+    parsearla NO degrada el empaquetado ya confirmado (el AIP YA quedó
+    inmutable en MinIO), solo deja el espejo local sin poblar (mismo
+    `COALESCE` defensivo que `IndexRepository.mark_worm_protegido`)."""
+
+    ok: bool
+    aip_id: uuid.UUID | None = None
+    retain_until: datetime | None = None
+    disabled: bool = False
+    fixity_mismatch: bool = False
+    transient: bool = False
+
+
+async def empaquetar_aip_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    documentos: list[dict],
+    indice_file_id: uuid.UUID | None,
+    retencion_anios: int,
+    fecha_inicio: date,
+    legal_hold: bool = False,
+) -> AipPackagingOutcome:
+    """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST /preservacion/aip`
+    — único llamador: `AipWiringService` (reconciliación-only, actúa con
+    `SYSTEM_RECONCILER_ID`, sin `X-User-Id` real — la ruta pública exige
+    `require_permission(min_crud=3)`, que SIEMPRE rechazaría con 403 un actor
+    sin fila en `auth_users`, mismo motivo que `proteger_indice_worm_internal`).
+
+    Timeout deliberadamente MAYOR (120s) que el resto de este cliente: a
+    diferencia de `proteger_indice_worm[_internal]` (sube un XML ya en
+    `files`), este endpoint DESCARGA los bytes reales de cada documento desde
+    MinIO, los re-hashea y arma un ZIP server-side antes de responder — coste
+    proporcional al tamaño total de los anexos del expediente, no una
+    operación barata.
+
+    `documentos` ya viene armado por el llamador con la forma que exige
+    `AipCreate.documentos` (`[{"document_id": ..., "nombre": ..., "file_id":
+    ...}, ...]`) — este cliente no valida su contenido, solo lo reenvía."""
+    body: dict = {
+        "expediente_id": expediente_id,
+        "documentos": documentos,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "legal_hold": legal_hold,
+    }
+    if indice_file_id is not None:
+        body["indice_file_id"] = str(indice_file_id)
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=120.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/aip-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al empaquetar el AIP: %s", exc)
+        return AipPackagingOutcome(ok=False, transient=True)
+
+    if resp.status_code == status.HTTP_201_CREATED:
+        try:
+            data = resp.json()
+            aip_id = uuid.UUID(data["id"])
+        except (ValueError, KeyError, TypeError):
+            logger.warning("storage-service → 201 sin 'id' válido al empaquetar el AIP")
+            return AipPackagingOutcome(ok=False, transient=True)
+        retain_until: datetime | None = None
+        try:
+            if data.get("retain_until"):
+                retain_until = datetime.fromisoformat(data["retain_until"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "storage-service → 201 sin 'retain_until' válido al empaquetar el "
+                "AIP de %s — espejo local quedará sin poblar",
+                expediente_id,
+            )
+        return AipPackagingOutcome(ok=True, aip_id=aip_id, retain_until=retain_until)
+    if resp.status_code == status.HTTP_409_CONFLICT:
+        logger.warning(
+            "storage-service: fixity_mismatch al empaquetar el AIP de %s "
+            "(un anexo mutó desde que se vinculó)",
+            expediente_id,
+        )
+        return AipPackagingOutcome(ok=False, fixity_mismatch=True)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "storage-service: empaquetado de AIP deshabilitado "
+            "(PRESERVATION_ENABLED=false, expediente_id=%s)",
+            expediente_id,
+        )
+        return AipPackagingOutcome(ok=False, disabled=True)
+    logger.warning(
+        "storage-service → HTTP %s al empaquetar el AIP de %s (transient)",
+        resp.status_code,
+        expediente_id,
+    )
+    return AipPackagingOutcome(ok=False, transient=True)
+
+
 class StorageAipError(Exception):
     """storage-service no respondió (o respondió con error) al pedir el AIP."""
 

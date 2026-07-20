@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -71,11 +72,15 @@ from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
     PreservationDisabledError,
+    _worm_lock_key,
     preservation_bucket_name,
 )
 from app.services.retention_policy import validate_retain_until
 
+logger = logging.getLogger(__name__)
+
 _SERVICE = "storage-service"
+_AIP_TIPO = "aip"
 
 # Firma de archivo PDF (magic bytes) — se detecta por CONTENIDO, nunca por
 # `files.mime_type` (lo declara el cliente en el multipart original, no es
@@ -172,6 +177,37 @@ class AipService:
         retain_until = payload.resolve_retain_until()
         validate_retain_until(retain_until)
 
+        # Advisory lock de SESIÓN por `(tenant, expediente_id, 'aip')`
+        # (remediación de auditoría, Media): serializa el
+        # check->put_object->insert de abajo, MISMO mecanismo
+        # (`_worm_lock_key`) que `PreservationWormService.proteger_indice`
+        # usa para el índice/acta -- reusado aquí con `tipo="aip"` para que
+        # ambos namespaces de lock (índice vs AIP del mismo expediente) NO
+        # compitan entre sí. Cubre AMBAS rutas HTTP (`/aip` pública y
+        # `/aip-internal`, D-02) porque ambas llegan al MISMO método de
+        # servicio. Ver la migración 012 (comentario corregido): el UNIQUE
+        # por sí solo dedup por CONTENIDO exacto, no cierra la carrera
+        # concurrente (dos builds del mismo expediente embeben timestamps
+        # distintos -> `sha256` distinto) -- este lock sí, porque impide que
+        # el `put_object` COMPLIANCE físico de dos llamadas al mismo
+        # expediente corra en paralelo. Lock de SESIÓN (no `xact`): el
+        # camino de fallo de fixity debe persistir su evento/asiento aunque
+        # el resto de la operación no siga adelante. Se libera en el
+        # `finally`, también ante excepción.
+        lock_key = _worm_lock_key(self._tenant_slug, payload.expediente_id, _AIP_TIPO)
+        await self._conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+        try:
+            return await self._empaquetar_aip_locked(payload, actor, retain_until)
+        finally:
+            await self._conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+
+    async def _empaquetar_aip_locked(
+        self, payload: AipCreate, actor: str | None, retain_until: datetime
+    ) -> AipResponse:
+        """Cuerpo de :meth:`empaquetar_aip` bajo el advisory lock de sesión
+        por-(expediente, 'aip') -- todo el `check->put_object->insert` corre
+        serializado contra otro empaquetado concurrente del MISMO
+        expediente. `retain_until` ya viene validado."""
         minio = get_minio()
 
         docs_material: list[AipDocMaterial] = []
@@ -251,6 +287,32 @@ class AipService:
         )
 
         zip_hash = aip_sha256(artifact.zip_bytes)
+
+        # Idempotencia PRE-`put_object`, bajo el advisory lock (remediación de
+        # auditoría, Media): si ya existe un AIP con este `(expediente_id,
+        # aip_sha256)` exacto -- mismo criterio que el índice único parcial
+        # de la migración 012 -- corta-circuita SIN subir nada al bucket WORM
+        # ni insertar una fila nueva. Decisión de semántica (documentada en
+        # la migración 012): CONTENIDO IDÉNTICO = corte-circuito idempotente
+        # (retorna el AIP YA existente); CONTENIDO DISTINTO = procede a
+        # empaquetar una versión NUEVA (re-empaquetado legítimo, migración
+        # 009 -- el AIP admite N versiones por expediente, `GET
+        # /aip/{expediente_id}` siempre expone la más reciente). Bajo el
+        # lock, dos llamadas concurrentes quedan serializadas: la 2ª ve aquí
+        # lo que la 1ª ya comprometió, en vez de competir por el mismo
+        # `put_object` COMPLIANCE físico.
+        existing_aip = await self._evt_repo.get_aip_by_expediente_and_sha256(
+            payload.expediente_id, zip_hash
+        )
+        if existing_aip is not None:
+            logger.info(
+                "Empaquetado AIP idempotente (contenido ya registrado) "
+                "expediente_id=%s aip_sha256=%s aip_id=%s",
+                payload.expediente_id,
+                zip_hash,
+                existing_aip["id"],
+            )
+            return AipResponse(**dict(existing_aip))
 
         bucket = preservation_bucket_name(self._tenant_slug)
         await ensure_object_lock_bucket(minio, bucket)

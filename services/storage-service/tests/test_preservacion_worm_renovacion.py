@@ -342,6 +342,56 @@ async def test_renovar_retencion_internal_happy_path(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_renovar_retencion_internal_happy_path_tipo_aip(client_with_conn) -> None:
+    """Gemelo EXACTO del test anterior para `tipo='aip'` (E10 debt,
+    fast-follow del cableado del AIP al eje de renovación WORM,
+    archive-service migración 034) -- `PreservacionWormRepository.
+    get_by_expediente_and_tipo`/`renovar` son GENÉRICOS por `(expediente_id,
+    tipo)` desde Increment A (migración 009): ningún cambio de esquema fue
+    necesario en storage-service, solo que `RenovarRetencionRequest.tipo`
+    (schema Pydantic) acepte el literal `'aip'` -- este test confirma que la
+    fila WORM del AIP se identifica y extiende exactamente igual que la del
+    índice/acta."""
+    client, mock_conn, mock_minio = client_with_conn
+    existing = make_worm_row(
+        expediente_id="EXP-CT-AIP-1",
+        tipo="aip",
+        retain_until=datetime(2028, 1, 1, tzinfo=UTC),
+    )
+    renovada = dict(existing)
+    renovada["retain_until"] = datetime(2031, 1, 1, tzinfo=UTC)
+    renovada["renovaciones"] = existing["renovaciones"] + 1
+
+    mock_conn.fetchrow.side_effect = [existing, renovada, {"id": uuid.uuid4()}]
+
+    resp = await client.post(
+        "/api/v1/preservacion/renovar-retencion-internal",
+        json=_renovar_payload(expediente_id="EXP-CT-AIP-1", tipo="aip"),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["renovado"] is True
+    assert body["retain_until"].startswith("2031-01-01")
+
+    # MinIO fue llamado sobre el objeto WORM del AIP identificado (bucket/key
+    # de LA FILA encontrada, no un valor inventado del payload).
+    mock_minio.set_object_retention.assert_awaited_once()
+    call = mock_minio.set_object_retention.await_args
+    assert call.args[0] == existing["bucket"]
+    assert call.args[1] == existing["object_key"]
+
+    audit_calls = [
+        c
+        for c in mock_conn.execute.call_args_list
+        if c.args and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    assert audit_calls[0].args[3] == str(SYSTEM_RECONCILER_ID)  # actor SIEMPRE el sistema
+
+
+@pytest.mark.asyncio
 async def test_renovar_retencion_internal_rejects_without_token(client_with_conn) -> None:
     client, mock_conn, mock_minio = client_with_conn
 

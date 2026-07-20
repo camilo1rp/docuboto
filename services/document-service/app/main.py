@@ -34,6 +34,7 @@ from app.routers.borradores import router as borradores_router
 from app.routers.documents import router as documents_router
 from app.routers.health import router as health_router
 from app.routers.ingest import router as ingest_router
+from app.routers.internal import router as internal_router
 from app.routers.metadata import router as metadata_router
 from app.routers.metadata_elements import router as metadata_elements_router
 from app.routers.postal import router as postal_router
@@ -106,6 +107,7 @@ app.include_router(postal_router)
 app.include_router(anulacion_router)
 app.include_router(respuesta_router)
 app.include_router(borradores_router)
+app.include_router(internal_router)
 app.include_router(health_router)
 
 

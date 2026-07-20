@@ -123,6 +123,7 @@ async def test_empaquetar_aip_happy_path_bag_and_premis(client_with_conn) -> Non
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # FileRepository.get_by_id_any_state (doc)
         _indice_record(indice_file_id),  # get_by_id_any_state (indice)
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         {  # insert_aip RETURNING
             "id": aip_id,
             "expediente_id": "EXP-1",
@@ -487,6 +488,7 @@ async def test_empaquetar_aip_without_indice_excludes_indice_tag_file(client_wit
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # get_by_id_any_state (doc)
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         {  # insert_aip RETURNING
             "id": aip_id,
             "expediente_id": "EXP-1",
@@ -598,6 +600,7 @@ async def test_empaquetar_aip_multiple_documentos_payload_oxum_and_manifest(
             sha256=sha2,
             object_key=f"{doc2_id}/anexo2.pdf",
         ),  # get_by_id_any_state (doc 2)
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         {  # insert_aip RETURNING
             "id": aip_id,
             "expediente_id": "EXP-1",

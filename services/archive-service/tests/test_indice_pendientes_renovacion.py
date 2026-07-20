@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.disposition import CT_DISPOSITION_CODES
+from app.repositories.aip_repository import AipRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.services.index_service import IndexService
@@ -66,12 +67,12 @@ def _visibilidad_row(**overrides) -> dict:
 
 # ---------------------------------------------------------------------------
 # IndexService.list_pendientes_renovacion — delegación + no-read-up (resuelve
-# clearance UNA vez, la propaga a AMBOS repositorios).
+# clearance UNA vez, la propaga a los TRES repositorios: índice, acta y AIP).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_list_pendientes_renovacion_resolves_clearance_once_and_delegates_to_both_repos() -> None:
+async def test_list_pendientes_renovacion_resolves_clearance_once_and_delegates_to_all_three_repos() -> None:
     conn = _mock_conn()
     svc = IndexService(conn, TENANT)
     user_id = uuid.uuid4()
@@ -86,24 +87,29 @@ async def test_list_pendientes_renovacion_resolves_clearance_once_and_delegates_
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[]),
         ) as mock_acta,
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ) as mock_aip,
     ):
         items, total = await svc.list_pendientes_renovacion(page=1, size=20, user_id=user_id)
 
     assert items == []
     assert total == 0
     mock_clearance.assert_awaited_once_with(user_id)
-    # AMBOS repositorios reciben el MISMO clearance (no re-resuelto por rama)
-    # y la MISMA ventana/lista de códigos CT.
+    # LOS TRES repositorios reciben el MISMO clearance (no re-resuelto por
+    # rama) y la MISMA ventana/lista de códigos CT.
     mock_indice.assert_awaited_once_with(max_clearance=2, ct_codes=_CT_CODES, ventana_dias=400)
     mock_acta.assert_awaited_once_with(max_clearance=2, ct_codes=_CT_CODES, ventana_dias=400)
+    mock_aip.assert_awaited_once_with(max_clearance=2, ct_codes=_CT_CODES, ventana_dias=400)
 
 
 @pytest.mark.asyncio
-async def test_list_pendientes_renovacion_tags_tipo_indice_y_acta_transferencia() -> None:
+async def test_list_pendientes_renovacion_tags_tipo_indice_acta_transferencia_y_aip() -> None:
     conn = _mock_conn()
     svc = IndexService(conn, TENANT)
     indice_row = _visibilidad_row(expediente_code="EXP-IND-0001")
     acta_row = _visibilidad_row(expediente_code="EXP-ACT-0001")
+    aip_row = _visibilidad_row(expediente_code="EXP-AIP-0001")
 
     with (
         patch.object(svc._archive, "caller_clearance", new=AsyncMock(return_value=3)),
@@ -117,13 +123,19 @@ async def test_list_pendientes_renovacion_tags_tipo_indice_y_acta_transferencia(
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[acta_row]),
         ),
+        patch.object(
+            AipRepository,
+            "list_worm_renovacion_visibilidad",
+            new=AsyncMock(return_value=[aip_row]),
+        ),
     ):
         items, total = await svc.list_pendientes_renovacion(page=1, size=20, user_id=uuid.uuid4())
 
-    assert total == 2
+    assert total == 3
     by_code = {it.expediente_code: it.tipo for it in items}
     assert by_code["EXP-IND-0001"] == "indice"
     assert by_code["EXP-ACT-0001"] == "acta_transferencia"
+    assert by_code["EXP-AIP-0001"] == "aip"
 
 
 # ---------------------------------------------------------------------------
@@ -163,11 +175,65 @@ async def test_list_pendientes_renovacion_orders_agotados_first_then_soonest() -
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[agotado_acta]),
         ),
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ),
     ):
         items, total = await svc.list_pendientes_renovacion(page=1, size=20, user_id=uuid.uuid4())
 
     assert total == 3
     assert [it.expediente_code for it in items] == ["EXP-AGOTADO-ACTA", "EXP-PROXIMO", "EXP-LEJOS"]
+
+
+@pytest.mark.asyncio
+async def test_list_pendientes_renovacion_orders_across_all_three_tipos() -> None:
+    """Gemelo del test anterior con el AIP participando en la MEZCLA (no solo
+    índice/acta) -- el orden agotado-primero-luego-más-próximo es indiferente
+    a qué repositorio aportó cada fila."""
+    conn = _mock_conn()
+    svc = IndexService(conn, TENANT)
+    now = datetime.now(tz=UTC)
+
+    proximo_indice = _visibilidad_row(
+        expediente_code="EXP-IND-PROXIMO", worm_retain_until=now + timedelta(days=5), worm_renovacion_agotado=False
+    )
+    lejos_acta = _visibilidad_row(
+        expediente_code="EXP-ACT-LEJOS", worm_retain_until=now + timedelta(days=300), worm_renovacion_agotado=False
+    )
+    agotado_aip = _visibilidad_row(
+        expediente_code="EXP-AIP-AGOTADO",
+        worm_retain_until=now + timedelta(days=200),  # lejos, pero agotado siempre gana
+        worm_renovacion_agotado=True,
+    )
+
+    with (
+        patch.object(svc._archive, "caller_clearance", new=AsyncMock(return_value=3)),
+        patch.object(
+            IndexRepository,
+            "list_worm_renovacion_visibilidad",
+            new=AsyncMock(return_value=[proximo_indice]),
+        ),
+        patch.object(
+            TransferenciaRepository,
+            "list_worm_renovacion_visibilidad",
+            new=AsyncMock(return_value=[lejos_acta]),
+        ),
+        patch.object(
+            AipRepository,
+            "list_worm_renovacion_visibilidad",
+            new=AsyncMock(return_value=[agotado_aip]),
+        ),
+    ):
+        items, total = await svc.list_pendientes_renovacion(page=1, size=20, user_id=uuid.uuid4())
+
+    assert total == 3
+    assert [it.expediente_code for it in items] == [
+        "EXP-AIP-AGOTADO",
+        "EXP-IND-PROXIMO",
+        "EXP-ACT-LEJOS",
+    ]
+    by_code = {it.expediente_code: it.tipo for it in items}
+    assert by_code["EXP-AIP-AGOTADO"] == "aip"
 
 
 @pytest.mark.asyncio
@@ -199,6 +265,9 @@ async def test_list_pendientes_renovacion_agotado_with_null_retain_until_does_no
             TransferenciaRepository,
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
         ),
     ):
         items, total = await svc.list_pendientes_renovacion(page=1, size=20, user_id=uuid.uuid4())
@@ -241,6 +310,9 @@ async def test_list_pendientes_renovacion_paginates_in_memory_after_merge() -> N
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=acta_rows),
         ),
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ),
     ):
         page1, total1 = await svc.list_pendientes_renovacion(page=1, size=2, user_id=uuid.uuid4())
         page3, total3 = await svc.list_pendientes_renovacion(page=3, size=2, user_id=uuid.uuid4())
@@ -272,6 +344,9 @@ async def test_get_indices_pendientes_renovacion_endpoint_sets_total_count_heade
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[]),
         ),
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ),
     ):
         resp = await client.get(
             "/api/v1/expedientes/indices/pendientes-renovacion", headers=TENANT_HEADERS
@@ -299,6 +374,9 @@ async def test_get_indices_pendientes_renovacion_endpoint_returns_expected_shape
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[]),
         ),
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ),
     ):
         resp = await client.get(
             "/api/v1/expedientes/indices/pendientes-renovacion", headers=TENANT_HEADERS
@@ -312,6 +390,45 @@ async def test_get_indices_pendientes_renovacion_endpoint_returns_expected_shape
     assert item["expediente_id"] == str(exp_id)
     assert item["expediente_code"] == "EXP-CT-9999"
     assert item["tipo"] == "indice"
+    assert item["worm_renovacion_agotado"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_indices_pendientes_renovacion_endpoint_returns_tipo_aip_shape(client_with_conn) -> None:
+    """Gemelo del test anterior para una fila aportada por `AipRepository` --
+    el endpoint combinado etiqueta `tipo='aip'` (E10 debt, fast-follow del
+    cableado del AIP) exactamente igual que 'indice'/'acta_transferencia'."""
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = {"is_root": False, "max_level": 3}
+    row = _visibilidad_row(expediente_id=exp_id, expediente_code="EXP-AIP-9999", worm_renovacion_agotado=True)
+
+    with (
+        patch.object(
+            IndexRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ),
+        patch.object(
+            TransferenciaRepository,
+            "list_worm_renovacion_visibilidad",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[row])
+        ),
+    ):
+        resp = await client.get(
+            "/api/v1/expedientes/indices/pendientes-renovacion", headers=TENANT_HEADERS
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Total-Count"] == "1"
+    body = resp.json()
+    assert len(body) == 1
+    item = body[0]
+    assert item["expediente_id"] == str(exp_id)
+    assert item["expediente_code"] == "EXP-AIP-9999"
+    assert item["tipo"] == "aip"
     assert item["worm_renovacion_agotado"] is True
 
 
@@ -354,6 +471,9 @@ async def test_pendientes_renovacion_permiso_insuficiente_es_rechazado_por_el_ga
             "list_worm_renovacion_visibilidad",
             new=AsyncMock(return_value=[]),
         ) as mock_acta,
+        patch.object(
+            AipRepository, "list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])
+        ) as mock_aip,
     ):
         resp = await client.get(
             "/api/v1/expedientes/indices/pendientes-renovacion", headers=TENANT_HEADERS
@@ -362,3 +482,4 @@ async def test_pendientes_renovacion_permiso_insuficiente_es_rechazado_por_el_ga
     assert resp.status_code == 403
     mock_indice.assert_not_called()
     mock_acta.assert_not_called()
+    mock_aip.assert_not_called()

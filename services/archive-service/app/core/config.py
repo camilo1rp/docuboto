@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     # storage-service rechace la llamada con 401 (fail-closed) — NUNCA
     # commitear el valor real.
     storage_internal_token: str = ""
+    # E10 debt (cableado del AIP OAIS al cierre del expediente): resolución
+    # cross-servicio de los `file_id` de los anexos de un lote de radicados
+    # — document-service es el único que conoce esa tabla. Ver
+    # app/clients/document_client.py.
+    document_service_url: str = "http://document-service:8003"
+    # D-02: mismo secreto que document-service.INTERNAL_SERVICE_TOKEN —
+    # enviado en X-Internal-Token al pedir el inventario TOTAL de anexos
+    # (`POST /internal/documentos/anexos`). Vacío (default) hace que
+    # document-service rechace la llamada con 401 (fail-closed) — NUNCA
+    # commitear el valor real.
+    document_internal_token: str = ""
     service_port: int = 8004
     log_level: str = "info"
 

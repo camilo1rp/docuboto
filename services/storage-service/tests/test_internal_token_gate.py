@@ -149,3 +149,41 @@ async def test_delete_is_not_gated_by_internal_token(
     )
 
     assert response.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# Remediación de auditoría (Baja): comparación en tiempo constante
+# (`hmac.compare_digest`, no `!=`) — se prueba `require_internal_token`
+# DIRECTAMENTE (sin HTTP) para cubrir el caso de tokens de LONGITUD DISTINTA,
+# que `hmac.compare_digest` maneja sin excepción (a diferencia de un XOR
+# byte-a-byte ingenuo) y que ningún test HTTP existente ejercita a propósito.
+# ---------------------------------------------------------------------------
+
+
+def test_require_internal_token_uses_constant_time_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.core.internal_auth import require_internal_token
+
+    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
+
+    # Token correcto: no lanza.
+    require_internal_token(x_internal_token=TEST_INTERNAL_TOKEN)
+
+    # Token incorrecto de la MISMA longitud: 403, no crashea.
+    with pytest.raises(HTTPException) as exc_info:
+        require_internal_token(x_internal_token="x" * len(TEST_INTERNAL_TOKEN))
+    assert exc_info.value.status_code == 403
+
+    # Token incorrecto de longitud DISTINTA (más corto y más largo): sigue
+    # siendo un 403 fail-closed, `hmac.compare_digest` no revienta con
+    # longitudes distintas (a diferencia de un XOR ingenuo byte-a-byte).
+    with pytest.raises(HTTPException) as exc_info:
+        require_internal_token(x_internal_token="short")
+    assert exc_info.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_internal_token(x_internal_token=TEST_INTERNAL_TOKEN + "-extra-suffix")
+    assert exc_info.value.status_code == 403

@@ -122,6 +122,44 @@ async def list_plan_versions(
     return [PlanResponse(**dict(r)) for r in rows]
 
 
+def _map_empaquetar_aip_error(exc: Exception) -> HTTPException:
+    """Traduce las excepciones de `AipService.empaquetar_aip` a HTTP —
+    compartido por la ruta pública (RBAC) y la interna (D-02, E10 debt) para
+    no duplicar el mapeo dos veces, mismo criterio que
+    `_map_proteger_indice_error`."""
+    if isinstance(exc, PreservationDisabledError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
+        )
+    if isinstance(exc, FileNotFoundForPreservationError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
+        )
+    if isinstance(exc, InvalidRetentionError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        )
+    if isinstance(exc, FixityMismatchError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
+        )
+    if isinstance(exc, ObjectLockNotEnabledError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
+        )
+    if isinstance(exc, PremisValidationError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "premis_invalid", "detail": str(exc), "status": 500},
+        )
+    raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
+
+
 @router.post(
     "/aip",
     response_model=AipResponse,
@@ -148,36 +186,59 @@ async def empaquetar_aip(
     service = AipService(conn, tenant_slug)
     try:
         return await service.empaquetar_aip(payload, actor=_actor(request))
-    except PreservationDisabledError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
-        ) from exc
-    except FileNotFoundForPreservationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
-        ) from exc
-    except InvalidRetentionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
-        ) from exc
-    except FixityMismatchError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
-        ) from exc
-    except ObjectLockNotEnabledError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
-        ) from exc
-    except PremisValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "premis_invalid", "detail": str(exc), "status": 500},
-        ) from exc
+    except (
+        PreservationDisabledError,
+        FileNotFoundForPreservationError,
+        InvalidRetentionError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+        PremisValidationError,
+    ) as exc:
+        raise _map_empaquetar_aip_error(exc) from exc
+
+
+@router.post(
+    "/aip-internal",
+    response_model=AipResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Gemelo INTERNO (D-02) de POST /aip -- disparo SISTEMA del "
+        "empaquetado del AIP desde archive-service (E10 debt, cableado del "
+        "AIP al cierre del expediente)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def empaquetar_aip_internal(
+    payload: AipCreate,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> AipResponse:
+    """Mismo servicio que `POST /aip`, con OTRA puerta de autorización:
+    `X-Internal-Token` (D-02) en vez de `require_permission(min_crud=3)` --
+    mismo patrón que `/proteger-indice-internal`.
+
+    Existe porque el cableado del AIP (E10 debt) es RECONCILIACIÓN-ONLY
+    (descargar todos los bytes + ZIP + subir al bucket WORM es caro: NUNCA se
+    intenta síncronamente en el path del cierre del expediente) — el único
+    llamador es la 6ª fase de reconciliación de archive-service
+    (`run_once_aip`), que actúa con `SYSTEM_RECONCILER_ID` (sin fila en
+    `auth_users` de este tenant). `require_permission` la rechazaría SIEMPRE
+    con 403, dejando el AIP sin empaquetar de forma permanente para
+    CUALQUIER expediente -- mismo motivo exacto que
+    `proteger_indice_internal`/`renovar_retencion_internal`. Actor fijo
+    (`SYSTEM_RECONCILER_ID`), NUNCA derivado de headers del llamador."""
+    service = AipService(conn, tenant_slug)
+    try:
+        return await service.empaquetar_aip(payload, actor=str(SYSTEM_RECONCILER_ID))
+    except (
+        PreservationDisabledError,
+        FileNotFoundForPreservationError,
+        InvalidRetentionError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+        PremisValidationError,
+    ) as exc:
+        raise _map_empaquetar_aip_error(exc) from exc
 
 
 @router.get(

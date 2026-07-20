@@ -21,6 +21,8 @@ token configurado, TODAS las llamadas se rechazan (401) — no hay modo
 "abierto" por omisión.
 """
 
+import hmac
+
 from fastapi import Header, HTTPException, status
 
 from app.core.config import settings
@@ -46,7 +48,13 @@ def require_internal_token(x_internal_token: str | None = Header(default=None)) 
                 "status": 401,
             },
         )
-    if x_internal_token != configured:
+    # Comparación en tiempo constante (remediación de auditoría, Baja): `!=`
+    # sobre strings corta en el primer byte distinto, filtrando por temporización
+    # cuántos caracteres iniciales acertó un atacante que mida la latencia de la
+    # respuesta. `hmac.compare_digest` no lo hace — mismo criterio ya aplicado en
+    # `auth-service/app/core/internal_auth.py`. El fail-closed de arriba (token no
+    # configurado / ausente) queda intacto, solo cambia ESTA comparación final.
+    if not hmac.compare_digest(x_internal_token, configured):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={

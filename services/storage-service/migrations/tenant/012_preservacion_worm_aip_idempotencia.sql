@@ -1,0 +1,68 @@
+-- OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+-- Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+-- Contacto: aurigadl@gmail.com
+--
+-- Software libre: este archivo se distribuye bajo la Licencia Pública General
+-- Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+-- conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+-- SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+-- Migración de tenant (E10 debt "AIP sin-wiring" — cableado del AIP OAIS al
+-- cierre del expediente desde archive-service): defensa en profundidad
+-- contra doble-registro del AIP en un retry parcial del disparo de
+-- reconciliación, espejo PARCIAL de las migraciones 009/010 (índice/acta).
+--
+-- DECISIÓN (documentada, ver `.claude/agent-memory/fastapi-developer/
+-- project_storage_service.md`, sección "E10 Inc.1"): NO se añade un
+-- UNIQUE(expediente_id) liso `WHERE tipo='aip'`. La migración 009 ya
+-- documentó por qué el AIP NO es un singleton por expediente como sí lo son
+-- el índice/acta: "es legítimo re-empaquetar el AIP de un expediente más de
+-- una vez a lo largo del tiempo (nuevo documento incorporado, nueva
+-- migración de formato) — nada en Increment B asume o prueba 'un solo AIP
+-- por expediente para siempre'" — ver también el docstring de
+-- `app/services/aip_service.py`. Un UNIQUE(expediente_id) liso convertiría
+-- esa capacidad ya documentada en un `unique_violation` permanente a partir
+-- del segundo empaquetado legítimo.
+--
+-- En su lugar: UNIQUE(expediente_id, sha256) WHERE tipo='aip' — dedup por
+-- CONTENIDO.
+--
+-- CORRECCIÓN (remediación de auditoría, Media, sobre el cableado del AIP —
+-- ver `.claude/agent-memory/fastapi-developer/project_storage_service.md`,
+-- sección "E10-B remediación #1"): la justificación ORIGINAL de este índice
+-- afirmaba que "dos intentos EXITOSOS [concurrentes] producen el MISMO
+-- `sha256` del ZIP (mismo conjunto de documentos + mismo índice firmado
+-- embebido en ese instante)" — eso es FALSO. `aip_builder.py` embebe
+-- timestamps reales en el artefacto (`generado.isoformat()` en el PREMIS,
+-- el mtime por-entrada de cada `zf.writestr`): dos empaquetados del MISMO
+-- expediente, aunque sean estrictamente concurrentes y con el MISMO
+-- contenido lógico, casi siempre producen bytes de ZIP DISTINTOS -> `sha256`
+-- distinto -> este UNIQUE NUNCA los deduplica. Este índice solo dedupliza el
+-- caso mucho más estrecho de un REINTENTO byte-a-byte idéntico (mismo
+-- artefacto ya construido, subido dos veces sin volver a empaquetarlo) —
+-- una red de seguridad honesta para ESE caso, no una guarda general de la
+-- carrera de doble-empaquetado concurrente.
+--
+-- El cierre REAL de esa carrera (remediación #1b, mismo incremento) es un
+-- advisory lock de SESIÓN por `(tenant, expediente_id, 'aip')` en
+-- `AipService.empaquetar_aip` (reusa `_worm_lock_key`, mismo mecanismo que
+-- `PreservationWormService.proteger_indice`) que serializa
+-- check->put_object->insert para AMBAS rutas (`/aip` pública y
+-- `/aip-internal`) — bajo ese lock, un segundo empaquetado del mismo
+-- expediente SIEMPRE corre DESPUÉS de que el primero libere el lock, nunca
+-- en paralelo con él. Este índice queda como defensa en profundidad a nivel
+-- BD (por si algún día un llamador invoca el repositorio sin pasar por el
+-- lock del servicio), no como el mecanismo principal de cierre de la carrera.
+--
+-- Sigue sin ser un `UNIQUE(expediente_id)` liso por el mismo motivo explicado
+-- arriba (versiones legítimas múltiples por expediente) — eso no cambia con
+-- esta corrección, solo se corrige QUÉ cierra realmente la carrera.
+--
+-- Aditiva/idempotente: `CREATE UNIQUE INDEX IF NOT EXISTS`.
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_preservacion_worm_objeto_expediente_aip_sha256
+    ON preservacion_worm_objeto (expediente_id, sha256)
+    WHERE tipo = 'aip';
+
+-- Rollback (manual, no automatizado por el runner):
+-- DROP INDEX IF EXISTS ux_preservacion_worm_objeto_expediente_aip_sha256;

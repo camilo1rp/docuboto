@@ -7,11 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Validación PDF/A del AIP en ingesta (E10 Increment C2a)."""
+"""Validación PDF/A del AIP en ingesta (E10 Increment C2a/C2b)."""
 
 from app.services.pdfa.factory import get_pdfa_validator
 from app.services.pdfa.runner import run_pdfa_validation
 from app.services.pdfa.stub import StubPdfaValidator
+from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 from app.services.pdfa.types import PdfaOutcome, PdfaResult, PdfaValidator
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "PdfaResult",
     "PdfaValidator",
     "StubPdfaValidator",
+    "SubprocessVeraPdfValidator",
     "get_pdfa_validator",
     "run_pdfa_validation",
 ]

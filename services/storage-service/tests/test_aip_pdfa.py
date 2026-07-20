@@ -134,6 +134,7 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _pdf_record(doc_file_id),
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         _aip_insert_row(aip_id, retain_until),
         make_worm_row(expediente_id="EXP-1", tipo="aip", retain_until=retain_until),
         _evento_row("FIJACION"),
@@ -180,6 +181,7 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _pdf_record(doc_file_id),
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         _aip_insert_row(aip_id, retain_until),
         make_worm_row(expediente_id="EXP-1", tipo="aip", retain_until=retain_until),
         _evento_row("FIJACION"),
@@ -269,6 +271,7 @@ async def test_pdfa_validation_skips_non_pdf_document(client_with_conn, monkeypa
             sha256=_NON_PDF_SHA256,
             object_key=f"{doc_file_id}/nota.txt",
         ),
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         _aip_insert_row(aip_id, retain_until),
         make_worm_row(expediente_id="EXP-1", tipo="aip", retain_until=retain_until),
         _evento_row("FIJACION"),
@@ -315,6 +318,7 @@ async def test_pdfa_validation_ignores_declared_mime_type_uses_sniff(
             sha256=_FAKE_PDF_MIME_SHA256,
             object_key=f"{doc_file_id}/disfrazado.pdf",
         ),
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         _aip_insert_row(aip_id, retain_until),
         make_worm_row(expediente_id="EXP-1", tipo="aip", retain_until=retain_until),
         _evento_row("FIJACION"),

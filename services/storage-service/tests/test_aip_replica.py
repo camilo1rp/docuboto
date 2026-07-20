@@ -77,6 +77,7 @@ def _aip_fetchrow_sequence(*, doc_file_id: uuid.UUID, aip_id: uuid.UUID, retain_
     sin índice (doc + insert_aip + worm_insert + FIJACION/WORM/INGESTA)."""
     return [
         _doc_record(doc_file_id),
+        None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
         {
             "id": aip_id,
             "expediente_id": "EXP-1",

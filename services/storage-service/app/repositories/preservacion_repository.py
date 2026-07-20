@@ -166,6 +166,36 @@ class PreservacionRepository:
             expediente_id,
         )
 
+    async def get_aip_by_expediente_and_sha256(
+        self, expediente_id: str, aip_sha256: str
+    ) -> asyncpg.Record | None:
+        """Fila `aip` para `(expediente_id, aip_sha256)` EXACTO — respaldo en
+        código, bajo el advisory lock de sesión, del índice único parcial
+        `ux_preservacion_worm_objeto_expediente_aip_sha256` (migración 012,
+        sobre `preservacion_worm_objeto`, no sobre esta tabla).
+
+        `AipService.empaquetar_aip` la consulta DESPUÉS de construir el Bag
+        (solo entonces se conoce el `aip_sha256` real del ZIP completo) y
+        ANTES de `put_object` — remediación de auditoría (Media, cierre de la
+        carrera de doble-empaquetado): si ya existe una fila con el MISMO
+        contenido para este expediente, la llamada es idempotente (corte-
+        circuito, sin re-subir nada al bucket WORM), mismo criterio que
+        `PreservacionWormRepository.get_by_expediente_and_tipo` para
+        `proteger_indice` — pero contra `aip` (que sí tiene todas las
+        columnas necesarias para reconstruir `AipResponse` directamente,
+        a diferencia de `preservacion_worm_objeto`, que no persiste
+        `premis_xml`/`num_documentos`/etc.). Contenido DISTINTO (`aip_sha256`
+        distinto) no encuentra nada aquí y procede a un nuevo empaquetado
+        legítimo (ver migración 012: el AIP admite N versiones por
+        expediente)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_AIP_COLS} FROM aip WHERE expediente_id = $1 AND aip_sha256 = $2 "
+            "ORDER BY created_at DESC LIMIT 1",
+            expediente_id,
+            aip_sha256,
+        )
+
     async def list_eventos(self, object_ref: str | None) -> list[asyncpg.Record]:
         await self._sp()
         if object_ref is not None:

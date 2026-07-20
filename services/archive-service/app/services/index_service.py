@@ -37,6 +37,7 @@ from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.models.archive import Expediente
+from app.repositories.aip_repository import AipRepository
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
@@ -821,15 +822,16 @@ class IndexService:
         conservación PERMANENTE a punto de expirar).
 
         No-read-up (RF-SEG-08): resuelve el clearance real del llamante y lo
-        pasa a AMBAS consultas (índices y actas) -- mismo criterio que
-        `list_pendientes_firma`.
+        pasa a las TRES consultas (índices, actas y AIP) -- mismo criterio
+        que `list_pendientes_firma`.
 
-        UN endpoint combinado (`tipo` distingue `indice`/`acta_transferencia`,
-        ver `IndicePendienteRenovacion`) en vez de dos gemelos: el volumen
+        UN endpoint combinado (`tipo` distingue `indice`/`acta_transferencia`/
+        `aip` -- este último, E10 debt, fast-follow del cableado del AIP, ver
+        `IndicePendienteRenovacion`) en vez de tres gemelos: el volumen
         esperado por tenant es pequeño (solo artefactos CT en riesgo), así que
-        se combinan y paginan en MEMORIA en vez de un UNION ALL SQL entre dos
+        se combinan y paginan en MEMORIA en vez de un UNION ALL SQL entre tres
         grafos de JOIN distintos (`expediente_indice` vs.
-        `transferencia_acta_firma`/`transferencias`)."""
+        `transferencia_acta_firma`/`transferencias` vs. `expediente_aip`)."""
         clearance = await self._archive.caller_clearance(user_id)
         ct_codes = list(CT_DISPOSITION_CODES)
         ventana_dias = settings.worm_renovacion_ventana_dias
@@ -840,6 +842,9 @@ class IndexService:
         acta_rows = await TransferenciaRepository(
             self._conn, self._tenant_slug
         ).list_worm_renovacion_visibilidad(
+            max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
+        )
+        aip_rows = await AipRepository(self._conn).list_worm_renovacion_visibilidad(
             max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
         )
 
@@ -865,6 +870,17 @@ class IndexService:
                 worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
             )
             for r in acta_rows
+        ] + [
+            IndicePendienteRenovacion(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                tipo="aip",
+                worm_retain_until=r["worm_retain_until"],
+                worm_renovacion_intentos=r["worm_renovacion_intentos"],
+                worm_renovacion_agotado=r["worm_renovacion_agotado"],
+                worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
+            )
+            for r in aip_rows
         ]
         # Más urgente primero: agotado antes que en-riesgo, y dentro de cada
         # grupo, el vencimiento más próximo primero. `datetime.max` (UTC) para

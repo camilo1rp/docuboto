@@ -354,10 +354,18 @@ class RenovarRetencionRequest(RetentionMixin):
     (200, SIN tocar MinIO). ``legal_hold`` (heredado de `RetentionMixin`) se
     IGNORA en este flujo -- la renovación es puramente de fecha; el freeze de
     litigio se gestiona por separado (roadmap, `active_lock_for_expediente`
-    ya lo trata como bloqueo incondicional aparte de `retain_until`)."""
+    ya lo trata como bloqueo incondicional aparte de `retain_until`).
+
+    `tipo='aip'` (E10 debt: extensión de la renovación al AIP OAIS, fast-follow
+    del cableado del AIP): a diferencia de `indice`/`acta_transferencia`
+    (SINGLETON por expediente, migraciones 009/010), el AIP admite N filas
+    `preservacion_worm_objeto` por expediente (re-empaquetado legítimo,
+    migración 012) -- `get_by_expediente_and_tipo` ya resuelve la MÁS
+    RECIENTE (`ORDER BY created_at DESC LIMIT 1`), así que renovar siempre
+    extiende el AIP vigente, sin cambio de comportamiento en el repositorio."""
 
     expediente_id: str = Field(..., min_length=1, max_length=255)
-    tipo: Literal["indice", "acta_transferencia"]
+    tipo: Literal["indice", "acta_transferencia", "aip"]
 
     @field_validator("expediente_id")
     @classmethod

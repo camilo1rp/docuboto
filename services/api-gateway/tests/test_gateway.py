@@ -7,6 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+import uuid
 from unittest.mock import AsyncMock
 
 import httpx
@@ -338,6 +339,14 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/internal/signing-key/sign-digest", state) is None
     assert _route_to_upstream("/internal/signing-key/activate", state) is None
     assert _route_to_upstream("/internal/totp/verify", state) is None
+    # Remediación #3 (auditoría cableado AIP E10-B): `POST
+    # /api/v1/internal/documentos/anexos` (D-02, document-service, primer
+    # endpoint interno de ese servicio) NO tiene ningún prefijo mapeado --
+    # a diferencia de `/internal/*` de arriba (fuera de `/api/v1` por
+    # construcción), este SÍ vive bajo `/api/v1/`, así que hace falta
+    # confirmarlo explícitamente: ningún prefijo de la tabla (`/api/v1/documents/`
+    # incluido) lo casa, porque el segmento es `internal`, no `documents`.
+    assert _route_to_upstream("/api/v1/internal/documentos/anexos", state) is None
 
 
 async def test_public_verify_route_is_public_and_routed():
@@ -470,6 +479,46 @@ async def test_client_x_internal_token_header_is_not_forwarded_for_eventos(test_
     assert "X-Internal-Token" not in forwarded, (
         "Client-supplied X-Internal-Token must never reach an upstream service"
     )
+
+
+async def test_internal_anexos_path_is_not_routed_externally(test_client):
+    """Remediación #3 (auditoría cableado AIP E10-B): `POST
+    /api/v1/internal/documentos/anexos` (D-02, document-service) no tiene
+    ningún prefijo mapeado en `_route_to_upstream` -- un cliente externo que
+    intente alcanzarlo vía el gateway recibe 404 `route_not_found` ANTES de
+    que la petición llegue siquiera a document-service (que además la
+    rechazaría con `X-Internal-Token`, nunca reenviado -- ver el test de
+    abajo). Mismo criterio que la inalcanzabilidad ya probada para
+    `/internal/signing-key/*`/`/internal/totp/*`."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock()  # no debería llamarse jamás
+
+    response = await client.post(
+        "/api/v1/internal/documentos/anexos",
+        json={"radicado_ids": [str(uuid.uuid4())]},
+        headers={
+            "Authorization": "Bearer valid-token",
+            "X-Internal-Token": "forged",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "route_not_found"
+    http_client.request.assert_not_called()
+
+
+async def test_x_internal_token_header_never_in_forwarded_request_headers():
+    """Defensa en profundidad estructural (remediación #3): incluso si algún
+    prefijo nuevo mapeara `/internal/...` a un upstream por error futuro,
+    `X-Internal-Token` seguiría sin poder viajar -- no está en la whitelist
+    `FORWARDED_REQUEST_HEADERS` (la fuente del invariante que
+    `test_client_x_internal_token_header_is_not_forwarded*` ya prueba de
+    forma indirecta, vía una petición HTTP real)."""
+    from app.core.proxy import FORWARDED_REQUEST_HEADERS
+
+    assert "x-internal-token" not in FORWARDED_REQUEST_HEADERS
 
 
 async def test_gateway_injects_server_derived_x_canal(test_client):

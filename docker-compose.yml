@@ -360,6 +360,11 @@ services:
       # se repite en storage-service (INTERNAL_SERVICE_TOKEN) y en
       # archive-service/signature-service más abajo. NUNCA este valor en producción.
       - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
+      # E10 debt (cableado del AIP OAIS al cierre del expediente): secreto que
+      # ESTE servicio exige en X-Internal-Token en
+      # POST /api/v1/internal/documentos/anexos — único llamador legítimo:
+      # archive-service (ver el comentario en ese bloque más abajo). Dev-only.
+      - INTERNAL_SERVICE_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
       - TENANT_SERVICE_URL=http://tenant-service:8002
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
@@ -396,6 +401,12 @@ services:
       # 001/2024 art. 4.3.2.4, app/jobs/indice_reconciliation.py) lo usa para
       # llamar signature-service POST /internal/sign-indice. Dev-only.
       - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
+      # E10 debt (cableado del AIP OAIS al cierre del expediente): document-service
+      # resuelve los file_id de los anexos de un lote de radicados —
+      # app/clients/document_client.py. Mismo secreto que
+      # document-service.INTERNAL_SERVICE_TOKEN más arriba. Dev-only.
+      - DOCUMENT_SERVICE_URL=http://document-service:8003
+      - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:
@@ -408,9 +419,14 @@ services:
   storage-service:
     # Contexto en la raíz para incluir shared/ (ADR-010): auditoría inmutable
     # orpycamcp_common (soft-delete auditado D-04).
+    # target: base EXPLÍCITO (E10 Increment C2b): el Dockerfile es multi-stage
+    # y el ÚLTIMO stage declarado es "production" (Java+veraPDF, ver
+    # services/storage-service/Dockerfile) -- sin este target, `docker build`
+    # tomaría por defecto ese último stage y dev dejaría de ser slim.
     build:
       context: .
       dockerfile: services/storage-service/Dockerfile
+      target: base
     container_name: orpycamcp-storage
     ports:
       - "19005:8005"

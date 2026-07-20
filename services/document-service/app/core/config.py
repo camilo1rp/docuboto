@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     # storage-service rechace la llamada con 401 (fail-closed) — NUNCA
     # commitear el valor real.
     storage_internal_token: str = ""
+    # D-02 (E10 debt, cableado del AIP al cierre): secreto que ESTE servicio
+    # exige en X-Internal-Token en `POST /api/v1/internal/documentos/anexos`
+    # (`app/routers/internal.py`) — el ÚNICO llamador legítimo es
+    # archive-service (`app/clients/document_client.py`), que resuelve el
+    # inventario TOTAL de anexos de un lote de radicados para empaquetar el
+    # AIP OAIS (acto de sistema, sin gate de clearance). Vacío (default) hace
+    # que este servicio rechace la llamada con 401 (fail-closed) — NUNCA
+    # commitear el valor real. Mismo patrón que
+    # `storage-service.INTERNAL_SERVICE_TOKEN`.
+    internal_service_token: str = ""
     tenant_service_url: str = "http://tenant-service:8002"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"

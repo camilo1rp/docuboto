@@ -479,6 +479,47 @@ class DocumentRepository:
         # `a.id` NULL = radicado visible sin anexos → lista vacía.
         return [_row_to_anexo(r) for r in rows if r["id"] is not None]
 
+    async def list_anexos_for_radicados_internal(
+        self, radicado_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[Anexo]]:
+        """Inventario TOTAL de anexos de un LOTE de radicados — SIN gate de
+        clearance (E10 debt, cableado del AIP al cierre del expediente:
+        `app/routers/internal.py::anexos_batch`, D-02, `X-Internal-Token`).
+
+        Deliberadamente distinto de `list_anexos_for_document` (no-read-up,
+        RF-SEG-08): el empaquetado del AIP es un ACTO DE SISTEMA que necesita
+        el inventario COMPLETO de archivos digitales del expediente — filtrar
+        por el clearance de quien disparó el cierre dejaría anexos fuera en
+        silencio (AIP incompleto), justo el fallo que este endpoint existe
+        para evitar. Inalcanzable desde el exterior (prefijo interno +
+        `require_internal_token`, ver `app/core/internal_auth.py`).
+
+        UN solo round-trip (`WHERE radicado_id = ANY($1)`) en vez de N
+        llamadas — ya scoped al tenant por el `search_path` que fija
+        `get_tenant_conn`: un `radicado_id` de OTRO tenant simplemente no
+        matchea ninguna fila de la tabla `anexos` de ESTE schema (aislamiento
+        físico por schema, ADR-002), sin necesidad de un JOIN a `radicados`
+        para filtrar. Radicados sin anexos digitales, o `radicado_id` que no
+        existen en este tenant, simplemente no aparecen como clave del dict
+        devuelto (el llamador lo trata como lista vacía).
+        """
+        if not radicado_ids:
+            return {}
+        rows = await self._conn.fetch(
+            """
+            SELECT id, radicado_id, file_id, filename, file_size, mime_type,
+                   created_at, tipo_anexo, es_principal, folios
+            FROM anexos
+            WHERE radicado_id = ANY($1::uuid[])
+            ORDER BY radicado_id, created_at ASC
+            """,
+            radicado_ids,
+        )
+        result: dict[uuid.UUID, list[Anexo]] = {}
+        for r in rows:
+            result.setdefault(r["radicado_id"], []).append(_row_to_anexo(r))
+        return result
+
     async def _get_anexos(self, radicado_id: uuid.UUID) -> list[Anexo]:
         rows = await self._conn.fetch(
             """

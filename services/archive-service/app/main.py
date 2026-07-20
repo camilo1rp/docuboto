@@ -30,6 +30,7 @@ from app.core.database import close_pool, create_pool
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
 from app.jobs.indice_reconciliation import run_once_actas_worm as _reconcile_actas_worm_once
+from app.jobs.indice_reconciliation import run_once_aip as _reconcile_aip_once
 from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
 from app.jobs.indice_reconciliation import (
     run_once_worm_renovacion as _reconcile_worm_renovacion_once,
@@ -71,7 +72,12 @@ async def _indice_reconciliation_loop() -> None:
     el mismo criterio: reactiva a "el índice/acta ya quedó protegido", sin
     kill-switch/intervalo propio (solo la ventana de antelación
     `worm_renovacion_ventana_dias` es configurable). Cubre ÍNDICE Y ACTA en
-    una sola llamada (ver el docstring de `run_once_worm_renovacion`)."""
+    una sola llamada (ver el docstring de `run_once_worm_renovacion`).
+
+    Incluye también la 6ª fase (E10 debt "AIP sin-wiring", cableado del AIP
+    OAIS al cierre, `run_once_aip`) — piggyback en el MISMO ciclo, mismo
+    criterio: reactiva a "el índice ya quedó firmado+protegido bajo WORM",
+    sin kill-switch/intervalo propio."""
     while True:
         try:
             await _reconcile_indices_once()
@@ -92,6 +98,13 @@ async def _indice_reconciliation_loop() -> None:
         except Exception:
             logger.warning(
                 "Fallo en la barrida de renovación de retención WORM (series CT)",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_aip_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de cableado del AIP",
                 exc_info=True,
             )
         await asyncio.sleep(settings.indice_reconciliation_interval_seconds)

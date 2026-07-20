@@ -44,8 +44,10 @@ from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from app.core.disposition import CT_DISPOSITION_CODES
+from app.repositories.aip_repository import AipRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
+from app.services.aip_wiring_service import AipWiringService
 from app.services.backoff import next_backoff_seconds
 from app.services.index_service import IndexService
 from app.services.transferencia_service import TransferenciaService
@@ -693,21 +695,22 @@ async def run_once_actas_worm() -> dict[str, int]:
 # disposición Conservación Total (CT) el documento debe conservarse PARA
 # SIEMPRE, pero el lock COMPLIANCE VENCE en esa fecha -- esta fase EXTIENDE
 # `retain_until` (ventana rodante `now() + total_TRD`, NUNCA una fecha
-# lejana/9999) antes de que expire, para el índice Y el acta de transferencia
-# (los dos artefactos con espejo local en este servicio; el AIP queda fuera
-# de alcance -- no tiene espejo, ver `app/core/disposition.py`).
+# lejana/9999) antes de que expire, para el índice, el acta de transferencia
+# Y (E10 debt, fast-follow del cableado del AIP) el AIP OAIS -- los TRES
+# artefactos con espejo local en este servicio (`expediente_indice`/
+# `transferencia_acta_firma`/`expediente_aip`, ver `app/core/disposition.py`).
 #
-# UNA sola función (`run_once_worm_renovacion`) cubre AMBOS artefactos --
-# a diferencia de las fases 3/4 (`run_once_worm`/`run_once_actas_worm`,
-# separadas porque cada una tenía su propio "artefacto recién firmado" que
-# disparaba la protección inicial), la renovación es un barrido periódico
-# puramente reactivo al vencimiento próximo sin un evento que la dispare —
-# no hay razón para separarla en dos funciones ni darle cadencia propia.
-# Piggyback en el MISMO ciclo/cadencia que la 3ra fase (índice,
-# `_indice_reconciliation_loop` en `app/main.py`) — reutiliza
+# UNA sola función (`run_once_worm_renovacion`) cubre los TRES artefactos --
+# a diferencia de las fases 3/4/6 (`run_once_worm`/`run_once_actas_worm`/
+# `run_once_aip`, separadas porque cada una tenía su propio "artefacto recién
+# firmado/empaquetado" que disparaba la protección inicial), la renovación es
+# un barrido periódico puramente reactivo al vencimiento próximo sin un
+# evento que la dispare — no hay razón para separarla en tres funciones ni
+# darle cadencia propia. Piggyback en el MISMO ciclo/cadencia que la 3ra fase
+# (índice, `_indice_reconciliation_loop` en `app/main.py`) — reutiliza
 # `indice_reconciliation_max_intentos`/`backoff_base_seconds`/`cap_seconds`/
 # `batch_size`, mismo criterio que ató las fases WORM anteriores al ciclo del
-# sellado (barata: el índice parcial de las migraciones 031/032 devuelve
+# sellado (barata: el índice parcial de las migraciones 031/032/034 devuelve
 # vacío casi siempre en un tenant sin series CT próximas a vencer).
 #
 # Fail-closed por construcción (`CT_DISPOSITION_CODES`, ver
@@ -747,6 +750,19 @@ async def _reconciliar_worm_renovacion_acta(
     )
 
 
+async def _reconciliar_worm_renovacion_aip(
+    conn: asyncpg.Connection, slug: str, row: asyncpg.Record
+) -> str:
+    """Intenta renovar la retención WORM del AIP de UN expediente CT próximo
+    a vencer (E10 debt, fast-follow del cableado del AIP) -- gemela EXACTA de
+    `_reconciliar_worm_renovacion_indice`."""
+    service = AipWiringService(conn, slug)
+    return await service.renovar_worm_aip(
+        row["expediente_id"],
+        intentos_previos=int(row["worm_renovacion_intentos"]),
+    )
+
+
 async def run_once_worm_renovacion() -> dict[str, int]:
     """Una barrida completa: por cada tenant activo, renueva hasta
     `indice_reconciliation_batch_size` índices Y hasta ese mismo cupo de
@@ -755,11 +771,11 @@ async def run_once_worm_renovacion() -> dict[str, int]:
     resto de la barrida) — mismo patrón que `run_once_worm`/
     `run_once_actas_worm`.
 
-    Dos advisory locks POR TENANT en esta barrida (`worm_renovacion_indice`/
-    `worm_renovacion_acta`, namespaces propios) -- índice y acta son
-    artefactos independientes, no deben serializarse entre sí; cada uno SÍ se
-    serializa contra otra instancia de ESTA MISMA fase vía su propio lock
-    (mismo criterio que las fases 3/4)."""
+    TRES advisory locks POR TENANT en esta barrida (`worm_renovacion_indice`/
+    `worm_renovacion_acta`/`worm_renovacion_aip`, namespaces propios) --
+    índice, acta y AIP son artefactos independientes, no deben serializarse
+    entre sí; cada uno SÍ se serializa contra otra instancia de ESTA MISMA
+    fase vía su propio lock (mismo criterio que las fases 3/4/6)."""
     pool = get_pool()
     slugs = await list_active_tenants(pool)
     summary = {"pendientes_vistos": 0, "renovados": 0, "fallidos": 0, "agotados": 0}
@@ -867,6 +883,54 @@ async def run_once_worm_renovacion() -> dict[str, int]:
                         "por otra instancia, se omite esta barrida",
                         slug,
                     )
+
+                got_lock_aip = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtext('orpycamcp:archive:worm_renovacion_aip'), hashtext($1))",
+                    slug,
+                )
+                if got_lock_aip:
+                    try:
+                        rows = await AipRepository(conn).list_worm_renovacion_pending(
+                            ventana_dias=settings.worm_renovacion_ventana_dias,
+                            ct_codes=ct_codes,
+                            limit=settings.indice_reconciliation_batch_size,
+                        )
+                        for row in rows:
+                            summary["pendientes_vistos"] += 1
+                            try:
+                                resultado = await _reconciliar_worm_renovacion_aip(
+                                    conn, slug, row
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Fallo renovando retención WORM del AIP "
+                                    "expediente_id=%s tenant=%s — se omite en esta barrida",
+                                    row["expediente_id"],
+                                    slug,
+                                    exc_info=True,
+                                )
+                                summary["fallidos"] += 1
+                                continue
+                            if resultado == "renovado":
+                                summary["renovados"] += 1
+                            elif resultado == "agotado":
+                                summary["agotados"] += 1
+                            else:
+                                summary["fallidos"] += 1
+                    finally:
+                        await conn.execute(
+                            "SELECT pg_advisory_unlock("
+                            "hashtext('orpycamcp:archive:worm_renovacion_aip'), "
+                            "hashtext($1))",
+                            slug,
+                        )
+                else:
+                    logger.debug(
+                        "Renovación WORM del AIP: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
         except Exception:
             logger.warning(
                 "Fallo en la barrida de renovación de retención WORM para tenant=%s "
@@ -880,6 +944,135 @@ async def run_once_worm_renovacion() -> dict[str, int]:
         "pendientes_vistos=%d renovados=%d fallidos=%d agotados=%d tenants=%d",
         summary["pendientes_vistos"],
         summary["renovados"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Sexta fase — cableado del AIP OAIS al cierre del expediente (E10 debt "AIP
+# sin-wiring")
+# ---------------------------------------------------------------------------
+#
+# Converge los expedientes `closed`/`transferred`, con índice electrónico
+# VIGENTE `estado='firmado'` y `worm_protegido_at IS NOT NULL` (E10 Inc.1),
+# cuyo AIP OAIS (`POST /preservacion/aip[-internal]`, storage-service
+# Increment B) todavía no se empaquetó — RECONCILIACIÓN-ONLY (diseño
+# ratificado por `orfeo-architect`): a diferencia del sellado/cableado WORM
+# del índice (fases 1/3, baratas: firman/protegen un XML ya en `files`), el
+# AIP DESCARGA los bytes reales de cada anexo digital + arma un ZIP
+# server-side — demasiado caro para intentarse síncronamente en el path de
+# la petición de cierre del expediente. Delgada sobre `AipWiringService.
+# intentar_empaquetar` (misma resolución cross-servicio de `file_id` vía
+# document-service, misma derivación de retención TRD, misma marca
+# atómica+asiento) para no duplicar esa lógica aquí — `_reconciliar_aip` solo
+# interpreta el resultado para el `summary` del barrido, mismo rol que
+# `_reconciliar_worm`.
+#
+# Piggyback en el MISMO ciclo/cadencia que la 3ra fase (índice,
+# `_indice_reconciliation_loop` en `app/main.py`) — mismo criterio que ató
+# `run_once_worm_renovacion` a ese ciclo: tan estrechamente acoplada a "el
+# índice ya quedó firmado+protegido" que no amerita kill-switch/intervalo
+# propio, reutiliza `indice_reconciliation_batch_size`/`_max_intentos`/
+# `_backoff_base_seconds`/`_backoff_cap_seconds`.
+
+
+async def _reconciliar_aip(conn: asyncpg.Connection, slug: str, row: asyncpg.Record) -> str:
+    """Intenta empaquetar el AIP de UN expediente elegible. Devuelve
+    'empaquetado', 'omitido' (expediente 100% físico, TERMINAL),
+    'fallido'/'pendiente' (backoff programado) o 'agotado'
+    (`expediente_aip.estado='agotado'`, requiere intervención manual — NUNCA
+    se inventa conformidad)."""
+    service = AipWiringService(conn, slug)
+    return await service.intentar_empaquetar(row["expediente_id"])
+
+
+async def run_once_aip() -> dict[str, int]:
+    """Una barrida completa: por cada tenant activo, hasta
+    `indice_reconciliation_batch_size` expedientes elegibles para empaquetar
+    el AIP. Fallos por-tenant o por-expediente quedan aislados (WARNING, no
+    abortan el resto de la barrida) — mismo patrón que `run_once_worm`."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {
+        "pendientes_vistos": 0,
+        "empaquetados": 0,
+        "omitidos": 0,
+        "fallidos": 0,
+        "agotados": 0,
+    }
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                # Namespace de advisory lock PROPIO (`aip_reconcile`, distinto
+                # de `indice_reconcile`/`acta_reconcile`/`worm_reconcile`/
+                # `acta_worm_reconcile`/`worm_renovacion_*`) — esta fase puede
+                # correr en el mismo ciclo que las demás sin competir por el
+                # mismo lock. También reduce la ventana de doble-empaquetado
+                # del lado de storage-service (ver migración 012 de ese
+                # servicio): dos instancias de ESTE job para el mismo tenant
+                # nunca corren `run_once_aip` en paralelo.
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:aip_reconcile'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    logger.debug(
+                        "Cableado AIP: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+                    continue
+                try:
+                    rows = await AipRepository(conn).list_pending(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        try:
+                            resultado = await _reconciliar_aip(conn, slug, row)
+                        except Exception:
+                            logger.warning(
+                                "Fallo empaquetando AIP expediente_id=%s tenant=%s "
+                                "— se omite este expediente en esta barrida",
+                                row["expediente_id"],
+                                slug,
+                                exc_info=True,
+                            )
+                            summary["fallidos"] += 1
+                            continue
+                        if resultado == "empaquetado":
+                            summary["empaquetados"] += 1
+                        elif resultado == "omitido":
+                            summary["omitidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:aip_reconcile'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de cableado AIP para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+
+    logger.info(
+        "Cableado del AIP completado: "
+        "pendientes_vistos=%d empaquetados=%d omitidos=%d fallidos=%d agotados=%d tenants=%d",
+        summary["pendientes_vistos"],
+        summary["empaquetados"],
+        summary["omitidos"],
         summary["fallidos"],
         summary["agotados"],
         len(slugs),
@@ -904,6 +1097,7 @@ async def _main() -> None:
         await run_once_worm()
         await run_once_actas_worm()
         await run_once_worm_renovacion()
+        await run_once_aip()
     finally:
         await close_pool()
 

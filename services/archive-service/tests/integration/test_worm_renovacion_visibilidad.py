@@ -53,8 +53,10 @@ from .test_worm_renovacion_ct_filter import (
     _LEJOS_DE_VENCER,
     _PRONTO_A_VENCER,
     _mark_acta_protegido,
+    _mark_aip_protegido,
     _mark_indice_protegido,
     _seed_acta_firmada,
+    _seed_expediente_aip_empaquetado,
     _seed_expediente_indice_firmado,
 )
 
@@ -184,6 +186,67 @@ async def test_no_read_up_acta_hides_classified_from_low_clearance_caller(
 
 
 @pytest.mark.integration
+async def test_no_read_up_aip_hides_classified_from_low_clearance_caller(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Gemelo EXACTO de `test_no_read_up_indice_hides_classified_from_low_clearance_caller`
+    para el AIP (E10 debt, fast-follow del cableado del AIP) -- el invariante
+    CRÍTICO es el mismo: ni el `expediente_id` ni el `expediente_code` de un
+    AIP por encima del clearance del llamante deben aparecer, y `total` es
+    post-filtro."""
+    slug, conn = tenant_ctx
+
+    hidden_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest renovacion AIP oculto")
+    await _mark_aip_protegido(conn, slug, hidden_id, retain_until=_PRONTO_A_VENCER, agotado=True)
+    await _set_nivel_seguridad(conn, slug, hidden_id, CLASIFICADA)
+    hidden_code = await _expediente_code(conn, slug, hidden_id)
+
+    visible_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest renovacion AIP visible")
+    await _mark_aip_protegido(conn, slug, visible_id, retain_until=_PRONTO_A_VENCER, agotado=True)
+
+    no_lector = uuid.uuid4()
+    items, total = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=1, size=20, user_id=no_lector
+    )
+
+    ids = {it.expediente_id for it in items}
+    codes = {it.expediente_code for it in items}
+    assert visible_id in ids
+    assert hidden_id not in ids
+    assert hidden_code not in codes
+    assert total == 1
+    visible_item = next(it for it in items if it.expediente_id == visible_id)
+    assert visible_item.tipo == "aip"
+
+
+@pytest.mark.integration
+async def test_no_read_up_aip_visible_with_sufficient_clearance(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """MISMO par sembrado que el test anterior; la ÚNICA variable es el
+    clearance real del llamante -- confirma que la ocultación del AIP es por
+    clearance, no por un bug que oculte todo ese tipo."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+
+    classified_id = await _seed_expediente_aip_empaquetado(
+        conn, slug, "itest renovacion AIP clasificado visible p-lector"
+    )
+    await _mark_aip_protegido(conn, slug, classified_id, retain_until=_PRONTO_A_VENCER, agotado=True)
+    await _set_nivel_seguridad(conn, slug, classified_id, CLASIFICADA)
+
+    lector_legitimo = uuid.uuid4()
+    await _grant_clearance(conn, schema, lector_legitimo, CLASIFICADA)
+
+    items, total = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=1, size=20, user_id=lector_legitimo
+    )
+
+    assert classified_id in {it.expediente_id for it in items}
+    assert total == 1
+
+
+@pytest.mark.integration
 async def test_no_read_up_total_count_is_post_filter_not_raw(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
@@ -271,6 +334,27 @@ async def test_agotado_appears_even_far_from_expiry(
 
 
 @pytest.mark.integration
+async def test_aip_agotado_appears_even_far_from_expiry(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Gemelo del test anterior para el AIP (E10 debt, fast-follow del
+    cableado del AIP)."""
+    slug, conn = tenant_ctx
+
+    exp_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest AIP agotado lejos")
+    await _mark_aip_protegido(conn, slug, exp_id, retain_until=_LEJOS_DE_VENCER, agotado=True)
+
+    items, total = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=1, size=20, user_id=None
+    )
+
+    assert exp_id in {it.expediente_id for it in items}
+    assert total == 1
+    item = next(it for it in items if it.expediente_id == exp_id)
+    assert item.tipo == "aip"
+
+
+@pytest.mark.integration
 async def test_non_ct_never_appears_even_when_agotado_and_pronto(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
@@ -281,6 +365,29 @@ async def test_non_ct_never_appears_even_when_agotado_and_pronto(
 
     e_id, e_row = await _seed_expediente_indice_firmado(conn, slug, "itest E agotado", disposition="E")
     await _mark_indice_protegido(conn, slug, e_row["id"], retain_until=_PRONTO_A_VENCER, agotado=True)
+
+    items, total = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=1, size=20, user_id=None
+    )
+
+    ids = {it.expediente_id for it in items}
+    assert ct_id in ids
+    assert e_id not in ids  # filtro CT estructural: E jamás entra, aunque agotado y próximo
+    assert total == 1
+
+
+@pytest.mark.integration
+async def test_non_ct_never_appears_for_aip_even_when_agotado_and_pronto(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Gemelo del test anterior para el AIP."""
+    slug, conn = tenant_ctx
+
+    ct_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest AIP CT agotado", disposition="CT")
+    await _mark_aip_protegido(conn, slug, ct_id, retain_until=_PRONTO_A_VENCER, agotado=True)
+
+    e_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest AIP E agotado", disposition="E")
+    await _mark_aip_protegido(conn, slug, e_id, retain_until=_PRONTO_A_VENCER, agotado=True)
 
     items, total = await IndexService(conn, slug).list_pendientes_renovacion(
         page=1, size=20, user_id=None
@@ -325,6 +432,42 @@ async def test_covers_both_tipos_and_orders_agotado_first_then_soonest(
     assert items[2].tipo == "indice"
 
 
+@pytest.mark.integration
+async def test_covers_all_three_tipos_and_orders_agotado_first_then_soonest(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Gemelo del test anterior con el AIP participando en la mezcla, no solo
+    índice/acta -- el orden agotado-primero-luego-más-próximo es indiferente
+    a qué de los TRES repositorios aportó cada fila."""
+    slug, conn = tenant_ctx
+
+    # AIP AGOTADO (retain_until lejano -- agotado igual gana el orden).
+    aip_expediente_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest orden AIP agotado")
+    await _mark_aip_protegido(conn, slug, aip_expediente_id, retain_until=_LEJOS_DE_VENCER, agotado=True)
+
+    # Acta EN RIESGO más próxima (5 días).
+    acta_transferencia_id, acta_expediente_id = await _seed_acta_firmada(conn, slug, "itest orden acta 5d")
+    await _mark_acta_protegido(
+        conn, slug, acta_transferencia_id, retain_until=_now() + timedelta(days=5), agotado=False
+    )
+
+    # Índice EN RIESGO menos próximo (20 días).
+    indice_id, indice_row = await _seed_expediente_indice_firmado(conn, slug, "itest orden indice 20d")
+    await _mark_indice_protegido(
+        conn, slug, indice_row["id"], retain_until=_now() + timedelta(days=20), agotado=False
+    )
+
+    items, total = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=1, size=20, user_id=None
+    )
+
+    assert total == 3
+    assert [it.expediente_id for it in items] == [aip_expediente_id, acta_expediente_id, indice_id]
+    assert items[0].tipo == "aip"
+    assert items[1].tipo == "acta_transferencia"
+    assert items[2].tipo == "indice"
+
+
 # ---------------------------------------------------------------------------
 # (C) Paginación en memoria: page/size + total post-filtro.
 # ---------------------------------------------------------------------------
@@ -353,6 +496,48 @@ async def test_pagination_respects_page_size_with_post_filter_total_count(
     assert total3 == 5
     assert len(page1) == 2
     assert len(page3) == 1  # 5 items, size=2 -> última página con el resto
+
+
+@pytest.mark.integration
+async def test_pagination_respects_page_size_across_all_three_tipos(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Gemelo del test anterior sembrando en LOS TRES repositorios (índice,
+    acta y AIP) -- `total`/paginación combinan las tres fuentes, no solo la
+    del índice."""
+    slug, conn = tenant_ctx
+
+    seeded_ids = set()
+    for i in range(2):
+        exp_id, row = await _seed_expediente_indice_firmado(conn, slug, f"itest paginacion indice {i}")
+        await _mark_indice_protegido(conn, slug, row["id"], retain_until=_PRONTO_A_VENCER, agotado=True)
+        seeded_ids.add(exp_id)
+
+    for i in range(2):
+        transferencia_id, exp_id = await _seed_acta_firmada(conn, slug, f"itest paginacion acta {i}")
+        await _mark_acta_protegido(conn, slug, transferencia_id, retain_until=_PRONTO_A_VENCER, agotado=True)
+        seeded_ids.add(exp_id)
+
+    exp_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest paginacion AIP")
+    await _mark_aip_protegido(conn, slug, exp_id, retain_until=_PRONTO_A_VENCER, agotado=True)
+    seeded_ids.add(exp_id)
+
+    page1, total1 = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=1, size=2, user_id=None
+    )
+    page3, total3 = await IndexService(conn, slug).list_pendientes_renovacion(
+        page=3, size=2, user_id=None
+    )
+
+    assert total1 == 5
+    assert total3 == 5
+    assert len(page1) == 2
+    assert len(page3) == 1  # 5 items (2 índice + 2 acta + 1 AIP), size=2 -> última página con el resto
+
+    all_seen_ids = {it.expediente_id for it in page1} | {it.expediente_id for it in page3}
+    assert all_seen_ids <= seeded_ids
+    all_seen_tipos = {it.tipo for it in page1} | {it.tipo for it in page3}
+    assert "aip" in all_seen_tipos
 
     all_seen_ids = {it.expediente_id for it in page1} | {it.expediente_id for it in page3}
     assert all_seen_ids <= seeded_ids

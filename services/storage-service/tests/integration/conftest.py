@@ -17,14 +17,16 @@ gate de disposición, pero el criterio de aislamiento se mantiene igual: un sche
 nuevo por test es más simple de razonar que depender de que cada test recuerde
 hacer rollback).
 
-Alcance MÁS ACOTADO que el de archive-service: este carril solo ejercita el gate
-del remedio E10 Inc.2 (`PreservacionWormRepository.active_lock_for_expediente`)
-contra el SQL real — NO bootstrapea `public.audit_log` porque los tests de este
-directorio llaman al repositorio directamente, no a `StorageService.purge_for_
-disposition` (que auditaría el bloqueo). Si en el futuro este carril crece para
-cubrir `purge_for_disposition` de punta a punta, replicar el bootstrap de
-`public.audit_log` de archive-service (ver su conftest, sección A2) en vez de
-asumir que la tabla ya existe.
+Alcance histórico MÁS ACOTADO que el de archive-service: los primeros tests de
+este carril solo ejercitaban el gate del remedio E10 Inc.2
+(`PreservacionWormRepository.active_lock_for_expediente`) contra el SQL real, y
+no bootstrapeaban `public.audit_log`. `test_aip_concurrent_real_sql.py`
+(remediación de auditoría del cableado del AIP, E10-B) SÍ ejercita
+`AipService.empaquetar_aip` de punta a punta (incluido `audit.append`), así que
+`db_conn` ahora bootstrapea `public.audit_log` (+ triggers append-only) primero
+— mismo criterio y DDL que `archive-service/tests/integration/conftest.py`
+(sección A2/G3): verificar-primero / crear-solo-si-no-existe, nunca reemitir
+DDL de seguridad sobre una tabla que ya existe.
 
 Gating idéntico: `RUN_INTEGRATION=1` (ver `pytest_collection_modifyitems`). El
 carril unit normal (`docker compose run --rm --no-deps storage-service pytest -q`)
@@ -125,8 +127,144 @@ def _make_slug(node_name: str) -> str:
     return f"itest-{hexpart}"
 
 
+# ---------------------------------------------------------------------------
+# Bootstrap de `public.audit_log` (mismo DDL/criterio que
+# `archive-service/tests/integration/conftest.py`, secciones A2/G3) — este
+# carril solo lo necesita desde `test_aip_concurrent_real_sql.py`, que ejercita
+# `AipService.empaquetar_aip` de punta a punta (incluye `audit.append`).
+# ---------------------------------------------------------------------------
+
+_EXPECTED_AUDIT_TRIGGERS = frozenset(
+    {
+        "trg_audit_log_immutable",
+        "trg_audit_log_no_truncate",
+        "trg_audit_log_no_mutation",
+        "trg_audit_log_default_no_truncate",
+        "trg_audit_log_default_no_mutation",
+    }
+)
+
+# Mismo DDL que la migración global de auth-service (002/003/004) contra la
+# que `orpycamcp_common.audit` fue diseñado -- copiado, no importado, porque
+# este carril no tiene visibilidad del árbol de auth-service (servicios
+# independientes, ADR-002).
+_AUDIT_LOG_CREATE_DDL = """
+CREATE TABLE public.audit_log (
+    id           BIGINT      GENERATED ALWAYS AS IDENTITY,
+    tenant_slug  TEXT        NOT NULL,
+    ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    service      TEXT        NOT NULL,
+    actor        TEXT,
+    canal        TEXT        NOT NULL DEFAULT 'api',
+    action       TEXT        NOT NULL,
+    object_type  TEXT        NOT NULL,
+    object_ref   TEXT,
+    payload      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    prev_hash    TEXT,
+    hash         TEXT        NOT NULL,
+    PRIMARY KEY (id, ts)
+) PARTITION BY RANGE (ts);
+
+CREATE TABLE public.audit_log_default
+    PARTITION OF public.audit_log DEFAULT;
+
+CREATE INDEX ix_audit_tenant_ts ON public.audit_log (tenant_slug, ts);
+CREATE INDEX ix_audit_object    ON public.audit_log (object_type, object_ref);
+
+ALTER TABLE public.audit_log
+    ADD CONSTRAINT chk_audit_log_canal
+    CHECK (canal IN ('api', 'ui', 'mcp', 'system'));
+
+CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'public.audit_log is append-only (Ley 594/2000, ADR-008)';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_audit_log_immutable
+    BEFORE UPDATE OR DELETE ON public.audit_log
+    FOR EACH ROW EXECUTE FUNCTION public.reject_audit_log_mutation();
+
+CREATE OR REPLACE FUNCTION public.reject_audit_log_truncate()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION
+        'TRUNCATE on public.audit_log is prohibited (ADR-008, Ley 594/2000, D-03)';
+END;
+$$;
+
+CREATE TRIGGER trg_audit_log_no_truncate
+    BEFORE TRUNCATE ON public.audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
+
+CREATE TRIGGER trg_audit_log_default_no_truncate
+    BEFORE TRUNCATE ON public.audit_log_default
+    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
+
+CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation_d03()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION
+        'UPDATE/DELETE on public.audit_log is prohibited '
+        '(ADR-008, Ley 594/2000, D-03): table is append-only';
+END;
+$$;
+
+CREATE TRIGGER trg_audit_log_no_mutation
+    BEFORE UPDATE OR DELETE ON public.audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
+
+CREATE TRIGGER trg_audit_log_default_no_mutation
+    BEFORE UPDATE OR DELETE ON public.audit_log_default
+    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
+"""
+
+
+@pytest_asyncio.fixture(scope="session")
+async def _audit_log_ready() -> None:
+    """Asegura que `public.audit_log` (+ triggers append-only) exista antes de
+    cualquier test de este carril que ejercite `audit.append`.
+    Verificar-primero / crear-solo-si-no-existe: jamás re-emite DDL de
+    seguridad sobre una tabla que ya existe (mismo criterio que
+    archive-service)."""
+    dsn = _require_dsn()
+    conn = await asyncpg.connect(dsn=dsn)
+    try:
+        already_exists = await conn.fetchval("SELECT to_regclass('public.audit_log')")
+        if already_exists is not None:
+            rows = await conn.fetch(
+                """
+                SELECT tgname
+                FROM pg_trigger
+                WHERE tgrelid = ANY(
+                    ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
+                )
+                  AND NOT tgisinternal
+                  AND tgenabled <> 'D'
+                """
+            )
+            found = {row["tgname"] for row in rows}
+            missing = _EXPECTED_AUDIT_TRIGGERS - found
+            if missing:
+                raise RuntimeError(
+                    "public.audit_log ya existe pero le faltan triggers append-only "
+                    f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
+                    "DDL de seguridad de producción — corrige el estado de esta base "
+                    "antes de reintentar."
+                )
+            return
+
+        async with conn.transaction():
+            await conn.execute("SET LOCAL lock_timeout = '5s'")
+            await conn.execute(_AUDIT_LOG_CREATE_DDL)
+    finally:
+        await conn.close()
+
+
 @pytest_asyncio.fixture
-async def db_conn() -> AsyncGenerator[asyncpg.Connection, None]:
+async def db_conn(_audit_log_ready: None) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión asyncpg REAL y propia (no el pool de la app)."""
     dsn = _require_dsn()
     conn = await asyncpg.connect(dsn=dsn)

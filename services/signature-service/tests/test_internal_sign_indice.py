@@ -86,6 +86,26 @@ def test_require_internal_token_accepts_matching_token(monkeypatch) -> None:
     require_internal_token(x_internal_token=_INTERNAL_TOKEN)
 
 
+def test_require_internal_token_rejects_wrong_token_of_different_length(monkeypatch) -> None:
+    """Remediación de auditoría (Baja): la comparación pasó de `!=` a
+    `hmac.compare_digest` (side-channel de temporización) -- se prueba
+    explícitamente con tokens de LONGITUD DISTINTA (más corto y más largo que
+    el configurado), que `compare_digest` maneja sin excepción (a diferencia
+    de un XOR byte-a-byte ingenuo) y que los tests existentes de arriba
+    (mismo tamaño) no ejercitan."""
+    monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_internal_token(x_internal_token="short")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "invalid_internal_token"
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_internal_token(x_internal_token=_INTERNAL_TOKEN + "-extra-suffix")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "invalid_internal_token"
+
+
 # ---------------------------------------------------------------------------
 # POST /internal/sign-indice — nivel HTTP
 # ---------------------------------------------------------------------------

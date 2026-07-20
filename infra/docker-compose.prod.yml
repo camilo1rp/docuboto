@@ -357,8 +357,17 @@ services:
 
   storage-service:
     build:
-      context: ../services/storage-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ (ADR-010, mismo motivo que signature-service más
+      # abajo): el Dockerfile instala shared/orpycamcp_common, que NO existe
+      # dentro de services/storage-service/ -- `context: ../services/storage-service`
+      # (como estaba antes) rompería ese COPY. target=production (E10
+      # Increment C2b) añade Java + veraPDF CLI real y corre como usuario
+      # NO-root -- ver comentarios en services/storage-service/Dockerfile
+      # para el detalle completo (la imagen de dev, target por defecto, se
+      # mantiene slim, sin Java).
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
+      target: production
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: "no"
     environment:
@@ -369,6 +378,12 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_SECURE: "true"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # VERAPDF_BINARY/PDFA_VALIDATOR/PRESERVATION_PDFA_VALIDATION_ENABLED ya
+      # vienen como ENV del stage "production" del Dockerfile (valores por
+      # defecto correctos para este despliegue) -- se sobrescriben acá SOLO
+      # si una instalación concreta necesita desviarse (p. ej. un perfil PDF/A
+      # institucional distinto de "2b", ver PDFA_PROFILE en core/config.py).
+      PDFA_PROFILE: ${PDFA_PROFILE:-2b}
     networks:
       - orpycamcp-net
     expose:

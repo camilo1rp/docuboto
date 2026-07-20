@@ -1,0 +1,32 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""Schemas del endpoint interno D-02 (E10 debt, cableado del AIP al cierre)."""
+
+from __future__ import annotations
+
+import uuid
+
+from pydantic import BaseModel, Field
+
+
+class AnexosInternalRequest(BaseModel):
+    """Lote de radicados cuyos anexos se necesitan resolver a `file_id` real.
+
+    Batch deliberado (un solo round-trip): archive-service ya conoce TODOS
+    los `radicado_id` vinculados al expediente que va a empaquetar, y
+    resolverlos uno a uno sería N llamadas HTTP por expediente.
+    """
+
+    radicado_ids: list[uuid.UUID] = Field(..., min_length=1)
+
+
+class AnexoInternalItem(BaseModel):
+    file_id: uuid.UUID
+    filename: str
