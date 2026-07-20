@@ -18,7 +18,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-_TIPO = Literal["INGESTA", "FIJACION", "MIGRACION", "VALIDACION_PDFA", "WORM", "REPLICA"]
+_TIPO = Literal[
+    "INGESTA", "FIJACION", "MIGRACION", "VALIDACION_PDFA", "WORM", "REPLICA", "RENOVACION"
+]
 
 _EXPEDIENTE_ID_WS_RE = re.compile(r"\s+")
 
@@ -323,3 +325,58 @@ class ProtegerIndiceResponse(BaseModel):
     # cualquier fila nueva SIEMPRE lo trae (`ProtegerIndiceRequest.file_id` es
     # obligatorio).
     file_id: uuid.UUID | None = None
+
+
+# ── Renovación de retención WORM para series CT (E10 debt) ────────────
+
+
+class RenovarRetencionRequest(RetentionMixin):
+    """Extiende (NUNCA acorta) la retención WORM ya registrada para un
+    artefacto -- índice o acta de transferencia -- de series de disposición
+    Conservación Total (CT), cuyo objeto no puede vencer nunca aunque el lock
+    COMPLIANCE original sí lo haga.
+
+    Identifica la fila POR ``(expediente_id, tipo)`` (el mismo par que la
+    unicidad parcial de las migraciones 009/010) -- NO por ``worm_object_id``,
+    para que el llamador (archive-service) no tenga que resolver ni cachear
+    ese UUID interno de storage-service; ya conoce ``expediente_id``/``tipo``
+    desde su propio espejo (``expediente_indice.worm_retain_until`` /
+    ``transferencia_acta_firma.worm_retain_until``).
+
+    Reusa el contrato de retención de `RetentionMixin` (``retain_until``
+    directo, o ``retencion_anios`` + ``fecha_inicio``) -- archive-service
+    SIEMPRE usa la segunda forma con ``fecha_inicio=hoy`` (ventana rodante:
+    ``now() + total_TRD``, NUNCA una fecha fija lejana/9999 -- ver
+    ``PreservationWormService.renovar_retencion``).
+
+    Semántica MONOTÓNICA: la fecha resuelta debe ser ESTRICTAMENTE mayor que
+    el ``retain_until`` ya persistido, o la llamada es un no-op idempotente
+    (200, SIN tocar MinIO). ``legal_hold`` (heredado de `RetentionMixin`) se
+    IGNORA en este flujo -- la renovación es puramente de fecha; el freeze de
+    litigio se gestiona por separado (roadmap, `active_lock_for_expediente`
+    ya lo trata como bloqueo incondicional aparte de `retain_until`)."""
+
+    expediente_id: str = Field(..., min_length=1, max_length=255)
+    tipo: Literal["indice", "acta_transferencia"]
+
+    @field_validator("expediente_id")
+    @classmethod
+    def _canonicalize_expediente_id(cls, value: str) -> str:
+        return canonicalize_expediente_id(value)
+
+
+class RenovarRetencionResponse(BaseModel):
+    id: uuid.UUID
+    expediente_id: str
+    tipo: str
+    bucket: str
+    object_key: str
+    retain_until: datetime
+    retention_mode: str
+    # `True` solo si ESTA llamada extendió `retain_until` (la nueva fecha
+    # resuelta era estrictamente mayor que la persistida y MinIO confirmó la
+    # extensión). `False` = no-op idempotente: `retain_until` ya cubría (o
+    # superaba) la fecha resuelta, no se llamó a MinIO.
+    renovado: bool
+    renovaciones: int
+    renovado_at: datetime | None

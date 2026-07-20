@@ -31,7 +31,14 @@ import asyncpg
 
 _COLS = (
     "id, expediente_id, tipo, bucket, object_key, version_id, sha256, "
-    "retain_until, retention_mode, legal_hold, created_at, file_id"
+    "retain_until, retention_mode, legal_hold, created_at, file_id, "
+    # E10 debt (renovación de retención WORM para series CT, migración 011):
+    # incluidas en TODAS las lecturas (no solo un subconjunto dedicado, a
+    # diferencia de `_WORM_COLS` en archive-service) porque tanto el camino
+    # de protección (`get_by_expediente_and_tipo`, idempotencia) como el de
+    # renovación (`renovar`) necesitan ver/actualizar el mismo par de
+    # columnas -- no ameritan una constante separada.
+    "renovado_at, renovaciones"
 )
 
 
@@ -131,6 +138,34 @@ class PreservacionWormRepository:
             """,
             expediente_id,
             list(exclude_retention_tipos),
+        )
+
+    async def renovar(
+        self, worm_id: uuid.UUID, *, retain_until: datetime
+    ) -> asyncpg.Record | None:
+        """Extiende (E10 debt: renovación de retención WORM para series CT,
+        migración 011) el `retain_until` de una fila YA protegida.
+
+        El `WHERE retain_until < $2` es la MISMA defensa monotónica que
+        `PreservationWormService.renovar_retencion` ya aplicó en Python antes
+        de llamar aquí (comparación contra la fila leída bajo el advisory
+        lock de sesión, ver `_worm_lock_key`) -- se repite a nivel BD porque
+        es gratis y cierra cualquier ventana si algún día un llamador nuevo
+        invoca este método sin pasar por el servicio. Devuelve ``None`` si el
+        `WHERE` no casó ninguna fila (no debería ocurrir bajo el lock de
+        sesión; el llamador lo trata como defensa en profundidad, no como
+        camino esperado).
+        """
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE preservacion_worm_objeto
+            SET retain_until = $2, renovado_at = now(), renovaciones = renovaciones + 1
+            WHERE id = $1 AND retain_until < $2
+            RETURNING {_COLS}
+            """,
+            worm_id,
+            retain_until,
         )
 
     async def list_for_expediente(self, expediente_id: str) -> list[asyncpg.Record]:

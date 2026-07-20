@@ -35,14 +35,18 @@ from orpycamcp_common import audit
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
+from app.core.disposition import CT_DISPOSITION_CODES
 from app.models.archive import Expediente
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
+from app.repositories.transferencia_repository import TransferenciaRepository
 from app.services.backoff import next_backoff_seconds
+from app.services.retention_math import total_trd_years
 from app.schemas.archive import (
     IndiceFixityResult,
     IndiceItemResponse,
     IndicePendienteFirma,
+    IndicePendienteRenovacion,
     IndiceResponse,
     IndiceVerifyDoc,
     IndiceVerifyFirma,
@@ -803,6 +807,81 @@ class IndexService:
         ]
         return items, total
 
+    async def list_pendientes_renovacion(
+        self, *, page: int, size: int, user_id: uuid.UUID | None
+    ) -> tuple[list[IndicePendienteRenovacion], int]:
+        """Visibilidad operacional de artefactos WORM de series CT cuya
+        renovación de retención está AGOTADA o EN RIESGO de vencer sin
+        renovar (E10 debt, `GET /expedientes/indices/pendientes-renovacion`)
+        -- gemela de `list_pendientes_firma` para el eje de RENOVACIÓN en vez
+        del de SELLADO: complementa al job de reconciliación
+        (`run_once_worm_renovacion`, `app/jobs/indice_reconciliation.py`) con
+        visibilidad directa, incluidos los `worm_renovacion_agotado=TRUE` que
+        requieren intervención manual URGENTE (un lock COMPLIANCE de
+        conservación PERMANENTE a punto de expirar).
+
+        No-read-up (RF-SEG-08): resuelve el clearance real del llamante y lo
+        pasa a AMBAS consultas (índices y actas) -- mismo criterio que
+        `list_pendientes_firma`.
+
+        UN endpoint combinado (`tipo` distingue `indice`/`acta_transferencia`,
+        ver `IndicePendienteRenovacion`) en vez de dos gemelos: el volumen
+        esperado por tenant es pequeño (solo artefactos CT en riesgo), así que
+        se combinan y paginan en MEMORIA en vez de un UNION ALL SQL entre dos
+        grafos de JOIN distintos (`expediente_indice` vs.
+        `transferencia_acta_firma`/`transferencias`)."""
+        clearance = await self._archive.caller_clearance(user_id)
+        ct_codes = list(CT_DISPOSITION_CODES)
+        ventana_dias = settings.worm_renovacion_ventana_dias
+
+        indice_rows = await self._index.list_worm_renovacion_visibilidad(
+            max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
+        )
+        acta_rows = await TransferenciaRepository(
+            self._conn, self._tenant_slug
+        ).list_worm_renovacion_visibilidad(
+            max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
+        )
+
+        items = [
+            IndicePendienteRenovacion(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                tipo="indice",
+                worm_retain_until=r["worm_retain_until"],
+                worm_renovacion_intentos=r["worm_renovacion_intentos"],
+                worm_renovacion_agotado=r["worm_renovacion_agotado"],
+                worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
+            )
+            for r in indice_rows
+        ] + [
+            IndicePendienteRenovacion(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                tipo="acta_transferencia",
+                worm_retain_until=r["worm_retain_until"],
+                worm_renovacion_intentos=r["worm_renovacion_intentos"],
+                worm_renovacion_agotado=r["worm_renovacion_agotado"],
+                worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
+            )
+            for r in acta_rows
+        ]
+        # Más urgente primero: agotado antes que en-riesgo, y dentro de cada
+        # grupo, el vencimiento más próximo primero. `datetime.max` (UTC) para
+        # el `None` teórico (`worm_retain_until` no debería ser NULL aquí --
+        # ambas consultas ya filtran `worm_retain_until IS NOT NULL` salvo la
+        # rama `agotado=TRUE`, que sí podría cargar un NULL legado) evita que
+        # ese caso se cuele al frente del orden.
+        items.sort(
+            key=lambda it: (
+                not it.worm_renovacion_agotado,
+                it.worm_retain_until or datetime.max.replace(tzinfo=UTC),
+            )
+        )
+        total = len(items)
+        start = (page - 1) * size
+        return items[start : start + size], total
+
     def _fixity_from_row(self, exp: Expediente, row, items) -> IndiceFixityResult:
         """Comparación de huellas pura-BD sobre un `row`/`items` YA obtenidos
         (E12 H-G). Núcleo compartido por `fixity()` (autocontenido, una
@@ -1023,10 +1102,27 @@ class IndexService:
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
             return None
-        total = (serie.archivo_gestion_years or 0) + (serie.archivo_central_years or 0)
-        if not (1 <= total <= 100):
+        total = total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
+        if total is None:
             return None
         return total, exp.closed_at.date()
+
+    async def _resolve_ct_retencion_anios(self, expediente_id: uuid.UUID) -> int | None:
+        """Total TRD (ambas fases) del expediente -- versión de RENOVACIÓN
+        (E10 debt) de `_resolve_worm_retention`: la ventana rodante de
+        renovación siempre usa `fecha_inicio=hoy` (no `closed_at`), así que
+        este helper SOLO necesita el total y no exige `exp.closed_at`
+        (aunque en la práctica siempre está poblado -- un índice solo llega a
+        `worm_protegido_at IS NOT NULL` tras el cierre)."""
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
+        if exp is None or exp.trd_serie_id is None:
+            return None
+        serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
+        if serie is None:
+            return None
+        return total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
 
     async def _bump_worm_backoff(
         self, indice_id: uuid.UUID, *, intentos_previos: int, motivo: str
@@ -1157,7 +1253,9 @@ class IndexService:
             if outcome.ok:
                 async with self._conn.transaction():
                     affected = await self._index.mark_worm_protegido(
-                        indice_id, outcome.worm_object_id
+                        indice_id,
+                        outcome.worm_object_id,
+                        worm_retain_until=outcome.retain_until,
                     )
                     # Idempotencia real (mismo patrón S1 que `mark_signed`):
                     # `affected == 0` -> otra llamada concurrente (el disparo
@@ -1200,6 +1298,138 @@ class IndexService:
                 expediente_id,
                 indice_id,
                 origen,
+                exc_info=True,
+            )
+            return "pendiente"
+
+    # -- E10 debt: renovación de retención WORM para series CT ---------
+
+    async def _bump_worm_renovacion_backoff(
+        self, indice_id: uuid.UUID, *, intentos_previos: int, motivo: str
+    ) -> Literal["pendiente", "agotado"]:
+        """Registra un intento fallido de RENOVACIÓN de retención WORM (E10
+        debt) — gemelo de `_bump_worm_backoff` (protección inicial) para el
+        eje de renovación, mismo umbral/backoff (`indice_reconciliation_*`,
+        reutilizados sin duplicar). `agotado=True` aquí es una alarma
+        operacional MÁS SERIA que en el eje de protección/sellado: significa
+        que un artefacto de conservación PERMANENTE (serie CT) podría perder
+        su lock COMPLIANCE al vencer `worm_retain_until` sin haberse podido
+        extender — requiere intervención manual URGENTE, no solo eventual."""
+        intentos_tras_este = intentos_previos + 1
+        agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        await self._index.bump_worm_renovacion_intento(
+            indice_id, proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado
+        )
+        if agotado:
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.indice_worm_renovacion_agotado",
+                    object_type="expediente_indice",
+                    object_ref=str(indice_id),
+                    actor=None,
+                    canal="system",
+                    payload={"renovacion_intentos": intentos_tras_este, "motivo": motivo},
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca degrada el resultado.
+                logger.warning(
+                    "audit.append(indice_worm_renovacion_agotado) failed", exc_info=True
+                )
+            return "agotado"
+        return "pendiente"
+
+    async def renovar_worm_indice(
+        self,
+        expediente_id: uuid.UUID,
+        indice_id: uuid.UUID,
+        *,
+        intentos_previos: int,
+    ) -> Literal["renovado", "omitido", "pendiente", "agotado"]:
+        """Extiende (E10 debt, AGN 001/2024 Art. 4.3.2.6) la retención WORM
+        del índice de un expediente de serie Conservación Total (CT) ANTES de
+        que su `retain_until` vigente venza — 5ª fase de reconciliación
+        (`run_once_worm_renovacion`, `app/jobs/indice_reconciliation.py`).
+
+        Solo se llama sobre filas que YA pasaron el filtro CT en SQL
+        (`IndexRepository.list_worm_renovacion_pending`) — este método NO
+        vuelve a comprobar disposición, solo resuelve el total TRD vigente
+        (puede haber cambiado desde la protección inicial) y llama a la
+        renovación. Ventana RODANTE: `fecha_inicio=hoy`, nunca una fecha
+        lejana/9999 (roadmap de irreversibilidad acotada).
+
+        Best-effort, NUNCA lanza — mismo patrón que `proteger_worm_indice`:
+        un fallo de renovación NUNCA debe tumbar el job de reconciliación."""
+        try:
+            retencion_anios = await self._resolve_ct_retencion_anios(expediente_id)
+            if retencion_anios is None:
+                return await self._bump_worm_renovacion_backoff(
+                    indice_id, intentos_previos=intentos_previos, motivo="trd_sin_retencion"
+                )
+
+            from app.clients import storage_client
+
+            outcome = await storage_client.renovar_retencion_worm_internal(
+                tenant_slug=self._tenant_slug,
+                expediente_id=str(expediente_id),
+                tipo="indice",
+                retencion_anios=retencion_anios,
+                fecha_inicio=datetime.now(tz=UTC).date(),
+            )
+
+            if outcome.ok:
+                assert outcome.retain_until is not None
+                async with self._conn.transaction():
+                    await self._index.mark_worm_renovado(
+                        indice_id, worm_retain_until=outcome.retain_until
+                    )
+                    if outcome.renovado:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant_slug,
+                            service=_SERVICE,
+                            action="archive.indice_worm_retencion_renovada",
+                            object_type="expediente_indice",
+                            object_ref=str(expediente_id),
+                            actor=None,
+                            canal="system",
+                            payload={
+                                "expediente_id": str(expediente_id),
+                                "retencion_anios": retencion_anios,
+                                "retain_until": outcome.retain_until.isoformat(),
+                            },
+                        )
+                return "renovado" if outcome.renovado else "omitido"
+
+            motivo = (
+                "worm_disabled"
+                if outcome.disabled
+                else "worm_object_not_found"
+                if outcome.not_found
+                else "worm_no_confirmado"
+            )
+            return await self._bump_worm_renovacion_backoff(
+                indice_id, intentos_previos=intentos_previos, motivo=motivo
+            )
+        except Exception:
+            logger.warning(
+                "Renovación de retención WORM del índice falló (best-effort), "
+                "expediente_id=%s indice_id=%s",
+                expediente_id,
+                indice_id,
                 exc_info=True,
             )
             return "pendiente"

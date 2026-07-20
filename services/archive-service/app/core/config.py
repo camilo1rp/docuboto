@@ -100,6 +100,17 @@ class Settings(BaseSettings):
     #   "todos"        -- exige la firma del receptor para TODA transferencia.
     acta_firma_personal_require: Literal["off", "clasificados", "todos"] = "off"
 
+    # --- Renovación de retención WORM para series CT (E10 debt) ---
+    # Ventana de antelación (días) antes del vencimiento de `worm_retain_until`
+    # en la que un objeto de serie CT se vuelve elegible para renovación (ver
+    # `IndexRepository.list_worm_renovacion_pending`/`app/jobs/
+    # indice_reconciliation.py::run_once_worm_renovacion`) -- ventana rodante,
+    # `nueva = now() + total_TRD`, NUNCA una fecha lejana/9999. Debe superar
+    # holgadamente el intervalo de barrida + horizonte de backoff de
+    # `indice_reconciliation_*` (reutilizados sin duplicar, ver ese job) o el
+    # lock COMPLIANCE podría vencer antes de que una renovación tenga éxito.
+    worm_renovacion_ventana_dias: int = 400
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

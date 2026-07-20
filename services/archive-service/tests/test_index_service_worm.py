@@ -296,10 +296,15 @@ async def test_proteger_worm_indice_success_marks_atomically_and_audits() -> Non
     conn.execute.return_value = "UPDATE 1"  # mark_worm_protegido: affected=1
     index._resolve_worm_retention = AsyncMock(return_value=(5, date(2026, 1, 1)))
     worm_object_id = uuid.uuid4()
+    retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     with patch(
         "app.clients.storage_client.proteger_indice_worm",
-        new=AsyncMock(return_value=WormProtectionOutcome(ok=True, worm_object_id=worm_object_id)),
+        new=AsyncMock(
+            return_value=WormProtectionOutcome(
+                ok=True, worm_object_id=worm_object_id, retain_until=retain_until
+            )
+        ),
     ):
         resultado = await index.proteger_worm_indice(
             row["expediente_id"], row["id"], actor_id=str(USER_ID), origen="close"
@@ -313,7 +318,11 @@ async def test_proteger_worm_indice_success_marks_atomically_and_audits() -> Non
         if c.args and "worm_protegido_at = now()" in c.args[0]
     ]
     assert len(update_calls) == 1
-    assert update_calls[0].args[1:] == (row["id"], worm_object_id)
+    # `worm_retain_until` (E10 debt, migración 031) se pasa TAL CUAL desde
+    # `WormProtectionOutcome.retain_until` -- no se recalcula ni se
+    # trunca aquí, `mark_worm_protegido`/COALESCE del lado del repositorio
+    # es quien decide qué hacer si viniera None.
+    assert update_calls[0].args[1:] == (row["id"], worm_object_id, retain_until)
 
     audit_calls = [
         c

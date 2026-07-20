@@ -419,7 +419,11 @@ class TransferenciaRepository:
         )
 
     async def mark_acta_worm_protegido(
-        self, transferencia_id: uuid.UUID, worm_object_id: uuid.UUID
+        self,
+        transferencia_id: uuid.UUID,
+        worm_object_id: uuid.UUID,
+        *,
+        worm_retain_until: datetime | None = None,
     ) -> int:
         """Marca la copia WORM del acta como confirmada (E10 Inc.2 wiring,
         gemela de `IndexRepository.mark_worm_protegido`).
@@ -431,13 +435,19 @@ class TransferenciaRepository:
         escribir un asiento `archive.acta_worm_protegido` fantasma si OTRA
         llamada concurrente (el disparo síncrono post-commit vs. la barrida de
         reconciliación corriendo en paralelo) ya ganó la carrera.
+
+        `worm_retain_until` (E10 debt, migración 032) puebla el espejo local
+        del `retain_until` confirmado por storage-service -- opcional
+        (default `None`, mismo criterio que `IndexRepository.mark_worm_protegido`).
         """
         await self._sp()
         tag = await self._conn.execute(
             "UPDATE transferencia_acta_firma SET worm_protegido_at = now(), "
-            "worm_object_id = $2 WHERE transferencia_id = $1 AND worm_protegido_at IS NULL",
+            "worm_object_id = $2, worm_retain_until = COALESCE($3, worm_retain_until) "
+            "WHERE transferencia_id = $1 AND worm_protegido_at IS NULL",
             transferencia_id,
             worm_object_id,
+            worm_retain_until,
         )
         try:
             return int(tag.split()[-1])
@@ -500,4 +510,119 @@ class TransferenciaRepository:
                 """,
                 limit,
             )
+        )
+
+    # -----------------------------------------------------------------
+    # E10 debt: renovación de retención WORM del acta para series CT --
+    # espejo EXACTO de `IndexRepository.list_worm_renovacion_pending`/
+    # `mark_worm_renovado`/`bump_worm_renovacion_intento`.
+    # -----------------------------------------------------------------
+
+    async def list_worm_renovacion_pending(
+        self, *, ventana_dias: int, ct_codes: list[str], limit: int
+    ) -> list[asyncpg.Record]:
+        """Actas CUYO EXPEDIENTE es de disposición Conservación Total (CT) y
+        cuyo `worm_retain_until` vence dentro de `ventana_dias` (E10 debt,
+        migración 032) -- 5ª fase de reconciliación, `run_once_worm_renovacion`.
+        Gemela EXACTA de `IndexRepository.list_worm_renovacion_pending`."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT taf.transferencia_id, t.expediente_id, taf.worm_retain_until,
+                       taf.worm_renovacion_intentos
+                FROM transferencia_acta_firma taf
+                JOIN transferencias t ON t.id = taf.transferencia_id
+                JOIN expedientes e ON e.id = t.expediente_id
+                JOIN trd_series s ON s.id = e.trd_serie_id
+                WHERE taf.worm_protegido_at IS NOT NULL
+                  AND taf.worm_renovacion_agotado = FALSE
+                  AND taf.worm_retain_until IS NOT NULL
+                  AND taf.worm_retain_until < now() + ($1 * INTERVAL '1 day')
+                  AND (taf.worm_renovacion_proximo_at IS NULL OR taf.worm_renovacion_proximo_at <= now())
+                  AND s.disposition = ANY($2::text[])
+                ORDER BY taf.worm_renovacion_proximo_at ASC NULLS FIRST
+                LIMIT $3
+                """,
+                ventana_dias,
+                ct_codes,
+                limit,
+            )
+        )
+
+    async def list_worm_renovacion_visibilidad(
+        self, *, max_clearance: int, ct_codes: list[str], ventana_dias: int
+    ) -> list[asyncpg.Record]:
+        """Actas YA protegidas bajo WORM, de expediente CT, cuya renovación
+        está AGOTADA o EN RIESGO de vencer -- gemela EXACTA de
+        `IndexRepository.list_worm_renovacion_visibilidad` (mismo criterio de
+        no-read-up, misma ventana, mismos códigos CT); ver su docstring para
+        el contraste con `list_worm_renovacion_pending` (consumida por el
+        job)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT t.expediente_id, e.code AS expediente_code,
+                       taf.worm_retain_until, taf.worm_renovacion_intentos,
+                       taf.worm_renovacion_agotado, taf.worm_renovacion_ultimo_error
+                FROM transferencia_acta_firma taf
+                JOIN transferencias t ON t.id = taf.transferencia_id
+                JOIN expedientes e ON e.id = t.expediente_id
+                JOIN trd_series s ON s.id = e.trd_serie_id
+                WHERE taf.worm_protegido_at IS NOT NULL
+                  AND s.disposition = ANY($1::text[])
+                  AND e.nivel_seguridad <= $2
+                  AND (
+                        taf.worm_renovacion_agotado = TRUE
+                        OR (
+                            taf.worm_retain_until IS NOT NULL
+                            AND taf.worm_retain_until < now() + ($3 * INTERVAL '1 day')
+                        )
+                      )
+                ORDER BY taf.worm_renovacion_agotado DESC, taf.worm_retain_until ASC NULLS LAST
+                """,
+                ct_codes,
+                max_clearance,
+                ventana_dias,
+            )
+        )
+
+    async def mark_acta_worm_renovado(
+        self, transferencia_id: uuid.UUID, *, worm_retain_until: datetime
+    ) -> None:
+        """Actualiza el espejo `worm_retain_until` del acta tras una llamada
+        CONFIRMADA a `renovar-retencion-internal` -- gemela EXACTA de
+        `IndexRepository.mark_worm_renovado`."""
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma SET worm_retain_until = $2, "
+            "worm_renovacion_intentos = 0, worm_renovacion_proximo_at = NULL, "
+            "worm_renovacion_ultimo_error = NULL, worm_renovacion_agotado = FALSE "
+            "WHERE transferencia_id = $1",
+            transferencia_id,
+            worm_retain_until,
+        )
+
+    async def bump_acta_worm_renovacion_intento(
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Registra un intento FALLIDO de renovación de retención WORM del
+        acta (E10 debt) -- gemela EXACTA de
+        `IndexRepository.bump_worm_renovacion_intento`."""
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma SET "
+            "worm_renovacion_intentos = worm_renovacion_intentos + 1, "
+            "worm_renovacion_proximo_at = $2, worm_renovacion_ultimo_error = $3, "
+            "worm_renovacion_agotado = $4 WHERE transferencia_id = $1",
+            transferencia_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
         )

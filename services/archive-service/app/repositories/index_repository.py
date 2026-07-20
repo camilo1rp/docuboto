@@ -324,7 +324,13 @@ class IndexRepository:
             indice_id,
         )
 
-    async def mark_worm_protegido(self, indice_id: uuid.UUID, worm_object_id: uuid.UUID) -> int:
+    async def mark_worm_protegido(
+        self,
+        indice_id: uuid.UUID,
+        worm_object_id: uuid.UUID,
+        *,
+        worm_retain_until: datetime | None = None,
+    ) -> int:
         """Marca la copia WORM del índice como confirmada (E10 Inc.1).
 
         Defensa en profundidad (mismo patrón que `mark_signed`): el `WHERE`
@@ -334,12 +340,20 @@ class IndexRepository:
         asiento `archive.indice_worm_protegido` fantasma si OTRA llamada
         concurrente (el disparo síncrono del cierre vs. la barrida de
         reconciliación corriendo en paralelo) ya ganó la carrera.
+
+        `worm_retain_until` (E10 debt, migración 031) puebla el espejo local
+        del `retain_until` que storage-service acaba de confirmar — opcional
+        (default `None`) para no romper llamadores/tests anteriores a esta
+        columna; `IndexService.proteger_worm_indice` SIEMPRE lo pasa desde
+        `WormProtectionOutcome.retain_until`.
         """
         tag = await self._conn.execute(
-            "UPDATE expediente_indice SET worm_protegido_at = now(), worm_object_id = $2 "
+            "UPDATE expediente_indice SET worm_protegido_at = now(), worm_object_id = $2, "
+            "worm_retain_until = COALESCE($3, worm_retain_until) "
             "WHERE id = $1 AND worm_protegido_at IS NULL",
             indice_id,
             worm_object_id,
+            worm_retain_until,
         )
         try:
             return int(tag.split()[-1])
@@ -403,6 +417,153 @@ class IndexRepository:
                 """,
                 limit,
             )
+        )
+
+    # -- E10 debt: renovación de retención WORM para series CT -------------
+
+    async def list_worm_renovacion_pending(
+        self, *, ventana_dias: int, ct_codes: list[str], limit: int
+    ) -> list[asyncpg.Record]:
+        """Filas espejo del índice CUYA SERIE es de disposición Conservación
+        Total (CT, `app.core.disposition.CT_DISPOSITION_CODES`) y cuyo
+        `worm_retain_until` vence dentro de `ventana_dias` (E10 debt,
+        migración 031) — 5ª fase de reconciliación, `run_once_worm_renovacion`.
+
+        Solo YA protegidas (`worm_protegido_at IS NOT NULL`), no agotadas de
+        renovación, con backoff cumplido. El filtro CT vive EN LA CONSULTA
+        (`s.disposition = ANY($2)`) — fail-closed por construcción: una serie
+        SIN disposición CT jamás entra en el resultado, sin importar cuán
+        próxima esté a vencer (E/S/M expiran y se disponen legítimamente, no
+        deben renovarse). Sin `DISTINCT ON`: `estado='firmado'` es terminal
+        por expediente (ver `list_worm_pending`), a lo sumo una fila
+        `worm_protegido_at IS NOT NULL` por `expediente_id`.
+        """
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT ei.id, ei.expediente_id, ei.worm_retain_until,
+                       ei.worm_renovacion_intentos, e.code AS expediente_code
+                FROM expediente_indice ei
+                JOIN expedientes e ON e.id = ei.expediente_id
+                JOIN trd_series s ON s.id = e.trd_serie_id
+                WHERE ei.worm_protegido_at IS NOT NULL
+                  AND ei.worm_renovacion_agotado = FALSE
+                  AND ei.worm_retain_until IS NOT NULL
+                  AND ei.worm_retain_until < now() + ($1 * INTERVAL '1 day')
+                  AND (ei.worm_renovacion_proximo_at IS NULL OR ei.worm_renovacion_proximo_at <= now())
+                  AND s.disposition = ANY($2::text[])
+                ORDER BY ei.worm_renovacion_proximo_at ASC NULLS FIRST
+                LIMIT $3
+                """,
+                ventana_dias,
+                ct_codes,
+                limit,
+            )
+        )
+
+    async def list_worm_renovacion_visibilidad(
+        self, *, max_clearance: int, ct_codes: list[str], ventana_dias: int
+    ) -> list[asyncpg.Record]:
+        """Índices YA protegidos bajo WORM, de serie CT, cuya renovación está
+        AGOTADA (`worm_renovacion_agotado = TRUE`) o EN RIESGO (vence dentro
+        de `ventana_dias`, MISMA ventana que vigila el job de reconciliación
+        -- `settings.worm_renovacion_ventana_dias`) -- visibilidad
+        operacional (E10 debt, `GET /expedientes/indices/pendientes-renovacion`),
+        gemela de `list_pending_signature_page`.
+
+        A diferencia de `list_worm_renovacion_pending` (consumida por el job:
+        excluye agotados y respeta el backoff `worm_renovacion_proximo_at`,
+        porque el job NO debe reintentar algo agotado ni antes de su próxima
+        ventana), este método es puramente de LECTURA humana: SÍ incluye los
+        agotados (son justamente los que requieren intervención manual
+        urgente) y NO filtra por backoff (un archivista debe poder ver un
+        artefacto en riesgo aunque el job todavía no esté listo para
+        reintentarlo).
+
+        No-read-up (RF-SEG-08): filtra por `e.nivel_seguridad <= $max_clearance`,
+        mismo criterio que `list_pending_signature_page`. Fail-closed por
+        construcción: `s.disposition = ANY($ct_codes)` (`CT_DISPOSITION_CODES`,
+        `app/core/disposition.py`) -- una serie E/S/M jamás entra al
+        resultado, sin importar cuán agotada esté su renovación (no la
+        necesitan: expiran y se disponen legítimamente).
+
+        Sin paginación SQL propia (a diferencia de `list_pending_signature_page`):
+        el servicio combina esta lista con la gemela de actas
+        (`TransferenciaRepository.list_worm_renovacion_visibilidad`, JOIN
+        distinto -- `transferencia_acta_firma`/`transferencias`) y pagina el
+        resultado combinado en memoria; el volumen esperado (artefactos CT en
+        riesgo de un tenant) es pequeño."""
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT ei.expediente_id, e.code AS expediente_code,
+                       ei.worm_retain_until, ei.worm_renovacion_intentos,
+                       ei.worm_renovacion_agotado, ei.worm_renovacion_ultimo_error
+                FROM expediente_indice ei
+                JOIN expedientes e ON e.id = ei.expediente_id
+                JOIN trd_series s ON s.id = e.trd_serie_id
+                WHERE ei.worm_protegido_at IS NOT NULL
+                  AND s.disposition = ANY($1::text[])
+                  AND e.nivel_seguridad <= $2
+                  AND (
+                        ei.worm_renovacion_agotado = TRUE
+                        OR (
+                            ei.worm_retain_until IS NOT NULL
+                            AND ei.worm_retain_until < now() + ($3 * INTERVAL '1 day')
+                        )
+                      )
+                ORDER BY ei.worm_renovacion_agotado DESC, ei.worm_retain_until ASC NULLS LAST
+                """,
+                ct_codes,
+                max_clearance,
+                ventana_dias,
+            )
+        )
+
+    async def mark_worm_renovado(
+        self, indice_id: uuid.UUID, *, worm_retain_until: datetime
+    ) -> None:
+        """Actualiza el espejo `worm_retain_until` tras una llamada CONFIRMADA
+        (`outcome.ok=True`) a `renovar-retencion-internal` — real o no-op
+        (ver `PreservationWormService.renovar_retencion` del lado de
+        storage-service). Resetea el backoff de renovación (mismo criterio
+        que `mark_signed` resetea el backoff de sellado): una llamada
+        confirmada, por definición, deja la fila sana, sin importar si
+        `outcome.renovado` fue True o False — el AUDITADO de la extensión
+        real lo decide el llamador (`IndexService.renovar_worm_indice`)
+        aparte, no esta actualización de estado."""
+        await self._conn.execute(
+            "UPDATE expediente_indice SET worm_retain_until = $2, "
+            "worm_renovacion_intentos = 0, worm_renovacion_proximo_at = NULL, "
+            "worm_renovacion_ultimo_error = NULL, worm_renovacion_agotado = FALSE "
+            "WHERE id = $1",
+            indice_id,
+            worm_retain_until,
+        )
+
+    async def bump_worm_renovacion_intento(
+        self,
+        indice_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Registra un intento FALLIDO de renovación de retención WORM (E10
+        debt) — gemelo de `bump_worm_reconcile_intento` para el eje de
+        RENOVACIÓN: incrementa `worm_renovacion_intentos` atómicamente en el
+        propio UPDATE y fija `worm_renovacion_proximo_at`/
+        `worm_renovacion_ultimo_error`/`worm_renovacion_agotado` con lo que
+        decidió el llamador."""
+        await self._conn.execute(
+            "UPDATE expediente_indice SET "
+            "worm_renovacion_intentos = worm_renovacion_intentos + 1, "
+            "worm_renovacion_proximo_at = $2, worm_renovacion_ultimo_error = $3, "
+            "worm_renovacion_agotado = $4 WHERE id = $1",
+            indice_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
         )
 
     async def get_items(self, indice_id: uuid.UUID) -> list[asyncpg.Record]:

@@ -100,6 +100,13 @@ def make_worm_row(
     legal_hold: bool = False,
     created_at: datetime | None = None,
     file_id: uuid.UUID | None = None,
+    # E10 debt (renovación de retención WORM para series CT, migración 011):
+    # ambos NULLABLE/con default (filas anteriores a esa migración quedan
+    # `renovaciones=0`/`renovado_at=None`) — el default aquí cubre ambos
+    # casos sin que cada test que NO versa sobre renovación tenga que
+    # declararlos explícitamente.
+    renovaciones: int = 0,
+    renovado_at: datetime | None = None,
 ) -> dict:
     return {
         "id": worm_id or uuid.uuid4(),
@@ -117,6 +124,8 @@ def make_worm_row(
         # esa migración quedan NULL) — el default `None` aquí cubre AMBOS
         # casos sin que cada test tenga que declararlo explícitamente.
         "file_id": file_id,
+        "renovaciones": renovaciones,
+        "renovado_at": renovado_at,
     }
 
 
@@ -184,6 +193,10 @@ def _make_mock_minio() -> MagicMock:
     # WORM (E10 Increment A): default = bucket ya existe CON Object Lock (no
     # levanta S3Error) — el caso "sin lock" lo fuerza cada test que lo necesite.
     minio.get_object_lock_config = AsyncMock(return_value=MagicMock())
+    # E10 debt (renovación de retención WORM para series CT): distinto de
+    # `put_object` -- `PreservationWormService.renovar_retencion` SOLO llama
+    # esto (nunca vuelve a subir bytes), ver tests/test_preservacion_worm_renovacion.py.
+    minio.set_object_retention = AsyncMock()
     return minio
 
 

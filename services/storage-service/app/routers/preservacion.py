@@ -32,6 +32,8 @@ from app.schemas.preservacion import (
     PlanResponse,
     ProtegerIndiceRequest,
     ProtegerIndiceResponse,
+    RenovarRetencionRequest,
+    RenovarRetencionResponse,
 )
 from app.services.aip_builder import PremisValidationError
 from app.services.aip_service import AipService
@@ -41,6 +43,7 @@ from app.services.preservation_worm_service import (
     InvalidRetentionError,
     PreservationDisabledError,
     PreservationWormService,
+    WormObjectNotFoundError,
 )
 
 router = APIRouter(prefix="/api/v1/preservacion", tags=["preservacion"])
@@ -428,6 +431,78 @@ async def proteger_artefacto(
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))
+
+
+def _map_renovar_retencion_error(exc: Exception) -> HTTPException:
+    """Traduce las excepciones de `PreservationWormService.renovar_retencion`
+    a HTTP -- usado por la ruta interna (D-02), mismo patrón que
+    `_map_proteger_indice_error`."""
+    if isinstance(exc, PreservationDisabledError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
+        )
+    if isinstance(exc, WormObjectNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "worm_object_not_found", "detail": str(exc), "status": 404},
+        )
+    if isinstance(exc, InvalidRetentionError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        )
+    raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
+
+
+@router.post(
+    "/renovar-retencion-internal",
+    response_model=RenovarRetencionResponse,
+    summary=(
+        "Extiende la retención WORM (MinIO Object Lock) de un artefacto ya "
+        "protegido -- índice o acta de transferencia -- de una serie de "
+        "disposición Conservación Total (E10 debt, AGN 001/2024 Art. 4.3.2.6). "
+        "Disparo SISTEMA únicamente (D-02, X-Internal-Token)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def renovar_retencion_internal(
+    payload: RenovarRetencionRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> RenovarRetencionResponse:
+    """Extiende (nunca acorta) `retain_until` de la fila WORM identificada
+    por `(payload.expediente_id, payload.tipo)`. Idempotente: si la fecha
+    resuelta (`retain_until` directo, o `retencion_anios` + `fecha_inicio`)
+    NO supera estrictamente la ya persistida, responde 200 SIN tocar MinIO
+    (`renovado=false` en el body).
+
+    Deliberadamente SIN ruta pública equivalente (remediación de auditoría de
+    seguridad, Media): storage-service no modela la disposición TRD, así que
+    no puede validar que `payload.expediente_id`/`tipo` correspondan
+    realmente a una serie CT -- un portador de `USUA_PERM_EXPEDIENTE
+    min_crud=3` con un payload arbitrario podría fijar el lock COMPLIANCE de
+    CUALQUIER artefacto ya protegido hasta 100 años (`preservation_max_
+    retention_years`), incluido uno de disposición E/S/M, saboteando su
+    disposición final (Ley 594/2000 arts. 24-26). Solo `X-Internal-Token`
+    (D-02): únicamente archive-service, dueño de la TRD, decide QUÉ artefacto
+    es CT y CUÁNDO renovar -- la 5ª fase de reconciliación
+    (`run_once_worm_renovacion`), que actúa con `SYSTEM_RECONCILER_ID` (sin
+    fila en `auth_users` de este tenant, `require_permission` la rechazaría
+    SIEMPRE con 403). Mismo criterio que `/proteger-indice-internal`/
+    `/proteger-artefacto-internal`, un paso más estricto (aquellas SÍ
+    conservan su gemela pública porque `proteger_indice` recibe `file_id` +
+    recalcula fixity -- no puede sobre-fijar un artefacto arbitrario del
+    mismo modo)."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        return await service.renovar_retencion(payload, actor=str(SYSTEM_RECONCILER_ID))
+    except (
+        PreservationDisabledError,
+        WormObjectNotFoundError,
+        InvalidRetentionError,
+    ) as exc:
+        raise _map_renovar_retencion_error(exc) from exc
 
 
 @router.post(

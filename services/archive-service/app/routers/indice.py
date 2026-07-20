@@ -36,6 +36,7 @@ from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
     IndiceFirmarResult,
     IndicePendienteFirma,
+    IndicePendienteRenovacion,
     IndiceResponse,
     IndiceVerifyResponse,
     IndiceVersionSummary,
@@ -367,6 +368,48 @@ async def list_indices_pendientes_firma(
     (`indice`, `indice.xml`, ...) distinto de `pendientes-firma`.
     """
     items, total = await IndexService(conn, tenant_slug).list_pendientes_firma(
+        page=page, size=size, user_id=user_id
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+@router.get(
+    "/indices/pendientes-renovacion",
+    response_model=list[IndicePendienteRenovacion],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def list_indices_pendientes_renovacion(
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[IndicePendienteRenovacion]:
+    """Visibilidad operacional de artefactos WORM de series de disposición
+    Conservación Total (CT) cuya renovación de retención está AGOTADA
+    (`worm_renovacion_agotado=TRUE`) o EN RIESGO de vencer sin renovar (E10
+    debt, AGN 001/2024 Art. 4.3.2.6) -- gemela de
+    `GET /indices/pendientes-firma` para el eje de RENOVACIÓN: complementa al
+    job de reconciliación (`run_once_worm_renovacion`,
+    `app/jobs/indice_reconciliation.py`) con visibilidad directa, incluidos
+    los agotados que requieren intervención manual URGENTE (un lock
+    COMPLIANCE de conservación PERMANENTE a punto de expirar sin extender).
+
+    No-read-up (RF-SEG-08): filtra por el clearance real del llamante, igual
+    que `list_indices_pendientes_firma` (`IndexService.list_pendientes_renovacion`).
+
+    Cubre AMBOS artefactos protegidos bajo WORM -- índice electrónico y acta
+    de transferencia -- distinguidos por `tipo` en cada fila, en vez de dos
+    endpoints gemelos (mismo criterio de no proliferación que
+    `POST /proteger-artefacto` en storage-service).
+
+    Bajo `/indices/...` (no `/{expediente_id}/...`): mismo criterio de
+    `list_indices_pendientes_firma` -- no colisiona con ninguna ruta de este
+    router.
+    """
+    items, total = await IndexService(conn, tenant_slug).list_pendientes_renovacion(
         page=page, size=size, user_id=user_id
     )
     response.headers["X-Total-Count"] = str(total)

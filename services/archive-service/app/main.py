@@ -31,6 +31,9 @@ from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
 from app.jobs.indice_reconciliation import run_once_actas_worm as _reconcile_actas_worm_once
 from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
+from app.jobs.indice_reconciliation import (
+    run_once_worm_renovacion as _reconcile_worm_renovacion_once,
+)
 from app.routers.batch import router as batch_router
 from app.routers.expedientes import router as expedientes_router
 from app.routers.fisico import router as fisico_router
@@ -61,7 +64,14 @@ async def _indice_reconciliation_loop() -> None:
     amerita un kill-switch/intervalo propio (a diferencia del acta, que sí
     tiene cadencia dedicada por ser aditiva y menos urgente, ver
     `_acta_reconciliation_loop`). Un fallo en la fase WORM tampoco debe
-    impedir que la siguiente iteración reintente el sellado."""
+    impedir que la siguiente iteración reintente el sellado.
+
+    Incluye también la 5ª fase (E10 debt, renovación de retención WORM para
+    series CT, `run_once_worm_renovacion`) — piggyback en el MISMO ciclo por
+    el mismo criterio: reactiva a "el índice/acta ya quedó protegido", sin
+    kill-switch/intervalo propio (solo la ventana de antelación
+    `worm_renovacion_ventana_dias` es configurable). Cubre ÍNDICE Y ACTA en
+    una sola llamada (ver el docstring de `run_once_worm_renovacion`)."""
     while True:
         try:
             await _reconcile_indices_once()
@@ -75,6 +85,13 @@ async def _indice_reconciliation_loop() -> None:
         except Exception:
             logger.warning(
                 "Fallo en la barrida de reconciliación WORM del índice",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_worm_renovacion_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de renovación de retención WORM (series CT)",
                 exc_info=True,
             )
         await asyncio.sleep(settings.indice_reconciliation_interval_seconds)

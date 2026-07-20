@@ -402,10 +402,15 @@ async def test_proteger_worm_acta_success_marks_atomically_and_audits() -> None:
     conn.execute.return_value = "UPDATE 1"  # mark_acta_worm_protegido: affected=1
     service._resolve_worm_retention_acta = AsyncMock(return_value=(5, date(2026, 1, 1)))
     worm_object_id = uuid.uuid4()
+    retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     with patch(
         "app.clients.storage_client.proteger_artefacto_worm",
-        new=AsyncMock(return_value=WormProtectionOutcome(ok=True, worm_object_id=worm_object_id)),
+        new=AsyncMock(
+            return_value=WormProtectionOutcome(
+                ok=True, worm_object_id=worm_object_id, retain_until=retain_until
+            )
+        ),
     ):
         resultado = await service.proteger_worm_acta(
             firma_row["transferencia_id"], actor_id=str(USER_ID), origen="close"
@@ -419,7 +424,14 @@ async def test_proteger_worm_acta_success_marks_atomically_and_audits() -> None:
         if c.args and "worm_protegido_at = now()" in c.args[0]
     ]
     assert len(update_calls) == 1
-    assert update_calls[0].args[1:] == (firma_row["transferencia_id"], worm_object_id)
+    # `worm_retain_until` (E10 debt, migración 032) se pasa TAL CUAL desde
+    # `WormProtectionOutcome.retain_until` -- mismo criterio que
+    # `test_index_service_worm.py`.
+    assert update_calls[0].args[1:] == (
+        firma_row["transferencia_id"],
+        worm_object_id,
+        retain_until,
+    )
 
     audit_calls = [
         c

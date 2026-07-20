@@ -43,6 +43,7 @@ from app.clients import signature_client
 from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import acquire_tenant, close_pool, create_pool, get_pool
+from app.core.disposition import CT_DISPOSITION_CODES
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.services.backoff import next_backoff_seconds
@@ -683,6 +684,210 @@ async def run_once_actas_worm() -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Quinta fase — renovación de retención WORM para series de disposición
+# Conservación Total (E10 debt)
+# ---------------------------------------------------------------------------
+#
+# Objetos bajo Object-Lock COMPLIANCE (Increment A/Inc.1/Inc.2 wiring) llevan
+# `retain_until = fecha_inicio + retención TOTAL de la TRD`. Para series de
+# disposición Conservación Total (CT) el documento debe conservarse PARA
+# SIEMPRE, pero el lock COMPLIANCE VENCE en esa fecha -- esta fase EXTIENDE
+# `retain_until` (ventana rodante `now() + total_TRD`, NUNCA una fecha
+# lejana/9999) antes de que expire, para el índice Y el acta de transferencia
+# (los dos artefactos con espejo local en este servicio; el AIP queda fuera
+# de alcance -- no tiene espejo, ver `app/core/disposition.py`).
+#
+# UNA sola función (`run_once_worm_renovacion`) cubre AMBOS artefactos --
+# a diferencia de las fases 3/4 (`run_once_worm`/`run_once_actas_worm`,
+# separadas porque cada una tenía su propio "artefacto recién firmado" que
+# disparaba la protección inicial), la renovación es un barrido periódico
+# puramente reactivo al vencimiento próximo sin un evento que la dispare —
+# no hay razón para separarla en dos funciones ni darle cadencia propia.
+# Piggyback en el MISMO ciclo/cadencia que la 3ra fase (índice,
+# `_indice_reconciliation_loop` en `app/main.py`) — reutiliza
+# `indice_reconciliation_max_intentos`/`backoff_base_seconds`/`cap_seconds`/
+# `batch_size`, mismo criterio que ató las fases WORM anteriores al ciclo del
+# sellado (barata: el índice parcial de las migraciones 031/032 devuelve
+# vacío casi siempre en un tenant sin series CT próximas a vencer).
+#
+# Fail-closed por construcción (`CT_DISPOSITION_CODES`, ver
+# `app/core/disposition.py`): el filtro CT vive EN LA CONSULTA SQL de
+# `list_worm_renovacion_pending` -- una serie E/S/M jamás entra al resultado,
+# sin importar cuán próxima esté a vencer (expiran y se disponen
+# legítimamente, renovarlas sería incorrecto).
+
+
+async def _reconciliar_worm_renovacion_indice(
+    conn: asyncpg.Connection, slug: str, row: asyncpg.Record
+) -> str:
+    """Intenta renovar la retención WORM de UN índice CT próximo a vencer.
+    Devuelve 'renovado', 'omitido' (llamada confirmada pero sin extensión
+    real -- no-op idempotente), 'pendiente'/'fallido' (backoff programado) o
+    'agotado' (`worm_renovacion_agotado=TRUE`, requiere intervención manual
+    URGENTE — riesgo de vencimiento del lock COMPLIANCE sobre un registro de
+    conservación permanente)."""
+    index = IndexService(conn, slug)
+    return await index.renovar_worm_indice(
+        row["expediente_id"],
+        row["id"],
+        intentos_previos=int(row["worm_renovacion_intentos"]),
+    )
+
+
+async def _reconciliar_worm_renovacion_acta(
+    conn: asyncpg.Connection, slug: str, row: asyncpg.Record
+) -> str:
+    """Intenta renovar la retención WORM de UNA acta CT próxima a vencer --
+    gemela EXACTA de `_reconciliar_worm_renovacion_indice`."""
+    service = TransferenciaService(conn, slug)
+    return await service.renovar_worm_acta(
+        row["transferencia_id"],
+        row["expediente_id"],
+        intentos_previos=int(row["worm_renovacion_intentos"]),
+    )
+
+
+async def run_once_worm_renovacion() -> dict[str, int]:
+    """Una barrida completa: por cada tenant activo, renueva hasta
+    `indice_reconciliation_batch_size` índices Y hasta ese mismo cupo de
+    actas de series CT próximas a vencer (`worm_renovacion_ventana_dias`).
+    Fallos por-tenant o por-artefacto quedan aislados (WARNING, no abortan el
+    resto de la barrida) — mismo patrón que `run_once_worm`/
+    `run_once_actas_worm`.
+
+    Dos advisory locks POR TENANT en esta barrida (`worm_renovacion_indice`/
+    `worm_renovacion_acta`, namespaces propios) -- índice y acta son
+    artefactos independientes, no deben serializarse entre sí; cada uno SÍ se
+    serializa contra otra instancia de ESTA MISMA fase vía su propio lock
+    (mismo criterio que las fases 3/4)."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "renovados": 0, "fallidos": 0, "agotados": 0}
+    ct_codes = list(CT_DISPOSITION_CODES)
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtext('orpycamcp:archive:worm_renovacion_indice'), hashtext($1))",
+                    slug,
+                )
+                if got_lock:
+                    try:
+                        rows = await IndexRepository(conn).list_worm_renovacion_pending(
+                            ventana_dias=settings.worm_renovacion_ventana_dias,
+                            ct_codes=ct_codes,
+                            limit=settings.indice_reconciliation_batch_size,
+                        )
+                        for row in rows:
+                            summary["pendientes_vistos"] += 1
+                            try:
+                                resultado = await _reconciliar_worm_renovacion_indice(
+                                    conn, slug, row
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Fallo renovando retención WORM indice_id=%s "
+                                    "(expediente_id=%s) tenant=%s — se omite en esta barrida",
+                                    row["id"],
+                                    row["expediente_id"],
+                                    slug,
+                                    exc_info=True,
+                                )
+                                summary["fallidos"] += 1
+                                continue
+                            if resultado == "renovado":
+                                summary["renovados"] += 1
+                            elif resultado == "agotado":
+                                summary["agotados"] += 1
+                            else:
+                                summary["fallidos"] += 1
+                    finally:
+                        await conn.execute(
+                            "SELECT pg_advisory_unlock("
+                            "hashtext('orpycamcp:archive:worm_renovacion_indice'), "
+                            "hashtext($1))",
+                            slug,
+                        )
+                else:
+                    logger.debug(
+                        "Renovación WORM del índice: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+
+                got_lock_acta = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtext('orpycamcp:archive:worm_renovacion_acta'), hashtext($1))",
+                    slug,
+                )
+                if got_lock_acta:
+                    try:
+                        rows = await TransferenciaRepository(
+                            conn, slug
+                        ).list_worm_renovacion_pending(
+                            ventana_dias=settings.worm_renovacion_ventana_dias,
+                            ct_codes=ct_codes,
+                            limit=settings.indice_reconciliation_batch_size,
+                        )
+                        for row in rows:
+                            summary["pendientes_vistos"] += 1
+                            try:
+                                resultado = await _reconciliar_worm_renovacion_acta(
+                                    conn, slug, row
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Fallo renovando retención WORM transferencia_id=%s "
+                                    "(expediente_id=%s) tenant=%s — se omite en esta barrida",
+                                    row["transferencia_id"],
+                                    row["expediente_id"],
+                                    slug,
+                                    exc_info=True,
+                                )
+                                summary["fallidos"] += 1
+                                continue
+                            if resultado == "renovado":
+                                summary["renovados"] += 1
+                            elif resultado == "agotado":
+                                summary["agotados"] += 1
+                            else:
+                                summary["fallidos"] += 1
+                    finally:
+                        await conn.execute(
+                            "SELECT pg_advisory_unlock("
+                            "hashtext('orpycamcp:archive:worm_renovacion_acta'), "
+                            "hashtext($1))",
+                            slug,
+                        )
+                else:
+                    logger.debug(
+                        "Renovación WORM del acta: tenant=%s ya está siendo procesado "
+                        "por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de renovación de retención WORM para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+
+    logger.info(
+        "Renovación de retención WORM (series CT) completada: "
+        "pendientes_vistos=%d renovados=%d fallidos=%d agotados=%d tenants=%d",
+        summary["pendientes_vistos"],
+        summary["renovados"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Standalone entry point
 # ---------------------------------------------------------------------------
 
@@ -698,6 +903,7 @@ async def _main() -> None:
         await run_once_actas()
         await run_once_worm()
         await run_once_actas_worm()
+        await run_once_worm_renovacion()
     finally:
         await close_pool()
 

@@ -20,6 +20,7 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
+from app.core.disposition import CT_DISPOSITION_CODES
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.audit_read import AuditReadRepository
@@ -1867,8 +1868,11 @@ def _to_evento_response(r) -> ExpedienteEventoResponse:
 
 
 _AGN_DISPOSITION: dict[str, tuple[str, str]] = {
-    "CT": ("CT", "Conservación Total"),
-    "conserve": ("CT", "Conservación Total"),
+    # Derivado de `CT_DISPOSITION_CODES` (app/core/disposition.py) -- fuente
+    # ÚNICA de qué códigos/alias equivalen a Conservación Total, compartida
+    # con el filtro SQL de la renovación de retención WORM (E10 debt) para
+    # que ambos no diverjan si se agrega un alias nuevo.
+    **{code: ("CT", "Conservación Total") for code in CT_DISPOSITION_CODES},
     "E": ("E", "Eliminación"),
     "eliminate": ("E", "Eliminación"),
     "S": ("S", "Selección"),

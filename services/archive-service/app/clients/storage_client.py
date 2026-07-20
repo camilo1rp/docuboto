@@ -97,7 +97,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 import httpx
 from fastapi import status
@@ -111,11 +111,21 @@ logger = logging.getLogger(__name__)
 class WormProtectionOutcome:
     """Resultado ESTRUCTURADO de un intento de cableado WORM del índice (E10
     Inc.1) — exactamente uno de los tres queda "poblado": `ok=True` (éxito,
-    `worm_object_id` poblado), `disabled=True` (503 `preservation_disabled`)
-    o `transient=True` (cualquier otro fallo — reintentable)."""
+    `worm_object_id`/`retain_until` poblados), `disabled=True` (503
+    `preservation_disabled`) o `transient=True` (cualquier otro fallo —
+    reintentable).
+
+    `retain_until` (E10 debt: renovación de retención para series CT) se
+    añade AQUÍ, no en un tipo nuevo, porque `IndexService.proteger_worm_indice`/
+    `TransferenciaService.proteger_worm_acta` ya reciben este mismo outcome y
+    lo necesitan para poblar el espejo `worm_retain_until` (migraciones
+    031/032) al confirmar la protección — antes la respuesta de storage-service
+    (`ProtegerIndiceResponse.retain_until`, siempre presente) se descartaba
+    sin leer."""
 
     ok: bool
     worm_object_id: uuid.UUID | None = None
+    retain_until: datetime | None = None
     disabled: bool = False
     transient: bool = False
 
@@ -136,7 +146,26 @@ def _worm_outcome_from_response(resp: httpx.Response, *, contexto: str) -> WormP
                 contexto,
             )
             return WormProtectionOutcome(ok=False, transient=True)
-        return WormProtectionOutcome(ok=True, worm_object_id=worm_object_id)
+        # `retain_until` SIEMPRE viene en `ProtegerIndiceResponse` — un fallo
+        # al parsearlo NO degrada la protección ya confirmada (el objeto YA
+        # quedó inmutable en MinIO): solo deja el espejo local sin poblar
+        # (`mark_worm_protegido`/`mark_acta_worm_protegido` toleran `None`,
+        # ver `COALESCE` en esos UPDATE) — la renovación (E10 debt) lo
+        # recuperará más tarde vía `PreservacionWormRepository.
+        # get_by_expediente_and_tipo` del lado de storage-service, que sigue
+        # siendo la fuente de verdad legal.
+        retain_until: datetime | None = None
+        try:
+            retain_until = datetime.fromisoformat(data["retain_until"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "storage-service → respuesta 2xx sin 'retain_until' válido al "
+                "proteger WORM (%s) — espejo local quedará sin poblar",
+                contexto,
+            )
+        return WormProtectionOutcome(
+            ok=True, worm_object_id=worm_object_id, retain_until=retain_until
+        )
     if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
         logger.warning(
             "storage-service: protección WORM deshabilitada (PRESERVATION_ENABLED=false, %s)",
@@ -298,6 +327,116 @@ async def proteger_artefacto_worm_internal(
         )
         return WormProtectionOutcome(ok=False, transient=True)
     return _worm_outcome_from_response(resp, contexto=f"reconciliation:{tipo}")
+
+
+# ---------------------------------------------------------------------------
+# E10 debt — renovación de retención WORM para series de disposición
+# Conservación Total (CT)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class WormRenewalOutcome:
+    """Resultado ESTRUCTURADO de un intento de renovación de retención WORM
+    (E10 debt) — mismo criterio de "exactamente un flag queda poblado" que
+    `WormProtectionOutcome`: `ok=True` (llamada confirmada — `renovado`
+    distingue extensión real de no-op idempotente, `retain_until` es SIEMPRE
+    el valor vigente tras la llamada), `not_found=True` (404
+    `worm_object_not_found` — nada que renovar, artefacto nunca protegido),
+    `disabled=True` (503 `preservation_disabled`) o `transient=True`
+    (cualquier otro fallo — reintentable)."""
+
+    ok: bool
+    retain_until: datetime | None = None
+    renovado: bool = False
+    not_found: bool = False
+    disabled: bool = False
+    transient: bool = False
+
+
+def _worm_renewal_outcome_from_response(
+    resp: httpx.Response, *, contexto: str
+) -> WormRenewalOutcome:
+    """Traduce una respuesta HTTP de storage-service a un
+    `WormRenewalOutcome` — compartido por la (futura) variante pública y
+    `renovar_retencion_worm_internal`, mismo criterio que
+    `_worm_outcome_from_response`."""
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            data = resp.json()
+            retain_until = datetime.fromisoformat(data["retain_until"])
+            renovado = bool(data["renovado"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "storage-service → respuesta 200 sin 'retain_until'/'renovado' "
+                "válidos al renovar retención WORM (%s)",
+                contexto,
+            )
+            return WormRenewalOutcome(ok=False, transient=True)
+        return WormRenewalOutcome(ok=True, retain_until=retain_until, renovado=renovado)
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        logger.warning(
+            "storage-service: sin objeto WORM protegido para renovar (%s, 404)", contexto
+        )
+        return WormRenewalOutcome(ok=False, not_found=True)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "storage-service: protección WORM deshabilitada al renovar "
+            "(PRESERVATION_ENABLED=false, %s)",
+            contexto,
+        )
+        return WormRenewalOutcome(ok=False, disabled=True)
+    logger.warning(
+        "storage-service → HTTP %s al renovar retención WORM (%s, transient)",
+        resp.status_code,
+        contexto,
+    )
+    return WormRenewalOutcome(ok=False, transient=True)
+
+
+async def renovar_retencion_worm_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    tipo: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+) -> WormRenewalOutcome:
+    """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST
+    /renovar-retencion-internal` — único llamador en este incremento: la 5ª
+    fase de reconciliación (`run_once_worm_renovacion`,
+    `app/jobs/indice_reconciliation.py`), sin `X-User-Id` real (actúa con
+    `SYSTEM_RECONCILER_ID`). No existe variante pública en este cliente
+    porque nada en archive-service dispara una renovación síncrona con un
+    usuario real detrás (a diferencia de la protección inicial, que sí ocurre
+    al cierre) — la renovación es puramente reactiva al vencimiento próximo,
+    detectado solo por el job."""
+    body = {
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/renovar-retencion-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "storage-service inalcanzable al renovar retención WORM (%s, %s): %s",
+            tipo,
+            expediente_id,
+            exc,
+        )
+        return WormRenewalOutcome(ok=False, transient=True)
+    return _worm_renewal_outcome_from_response(resp, contexto=f"renovacion:{tipo}")
 
 
 class StorageAipError(Exception):

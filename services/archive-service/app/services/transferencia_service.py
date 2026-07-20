@@ -51,6 +51,7 @@ from app.services.backoff import next_backoff_seconds
 # canónica (C14N) -- es el mismo cuerpo que congela el acta de entrega.
 from app.services.fisico_service import FisicoService, _fuid_to_xml
 from app.services.index_service import IndexService
+from app.services.retention_math import total_trd_years
 
 logger = logging.getLogger(__name__)
 
@@ -1755,10 +1756,25 @@ class TransferenciaService:
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
             return None
-        total = (serie.archivo_gestion_years or 0) + (serie.archivo_central_years or 0)
-        if not (1 <= total <= 100):
+        total = total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
+        if total is None:
             return None
         return total, firmado_at.date()
+
+    async def _resolve_ct_retencion_anios_acta(self, expediente_id: uuid.UUID) -> int | None:
+        """Total TRD (ambas fases) del EXPEDIENTE de una transferencia --
+        versión de RENOVACIÓN (E10 debt) de `_resolve_worm_retention_acta`:
+        la ventana rodante de renovación SIEMPRE usa `fecha_inicio=hoy` (no
+        `firmado_at`), así que este helper no exige ese parámetro."""
+        exp = await self._archive.get_expediente_by_id(
+            expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
+        )
+        if exp is None or exp.trd_serie_id is None:
+            return None
+        serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
+        if serie is None:
+            return None
+        return total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
 
     async def _bump_worm_backoff_acta(
         self, transferencia_id: uuid.UUID, *, intentos_previos: int, motivo: str
@@ -1898,7 +1914,9 @@ class TransferenciaService:
             if outcome.ok:
                 async with self._conn.transaction():
                     affected = await self._repo.mark_acta_worm_protegido(
-                        transferencia_id, outcome.worm_object_id
+                        transferencia_id,
+                        outcome.worm_object_id,
+                        worm_retain_until=outcome.retain_until,
                     )
                     # Idempotencia real (mismo patrón S1 que `mark_acta_firmada`):
                     # `affected == 0` -> otra llamada concurrente (el disparo
@@ -1941,6 +1959,126 @@ class TransferenciaService:
                 "Cableado WORM del acta falló (best-effort), transferencia_id=%s origen=%s",
                 transferencia_id,
                 origen,
+                exc_info=True,
+            )
+            return "pendiente"
+
+    # -- E10 debt: renovación de retención WORM del acta para series CT --
+    #
+    # Espejo EXACTO de `IndexService._bump_worm_renovacion_backoff`/
+    # `renovar_worm_indice` -- ver esos docstrings para el contrato completo.
+
+    async def _bump_worm_renovacion_backoff_acta(
+        self, transferencia_id: uuid.UUID, *, intentos_previos: int, motivo: str
+    ) -> Literal["pendiente", "agotado"]:
+        intentos_tras_este = intentos_previos + 1
+        agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        await self._repo.bump_acta_worm_renovacion_intento(
+            transferencia_id, proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado
+        )
+        if agotado:
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant,
+                    service=_SERVICE,
+                    action="archive.acta_worm_renovacion_agotado",
+                    object_type="transferencia_acta",
+                    object_ref=str(transferencia_id),
+                    actor=None,
+                    canal="system",
+                    payload={"renovacion_intentos": intentos_tras_este, "motivo": motivo},
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca degrada el resultado.
+                logger.warning(
+                    "audit.append(archive.acta_worm_renovacion_agotado) failed", exc_info=True
+                )
+            return "agotado"
+        return "pendiente"
+
+    async def renovar_worm_acta(
+        self,
+        transferencia_id: uuid.UUID,
+        expediente_id: uuid.UUID,
+        *,
+        intentos_previos: int,
+    ) -> Literal["renovado", "omitido", "pendiente", "agotado"]:
+        """Extiende (E10 debt) la retención WORM del acta de un expediente de
+        serie CT ANTES de que su `retain_until` vigente venza -- gemelo
+        EXACTO de `IndexService.renovar_worm_indice`. `expediente_id` llega
+        YA resuelto por el llamador (`TransferenciaRepository.
+        list_worm_renovacion_pending` lo proyecta vía el JOIN a
+        `transferencias`) -- no se re-consulta aquí."""
+        try:
+            retencion_anios = await self._resolve_ct_retencion_anios_acta(expediente_id)
+            if retencion_anios is None:
+                return await self._bump_worm_renovacion_backoff_acta(
+                    transferencia_id, intentos_previos=intentos_previos, motivo="trd_sin_retencion"
+                )
+
+            from app.clients import storage_client
+
+            outcome = await storage_client.renovar_retencion_worm_internal(
+                tenant_slug=self._tenant,
+                expediente_id=str(expediente_id),
+                tipo="acta_transferencia",
+                retencion_anios=retencion_anios,
+                fecha_inicio=datetime.now(tz=UTC).date(),
+            )
+
+            if outcome.ok:
+                assert outcome.retain_until is not None
+                async with self._conn.transaction():
+                    await self._repo.mark_acta_worm_renovado(
+                        transferencia_id, worm_retain_until=outcome.retain_until
+                    )
+                    if outcome.renovado:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant,
+                            service=_SERVICE,
+                            action="archive.acta_worm_retencion_renovada",
+                            object_type="transferencia_acta",
+                            object_ref=str(transferencia_id),
+                            actor=None,
+                            canal="system",
+                            payload={
+                                "transferencia_id": str(transferencia_id),
+                                "expediente_id": str(expediente_id),
+                                "retencion_anios": retencion_anios,
+                                "retain_until": outcome.retain_until.isoformat(),
+                            },
+                        )
+                return "renovado" if outcome.renovado else "omitido"
+
+            motivo = (
+                "worm_disabled"
+                if outcome.disabled
+                else "worm_object_not_found"
+                if outcome.not_found
+                else "worm_no_confirmado"
+            )
+            return await self._bump_worm_renovacion_backoff_acta(
+                transferencia_id, intentos_previos=intentos_previos, motivo=motivo
+            )
+        except Exception:
+            logger.warning(
+                "Renovación de retención WORM del acta falló (best-effort), "
+                "transferencia_id=%s expediente_id=%s",
+                transferencia_id,
+                expediente_id,
                 exc_info=True,
             )
             return "pendiente"
