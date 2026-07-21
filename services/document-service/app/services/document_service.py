@@ -158,6 +158,21 @@ class DocumentService:
         now = datetime.now(tz=UTC)
         year = now.year
 
+        # No-write-up al radicar (RF-SEG-08, espejo del M3 de archive y de la
+        # reclasificación): no se puede ORIGINAR un radicado por encima del propio
+        # clearance — clasificar es acto reglado de quien tiene competencia (Ley
+        # 1712/2014 arts. 6, 18-20). Un PUBLICA no puede radicar una CLASIFICADA y
+        # perderla de vista (los reads no-read-up la ocultarían). Solo se resuelve
+        # el clearance cuando hay clasificación (nivel>=2) — la radicación PUBLICA
+        # (la mayoría) no paga la consulta.
+        if payload.nivel_seguridad >= 2:
+            clearance = await resolve_caller_clearance(self._conn, registered_by)
+            if payload.nivel_seguridad > clearance:
+                raise ReclassifyForbiddenError(
+                    f"No se puede radicar en nivel {payload.nivel_seguridad}: "
+                    f"el clearance del actor es {clearance}"
+                )
+
         # Vínculo con el organigrama: si se indican códigos de dependencia, se
         # validan contra tenant-service y se denormaliza el nombre (snapshot
         # legal) en los campos de texto origin_dept/dest_dept.

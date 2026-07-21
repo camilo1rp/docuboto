@@ -134,6 +134,12 @@ async def create_document(
     service = _build_service(conn, _tenant_slug(request), tenant_client, redis)
     try:
         return await service.create(payload, _get_registered_by(request))
+    except ReclassifyForbiddenError as exc:
+        # No-write-up: no se puede radicar por encima del propio clearance.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "clasificacion_forbidden", "detail": str(exc), "status": 403},
+        )
     except MetadataValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

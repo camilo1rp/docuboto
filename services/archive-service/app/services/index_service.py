@@ -1178,7 +1178,9 @@ class IndexService:
                     action="archive.indice_worm_reconcile_agotado",
                     object_type="expediente_indice",
                     object_ref=str(indice_id),
-                    actor=None,
+                    # Acto de sistema (reconciliación): principal de sistema, no
+                    # `None` (deuda E10, unificación de actor).
+                    actor=str(SYSTEM_RECONCILER_ID),
                     canal="system",
                     payload={"reconcile_intentos": intentos_tras_este, "motivo": motivo},
                 )

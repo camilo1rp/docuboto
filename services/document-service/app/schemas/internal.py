@@ -35,3 +35,10 @@ class AnexosInternalRequest(BaseModel):
 class AnexoInternalItem(BaseModel):
     file_id: uuid.UUID
     filename: str
+
+
+class RadicadoMetaItem(BaseModel):
+    """Metadata de un radicado para el manifiesto de exportación (E02/export)."""
+
+    subject: str
+    doc_type: str

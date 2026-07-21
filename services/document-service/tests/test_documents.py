@@ -686,7 +686,9 @@ async def test_create_document_returns_nivel_seguridad(
     """POST /documents returns nivel_seguridad in the 201 response body."""
     client, mock_conn = client_with_conn
     record = make_radicado_record(nivel_seguridad=2)
-    mock_conn.fetchrow.side_effect = [None, {"code": "DEMO"}, record]
+    # No-write-up: radicar en nivel 2 resuelve primero el clearance del actor
+    # (fetchrow, is_root → CLASIFICADA=3 ≥ 2), luego template → tenant_code → create.
+    mock_conn.fetchrow.side_effect = [{"is_root": True}, None, {"code": "DEMO"}, record]
     mock_conn.fetchval.return_value = 1
     mock_conn.fetch.return_value = []
 
@@ -702,6 +704,27 @@ async def test_create_document_returns_nivel_seguridad(
 
     assert response.status_code == 201
     assert response.json()["nivel_seguridad"] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_document_no_write_up_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """No-write-up: un PUBLICA no puede radicar en nivel 3 → 403 (RF-SEG-08)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso PERM_RADI concedido
+    mock_conn.fetchrow.return_value = None  # resolve_caller_clearance → PUBLICA (1)
+    response = await client.post(
+        "/api/v1/documents",
+        json={
+            **_CREATE_PAYLOAD,
+            "nivel_seguridad": 3,
+            "clasificacion_fundamento": "Art. 18 Ley 1712",
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "clasificacion_forbidden"
 
 
 @pytest.mark.asyncio

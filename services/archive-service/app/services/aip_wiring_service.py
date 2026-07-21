@@ -164,7 +164,10 @@ class AipWiringService:
                     action="archive.aip_agotado",
                     object_type="expediente_aip",
                     object_ref=str(expediente_id),
-                    actor=None,
+                    # Acto de sistema (reconciliación): atribuido al principal de
+                    # sistema, no `None` (deuda E10: unificar con los demás
+                    # asientos de renovación/reconciliación).
+                    actor=str(SYSTEM_RECONCILER_ID),
                     canal="system",
                     payload={"intentos": intentos_tras_este, "motivo": motivo},
                 )

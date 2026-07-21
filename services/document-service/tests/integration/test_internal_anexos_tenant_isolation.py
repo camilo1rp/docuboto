@@ -106,6 +106,25 @@ async def test_radicado_id_from_other_tenant_never_appears_in_result(
     await conn.execute("SET search_path = public")
 
 
+@pytest.mark.integration
+async def test_radicado_metadata_internal_filters_by_clearance(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """`list_radicado_metadata_internal` devuelve asunto/tipo SOLO de los visibles."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+    pub = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000020", nivel=1, con_anexo=False)
+    clasif = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000021", nivel=3, con_anexo=False)
+
+    await conn.execute(f'SET search_path = "{schema}", public')
+    repo = DocumentRepository(conn, slug)
+    meta = await repo.list_radicado_metadata_internal([pub, clasif], max_clearance=1)
+    assert set(meta.keys()) == {pub}  # el clasificado (nivel 3) se omite
+    assert meta[pub]["doc_type"] == "E"
+    assert meta[pub]["subject"] == "itest export clearance"
+    await conn.execute("SET search_path = public")
+
+
 async def _seed_radicado_nivel(
     conn: asyncpg.Connection, schema: str, *, tracking: str, nivel: int, con_anexo: bool
 ) -> uuid.UUID:

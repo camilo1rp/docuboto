@@ -535,6 +535,24 @@ class DocumentRepository:
         # `a.id` NULL = radicado visible sin anexos → lista vacía.
         return [_row_to_anexo(r) for r in rows if r["id"] is not None]
 
+    async def list_radicado_metadata_internal(
+        self, radicado_ids: list[uuid.UUID], max_clearance: int
+    ) -> dict[uuid.UUID, dict]:
+        """Metadata de radicados VISIBLES (`subject`/`doc_type`) para enriquecer el
+        manifiesto de exportación (E02/export). Filtra por `nivel_seguridad <=
+        max_clearance` — un radicado sobre-clearance NO aparece (no-read-up,
+        mismo criterio que `list_anexos_for_radicados_internal` en modo export).
+        Acto de sistema (D-02), scoped al tenant por `search_path`."""
+        if not radicado_ids:
+            return {}
+        rows = await self._conn.fetch(
+            "SELECT id, subject, doc_type FROM radicados "
+            "WHERE id = ANY($1::uuid[]) AND nivel_seguridad <= $2",
+            radicado_ids,
+            max_clearance,
+        )
+        return {r["id"]: {"subject": r["subject"], "doc_type": r["doc_type"]} for r in rows}
+
     async def list_anexos_for_radicados_internal(
         self, radicado_ids: list[uuid.UUID], max_clearance: int | None = None
     ) -> dict[uuid.UUID, list[Anexo]]:

@@ -94,3 +94,39 @@ async def fetch_anexos_internal(
             f"anexos: {resp.text[:300]!r}"
         )
     return resp.json()
+
+
+async def fetch_radicado_metadata_internal(
+    *, tenant_slug: str, radicado_ids: list[uuid.UUID], max_clearance: int
+) -> dict[str, dict]:
+    """Metadata (`subject`/`doc_type`) de los radicados VISIBLES para enriquecer
+    el manifiesto de exportación (E02/export) — clearance-aware (no-read-up).
+    Devuelve ``{str(radicado_id): {"subject", "doc_type"}}`` solo de los visibles.
+
+    Lanza ``DocumentClientError`` ante cualquier fallo."""
+    if not radicado_ids:
+        return {}
+    body = {
+        "radicado_ids": [str(r) for r in radicado_ids],
+        "max_clearance": max_clearance,
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.document_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.document_service_url, timeout=30.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/internal/documentos/metadata", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise DocumentClientError(
+            f"document-service inalcanzable al pedir la metadata de radicados: {exc}"
+        ) from exc
+    if resp.status_code != 200:
+        raise DocumentClientError(
+            f"document-service → HTTP {resp.status_code} al pedir la metadata de radicados"
+        )
+    return resp.json()

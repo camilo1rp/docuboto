@@ -90,6 +90,15 @@ async def test_export_manifest_shows_excluido_no_bytes(monkeypatch) -> None:
         }
     )
     monkeypatch.setattr("app.clients.document_client.fetch_anexos_internal", fetch_mock)
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_radicado_metadata_internal",
+        AsyncMock(
+            return_value={
+                str(vinc.radicado_id): {"subject": "Asunto del oficio", "doc_type": "E"},
+                str(excl.radicado_id): {"subject": "Asunto excluido", "doc_type": "S"},
+            }
+        ),
+    )
 
     captured = {}
 
@@ -125,10 +134,11 @@ async def test_export_manifest_shows_excluido_no_bytes(monkeypatch) -> None:
     manifest = base64.b64decode(
         next(e["contenido_b64"] for e in captured["extra_files"] if e["arcname"] == "manifiesto.csv")
     ).decode()
-    # Ambos radicados figuran; el excluido con su causal, sin bytes.
+    # Ambos radicados figuran; el excluido con su causal, sin bytes; con asunto.
     assert "2026-DEMO-E-000001" in manifest
     assert "2026-DEMO-E-000002" in manifest
     assert "excluido" in manifest and "documento duplicado" in manifest
+    assert "Asunto del oficio" in manifest  # metadata enriquecida (asunto/tipo)
 
 
 @pytest.mark.asyncio
@@ -142,6 +152,10 @@ async def test_export_omits_over_clearance_radicado(monkeypatch) -> None:
     # document-service solo devuelve el VISIBLE; el clasificado no aparece.
     fetch_mock = AsyncMock(return_value={str(visible.radicado_id): []})
     monkeypatch.setattr("app.clients.document_client.fetch_anexos_internal", fetch_mock)
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_radicado_metadata_internal",
+        AsyncMock(return_value={str(visible.radicado_id): {"subject": "x", "doc_type": "E"}}),
+    )
     captured = {}
 
     async def _fake_export(*, tenant_slug, items, extra_files):
@@ -170,6 +184,10 @@ async def test_export_includes_indice_when_present(monkeypatch) -> None:
     svc = _service_with(_expediente([vinc]))
     monkeypatch.setattr(
         "app.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_radicado_metadata_internal",
+        AsyncMock(return_value={}),
     )
     captured = {}
 

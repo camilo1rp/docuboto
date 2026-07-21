@@ -454,6 +454,20 @@ class ArchiveService:
                 )
         visible_ids = set(anexos_by_rad.keys())
 
+        # Metadata (asunto/tipo) de los radicados visibles para el manifiesto
+        # (E02/export deuda) — best-effort: un fallo no impide la exportación,
+        # solo deja esas columnas vacías. Mismo `max_clearance` (no-read-up).
+        meta_by_rad: dict[str, dict] = {}
+        if all_ids:
+            try:
+                meta_by_rad = await document_client.fetch_radicado_metadata_internal(
+                    tenant_slug=self._tenant_slug,
+                    radicado_ids=all_ids,
+                    max_clearance=max_clearance,
+                )
+            except document_client.DocumentClientError:
+                meta_by_rad = {}
+
         items: list[dict] = []
         manifest = io.StringIO()
         writer = csv.writer(manifest)
@@ -461,6 +475,8 @@ class ArchiveService:
             [
                 "orden_documental",
                 "numero_radicado",
+                "tipo",
+                "asunto",
                 "estado",
                 "folios",
                 "formato",
@@ -499,10 +515,13 @@ class ArchiveService:
                 # manifiesto con su causal para preservar la trazabilidad.
                 num_anexos = 0
                 causal = r.excluido_causal or ""
+            meta = meta_by_rad.get(str(r.radicado_id), {})
             writer.writerow(
                 [
                     "" if r.orden_documental is None else r.orden_documental,
                     r.tracking_number,
+                    meta.get("doc_type", ""),
+                    _csv_safe(meta.get("subject", "")),
                     r.estado,
                     "" if r.folios is None else r.folios,
                     _csv_safe(r.formato or ""),

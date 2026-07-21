@@ -28,7 +28,11 @@ from fastapi import APIRouter, Depends, Request
 from app.core.database import get_tenant_conn
 from app.core.internal_auth import require_internal_token
 from app.repositories.document_repository import DocumentRepository
-from app.schemas.internal import AnexoInternalItem, AnexosInternalRequest
+from app.schemas.internal import (
+    AnexoInternalItem,
+    AnexosInternalRequest,
+    RadicadoMetaItem,
+)
 
 router = APIRouter(
     prefix="/api/v1/internal/documentos",
@@ -58,3 +62,22 @@ async def anexos_batch(
         ]
         for radicado_id, anexos in grouped.items()
     }
+
+
+@router.post(
+    "/metadata",
+    response_model=dict[str, RadicadoMetaItem],
+    summary="Metadata (asunto/tipo) de un lote de radicados VISIBLES — para el manifiesto de exportación",
+)
+async def metadata_batch(
+    payload: AnexosInternalRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, RadicadoMetaItem]:
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    repo = DocumentRepository(conn, tenant_slug)
+    # El manifiesto es un camino de LECTURA de usuario → siempre clearance-aware
+    # (no-read-up); si el llamante omite max_clearance se asume sin restricción (3).
+    clearance = payload.max_clearance if payload.max_clearance is not None else 3
+    meta = await repo.list_radicado_metadata_internal(payload.radicado_ids, max_clearance=clearance)
+    return {str(rid): RadicadoMetaItem(**m) for rid, m in meta.items()}
