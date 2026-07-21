@@ -26,9 +26,27 @@ class Settings(BaseSettings):
     # consumen el mismo stream sin competir entre sí.
     knowledge_ingest_group: str = "knowledge-ingest"
 
-    # Proveedor de embeddings (ADR-006: pluggable, local por defecto).
-    embedding_provider: str = "stub"
-    embedding_dim: int = 64
+    # Proveedor de embeddings (ADR-006/E21 Inc.1: pluggable). Default REAL de
+    # despliegue: `local_st` (sentence-transformers en el propio contenedor —
+    # soberano, no envía texto a ningún tercero). `stub` (determinista, sin
+    # modelo) queda como fallback de test/dev — los tests FUERZAN "stub" a nivel
+    # de sesión en `tests/conftest.py` para no descargar el modelo nunca en CI.
+    # `ollama` es un proveedor MÍNIMO VIABLE (ver `app/services/embeddings.py`;
+    # requiere un Ollama accesible en `ollama_url`, no provisionado por defecto
+    # en `docker-compose.yml` de este repo).
+    embedding_provider: str = "local_st"
+    # EMBEDDING_DIM es la fuente ÚNICA de la dimensión de `knowledge_chunk.embedding`
+    # (una sola columna/índice ANN por schema, migración 007). El provider
+    # seleccionado DEBE producir vectores de esta dimensión o el arranque aborta
+    # (guard fail-closed en `app/main.py::lifespan`).
+    embedding_dim: int = 384
+    # Modelo del proveedor real. Para `local_st`: nombre de modelo de
+    # sentence-transformers (multilingüe, 384 dim). Para `ollama`: el tag del
+    # modelo servido por esa instancia (el operador debe sobreescribir este
+    # valor si usa `ollama`, el default está pensado para `local_st`).
+    model_embed: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    # Solo relevante si embedding_provider="ollama" (proveedor mínimo viable).
+    ollama_url: str = "http://ollama:11434"
     service_port: int = 8011
     log_level: str = "info"
 
@@ -36,6 +54,36 @@ class Settings(BaseSettings):
     # servicios internos en X-Internal-Token para invocar /ingest. Si está vacío el
     # endpoint rechaza TODAS las llamadas (fail-closed).  Nunca exponer en logs.
     internal_service_token: str = ""
+
+    # --- E21 Inc.3: RAG generativo con citas (Patrón B) --------------------------
+    # Selección de proveedor de GENERACIÓN (distinto de EMBEDDING_PROVIDER, que
+    # solo cubre embeddings). `disabled` (o cualquier nombre no registrado) NO
+    # genera nada — el router cae al Patrón A (recuperación pura, `/antecedentes`).
+    # `ollama_local` es el DEFAULT soberano (mismo contenedor Ollama que
+    # EMBEDDING_PROVIDER=ollama podría usar, ver `ollama_url`). `ollama_cloud` y
+    # `openai_compatible` son proveedores EXTERNOS mínimo-viables (mismo shape de
+    # API, endpoint distinto). `anthropic` es opción explícita (NO default) — usa
+    # el SDK oficial con la Citations API nativa (anclaje fuerte).
+    #
+    # Barrera dura de soberanía (decisión TOMADA, ver documentos/specDrive/
+    # 00-capa-conocimiento.md y app/core/clearance.py::is_generatable): NO existe
+    # un `ALLOW_CLASSIFIED_EXTERNAL` — material nivel>=RESERVADA NUNCA se envía a
+    # un proveedor externo, sin excepción configurable.
+    ai_provider: str = "ollama_local"
+    # Vacío = cada proveedor resuelve SU PROPIO default sensato (ver
+    # `app/services/llm.py::_build_llm_provider`) — así no hay que fijar aquí un
+    # modelo que solo tiene sentido para un proveedor concreto.
+    model_generation: str = ""
+    # Solo si AI_PROVIDER=anthropic (opt-in explícito). Vacío → el provider aborta
+    # con RAGUnavailableError (degradación HONESTA, RF-FIR-15: nunca simula una
+    # respuesta) y el router responde 503 `rag_unavailable`.
+    anthropic_api_key: str = ""
+    # AI_PROVIDER=ollama_local reusa `ollama_url` (arriba, ya existe para
+    # EMBEDDING_PROVIDER=ollama) — es la MISMA instancia local/soberana.
+    ollama_cloud_url: str = "https://ollama.com"
+    ollama_cloud_api_key: str = ""
+    openai_compatible_url: str = ""
+    openai_compatible_api_key: str = ""
 
 
 settings = Settings()

@@ -25,11 +25,32 @@
 -- Rollback:
 --   ALTER TABLE knowledge_chunk DROP CONSTRAINT IF EXISTS ux_knowledge_source;
 --   ALTER TABLE knowledge_chunk DROP COLUMN IF EXISTS updated_at;
+--
+-- BUGFIX (testing-engineer, cobertura E21 Inc.1): AMBOS checks de este bloque
+-- eran globales a la base, no acotados al schema activo — mismo defecto que
+-- 002_nivel_seguridad_failclosed.sql (ver ese comentario para el razonamiento
+-- completo):
+--   - `pg_constraint WHERE conname = 'ux_knowledge_source'` — `conname` NO es
+--     único entre schemas; en cuanto el PRIMER tenant tiene esa constraint (y
+--     todos la crean con el mismo nombre), el check la encuentra ahí y se
+--     salta el `ADD CONSTRAINT` para cualquier tenant provisionado después.
+--     Se acota uniendo `pg_constraint` -> `pg_class` -> `pg_namespace` y
+--     filtrando por `current_schema()`.
+--   - `information_schema.columns WHERE table_name = 'knowledge_chunk' AND
+--     column_name = 'updated_at'` — mismo defecto que en 002 (no filtra por
+--     `table_schema`).
+-- Ambos ahora se acotan explícitamente al schema activo (`current_schema()`,
+-- el primero del `search_path` fijado antes de aplicar la migración).
 
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'ux_knowledge_source'
+        SELECT 1
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE c.conname = 'ux_knowledge_source'
+           AND n.nspname = current_schema()
     ) THEN
         -- Dedup defensivo: conserva solo la fila más reciente de cada
         -- (source_type, source_ref) antes de poder crear el índice único.
@@ -46,8 +67,9 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
           FROM information_schema.columns
-         WHERE table_name  = 'knowledge_chunk'
-           AND column_name = 'updated_at'
+         WHERE table_schema = current_schema()
+           AND table_name   = 'knowledge_chunk'
+           AND column_name  = 'updated_at'
     ) THEN
         ALTER TABLE knowledge_chunk
             ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();

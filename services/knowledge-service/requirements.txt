@@ -5,6 +5,17 @@ asyncpg>=0.29.0
 httpx>=0.27.0
 # E21: worker de ingesta event-driven consume orpycamcp.document.events (Redis Streams).
 redis>=5.0.0
+# E21 Inc.1: proveedor de embeddings REAL, local/soberano (app/services/embeddings.py,
+# LocalSentenceTransformerProvider). Dependencia PESADA (arrastra torch, CPU-only
+# suficiente) — aceptada por diseño (ver .claude/agent-memory/orfeo-architect); solo se
+# usa si EMBEDDING_PROVIDER=local_st (default de despliegue). Los tests NUNCA la cargan
+# (EMBEDDING_PROVIDER=stub forzado en tests/conftest.py) aunque esté instalada.
+sentence-transformers>=3.0.0
+# E21 Inc.3: proveedor de generación `anthropic` (RAG con Citations API nativa,
+# app/services/llm.py::AnthropicLLMProvider). Import PEREZOSO (solo si
+# AI_PROVIDER=anthropic) — los demás proveedores (default `ollama_local`,
+# `ollama_cloud`, `openai_compatible`) usan httpx (ya en requirements) directo.
+anthropic>=0.40.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-timeout>=2.4.0

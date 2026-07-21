@@ -57,12 +57,18 @@ chunk ya está voided — bajo CUALQUIER orden de entrega respecto al evento
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import asyncpg
 from orpycamcp_common import audit
 
-from app.core.clearance import CLASIFICADA, RESERVADA, is_embeddable
+from app.core.clearance import (
+    CLASIFICADA,
+    RESERVADA,
+    is_embeddable,
+    is_local_embedding_provider,
+)
 from app.core.config import settings
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.services.embeddings import embed, to_pgvector
@@ -181,7 +187,12 @@ async def ingest_radicado_created(
         )
         if v
     )
-    literal = to_pgvector(embed(texto))
+    # `asyncio.to_thread`: con `local_st`/`ollama` la llamada es CPU/red-bloqueante
+    # (inferencia del modelo o HTTP síncrono, ver `embeddings.py`); el worker
+    # procesa secuencialmente pero comparte el loop con el resto del servicio
+    # (endpoints HTTP) — no debe bloquearlo. Con `stub` es puro overhead
+    # despreciable (hash determinista).
+    literal = to_pgvector(await asyncio.to_thread(embed, texto))
     await repo.upsert_chunk(
         source_type=_SOURCE_TYPE,
         source_ref=tracking_number,
@@ -218,8 +229,8 @@ async def apply_reclassification(
     `upsert_chunk`/`tombstone_by_source` y permitiría que un `created` REDELIVERED
     tarde reencarnara el chunk a un nivel inferior (ver docstring del módulo y de
     `tombstone_by_source`). En cualquier otro caso (baja de nivel, o proveedor
-    local) se fija el nivel exacto con `update_nivel_by_source`, que desde el
-    cierre del residual ALTA (config stub por defecto) es también un
+    local — `is_local_embedding_provider`, E21 Inc.1) se fija el nivel exacto con
+    `update_nivel_by_source`, que desde el cierre del residual ALTA es también un
     UPSERT-con-centinela: cubre el mismo reordenamiento inverso que
     `tombstone_by_source` (un `reclassified` que llega ANTES que el `created`
     original ya no pierde el nivel por un UPDATE de 0 filas — ver su docstring).
@@ -271,7 +282,7 @@ async def apply_reclassification(
             )
 
     repo = KnowledgeRepository(conn)
-    if nuevo >= RESERVADA and settings.embedding_provider != "stub":
+    if nuevo >= RESERVADA and not is_local_embedding_provider(settings.embedding_provider):
         await repo.tombstone_by_source(_SOURCE_TYPE, tracking_number, nuevo)
     else:
         await repo.update_nivel_by_source(_SOURCE_TYPE, tracking_number, nuevo)

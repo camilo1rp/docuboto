@@ -1,0 +1,82 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""Repositorio de `kb_suggestions` (E21 Inc.3 — auditoría CC-02/CC-03).
+
+Cada fila es el registro ADVISORIO de una generación del Patrón B (RAG con citas):
+qué se sugirió, con qué proveedor/modelo (columnas SEPARADAS — CC-03: a dónde salió
+el contenido) y con qué confianza. `aceptada_por`/`aceptada_en` quedan NULL al
+insertar — son advisory, la aceptación humana es un acto POSTERIOR (CC-02: la capa
+sugiere, no decide) que este incremento no implementa (columnas listas para un
+endpoint de aceptación futuro, fuera de alcance de Inc.3).
+
+search_path ya fijado por la conexión (mismo patrón que `KnowledgeRepository`).
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+
+import asyncpg
+
+
+class KbSuggestionRepository:
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    async def insert(
+        self,
+        *,
+        tipo: str,
+        objeto_ref: str | None,
+        sugerencia: dict,
+        proveedor: str,
+        modelo: str,
+        confianza: float,
+        canal: str,
+    ) -> asyncpg.Record:
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO kb_suggestions
+                (tipo, objeto_ref, sugerencia, proveedor, modelo, confianza, canal)
+            VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+            RETURNING id, created_at
+            """,
+            tipo,
+            objeto_ref,
+            json.dumps(sugerencia, default=str),
+            proveedor,
+            modelo,
+            confianza,
+            canal,
+        )
+        assert row is not None
+        return row
+
+    async def mark_accepted(
+        self, suggestion_id: uuid.UUID, *, aceptada_por: uuid.UUID
+    ) -> asyncpg.Record | None:
+        """Registra la aceptación humana de una sugerencia (CC-02, advisory).
+
+        No forma parte del contrato de Inc.3 (ningún router la expone todavía) —
+        se deja lista para el próximo incremento que confirme sugerencias desde
+        la UI/MCP; queda como método muerto intencional hasta entonces.
+        """
+        return await self._conn.fetchrow(
+            """
+            UPDATE kb_suggestions
+               SET aceptada_por = $2,
+                   aceptada_en  = now()
+             WHERE id = $1 AND aceptada_en IS NULL
+            RETURNING id, aceptada_por, aceptada_en
+            """,
+            suggestion_id,
+            aceptada_por,
+        )

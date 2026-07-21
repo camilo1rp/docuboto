@@ -19,14 +19,29 @@
 -- valor; en caso contrario queda en 3 (CLASIFICADA).
 --
 -- Idempotente: el bloque DO protege contra doble ejecución.
+--
+-- BUGFIX (testing-engineer, cobertura E21 Inc.1): el check original NO filtraba
+-- por `table_schema`, solo por `table_name`. `information_schema.columns` lista
+-- las columnas de TODOS los schemas de la base, no solo del schema activo del
+-- `search_path` — con multi-tenant (un `knowledge_chunk` por schema `tenant_*`,
+-- mismo nombre de tabla en todos), en cuanto el PRIMER tenant tiene la columna,
+-- el `IF NOT EXISTS` la encuentra ahí y la migración se SALTA en silencio para
+-- CUALQUIER OTRO tenant que se provisione después — el `ALTER TABLE` nunca
+-- corre en el schema nuevo, que se queda sin `nivel_seguridad` (columna que
+-- sostiene el gate D-02/RF-SEG-08 fail-closed) hasta que algo intente leerla y
+-- reviente con `UndefinedColumnError`. Se añade `AND table_schema =
+-- current_schema()` para acotar el check al schema efectivamente activo (el
+-- primero del `search_path` fijado por el runner/fixture antes de aplicar esta
+-- migración).
 
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1
           FROM information_schema.columns
-         WHERE table_name  = 'knowledge_chunk'
-           AND column_name = 'nivel_seguridad'
+         WHERE table_schema = current_schema()
+           AND table_name   = 'knowledge_chunk'
+           AND column_name  = 'nivel_seguridad'
     ) THEN
         -- Paso 1: añadir con DEFAULT para que las filas existentes queden en 3.
         ALTER TABLE knowledge_chunk

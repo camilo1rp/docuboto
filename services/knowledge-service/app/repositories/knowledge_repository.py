@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import asyncpg
 
@@ -327,6 +328,100 @@ class KnowledgeRepository:
         assert row is not None
         return row
 
+    async def list_pending_reembed_ids(self) -> list[uuid.UUID]:
+        """Snapshot (una sola consulta) de los `id` con centinela `embedding IS
+        NULL` que SÍ tienen contenido real pendiente de re-embeber (E21 Inc.1
+        backfill, migración 007).
+
+        Excluye, con la misma condición, dos clases de fila que también tienen
+        `embedding IS NULL` pero NUNCA deben re-embeberse:
+          - Tombstones reales (`tombstone_by_source`/`update_nivel_by_source`
+            rama INSERT) y voided (`void_by_source`): siempre dejan
+            `texto = ''` — el filtro `texto <> ''` los excluye sin distinguir
+            "tombstone por nivel" de "voided por anulación", ambos
+            deliberadamente vacíos de contenido.
+          - `voided`: defensa en profundidad explícita (ya cubiertos por
+            `texto <> ''`, pero un `voided=true` nunca debe re-indexarse pase
+            lo que pase con `texto`, igual que en `search`).
+
+        Deliberadamente un SNAPSHOT de solo-ids (no de filas completas, y sin
+        paginar por `embedding IS NULL` a medida que el backfill avanza): si
+        alguna fila queda bloqueada por residencia (`is_embeddable` fail-closed,
+        ver `app/ops/reembed.py`), seguiría cumpliendo `embedding IS NULL` en
+        la siguiente vuelta — paginar sobre esa condición sin cursor fijo
+        haría un loop infinito. Iterar sobre esta lista fija en el llamante
+        (`app/ops/reembed.py`) converge siempre, la bloquee o no `is_embeddable`.
+        """
+        rows = await self._conn.fetch(
+            """
+            SELECT id FROM knowledge_chunk
+             WHERE embedding IS NULL AND NOT voided AND texto <> ''
+             ORDER BY created_at
+            """
+        )
+        return [r["id"] for r in rows]
+
+    async def fetch_chunks_by_ids(self, ids: list[uuid.UUID]) -> list[asyncpg.Record]:
+        """Relee un lote de chunks por `id` (contenido + nivel), re-verificando
+        `embedding IS NULL AND NOT voided` EN EL MOMENTO de la lectura — defensa
+        contra una carrera con `void_radicado`/una reclasificación concurrente
+        entre el snapshot (`list_pending_reembed_ids`) y este fetch (ventana
+        corta, pero el backfill puede tardar en tenants grandes)."""
+        if not ids:
+            return []
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT id, source_type, source_ref, texto, nivel_seguridad
+                  FROM knowledge_chunk
+                 WHERE id = ANY($1::uuid[]) AND embedding IS NULL AND NOT voided
+                """,
+                ids,
+            )
+        )
+
+    async def update_embedding(self, chunk_id: uuid.UUID, embedding_literal: str) -> None:
+        """Repuebla el `embedding` de un chunk existente (backfill/re-embed).
+
+        NO toca `texto`/`metadata`/`nivel_seguridad`/`acl` — el backfill re-usa
+        el `texto` YA persistido (capa derivada, CC-01: no vuelve a la fuente)
+        y no reclasifica nada; solo produce el vector con el proveedor actual.
+        """
+        await self._conn.execute(
+            "UPDATE knowledge_chunk SET embedding = $1::vector, updated_at = now() "
+            "WHERE id = $2",
+            embedding_literal,
+            chunk_id,
+        )
+
+    async def get_pivot_chunk(
+        self, source_type: str, source_ref: str
+    ) -> asyncpg.Record | None:
+        """Lee el embedding YA indexado de una fuente (E21 Inc.2, búsqueda "por
+        radicado" de ``/antecedentes``), para usarlo como PIVOTE de
+        ``search`` en vez de re-embeber el texto del radicado desde cero
+        (más barato, y este servicio no tiene por qué reconstruir el texto
+        fuente fuera de lo que ya indexó).
+
+        ``embedding::text`` produce la MISMA representación textual entre
+        corchetes que ``to_pgvector`` (p. ej. ``"[0.1,0.2,...]"``), así el
+        literal es reusable tal cual como ``$1::vector`` en ``search``.
+
+        Misma condición que ``search`` (``embedding IS NOT NULL AND NOT
+        voided``): un radicado tombstoneado (reclasificado a un nivel para el
+        que no hay embedding aún) o anulado nunca sirve de pivote.
+        """
+        return await self._conn.fetchrow(
+            """
+            SELECT embedding::text AS embedding_literal, nivel_seguridad
+              FROM knowledge_chunk
+             WHERE source_type = $1 AND source_ref = $2
+               AND embedding IS NOT NULL AND NOT voided
+            """,
+            source_type,
+            source_ref,
+        )
+
     async def search(
         self,
         *,
@@ -352,6 +447,15 @@ class KnowledgeRepository:
         queda sin `embedding` (lo excluye la condición anterior), pero esta
         condición lo hace EXPLÍCITO y a prueba de que alguna ruta futura deje un
         `voided=true` con `embedding` no nulo.
+
+        El SELECT incluye `nivel_seguridad` (además de las columnas que ya
+        consumían `/search`/`/antecedentes`) para que el endpoint `/rag` (E21
+        Inc.3) pueda aplicar la barrera dura `is_generatable` SIN una segunda
+        consulta — el pre-filtro ACL de arriba ya limitó el resultado a lo que
+        el usuario puede VER; `nivel_seguridad` es lo que decide qué de eso
+        puede además SALIR a un proveedor de generación externo. Los llamadores
+        que no lo necesitan (`SearchHit`/`Antecedente`) simplemente lo ignoran
+        (Pydantic descarta kwargs no declarados por defecto).
         """
         params: list[object] = [embedding_literal]
         conds: list[str] = ["embedding IS NOT NULL", "NOT voided"]
@@ -369,7 +473,7 @@ class KnowledgeRepository:
         return list(
             await self._conn.fetch(
                 f"""
-                SELECT id, source_type, source_ref, texto, metadata,
+                SELECT id, source_type, source_ref, texto, metadata, nivel_seguridad,
                        1 - (embedding <=> $1::vector) AS score
                   FROM knowledge_chunk
                   {where}
