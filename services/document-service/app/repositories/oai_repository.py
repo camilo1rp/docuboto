@@ -97,3 +97,21 @@ class OaiRepository:
         return await self._conn.fetchval(
             f"SELECT min(registered_at) FROM radicados WHERE {_PUBLIC}"
         )
+
+    async def get_public_anexo(self, tracking_number: str) -> asyncpg.Record | None:
+        """Primer anexo de un radicado PÚBLICO (para el `getContentStream` de CMIS).
+        None si el radicado no es público/no existe o no tiene anexos — mismo recorte
+        `_PUBLIC` (aquí cualificado por el JOIN), así el content stream nunca sirve un
+        byte de un reservado (indistinguible de "sin contenido")."""
+        return await self._conn.fetchrow(
+            """
+            SELECT a.file_id, a.filename, a.file_size, a.mime_type
+              FROM anexos a
+              JOIN radicados r ON r.id = a.radicado_id
+             WHERE r.tracking_number = $1
+               AND r.nivel_seguridad = 1 AND r.status <> 'anulado'
+             ORDER BY a.created_at
+             LIMIT 1
+            """,
+            tracking_number,
+        )

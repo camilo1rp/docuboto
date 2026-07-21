@@ -31,6 +31,7 @@ from app.core.database import close_pool, create_pool
 from app.routers.anulacion import router as anulacion_router
 from app.routers.batch import router as batch_router
 from app.routers.borradores import router as borradores_router
+from app.routers.cmis import router as cmis_router
 from app.routers.documents import router as documents_router
 from app.routers.health import router as health_router
 from app.routers.ingest import router as ingest_router
@@ -106,6 +107,7 @@ app.include_router(ingest_router)
 app.include_router(signatures_router)
 app.include_router(postal_router)
 app.include_router(oai_router)
+app.include_router(cmis_router)
 app.include_router(anulacion_router)
 app.include_router(respuesta_router)
 app.include_router(borradores_router)
