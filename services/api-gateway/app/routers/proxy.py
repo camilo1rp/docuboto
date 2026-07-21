@@ -32,6 +32,7 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/catalogos/", app_state.tenant_service_url),
         ("/api/v1/config/", app_state.tenant_service_url),
         ("/api/v1/business-days/", app_state.tenant_service_url),
+        ("/api/v1/pinar/", app_state.tenant_service_url),
         # document-service
         ("/api/v1/documents/", app_state.document_service_url),
         ("/api/v1/metadata/", app_state.document_service_url),

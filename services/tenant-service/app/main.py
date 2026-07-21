@@ -29,6 +29,7 @@ from app.routers.catalogos import router as catalogos_router
 from app.routers.config import router as config_router
 from app.routers.dependencias import router as dependencias_router
 from app.routers.health import router as health_router
+from app.routers.pinar import router as pinar_router
 from app.routers.tenants import router as tenants_router
 
 logging.basicConfig(
@@ -64,6 +65,7 @@ app.include_router(tenants_router)
 app.include_router(config_router)
 app.include_router(dependencias_router)
 app.include_router(catalogos_router)
+app.include_router(pinar_router)
 app.include_router(health_router)
 
 

@@ -323,7 +323,9 @@ services:
     memswap_limit: 2g
 
   tenant-service:
-    build: ./services/tenant-service
+    build:
+      context: .
+      dockerfile: services/tenant-service/Dockerfile
     container_name: orpycamcp-tenant
     ports:
       - "19002:8002"

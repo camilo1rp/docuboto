@@ -37,6 +37,7 @@ from app.routers.ingest import router as ingest_router
 from app.routers.internal import router as internal_router
 from app.routers.metadata import router as metadata_router
 from app.routers.metadata_elements import router as metadata_elements_router
+from app.routers.oai import router as oai_router
 from app.routers.postal import router as postal_router
 from app.routers.public import router as public_router
 from app.routers.reports import router as reports_router
@@ -104,6 +105,7 @@ app.include_router(public_router)
 app.include_router(ingest_router)
 app.include_router(signatures_router)
 app.include_router(postal_router)
+app.include_router(oai_router)
 app.include_router(anulacion_router)
 app.include_router(respuesta_router)
 app.include_router(borradores_router)

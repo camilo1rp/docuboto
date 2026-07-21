@@ -190,6 +190,23 @@ Actualizar `name` o `status`. `slug` y `code` son inmutables.
 - **Días no hábiles / festivos**: `GET /api/v1/config/holidays` (`?year=`), `POST /api/v1/config/holidays` (alta), `DELETE /api/v1/config/holidays/{id}`, `POST /api/v1/config/holidays/seed` (`{year}` → siembra los festivos colombianos calculados automáticamente).
 - **Días hábiles**: `GET /api/v1/business-days/calculate?from_date=&days=` — calcula la fecha de vencimiento aplicando fines de semana + festivos + no laborables del tenant (base de RF-RAD-04).
 
+### PINAR — Plan Institucional de Archivos (E14, RF-ADM-08, Acuerdo AGN 003/2015)
+
+Instrumento de planeación archivística por tenant. Requiere rol administrador (mediado por el gateway). El actor imputable llega en `X-User-Id`.
+
+- **Ejes** (catálogo fijo, seed de 5): `GET /api/v1/pinar/ejes`.
+- **Plan**: `POST /api/v1/pinar/planes` (crea en `borrador`, `version = max+1`) · `GET /api/v1/pinar/planes` (`?estado=`) · `GET /api/v1/pinar/planes/{id}` · `PATCH /api/v1/pinar/planes/{id}` (visión/vigencia, solo en `borrador`).
+- **Transiciones**: `POST /planes/{id}/aprobar` (`borrador→aprobado`, exige `acto_administrativo` → 422 si falta) · `POST /planes/{id}/ejecutar` (`aprobado→en_ejecucion`, **un único plan en ejecución por tenant** → 409 `plan_en_ejecucion_existe`) · `POST /planes/{id}/cerrar` (terminal). Cada acto de ciclo de vida es **imputable** (X-User-Id obligatorio → 400 si falta) y queda en la **`audit_log` INMUTABLE (E08)**. Al **aprobar** el contenido se **congela** (no más edición estructural, solo seguimiento).
+- **Aspectos críticos** (diagnóstico): `POST/GET /planes/{id}/aspectos`, `PATCH/DELETE /aspectos/{id}`.
+- **Priorización** (matriz aspecto×eje, impacto 1–10): `PUT /planes/{id}/priorizacion` (carga la matriz) · `GET /planes/{id}/priorizacion` → cada aspecto con su prioridad = **Σ impactos**, ordenada desc (define el mapa de ruta).
+- **Objetivos**: `POST/GET /planes/{id}/objetivos`, `PATCH/DELETE /objetivos/{id}`.
+- **Proyectos**: `POST/GET /planes/{id}/proyectos`, `PATCH/DELETE /proyectos/{id}`, `PUT /proyectos/{id}/aspectos` (vínculo a los aspectos que mitiga).
+- **Seguimiento** (append-only): `POST /proyectos/{id}/seguimiento` (proyecta el `avance_pct` del proyecto) · `GET /proyectos/{id}/seguimiento`.
+- **Tableros**: `GET /planes/{id}/tablero` (avance por objetivo y por eje) · `GET /planes/{id}/mapa-ruta` (cronograma por fechas).
+- **Articulación** (por referencia, no copia): `POST/GET /planes/{id}/instrumentos`, `DELETE /planes/{id}/instrumentos/{id}` — `tipo ∈ {ccd, trd, fuid, plan_preservacion, plan_contingencia}`.
+
+Edición estructural permitida **solo en `borrador`** (→ 409 `plan_no_editable` en `aprobado`/`en_ejecucion`/`cerrado`: el contenido se congela al aprobar); seguimiento permitido en `{aprobado, en_ejecucion}` (→ 409 `plan_no_seguible`).
+
 ---
 
 ## document-service — puerto 8003
@@ -614,6 +631,11 @@ Ciclo de vida del despacho físico de un radicado de salida. Máquina de estados
 - `POST /api/v1/envios/{shipment_id}/estado` `{estado, descripcion?}` — transición **manual** (despacho humano). Resuelve el *clearance* del llamante → `404` si el radicado lo supera (cierre D-14); `409 transicion_invalida` para un salto no permitido.
 - `GET /api/v1/envios/{shipment_id}/tracking` — **consulta por guía (pull, F5)** contra el operador (stub `consultar_estado`); devuelve `{estado_interno_actual, estado_operador, estado_interno_mapeado, operador_conectado}`. Solo lectura, no aplica la transición.
 - `POST /api/v1/public/postal/callback/{tenant_slug}` `{operador, guia, estado_operador, event_id, descripcion?, motivo?}` — **webhook ENTRANTE del operador (F5, RF-POR-08)**. **Sin JWT** (bajo `/api/v1/public/`); autenticación **HMAC-SHA256** con cabecera `X-OrpycaMCP-Signature: sha256=<hex>` sobre el cuerpo crudo, con el secreto per-tenant/per-operador de `postal_operator_credential` (identidad propia del operador, separada del permiso humano — cierra D-14 #3). El `tenant_slug` del path fija el `search_path`; el secreto vive en el schema de ese tenant. **Idempotente** por `(operador, event_id)` (reintento → no-op). Mapea `estado_operador` a la máquina interna (`422 estado_operador_no_mapeable` si no mapea). Devuelve `{status: "applied"|"duplicate"|"recorded_no_change", shipment_id, estado}`. `401 firma_invalida` (sin credencial o firma mala, indistinguibles); `404 envio_no_encontrado` (guía desconocida); `400 cuerpo_invalido`. Una notificación que implicaría un retroceso (o sobre un terminal) se registra como `recorded_no_change` sin mutar el estado. Cada transición emite un evento `document.envio.*` para E16 y deja asiento en `audit_log` (`actor=postal:<operador>`).
+
+### Interoperabilidad — OAI-PMH (E11, RF-INT-02) — document-service
+
+- `GET /api/v1/public/oai/{tenant}?verb=...` — **cosecha de metadatos OAI-PMH 2.0** de los radicados **públicos** del tenant. **Sin JWT** (bajo `/api/v1/public/`, como el webhook postal); el `tenant` del path fija el `search_path`. Respuesta `application/xml`. Verbos: `Identify`, `ListMetadataFormats`, `ListIdentifiers`, `ListRecords`, `GetRecord` (args `identifier`+`metadataPrefix`), `ListSets`. Cosecha selectiva `from`/`until` (fecha OAI) y `set` (= `doc_type` E/S/I). Formato `metadataPrefix=oai_dc` (**Dublin Core**: title=asunto, identifier=número de radicado, type, date, publisher, language). Identificador OAI `oai:{tenant}:{tracking_number}`. Paginación por `resumptionToken` (100/página). Errores OAI estándar (`badVerb`, `badArgument`, `cannotDisseminateFormat`, `idDoesNotExist`, `noRecordsMatch`, `badResumptionToken`).
+- **Control de acceso (CRÍTICO, Ley 1712/2014 arts. 18-19, RF-SEG-08):** la cosecha **solo** expone lo **público** (`nivel_seguridad=1`, no anulado). El recorte se aplica en la fuente, así la omisión de reservados/clasificados es **indistinguible**: `completeListSize` cuenta solo público, `ListSets` no enumera un *set* solo-reservado, y `GetRecord`/`ListMetadataFormats` sobre un identificador reservado devuelven `idDoesNotExist` (no confirman su existencia). No hay credencial de tercero con clearance en este alcance (cosecha pública).
 
 ### Capa MCP (E18, ADR-019) — mcp-server, puerto 8009
 Servicio separado (no detrás del gateway): expone la API como *tools* a agentes/LLM, siendo él mismo cliente del gateway. **Protocolo MCP** disponible por **stdio** (`python -m app.mcp_stdio`) y **HTTP streamable** (`POST /mcp`, contexto por cabeceras `Authorization`/`X-Tenant-Slug`/`X-User-Permissions`/`X-User-Roles`). API HTTP simple del catálogo:

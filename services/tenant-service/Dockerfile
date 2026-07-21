@@ -7,9 +7,22 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+# tenant-service — se construye con el contexto en la RAÍZ del repo (ADR-010),
+# para instalar la librería compartida orpycamcp_common desde shared/ (auditoría
+# canónica a public.audit_log; el PINAR/E14 audita sus actos de ciclo de vida ahí).
+#   build: { context: ., dockerfile: services/tenant-service/Dockerfile }
 FROM python:3.11-slim
 WORKDIR /app
-COPY requirements.txt requirements.lock ./
+
+# 1) Librería compartida (capa cacheable; cambia poco).
+COPY shared /shared
+RUN pip install --no-cache-dir /shared
+
+# 2) Dependencias del servicio.
+COPY services/tenant-service/requirements.txt services/tenant-service/requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
-COPY . .
+
+# 3) Código del servicio.
+COPY services/tenant-service/ .
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
