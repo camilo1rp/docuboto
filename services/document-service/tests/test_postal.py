@@ -68,8 +68,11 @@ async def test_create_envio(client_with_conn) -> None:
 async def test_update_estado_valid_transition(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
-    # get (registrado) → update_estado (en_transito) → _response events
+    # resolve_caller_clearance (is_root → sin restricción) → get (registrado) →
+    # update_estado (en_transito) → _response events. (D-14: la transición manual
+    # ahora resuelve el clearance del llamante antes del get.)
     mock_conn.fetchrow.side_effect = [
+        {"is_root": True},
         _ship_row(id=sid, estado="registrado"),
         _ship_row(id=sid, estado="en_transito"),
     ]

@@ -25,6 +25,12 @@ FORWARDED_REQUEST_HEADERS = {
     "accept",
     "accept-language",
     "accept-encoding",
+    # E20 F5: firma HMAC del webhook ENTRANTE del operador postal
+    # (`POST /api/v1/public/postal/callback/{slug}`). Es una credencial de
+    # AUTENTICACIÓN del operador (no del usuario) que document-service verifica
+    # sobre el cuerpo crudo; el gateway debe reenviarla intacta o todo callback
+    # legítimo fallaría 401 (la puerta HMAC quedaría inalcanzable e2e).
+    "x-orpycamcp-signature",
 }
 
 FORWARDED_RESPONSE_HEADERS = {

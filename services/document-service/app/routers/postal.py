@@ -17,8 +17,14 @@ import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.core.clearance import require_permission, resolve_caller_clearance
-from app.core.database import get_tenant_conn
-from app.schemas.postal import ShipmentCreate, ShipmentResponse, ShipmentStatusUpdate
+from app.core.database import get_redis, get_tenant_conn, tenant_schema
+from app.schemas.postal import (
+    CallbackResult,
+    ShipmentCreate,
+    ShipmentResponse,
+    ShipmentStatusUpdate,
+    TrackingResponse,
+)
 from app.services.postal_service import PostalService
 
 router = APIRouter(tags=["postal"])
@@ -108,12 +114,61 @@ async def get_envio(
 @router.post(
     "/api/v1/envios/{shipment_id}/estado",
     response_model=ShipmentResponse,
-    summary="Actualizar estado de entrega (callback/sondeo del operador) (E20)",
+    summary="Actualizar estado de entrega manualmente (despacho humano) (E20)",
     dependencies=[Depends(require_permission("PERM_RADI_SALIDA"))],
 )
 async def update_estado(
     shipment_id: uuid.UUID,
     payload: ShipmentStatusUpdate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> ShipmentResponse:
-    return await PostalService(conn).update_estado(shipment_id, payload)
+    # RF-SEG-08 (cierra D-14): la transición manual pasa el clearance del llamante
+    # → un envío de radicado sobre-clearance colapsa a 404 (sin read-up en el write).
+    clearance = await resolve_caller_clearance(conn, _caller_id(request))
+    return await PostalService(conn).update_estado(shipment_id, payload, clearance)
+
+
+@router.get(
+    "/api/v1/envios/{shipment_id}/tracking",
+    response_model=TrackingResponse,
+    summary="Consultar estado por guía contra el operador (pull, F5)",
+    dependencies=[Depends(require_permission("PERM_RADI_SALIDA"))],
+)
+async def tracking(
+    shipment_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> TrackingResponse:
+    clearance = await resolve_caller_clearance(conn, _caller_id(request))
+    return await PostalService(conn).tracking(shipment_id, clearance)
+
+
+@router.post(
+    "/api/v1/public/postal/callback/{tenant_slug}",
+    response_model=CallbackResult,
+    summary="Webhook ENTRANTE del operador postal — estado de entrega (E20 F5)",
+)
+async def postal_callback(
+    tenant_slug: str,
+    request: Request,
+    redis: object = Depends(get_redis),
+) -> CallbackResult:
+    """Callback del operador (4-72/Servientrega). Bajo `/api/v1/public/` → el
+    gateway NO exige JWT; la autenticación es HMAC per-tenant/per-operador
+    (identidad propia del operador, separada del permiso humano de despacho —
+    cierra D-14 #3). El tenant va en el path (el operador no manda JWT); el
+    secreto vive en el schema de ESE tenant, así que una firma válida prueba que
+    el emisor lo conoce y no puede falsificar callbacks de otro tenant.
+    """
+    schema = tenant_schema(tenant_slug)  # valida el slug (400 si es inválido)
+    raw = await request.body()
+    signature = request.headers.get("X-OrpycaMCP-Signature")
+    pool: asyncpg.Pool = request.app.state.db_pool
+    async with pool.acquire() as conn:
+        await conn.execute(f'SET search_path = "{schema}", public')
+        try:
+            svc = PostalService(conn, redis=redis, tenant_slug=tenant_slug)
+            return await svc.apply_operator_callback(raw, signature, tenant_slug)
+        finally:
+            await conn.execute("SET search_path = public")

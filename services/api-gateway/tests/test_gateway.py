@@ -521,6 +521,44 @@ async def test_x_internal_token_header_never_in_forwarded_request_headers():
     assert "x-internal-token" not in FORWARDED_REQUEST_HEADERS
 
 
+async def test_postal_signature_header_in_forwarded_request_headers():
+    """E20 F5: la firma HMAC del webhook postal DEBE estar en la whitelist —
+    es la credencial de autenticación del operador que document-service verifica.
+    Si se cae de la whitelist, todo callback legítimo fallaría 401 e2e (la puerta
+    HMAC quedaría inalcanzable). Guarda de regresión del Hallazgo #1 de la auditoría."""
+    from app.core.proxy import FORWARDED_REQUEST_HEADERS
+
+    assert "x-orpycamcp-signature" in FORWARDED_REQUEST_HEADERS
+
+
+async def test_postal_callback_forwards_signature_header(test_client):
+    """E20 F5: el gateway reenvía `X-OrpycaMCP-Signature` al callback público
+    (ruta `/api/v1/public/postal/callback/{slug}`, exenta de JWT) — sin esto el
+    HMAC nunca llega a document-service y el callback siempre daría 401."""
+    client, http_client, _ = test_client
+
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"status": "applied"},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    await client.post(
+        "/api/v1/public/postal/callback/demo",
+        headers={"X-OrpycaMCP-Signature": "sha256=deadbeef", "Content-Type": "application/json"},
+        content=b'{"operador":"4-72"}',
+    )
+
+    # Starlette entrega las claves de header en minúscula; el gateway las
+    # reenvía tal cual → la clave reenviada es 'x-orpycamcp-signature'.
+    forwarded = {k.lower(): v for k, v in http_client.request.call_args.kwargs["headers"].items()}
+    assert forwarded.get("x-orpycamcp-signature") == "sha256=deadbeef", (
+        "Gateway must forward the operator's HMAC signature to document-service"
+    )
+
+
 async def test_gateway_injects_server_derived_x_canal(test_client):
     """D-03: el gateway inyecta X-Canal derivado server-side, no el del cliente."""
     client, http_client, _ = test_client

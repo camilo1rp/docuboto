@@ -46,6 +46,44 @@ class ShipmentResponse(BaseModel):
     estado: str
     destinatario: str | None
     direccion: str | None
+    motivo_devolucion: str | None = None
     created_at: datetime
     updated_at: datetime
     eventos: list[ShipmentEvent] = []
+
+
+class PostalCallbackPayload(BaseModel):
+    """Cuerpo del webhook ENTRANTE del operador postal (E20 F5).
+
+    `operador` selecciona el secreto HMAC y el mapa de estados; `event_id` es la
+    clave de idempotencia (dedup por `(operador, event_id)`); `estado_operador`
+    es la etiqueta cruda del operador (se mapea a la máquina interna); `motivo`
+    alimenta `motivo_devolucion` cuando el estado resuelve a `devuelto`.
+    """
+
+    operador: _OPERADOR
+    guia: str = Field(max_length=60)
+    estado_operador: str = Field(max_length=40)
+    event_id: str = Field(min_length=1, max_length=120)
+    descripcion: str | None = Field(default=None, max_length=500)
+    motivo: str | None = Field(default=None, max_length=500)
+
+
+class CallbackResult(BaseModel):
+    """Resultado del callback. `duplicate` = ya procesado (idempotente); `applied`
+    = transición aplicada; `recorded_no_change` = notificación registrada sin
+    cambiar el estado (misma etiqueta o transición no válida sobre un terminal)."""
+
+    status: Literal["applied", "duplicate", "recorded_no_change"]
+    shipment_id: uuid.UUID | None = None
+    estado: str | None = None
+
+
+class TrackingResponse(BaseModel):
+    shipment_id: uuid.UUID
+    operador: str
+    guia: str
+    estado_interno_actual: str
+    estado_operador: str | None = None
+    estado_interno_mapeado: str | None = None
+    operador_conectado: bool = False
