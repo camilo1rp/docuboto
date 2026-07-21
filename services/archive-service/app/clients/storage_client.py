@@ -583,6 +583,41 @@ class StorageEventosError(Exception):
     eventos de preservación de un objeto."""
 
 
+class StorageExportError(Exception):
+    """storage-service no pudo ensamblar el ZIP de exportación del expediente."""
+
+
+async def export_zip_internal(
+    *,
+    tenant_slug: str,
+    items: list[dict],
+    extra_files: list[dict],
+) -> bytes:
+    """Pide a storage el ZIP de exportación (D-02, `X-Internal-Token`) a partir
+    del inventario de anexos (`{file_id, arcname}`) + archivos generados por
+    archive (`{arcname, contenido_b64}`). Devuelve los bytes del ZIP. Timeout
+    amplio: descargar N anexos de MinIO + comprimir es costoso."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    body = {"items": items, "extra_files": extra_files}
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=120.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/export-zip-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise StorageExportError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageExportError(
+            f"storage-service respondió {resp.status_code} al ensamblar el ZIP"
+        )
+    return resp.content
+
+
 async def download_signed_xml(*, tenant_slug: str, minio_key_firmado: str) -> str | None:
     """Descarga el XML firmado identificado por `minio_key_firmado`.
 

@@ -25,6 +25,11 @@ class AnexosInternalRequest(BaseModel):
     """
 
     radicado_ids: list[uuid.UUID] = Field(..., min_length=1)
+    # None (AIP, acto de sistema) = inventario TOTAL sin gate de clearance.
+    # Con valor (exportación de expediente, RF-SEG-08) = filtra por
+    # `nivel_seguridad <= max_clearance` y omite los radicados sobre-clearance
+    # (incluida su existencia). Cierra la fuga read-up por-radicado del export.
+    max_clearance: int | None = Field(default=None, ge=1, le=3)
 
 
 class AnexoInternalItem(BaseModel):

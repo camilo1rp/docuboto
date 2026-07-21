@@ -258,6 +258,7 @@ def _minio_patches(mock_minio: MagicMock):
         patch("app.services.storage_service.get_minio", return_value=mock_minio),
         patch("app.services.preservation_worm_service.get_minio", return_value=mock_minio),
         patch("app.services.aip_service.get_minio", return_value=mock_minio),
+        patch("app.services.export_service.get_minio", return_value=mock_minio),
         patch("app.routers.health.get_minio", return_value=mock_minio),
     )
 
@@ -282,8 +283,8 @@ async def client_with_conn(
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4, p5 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4, p5:
+    p1, p2, p3, p4, p5, p6 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4, p5, p6:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, mock_minio
 
@@ -302,8 +303,8 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4, p5 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4, p5:
+    p1, p2, p3, p4, p5, p6 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4, p5, p6:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 

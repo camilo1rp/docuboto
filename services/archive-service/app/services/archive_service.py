@@ -57,6 +57,15 @@ _SERVICE = "archive-service"
 # Espejo de `index_service._CANALES_AUDITABLES`.
 _CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
 
+
+def _csv_safe(value: object) -> object:
+    """Neutraliza la inyección de fórmulas CSV (Excel/Sheets) en los campos de
+    texto libre del manifiesto de exportación (dependencia productora, causal de
+    exclusión): un valor que empieza por `= + - @`/control se lee como fórmula."""
+    if isinstance(value, str) and value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
 # Valid state transitions — re-opening a closed expediente is not permitted.
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     "open": {"closed"},
@@ -383,6 +392,214 @@ class ArchiveService:
             )
         await self._audit_read_access(expediente.code, user_id=user_id, canal=canal)
         return _to_expediente_response(expediente)
+
+    async def export_expediente_zip(
+        self,
+        expediente_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> tuple[bytes, str]:
+        """Exporta el expediente como ZIP de USUARIO (E02/export): índice
+        electrónico XML (si existe) + manifiesto CSV + los bytes de los anexos de
+        sus radicados VINCULADOS. **No-read-up a nivel de expediente**: 404 si el
+        expediente supera el clearance del llamante; si es visible, se exporta su
+        contenido (el ensamblado de bytes lo hace storage-service, D-02). Devuelve
+        `(zip_bytes, filename)`.
+        """
+        import base64
+        import csv
+        import io
+
+        from app.clients import document_client, storage_client
+
+        max_clearance = await self._repo.caller_clearance(user_id)
+        expediente = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
+        if expediente is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "expediente_not_found",
+                    "detail": f"Expediente {expediente_id} not found",
+                    "status": 404,
+                },
+            )
+        # Inventario CLEARANCE-AWARE (RF-SEG-08, cierre de la fuga read-up
+        # por-radicado): document-service filtra por `nivel_seguridad <=
+        # max_clearance` y devuelve una entrada por cada radicado VISIBLE (aunque
+        # sin anexos), omitiendo los sobre-clearance. Se piden TODOS los radicados
+        # (vinculados + excluidos) para conocer su visibilidad — el manifiesto
+        # representa el hueco trazable del excluido (Ac. AGN 001/2024 art. 4.3.2.3)
+        # SOLO si el radicado es visible; un radicado clasificado por encima del
+        # clearance del llamante no se enumera siquiera. `expediente.radicados` ya
+        # viene ordenado por `orden_documental` (orden original preservado).
+        anexos_by_rad: dict[str, list[dict]] = {}
+        all_ids = [r.radicado_id for r in expediente.radicados]
+        if all_ids:
+            try:
+                anexos_by_rad = await document_client.fetch_anexos_internal(
+                    tenant_slug=self._tenant_slug,
+                    radicado_ids=all_ids,
+                    max_clearance=max_clearance,
+                )
+            except document_client.DocumentClientError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail={
+                        "error": "inventario_anexos_no_disponible",
+                        "detail": str(exc),
+                        "status": 502,
+                    },
+                )
+        visible_ids = set(anexos_by_rad.keys())
+
+        items: list[dict] = []
+        manifest = io.StringIO()
+        writer = csv.writer(manifest)
+        writer.writerow(
+            [
+                "orden_documental",
+                "numero_radicado",
+                "estado",
+                "folios",
+                "formato",
+                "dependencia_productora",
+                "fecha_incorporacion",
+                "causal_exclusion",
+                "num_anexos",
+            ]
+        )
+        num_documentos = 0  # documentos VISIBLES vinculados (para el asiento)
+        for r in expediente.radicados:
+            # No-read-up: un radicado sobre el clearance del llamante no aparece
+            # en `visible_ids` → se omite del manifiesto (ni su existencia se filtra).
+            if str(r.radicado_id) not in visible_ids:
+                continue
+            if r.estado == "vinculado":
+                num_documentos += 1
+                anexos = anexos_by_rad.get(str(r.radicado_id), [])
+                for idx, a in enumerate(anexos):
+                    # Saneo del filename (subido por el usuario) a un LEAF sin
+                    # separadores: un '/' o '\' partiría el arcname en segmentos y
+                    # un nombre hostil haría fallar `_safe_arcname` en storage (422
+                    # → el export ENTERO del expediente caería). El prefijo `idx-`
+                    # ya garantiza unicidad y neutraliza `.`/`..` exactos.
+                    leaf = str(a["filename"]).replace("/", "_").replace("\\", "_") or "archivo"
+                    items.append(
+                        {
+                            "file_id": str(a["file_id"]),
+                            "arcname": f"documentos/{r.tracking_number}/{idx}-{leaf}",
+                        }
+                    )
+                num_anexos = len(anexos)
+                causal = ""
+            else:
+                # Excluido (soft-delete): SIN bytes, pero representado en el
+                # manifiesto con su causal para preservar la trazabilidad.
+                num_anexos = 0
+                causal = r.excluido_causal or ""
+            writer.writerow(
+                [
+                    "" if r.orden_documental is None else r.orden_documental,
+                    r.tracking_number,
+                    r.estado,
+                    "" if r.folios is None else r.folios,
+                    _csv_safe(r.formato or ""),
+                    _csv_safe(r.dependencia_productora_nombre or ""),
+                    r.added_at.isoformat() if r.added_at else "",
+                    _csv_safe(causal),
+                    num_anexos,
+                ]
+            )
+
+        # Índice electrónico XML — best-effort: un expediente sin índice firmado
+        # (aún abierto) se exporta igual, solo con el manifiesto + los anexos.
+        indice_incluido = False
+        extra_files: list[dict] = []
+        try:
+            from app.services.index_service import IndexService
+
+            xml = await IndexService(self._conn, self._tenant_slug).get_xml(
+                expediente_id, version=None, user_id=user_id, canal=canal
+            )
+            extra_files.append(
+                {
+                    "arcname": "indice-electronico.xml",
+                    "contenido_b64": base64.b64encode(xml.encode("utf-8")).decode(),
+                }
+            )
+            indice_incluido = True
+        except HTTPException:
+            pass
+
+        # LEEME de ALCANCE (RF-FIR-15): que el receptor no confunda esta copia de
+        # consulta con un AIP acreditado (E10) ni una transferencia FUID (E12).
+        leyenda = (
+            "COPIA DE CONSULTA DE EXPEDIENTE - OrpycaMCP\n"
+            "===========================================\n\n"
+            f"Expediente: {expediente.code}\n"
+            f"Estado del expediente al exportar: {expediente.status}\n"
+            f"Indice electronico firmado incluido: {'si' if indice_incluido else 'no'}\n\n"
+            "ALCANCE: este ZIP es una copia de CONSULTA/ENTREGA para un usuario. "
+            "NO es un paquete de preservacion acreditado (AIP, E10) ni una "
+            "transferencia documental formal con FUID (E12). Los radicados "
+            "excluidos figuran en el manifiesto (sin sus bytes) para preservar la "
+            "trazabilidad del expediente (Acuerdo AGN 001/2024 art. 4.3.2.3). "
+            "Verifique la integridad de cada archivo con checksums.txt.\n"
+        )
+        extra_files.append(
+            {
+                "arcname": "LEEME.txt",
+                "contenido_b64": base64.b64encode(leyenda.encode("utf-8")).decode(),
+            }
+        )
+        extra_files.append(
+            {
+                "arcname": "manifiesto.csv",
+                "contenido_b64": base64.b64encode(manifest.getvalue().encode("utf-8")).decode(),
+            }
+        )
+
+        zip_bytes = await storage_client.export_zip_internal(
+            tenant_slug=self._tenant_slug, items=items, extra_files=extra_files
+        )
+        await self._audit_export_access(
+            expediente.code,
+            user_id=user_id,
+            canal=canal,
+            num_documentos=num_documentos,
+            num_anexos=len(items),
+        )
+        return zip_bytes, f"expediente-{expediente.code}.zip"
+
+    async def _audit_export_access(
+        self,
+        code: str,
+        *,
+        user_id: uuid.UUID | None,
+        canal: str,
+        num_documentos: int,
+        num_anexos: int,
+    ) -> None:
+        """Traza de la exportación (RF-BUS-10): una descarga masiva del expediente
+        deja asiento con actor/total, best-effort (no degrada la descarga a 500)."""
+        if canal not in _CANALES_AUDITABLES or user_id is None:
+            return
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.expediente_exportado",
+                object_type="expediente",
+                object_ref=code,
+                actor=str(user_id),
+                canal=canal,
+                payload={"num_documentos": num_documentos, "num_anexos": num_anexos},
+            )
+        except Exception:  # noqa: BLE001 — auditoría best-effort
+            logger.warning("audit.append (expediente_exportado) failed", exc_info=True)
 
     async def get_aip(
         self,

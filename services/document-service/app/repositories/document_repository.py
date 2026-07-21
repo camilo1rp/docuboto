@@ -536,11 +536,21 @@ class DocumentRepository:
         return [_row_to_anexo(r) for r in rows if r["id"] is not None]
 
     async def list_anexos_for_radicados_internal(
-        self, radicado_ids: list[uuid.UUID]
+        self, radicado_ids: list[uuid.UUID], max_clearance: int | None = None
     ) -> dict[uuid.UUID, list[Anexo]]:
-        """Inventario TOTAL de anexos de un LOTE de radicados — SIN gate de
-        clearance (E10 debt, cableado del AIP al cierre del expediente:
-        `app/routers/internal.py::anexos_batch`, D-02, `X-Internal-Token`).
+        """Inventario de anexos de un LOTE de radicados.
+
+        `max_clearance=None` (AIP, acto de sistema): inventario TOTAL sin gate de
+        clearance — ver el resto del docstring. `max_clearance` con valor
+        (exportación de expediente, RF-SEG-08): filtra por `nivel_seguridad <=
+        max_clearance` (JOIN a `radicados`) y devuelve una entrada por cada
+        radicado VISIBLE (aunque no tenga anexos), OMITIENDO por completo los
+        radicados sobre-clearance — así el llamador no puede ni enumerar su
+        existencia (no-read-up: cierra la fuga read-up por-radicado del export,
+        donde un radicado clasificado vinculado a un expediente de menor nivel
+        entregaría sus bytes a un llamante sin clearance).
+
+        Modo TOTAL (`max_clearance=None`):
 
         Deliberadamente distinto de `list_anexos_for_document` (no-read-up,
         RF-SEG-08): el empaquetado del AIP es un ACTO DE SISTEMA que necesita
@@ -561,19 +571,48 @@ class DocumentRepository:
         """
         if not radicado_ids:
             return {}
+        if max_clearance is None:
+            rows = await self._conn.fetch(
+                """
+                SELECT id, radicado_id, file_id, filename, file_size, mime_type,
+                       created_at, tipo_anexo, es_principal, folios
+                FROM anexos
+                WHERE radicado_id = ANY($1::uuid[])
+                ORDER BY radicado_id, created_at ASC
+                """,
+                radicado_ids,
+            )
+            result: dict[uuid.UUID, list[Anexo]] = {}
+            for r in rows:
+                result.setdefault(r["radicado_id"], []).append(_row_to_anexo(r))
+            return result
+
+        # Modo clearance-aware (export): primero los radicados VISIBLES
+        # (nivel_seguridad <= max_clearance) → sirven de esqueleto para que el
+        # llamador conozca la visibilidad incluso de los radicados sin anexos;
+        # los sobre-clearance no aparecen (no-read-up).
+        visibles = await self._conn.fetch(
+            "SELECT id FROM radicados WHERE id = ANY($1::uuid[]) AND nivel_seguridad <= $2",
+            radicado_ids,
+            max_clearance,
+        )
+        result = {r["id"]: [] for r in visibles}
+        if not result:
+            return result
         rows = await self._conn.fetch(
             """
-            SELECT id, radicado_id, file_id, filename, file_size, mime_type,
-                   created_at, tipo_anexo, es_principal, folios
-            FROM anexos
-            WHERE radicado_id = ANY($1::uuid[])
-            ORDER BY radicado_id, created_at ASC
+            SELECT a.id, a.radicado_id, a.file_id, a.filename, a.file_size,
+                   a.mime_type, a.created_at, a.tipo_anexo, a.es_principal, a.folios
+            FROM anexos a
+            JOIN radicados r ON r.id = a.radicado_id
+            WHERE a.radicado_id = ANY($1::uuid[]) AND r.nivel_seguridad <= $2
+            ORDER BY a.radicado_id, a.created_at ASC
             """,
             radicado_ids,
+            max_clearance,
         )
-        result: dict[uuid.UUID, list[Anexo]] = {}
         for r in rows:
-            result.setdefault(r["radicado_id"], []).append(_row_to_anexo(r))
+            result[r["radicado_id"]].append(_row_to_anexo(r))
         return result
 
     async def _get_anexos(self, radicado_id: uuid.UUID) -> list[Anexo]:

@@ -49,23 +49,30 @@ class DocumentClientError(Exception):
 
 
 async def fetch_anexos_internal(
-    *, tenant_slug: str, radicado_ids: list[uuid.UUID]
+    *,
+    tenant_slug: str,
+    radicado_ids: list[uuid.UUID],
+    max_clearance: int | None = None,
 ) -> dict[str, list[dict]]:
-    """Inventario TOTAL de anexos (`file_id`/`filename`) de un LOTE de
-    radicados — UN solo round-trip batch hacia
-    `POST /api/v1/internal/documentos/anexos`.
+    """Inventario de anexos (`file_id`/`filename`) de un LOTE de radicados — UN
+    solo round-trip batch hacia `POST /api/v1/internal/documentos/anexos`.
 
-    Devuelve ``{}`` sin llamada HTTP si ``radicado_ids`` está vacío (p. ej.
-    un expediente sin radicados vigentes). La forma de retorno es la que
-    document-service ya serializa: ``{str(radicado_id): [{"file_id": ...,
-    "filename": ...}, ...]}`` — un `radicado_id` sin anexos digitales
-    simplemente no aparece como clave.
+    `max_clearance=None` (AIP, acto de sistema): inventario TOTAL sin gate.
+    `max_clearance` con valor (exportación, RF-SEG-08): document-service filtra
+    por `nivel_seguridad <= max_clearance` y devuelve una entrada por cada
+    radicado VISIBLE (aunque sin anexos), OMITIENDO los sobre-clearance — así el
+    llamador puede filtrar también el manifiesto (sin fuga de existencia).
+
+    Devuelve ``{}`` sin llamada HTTP si ``radicado_ids`` está vacío. Forma de
+    retorno: ``{str(radicado_id): [{"file_id", "filename"}, ...]}``.
 
     Lanza ``DocumentClientError`` ante cualquier fallo (red, timeout, HTTP
     distinto de 200)."""
     if not radicado_ids:
         return {}
-    body = {"radicado_ids": [str(r) for r in radicado_ids]}
+    body: dict = {"radicado_ids": [str(r) for r in radicado_ids]}
+    if max_clearance is not None:
+        body["max_clearance"] = max_clearance
     headers = {
         "X-Tenant-Slug": tenant_slug,
         "X-Internal-Token": settings.document_internal_token,

@@ -106,6 +106,56 @@ async def test_radicado_id_from_other_tenant_never_appears_in_result(
     await conn.execute("SET search_path = public")
 
 
+async def _seed_radicado_nivel(
+    conn: asyncpg.Connection, schema: str, *, tracking: str, nivel: int, con_anexo: bool
+) -> uuid.UUID:
+    rid = await conn.fetchval(
+        f'INSERT INTO "{schema}".radicados '
+        "(tracking_number, doc_type, year, sequence, subject, tenant_code, nivel_seguridad) "
+        "VALUES ($1, 'E', 2026, 1, 'itest export clearance', 'ITEST', $2) RETURNING id",
+        tracking,
+        nivel,
+    )
+    if con_anexo:
+        await conn.execute(
+            f'INSERT INTO "{schema}".anexos (radicado_id, file_id, filename, file_size, mime_type) '
+            "VALUES ($1, $2, 'a.pdf', 10, 'application/pdf')",
+            rid,
+            uuid.uuid4(),
+        )
+    return rid
+
+
+@pytest.mark.integration
+async def test_clearance_aware_omits_over_clearance_includes_empty_visible(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """E02/export (RF-SEG-08): con `max_clearance`, los radicados sobre-clearance
+    se OMITEN (ni su existencia), y un visible sin anexos aparece con lista vacía.
+    Con `max_clearance=None` (AIP), el gate no aplica (omit-empty, todos los niveles)."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+    pub = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000010", nivel=1, con_anexo=True)
+    pub_vacio = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000011", nivel=1, con_anexo=False)
+    clasif = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000012", nivel=3, con_anexo=True)
+
+    await conn.execute(f'SET search_path = "{schema}", public')
+    repo = DocumentRepository(conn, slug)
+
+    # Clearance 1: el clasificado (nivel 3) NO aparece; el visible sin anexos SÍ (lista vacía).
+    res = await repo.list_anexos_for_radicados_internal([pub, pub_vacio, clasif], max_clearance=1)
+    assert set(res.keys()) == {pub, pub_vacio}
+    assert len(res[pub]) == 1
+    assert res[pub_vacio] == []
+
+    # Modo AIP (sin gate): el clasificado SÍ aparece; el visible sin anexos NO (omit-empty).
+    res_total = await repo.list_anexos_for_radicados_internal([pub, pub_vacio, clasif], max_clearance=None)
+    assert clasif in res_total
+    assert pub_vacio not in res_total
+
+    await conn.execute("SET search_path = public")
+
+
 @pytest.mark.integration
 async def test_radicado_without_anexos_is_absent_key_across_tenants(
     two_tenant_ctx: tuple[str, str, asyncpg.Connection],

@@ -49,7 +49,9 @@ async def anexos_batch(
 ) -> dict[str, list[AnexoInternalItem]]:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DocumentRepository(conn, tenant_slug)
-    grouped = await repo.list_anexos_for_radicados_internal(payload.radicado_ids)
+    grouped = await repo.list_anexos_for_radicados_internal(
+        payload.radicado_ids, max_clearance=payload.max_clearance
+    )
     return {
         str(radicado_id): [
             AnexoInternalItem(file_id=a.file_id, filename=a.filename) for a in anexos

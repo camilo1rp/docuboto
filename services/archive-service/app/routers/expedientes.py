@@ -142,6 +142,32 @@ async def list_expedientes(
 
 
 @router.get(
+    "/{expediente_id}/export.zip",
+    summary="Exportar el expediente como ZIP (índice XML + manifiesto + anexos)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def export_expediente(
+    expediente_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> Response:
+    # No-read-up (RF-SEG-08): 404 si el expediente supera el clearance del
+    # llamante; si es visible, se exporta su contenido (bytes ensamblados por
+    # storage-service). El nombre de archivo usa el `code` del expediente.
+    service = ArchiveService(conn, tenant_slug)
+    zip_bytes, filename = await service.export_expediente_zip(
+        expediente_id, user_id=user_id, canal=canal
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
     "/search",
     response_model=ExpedienteSearchResponse,
     summary="Full-text search of expedientes (E09, ADR-014)",

@@ -163,6 +163,60 @@ class AipDocInput(BaseModel):
         return value
 
 
+def _safe_arcname(value: str) -> str:
+    """Sanea una ruta relativa dentro del ZIP (permite subcarpetas, bloquea
+    zip-slip): cada segmento no puede ser vacío, '.', '..' ni contener '\\' o
+    caracteres de control. Devuelve la ruta normalizada con '/'."""
+    segments: list[str] = []
+    for raw in value.replace("\\", "/").split("/"):
+        seg = raw.strip()
+        if not seg or seg in (".", ".."):
+            raise ValueError(f"arcname inválido (segmento {raw!r})")
+        if any(ord(c) < 32 for c in seg):
+            raise ValueError("arcname no puede contener caracteres de control")
+        segments.append(seg)
+    if not segments:
+        raise ValueError("arcname vacío")
+    return "/".join(segments)
+
+
+class ExportZipItem(BaseModel):
+    """Un anexo a incluir en el ZIP de exportación del expediente (E02/export).
+
+    `file_id` localiza el objeto real en `files`; `arcname` es la ruta relativa
+    (con subcarpetas) dentro del ZIP — saneada contra zip-slip."""
+
+    file_id: uuid.UUID
+    arcname: str = Field(..., min_length=1, max_length=400)
+
+    @field_validator("arcname")
+    @classmethod
+    def _validate_arcname(cls, value: str) -> str:
+        return _safe_arcname(value)
+
+
+class ExportExtraFile(BaseModel):
+    """Un archivo generado por archive (índice XML, manifiesto CSV) a incrustar
+    en el ZIP. `contenido_b64` son los bytes en base64."""
+
+    arcname: str = Field(..., min_length=1, max_length=400)
+    contenido_b64: str
+
+    @field_validator("arcname")
+    @classmethod
+    def _validate_arcname(cls, value: str) -> str:
+        return _safe_arcname(value)
+
+
+class ExportZipCreate(BaseModel):
+    """Ensambla un ZIP de exportación de expediente a partir de un inventario de
+    anexos (`file_id`) + archivos extra generados por archive. NO persiste nada:
+    descarga los bytes de MinIO, arma el ZIP y lo devuelve para streaming."""
+
+    items: list[ExportZipItem] = Field(default_factory=list)
+    extra_files: list[ExportExtraFile] = Field(default_factory=list)
+
+
 class AipCreate(RetentionMixin):
     """Empaqueta un AIP (BagIt real + PREMIS v3) y lo sube al bucket WORM.
 

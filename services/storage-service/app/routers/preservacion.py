@@ -15,7 +15,7 @@ import json
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.core.clearance import require_permission
 from app.core.constants import SYSTEM_RECONCILER_ID
@@ -27,6 +27,7 @@ from app.schemas.preservacion import (
     AipCreate,
     AipResponse,
     EventoCreate,
+    ExportZipCreate,
     EventoResponse,
     PlanCreate,
     PlanResponse,
@@ -599,3 +600,33 @@ async def proteger_artefacto_internal(
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))
+
+
+@router.post(
+    "/export-zip-internal",
+    summary=(
+        "Ensambla un ZIP de exportación de expediente (D-02, acto de SISTEMA) — "
+        "descarga los bytes de los anexos de MinIO y devuelve el ZIP para streaming"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def export_zip_internal(
+    payload: ExportZipCreate,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> Response:
+    """Gemelo interno (X-Internal-Token, D-02) que materializa el inventario que
+    archive-service ya filtró por clearance (no-read-up a nivel de expediente).
+    NO persiste nada: descarga bytes + arma el ZIP + lo devuelve. El único
+    llamador legítimo es `ArchiveService.export_expediente_zip`; inalcanzable
+    desde el gateway y el token interno es la segunda capa fail-closed."""
+    from app.services.export_service import ExportService
+
+    try:
+        zip_bytes = await ExportService(conn, tenant_slug).build_export_zip(payload)
+    except FileNotFoundForPreservationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "anexo_no_encontrado", "detail": str(exc), "status": 404},
+        )
+    return Response(content=zip_bytes, media_type="application/zip")
