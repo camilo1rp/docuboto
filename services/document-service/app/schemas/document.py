@@ -11,7 +11,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AnexoInput(BaseModel):
@@ -43,6 +43,14 @@ class DocumentCreate(BaseModel):
     # 3=CLASIFICADA (= security_levels.code). Por defecto PUBLICA. La búsqueda (E09)
     # oculta a cada usuario los radicados por encima de su clearance (RF-BUS-04).
     nivel_seguridad: int = Field(default=1, ge=1, le=3)
+    # Fundamentación jurídica de la clasificación/reserva al radicar. OBLIGATORIA
+    # cuando nivel_seguridad >= 2 (Ley 1712/2014 art. 19/28: todo acto de reserva
+    # debe ser motivado) — sin ella, el radicado entraría al índice de información
+    # clasificada y reservada (art. 20) con fundamento vacío. Se persiste como
+    # metadata de clasificación vigente (E08) y se motiva en el audit_log.
+    clasificacion_fundamento: str | None = Field(default=None, max_length=300)
+    clasificacion_causal: str | None = Field(default=None, max_length=200)
+    clasificacion_plazo_meses: int | None = Field(default=None, ge=0, le=600)
     # Plazo de respuesta en DÍAS HÁBILES (RF-RAD-04). Si se indica, document-service
     # calcula la fecha de vencimiento vía tenant-service; si se omite, no hay plazo.
     response_days: int | None = Field(default=None, ge=1, le=3650)
@@ -50,6 +58,18 @@ class DocumentCreate(BaseModel):
     # una plantilla activa, se validan contra su JSON Schema antes de radicar.
     metadata: dict[str, Any] = Field(default_factory=dict)
     anexos: list[AnexoInput] = []
+
+    @model_validator(mode="after")
+    def _require_fundamento_when_classified(self) -> "DocumentCreate":
+        if self.nivel_seguridad >= 2 and not (
+            self.clasificacion_fundamento and self.clasificacion_fundamento.strip()
+        ):
+            raise ValueError(
+                "clasificacion_fundamento es obligatorio al radicar con "
+                "nivel_seguridad >= 2 (Ley 1712/2014 art. 19/28: la reserva debe "
+                "ser motivada; alimenta el índice del art. 20)"
+            )
+        return self
 
 
 class DocumentUpdate(BaseModel):
@@ -126,6 +146,20 @@ class ReclassifyRequest(BaseModel):
     fundamento_juridico: str | None = Field(default=None, max_length=300)
     plazo_reserva_meses: int | None = Field(default=None, ge=0, le=600)
 
+    @model_validator(mode="after")
+    def _require_fundamento_when_classifying(self) -> "ReclassifyRequest":
+        # Al reclasificar A nivel >= 2 el fundamento es OBLIGATORIO (Ley 1712 art.
+        # 19/28): así el índice del art. 20 nunca publica una reserva sin su
+        # fundamento. Desclasificar (nivel 1) no lo exige.
+        if self.nivel_seguridad >= 2 and not (
+            self.fundamento_juridico and self.fundamento_juridico.strip()
+        ):
+            raise ValueError(
+                "fundamento_juridico es obligatorio al reclasificar a "
+                "nivel_seguridad >= 2 (Ley 1712/2014 art. 19/28)"
+            )
+        return self
+
 
 class ReclassifyResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -133,6 +167,34 @@ class ReclassifyResponse(BaseModel):
     id: uuid.UUID
     tracking_number: str
     nivel_seguridad: int
+
+
+class IndiceClasificadoItem(BaseModel):
+    """Una fila del índice de información clasificada y reservada (Ley 1712 art. 20).
+
+    CONTENT-FREE: identifica el radicado por su número y tipo documental y describe
+    el acto de clasificación (nivel, excepción legal, fundamento, causal, plazo,
+    fecha) — NUNCA el `subject`/contenido del documento reservado.
+    """
+
+    numero_radicado: str
+    # Dirección del radicado (E=Entrada / S=Salida / I=Interno). NO es la serie
+    # documental de la TRD (esa vive a nivel de expediente en archive-service; el
+    # índice a nivel de serie es un follow-up declarado). Nombre honesto.
+    tipo_radicado: str
+    nivel_seguridad: int
+    clasificacion: str  # "reservada" (nivel 2) | "clasificada" (nivel 3)
+    excepcion_ley_1712: str  # art. 19 (reservada) | art. 18 (clasificada)
+    fundamento_juridico: str | None
+    causal_reserva: str | None
+    plazo_reserva_meses: int | None
+    fecha_clasificacion: datetime | None
+    fecha_radicacion: datetime
+
+
+class IndiceClasificadosResponse(BaseModel):
+    total: int
+    items: list[IndiceClasificadoItem]
 
 
 class HealthResponse(BaseModel):

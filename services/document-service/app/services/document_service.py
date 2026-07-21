@@ -39,6 +39,8 @@ from app.schemas.document import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
+    IndiceClasificadoItem,
+    IndiceClasificadosResponse,
 )
 from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
 from app.services.metadata_service import validate_metadata
@@ -207,6 +209,24 @@ class DocumentService:
                 due_date=due_date,
                 metadata_template_id=metadata_template_id,
             )
+            # E08: si se radica ya clasificado (nivel >= 2), persiste la metadata
+            # de clasificación vigente (fundamento/causal/plazo) para el índice
+            # Ley 1712 art. 20 — el schema ya exige el fundamento (422 si falta).
+            audit_payload: dict[str, Any] = {
+                "doc_type": radicado.doc_type,
+                "id": str(radicado.id),
+                "nivel_seguridad": radicado.nivel_seguridad,
+            }
+            if payload.nivel_seguridad >= 2:
+                await self._repo.set_classification(
+                    radicado.id,
+                    payload.nivel_seguridad,
+                    fundamento=payload.clasificacion_fundamento,
+                    causal=payload.clasificacion_causal,
+                    plazo_meses=payload.clasificacion_plazo_meses,
+                )
+                audit_payload["clasificacion_fundamento"] = payload.clasificacion_fundamento
+                audit_payload["clasificacion_causal"] = payload.clasificacion_causal
             await audit.append(
                 self._conn,
                 tenant_slug=self._slug,
@@ -215,7 +235,7 @@ class DocumentService:
                 object_type="radicado",
                 object_ref=tracking_number,
                 actor=actor,
-                payload={"doc_type": radicado.doc_type, "id": str(radicado.id)},
+                payload=audit_payload,
             )
 
         # El evento de dominio se publica tras confirmar la transacción. Es
@@ -575,7 +595,16 @@ class DocumentService:
                     "nivel_seguridad": ctx["nivel_seguridad"],
                 }
 
-            await self._repo.set_nivel_seguridad(document_id, nuevo_nivel)
+            # E08: además del nivel, persiste la metadata de clasificación vigente
+            # (fundamento/causal/plazo) para el índice Ley 1712 art. 20; al
+            # desclasificar (nivel 1) la limpia. El audit_log guarda el histórico.
+            await self._repo.set_classification(
+                document_id,
+                nuevo_nivel,
+                fundamento=fundamento_juridico,
+                causal=causal_reserva,
+                plazo_meses=plazo_reserva_meses,
+            )
             await audit.append(
                 self._conn,
                 tenant_slug=self._slug,
@@ -631,6 +660,58 @@ class DocumentService:
             "tracking_number": result_tracking,
             "nivel_seguridad": nuevo_nivel,
         }
+
+    async def indice_clasificados(
+        self, actor: uuid.UUID | None
+    ) -> IndiceClasificadosResponse:
+        """Genera el índice de información clasificada y reservada (Ley 1712 art. 20).
+
+        Registro CONTENT-FREE y COMPLETO (todos los radicados nivel ≥ 2), ortogonal
+        al clearance de lectura: es un acto de PUBLICACIÓN de metadata, no de lectura
+        de contenido (por eso el repo no filtra por clearance ni selecciona `subject`).
+        La generación se audita (RF-BUS-10) como una entrada agregada, best-effort.
+        """
+        # nivel → (etiqueta, excepción de la Ley 1712). Nivel 2 = RESERVADA (art. 19,
+        # protege intereses públicos); nivel 3 = CLASIFICADA (art. 18, protege
+        # derechos de personas / información privada).
+        clasif = {
+            2: ("reservada", "Ley 1712/2014 art. 19 (información reservada)"),
+            3: ("clasificada", "Ley 1712/2014 art. 18 (información clasificada)"),
+        }
+        rows = await self._repo.indice_clasificados()
+        items: list[IndiceClasificadoItem] = []
+        for r in rows:
+            etiqueta, excepcion = clasif.get(
+                r["nivel_seguridad"], ("reservada", "Ley 1712/2014 art. 19")
+            )
+            items.append(
+                IndiceClasificadoItem(
+                    numero_radicado=r["tracking_number"],
+                    tipo_radicado=r["doc_type"],
+                    nivel_seguridad=r["nivel_seguridad"],
+                    clasificacion=etiqueta,
+                    excepcion_ley_1712=excepcion,
+                    fundamento_juridico=r["clasificacion_fundamento"],
+                    causal_reserva=r["clasificacion_causal"],
+                    plazo_reserva_meses=r["clasificacion_plazo_meses"],
+                    fecha_clasificacion=r["clasificado_at"],
+                    fecha_radicacion=r["registered_at"],
+                )
+            )
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.indice_clasificados_generado",
+                object_type="indice_clasificados",
+                object_ref="registro",
+                actor=str(actor) if actor else None,
+                payload={"total": len(items)},
+            )
+        except Exception:  # noqa: BLE001 — auditoría best-effort, nunca degrada a 500
+            logger.warning("audit.append (indice_clasificados) failed", exc_info=True)
+        return IndiceClasificadosResponse(total=len(items), items=items)
 
     async def update(
         self,

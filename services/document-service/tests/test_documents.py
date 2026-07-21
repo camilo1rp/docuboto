@@ -692,7 +692,11 @@ async def test_create_document_returns_nivel_seguridad(
 
     response = await client.post(
         "/api/v1/documents",
-        json={**_CREATE_PAYLOAD, "nivel_seguridad": 2},
+        json={
+            **_CREATE_PAYLOAD,
+            "nivel_seguridad": 2,
+            "clasificacion_fundamento": "Art. 19 Ley 1712",
+        },
         headers=TENANT_HEADERS,
     )
 

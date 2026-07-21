@@ -782,6 +782,9 @@ Exporta el resumen en **CSV** (`seccion,clave,valor` con secciones tipo/estado/m
   "by_month": [{"month": "2024-01", "count": 4}, {"month": "2024-02", "count": 4}] }
 ```
 
+### `GET /api/v1/reports/indice-reservado` · `.csv`
+**Índice de información clasificada y reservada** (E08, Ley 1712/2014 art. 20 + Decreto 1081/2015). Registro de todos los radicados `nivel_seguridad ≥ 2` con la metadata del acto de clasificación. Gate **`PERM_RECLASIFICAR`**. **CONTENT-FREE** (nunca expone el asunto/contenido) y **ORTOGONAL al clearance** (el registro es COMPLETO por mandato legal — es una publicación de metadata, no una lectura de contenido). Mapeo: `nivel 2 = reservada → art. 19`, `nivel 3 = clasificada → art. 18`. Cada ítem: `{numero_radicado, tipo_radicado (E/S/I, NO serie TRD), nivel_seguridad, clasificacion, excepcion_ley_1712, fundamento_juridico, causal_reserva, plazo_reserva_meses, fecha_clasificacion, fecha_radicacion}`. La metadata se puebla al **radicar clasificado** o **reclasificar** (ambos exigen `fundamento` al pasar a nivel≥2, `422` si falta — Ley 1712 art. 19/28) y se limpia al desclasificar. El `.csv` neutraliza inyección de fórmulas en los campos de texto libre. La generación deja una entrada agregada en `audit_log` (RF-BUS-10).
+
 ### `GET /api/v1/search`
 Búsqueda avanzada de radicados (E09, ADR-014: PostgreSQL FTS). Texto completo con ranking (`tsvector`/`ts_rank`) + difuso (`pg_trgm`), combinable con filtros estructurados.
 

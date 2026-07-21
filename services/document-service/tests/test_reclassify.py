@@ -65,7 +65,7 @@ async def test_reclassify_forbidden_without_permission(client_with_conn) -> None
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba"},
+        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba", "fundamento_juridico": "Art. 19 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -91,7 +91,7 @@ async def test_reclassify_404_when_radicado_not_found(client_with_conn) -> None:
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba"},
+        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba", "fundamento_juridico": "Art. 19 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -124,7 +124,7 @@ async def test_reclassify_neutral_404_when_clearance_below_current_level(
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba"},
+        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba", "fundamento_juridico": "Art. 19 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -157,7 +157,7 @@ async def test_reclassify_403_when_nuevo_nivel_exceeds_clearance(
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": "Intento de over-clasificar"},
+        json={"nivel_seguridad": 3, "motivo": "Intento de over-clasificar", "fundamento_juridico": "Art. 18 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -194,7 +194,7 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": motivo},
+        json={"nivel_seguridad": 3, "motivo": motivo, "fundamento_juridico": "Art. 18 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -252,7 +252,7 @@ async def test_reclassify_noop_when_nivel_already_matches(client_with_redis) -> 
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Reintento idempotente"},
+        json={"nivel_seguridad": 2, "motivo": "Reintento idempotente", "fundamento_juridico": "Art. 19 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -302,7 +302,7 @@ async def test_reclassify_succeeds_even_when_redis_emit_fails(
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": "Test best-effort"},
+        json={"nivel_seguridad": 3, "motivo": "Test best-effort", "fundamento_juridico": "Art. 18 Ley 1712"},
         headers=TENANT_HEADERS,
     )
 
@@ -332,8 +332,12 @@ def test_reclassify_request_rejects_nivel_out_of_range() -> None:
 def test_reclassify_request_accepts_valid_range() -> None:
     from app.schemas.document import ReclassifyRequest
 
-    for nivel in (1, 2, 3):
-        req = ReclassifyRequest(nivel_seguridad=nivel, motivo="Motivo obligatorio")
+    # Nivel 1 (desclasificar) no exige fundamento; nivel ≥ 2 sí (Ley 1712 art. 19/28).
+    assert ReclassifyRequest(nivel_seguridad=1, motivo="Motivo").nivel_seguridad == 1
+    for nivel in (2, 3):
+        req = ReclassifyRequest(
+            nivel_seguridad=nivel, motivo="Motivo obligatorio", fundamento_juridico="Art. Ley 1712"
+        )
         assert req.nivel_seguridad == nivel
 
 
@@ -421,10 +425,23 @@ async def test_reclassify_compliance_fields_recorded_in_audit(
 
 
 def test_reclassify_request_compliance_fields_are_optional() -> None:
-    """Los tres campos de compliance son opcionales — no causan ValidationError si se omiten."""
+    """`causal_reserva` y `plazo` son opcionales; `fundamento_juridico` es
+    OBLIGATORIO al clasificar (nivel ≥ 2, Ley 1712 art. 19/28) pero opcional al
+    desclasificar (nivel 1)."""
+    from pydantic import ValidationError
+
     from app.schemas.document import ReclassifyRequest
 
-    req = ReclassifyRequest(nivel_seguridad=2, motivo="Solo motivo, sin fundamentación")
+    # Nivel 1: fundamento opcional; causal/plazo opcionales.
+    req = ReclassifyRequest(nivel_seguridad=1, motivo="Desclasificar")
     assert req.causal_reserva is None
     assert req.fundamento_juridico is None
     assert req.plazo_reserva_meses is None
+
+    # Nivel ≥ 2 sin fundamento → ValidationError (motivación obligatoria).
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(nivel_seguridad=2, motivo="Solo motivo, sin fundamento")
+
+    # Nivel ≥ 2 con fundamento: causal/plazo siguen opcionales.
+    ok = ReclassifyRequest(nivel_seguridad=2, motivo="m", fundamento_juridico="Art. 19")
+    assert ok.causal_reserva is None and ok.plazo_reserva_meses is None

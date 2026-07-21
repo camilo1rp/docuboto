@@ -451,6 +451,62 @@ class DocumentRepository:
             nivel,
         )
 
+    async def set_classification(
+        self,
+        document_id: uuid.UUID,
+        nivel: int,
+        *,
+        fundamento: str | None = None,
+        causal: str | None = None,
+        plazo_meses: int | None = None,
+    ) -> None:
+        """Fija el nivel y la metadata de clasificación VIGENTE (E08, índice Ley 1712).
+
+        Al desclasificar (`nivel <= 1`) se LIMPIA la metadata — el radicado deja de
+        estar en el índice y no debe conservar un fundamento de reserva obsoleto.
+        Al clasificar (`nivel >= 2`) se sella `clasificado_at = now()` y se guardan
+        fundamento/causal/plazo. El `audit_log` conserva el histórico inmutable; esto
+        es solo la proyección del estado vigente.
+        """
+        if nivel <= 1:
+            await self._conn.execute(
+                "UPDATE radicados SET nivel_seguridad = $2, updated_at = now(), "
+                "clasificacion_fundamento = NULL, clasificacion_causal = NULL, "
+                "clasificacion_plazo_meses = NULL, clasificado_at = NULL WHERE id = $1",
+                document_id,
+                nivel,
+            )
+        else:
+            await self._conn.execute(
+                "UPDATE radicados SET nivel_seguridad = $2, updated_at = now(), "
+                "clasificacion_fundamento = $3, clasificacion_causal = $4, "
+                "clasificacion_plazo_meses = $5, clasificado_at = now() WHERE id = $1",
+                document_id,
+                nivel,
+                fundamento,
+                causal,
+                plazo_meses,
+            )
+
+    async def indice_clasificados(self) -> list[asyncpg.Record]:
+        """Registro de información clasificada y reservada (Ley 1712/2014 art. 20).
+
+        SIN filtro de clearance a propósito: el índice es un registro PÚBLICO y
+        CONTENT-FREE (no expone `subject`/contenido, solo metadata del acto de
+        clasificación) que debe ser COMPLETO para cumplir su función legal — es
+        ortogonal al clearance de lectura (como la disposición/custodia). La
+        consulta NO selecciona `subject` por construcción (defensa en profundidad).
+        """
+        return list(
+            await self._conn.fetch(
+                "SELECT tracking_number, doc_type, nivel_seguridad, "
+                "clasificacion_fundamento, clasificacion_causal, "
+                "clasificacion_plazo_meses, clasificado_at, registered_at "
+                "FROM radicados WHERE nivel_seguridad >= 2 "
+                "ORDER BY nivel_seguridad DESC, registered_at DESC"
+            )
+        )
+
     async def list_anexos_for_document(
         self, document_id: uuid.UUID, max_clearance: int
     ) -> list[Anexo] | None:
