@@ -7,13 +7,16 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""OAI-PMH 2.0 (E11, RF-INT-02) sobre los radicados PÚBLICOS de un tenant.
+"""OAI-PMH 2.0 (E11, RF-INT-02/INT-06) sobre los radicados PÚBLICOS de un tenant.
 
-Protocol Version 2.0, `metadataPrefix=oai_dc` (Dublin Core). Cosecha selectiva por
-`from`/`until`/`set` (set = doc_type). Todo el recorte de seguridad vive en
-`OaiRepository` (`nivel_seguridad=1`, no anulado): este servicio nunca ve un registro
-reservado, por lo que la omisión es indistinguible (completeListSize/sets/GetRecord
-derivan del mismo filtro). Referencia: http://www.openarchives.org/OAI/2.0/
+Protocol Version 2.0. Dos formatos de diseminación (RF-INT-06): `oai_dc` (Dublin Core
+simple) y `ead` (ISAD(G) codificado en EAD 2002 — descripción archivística normalizada,
+un componente `level="item"` por radicado). Cosecha selectiva por `from`/`until`/`set`
+(set = doc_type). Todo el recorte de seguridad vive en `OaiRepository`
+(`nivel_seguridad=1`, no anulado): este servicio nunca ve un registro reservado, por lo
+que la omisión es indistinguible (completeListSize/sets/GetRecord derivan del mismo
+filtro), sea cual sea el formato. Referencias: http://www.openarchives.org/OAI/2.0/ ·
+ISAD(G) 2ª ed. · EAD 2002 (http://www.loc.gov/ead/).
 """
 
 import base64
@@ -27,11 +30,19 @@ OAI_NS = "http://www.openarchives.org/OAI/2.0/"
 OAI_DC_NS = "http://www.openarchives.org/OAI/2.0/oai_dc/"
 DC_NS = "http://purl.org/dc/elements/1.1/"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+EAD_NS = "urn:isbn:1-931666-22-9"  # EAD 2002 (Encoded Archival Description)
+
+# Formatos de diseminación soportados (RF-INT-06). El prefijo → (namespace, schema).
+_FORMATS = {
+    "oai_dc": (OAI_DC_NS, "http://www.openarchives.org/OAI/2.0/oai_dc.xsd"),
+    "ead": (EAD_NS, "http://www.loc.gov/ead/ead.xsd"),
+}
 
 _PAGE = 100
 _GRANULARITY = "YYYY-MM-DDThh:mm:ssZ"
 
-for _p, _u in (("", OAI_NS), ("oai_dc", OAI_DC_NS), ("dc", DC_NS), ("xsi", XSI_NS)):
+for _p, _u in (("", OAI_NS), ("oai_dc", OAI_DC_NS), ("dc", DC_NS), ("xsi", XSI_NS),
+               ("ead", EAD_NS)):
     ET.register_namespace(_p, _u)
 
 _DOC_TYPE_LABEL = {"E": "Entrada", "S": "Salida", "I": "Interno"}
@@ -127,14 +138,22 @@ class OaiService:
         ET.SubElement(h, f"{{{OAI_NS}}}datestamp").text = _fmt(row["registered_at"])
         ET.SubElement(h, f"{{{OAI_NS}}}setSpec").text = row["doc_type"]
 
-    def _metadata(self, parent: ET.Element, row) -> None:
+    def _write_metadata(self, parent: ET.Element, row, prefix: str) -> None:
+        """Despacha al constructor del formato pedido (ambos sobre el MISMO row
+        público → el recorte de seguridad es idéntico sea cual sea el prefijo)."""
+        if prefix == "ead":
+            self._metadata_ead(parent, row)
+        else:
+            self._metadata_dc(parent, row)
+
+    def _metadata_dc(self, parent: ET.Element, row) -> None:
         md = ET.SubElement(parent, f"{{{OAI_NS}}}metadata")
         dc = ET.SubElement(md, f"{{{OAI_DC_NS}}}dc")
         dc.set(
             f"{{{XSI_NS}}}schemaLocation",
             f"{OAI_DC_NS} http://www.openarchives.org/OAI/2.0/oai_dc.xsd",
         )
-        # Mapeo radicado → Dublin Core (RF-INT-06). El registro es PÚBLICO, así que
+        # Mapeo radicado → Dublin Core simple. El registro es PÚBLICO, así que
         # su `subject` es divulgable.
         pairs = [
             ("title", row["subject"]),
@@ -148,6 +167,74 @@ class OaiService:
         for tag, val in pairs:
             if val:
                 ET.SubElement(dc, f"{{{DC_NS}}}{tag}").text = _xml_safe(str(val))
+
+    def _metadata_ead(self, parent: ET.Element, row) -> None:
+        """Mapeo radicado → EAD 2002 con los 6 elementos OBLIGATORIOS de ISAD(G)/NTC 4095
+        para intercambio (RF-INT-06). Un radicado es una *unidad documental simple* →
+        `level="item"` (convención: el radicado es la unidad; sus anexos son parte de
+        ella — no se eleva a `file`). Fragmento EAD autocontenido por registro (patrón
+        OAI-EAD).
+
+        ISAD(G) → EAD:
+          3.1.1 Código de referencia   → <unitid countrycode="CO" repositorycode>  (país+repo+ref local, para intercambio)
+          3.1.2 Título                 → <unittitle>     (asunto — público)
+          3.1.3 Fecha(s)               → <unitdate normal>  (registered_at, AAAA-MM-DD)
+          3.1.4 Nivel de descripción   → @level="item"
+          3.1.5 Volumen y soporte      → <physdesc>      (1 doc. electrónico)
+          3.2.1 Nombre del productor   → <origination>   (dependencia origen / tenant)
+          3.4.1 Condiciones de acceso  → <accessrestrict>  (público, Ley 1712/2014)
+          3.7.2 Reglas o convenciones  → <descrules>     (ISAD(G) 2ª ed. / NTC 4095)
+
+        DEUDA declarada (roadmap, no incumplimiento — ISAD(G) 2.2/2.4): la descripción
+        es monolvel (item); el contexto multinivel fondo→sección→serie→expediente vive
+        en archive-service (TRD/CCD, Ac. AGN 001/2024) y se inyectará en un fast-follow.
+        """
+        md = ET.SubElement(parent, f"{{{OAI_NS}}}metadata")
+        ead = ET.SubElement(md, f"{{{EAD_NS}}}ead")
+        ead.set(
+            f"{{{XSI_NS}}}schemaLocation",
+            f"{EAD_NS} http://www.loc.gov/ead/ead.xsd",
+        )
+        tn = _xml_safe(str(row["tracking_number"]))
+        title = _xml_safe(str(row["subject"])) if row["subject"] else tn
+        # Código de repositorio para el identificador de intercambio (país + repo). El
+        # tenant_code (o el slug) es divulgable: ya viaja en la URL y en el identificador OAI.
+        repo_code = _xml_safe(str(row["tenant_code"] or self._tenant))
+        # eadheader — identidad del fragmento + reglas de descripción (3.7.2).
+        header = ET.SubElement(ead, f"{{{EAD_NS}}}eadheader")
+        ET.SubElement(
+            header, f"{{{EAD_NS}}}eadid",
+            {"countrycode": "CO", "mainagencycode": repo_code},
+        ).text = _xml_safe(self._identifier(row["tracking_number"]))
+        fd = ET.SubElement(header, f"{{{EAD_NS}}}filedesc")
+        ts = ET.SubElement(fd, f"{{{EAD_NS}}}titlestmt")
+        ET.SubElement(ts, f"{{{EAD_NS}}}titleproper").text = title
+        pd = ET.SubElement(header, f"{{{EAD_NS}}}profiledesc")
+        ET.SubElement(pd, f"{{{EAD_NS}}}descrules").text = "ISAD(G) 2ª ed.; NTC 4095 (ICONTEC)."
+        # archdesc — la descripción ISAD(G) del radicado.
+        arch = ET.SubElement(ead, f"{{{EAD_NS}}}archdesc", {"level": "item"})
+        did = ET.SubElement(arch, f"{{{EAD_NS}}}did")
+        # 3.1.1 Código de referencia completo para intercambio: país (ISO 3166) + repo + ref local.
+        ET.SubElement(
+            did, f"{{{EAD_NS}}}unitid",
+            {"countrycode": "CO", "repositorycode": repo_code},
+        ).text = tn
+        ET.SubElement(did, f"{{{EAD_NS}}}unittitle").text = title
+        # 3.1.3 Fecha — @normal + texto en la misma granularidad de día (AAAA-MM-DD).
+        iso_day = row["registered_at"].astimezone(UTC).strftime("%Y-%m-%d")
+        ET.SubElement(did, f"{{{EAD_NS}}}unitdate", {"normal": iso_day}).text = iso_day
+        doc_label = _xml_safe(str(_DOC_TYPE_LABEL.get(row["doc_type"], row["doc_type"])))
+        ET.SubElement(did, f"{{{EAD_NS}}}physdesc").text = f"1 documento electrónico ({doc_label})"
+        origin = row["origin_dept"] or row["tenant_code"]
+        if origin:
+            ET.SubElement(did, f"{{{EAD_NS}}}origination").text = _xml_safe(str(origin))
+        lm = ET.SubElement(did, f"{{{EAD_NS}}}langmaterial")
+        ET.SubElement(lm, f"{{{EAD_NS}}}language", {"langcode": "spa"}).text = "Español"
+        ET.SubElement(did, f"{{{EAD_NS}}}repository").text = _xml_safe(self._tenant)
+        # 3.4.1 Condiciones de acceso — afirma positivamente el carácter público de lo
+        # diseminado (Ley 1712/2014); ancla la divulgación en vez de omitirla.
+        ar = ET.SubElement(arch, f"{{{EAD_NS}}}accessrestrict")
+        ET.SubElement(ar, f"{{{EAD_NS}}}p").text = "Información pública (Ley 1712 de 2014)."
 
     # --- verbos ------------------------------------------------------------
     async def identify(self, request_attrs: dict[str, str]) -> bytes:
@@ -176,10 +263,11 @@ class OaiService:
                 raise OaiError("idDoesNotExist", "Identificador desconocido")
         root, _ = self._root(request_attrs)
         lmf = ET.SubElement(root, f"{{{OAI_NS}}}ListMetadataFormats")
-        fmt = ET.SubElement(lmf, f"{{{OAI_NS}}}metadataFormat")
-        ET.SubElement(fmt, f"{{{OAI_NS}}}metadataPrefix").text = "oai_dc"
-        ET.SubElement(fmt, f"{{{OAI_NS}}}schema").text = "http://www.openarchives.org/OAI/2.0/oai_dc.xsd"
-        ET.SubElement(fmt, f"{{{OAI_NS}}}metadataNamespace").text = OAI_DC_NS
+        for prefix, (namespace, schema) in _FORMATS.items():
+            fmt = ET.SubElement(lmf, f"{{{OAI_NS}}}metadataFormat")
+            ET.SubElement(fmt, f"{{{OAI_NS}}}metadataPrefix").text = prefix
+            ET.SubElement(fmt, f"{{{OAI_NS}}}schema").text = schema
+            ET.SubElement(fmt, f"{{{OAI_NS}}}metadataNamespace").text = namespace
         return self._serialize(root)
 
     async def list_sets(self, request_attrs: dict[str, str]) -> bytes:
@@ -192,8 +280,8 @@ class OaiService:
         return self._serialize(root)
 
     async def get_record(self, request_attrs: dict[str, str], identifier: str, prefix: str) -> bytes:
-        if prefix != "oai_dc":
-            raise OaiError("cannotDisseminateFormat", "Solo oai_dc")
+        if prefix not in _FORMATS:
+            raise OaiError("cannotDisseminateFormat", "Formato no soportado (oai_dc, ead)")
         tn = self._parse_identifier(identifier)
         row = await self._repo.get_public(tn) if tn else None
         if row is None:
@@ -202,7 +290,7 @@ class OaiService:
         gr = ET.SubElement(root, f"{{{OAI_NS}}}GetRecord")
         rec = ET.SubElement(gr, f"{{{OAI_NS}}}record")
         self._header(rec, row)
-        self._metadata(rec, row)
+        self._write_metadata(rec, row, prefix)
         return self._serialize(root)
 
     async def list_records(
@@ -211,8 +299,9 @@ class OaiService:
         offset, req = self._resume(harvest)
         from_dt, until_dt = self._parse_range(req)
         set_spec = req.get("set")
-        if req.get("metadataPrefix", "oai_dc") != "oai_dc":
-            raise OaiError("cannotDisseminateFormat", "Solo oai_dc")
+        prefix = req.get("metadataPrefix", "oai_dc")
+        if prefix not in _FORMATS:
+            raise OaiError("cannotDisseminateFormat", "Formato no soportado (oai_dc, ead)")
 
         total = await self._repo.count_public(from_dt, until_dt, set_spec)
         if total == 0:
@@ -229,7 +318,7 @@ class OaiService:
             else:
                 rec = ET.SubElement(container, f"{{{OAI_NS}}}record")
                 self._header(rec, row)
-                self._metadata(rec, row)
+                self._write_metadata(rec, row, prefix)
         self._resumption(container, offset=offset, page=len(rows), total=total, req=req)
         return self._serialize(root)
 

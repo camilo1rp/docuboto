@@ -40,6 +40,11 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/metadata/", app_state.document_service_url),
         ("/api/v1/search/", app_state.document_service_url),
         ("/api/v1/reports/", app_state.document_service_url),
+        # OAI-PMH de expedientes (archive-service, E11 RF-INT-06) DEBE ir ANTES
+        # que el prefijo genérico "/api/v1/public/" de document-service (más
+        # abajo): el ruteo es primer-prefijo-que-casa, así que si quedara
+        # después lo capturaría siempre document-service.
+        ("/api/v1/public/archive/", app_state.archive_service_url),
         ("/api/v1/public/", app_state.document_service_url),
         ("/api/v1/ingest/", app_state.document_service_url),
         ("/api/v1/envios/", app_state.document_service_url),

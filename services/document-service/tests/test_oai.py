@@ -26,6 +26,7 @@ from app.main import app
 
 OAI = "{http://www.openarchives.org/OAI/2.0/}"
 DC = "{http://purl.org/dc/elements/1.1/}"
+EAD = "{urn:isbn:1-931666-22-9}"
 
 
 def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública", doc_type: str = "E") -> dict:
@@ -94,7 +95,8 @@ async def test_list_metadata_formats(oai_ctx: tuple[AsyncClient, AsyncMock]) -> 
     client, _ = oai_ctx
     root = ET.fromstring((await client.get(_url(verb="ListMetadataFormats"))).content)
     prefixes = [e.text for e in root.iter(f"{OAI}metadataPrefix")]
-    assert prefixes == ["oai_dc"]
+    # RF-INT-06: dos formatos de diseminación — Dublin Core y EAD/ISAD(G).
+    assert prefixes == ["oai_dc", "ead"]
 
 
 @pytest.mark.asyncio
@@ -299,3 +301,71 @@ async def test_mixed_date_granularity_is_bad_argument(
         ).content
     )
     assert root.find(f"{OAI}error").get("code") == "badArgument"
+
+
+# --- INT-06: formato EAD / ISAD(G) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_record_ead_isadg(oai_ctx: tuple[AsyncClient, AsyncMock]) -> None:
+    """RF-INT-06: `metadataPrefix=ead` disemina el radicado como componente EAD 2002
+    con los elementos OBLIGATORIOS de ISAD(G) (código, título, fecha, nivel, productor)."""
+    client, conn = oai_ctx
+    conn.fetchrow.return_value = _rad(subject="Convenio marco")
+    root = ET.fromstring(
+        (
+            await client.get(
+                _url(verb="GetRecord", identifier="oai:demo:2026-DEMO-E-000001", metadataPrefix="ead")
+            )
+        ).content
+    )
+    arch = root.find(f".//{EAD}archdesc")
+    did = arch.find(f"{EAD}did")
+    assert arch.get("level") == "item"  # unidad documental simple
+    unitid = did.find(f"{EAD}unitid")
+    assert unitid.text == "2026-DEMO-E-000001"
+    # 3.1.1 código de referencia para intercambio: país (ISO 3166) + repositorio.
+    assert unitid.get("countrycode") == "CO"
+    assert unitid.get("repositorycode") == "DEMO"
+    assert did.find(f"{EAD}unittitle").text == "Convenio marco"
+    assert did.find(f"{EAD}unitdate").get("normal") == "2026-03-01"
+    assert did.find(f"{EAD}origination").text == "Secretaría General"
+    assert did.find(f"{EAD}langmaterial/{EAD}language").get("langcode") == "spa"
+    # 3.4.1 condiciones de acceso (público, Ley 1712) + 3.7.2 reglas de descripción.
+    assert arch.find(f"{EAD}accessrestrict/{EAD}p") is not None
+    assert "NTC 4095" in root.find(f".//{EAD}descrules").text
+
+
+@pytest.mark.asyncio
+async def test_list_records_ead(oai_ctx: tuple[AsyncClient, AsyncMock]) -> None:
+    """El formato EAD también fluye por ListRecords y el resumptionToken preserva el
+    prefijo (la reanudación sigue en EAD, no cae a oai_dc)."""
+    client, conn = oai_ctx
+    conn.fetchval.return_value = 250  # > una página → emite token
+    conn.fetch.return_value = [_rad(tn=f"2026-DEMO-E-{i:06d}") for i in range(100)]
+    root = ET.fromstring(
+        (await client.get(_url(verb="ListRecords", metadataPrefix="ead"))).content
+    )
+    assert root.find(f".//{EAD}archdesc/{EAD}did/{EAD}unitid") is not None
+    # el token round-trip lleva el prefijo ead embebido.
+    import base64
+    rt = root.find(f"{OAI}ListRecords/{OAI}resumptionToken").text
+    assert base64.urlsafe_b64decode(rt.encode()).decode().endswith("|ead")
+
+
+@pytest.mark.asyncio
+async def test_get_record_reserved_ead_is_iddoesnotexist(
+    oai_ctx: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El chokepoint público es ortogonal al formato: un reservado en EAD también es
+    `idDoesNotExist` indistinguible (no hay fuga por elegir otro metadataPrefix)."""
+    client, conn = oai_ctx
+    conn.fetchrow.return_value = None
+    root = ET.fromstring(
+        (
+            await client.get(
+                _url(verb="GetRecord", identifier="oai:demo:2026-DEMO-E-999999", metadataPrefix="ead")
+            )
+        ).content
+    )
+    assert root.find(f"{OAI}error").get("code") == "idDoesNotExist"
