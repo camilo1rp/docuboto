@@ -70,6 +70,37 @@ class StorageContentStream:
         await self._client.aclose()
 
 
+async def upload_bytes(
+    *,
+    tenant_slug: str,
+    filename: str,
+    mime_type: str | None,
+    data: bytes,
+    uploaded_by: uuid.UUID | None = None,
+) -> dict:
+    """Sube `data` a storage-service (`POST /upload`) y devuelve el registro del
+    fichero (`file_id`, `sha256`, …). Lo usa la IMPORTACIÓN (E11/INT-05) para
+    persistir los binarios del paquete. Va scoped al `tenant_slug` del llamante →
+    el objeto aterriza en el bucket de ESE tenant. Lanza `StorageContentError`
+    ante fallo de red o HTTP != 2xx (el servicio de import lo traduce a error del
+    ítem sin dejar estado parcial en BD)."""
+    headers = {"X-Tenant-Slug": tenant_slug}
+    if uploaded_by is not None:
+        headers["X-User-Id"] = str(uploaded_by)
+    files = {"file": (filename, data, mime_type or "application/octet-stream")}
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:
+        try:
+            resp = await client.post("/api/v1/storage/upload", headers=headers, files=files)
+        except httpx.RequestError as exc:
+            raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code not in (200, 201):
+        raise StorageContentError(
+            f"storage-service → HTTP {resp.status_code} al subir '{filename}': "
+            f"{resp.text[:300]!r}"
+        )
+    return resp.json()
+
+
 async def open_content_stream(
     *, tenant_slug: str, file_id: uuid.UUID
 ) -> StorageContentStream | None:
