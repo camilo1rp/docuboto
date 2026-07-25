@@ -34,7 +34,8 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'trd_series' AND column_name = 'pdfa_profile'
+        WHERE table_schema = current_schema()
+          AND table_name = 'trd_series' AND column_name = 'pdfa_profile'
     ) THEN
         ALTER TABLE trd_series ADD COLUMN pdfa_profile TEXT;
     END IF;
@@ -46,7 +47,9 @@ BEGIN
         SELECT 1
         FROM pg_constraint con
         JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
         WHERE rel.relname = 'trd_series'
+          AND nsp.nspname = current_schema()
           AND con.contype = 'c'
           AND con.conname = 'trd_series_pdfa_profile_check'
     ) THEN

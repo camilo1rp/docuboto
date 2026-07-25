@@ -39,6 +39,7 @@ import pytest
 from orpycamcp_common import audit
 
 from app.clients.storage_client import AipPackagingOutcome
+from app.core.config import settings
 from app.core.database import tenant_schema
 from app.repositories.aip_repository import AipRepository
 from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
@@ -356,7 +357,15 @@ async def test_concurrent_intentar_empaquetar_does_not_double_mark(
 @pytest.mark.integration
 async def test_intentar_empaquetar_zero_anexos_marks_omitido_for_real(
     tenant_ctx: tuple[str, asyncpg.Connection],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # El camino 'omitido' (cero anexos digitales → sin AIP, TERMINAL) solo aplica
+    # con el kill-switch del AIP solo-índice APAGADO. Su default es ON (un
+    # expediente sin anexos empaqueta un AIP solo-índice = 'empaquetado'), así que
+    # este test —que ejercita específicamente el 'omitido'— debe fijar el flag,
+    # igual que su gemelo unit (`test_..._marks_omitido_and_audits`). Sin esto el
+    # test quedó desalineado del default ON y aserraba 'empaquetado'.
+    monkeypatch.setattr(settings, "aip_indice_only_enabled", False)
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
     expediente_id, _radicado_id = await _seed_ready(conn, slug, "itest AIP 100% fisico")

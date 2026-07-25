@@ -24,7 +24,9 @@ BEGIN
         SELECT 1
         FROM pg_constraint con
         JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
         WHERE rel.relname = 'expediente_indice_item'
+          AND nsp.nspname = current_schema()
           AND con.contype = 'c'
           AND con.conname = 'expediente_indice_item_tamano_bytes_check'
     ) THEN
@@ -42,7 +44,9 @@ BEGIN
         SELECT 1
         FROM pg_constraint con
         JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
         WHERE rel.relname = 'expediente_indice_item'
+          AND nsp.nspname = current_schema()
           AND con.contype = 'c'
           AND con.conname = 'expediente_indice_item_folios_check'
     ) THEN

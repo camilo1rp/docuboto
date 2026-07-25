@@ -38,10 +38,20 @@ ALTER TABLE firma
 -- campos). No hay "ADD CONSTRAINT IF NOT EXISTS" en Postgres para CHECK, así
 -- que se envuelve en un DO block idempotente (re-ejecutar el archivo no falla
 -- con "constraint already exists").
+-- Los guards DEBEN acotarse al schema activo (`n.nspname = current_schema()`): en
+-- el modelo multi-tenant-por-schema `pg_constraint.conname` se REPITE entre tenants
+-- (cada `tenant_<slug>.firma` tiene sus propias constraints). Un guard por `conname`
+-- global vería la constraint de OTRO tenant y la omitiría en éste ⇒ los tenants #2+
+-- quedaban sin el CHECK. Reparación de tenants ya provisionados: 015_*_backfill.sql.
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'firma_nivel_conformidad_check'
+        SELECT 1
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE c.conname = 'firma_nivel_conformidad_check'
+           AND n.nspname = current_schema()
     ) THEN
         ALTER TABLE firma
             ADD CONSTRAINT firma_nivel_conformidad_check
@@ -53,7 +63,12 @@ BEGIN
     END IF;
 
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'firma_xades_level_check'
+        SELECT 1
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE c.conname = 'firma_xades_level_check'
+           AND n.nspname = current_schema()
     ) THEN
         ALTER TABLE firma
             ADD CONSTRAINT firma_xades_level_check

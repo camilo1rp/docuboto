@@ -42,10 +42,21 @@ CREATE TABLE IF NOT EXISTS kb_suggestions (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- El guard DEBE acotarse al schema activo (`n.nspname = current_schema()`): en el
+-- modelo multi-tenant-por-schema, `pg_constraint.conname` se REPITE entre tenants
+-- (cada `tenant_<slug>.kb_suggestions` tiene su propia `chk_kb_suggestions_canal`).
+-- Un guard por `conname` global vería la constraint de OTRO tenant y omitiría la de
+-- éste ⇒ los tenants #2+ quedaban sin el CHECK. Mismo patrón correcto que
+-- 003_knowledge_upsert.sql (que documenta exactamente esta clase de bug).
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_kb_suggestions_canal'
+        SELECT 1
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE c.conname = 'chk_kb_suggestions_canal'
+           AND n.nspname = current_schema()
     ) THEN
         ALTER TABLE kb_suggestions
             ADD CONSTRAINT chk_kb_suggestions_canal

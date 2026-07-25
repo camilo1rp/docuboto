@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -20,9 +21,46 @@ _pool: asyncpg.Pool | None = None
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 
+def _jsonb_encoder(value: object) -> str:
+    """Encoder de `jsonb` que NO rompe la convención de escritura del repositorio.
+
+    `KnowledgeRepository` ya serializa con `json.dumps(...)` y castea `$N::jsonb`,
+    es decir, bindea un `str` de texto JSON. Si el encoder volviera a aplicar
+    `json.dumps` sobre ese `str`, produciría un doble-encode (`'{}'` → `'"{}"'`) y
+    corrompería `metadata`/`acl`. Por eso los `str` pasan tal cual (comportamiento
+    idéntico al de asyncpg SIN codec); solo se serializa un valor que llegue como
+    objeto Python (rama defensiva, hoy ningún call site la usa).
+    """
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Decodifica `jsonb` a dict de Python en toda conexión del pool.
+
+    Sin este codec, asyncpg devuelve las columnas `jsonb` (p. ej. `knowledge_chunk.
+    metadata`/`acl`) como el TEXTO crudo `'{}'`, y `SearchHit(**dict(row))` en
+    `/search` revienta con `ValidationError` (Pydantic espera un dict). Los tests
+    unit no lo detectaban porque mockean la conexión devolviendo dicts de Python; el
+    fallo solo aparece contra Postgres real. `/rag` y `/antecedentes` no se veían
+    afectados porque no proyectan `metadata` en su respuesta.
+
+    El ENCODE se deja como texto (ver `_jsonb_encoder`) para no alterar la escritura
+    ya existente; solo el DECODE cambia (`str` → `dict`).
+    """
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=_jsonb_encoder,
+        decoder=json.loads,
+        schema="pg_catalog",
+        format="text",
+    )
+
+
 async def create_pool(dsn: str) -> asyncpg.Pool:
     global _pool
-    _pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
+    _pool = await asyncpg.create_pool(
+        dsn=dsn, min_size=2, max_size=10, init=_init_connection
+    )
     return _pool
 
 

@@ -35,7 +35,8 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'evento_dead_letter' AND column_name = 'status'
+        WHERE table_schema = current_schema()
+          AND table_name = 'evento_dead_letter' AND column_name = 'status'
     ) THEN
         ALTER TABLE evento_dead_letter
             ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
@@ -47,7 +48,8 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'evento_dead_letter' AND column_name = 'resolved_at'
+        WHERE table_schema = current_schema()
+          AND table_name = 'evento_dead_letter' AND column_name = 'resolved_at'
     ) THEN
         ALTER TABLE evento_dead_letter
             ADD COLUMN resolved_at TIMESTAMPTZ NULL;
