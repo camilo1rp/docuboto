@@ -89,3 +89,95 @@ async def test_verify_invalid_when_no_match(client_with_conn) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["valid"] is False
+
+
+# ---------------------------------------------------------------------------
+# Autorización: PERM_FIRMA + no-read-up (RF-SEG-08)
+#
+# Las tres rutas carecían de CUALQUIER gate: sin permiso y sin clearance.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("metodo", "ruta"),
+    [
+        ("post", "/api/v1/documents/{rid}/signatures"),
+        ("get", "/api/v1/documents/{rid}/signatures"),
+        ("get", "/api/v1/documents/{rid}/signatures/verify?content_hash=" + _HASH),
+    ],
+)
+@pytest.mark.asyncio
+async def test_firmas_exigen_perm_firma(client_with_conn, metodo, ruta) -> None:
+    """Sin PERM_FIRMA → 403 en las tres rutas (mismo permiso que signature-service)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # sin fila en auth_users → fail-closed
+
+    url = ruta.format(rid=uuid.uuid4())
+    headers = {**TENANT_HEADERS, "X-User-Id": _USER}
+    resp = await (
+        client.post(url, json={"content_hash": _HASH}, headers=headers)
+        if metodo == "post"
+        else client.get(url, headers=headers)
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_listar_firmas_de_radicado_sobre_clearance_404(client_with_conn) -> None:
+    """Radicado invisible → 404 neutro, nunca `[]`.
+
+    La distinción importa: `[]` significa «visible y sin firmas». Si un
+    sub-clearance recibiera `[]` en vez de 404, el par 404/`[]` sería un oráculo
+    de existencia. Aquí el sub-clearance recibe SIEMPRE 404.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [True, False]  # PERM_FIRMA ok; radicado_visible → False
+    mock_conn.fetchrow.return_value = {"is_root": False, "max_level": 1}
+
+    resp = await client.get(
+        f"/api/v1/documents/{uuid.uuid4()}/signatures",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "document_not_found"
+
+
+@pytest.mark.asyncio
+async def test_verify_de_radicado_sobre_clearance_404(client_with_conn) -> None:
+    """`verify` gateado: el `valid` true/false era un oráculo de CONTENIDO.
+
+    Permitía confirmar por fuerza bruta el hash de un documento reservado sin
+    llegar a leerlo.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [True, False]
+    mock_conn.fetchrow.return_value = {"is_root": False, "max_level": 1}
+
+    resp = await client.get(
+        f"/api/v1/documents/{uuid.uuid4()}/signatures/verify?content_hash={_HASH}",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_firmar_radicado_sobre_clearance_404(client_with_conn) -> None:
+    """El INSERT condicional no encuentra radicado visible → None → 404 neutro."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # PERM_FIRMA concedido
+    # clearance del llamante; luego el INSERT ... WHERE EXISTS no devuelve fila.
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}, None]
+
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/signatures",
+        json={"content_hash": _HASH, "reason": "intento"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "document_not_found"
+
+    # El gate viaja DENTRO del INSERT (atomicidad), no como consulta previa.
+    sql = mock_conn.fetchrow.call_args[0][0]
+    assert "INSERT INTO signatures" in sql
+    assert "nivel_seguridad <= $7" in sql

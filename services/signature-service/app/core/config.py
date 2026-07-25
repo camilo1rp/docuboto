@@ -113,6 +113,12 @@ class Settings(BaseSettings):
     # Llamadas DIRECTAS servicio-a-servicio (Q3, mismo patrón que Inc.1
     # storage_client.py) — NO a través del api-gateway.
     notification_service_url: str = "http://notification-service:8007"
+    # Token compartido D-02: mismo secreto que
+    # `notification-service.INTERNAL_SERVICE_TOKEN`, enviado en X-Internal-Token
+    # al despachar el OTP por `POST /api/v1/notifications/send` (que ahora está
+    # sellado como endpoint servicio-a-servicio). Vacío (default) ⇒ notification
+    # responde 401 y el OTP-correo no se entrega — en dev/prod debe configurarse.
+    notification_internal_token: str = ""
     auth_service_url: str = "http://auth-service:8001"
 
     # --- 2FA por TOTP (RFC 6238), elevando el OTP-correo del Inc.2 ---

@@ -53,9 +53,13 @@ def _caller_id(request: Request) -> uuid.UUID | None:
 async def create_envio(
     document_id: uuid.UUID,
     payload: ShipmentCreate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> ShipmentResponse:
-    return await PostalService(conn).create(document_id, payload)
+    # RF-SEG-08: no se despacha un radicado que el llamante no puede ver — era la
+    # única ruta de este archivo sin el gate que sus cinco hermanas ya aplican.
+    clearance = await resolve_caller_clearance(conn, _caller_id(request))
+    return await PostalService(conn).create(document_id, payload, clearance)
 
 
 @router.get(

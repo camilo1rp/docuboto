@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.services.webhook_service import sign
+from tests.conftest import USER
 
 NOW = datetime.now(tz=UTC)
 
@@ -45,7 +46,7 @@ async def test_create_webhook(client, db_conn) -> None:
             "event_types": ["document.radicado.created"],
             "secret": "s3cr3t",
         },
-        headers={"X-Tenant-Slug": "demo"},
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)},
     )
     assert resp.status_code == 201
     body = resp.json()
@@ -53,6 +54,24 @@ async def test_create_webhook(client, db_conn) -> None:
     assert body["event_types"] == ["document.radicado.created"]
     # El secret no se expone en la respuesta.
     assert "secret" not in body
+
+
+@pytest.mark.asyncio
+async def test_create_webhook_sin_permiso_403(client, db_conn) -> None:
+    """Sin USUA_PERM_ADMIN no se registra un webhook (fail-closed).
+
+    Registrar una suscripción entrega CADA evento del tenant a una URL externa:
+    sin este gate era un canal de exfiltración (y SSRF) abierto a cualquier
+    usuario autenticado. El gate es de router → cubre create/list/delete.
+    """
+    db_conn.fetchval.return_value = None  # check_permission → False
+    resp = await client.post(
+        "/api/v1/webhooks",
+        json={"url": "https://ext.example.com/hook", "event_types": ["document.radicado.created"]},
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
 
 
 @pytest.mark.asyncio
@@ -66,7 +85,7 @@ async def test_list_webhooks(client, db_conn) -> None:
             "created_at": NOW,
         },
     ]
-    resp = await client.get("/api/v1/webhooks", headers={"X-Tenant-Slug": "demo"})
+    resp = await client.get("/api/v1/webhooks", headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)})
     assert resp.status_code == 200
     assert resp.headers["x-total-count"] == "1"
     assert len(resp.json()) == 1
@@ -76,7 +95,7 @@ async def test_list_webhooks(client, db_conn) -> None:
 async def test_delete_webhook_not_found(client, db_conn) -> None:
     db_conn.execute.return_value = "DELETE 0"
     resp = await client.delete(
-        f"/api/v1/webhooks/{uuid.uuid4()}", headers={"X-Tenant-Slug": "demo"}
+        f"/api/v1/webhooks/{uuid.uuid4()}", headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
     )
     assert resp.status_code == 404
 

@@ -77,9 +77,16 @@ async def crear_respuesta(
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
+    """Crea una Salida vinculada a este radicado.
+
+    No-read-up (RF-SEG-08): 404 neutro si el antecedente no existe o supera el
+    clearance del llamante. La Salida hereda el asunto del antecedente, así que
+    sin este gate el endpoint era una vía de exfiltración.
+    """
     service = _service(conn, _slug(request), tenant_client, redis)
+    clearance = await resolve_caller_clearance(conn, _user(request))
     try:
-        return await service.crear_respuesta(document_id, payload, _user(request))
+        return await service.crear_respuesta(document_id, payload, _user(request), clearance)
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

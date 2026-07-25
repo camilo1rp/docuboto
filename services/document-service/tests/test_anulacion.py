@@ -27,6 +27,15 @@ NOW = datetime.now(tz=UTC)
 _USER = str(uuid.uuid4())
 
 
+def _clearance_row(max_level: int = 3, is_root: bool = False) -> dict:
+    """Fila que consume `resolve_caller_clearance` (SELECT is_root, max_level).
+
+    Aprobar/rechazar resuelven el clearance del llamante antes de tocar la
+    solicitud (RF-SEG-08), así que consumen UN `fetchrow` previo.
+    """
+    return {"is_root": is_root, "max_level": max_level}
+
+
 def _anulacion_row(**kw) -> dict:
     base = {
         "id": uuid.uuid4(),
@@ -79,6 +88,7 @@ async def test_aprobar_anula_el_radicado(client_with_conn) -> None:
     rid = uuid.uuid4()
     # get_active (solicitada) → decide (UPDATE RETURNING aprobada)
     mock_conn.fetchrow.side_effect = [
+        _clearance_row(),  # resolve_caller_clearance
         _anulacion_row(radicado_id=rid, estado="solicitada"),
         _anulacion_row(
             radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
@@ -183,6 +193,7 @@ async def test_aprobar_emite_evento_annulled(client_with_redis) -> None:
     rid = uuid.uuid4()
     tracking = "2026-DEMO-E-000042"
     mock_conn.fetchrow.side_effect = [
+        _clearance_row(),  # resolve_caller_clearance
         _anulacion_row(radicado_id=rid, estado="solicitada"),
         _anulacion_row(
             radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
@@ -213,6 +224,7 @@ async def test_rechazar_no_emite_evento(client_with_redis) -> None:
     client, mock_conn, fake_redis = client_with_redis
     rid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
+        _clearance_row(),  # resolve_caller_clearance
         _anulacion_row(radicado_id=rid, estado="solicitada"),
         _anulacion_row(
             radicado_id=rid, estado="rechazada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
@@ -255,6 +267,7 @@ async def test_aprobar_evento_best_effort_no_revierte_anulacion(client_with_redi
     fake_redis.xadd.side_effect = RuntimeError("redis down")
     rid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
+        _clearance_row(),  # resolve_caller_clearance
         _anulacion_row(radicado_id=rid, estado="solicitada"),
         _anulacion_row(
             radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW

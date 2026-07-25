@@ -17,7 +17,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, Request, status
 
-from app.core.clearance import require_permission
+from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_conn
 from app.schemas.anulacion import (
     AnulacionDecision,
@@ -57,15 +57,25 @@ async def solicitar_anulacion(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> AnulacionResponse:
-    return await AnulacionService(conn).solicitar(document_id, payload, _actor(request))
+    """Solicita la anulación (paso 1). No-read-up: 404 neutro si el radicado no
+    existe o supera el clearance del llamante (RF-SEG-08)."""
+    clearance = await resolve_caller_clearance(conn, _actor(request))
+    return await AnulacionService(conn).solicitar(document_id, payload, _actor(request), clearance)
 
 
 @router.get("/{document_id}/anulacion", response_model=AnulacionResponse)
 async def get_anulacion(
     document_id: uuid.UUID,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> AnulacionResponse:
-    return await AnulacionService(conn).get(document_id)
+    """Estado de la anulación del radicado.
+
+    No-read-up (RF-SEG-08): la causal y el motivo describen el documento, así que
+    un radicado sobre-clearance devuelve el mismo 404 que uno sin anulaciones.
+    """
+    clearance = await resolve_caller_clearance(conn, _actor(request))
+    return await AnulacionService(conn).get(document_id, clearance)
 
 
 @router.post(
@@ -81,8 +91,16 @@ async def aprobar_anulacion(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     redis: Any = Depends(get_redis),
 ) -> AnulacionResponse:
+    """Aprueba la anulación (paso 2). No-read-up: aprobar la anulación de un
+    radicado que no se puede ver sería mutar su ciclo de vida sin autoridad
+    (Ley 594/2000 art. 28)."""
+    clearance = await resolve_caller_clearance(conn, _actor(request))
     return await AnulacionService(conn, redis).aprobar(
-        document_id, payload, _actor(request), tenant_slug=_tenant_slug(request)
+        document_id,
+        payload,
+        _actor(request),
+        clearance,
+        tenant_slug=_tenant_slug(request),
     )
 
 
@@ -98,4 +116,6 @@ async def rechazar_anulacion(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> AnulacionResponse:
-    return await AnulacionService(conn).rechazar(document_id, payload, _actor(request))
+    """Rechaza la anulación (paso 2). Mismo gate de clearance que aprobar."""
+    clearance = await resolve_caller_clearance(conn, _actor(request))
+    return await AnulacionService(conn).rechazar(document_id, payload, _actor(request), clearance)

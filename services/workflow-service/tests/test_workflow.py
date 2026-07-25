@@ -112,19 +112,47 @@ async def test_assign_radicado(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/workflows/assign — missing X-Tenant-Slug
+# POST /api/v1/workflows/assign — autorización (PERM_TRAMITAR) + tenant
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_assign_missing_tenant_header(client: AsyncClient) -> None:
+    """Sin X-Tenant-Slug no se puede resolver el RBAC del tenant → 403.
+
+    `assign` es ahora una ruta con `require_permission("PERM_TRAMITAR")`, y esa
+    dependency deniega explícitamente (403) cuando falta el tenant — se resuelve
+    ANTES que la validación `_require_tenant` que antes daba 400. Mismo
+    comportamiento que las demás rutas gateadas (cf. `crear_cadena`).
+    """
     response = await client.post(
         "/api/v1/workflows/assign",
         json=_ASSIGN_PAYLOAD,
         headers={"X-User-Id": str(USER_ID)},
     )
-    assert response.status_code == 400
-    assert response.json()["detail"]["error"] == "missing_tenant"
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_assign_sin_permiso_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Sin PERM_TRAMITAR, assign devuelve 403 (fail-closed).
+
+    `check_permission` usa `fetchval`; `None` = usuario sin el permiso. Antes de
+    este cierre, assign no tenía gate alguno: cualquier usuario autenticado del
+    tenant podía crear/reasignar el flujo de cualquier radicado (RF-SEG-03).
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None  # check_permission → False
+    response = await client.post(
+        "/api/v1/workflows/assign",
+        json=_ASSIGN_PAYLOAD,
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +505,74 @@ async def test_execute_transaction_anular(
     )
     assert resp.status_code == 200
     assert resp.json()["tipo_tx"] == "anular"
+
+
+@pytest.mark.asyncio
+async def test_execute_transaction_sin_permiso_del_tipo_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """El permiso que declara el tipo (`requires_permission`) se hace cumplir aquí.
+
+    Es el hallazgo central de la auditoría E05: la migración 007 delegaba el
+    enforcement "al gateway", pero el gateway sólo AUTENTICA. Sin PERM_ANULAR, un
+    usuario autenticado no puede ejecutar `anular` — y la transacción NO se aplica
+    (no se llega a `get_latest_step` ni al INSERT append-only).
+    """
+    client, mock_conn, _ = client_with_conn
+    tt = {
+        "code": "anular",
+        "nombre": "Anular",
+        "descripcion": None,
+        "requires_permission": "PERM_ANULAR",
+        "target_step_status": "cancelled",
+        "activo": True,
+    }
+    mock_conn.fetchrow.return_value = tt  # get_transaction_type → tt
+    mock_conn.fetchval.return_value = None  # check_permission(PERM_ANULAR) → False
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/transactions",
+        json={"tipo_tx": "anular", "comentario": "Intento sin permiso"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+    # Fail-closed real: no se ejecutó el INSERT append-only en flow_events.
+    assert not any(
+        "flow_events" in str(c.args[0]) for c in mock_conn.execute.await_args_list
+    ), "la transacción no debe aplicarse cuando el permiso del tipo falta"
+
+
+@pytest.mark.asyncio
+async def test_execute_transaction_tipo_abierto_sin_permiso_ok(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un tipo con `requires_permission = NULL` es abierto: no exige permiso.
+
+    Control positivo del gate: la nulidad de la columna significa "sin permiso",
+    no "fail-closed" — se ejecuta aunque el RBAC no conceda nada.
+    """
+    client, mock_conn, _ = client_with_conn
+    tt = {
+        "code": "marcar_visto",
+        "nombre": "Marcar visto",
+        "descripcion": None,
+        "requires_permission": None,  # tipo abierto
+        "target_step_status": None,
+        "activo": True,
+    }
+    latest = make_step_record(step_status="pending")
+    event = make_event_record(tipo_tx="marcar_visto")
+    mock_conn.fetchrow.side_effect = [tt, latest, event]
+    mock_conn.fetchval.return_value = None  # RBAC no concede nada; da igual, es abierto
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/transactions",
+        json={"tipo_tx": "marcar_visto"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["tipo_tx"] == "marcar_visto"
 
 
 @pytest.mark.asyncio

@@ -25,22 +25,36 @@ class AnulacionRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
         self._conn = conn
 
-    async def get_active(self, radicado_id: uuid.UUID) -> asyncpg.Record | None:
+    # El no-read-up (RF-SEG-08) se aplica en las TRES consultas de entrada
+    # (`get_active`, `get_latest`, `radicado_status`), que son las únicas puertas
+    # por las que el servicio de anulación alcanza un radicado. La causal y el
+    # motivo de una anulación describen el documento, así que exponerlos sin gate
+    # filtraría material clasificado; y aprobar la anulación de un radicado que no
+    # se puede ver sería una mutación del ciclo de vida sin autoridad (art. 28).
+    _VISIBLE = "EXISTS (SELECT 1 FROM radicados r WHERE r.id = $1 AND r.nivel_seguridad <= $2)"
+
+    async def get_active(self, radicado_id: uuid.UUID, max_clearance: int) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
             f"SELECT {_COLS} FROM radicado_anulacion "
-            "WHERE radicado_id = $1 AND estado = 'solicitada'",
+            f"WHERE radicado_id = $1 AND estado = 'solicitada' AND {self._VISIBLE}",
             radicado_id,
+            max_clearance,
         )
 
-    async def get_latest(self, radicado_id: uuid.UUID) -> asyncpg.Record | None:
+    async def get_latest(self, radicado_id: uuid.UUID, max_clearance: int) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
             f"SELECT {_COLS} FROM radicado_anulacion WHERE radicado_id = $1 "
-            "ORDER BY solicitado_at DESC LIMIT 1",
+            f"AND {self._VISIBLE} ORDER BY solicitado_at DESC LIMIT 1",
             radicado_id,
+            max_clearance,
         )
 
-    async def radicado_status(self, radicado_id: uuid.UUID) -> str | None:
-        return await self._conn.fetchval("SELECT status FROM radicados WHERE id = $1", radicado_id)
+    async def radicado_status(self, radicado_id: uuid.UUID, max_clearance: int) -> str | None:
+        return await self._conn.fetchval(
+            "SELECT status FROM radicados WHERE id = $1 AND nivel_seguridad <= $2",
+            radicado_id,
+            max_clearance,
+        )
 
     async def get_tracking_number(self, radicado_id: uuid.UUID) -> str | None:
         """Usado tras aprobar la anulación para publicar `document.radicado.annulled`

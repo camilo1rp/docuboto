@@ -296,20 +296,35 @@ class DocumentService:
                 exc_info=True,
             )
 
-    async def get_disposition(self, document_id: uuid.UUID) -> dict:
-        exists, disp = await self._repo.get_disposition(document_id)
+    async def get_disposition(self, document_id: uuid.UUID, max_clearance: int) -> dict:
+        """Lee los metadatos de disposición (RF-MET-08) respetando no-read-up.
+
+        Un radicado inexistente y uno por encima del clearance del llamante elevan
+        la MISMA excepción → mismo 404 neutro (RF-SEG-08, no-oráculo).
+        """
+        exists, disp = await self._repo.get_disposition(document_id, max_clearance)
         if not exists:
             raise DocumentNotFoundError(str(document_id))
         return disp
 
-    async def set_disposition(self, document_id: uuid.UUID, payload: DispositionUpdate) -> dict:
-        """Fija/actualiza (merge) los metadatos de disposición (RF-MET-08)."""
-        exists, current = await self._repo.get_disposition(document_id)
+    async def set_disposition(
+        self, document_id: uuid.UUID, payload: DispositionUpdate, max_clearance: int
+    ) -> dict:
+        """Fija/actualiza (merge) los metadatos de disposición (RF-MET-08).
+
+        Ambas consultas —la lectura del estado actual y la escritura del merge—
+        llevan el gate de clearance. Si el radicado se reclasifica POR ENCIMA del
+        llamante entre una y otra, el UPDATE no encuentra fila y se eleva 404 en
+        lugar de devolver un resultado vacío que aparentaría éxito.
+        """
+        exists, current = await self._repo.get_disposition(document_id, max_clearance)
         if not exists:
             raise DocumentNotFoundError(str(document_id))
         merged = {**current, **payload.model_dump(exclude_unset=True)}
-        result = await self._repo.set_disposition(document_id, merged)
-        return result if result is not None else {}
+        result = await self._repo.set_disposition(document_id, merged, max_clearance)
+        if result is None:
+            raise DocumentNotFoundError(str(document_id))
+        return result
 
     async def _resolve_dependencia(self, codigo: int) -> str:
         """Valida la dependencia por código y devuelve su nombre (denormalizado)."""
@@ -505,9 +520,17 @@ class DocumentService:
         antecedente_id: uuid.UUID,
         payload: RespuestaRapidaCreate,
         registered_by: uuid.UUID | None,
+        max_clearance: int,
     ) -> DocumentResponse:
-        """Respuesta rápida: crea una Salida vinculada a la Entrada antecedente."""
-        entrada = await self._repo.get_by_id(antecedente_id)
+        """Respuesta rápida: crea una Salida vinculada a la Entrada antecedente.
+
+        No-read-up (RF-SEG-08): el antecedente se lee CON el clearance del
+        llamante. Es imprescindible aquí y no solo por simetría — el `subject` y
+        el `tracking_number` de la Entrada se copian a la Salida que se crea
+        (`RE: {subject}`, `metadata.antecedente`), así que sin gate responder a un
+        radicado reservado EXFILTRABA su asunto a un documento legible.
+        """
+        entrada = await self._repo.get_by_id(antecedente_id, max_clearance)
         if entrada is None:
             raise DocumentNotFoundError(str(antecedente_id))
         salida = DocumentCreate(
@@ -732,8 +755,14 @@ class DocumentService:
         self,
         document_id: uuid.UUID,
         payload: DocumentUpdate,
+        max_clearance: int,
     ) -> DocumentResponse:
-        radicado = await self._repo.update(document_id, payload)
+        """Actualiza campos mutables respetando no-read-up (RF-SEG-08).
+
+        La respuesta es el `DocumentResponse` COMPLETO (asunto, remitente, anexos),
+        así que sin este gate un PATCH era además una lectura total del radicado.
+        """
+        radicado = await self._repo.update(document_id, payload, max_clearance)
         if radicado is None:
             raise DocumentNotFoundError(str(document_id))
         return _to_response(radicado)

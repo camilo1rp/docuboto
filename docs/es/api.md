@@ -283,7 +283,7 @@ CRUD de definiciones reutilizables de campos de metadato (`POST`/`GET`/`GET {id}
 Listar radicados. Filtros: `?doc_type=E&status=registered&page=1&size=20`. **Filtro por metadato** (RF-MET-02): `?meta.<campo>=valor` (uno o varios) usa contención JSONB sobre el índice GIN, p. ej. `?meta.area=juridica`. **Control de acceso (RF-SEG-08):** el listado se acota por la clasificación del radicado igual que la búsqueda — cada usuario solo ve los de `nivel_seguridad ≤` su *clearance* (*fail-closed* a PUBLICA).
 
 ### `GET` / `PATCH /api/v1/documents/{id}/disposition`
-Metadatos de disposición del documento (RF-MET-08): `programa`, `retention_until`, `accion` (conservar/eliminar/transferir/seleccionar), `confirmado`, `marcado_eliminacion`. `PATCH` hace merge de los campos provistos. `404` si el radicado no existe.
+Metadatos de disposición del documento (RF-MET-08): `programa`, `retention_until`, `accion` (conservar/eliminar/transferir/seleccionar), `confirmado`, `marcado_eliminacion`. `PATCH` hace merge de los campos provistos. Exige `USUA_PERM_EXPEDIENTE`. **Control de acceso (RF-SEG-08):** `404` tanto si el radicado no existe como si supera el *clearance* del llamante — indistinguibles, para no revelar la existencia de material clasificado. El gate aplica también al `PATCH`: la disposición decide conservación total frente a eliminación (Ley 594/2000 art. 24), así que quien no puede leer el radicado tampoco puede fijar su destino.
 
 ### `GET /api/v1/documents/{id}`
 Obtener por UUID. Incluye lista de anexos. **Control de acceso (RF-SEG-08):** si el radicado supera el *clearance* del llamante, responde `404` (no revela su existencia).
@@ -294,6 +294,7 @@ Obtener por número de radicado (ej: `2024-ICETEX-E-000001`). Misma acotación p
 ### `PATCH /api/v1/documents/{id}`
 Actualizar `subject`, `dest_dept`, `observations`, `status`, `pages`.
 `tracking_number`, `doc_type`, `year`, `sequence` son inmutables.
+**Control de acceso (RF-SEG-08):** `404` si el radicado no existe **o** supera el *clearance* del llamante. El gate es imprescindible porque la respuesta devuelve el radicado completo (asunto, remitente, anexos): sin él, la escritura sería también una lectura.
 
 ### `PATCH /api/v1/documents/{id}/security-level`
 **Reclasificación del nivel de seguridad** de un radicado ya radicado (E08, paridad con el *Cambio Nivel de Seguridad* de Orfeo). Cambia `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) sin alterar contenido ni `tracking_number` (inmutabilidad intacta). Requiere permiso **`PERM_RECLASIFICAR`**.
@@ -378,7 +379,7 @@ Elimina de MinIO y de la base de datos. Responde `204`.
 > **Distribución automática (RF-FLU-04):** además de los endpoints, workflow-service consume el stream `orpycamcp.document.events`. Al radicarse un documento (`document.radicado.created`) evalúa las reglas activas y, si alguna casa, **autoasigna** el radicado a su dependencia (paso + evento append-only, autor = sistema). Es idempotente (no redistribuye si el radicado ya tiene pasos).
 
 ### `POST /api/v1/workflows/assign`
-Asigna un radicado a una dependencia (primer paso o reasignación).
+Asigna un radicado a una dependencia (primer paso o reasignación). Exige `PERM_TRAMITAR`; `403 forbidden` si falta permiso o tenant (RF-SEG-03).
 
 ```json
 // Request
@@ -394,7 +395,7 @@ Asigna un radicado a una dependencia (primer paso o reasignación).
 ```
 
 ### `POST /api/v1/workflows/transfer`
-Transfiere el radicado a otra dependencia. Requiere `from_dept`.
+Transfiere el radicado a otra dependencia. Requiere `from_dept`. Exige `PERM_TRAMITAR` (RF-SEG-03).
 
 ### `GET /api/v1/workflows/{radicado_id}/history`
 Historial completo de pasos ordenado por `step_number ASC`.
@@ -414,7 +415,7 @@ Historial completo de pasos ordenado por `step_number ASC`.
 Bandeja tipada de pasos activos (RF-FLU-03). `?box=entrada|salida|internos` (mapea a `doc_type` E/S/I), `&dept=&assigned_to=&page=&size=`. Prioriza por antigüedad; cabecera `X-Total-Count`. `400 invalid_box` si el box no es válido. Cada paso incluye `due_at` y `semaforo` (verde/amarillo/rojo/vencido, RF-FLU-07).
 
 ### `POST /api/v1/workflows/overdue/scan`
-Barrido de vencimientos (RF-FLU-07): detecta pasos activos vencidos no alertados, emite `workflow.step.overdue` al bus (→ notificaciones) y los marca para no duplicar. Idempotente por paso; pensado para invocación periódica por un scheduler. Responde `{ "alerted": N }`.
+Barrido de vencimientos (RF-FLU-07): detecta pasos activos vencidos no alertados, emite `workflow.step.overdue` al bus (→ notificaciones) y los marca para no duplicar. Idempotente por paso; pensado para invocación periódica por un scheduler. Responde `{ "alerted": N }`. Exige `USUA_PERM_ADMIN` (barrido transversal del tenant). La reasignación masiva `POST /api/v1/workflows/reassign/cascade` (RF-FLU-08) exige el mismo permiso de administración.
 
 ### Vistos buenos secuenciales (paridad legado)
 - `POST /api/v1/workflows/{radicado_id}/vistos-buenos` `{revisores: [uuid,...]}` — crea la cadena ordenada de revisión (1..20 revisores, sin duplicados). Exige `PERM_RADI` (D-09); `403 forbidden` si falta permiso, identidad o tenant. `409 cadena_existente` si el radicado ya tiene cadena.
@@ -426,7 +427,7 @@ Re-enruta un radicado mal asignado: `{ "to_dept": "...", "causal": "DEV-DEP", "c
 
 ### Transacciones de trámite (RF-FLU-01)
 - `GET /api/v1/workflows/transaction-types` — catálogo (informar, NRR, agendar, no_agendar, change_folder, marcar_leido, validate_trd_send, solicitar_firma, vobo, cerrar_exp, anular…), con su permiso atómico y efecto de estado.
-- `POST /api/v1/workflows/{radicado_id}/transactions` `{ "tipo_tx": "anular", "comentario": "...", "detalles": {} }` — ejecuta la transacción: aplica el efecto al paso activo (p. ej. `marcar_leido`→in_progress, `anular`→cancelled) y registra el evento append-only. `404 unknown_transaction` / `no_flow`.
+- `POST /api/v1/workflows/{radicado_id}/transactions` `{ "tipo_tx": "anular", "comentario": "...", "detalles": {} }` — ejecuta la transacción: aplica el efecto al paso activo (p. ej. `marcar_leido`→in_progress, `anular`→cancelled) y registra el evento append-only. **Enforcement RBAC por-tipo (RF-SEG-03):** cada tipo declara en `transaction_types.requires_permission` el permiso que exige (`anular`→`PERM_ANULAR`, `cerrar_exp`→`PERM_CERRAR_EXP`, `vobo`→`PERM_VOBO`…); sin él, `403 forbidden` y la transacción **no** se aplica. Un tipo con `requires_permission = NULL` es abierto. `404 unknown_transaction` / `no_flow`. `PATCH /{step_id}/complete` exige `PERM_TRAMITAR`.
 
 ### `POST /api/v1/workflows/{radicado_id}/rollback`
 Revierte la última asignación (RF-FLU-08): cancela el paso vigente —solo si sigue `pending`— y reactiva el anterior, atómicamente, con evento `tipo_tx=rollback`. `409 no_active_step` (sin paso activo) o `cannot_rollback_initial` (es la radicación inicial).
@@ -590,19 +591,21 @@ Actualizar serie (excepto `code`).
 ## notification-service — puerto 8007
 
 ### `POST /api/v1/notifications/send`
-Envío manual de notificación por email. Responde `202` (aceptado para envío async). El historial se persiste en la BD del `tenant_slug` indicado.
+Envío de notificación por email. Responde `202` (aceptado para envío async). El historial se persiste en la BD del `tenant_slug` indicado.
 
 ```json
 { "recipient_email": "juridica@icetex.gov.co", "subject": "Nuevo radicado", "body": "...", "tenant_slug": "icetex", "sensible": false }
 ```
 
+**Endpoint servicio-a-servicio (D-02):** es la vía por la que signature-service despacha los OTP de 2FA (los demás envíos entran por el stream de eventos, no por HTTP). Exige `X-Internal-Token` (secreto compartido `INTERNAL_SERVICE_TOKEN`) — sin él `401`, inválido `403`. **Fail-closed:** sin el token configurado en el despliegue, rechaza toda llamada. El sello impide que un usuario externo, vía el gateway, envíe correo arbitrario con la identidad SMTP de la institución.
+
 - `sensible` (opcional, default `false`): marca el correo como **sensible** (p. ej. el OTP del 2FA de firma, RF-FIR-13). Con `sensible=true` el correo se **envía por SMTP con el body real** pero el historial persiste el `body` **redactado** (`[contenido sensible omitido]`) y un `last_error` genérico — el secreto nunca queda en BD/backups. Todo emisor de correos con secretos **debe** fijar este flag.
 
 ### `GET /api/v1/notifications/history`
-Historial de notificaciones del tenant (persistido en BD por institución). Requiere `X-Tenant-Slug`. Query: `?limit=20`.
+Historial de notificaciones del tenant (persistido en BD por institución). Requiere `X-Tenant-Slug`. Query: `?limit=20`. **Exige `USUA_PERM_ADMIN`:** devuelve TODAS las notificaciones del tenant sin filtro por usuario (asuntos/cuerpos de correos ajenos), así que es una vista administrativa/auditoría, no un buzón personal.
 
 ### `GET /api/v1/notifications/{id}`
-Obtener notificación por UUID. Requiere `X-Tenant-Slug`. `404` si no existe.
+Obtener notificación por UUID. Requiere `X-Tenant-Slug` y `USUA_PERM_ADMIN` (misma razón que el historial). `404` si no existe.
 
 ### Firma electrónica — signature-service, puerto 8008 (E06, ADR-016)
 Proveedor **enchufable** (`app/providers/`): `nativa` (HMAC hash+identidad, default para todo objeto) y **`xades_local`** (XAdES-B enveloped real vía `signxml`, activo solo para el **índice electrónico**). Selección: `xades_local` cuando `objeto_tipo=="indice"` **y** `SIGNER_PROVIDER=="xades_local"` (default; kill-switch `SIGNER_PROVIDER=nativa`); cualquier otro caso → `nativa`. Ver [ADR-016 addendum Inc.1](adr/ADR-016-firma-electronica.md#addendum--incremento-1-2026-07-02-xades-b-del-índice-electrónico--sello-institucional).
@@ -624,7 +627,7 @@ Proveedor **enchufable** (`app/providers/`): `nativa` (HMAC hash+identidad, defa
 
 ### Envíos postales (E20) — document-service
 Ciclo de vida del despacho físico de un radicado de salida. Máquina de estados `registrado → en_transito → entregado/devuelto/fallido` (`entregado`/`devuelto`/`fallido` terminales). Las rutas humanas exigen **`PERM_RADI_SALIDA`** y aplican no-read-up por *clearance*.
-- `POST /api/v1/documents/{document_id}/envios` `{operador, destinatario?, direccion?}` — despacha el radicado con un operador (guía autogenerada). `201`.
+- `POST /api/v1/documents/{document_id}/envios` `{operador, destinatario?, direccion?}` — despacha el radicado con un operador (guía autogenerada). `201`. Resuelve el *clearance* del llamante → `404 radicado_not_found` si el radicado no existe **o** lo supera (indistinguibles): no se despacha lo que no se puede ver.
 - `GET /api/v1/documents/{document_id}/envios` — envíos del radicado (filtrados por *clearance*).
 - `GET /api/v1/envios?estado=&page=&size=` — listado transversal del tenant (`X-Total-Count`, no-read-up).
 - `GET /api/v1/envios/{shipment_id}` — detalle (`404` si el radicado supera el *clearance* del llamante).
@@ -683,9 +686,9 @@ Capa **advisoria/derivada y opt-in** (no es fuente de verdad). Embeddings con pr
 > **Ingesta event-driven (E21, MVP):** además del `POST /ingest` manual, el knowledge-service **consume `orpycamcp.document.events`** (consumer group `knowledge-ingest` + DLQ, ADR-021) y auto-indexa cada radicado al crearse (`document.radicado.created` → `subject`/`sender`, `source_type="radicado"`, `source_ref=tracking_number`). El `nivel_seguridad` se **replica del evento** (fail-closed a CLASIFICADA si falta) y se **mantiene consistente ante reclasificación** (`document.radicado.reclassified`): una subida a RESERVADA+ con proveedor de embeddings externo **purga el contenido** (tombstone), y el nivel de un fragmento **nunca baja** salvo por una reclasificación explícita, sea cual sea el orden de llegada de los eventos. Material RESERVADA+ **no se embebe** con un proveedor externo (queda registrado en `audit_log`). Un radicado **anulado** (`document.radicado.annulled`) se marca *voided* de forma **permanente** y queda excluido de la búsqueda a cualquier clearance (no se re-indexa aunque un evento de creación se reprocese después). Es una capa **derivada/advisoria** (ADR-006): no es fuente de verdad; el registro legal vive en document/archive.
 
 ### Webhooks salientes (E11, ADR-018)
-- `POST /api/v1/webhooks` `{url, event_types: [...], secret?}` — suscribe un endpoint externo (`event_types` vacío = todos los eventos). El `secret` no se devuelve.
-- `GET /api/v1/webhooks` — lista las suscripciones (`X-Total-Count`).
-- `DELETE /api/v1/webhooks/{id}` — elimina una suscripción.
+- `POST /api/v1/webhooks` `{url, event_types: [...], secret?}` — suscribe un endpoint externo (`event_types` vacío = todos los eventos). El `secret` no se devuelve. **Exige `USUA_PERM_ADMIN`** (todo el CRUD): registrar una suscripción entrega cada evento del tenant a la URL indicada, así que es config de administración — sin el gate sería un canal de exfiltración (y SSRF).
+- `GET /api/v1/webhooks` — lista las suscripciones (`X-Total-Count`). Exige `USUA_PERM_ADMIN`.
+- `DELETE /api/v1/webhooks/{id}` — elimina una suscripción. Exige `USUA_PERM_ADMIN`.
 - Al ocurrir un evento de dominio, OrpycaMCP hace `POST` del sobre canónico a las suscripciones que coinciden, firmado en la cabecera `X-OrpycaMCP-Signature: sha256=<hmac>` (best-effort con reintentos). El receptor debe ser idempotente.
 
 ---
@@ -793,19 +796,19 @@ Crea 1-100 expedientes con radicados vinculados. Retorna `202 Accepted`.
 - `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (editar solo si no radicado), `POST /{id}/aprobar` (borrador→aprobado), `POST /{id}/radicar` (→ genera el radicado real y marca el borrador `radicado`).
 
 ### Respuesta rápida (paridad legado)
-- `POST /api/v1/documents/{id}/respuesta` `{subject?, dest_dept?, observations?, response_days?}` — crea un radicado de **Salida** en respuesta a este (hereda asunto `RE: …` y dependencia si se omiten), enlazado al antecedente (`responde_a`). Requiere permiso `PERM_RESPUESTA_VINCULADA`. `403 forbidden` si falta. Devuelve el nuevo radicado.
+- `POST /api/v1/documents/{id}/respuesta` `{subject?, dest_dept?, observations?, response_days?}` — crea un radicado de **Salida** en respuesta a este (hereda asunto `RE: …` y dependencia si se omiten), enlazado al antecedente (`responde_a`). Requiere permiso `PERM_RESPUESTA_VINCULADA`. `403 forbidden` si falta. Devuelve el nuevo radicado. **No-read-up (RF-SEG-08):** `404` neutro si el antecedente no existe o supera el *clearance* del llamante — precisamente porque la Salida **hereda el asunto** del antecedente, responder sin ese gate exfiltraría el asunto de una Entrada reservada a un documento legible.
 - `GET /api/v1/documents/{id}/respuestas` — salidas que responden a este radicado.
 
 ### Anulación de radicado en dos pasos (paridad legado)
 La ley prohíbe borrar radicados: se anulan con aprobación supervisora.
-- `POST /api/v1/documents/{id}/anulacion` `{causal, motivo?}` — solicita (paso 1). Requiere permiso `PERM_SOL_ANULAR`. `403 forbidden` si falta. `409` si ya está anulado o hay solicitud pendiente.
+- `POST /api/v1/documents/{id}/anulacion` `{causal, motivo?}` — solicita (paso 1). Requiere permiso `PERM_SOL_ANULAR`. `403 forbidden` si falta. `409` si ya está anulado o hay solicitud pendiente. **Las cuatro rutas de anulación** aplican no-read-up (RF-SEG-08): un radicado que supera el *clearance* del llamante devuelve el mismo `404` que uno inexistente — la causal y el motivo describen el documento.
 - `POST /api/v1/documents/{id}/anulacion/aprobar` `{observacion?}` — aprueba (paso 2; nivel jefe): el radicado pasa a `anulado` (el número se conserva). Requiere `PERM_PANU_CODI`. `403 forbidden` si falta.
 - `POST /api/v1/documents/{id}/anulacion/rechazar` `{observacion?}` — rechaza. Requiere `PERM_PANU_CODI`. `403 forbidden` si falta. `GET /api/v1/documents/{id}/anulacion` — última solicitud.
 
 ### Firma electrónica (E06, ADR-016)
-- `POST /api/v1/documents/{id}/signatures` `{ "content_hash": "<sha256 hex>", "anexo_id"?, "reason"? }` — firma el radicado/anexo: registra identidad (claims del gateway), `content_hash` y sello de tiempo. `422` si el hash no es SHA-256.
-- `GET /api/v1/documents/{id}/signatures` — lista las firmas (`X-Total-Count`).
-- `GET /api/v1/documents/{id}/signatures/verify?content_hash=<hex>` — `{content_hash, valid, signatures[]}`: `valid=true` si alguna firma del radicado coincide con ese hash (si el contenido cambió, deja de verificar).
+- `POST /api/v1/documents/{id}/signatures` `{ "content_hash": "<sha256 hex>", "anexo_id"?, "reason"? }` — firma el radicado/anexo: registra identidad (claims del gateway), `content_hash` y sello de tiempo. `422` si el hash no es SHA-256. **Las tres rutas de firma** exigen `PERM_FIRMA` (el mismo permiso que gobierna signature-service) y aplican no-read-up: `404` neutro si el radicado no existe o supera el *clearance*.
+- `GET /api/v1/documents/{id}/signatures` — lista las firmas (`X-Total-Count`). `404` si el radicado no es visible; `[]` (200) si es visible y aún no tiene firmas — un sub-*clearance* recibe siempre `404`, nunca `[]`, así que el par no es oráculo.
+- `GET /api/v1/documents/{id}/signatures/verify?content_hash=<hex>` — `{content_hash, valid, signatures[]}`: `valid=true` si alguna firma del radicado coincide con ese hash (si el contenido cambió, deja de verificar). Gateado igual que el listado: sin el filtro, el `valid` true/false sería un **oráculo de contenido** sobre documentos reservados.
 
 ### Envíos postales (E20)
 - `POST /api/v1/documents/{id}/envios` `{operador, destinatario?, direccion?}` — despacha el radicado por operador postal (4-72/servientrega/otro); genera la guía y estado `registrado`.

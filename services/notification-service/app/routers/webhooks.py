@@ -14,11 +14,20 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_tenant_conn
 from app.repositories.webhook_repository import WebhookRepository
 from app.schemas.webhook import WebhookCreate, WebhookResponse
 
-router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
+# Config de webhooks salientes (E11, ADR-018): registrar una suscripción entrega
+# CADA evento del tenant que case a una URL externa — un canal de exfiltración (y
+# SSRF) si cualquiera puede crearlo. Es configuración de administración: todo el
+# CRUD exige USUA_PERM_ADMIN a nivel de router (crear/listar/borrar).
+router = APIRouter(
+    prefix="/api/v1/webhooks",
+    tags=["webhooks"],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 
 
 @router.post("", response_model=WebhookResponse, status_code=status.HTTP_201_CREATED)

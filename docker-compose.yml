@@ -227,6 +227,11 @@ services:
       # 2FA OTP-correo/TOTP): POST /internal/signing-key/sign-digest. Mismo
       # secreto que auth-service.SIGNING_KEY_INTERNAL_TOKEN. Dev-only.
       - SIGNING_KEY_INTERNAL_TOKEN=${SIGNING_KEY_INTERNAL_TOKEN:-orpycamcp_signing_key_internal_dev}
+      # D-02: mismo secreto que notification-service.INTERNAL_SERVICE_TOKEN —
+      # enviado en X-Internal-Token al despachar el OTP de 2FA por
+      # POST /api/v1/notifications/send (ahora sellado servicio-a-servicio).
+      # Dev-only — NUNCA este valor en producción.
+      - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
     volumes:
       # Solo lectura: signature-service nunca escribe en los sellos montados.
       # NUNCA se monta ./secrets/ca-authority (clave privada de la CA local de
@@ -251,12 +256,42 @@ services:
     build:
       context: .
       dockerfile: services/knowledge-service/Dockerfile
+      args:
+        # Esta máquina de desarrollo NO puede ejecutar modelos de lenguaje locales, así que
+        # se omite la capa ML (torch CPU, ~1,5 GB). El Dockerfile trae WITH_ML=1 por defecto:
+        # una instalación tenant local se construye completa sin tocar nada de esto.
+        WITH_ML: "0"
     container_name: orpycamcp-knowledge
     ports:
       - "19011:8011"
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      # --- E21: proveedores, SOLO override de esta máquina de desarrollo ------------------
+      # Los defaults de `app/core/config.py` siguen siendo los SOBERANOS (`local_st` +
+      # `ollama_local`) y no se tocan: un despliegue tenant local no necesita ninguna de
+      # estas variables. Aquí se sobreescriben porque este equipo no puede correr modelos.
+      #
+      # Embeddings: `stub` es un hashing vectorizer con signo sobre 384 cubetas
+      # (`embeddings.py::_stub_embed`) — recuperación LÉXICA real, sin modelo ni red. Su
+      # dimensión ya coincide con EMBEDDING_DIM=384 (`vector(384)` + HNSW, migración 007),
+      # así que NO requiere migración. Es LOCAL/soberano
+      # (`clearance.py::LOCAL_EMBEDDING_PROVIDERS`), luego el material clasificado se sigue
+      # indexando. Lo que no captura son sinónimos/paráfrasis: eso lo aporta `local_st`.
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-stub}
+      # Generación: Ollama Cloud (mismos parámetros que sgdINTI/ai-service). El cómputo
+      # pesado sale de esta máquina. `OllamaLLMProvider` ya envía Authorization: Bearer.
+      # BARRERA DURA (`clearance.py::LOCAL_LLM_PROVIDERS = {"ollama_local"}`): al ser un
+      # proveedor EXTERNO, el material nivel>=RESERVADA NUNCA se le envía, sin override
+      # posible. El RAG generativo responde solo sobre material público/no reservado.
+      - AI_PROVIDER=${AI_PROVIDER:-ollama_cloud}
+      - OLLAMA_CLOUD_URL=${OLLAMA_CLOUD_URL:-https://ollama.com}
+      - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}
+      - MODEL_GENERATION=${MODEL_GENERATION:-gpt-oss:120b}
+      # NOTA: INTERNAL_SERVICE_TOKEN se deja SIN definir a propósito ⇒ el endpoint HTTP
+      # /ingest sigue fail-closed (D-02 / RF-SEG-08). La ingesta del ejemplo entra por el
+      # worker event-driven (consumer de orpycamcp.document.events), que es interno y no
+      # usa ese header (ver `app/services/ingestion.py`).
     networks:
       - orpycamcp-net
     depends_on:
@@ -500,6 +535,10 @@ services:
       - SMTP_FROM=noreply@orpycamcp.local
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      # D-02: sella POST /api/v1/notifications/send (endpoint servicio-a-servicio
+      # del OTP de 2FA). Mismo secreto que signature-service.NOTIFICATION_INTERNAL_TOKEN.
+      # Fail-closed: vacío ⇒ /send rechaza toda llamada (401). Dev-only.
+      - INTERNAL_SERVICE_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

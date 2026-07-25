@@ -26,10 +26,30 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app.core.config import settings
+
 # X-User-Id carries the internal auth_users.id UUID (not keycloak_sub).
 # auth-service /validate resolves keycloak_sub → auth_users.id before the gateway
 # injects the header; tests use a fixed UUID that matches the mock's user row.
 USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+# Token interno de pruebas para `POST /send` (sellado servicio-a-servicio, D-02).
+_TEST_INTERNAL_TOKEN = "test-internal-token"
+INTERNAL_HEADERS = {"X-Internal-Token": _TEST_INTERNAL_TOKEN}
+
+
+@pytest.fixture(autouse=True)
+def _configure_internal_token() -> AsyncGenerator[None, None]:
+    """Deja `INTERNAL_SERVICE_TOKEN` configurado en TODAS las pruebas.
+
+    Sin esto el gate de `/send` está fail-closed (401 `internal_access_not_configured`)
+    y no se podría distinguir "token ausente" de "servicio sin configurar". Con el
+    secreto fijado, un envío legítimo debe portar `INTERNAL_HEADERS`.
+    """
+    previo = settings.internal_service_token
+    settings.internal_service_token = _TEST_INTERNAL_TOKEN
+    yield
+    settings.internal_service_token = previo
 
 
 def make_redis_mock() -> MagicMock:
@@ -47,6 +67,14 @@ def make_db_conn() -> AsyncMock:
     conn.execute.return_value = None
     conn.fetchrow.return_value = None
     conn.fetch.return_value = []
+    # check_permission (require_permission dep, ahora en /history · /{id} y en
+    # el router de webhooks) usa fetchval: True = usuario autorizado por defecto.
+    # Los tests que quieren 403 lo fuerzan a None.
+    conn.fetchval.return_value = True
+    # La traza best-effort de denegación (`audit.append_denial`) abre
+    # `async with conn.transaction():`; sin esto el mock devuelve una corrutina
+    # sin await (RuntimeWarning). Mismo tratamiento que `_make_mock_conn`.
+    conn.transaction = MagicMock(return_value=AsyncMock())
     return conn
 
 

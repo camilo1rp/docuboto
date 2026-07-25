@@ -30,19 +30,36 @@ BASE = Path(__file__).parent.parent
 # Each entry points to the service root; _sql_files() appends the sub-dir.
 # Migrations live in migrations/global/*.sql  (schema public)
 #                  and migrations/tenant/*.sql  (schema tenant_{slug}).
+# Las GLOBALES se aplican SIEMPRE antes que las de tenant (ver main()), lo que
+# importa porque instalan extensiones de las que dependen tablas por-tenant:
+# `document-service/001_extensions.sql` (pg_trgm/unaccent → FTS) y
+# `knowledge-service/001_pgvector.sql` (pgvector → columnas `vector(384)` de
+# `knowledge_chunk`). Omitirlas hacía fallar la provisión de esos servicios.
 GLOBAL_MIGRATIONS = [
     BASE / "services" / "auth-service"   / "migrations" / "global",
     BASE / "services" / "tenant-service" / "migrations" / "global",
+    BASE / "services" / "document-service"  / "migrations" / "global",
+    BASE / "services" / "knowledge-service" / "migrations" / "global",
 ]
 
+# ORDEN: `auth-service` primero (RBAC/usuarios) y `tenant-service` a continuación
+# por ser fundacional (dependencias, parámetros, catálogos, PINAR); los servicios
+# de dominio después; `knowledge-service` al final, por ser una capa DERIVADA
+# (índice advisorio, no fuente de verdad — ADR-006).
+#
+# Esta lista debe cubrir TODO servicio con `migrations/tenant/`. Al añadir un
+# servicio nuevo, añadirlo también aquí: una omisión no da error: el tenant se
+# provisiona "bien" y el servicio falla en runtime contra tablas inexistentes.
 TENANT_MIGRATIONS = [
     BASE / "services" / "auth-service"    / "migrations" / "tenant",
+    BASE / "services" / "tenant-service"    / "migrations" / "tenant",
     BASE / "services" / "document-service"  / "migrations" / "tenant",
     BASE / "services" / "storage-service"   / "migrations" / "tenant",
     BASE / "services" / "workflow-service"  / "migrations" / "tenant",
     BASE / "services" / "archive-service"   / "migrations" / "tenant",
     BASE / "services" / "signature-service" / "migrations" / "tenant",
     BASE / "services" / "notification-service" / "migrations" / "tenant",
+    BASE / "services" / "knowledge-service" / "migrations" / "tenant",
 ]
 
 
@@ -64,6 +81,45 @@ def _sql_files(directory: Path) -> list[Path]:
     )
 
 
+def _mig_key(migrations_dir: Path, path: Path) -> str:
+    """Identidad de una migración en `_migrations`: ``servicio/archivo``.
+
+    El nombre DESNUDO no es único entre servicios — cada uno numera su propia
+    serie desde 001. Hoy colisionan `002_batch_jobs.sql` (archive + document) y
+    `005_evento_dead_letter.sql` / `006_deadletter_status.sql` /
+    `007_deadletter_origin_group_notnull_index.sql` (notification + signature).
+    Registrando solo el nombre, el segundo servicio violaba el UNIQUE de
+    `_migrations` y abortaba la provisión a medias.
+    """
+    # …/services/<svc>/migrations/<ámbito> → .parent = migrations, .parent.parent = <svc>
+    return f"{migrations_dir.parent.parent.name}/{path.name}"
+
+
+async def _backfill_legacy_keys(
+    conn: asyncpg.Connection, table: str, dirs: list[Path]
+) -> None:
+    """Compatibilidad: los tenants provisionados con el esquema ANTIGUO guardan
+    el nombre desnudo. Se reescriben a ``servicio/archivo`` para que no se
+    vuelvan a aplicar. A un nombre duplicado se le atribuye el PRIMER servicio
+    que lo declara, que es justamente el único que alcanzó a aplicarse.
+    """
+    legacy = {
+        r["filename"]
+        for r in await conn.fetch(f"SELECT filename FROM {table}")  # noqa: S608 — literal interno
+        if "/" not in r["filename"]
+    }
+    if not legacy:
+        return
+    for migrations_dir in dirs:
+        for path in _sql_files(migrations_dir):
+            if path.name in legacy:
+                legacy.discard(path.name)
+                await conn.execute(
+                    f"UPDATE {table} SET filename = $1 WHERE filename = $2",  # noqa: S608
+                    _mig_key(migrations_dir, path), path.name,
+                )
+
+
 # ---------------------------------------------------------------------------
 # Migraciones globales — se rastrean en public._migrations
 # ---------------------------------------------------------------------------
@@ -76,19 +132,24 @@ async def apply_global_migrations(conn: asyncpg.Connection) -> None:
             applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
+    await _backfill_legacy_keys(conn, "public._migrations", GLOBAL_MIGRATIONS)
     applied = {r["filename"] for r in await conn.fetch(
         "SELECT filename FROM public._migrations"
     )}
     for migrations_dir in GLOBAL_MIGRATIONS:
         for path in _sql_files(migrations_dir):
-            if path.name in applied:
-                print(f"  [global] skip  {path.name}")
+            key = _mig_key(migrations_dir, path)
+            if key in applied:
+                print(f"  [global] skip  {key}")
                 continue
-            print(f"  [global] apply {path.name}")
+            print(f"  [global] apply {key}")
             await conn.execute(path.read_text())
             await conn.execute(
-                "INSERT INTO public._migrations (filename) VALUES ($1)", path.name
+                "INSERT INTO public._migrations (filename) VALUES ($1)", key
             )
+            # Alimentar el conjunto en caliente: dos servicios pueden declarar el
+            # mismo nombre y `applied` se leyó UNA vez antes del bucle.
+            applied.add(key)
 
 
 # ---------------------------------------------------------------------------
@@ -116,19 +177,22 @@ async def apply_tenant_migrations(conn: asyncpg.Connection, slug: str) -> None:
             applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
+    await _backfill_legacy_keys(conn, "_migrations", TENANT_MIGRATIONS)
     applied = {r["filename"] for r in await conn.fetch(
         "SELECT filename FROM _migrations"
     )}
     for migrations_dir in TENANT_MIGRATIONS:
         for path in _sql_files(migrations_dir):
-            if path.name in applied:
-                print(f"  [{schema}] skip  {path.name}")
+            key = _mig_key(migrations_dir, path)
+            if key in applied:
+                print(f"  [{schema}] skip  {key}")
                 continue
-            print(f"  [{schema}] apply {path.name}")
+            print(f"  [{schema}] apply {key}")
             await conn.execute(path.read_text())
             await conn.execute(
-                "INSERT INTO _migrations (filename) VALUES ($1)", path.name
+                "INSERT INTO _migrations (filename) VALUES ($1)", key
             )
+            applied.add(key)
     # Restaurar search_path al terminar
     await conn.execute("SET search_path = public")
 
@@ -168,7 +232,7 @@ async def main(slug: str, name: str, code: str) -> None:
         sys.exit(1)
 
     dsn = _dsn(raw_dsn)
-    print(f"\nConectando a PostgreSQL...")
+    print("\nConectando a PostgreSQL...")
     conn = await asyncpg.connect(dsn=dsn)
 
     try:
@@ -178,10 +242,10 @@ async def main(slug: str, name: str, code: str) -> None:
         print(f"\n── Schema del tenant: tenant_{slug.replace('-', '_')} ─────")
         await provision_schema(conn, slug)
 
-        print(f"\n── Migraciones por tenant ────────────────────────────────────")
+        print("\n── Migraciones por tenant ────────────────────────────────────")
         await apply_tenant_migrations(conn, slug)
 
-        print(f"\n── Registro en public.tenants ────────────────────────────────")
+        print("\n── Registro en public.tenants ────────────────────────────────")
         await register_tenant(conn, slug, name, code)
 
         print(f"\n✓ Tenant '{slug}' inicializado correctamente.\n")

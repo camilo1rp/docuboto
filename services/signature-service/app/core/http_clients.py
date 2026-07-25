@@ -180,7 +180,14 @@ async def send_otp_email(
         async with httpx.AsyncClient(
             base_url=settings.notification_service_url, timeout=5.0
         ) as client:
-            resp = await client.post("/api/v1/notifications/send", json=payload)
+            # D-02: `/send` es un endpoint servicio-a-servicio sellado; el gateway
+            # nunca reenvía X-Internal-Token (whitelist de FORWARDED_REQUEST_HEADERS),
+            # así que solo un llamante interno con el secreto compartido lo alcanza.
+            resp = await client.post(
+                "/api/v1/notifications/send",
+                json=payload,
+                headers={"X-Internal-Token": settings.notification_internal_token},
+            )
     except httpx.RequestError as exc:
         raise OtpEmailDeliveryError(f"notification-service inalcanzable: {exc}") from exc
 

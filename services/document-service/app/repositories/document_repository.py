@@ -352,7 +352,16 @@ class DocumentRepository:
         self,
         document_id: uuid.UUID,
         payload: DocumentUpdate,
+        max_clearance: int,
     ) -> Radicado | None:
+        """Actualiza los campos mutables de un radicado (RF-SEG-08: no-read-up).
+
+        El filtro `nivel_seguridad <= max_clearance` viaja en el `WHERE` del propio
+        UPDATE (no en una comprobación previa) para que la autorización y la
+        escritura sean el MISMO acto: sin ventana TOCTOU entre comprobar y mutar.
+        Un radicado por encima del clearance devuelve `None`, indistinguible de uno
+        inexistente — el router traduce ambos al mismo 404 neutro.
+        """
         fields: list[str] = []
         params: list[object] = []
         idx = 1
@@ -383,21 +392,22 @@ class DocumentRepository:
             idx += 1
 
         if not fields:
-            # Nothing to update — return current state
-            return await self.get_by_id(document_id)
+            # Nothing to update — return current state (mismo gate de clearance).
+            return await self.get_by_id(document_id, max_clearance)
 
         fields.append(f"updated_at = ${idx}")
         params.append(datetime.now(tz=UTC))
         idx += 1
 
         params.append(document_id)
+        params.append(max_clearance)
         set_clause = ", ".join(fields)
 
         row = await self._conn.fetchrow(
             f"""
             UPDATE radicados
             SET {set_clause}
-            WHERE id = ${idx}
+            WHERE id = ${idx} AND nivel_seguridad <= ${idx + 1}
             RETURNING
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,
@@ -415,20 +425,41 @@ class DocumentRepository:
         radicado.anexos = await self._get_anexos(radicado.id)
         return radicado
 
-    async def get_disposition(self, document_id: uuid.UUID) -> tuple[bool, dict]:
-        """Devuelve (existe, disposition). disposition es {} si no hay nada fijado."""
+    async def get_disposition(
+        self, document_id: uuid.UUID, max_clearance: int
+    ) -> tuple[bool, dict]:
+        """Devuelve (existe, disposition). disposition es {} si no hay nada fijado.
+
+        No-read-up (RF-SEG-08): un radicado por encima de `max_clearance` devuelve
+        `(False, {})`, EXACTAMENTE lo mismo que uno inexistente — de otro modo el
+        200-frente-a-404 sería un oráculo de existencia para un llamante sin nivel.
+        """
         row = await self._conn.fetchrow(
-            "SELECT disposition FROM radicados WHERE id = $1", document_id
+            "SELECT disposition FROM radicados WHERE id = $1 AND nivel_seguridad <= $2",
+            document_id,
+            max_clearance,
         )
         if row is None:
             return False, {}
         return True, _json_obj(row["disposition"])
 
-    async def set_disposition(self, document_id: uuid.UUID, disposition: dict) -> dict | None:
+    async def set_disposition(
+        self, document_id: uuid.UUID, disposition: dict, max_clearance: int
+    ) -> dict | None:
+        """Fija la disposición final del radicado, gated por clearance.
+
+        El gate va en el `WHERE` del UPDATE, no en una lectura previa: la
+        disposición decide el DESTINO del documento (conservación total /
+        eliminación, Ley 594/2000 art. 24), así que un actor sin nivel no debe
+        poder mutarla ni siquiera en la ventana entre comprobar y escribir.
+        """
         row = await self._conn.fetchrow(
-            "UPDATE radicados SET disposition = $2::jsonb WHERE id = $1 " "RETURNING disposition",
+            "UPDATE radicados SET disposition = $2::jsonb "
+            "WHERE id = $1 AND nivel_seguridad <= $3 "
+            "RETURNING disposition",
             document_id,
             json.dumps(disposition, default=str),
+            max_clearance,
         )
         return _json_obj(row["disposition"]) if row is not None else None
 

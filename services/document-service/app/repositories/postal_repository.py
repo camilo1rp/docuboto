@@ -38,13 +38,26 @@ class PostalRepository:
         guia: str,
         destinatario: str | None,
         direccion: str | None,
-    ) -> asyncpg.Record:
+        max_clearance: int,
+    ) -> asyncpg.Record | None:
+        """Registra el envío solo si el radicado es visible para el clearance dado.
+
+        No-read-up (RF-SEG-08) alineado con el resto del archivo, donde las cinco
+        rutas de lectura ya filtran. El gate va como `WHERE EXISTS` del INSERT: si
+        fuera una consulta previa, el evento `registrado` de la misma transacción
+        podría escribirse sobre un radicado reclasificado en el intervalo.
+        Devuelve `None` si el radicado no existe o supera el clearance — el
+        servicio lo traduce al mismo 404 que la violación de clave foránea.
+        """
         async with self._conn.transaction():
             row = await self._conn.fetchrow(
                 f"""
                 INSERT INTO postal_shipment
                     (radicado_id, operador, guia, destinatario, direccion)
-                VALUES ($1, $2, $3, $4, $5)
+                SELECT $1, $2, $3, $4, $5
+                WHERE EXISTS (
+                    SELECT 1 FROM radicados WHERE id = $1 AND nivel_seguridad <= $6
+                )
                 RETURNING {_COLS}
                 """,
                 radicado_id,
@@ -52,8 +65,10 @@ class PostalRepository:
                 guia,
                 destinatario,
                 direccion,
+                max_clearance,
             )
-            assert row is not None
+            if row is None:
+                return None
             await self._conn.execute(
                 "INSERT INTO postal_shipment_event (shipment_id, estado, descripcion) "
                 "VALUES ($1, 'registrado', 'Envío registrado')",

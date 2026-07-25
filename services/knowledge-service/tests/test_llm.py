@@ -30,6 +30,7 @@ está mockeado por completo:
 
 from __future__ import annotations
 
+import html
 import json
 import sys
 from types import SimpleNamespace
@@ -38,6 +39,7 @@ import httpx
 import pytest
 
 from app.services.llm import (
+    _SYSTEM_PROMPT,
     GENERATIVE_PROVIDERS,
     AnthropicLLMProvider,
     OllamaLLMProvider,
@@ -48,7 +50,6 @@ from app.services.llm import (
     _build_context_blocks,
     _build_user_prompt,
     _parse_structured_answer,
-    _SYSTEM_PROMPT,
     get_llm_provider,
 )
 
@@ -75,10 +76,18 @@ class TestPromptInjectionContainment:
         assert block.rstrip().endswith("</documentos_recuperados>")
         doc_start = block.index('<documento id="S1"')
         doc_end = block.index("</documento>", doc_start)
-        injected_at = block.index(malicious)
+        # El texto del chunk se interpola ESCAPADO (`html.escape`, remediación
+        # anti-inyección de `_build_context_blocks`): se busca esa forma, no la
+        # cruda. `html.escape` toca también `'` -> `&#x27;`, que es justo lo que
+        # esta cadena contiene.
+        injected_at = block.index(html.escape(malicious))
         assert doc_start < injected_at < doc_end, (
             "el texto del chunk (potencialmente hostil) debe quedar DENTRO del "
             "bloque <documento>...</documento>, nunca fuera de él"
+        )
+        assert malicious not in block, (
+            "el texto del chunk debe aparecer ESCAPADO, nunca verbatim: es lo que "
+            "impide que un `</documento>` incrustado simule el fin de los DATOS"
         )
 
     def test_user_prompt_places_question_after_and_separate_from_injected_text(self) -> None:
@@ -230,8 +239,12 @@ class TestOllamaLLMProvider:
         messages = payload["messages"]
         system_msg = next(m for m in messages if m["role"] == "system")
         user_msg = next(m for m in messages if m["role"] == "user")
-        assert malicious in user_msg["content"]
+        # Interpolado ESCAPADO en el mensaje de usuario (ver
+        # `_build_context_blocks`); nunca verbatim, y nunca en el system prompt.
+        assert html.escape(malicious) in user_msg["content"]
+        assert malicious not in user_msg["content"]
         assert malicious not in system_msg["content"]
+        assert html.escape(malicious) not in system_msg["content"]
         assert result.answer == "ok"
         assert result.model_id == "llama3.1"
 
@@ -282,7 +295,7 @@ class _FakeStreamCtx:
         self._final_message = final_message
         self._raise = raise_exc
 
-    def __enter__(self) -> "_FakeStreamCtx":
+    def __enter__(self) -> _FakeStreamCtx:
         if self._raise is not None:
             raise self._raise
         return self

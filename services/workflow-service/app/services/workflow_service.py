@@ -19,7 +19,8 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit, events
 
-from app.core.clearance import CLEARANCE_SIN_RESTRICCION
+from app.core.clearance import CLEARANCE_SIN_RESTRICCION, check_permission
+from app.core.database import tenant_schema
 from app.core.redis_client import get_redis
 from app.models.flow import FlowStep
 from app.repositories.workflow_repository import WorkflowRepository
@@ -210,11 +211,23 @@ class WorkflowService:
         payload: TransactionRequest,
         actor: uuid.UUID | None,
     ) -> FlowEventResponse:
-        """Ejecuta una transacción de trámite (RF-FLU-01): valida el tipo, aplica el
-        efecto de estado y registra el evento append-only."""
+        """Ejecuta una transacción de trámite (RF-FLU-01): valida el tipo, exige el
+        permiso que el tipo declara, aplica el efecto de estado y registra el evento
+        append-only."""
         tt = await self._repo.get_transaction_type(payload.tipo_tx)
         if tt is None:
             raise TransactionError("unknown_transaction")
+        # Enforcement RBAC por-tipo (RF-SEG-03): cada transacción declara en
+        # `transaction_types.requires_permission` el permiso atómico que exige
+        # (`anular`→PERM_ANULAR, `cerrar_exp`→PERM_CERRAR_EXP, `vobo`→PERM_VOBO…).
+        # La migración 007 lo daba por "delegado al gateway", pero el gateway sólo
+        # AUTENTICA (inyecta X-User-Id/roles) — nunca autoriza por permiso. Éste es
+        # el único punto donde el permiso por-tipo puede hacerse cumplir. `NULL` =
+        # transacción abierta (no exige permiso). Fail-closed: sin actor
+        # identificado, `check_permission` deniega.
+        required_perm = tt["requires_permission"]
+        if required_perm:
+            await self._require_permission(actor, required_perm)
         latest = await self._repo.get_latest_step(radicado_id)
         if latest is None:
             raise TransactionError("no_flow")
@@ -544,6 +557,39 @@ class WorkflowService:
             )
         except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
             logger.warning("audit.append (%s) failed", action, exc_info=True)
+
+    async def _require_permission(self, actor: uuid.UUID | None, perm_name: str) -> None:
+        """Eleva 403 si `actor` carece de `perm_name` en el tenant (RF-SEG-03).
+
+        Espejo en la capa de servicio de `clearance.require_permission` (que es una
+        dependency de router y no sirve para un permiso RESUELTO en runtime, como el
+        de `execute_transaction`). Fija el search_path al tenant antes de la consulta
+        RBAC — igual que la dependency — porque `get_db_conn` no lo hace, y deja la
+        misma traza de denegación (best-effort) para no romper la simetría forense.
+        """
+        await self._conn.execute(f'SET search_path TO "{tenant_schema(self._tenant_slug)}", public')
+        if await check_permission(self._conn, actor, perm_name):
+            return
+        if audit is not None and actor is not None:
+            try:
+                await audit.append_denial(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    actor=str(actor),
+                    perm_name=perm_name,
+                    min_crud=1,
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning("audit.append_denial failed", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": f"Se requiere el permiso {perm_name}",
+                "status": 403,
+            },
+        )
 
     async def _create_step(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStep:
         step_number = await self._repo.get_next_step_number(payload.radicado_id)

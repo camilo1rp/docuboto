@@ -19,8 +19,23 @@ COPY shared /shared
 RUN pip install --no-cache-dir /shared
 
 # 2) Dependencias del servicio.
+#
+# WITH_ML controla la CAPA ML OPCIONAL (`sentence-transformers` → torch CPU, ~1,5 GB), que
+# respalda `EMBEDDING_PROVIDER=local_st` — el proveedor de embeddings soberano. El DEFAULT
+# es 1: `docker build` sin argumentos produce la imagen completa, así que una instalación
+# tenant local no cambia en nada.
+#
+# WITH_ML=0 produce una imagen ligera (~150 MB de deps) para máquinas que no pueden ejecutar
+# modelos locales. El CÓDIGO es idéntico en ambos casos: `embeddings.py` importa
+# `sentence_transformers` de forma perezosa (`_ensure_loaded`), nunca al importar el módulo.
+# Con WITH_ML=0 el servicio arranca y opera con `EMBEDDING_PROVIDER` = `stub` o `ollama`;
+# si se dejara en `local_st`, el guard fail-closed de `main.py::lifespan` aborta el arranque
+# con ImportError — deliberado: nunca degrada en silencio.
+ARG WITH_ML=1
 COPY services/knowledge-service/requirements.txt services/knowledge-service/requirements.lock ./
-RUN pip install --no-cache-dir -r requirements.lock
+COPY services/knowledge-service/requirements-ml.txt services/knowledge-service/requirements-ml.lock ./
+RUN pip install --no-cache-dir -r requirements.lock \
+ && if [ "$WITH_ML" = "1" ]; then pip install --no-cache-dir -r requirements-ml.lock; fi
 
 # 3) Código del servicio.
 COPY services/knowledge-service/ .

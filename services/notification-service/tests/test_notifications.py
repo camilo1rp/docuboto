@@ -15,7 +15,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import TENANT_HEADERS, _FakeAcquire, make_db_conn, make_db_row
+from tests.conftest import (
+    INTERNAL_HEADERS,
+    TENANT_HEADERS,
+    USER,
+    _FakeAcquire,
+    make_db_conn,
+    make_db_row,
+)
 
 
 # --- envío manual + persistencia -------------------------------------------
@@ -30,6 +37,7 @@ async def test_send_notification_manual(client: AsyncClient, db_conn) -> None:
                 "body": "Test body",
                 "tenant_slug": "icetex",
             },
+            headers=INTERNAL_HEADERS,
         )
     assert response.status_code == 202
     data = response.json()
@@ -57,6 +65,7 @@ async def test_send_notification_failed_email_is_persisted(client: AsyncClient, 
                 "body": "B",
                 "tenant_slug": "icetex",
             },
+            headers=INTERNAL_HEADERS,
         )
     assert response.status_code == 202
     db_conn.execute.assert_awaited_once()
@@ -85,6 +94,7 @@ async def test_sensible_notification_sends_real_body_but_persists_redacted(
                 "tenant_slug": "icetex",
                 "sensible": True,
             },
+            headers=INTERNAL_HEADERS,
         )
     assert response.status_code == 202
 
@@ -116,6 +126,7 @@ async def test_non_sensible_notification_persists_real_body(
                 "body": "Cuerpo normal, no sensible",
                 "tenant_slug": "icetex",
             },
+            headers=INTERNAL_HEADERS,
         )
     assert response.status_code == 202
 
@@ -204,9 +215,60 @@ async def test_get_history_empty(client: AsyncClient, db_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_get_history_missing_tenant_is_400(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/notifications/history")
+    # /history exige ahora USUA_PERM_ADMIN → requiere identidad (X-User-Id). Con
+    # identidad pero sin tenant, sigue devolviendo el 400 missing_tenant original.
+    response = await client.get(
+        "/api/v1/notifications/history", headers={"X-User-Id": str(USER)}
+    )
     assert response.status_code == 400
     assert response.json()["detail"]["error"] == "missing_tenant"
+
+
+# --- Gate D-02: /send sellado servicio-a-servicio (X-Internal-Token) --------
+@pytest.mark.asyncio
+async def test_send_sin_token_interno_401(client: AsyncClient) -> None:
+    """Sin X-Internal-Token, /send rechaza (401): cierra el vector de phishing.
+
+    Antes de este sello, cualquier JWT válido reenviado por el gateway podía
+    enviar correo arbitrario con la identidad SMTP de la institución.
+    """
+    response = await client.post(
+        "/api/v1/notifications/send",
+        json={"recipient_email": "u@x.co", "subject": "S", "body": "B", "tenant_slug": "icetex"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "missing_internal_token"
+
+
+@pytest.mark.asyncio
+async def test_send_token_interno_invalido_403(client: AsyncClient) -> None:
+    """Un X-Internal-Token que no casa con el secreto → 403 (comparación constante)."""
+    response = await client.post(
+        "/api/v1/notifications/send",
+        json={"recipient_email": "u@x.co", "subject": "S", "body": "B", "tenant_slug": "icetex"},
+        headers={"X-Internal-Token": "token-equivocado"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "invalid_internal_token"
+
+
+@pytest.mark.asyncio
+async def test_get_history_sin_permiso_403(client: AsyncClient, db_conn) -> None:
+    """Sin USUA_PERM_ADMIN, el historial tenant-wide devuelve 403 (fail-closed)."""
+    db_conn.fetchval.return_value = None  # check_permission → False
+    response = await client.get("/api/v1/notifications/history", headers=TENANT_HEADERS)
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_notification_sin_permiso_403(client: AsyncClient, db_conn) -> None:
+    db_conn.fetchval.return_value = None
+    response = await client.get(
+        f"/api/v1/notifications/{uuid.uuid4()}", headers=TENANT_HEADERS
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "forbidden"
 
 
 @pytest.mark.asyncio

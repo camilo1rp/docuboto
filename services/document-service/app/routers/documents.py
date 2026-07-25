@@ -381,9 +381,15 @@ async def get_disposition(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> DispositionResponse:
+    """Lee la disposición final del radicado (RF-MET-08).
+
+    No-read-up (RF-SEG-08): un radicado inexistente y uno por encima del clearance
+    del llamante devuelven el MISMO 404 neutro (no-oráculo).
+    """
     service = _build_service(conn, _tenant_slug(request))
+    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
     try:
-        disp = await service.get_disposition(document_id)
+        disp = await service.get_disposition(document_id, clearance)
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -404,9 +410,16 @@ async def set_disposition(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> DispositionResponse:
+    """Fija la disposición final del radicado (RF-MET-08).
+
+    No-read-up (RF-SEG-08) con el mismo 404 neutro que el GET: la disposición
+    decide conservación total frente a eliminación (Ley 594/2000 art. 24), así que
+    un actor por debajo del nivel del documento no puede leerla NI fijarla.
+    """
     service = _build_service(conn, _tenant_slug(request))
+    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
     try:
-        disp = await service.set_disposition(document_id, payload)
+        disp = await service.set_disposition(document_id, payload, clearance)
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -486,9 +499,15 @@ async def update_document(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> DocumentResponse:
+    """Actualiza campos mutables — `tracking_number` es inmutable.
+
+    No-read-up (RF-SEG-08): mismo 404 neutro para inexistente y sobre-clearance.
+    El gate es imprescindible porque la respuesta devuelve el radicado COMPLETO.
+    """
     service = _build_service(conn, _tenant_slug(request))
+    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
     try:
-        return await service.update(document_id, payload)
+        return await service.update(document_id, payload, clearance)
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

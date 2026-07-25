@@ -38,9 +38,18 @@ async def _seed_shipment(conn: asyncpg.Connection, *, guia: str = "C472-INT0001"
         "VALUES ($1, 'S', 2026, 1, 'asunto', 'DEMO') RETURNING id",
         f"2026-DEMO-S-{uuid.uuid4().hex[:6]}",
     )
+    # max_clearance=3 (CLASIFICADA) = sin restricción: la siembra no ejercita el
+    # gate de no-read-up (eso lo cubre test_no_read_up_integration.py), solo
+    # necesita un envío existente para probar la deduplicación del webhook.
     row = await PostalRepository(conn).insert(
-        radicado_id=rid, operador="4-72", guia=guia, destinatario="X", direccion="Y"
+        radicado_id=rid,
+        operador="4-72",
+        guia=guia,
+        destinatario="X",
+        direccion="Y",
+        max_clearance=3,
     )
+    assert row is not None
     return row["id"]
 
 

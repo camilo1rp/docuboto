@@ -83,8 +83,17 @@ class PostalService:
             ],
         )
 
-    async def create(self, radicado_id: uuid.UUID, payload: ShipmentCreate) -> ShipmentResponse:
+    async def create(
+        self, radicado_id: uuid.UUID, payload: ShipmentCreate, clearance: int = 3
+    ) -> ShipmentResponse:
+        # clearance=3 (CLASIFICADA) = sin restricción; el router pasa el real.
+        # No-read-up: un radicado sobre-clearance devuelve el MISMO 404
+        # `radicado_not_found` que uno inexistente (indistinguibles, no-oráculo).
         guia = generar_guia(payload.operador, radicado_id)
+        no_encontrado = HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "radicado_not_found", "detail": str(radicado_id), "status": 404},
+        )
         try:
             row = await self._repo.insert(
                 radicado_id=radicado_id,
@@ -92,12 +101,10 @@ class PostalService:
                 guia=guia,
                 destinatario=payload.destinatario,
                 direccion=payload.direccion,
+                max_clearance=clearance,
             )
         except asyncpg.ForeignKeyViolationError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": "radicado_not_found", "detail": str(radicado_id), "status": 404},
-            )
+            raise no_encontrado
         except asyncpg.UniqueViolationError:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -107,6 +114,8 @@ class PostalService:
                     "status": 409,
                 },
             )
+        if row is None:
+            raise no_encontrado
         return await self._response(row)
 
     async def get(self, shipment_id: uuid.UUID, clearance: int = 3) -> ShipmentResponse:

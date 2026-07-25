@@ -27,6 +27,21 @@ class SignatureRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
         self._conn = conn
 
+    async def radicado_visible(self, radicado_id: uuid.UUID, max_clearance: int) -> bool:
+        """¿El radicado existe Y está a-nivel-o-por-debajo del clearance? (RF-SEG-08).
+
+        Un `False` cubre indistintamente «no existe» y «te supera», de modo que el
+        router pueda devolver un 404 neutro en ambos casos (no-oráculo).
+        """
+        return bool(
+            await self._conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM radicados "
+                "WHERE id = $1 AND nivel_seguridad <= $2)",
+                radicado_id,
+                max_clearance,
+            )
+        )
+
     async def insert(
         self,
         *,
@@ -36,12 +51,23 @@ class SignatureRepository:
         signer_name: str | None,
         content_hash: str,
         reason: str | None,
-    ) -> asyncpg.Record:
+        max_clearance: int,
+    ) -> asyncpg.Record | None:
+        """Inserta la firma solo si el radicado es visible para el clearance dado.
+
+        El gate va como `WHERE EXISTS` del propio INSERT (no como consulta previa):
+        firmar es un acto probatorio, así que la comprobación y la escritura deben
+        ser atómicas — una reclasificación concurrente no puede colarse entre ambas.
+        Devuelve `None` si el radicado no existe o supera el clearance.
+        """
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO signatures
                 (radicado_id, anexo_id, signer_id, signer_name, content_hash, reason)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            SELECT $1, $2, $3, $4, $5, $6
+            WHERE EXISTS (
+                SELECT 1 FROM radicados WHERE id = $1 AND nivel_seguridad <= $7
+            )
             RETURNING {_COLS}
             """,
             radicado_id,
@@ -50,8 +76,8 @@ class SignatureRepository:
             signer_name,
             content_hash,
             reason,
+            max_clearance,
         )
-        assert row is not None
         return row
 
     async def list_by_radicado(self, radicado_id: uuid.UUID) -> list[asyncpg.Record]:

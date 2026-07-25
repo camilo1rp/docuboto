@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
 
+    # Token de servicio interno (D-02): protege `POST /api/v1/notifications/send`,
+    # que es un endpoint SERVICIO-A-SERVICIO (signature-service lo llama para
+    # despachar los OTP de 2FA; los demás eventos entran por el stream, no por
+    # HTTP). Fail-closed: vacío ⇒ el endpoint rechaza toda llamada (401). Mismo
+    # secreto que `signature-service.notification_internal_token`. Ver
+    # `app/core/internal_auth.py`.
+    internal_service_token: str = ""
+
     # Retention job (ADR-021 Fase 4 — MVP-1)
     # How many days to keep rows in notification_processed_events before purging.
     # 7 days is generous: the actual redelivery / reclaim window is minutes.

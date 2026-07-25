@@ -14,6 +14,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
+from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.workflow import (
     CascadeReassignRequest,
@@ -105,6 +106,9 @@ def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
     "/reassign/cascade",
     response_model=CascadeReassignResponse,
     summary="Reassign all active steps of a user/dept to a new responsible (RF-FLU-08)",
+    # Reasignación masiva = acto de administración (mueve el trabajo de OTROS
+    # usuarios), no de trámite propio → USUA_PERM_ADMIN, no PERM_TRAMITAR.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def reassign_cascade(
     payload: CascadeReassignRequest,
@@ -137,6 +141,8 @@ async def list_transaction_types(
 @router.post(
     "/overdue/scan",
     summary="Scan overdue steps and emit alerts to E16 (RF-FLU-07)",
+    # Barrido transversal del tenant (pensado para un scheduler) → administración.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def scan_overdue(
     tenant_slug: str = Depends(_require_tenant),
@@ -224,6 +230,7 @@ async def list_pending(
     response_model=FlowStepResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Assign a radicado to a dependencia",
+    dependencies=[Depends(require_permission("PERM_TRAMITAR"))],
 )
 async def assign_radicado(
     payload: FlowStepCreate,
@@ -240,6 +247,7 @@ async def assign_radicado(
     response_model=FlowStepResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Transfer a radicado to another dependencia",
+    dependencies=[Depends(require_permission("PERM_TRAMITAR"))],
 )
 async def transfer_radicado(
     payload: FlowStepCreate,
@@ -382,6 +390,7 @@ async def get_current_step(
     "/{step_id}/complete",
     response_model=FlowStepResponse,
     summary="Mark a flow step as completed",
+    dependencies=[Depends(require_permission("PERM_TRAMITAR"))],
 )
 async def complete_step(
     step_id: uuid.UUID,

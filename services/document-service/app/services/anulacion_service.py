@@ -57,8 +57,9 @@ class AnulacionService:
         radicado_id: uuid.UUID,
         payload: AnulacionSolicitud,
         solicitado_por: uuid.UUID | None,
+        max_clearance: int,
     ) -> AnulacionResponse:
-        estado_rad = await self._repo.radicado_status(radicado_id)
+        estado_rad = await self._repo.radicado_status(radicado_id, max_clearance)
         if estado_rad is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -98,9 +99,10 @@ class AnulacionService:
         aprobar: bool,
         payload: AnulacionDecision,
         decidido_por: uuid.UUID | None,
+        max_clearance: int,
         tenant_slug: str | None = None,
     ) -> AnulacionResponse:
-        active = await self._repo.get_active(radicado_id)
+        active = await self._repo.get_active(radicado_id, max_clearance)
         if active is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -152,23 +154,30 @@ class AnulacionService:
             )
 
     async def aprobar(
-        self, radicado_id, payload, decidido_por, tenant_slug: str | None = None
+        self, radicado_id, payload, decidido_por, max_clearance: int, tenant_slug: str | None = None
     ) -> AnulacionResponse:
         return await self._decidir(
             radicado_id,
             aprobar=True,
             payload=payload,
             decidido_por=decidido_por,
+            max_clearance=max_clearance,
             tenant_slug=tenant_slug,
         )
 
-    async def rechazar(self, radicado_id, payload, decidido_por) -> AnulacionResponse:
+    async def rechazar(
+        self, radicado_id, payload, decidido_por, max_clearance: int
+    ) -> AnulacionResponse:
         return await self._decidir(
-            radicado_id, aprobar=False, payload=payload, decidido_por=decidido_por
+            radicado_id,
+            aprobar=False,
+            payload=payload,
+            decidido_por=decidido_por,
+            max_clearance=max_clearance,
         )
 
-    async def get(self, radicado_id: uuid.UUID) -> AnulacionResponse:
-        row = await self._repo.get_latest(radicado_id)
+    async def get(self, radicado_id: uuid.UUID, max_clearance: int) -> AnulacionResponse:
+        row = await self._repo.get_latest(radicado_id, max_clearance)
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

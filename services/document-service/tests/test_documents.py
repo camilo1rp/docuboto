@@ -53,6 +53,16 @@ from tests.conftest import (
     make_radicado_record,
 )
 
+
+def _clearance_row(max_level: int = 3, is_root: bool = False) -> dict:
+    """Fila que consume `resolve_caller_clearance` (SELECT is_root, max_level).
+
+    `TENANT_HEADERS` incluye `X-User-Id`, así que todo endpoint con gate de
+    clearance consume UN `fetchrow` antes de la consulta de negocio.
+    """
+    return {"is_root": is_root, "max_level": max_level}
+
+
 _CREATE_PAYLOAD = {
     "doc_type": "E",
     "subject": "Solicitud de información",
@@ -397,9 +407,10 @@ async def test_set_and_get_disposition(
     """PATCH y GET /{id}/disposition fijan y leen los metadatos de disposición."""
     client, mock_conn = client_with_conn
     doc_id = uuid.uuid4()
-    # set: get_disposition (existe, {}) → fetchrow {"disposition": None};
-    #      set_disposition → fetchrow {"disposition": <json>}
+    # clearance del llamante; get_disposition (existe, {}) → {"disposition": None};
+    # set_disposition → {"disposition": <json>}
     mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
         {"disposition": None},
         {"disposition": '{"accion": "eliminar", "marcado_eliminacion": true}'},
     ]
@@ -572,6 +583,7 @@ async def test_set_disposition_con_permiso_200(
     doc_id = uuid.uuid4()
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [
+        _clearance_row(),  # resolve_caller_clearance
         {"disposition": None},  # get_disposition (existe)
         {"disposition": '{"accion": "eliminar", "marcado_eliminacion": true}'},  # set result
     ]
@@ -614,6 +626,119 @@ async def test_get_disposition_con_permiso_200(
     )
     assert response.status_code == 200
     assert response.json()["radicado_id"] == str(doc_id)
+
+
+# ---------------------------------------------------------------------------
+# No-read-up (RF-SEG-08) en disposición y PATCH.
+#
+# El gate viaja en el `WHERE` de la consulta, así que con `AsyncMock` no se
+# "ejecuta" el filtro: se verifican las DOS mitades por separado —
+#   (a) la consulta enviada lleva `nivel_seguridad <= $N` con el clearance real;
+#   (b) cuando la fila no aparece, la respuesta es un 404 INDISTINGUIBLE del de
+#       un radicado inexistente (propiedad de no-oráculo).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_disposition_consulta_lleva_gate_de_clearance(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El SELECT de disposición filtra por el clearance resuelto del llamante."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=2), {"disposition": None}]
+
+    resp = await client.get(
+        f"/api/v1/documents/{uuid.uuid4()}/disposition",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+
+    sql, *params = mock_conn.fetchrow.call_args[0]
+    assert "nivel_seguridad <= $2" in sql
+    assert params[1] == 2, "debe viajar el clearance REAL, no un valor abierto"
+
+
+@pytest.mark.asyncio
+async def test_set_disposition_consulta_lleva_gate_y_no_escribe_sobre_clearance(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Un radicado por encima del clearance no se lee NI se muta: 404 y cero UPDATE.
+
+    Es la mitad que más importa: la disposición decide conservación total frente
+    a eliminación (Ley 594/2000 art. 24).
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    # clearance 1; el SELECT gated no encuentra fila (el radicado es RESERVADO).
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=1), None]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}/disposition",
+        json={"accion": "eliminar", "marcado_eliminacion": True},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 404
+    consultas = [c[0][0] for c in mock_conn.fetchrow.call_args_list]
+    assert not any("UPDATE radicados" in q for q in consultas), (
+        "la escritura no debe intentarse siquiera cuando la lectura gated falla"
+    )
+
+
+@pytest.mark.asyncio
+async def test_disposition_sobre_clearance_es_indistinguible_de_inexistente(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """No-oráculo: 404 idéntico para «no existe» y «existe pero te supera».
+
+    Si difirieran (p. ej. 403 frente a 404), un usuario sin nivel podría sondear
+    el servicio para confirmar la EXISTENCIA de radicados reservados.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    doc_id = uuid.uuid4()
+
+    # (1) Radicado inexistente: clearance alto, la fila no está.
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), None]
+    inexistente = await client.get(
+        f"/api/v1/documents/{doc_id}/disposition",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    # (2) Radicado RESERVADO y llamante sin nivel: el gate lo excluye igual.
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=1), None]
+    sobre_clearance = await client.get(
+        f"/api/v1/documents/{doc_id}/disposition",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert inexistente.status_code == sobre_clearance.status_code == 404
+    assert inexistente.json() == sobre_clearance.json()
+
+
+@pytest.mark.asyncio
+async def test_update_document_no_read_up_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """PATCH sobre un radicado que supera el clearance: 404 neutro.
+
+    El PATCH devuelve el `DocumentResponse` COMPLETO, así que sin gate era además
+    una lectura total (asunto, remitente, anexos) del radicado clasificado.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=1), None]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}",
+        json={"subject": "Intento de lectura por escritura"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "document_not_found"
+
+    sql = mock_conn.fetchrow.call_args[0][0]
+    assert "UPDATE radicados" in sql
+    assert "nivel_seguridad <=" in sql, "el gate debe ir en el WHERE del propio UPDATE"
 
 
 # ---------------------------------------------------------------------------
