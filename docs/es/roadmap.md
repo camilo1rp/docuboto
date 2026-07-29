@@ -1,6 +1,6 @@
 # Roadmap
 
-> Actualizado al 2026-07-21.
+> Actualizado al 2026-07-29.
 
 OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
@@ -11,7 +11,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
 ## Plan specDrive — Conformidad SGDEA (vigente)
 
-**Estado global:** núcleo de las **21 épicas implementado, probado en Docker (~300 tests verdes en 11 microservicios) y con migraciones validadas contra PostgreSQL/pgvector real.** 20 ADRs aceptados.
+**Estado global:** núcleo de las **21 épicas implementado, probado en Docker (~300 tests verdes en 11 microservicios) y con migraciones validadas contra PostgreSQL/pgvector real.** 23 ADRs registrados (ver [Decisiones de arquitectura](adrs.md)).
 
 | Fase | Épicas | Estado |
 |---|---|---|

@@ -144,4 +144,31 @@ Cuando vence el tiempo de retención definido en la TRD, cada expediente tiene u
 
 El proceso de eliminación documental requiere un **Acta de Eliminación** firmada, que también se archiva en el sistema.
 
+---
+
+## Cierre, firma y preservación (F3–F5)
+
+El cierre de un expediente no es solo un cambio de estado: dispara tres actos
+encadenados que blindan su validez legal a largo plazo (detalle completo de cada
+entidad en [Dominio documental](domain.md#entidades-de-conformidad-y-ciclo-de-vida-f3f6)):
+
+```
+Cierre del expediente
+   │
+   ├─► Se genera/firma el índice electrónico XML (E15)
+   │     firma XAdES-B con sello institucional → el expediente queda inmutable
+   │
+   ├─► Se sube el índice (y, si aplica, el AIP BagIt/PREMIS) a un bucket
+   │     con WORM/Object-Lock (E10) bajo retención derivada de la TRD
+   │     → mientras la retención esté vigente, la disposición final queda
+   │        BLOQUEADA (no se puede eliminar antes de tiempo)
+   │
+   └─► Al vencer la retención y llegar la transferencia (E12), se genera el
+         FUID y el expediente pasa a `transferred` (queda congelado)
+```
+
+Esto significa que la disposición final (tabla de arriba) **no ocurre por el solo
+paso del tiempo**: el sistema verifica que el WORM ya no retenga el artefacto antes
+de permitir eliminación o transferencia secundaria.
+
 <!-- TODO: translate to English -->

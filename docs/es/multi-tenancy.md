@@ -14,7 +14,7 @@ Cada institución (tenant) tiene su propio schema de base de datos (`tenant_{slu
 
 ```bash
 # Con token de superadmin
-curl -X POST 'http://localhost:8080/api/v1/tenants/' \
+curl -X POST 'http://localhost:19080/api/v1/tenants/' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{

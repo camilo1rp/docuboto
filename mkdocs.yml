@@ -91,6 +91,11 @@ nav:
     - ADR-017 Archivo físico: adr/ADR-017-archivo-fisico.md
     - ADR-018 Interoperabilidad webhooks: adr/ADR-018-interoperabilidad-webhooks.md
     - ADR-019 Capa MCP: adr/ADR-019-capa-mcp.md
+    - ADR-020 Sistema de diseño Orpyca y asistente: adr/ADR-020-sistema-diseno-orpyca-asistente.md
+    - ADR-021 Reclamación y dead-letter de eventos: adr/ADR-021-reclamacion-deadletter-eventos.md
+    - ADR-022 Índice electrónico v2: adr/ADR-022-indice-electronico-v2-metadatos.md
+    - ADR-023 WORM/Object-Lock de preservación: adr/ADR-023-worm-object-lock-preservacion.md
+  - Pantallas del sistema: pantallas.md
   - Referencia API: api.md
   - Despliegue: deployment.md
   - Integraciones externas: integraciones-externas.md

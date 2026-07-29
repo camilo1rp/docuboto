@@ -1,7 +1,7 @@
 # OrpycaMCP
 
-> **Free, open-source Document Management System (DMS / SGDEA) for Latin American institutions**  
-> FastAPI microservices · PostgreSQL · MinIO · Keycloak · Redis  
+> **Free, open-source Document Management System (DMS / SGDEA) for Latin American institutions**
+> FastAPI microservices · PostgreSQL · MinIO · Keycloak · Redis
 > Published under **AGPL v3**
 
 [![CI/CD](https://img.shields.io/badge/CI%2FCD-GitLab%20CI-blue)](https://gitlab.com/orpyca/orpyca-mcp)
@@ -205,6 +205,12 @@ Special thanks to the people who contributed ideas, domain expertise, and feedba
 - **Israel Pardo**
 - **Edgar Buitrago**
 - **Wilson Huérfano**
+- **Hollman Ladino Paredes**
+- **Liliana Gomez Velasquez**
+- **William Duarte**
+- **WCarlos Barrero**
+- **Jose Rueda**
+- **JFabian Losada**
 
 And to the broader Orfeo community of archivists, developers, and public servants who keep free document management alive.
 

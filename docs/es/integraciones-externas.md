@@ -65,7 +65,7 @@ Principio común: el contrato (firmas de función / endpoints REST) **no cambia*
 **Transporte stdio (cliente local tipo escritorio):** el cliente lanza el proceso y habla por stdio; la sesión se configura por entorno. Para el **token** hay tres modos (precedencia de arriba abajo):
 
 ```bash
-GATEWAY_URL=http://localhost:8080 \
+GATEWAY_URL=http://localhost:19080 \
 MCP_TENANT_SLUG=icetex \
 MCP_USER_PERMISSIONS=RADI_CREAR,... \
 # (a) token estático (sin refresco):   MCP_BEARER_TOKEN=<jwt>
