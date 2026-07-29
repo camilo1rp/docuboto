@@ -1,6 +1,9 @@
 site_name: OrpycaMCP
 site_description: Sistema de Gestión Documental Libre — Free Document Management System
-site_url: https://orpyca.com/orpyca
+# El sitio de Orpyca publica esta documentación bajo /docs: su pipeline clona
+# este repositorio y corre `mkdocs build` en cada despliegue, para no mantener
+# dos copias. Si cambia esta ruta, hay que cambiarla también allá.
+site_url: https://orpyca.com/docs
 repo_url: https://gitlab.com/orpyca/orpyca-mcp
 repo_name: GitLab
 edit_uri: edit/main/docs/
