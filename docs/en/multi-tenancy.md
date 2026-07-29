@@ -14,7 +14,7 @@ Each institution (`tenant`) has its own database schema (`tenant_{slug}`), compl
 
 ```bash
 # Con token de superadmin
-curl -X POST 'http://localhost:8080/api/v1/tenants/' \
+curl -X POST 'http://localhost:19080/api/v1/tenants/' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{

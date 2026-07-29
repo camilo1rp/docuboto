@@ -1,7 +1,12 @@
 # API Reference
 
-> Base URL in development: `http://localhost:8080/api/v1`
+> Base URL in development (from the host, via the gateway's published port): `http://localhost:19080/api/v1`
 > All endpoints (except the public ones) require `Authorization: Bearer {token}`.
+>
+> The "port NNNN" noted in each section below is the **internal** container port
+> inside the `orpycamcp-net` Docker network — never accessed directly from the host,
+> always through the `api-gateway` (published port 19080). See the full
+> internal↔published mapping in [Architecture](architecture.md#services-and-ports).
 
 ## Conventions
 

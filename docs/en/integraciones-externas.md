@@ -65,7 +65,7 @@ Common principle: the contract (function signatures / REST endpoints) **does not
 **stdio transport (local desktop-style client):** the client launches the process and talks over stdio; the session is configured via environment. There are three **token** modes (precedence top to bottom):
 
 ```bash
-GATEWAY_URL=http://localhost:8080 \
+GATEWAY_URL=http://localhost:19080 \
 MCP_TENANT_SLUG=icetex \
 MCP_USER_PERMISSIONS=RADI_CREAR,... \
 # (a) static token (no refresh):   MCP_BEARER_TOKEN=<jwt>

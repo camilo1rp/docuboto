@@ -27,6 +27,9 @@ The full files are in `docs/es/adr/`.
 | [ADR-018](adr/ADR-018-interoperabilidad-webhooks.md) | Outgoing interoperability via signed HTTP webhooks (HMAC-SHA256) over the event bus, subscribed per tenant | Accepted |
 | [ADR-019](adr/ADR-019-capa-mcp.md) | MCP layer as a thin gateway-client facade (declarative tool catalog, no logic or DB) | Accepted |
 | [ADR-020](adr/ADR-020-sistema-diseno-orpyca-asistente.md) | Orpyca design system (Sass tokens + custom properties, per-tenant branding) and conversational assistant (text/voice) as a translator to MCP tools with local opt-in AI | Proposed |
+| [ADR-021](adr/ADR-021-reclamacion-deadletter-eventos.md) | PEL reclamation and per-consumer-group dead-letter in Redis Streams (signature/workflow/notification-service) | Accepted |
+| [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md) | Electronic index v2 profile — RT-15 metadata per document (format, size, foliation) | Accepted |
+| [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md) | WORM / Object-Lock for preservation (MinIO) and the AIP/PREMIS roadmap | Accepted (Increment A) |
 
 ## How to propose a new ADR
 

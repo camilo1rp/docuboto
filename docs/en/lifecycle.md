@@ -145,3 +145,30 @@ When the retention period defined in the TRD (Tabla de Retención Documental —
 | Selection | S | A representative sample is preserved, the rest is deleted |
 
 The document deletion process requires a signed **Acta de Eliminación** (deletion minutes), which is also filed in the system.
+
+---
+
+## Closure, signature, and preservation (F3–F5)
+
+Closing an expediente is not just a status change: it triggers three chained acts
+that shield its long-term legal validity (full detail of each entity in
+[Document domain](domain.md#compliance-and-lifecycle-entities-f3f6)):
+
+```
+Expediente closure
+   │
+   ├─► The electronic index XML is generated/signed (E15)
+   │     XAdES-B signature with institutional seal → the expediente becomes immutable
+   │
+   ├─► The index (and, if applicable, the BagIt/PREMIS AIP) is uploaded to a
+   │     bucket with WORM/Object-Lock (E10) under retention derived from the TRD
+   │     → while retention is in effect, final disposition is BLOCKED
+   │        (it cannot be deleted before its time)
+   │
+   └─► Once retention expires and the transfer (E12) occurs, the FUID is
+         generated and the expediente moves to `transferred` (frozen)
+```
+
+This means final disposition (table above) does **not** happen by the mere passage
+of time: the system verifies that WORM no longer retains the artifact before
+allowing deletion or secondary transfer.
