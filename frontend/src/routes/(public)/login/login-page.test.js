@@ -23,13 +23,27 @@ import LoginPage from "./+page.svelte";
 
 describe("/login — marcado transitorio de redirección", () => {
   it("muestra el mensaje de redirección con role=status (live region)", () => {
-    render(LoginPage);
+    render(LoginPage, { data: {} });
     expect(screen.getByRole("status")).toHaveTextContent(/Redirigiendo/i);
   });
 
   it("ofrece un enlace de reintento manual a /login", () => {
-    render(LoginPage);
+    render(LoginPage, { data: {} });
     const link = screen.getByRole("link", { name: "haz clic aquí" });
+    expect(link).toHaveAttribute("href", "/login");
+  });
+});
+
+describe("/login — error reenviado por /login/callback (rompe el bucle de redirects)", () => {
+  it("muestra el mensaje de error con role=alert en vez de reiniciar el flujo PKCE", () => {
+    render(LoginPage, { data: { error: "No fue posible autenticarte." } });
+    expect(screen.getByRole("alert")).toHaveTextContent("No fue posible autenticarte.");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("ofrece un enlace «Reintentar» a /login sin query string", () => {
+    render(LoginPage, { data: { error: "No fue posible autenticarte." } });
+    const link = screen.getByRole("link", { name: "Reintentar" });
     expect(link).toHaveAttribute("href", "/login");
   });
 });

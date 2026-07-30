@@ -55,6 +55,46 @@ plugins:
         - locale: en
           name: English
           build: true
+          # La `nav` de abajo se escribe una sola vez, en español. Sin estas
+          # traducciones el menú superior y las migas quedan en español dentro
+          # de la documentación en inglés, aunque el contenido sí esté traducido.
+          # La clave es el texto EXACTO del `nav`; si allí se renombra una
+          # entrada, hay que renombrarla aquí o volverá a salir en español.
+          nav_translations:
+            Inicio: Home
+            El SGD: Records management
+            Dominio documental: Documentary domain
+            Marco normativo: Regulatory framework
+            Ciclo de vida del documento: Document lifecycle
+            Primeros Pasos: Getting started
+            Arquitectura: Architecture
+            Visión general: Overview
+            Decisiones (ADRs): Decisions (ADRs)
+            ADR-001 Microservicios: ADR-001 Microservices
+            ADR-003 asyncpg sin ORM: ADR-003 asyncpg without an ORM
+            ADR-006 Proveedor de IA configurable: ADR-006 Configurable AI provider
+            ADR-007 Metadatos JSONB: ADR-007 JSONB metadata
+            ADR-008 Auditoría inmutable: ADR-008 Immutable audit trail
+            ADR-009 Historial de flujos: ADR-009 Workflow history
+            ADR-010 Librería compartida: ADR-010 Shared library
+            ADR-012 Migraciones por tenant: ADR-012 Per-tenant migrations
+            ADR-013 Autorización en BD: ADR-013 Authorisation resolved in the database
+            ADR-014 Búsqueda PostgreSQL FTS: ADR-014 PostgreSQL full-text search
+            ADR-015 Modelo TRD/CCD: ADR-015 Retention and classification model
+            ADR-016 Firma electrónica: ADR-016 Electronic signature
+            ADR-017 Archivo físico: ADR-017 Physical archive
+            ADR-018 Interoperabilidad webhooks: ADR-018 Interoperability webhooks
+            ADR-019 Capa MCP: ADR-019 MCP layer
+            ADR-020 Sistema de diseño Orpyca y asistente: ADR-020 Orpyca design system and assistant
+            ADR-021 Reclamación y dead-letter de eventos: ADR-021 Event reclaim and dead-letter
+            ADR-022 Índice electrónico v2: ADR-022 Electronic index v2
+            ADR-023 WORM/Object-Lock de preservación: ADR-023 Preservation WORM/Object-Lock
+            Pantallas del sistema: System screens
+            Referencia API: API reference
+            Despliegue: Deployment
+            Integraciones externas: External integrations
+            Contribuir: Contributing
+            Seguridad: Security
 
 extra:
   social:

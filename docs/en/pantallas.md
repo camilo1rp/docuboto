@@ -39,8 +39,8 @@ the UI — the backend always revalidates the permission and the clearance level
 | `/firmas` | Electronic signatures | Sign (individually or in batch) pending radicados/expedientes, reject signature | Authorized signer (`PERM_FIRMA`) | `GET/POST /api/v1/signature`, `/api/v1/signature/cadena` |
 | `/envios` | Postal shipments | Manage dispatches to the external postal operator and delivery confirmation | Correspondence operator | `POST /api/v1/documents` (postal), incoming operator webhook |
 | `/reportes` | Reports | Generate and export (CSV) records-management reports | Dependencia head, administrator | `GET /api/v1/reports` |
-| `/asistente` | Conversational assistant | Natural-language chat that queries the system (RAG with citations), translating the question into read-only MCP calls | Any authenticated user | `POST /api/v1/assistant/chat` (via `mcp-server`) |
-| `/admin/plantillas` | Template administration | Define document/expediente metadata templates (Form Builder with SurveyJS) | Administrator (`USUA_PERM_ADMIN`) | `GET/POST /api/v1/metadata/templates` |
+| `AssistantDock` (not a route) | Conversational assistant | Natural-language chat that queries the system (RAG with citations), translating the question into read-only MCP calls. It is a floating panel mounted in `AppLayout.svelte`, available from any screen: **there is no `/asistente` page**, only the BFF proxy `(app)/asistente/api/message` | Any authenticated user | `POST /api/v1/assistant/message` (via `mcp-server`) |
+| `/admin/plantillas` | Template administration | CRUD of reusable **body** templates for outbound documents, with a rich text editor. It is **not** a form builder: **metadata** templates are only consumed (from `/radicar` and `/expedientes`) and have no administration UI yet — see RF-ADM-06 in the roadmap | Administrator (`USUA_PERM_ADMIN`) | `GET/POST /api/v1/plantillas` |
 | `/_kit` | UI component kit | Internal showcase of the Orpyca design system's components (development environment only, not production) | Developers | — |
 
 ## Design notes

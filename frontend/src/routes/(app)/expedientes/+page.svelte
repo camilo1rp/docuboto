@@ -744,7 +744,7 @@
   .modal-form__meta-warning {
     margin: 0;
     font-size: var(--op-font-xs);
-    color: var(--op-warning);
+    color: var(--op-warning-fg);
   }
 
   .modal-error {

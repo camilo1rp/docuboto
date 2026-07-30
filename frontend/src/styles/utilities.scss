@@ -58,8 +58,13 @@
 }
 
 // Color de texto semántico
+// Nota AA: las utilidades .text-* se usan como color de TEXTO, no de borde/icono,
+// así que usan las variantes -dark/-fg (verificadas ≥4.5:1) en vez de la base
+// semántica cruda (--op-primary/--op-success miden 4.28:1 sobre blanco, no AA;
+// --op-warning mide 3.0:1). --op-error y --op-info sí cumplen AA en su valor
+// base (4.96:1 y 5.42:1) pero se alinean igualmente a su -fg por consistencia.
 .text-primary {
-  color: var(--op-primary) !important;
+  color: var(--op-primary-dark) !important;
 }
 .text-secondary {
   color: var(--op-text-secondary) !important;
@@ -68,16 +73,16 @@
   color: var(--op-text-secondary) !important;
 }
 .text-success {
-  color: var(--op-success) !important;
+  color: var(--op-success-fg) !important;
 }
 .text-warning {
-  color: var(--op-warning) !important;
+  color: var(--op-warning-fg) !important;
 }
 .text-error {
-  color: var(--op-error) !important;
+  color: var(--op-error-fg) !important;
 }
 .text-info {
-  color: var(--op-info) !important;
+  color: var(--op-info-fg) !important;
 }
 .text-body {
   color: var(--op-text) !important;
@@ -394,8 +399,10 @@
 // 3. Colores de fondo
 // =============================================================================
 
+// AA: fondo pensado para combinarse con texto claro (--op-surface); usa
+// --op-primary-dark (6.56:1) en vez de --op-primary (4.28:1, no cumple AA de texto).
 .bg-primary {
-  background-color: var(--op-primary) !important;
+  background-color: var(--op-primary-dark) !important;
 }
 .bg-primary-light {
   background-color: var(--op-primary-light) !important;
@@ -662,13 +669,14 @@
 }
 
 // Skip-to-content para lectores de pantalla
+// AA: texto blanco sobre --op-primary-dark (6.56:1); --op-primary mide 4.28:1.
 .skip-link {
   position: absolute;
   top: -100%;
   left: var(--op-space-4);
   z-index: 9999;
   padding: var(--op-space-2) var(--op-space-4);
-  background: var(--op-primary);
+  background: var(--op-primary-dark);
   color: var(--op-surface);
   border-radius: var(--op-radius-sm);
   font-weight: var(--op-weight-bold);

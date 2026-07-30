@@ -31,7 +31,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "svelte/compiler";
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -41,15 +41,19 @@ import path from "node:path";
  * través del resolvedor de Vite, que rechaza servir archivos fuera de la raíz
  * del proyecto — de ahí que el archivo temporal viva bajo `process.cwd()`.
  *
+ * El archivo temporal se escribe como HERMANO del componente (misma carpeta
+ * ui/, no un subdirectorio aparte): `compile()` no reescribe los imports
+ * relativos del `.svelte` original (p. ej. `import EmptyState from
+ * "./EmptyState.svelte"` en DataTable.svelte) — si el archivo compilado
+ * viviera en otra carpeta, esos imports relativos apuntarían al lugar
+ * equivocado y el `import()` dinámico fallaría con "Does the file exist?".
+ *
  * @param {string} componentFileName — nombre de archivo dentro de este directorio (ui/)
  * @returns {Promise<{ render: (props?: object) => { html: string } }>}
  */
 async function compileForSsr(componentFileName) {
-  const absoluteSveltePath = path.resolve(
-    process.cwd(),
-    "src/lib/components/ui",
-    componentFileName,
-  );
+  const uiDir = path.resolve(process.cwd(), "src/lib/components/ui");
+  const absoluteSveltePath = path.join(uiDir, componentFileName);
   const source = readFileSync(absoluteSveltePath, "utf-8");
   const { js } = compile(source, {
     generate: "ssr",
@@ -57,15 +61,17 @@ async function compileForSsr(componentFileName) {
     css: "injected",
   });
 
-  const tmpDir = mkdtempSync(path.join(process.cwd(), ".vitest-ssr-tmp-"));
-  const tmpFile = path.join(tmpDir, `${path.basename(componentFileName, ".svelte")}.ssr.mjs`);
+  const tmpFile = path.join(
+    uiDir,
+    `.${path.basename(componentFileName, ".svelte")}.ssr-tmp-${process.hrtime.bigint()}.mjs`,
+  );
   writeFileSync(tmpFile, js.code);
 
   try {
     const mod = await import(/* @vite-ignore */ tmpFile);
     return mod.default;
   } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(tmpFile, { force: true });
   }
 }
 
@@ -82,7 +88,7 @@ describe("SSR real (generate: ssr) — Modal.svelte no revienta con document (D-
     // defined (el bloque `$: if (open) { previousFocus = document.activeElement }`
     // corría durante el render SSR, igual que el onDestroy del bug D-16 original).
     const { html } = Modal.render({ open: true, title: "Confirmar" });
-    expect(html).toContain("role=\"dialog\"");
+    expect(html).toContain('role="dialog"');
     expect(html).toContain("Confirmar");
   });
 });
@@ -97,7 +103,41 @@ describe("SSR real (generate: ssr) — Drawer.svelte no revienta con document (D
   it("open:true desde el primer render — NO revienta con 'document is not defined'", async () => {
     const Drawer = await compileForSsr("Drawer.svelte");
     const { html } = Drawer.render({ open: true, title: "Detalle" });
-    expect(html).toContain("role=\"dialog\"");
+    expect(html).toContain('role="dialog"');
     expect(html).toContain("Detalle");
+  });
+});
+
+describe("SSR real (generate: ssr) — DataTable.svelte no revienta con localStorage/window", () => {
+  const columns = [
+    { key: "radicado", label: "Radicado", sortable: true },
+    { key: "estado", label: "Estado", filterType: "select" },
+  ];
+  const rows = [{ id: "1", radicado: "2024-E-1", estado: "activo" }];
+
+  it("con enableColumnToggle + enableSavedViews + tableId — no lanza 'window is not defined'", async () => {
+    const DataTable = await compileForSsr("DataTable.svelte");
+    // Antes de guardar cada acceso a `localStorage` tras `typeof window !==
+    // "undefined"`, este render lanzaría ReferenceError en Node real (donde,
+    // a diferencia de jsdom, `window` no existe) — la misma clase de bug que
+    // D-16 con `document`.
+    const { html } = DataTable.render({
+      columns,
+      rows,
+      enableColumnToggle: true,
+      enableSavedViews: true,
+      enableFilters: true,
+      enableSort: true,
+      enableSelection: true,
+      tableId: "kit-demo",
+    });
+    expect(html).toContain("op-datatable");
+    expect(html).toContain("Radicado");
+  });
+
+  it("sin tableId (persistencia deshabilitada) también renderiza sin lanzar", async () => {
+    const DataTable = await compileForSsr("DataTable.svelte");
+    const { html } = DataTable.render({ columns, rows, enableFilters: true, enableSort: true });
+    expect(html).toContain("op-datatable");
   });
 });

@@ -105,6 +105,7 @@
     }
 
     &__marker {
+      position: relative;
       width: 32px;
       height: 32px;
       border-radius: 50%;
@@ -117,6 +118,13 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
+
+      // Objetivo táctil >=44px (v1.0 A11y) sin alterar el tamaño visual.
+      &::after {
+        content: "";
+        position: absolute;
+        inset: -6px;
+      }
       transition:
         background var(--op-transition),
         border-color var(--op-transition),

@@ -113,6 +113,51 @@ La capa MCP queda así **completa** (tools + resources + prompts + ambos transpo
 
 ---
 
+## 7. Migración desde Orfeo — **fuera del alcance de este repositorio**
+
+**Decisión de alcance: este código no incorpora, ni incorporará, herramientas de
+migración de datos desde instalaciones de Orfeo anteriores.** Ese trabajo se hace
+externamente, por fuera del repositorio.
+
+### Por qué
+
+Cada entidad configuró su Orfeo a su manera: formatos de radicado de 14 o 15
+dígitos, metadatos en tablas dinámicas, esquemas de contraseñas propios, motores
+de base de datos distintos. Un extractor genérico no existe; lo que existe es un
+trabajo de mapeo por instalación. Meterlo aquí significaría mantener en el núcleo
+un conjunto de casos particulares que no le sirven a nadie más, y que envejecen
+con cada cliente.
+
+### Qué SÍ ofrece este repositorio, y es suficiente
+
+La vía de entrada es el **importador interoperable**, que es genérico y está
+documentado:
+
+- `POST /api/v1/import` en `document-service` — recibe un paquete ZIP con
+  `manifiesto.json`, `esquema/radicado.schema.json` (JSON Schema draft 2020-12
+  **publicado dentro del propio paquete**), los radicados en JSON y sus anexos.
+- Validación **todo o nada**: si un esquema o un SHA-256 no cuadra, no queda
+  estado parcial en la base.
+- **Identidad preservada**: el número de radicado original no se regenera
+  (Acuerdo AGN 060/2001, Ley 594/2000 art. 19). Una colisión se omite, nunca se
+  sobreescribe.
+- Idempotente por número, lo que permite cargas incrementales repetidas.
+
+Es decir: el contrato de entrada es estable y público. **Lo que se construye
+fuera es el traductor** desde el sistema de origen hacia ese formato.
+
+### Consecuencias prácticas
+
+- No se aceptan en este repositorio contribuciones de ETL específico de Orfeo,
+  adaptadores por cliente ni scripts de extracción de bases legadas.
+- El material de análisis de instalaciones reales vive en el repositorio privado
+  `documentos/planesMigracion/`, y es **referencia de reglas de negocio**, no
+  código de migración.
+- Si al migrar aparece una limitación del **importador genérico** —por ejemplo el
+  formato del número de radicado admitido, o la reconciliación de la secuencia de
+  numeración tras una carga— eso sí es trabajo de este repositorio, porque afecta
+  al contrato de entrada y beneficia a cualquier origen, no solo a Orfeo.
+
 ## Resumen
 
 | Capacidad | Servicio | Swap | Necesita |
@@ -123,5 +168,8 @@ La capa MCP queda así **completa** (tools + resources + prompts + ambos transpo
 | Protocolo MCP (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | hecho (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
 | Embeddings/RAG | knowledge-service | `embeddings.py` | modelo/LLM |
 | Operador postal | document-service | `postal_provider.py` | credenciales API |
+| Migración desde Orfeo | — | **fuera de alcance** | traductor externo hacia `POST /api/v1/import` |
 
 Todas las integraciones conservan su contrato; activar cada una es implementar el adaptador y proveer la dependencia/credencial — **sin cambios en la lógica de dominio**.
+
+La migración es la excepción y por eso figura sin servicio: no es un adaptador que se enchufe aquí, sino trabajo que se hace fuera contra un contrato de entrada estable (§7).

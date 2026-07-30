@@ -25,21 +25,27 @@ La pregunta de esta ADR: **qué sistema de diseño adopta el frontend y cómo se
 ### 1. Sistema de diseño por tokens (paleta Orpyca)
 
 - **Doble expresión de tokens**: la paleta se define como **variables Sass** (alimentan a Bulma en build) **y** como **CSS custom properties `--op-*`** en `:root`. Las variables Sass dan el tema base; las custom properties permiten **rebrandear por tenant en runtime** (inyectando un `<style>` con overrides de `--op-*` desde los claims/config del tenant) sin recompilar.
-- **Paleta Orpyca** (archivo origen `~/Downloads/orpyca_paleta.mb`, NO el verde de sgdINTI):
+- **Paleta Orpyca** — la tabla siguiente refleja el **Sistema de Diseño OrpycaMCP v1.0** (2026-07), que reemplazó los valores provisionales con los que se escribió originalmente esta ADR (`#459940` / `#305336` / `#94BC2F` / `#212421` / `#515551` / `#D8DDD6` / `#F5F7F4`, y los estados `#D8A32E` / `#D9534F` / `#3E7FA6`). **Los nombres de token no cambiaron**, solo sus valores, por lo que ninguna pantalla tuvo que tocarse. La fuente única es `frontend/src/styles/_tokens.scss`:
 
   | Token | Valor | Uso |
   |---|---|---|
-  | `--op-primary` | `#459940` | acción principal, marca |
-  | `--op-primary-dark` | `#305336` | hover/activo, texto sobre claro |
+  | `--op-primary` | `#2A8C3A` | marca 500 — acción principal. **Solo usos NO textuales** (ver nota de contraste) |
+  | `--op-primary-dark` | `#1C6B33` | marca 600 — hover/activo **y color AA-seguro para TEXTO** |
   | `--op-primary-light` | `#DCEED7` | fondos sutiles, selección |
-  | `--op-accent` | `#94BC2F` | acentos puntuales |
-  | `--op-text` | `#212421` | texto primario |
-  | `--op-text-secondary` | `#515551` | texto secundario |
-  | `--op-border` | `#D8DDD6` | bordes/divisores |
-  | `--op-bg` | `#F5F7F4` | fondo de página |
+  | `--op-on-primary` | `#FFFFFF` | texto sobre superficie primaria oscura |
+  | `--op-accent` | `#8DBF3C` | marca lime 300 — acentos puntuales. **NUNCA como texto sobre claro** (2.18:1) |
+  | `$op-brand-700` / `$op-brand-400` | `#173A22` / `#4FA84B` | extensión de marca para degradados profundos (hero, panel de login) |
+  | `--op-text` | `#232624` | ink — texto primario |
+  | `--op-text-secondary` | `#6E7370` | muted — texto secundario |
+  | `--op-border` | `#E7EAE2` | hairline — bordes/divisores |
+  | `--op-bg` | `#FBFCF8` | canvas — fondo de página |
   | `--op-surface` | `#FFFFFF` | tarjetas/superficies |
-  | `--op-success` / `--op-warning` / `--op-error` / `--op-info` | `#459940` / `#D8A32E` / `#D9534F` / `#3E7FA6` | estados |
+  | `--op-success` / `--op-warning` / `--op-error` / `--op-info` | `#2A8C3A` / `#C8881C` / `#C4452C` / `#2B6CB0` | estados — color de **borde/icono** (≥3:1) |
+  | `--op-*-bg` / `--op-*-fg` | ver `_tokens.scss` | pares verificados **≥4.5:1 AA** para chips, toasts y semáforos |
 
+- **Contraste: el primario está partido por rol.** El verde de marca v1.0 (`#2A8C3A`) mide **4.28:1** sobre blanco — cumple el umbral no-textual de 3:1 pero **falla el 4.5:1 que WCAG AA exige a texto normal**. Por eso `--op-primary` conserva el valor exacto de v1.0 y se reserva a bordes, iconos y anillos de foco, mientras que **todo uso de texto** —botones, tags, enlaces, `.text-primary`, skip-link, y las variables Sass `$primary`/`$link` que alimentan las clases autogeneradas de Bulma— consume `--op-primary-dark` (**6.56:1**) o el par `--op-*-fg` correspondiente. Los ratios están calculados con la fórmula de luminancia relativa WCAG (no estimados) y anotados junto a cada token en `_tokens.scss`.
+- **Tipografía**: **Space Grotesk** (display, títulos, cifras destacadas) + **Public Sans** (UI y cuerpo), **self-hosted** vía `@fontsource` — sin CDN externo, tanto por soberanía como para no filtrar la navegación de los usuarios a un tercero. Escala v1.0: Display 46/700 · H1 28/600 · H2 22/600 · Body 15/400 · Small 13/500 · Mono 12/500.
+- **Movimiento**: los tokens de duración y easing viven también en `_tokens.scss`, que declara además una **regla global `prefers-reduced-motion`** neutralizando toda transición y animación del sitio; ninguna pantalla necesita repetirla.
 - **Regla de proporción 60/30/10** (neutro/primario/acento) para evitar saturación de verde en pantallas de uso prolongado.
 - **Plantilla única**: `AppLayout` (sidebar + topbar + breadcrumb + área de contenido), reutilizando la estructura validada en `~/Documents/sgdINTI/frontend` (AppLayout/SidebarNav/BreadcrumbBar, `api.service.js`, stores `auth/permissions/roles/ui`), repintada con la paleta Orpyca.
 

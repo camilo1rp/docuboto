@@ -31,6 +31,7 @@
 -->
 <script>
   import { onMount, tick } from "svelte";
+  import { goto } from "$app/navigation";
   import SidebarNav from "./SidebarNav.svelte";
   import BreadcrumbBar from "./BreadcrumbBar.svelte";
   import AssistantDock from "./AssistantDock.svelte";
@@ -42,6 +43,7 @@
     closeMobileSidebar,
   } from "$lib/stores/ui.js";
   import { sessionUser } from "$lib/stores/auth.js";
+  import { ROUTES } from "$lib/utils/config.js";
 
   /** Título de la página actual (usado en el topbar y <title>) */
   export let pageTitle = "";
@@ -51,6 +53,51 @@
 
   function toggleAssistant() {
     assistantOpen = !assistantOpen;
+  }
+
+  // ── Búsqueda global (§9: "barra prominente y siempre accesible") ─────────
+  // No llama al gateway desde aquí: navega a /busqueda?q=..., que ya
+  // implementa la carga SSR real (busqueda/+page.server.js lee `q` de la URL).
+  let searchQuery = "";
+  /** @type {HTMLInputElement} */
+  let searchInputEl;
+  // En móvil el campo empieza oculto para no ahogar el topbar; se revela con
+  // el botón de lupa. En desktop el campo siempre está visible (§9).
+  let searchExpandedMobile = false;
+
+  function submitSearch() {
+    const trimmed = searchQuery.trim();
+    const target = trimmed
+      ? `${ROUTES.busqueda}?q=${encodeURIComponent(trimmed)}`
+      : ROUTES.busqueda;
+    goto(target);
+    searchExpandedMobile = false;
+  }
+
+  function toggleSearchMobile() {
+    searchExpandedMobile = !searchExpandedMobile;
+    if (searchExpandedMobile) {
+      tick().then(() => searchInputEl?.focus());
+    }
+  }
+
+  /**
+   * Atajo "/" para enfocar la búsqueda global, salvo que el usuario ya esté
+   * escribiendo en otro campo (input/textarea/contenteditable) — nunca debe
+   * secuestrar la escritura de un formulario en curso.
+   * @param {KeyboardEvent} e
+   */
+  function handleSearchShortcut(e) {
+    if (e.key !== "/" || e.defaultPrevented) return;
+    const target = /** @type {HTMLElement|null} */ (e.target);
+    const isTyping =
+      !!target &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+    if (isTyping) return;
+
+    e.preventDefault();
+    searchExpandedMobile = true;
+    tick().then(() => searchInputEl?.focus());
   }
 
   // ── Trampa de foco + ESC para el drawer de navegación móvil ──────────────
@@ -111,7 +158,11 @@
   // existe allí, lo que rompía el render del layout (500 en rutas (app)).
   onMount(() => {
     document.addEventListener("keydown", trapDrawerFocus);
-    return () => document.removeEventListener("keydown", trapDrawerFocus);
+    document.addEventListener("keydown", handleSearchShortcut);
+    return () => {
+      document.removeEventListener("keydown", trapDrawerFocus);
+      document.removeEventListener("keydown", handleSearchShortcut);
+    };
   });
 </script>
 
@@ -155,11 +206,46 @@
       ></i>
     </button>
 
+    <!-- Búsqueda global (§9): entrada principal al sistema, siempre accesible -->
+    <form
+      class="app-layout__search"
+      class:app-layout__search--expanded={searchExpandedMobile}
+      role="search"
+      aria-label="Búsqueda global de radicados y expedientes"
+      on:submit|preventDefault={submitSearch}
+    >
+      <label for="app-layout-search-input" class="sr-only">
+        Buscar radicados, expedientes o dependencias
+      </label>
+      <i class="fas fa-search app-layout__search-icon" aria-hidden="true"></i>
+      <input
+        id="app-layout-search-input"
+        bind:this={searchInputEl}
+        bind:value={searchQuery}
+        type="search"
+        class="app-layout__search-input"
+        placeholder="Buscar radicados, expedientes… (/)"
+        autocomplete="off"
+      />
+    </form>
+
+    <!-- Alternador de búsqueda en móvil: revela el campo sin ahogar el topbar -->
+    <button
+      class="app-layout__action-btn app-layout__search-toggle is-hidden-tablet"
+      type="button"
+      aria-label={searchExpandedMobile ? "Cerrar búsqueda" : "Abrir búsqueda"}
+      aria-expanded={searchExpandedMobile}
+      aria-controls="app-layout-search-input"
+      on:click={toggleSearchMobile}
+    >
+      <i class="fas {searchExpandedMobile ? 'fa-xmark' : 'fa-search'}" aria-hidden="true"></i>
+    </button>
+
     <!-- Espacio flexible -->
     <div class="app-layout__topbar-spacer" aria-hidden="true"></div>
 
     <!-- Acciones derechas del topbar -->
-    <div class="app-layout__topbar-actions">
+    <div class="app-layout__topbar-actions" class:is-hidden-mobile={searchExpandedMobile}>
       <!-- Botón asistente -->
       <button
         class="app-layout__action-btn"
@@ -268,8 +354,10 @@
       border: none;
       cursor: pointer;
       color: var(--op-text-secondary);
-      width: 36px;
-      height: 36px;
+      // Objetivo táctil >=44px (v1.0 A11y) — hamburguesa (única entrada a la
+      // navegación en móvil), asistente y logout son controles independientes.
+      width: 44px;
+      height: 44px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -286,6 +374,56 @@
       &:focus-visible {
         outline: 2px solid var(--op-primary);
         outline-offset: 2px;
+      }
+    }
+
+    // ── Búsqueda global (§9) ──
+    &__search {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      flex: 1 1 420px;
+      max-width: 420px;
+      height: 36px;
+      padding: 0 var(--op-space-3);
+      background: var(--op-bg);
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      transition: border-color var(--op-transition);
+
+      &:focus-within {
+        border-color: var(--op-primary);
+        box-shadow: 0 0 0 2px var(--op-primary-light);
+      }
+    }
+
+    &__search-icon {
+      flex-shrink: 0;
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-sm);
+    }
+
+    &__search-input {
+      flex: 1;
+      min-width: 0;
+      border: none;
+      background: none;
+      font-family: var(--op-font-family);
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+
+      &:focus {
+        outline: none;
+      }
+
+      &::placeholder {
+        color: var(--op-text-secondary);
+      }
+
+      // Oculta el botón nativo "x" de <input type=search> en WebKit — look
+      // consistente entre navegadores (el borrado se hace con Backspace).
+      &::-webkit-search-cancel-button {
+        -webkit-appearance: none;
       }
     }
 
@@ -388,6 +526,18 @@
   @media screen and (max-width: 768px) {
     .is-hidden-mobile {
       display: none !important;
+    }
+
+    // Búsqueda global: oculta por defecto en móvil (no ahoga el topbar),
+    // se revela con el botón de lupa y ocupa el espacio disponible.
+    .app-layout__search {
+      display: none;
+      flex: 1 1 auto;
+      max-width: none;
+    }
+
+    .app-layout__search--expanded {
+      display: flex;
     }
   }
 

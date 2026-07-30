@@ -15,6 +15,9 @@
   Se muestra cuando un usuario autenticado intenta acceder a una ruta
   o acción para la que no tiene permisos (RBAC en UI, T-19).
   La autorización real siempre la hace el backend.
+
+  Dentro de la app solo va el icono de marca (nunca el logotipo completo,
+  reservado para /login y la landing pública).
 -->
 <svelte:head>
   <title>Acceso denegado (403) — OrpycaMCP</title>
@@ -22,20 +25,20 @@
 
 <main class="forbidden">
   <div class="forbidden__card">
-    <div class="forbidden__icon" aria-hidden="true">
-      <span class="forbidden__icon-inner">403</span>
-    </div>
+    <img src="/orpyca-logo.png" alt="" class="forbidden__icon" aria-hidden="true" />
+
+    <p class="forbidden__code" aria-hidden="true">403</p>
 
     <h1 class="forbidden__title">Acceso denegado</h1>
 
     <p class="forbidden__message">
-      No tienes permiso para acceder a esta seccion. Si crees que esto es un error, contacta al
-      administrador de tu entidad.
+      Tu cuenta no tiene los permisos necesarios para esta sección. Si crees que deberías tener
+      acceso, contacta al administrador de tu entidad para que revise tu rol.
     </p>
 
     <div class="forbidden__actions">
-      <a href="/dashboard" class="button-primary" role="button"> Volver al panel principal </a>
-      <a href="/" class="button-secondary" role="button"> Ir al inicio </a>
+      <a href="/dashboard" class="button-primary" role="button">Volver al panel principal</a>
+      <a href="/" class="button-secondary" role="button">Ir al inicio</a>
     </div>
   </div>
 </main>
@@ -64,18 +67,22 @@
   }
 
   .forbidden__icon {
-    margin-bottom: var(--op-space-5);
+    height: 40px;
+    width: auto;
+    margin-bottom: var(--op-space-4);
   }
 
-  .forbidden__icon-inner {
-    display: inline-block;
-    font-size: var(--op-font-2xl);
+  .forbidden__code {
+    font-family: var(--op-font-mono, monospace);
+    font-size: var(--op-font-sm);
     font-weight: var(--op-weight-bold);
     color: var(--op-warning);
     letter-spacing: 2px;
+    margin: 0 0 var(--op-space-2);
   }
 
   .forbidden__title {
+    font-family: var(--op-font-display);
     font-size: var(--op-font-xl);
     font-weight: var(--op-weight-bold);
     color: var(--op-text);
@@ -97,9 +104,12 @@
   }
 
   .button-primary {
-    display: inline-block;
-    background: var(--op-primary);
-    color: var(--op-surface);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    background: var(--op-primary-dark);
+    color: var(--op-on-primary);
     padding: var(--op-space-2) var(--op-space-5);
     border-radius: var(--op-radius);
     font-size: var(--op-font-sm);
@@ -108,7 +118,7 @@
     transition: background var(--op-transition);
 
     &:hover {
-      background: var(--op-primary-dark);
+      background: var(--op-brand-700);
     }
 
     &:focus-visible {
@@ -118,13 +128,17 @@
   }
 
   .button-secondary {
-    display: inline-block;
-    color: var(--op-primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: var(--op-space-2) var(--op-space-3);
+    color: var(--op-primary-dark);
     font-size: var(--op-font-sm);
     text-decoration: underline;
 
     &:hover {
-      color: var(--op-primary-dark);
+      color: var(--op-primary);
     }
 
     &:focus-visible {

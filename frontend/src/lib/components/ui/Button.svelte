@@ -121,11 +121,21 @@
       font-size: var(--op-font-xs);
       padding: var(--op-space-1) var(--op-space-3);
       height: 28px;
+
+      // Objetivo táctil >=44px (v1.0 A11y) en dispositivos táctiles, sin
+      // alterar la densidad visual en escritorio (mouse/trackpad).
+      @media (pointer: coarse) {
+        min-height: 44px;
+      }
     }
     &--md {
       font-size: var(--op-font-sm);
       padding: var(--op-space-2) var(--op-space-4);
       height: 36px;
+
+      @media (pointer: coarse) {
+        min-height: 44px;
+      }
     }
     &--lg {
       font-size: var(--op-font-base);
@@ -135,23 +145,24 @@
 
     // Variantes
     &--primary {
-      background: var(--op-primary);
+      background: var(--op-primary-dark);
       color: var(--op-surface);
-      border-color: var(--op-primary);
+      border-color: var(--op-primary-dark);
 
       &:hover:not(:disabled) {
-        background: var(--op-primary-dark);
-        border-color: var(--op-primary-dark);
+        background: var(--op-brand-700);
+        border-color: var(--op-brand-700);
       }
     }
 
     &--secondary {
       background: var(--op-surface);
-      color: var(--op-primary);
+      color: var(--op-primary-dark);
       border-color: var(--op-primary);
 
       &:hover:not(:disabled) {
         background: var(--op-primary-light);
+        color: var(--op-primary-dark);
       }
     }
 

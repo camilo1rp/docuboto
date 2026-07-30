@@ -15,6 +15,19 @@
   El <slot> renderiza el subtree de la ruta actual.
 -->
 <script>
+  // Tipografías self-hosted (@fontsource, sin CDN externo) — solo los pesos usados.
+  import "@fontsource/public-sans/400.css";
+  import "@fontsource/public-sans/500.css";
+  import "@fontsource/public-sans/600.css";
+  import "@fontsource/public-sans/700.css";
+  import "@fontsource/space-grotesk/400.css";
+  import "@fontsource/space-grotesk/500.css";
+  import "@fontsource/space-grotesk/600.css";
+  import "@fontsource/space-grotesk/700.css";
+
+  // Font Awesome (iconografía del sistema de diseño — sidebar, botones).
+  import "@fortawesome/fontawesome-free/css/all.min.css";
+
   import "../styles/app.scss";
 </script>
 

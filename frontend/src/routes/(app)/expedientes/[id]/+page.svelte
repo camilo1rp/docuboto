@@ -1060,7 +1060,7 @@
     }
 
     &--active {
-      color: var(--op-primary);
+      color: var(--op-primary-dark);
       border-bottom-color: var(--op-primary);
       font-weight: var(--op-weight-bold);
     }

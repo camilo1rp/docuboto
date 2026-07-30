@@ -16,119 +16,55 @@
   - En modo colapsado muestra solo íconos; el label se sirve como aria-label y tooltip.
   - Responde a $sidebarCollapsed del store ui.js.
   - Navegación completamente accesible por teclado (rol navigation, aria-current).
+  - Sección "Favoritos" (Sistema de Diseño §10, módulo 04): accesos fijados por el
+    usuario, persistidos por tenant+usuario. SIEMPRE se derivan de `visibleItems`
+    (ya permission-filtrado) — un favorito nunca puede mostrar un destino para el
+    que el usuario perdió el permiso entre sesiones (ver favorites.js).
 -->
 <script>
   import { page } from "$app/stores";
-  import { permissions, roles } from "$lib/stores/auth.js";
+  import { browser } from "$app/environment";
+  import { permissions, roles, sessionUser, tenantSlug } from "$lib/stores/auth.js";
   import { sidebarCollapsed, closeMobileSidebar } from "$lib/stores/ui.js";
   import { ROUTES } from "$lib/utils/config.js";
-
-  /**
-   * Definición de ítems de navegación.
-   * - permission: se muestra si el usuario tiene ese permiso (string)
-   * - role: se muestra si el usuario tiene ese rol (string)
-   * - Si no hay permission ni role, el ítem es público (dashboard, etc.)
-   */
-  const NAV_ITEMS = [
-    {
-      label: "Panel principal",
-      href: ROUTES.dashboard,
-      icon: "fas fa-home",
-    },
-    {
-      label: "Bandeja",
-      href: ROUTES.bandeja,
-      icon: "fas fa-inbox",
-      // D-07: 'VER_BANDEJA' no existe en el catálogo RBAC (migración 004).
-      // La bandeja es la pantalla base de cualquier operador que trabaja con radicados.
-      // Se gatea por PERM_RADI (permiso base de radicación): todo operador activo lo tiene.
-      permission: "PERM_RADI",
-    },
-    {
-      label: "Radicar",
-      href: ROUTES.radicar,
-      icon: "fas fa-file-import",
-      // La página permite PERM_RADI_ENTRADA || PERM_RADI_SALIDA || PERM_RADI_INTERNO (ADR-013)
-      permissions: ["PERM_RADI_ENTRADA", "PERM_RADI_SALIDA", "PERM_RADI_INTERNO"],
-    },
-    {
-      label: "Expedientes",
-      href: ROUTES.expedientes,
-      icon: "fas fa-folder-open",
-      // D-07: 'VER_EXPEDIENTES' → USUA_PERM_EXPEDIENTE (migración 004)
-      permission: "USUA_PERM_EXPEDIENTE",
-    },
-    {
-      label: "Búsqueda",
-      href: ROUTES.busqueda,
-      icon: "fas fa-search",
-      // D-07: 'BUSCAR_DOCUMENTOS' no existe en el catálogo RBAC.
-      // La búsqueda es consulta de radicados; se gatea por PERM_RADI igual que la bandeja.
-      permission: "PERM_RADI",
-    },
-    {
-      label: "Reportes",
-      href: ROUTES.reportes,
-      icon: "fas fa-chart-bar",
-      // D-07: 'VER_REPORTES' → SGD_PERM_ESTADISTICA (migración 004)
-      permission: "SGD_PERM_ESTADISTICA",
-    },
-    {
-      label: "Borradores",
-      href: ROUTES.borradores,
-      icon: "fas fa-file-alt",
-      // PERM_RADI: mismo permiso que bandeja; todo operador que radica gestiona borradores.
-      permission: "PERM_RADI",
-    },
-    {
-      label: "Envíos",
-      href: ROUTES.envios,
-      icon: "fas fa-truck",
-      // PERM_RADI_SALIDA: solo operadores de salida gestionan envíos postales (T-12e).
-      permission: "PERM_RADI_SALIDA",
-    },
-    {
-      label: "Firmas",
-      href: ROUTES.firmas,
-      icon: "fas fa-signature",
-      // PERM_FIRMA: firmantes de la cadena de firma electrónica (T-12d, E06).
-      permission: "PERM_FIRMA",
-    },
-    {
-      label: "Archivo físico",
-      href: ROUTES.archivoFisico,
-      icon: "fas fa-box-archive",
-      // USUA_PERM_EXPEDIENTE: gestión de expedientes/archivo (migración 004)
-      permission: "USUA_PERM_EXPEDIENTE",
-    },
-    {
-      label: "Transferencias",
-      href: ROUTES.transferencias,
-      icon: "fas fa-exchange-alt",
-      permission: "USUA_PERM_EXPEDIENTE",
-    },
-    {
-      label: "Administración",
-      href: ROUTES.admin,
-      icon: "fas fa-cog",
-      role: "tenant_admin",
-    },
-    {
-      label: "Plantillas",
-      href: ROUTES.adminPlantillas,
-      icon: "fas fa-copy",
-      // USUA_PERM_ADMIN: gestión de plantillas de contenido (T-12c, D-11)
-      permission: "USUA_PERM_ADMIN",
-    },
-  ];
+  import { NAV_ITEMS, filterVisibleNavItems } from "$lib/utils/navItems.js";
+  import {
+    favoriteHrefs,
+    initFavorites,
+    toggleFavorite,
+    pickFavoriteNavItems,
+  } from "$lib/stores/favorites.js";
 
   /** Filtra los ítems según los permisos/roles del usuario actual */
-  $: visibleItems = NAV_ITEMS.filter((item) => {
-    if (item.permissions) return item.permissions.some((p) => $permissions.includes(p));
-    if (item.permission) return $permissions.includes(item.permission);
-    if (item.role) return $roles.includes(item.role);
-    return true;
-  });
+  $: visibleItems = filterVisibleNavItems(NAV_ITEMS, $permissions, $roles);
+
+  // ── Favoritos (§10 módulo 04) ─────────────────────────────────────────────
+  // Reinicializa la persistencia de favoritos cada vez que cambia el tenant o
+  // el usuario de la sesión activa (login/logout dentro del mismo navegador).
+  // Guard `browser` (D-16): en SSR no hay localStorage y `initFavorites` no
+  // debe ejecutarse — el store queda vacío hasta que el cliente hidrata.
+  //
+  // DEBE declararse ANTES del bloque reactivo de `favoriteItems`: ambos son
+  // estatutos reactivos sin dependencia de dato explícita entre sí (ninguno
+  // asigna una variable que el otro lea como store), así que Svelte los
+  // ejecuta en orden de declaración en el primer render. Si `favoriteItems`
+  // se calculara antes, el primer render de un componente nuevo (p. ej. tras
+  // cambiar de usuario) leería el `$favoriteHrefs` TODAVÍA con los datos del
+  // usuario anterior — el store es un singleton de módulo y solo lo corrige
+  // esta reinicialización.
+  let favoritesInitKey = null;
+  $: if (browser) {
+    const nextKey = `${$tenantSlug ?? ""}:${$sessionUser?.sub ?? ""}`;
+    if (nextKey !== favoritesInitKey) {
+      favoritesInitKey = nextKey;
+      initFavorites($tenantSlug, $sessionUser?.sub);
+    }
+  }
+
+  // `pickFavoriteNavItems` recibe SIEMPRE `visibleItems` (ya permission-
+  // filtrado más arriba) — nunca la lista cruda NAV_ITEMS. Así un favorito
+  // fijado con un permiso que el usuario ya perdió deja de listarse solo.
+  $: favoriteItems = pickFavoriteNavItems(visibleItems, $favoriteHrefs);
 
   /** Determina si una ruta está activa */
   function isActive(href) {
@@ -139,6 +75,17 @@
   /** Al hacer clic en un enlace en móvil, cerrar el drawer */
   function handleLinkClick() {
     closeMobileSidebar();
+  }
+
+  /**
+   * Fija/desfija un ítem sin navegar (el botón es hermano del <a>, no hace
+   * falta preventDefault, pero sí evitar que el click "burbujee" a nada más).
+   * @param {MouseEvent} event
+   * @param {string} href
+   */
+  function handleToggleFavorite(event, href) {
+    event.stopPropagation();
+    toggleFavorite(href);
   }
 </script>
 
@@ -157,10 +104,58 @@
     {/if}
   </div>
 
+  <!-- Favoritos: accesos configurables por el usuario (§10 módulo 04) -->
+  {#if favoriteItems.length}
+    <div class="sidebar-nav__section">
+      {#if !$sidebarCollapsed}
+        <p class="sidebar-nav__section-title" id="sidebar-nav-favorites-heading">Favoritos</p>
+      {/if}
+      <ul
+        class="sidebar-nav__list"
+        role="list"
+        aria-labelledby={$sidebarCollapsed ? undefined : "sidebar-nav-favorites-heading"}
+        aria-label={$sidebarCollapsed ? "Favoritos" : undefined}
+      >
+        {#each favoriteItems as item (item.href)}
+          {@const active = isActive(item.href)}
+          <li class="sidebar-nav__item">
+            <a
+              href={item.href}
+              class="sidebar-nav__link"
+              class:sidebar-nav__link--active={active}
+              aria-current={active ? "page" : undefined}
+              aria-label={$sidebarCollapsed ? item.label : undefined}
+              title={$sidebarCollapsed ? item.label : undefined}
+              on:click={handleLinkClick}
+            >
+              <i class="{item.icon} sidebar-nav__icon" aria-hidden="true"></i>
+              {#if !$sidebarCollapsed}
+                <span class="sidebar-nav__label">{item.label}</span>
+              {/if}
+            </a>
+            {#if !$sidebarCollapsed}
+              <button
+                type="button"
+                class="sidebar-nav__pin-btn"
+                aria-pressed="true"
+                aria-label={`Quitar ${item.label} de favoritos`}
+                title={`Quitar ${item.label} de favoritos`}
+                on:click={(e) => handleToggleFavorite(e, item.href)}
+              >
+                <i class="fas fa-star" aria-hidden="true"></i>
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   <!-- Lista de ítems -->
   <ul class="sidebar-nav__list" role="list">
     {#each visibleItems as item (item.href)}
       {@const active = isActive(item.href)}
+      {@const isFav = $favoriteHrefs.includes(item.href)}
       <li class="sidebar-nav__item">
         <a
           href={item.href}
@@ -176,6 +171,21 @@
             <span class="sidebar-nav__label">{item.label}</span>
           {/if}
         </a>
+        {#if !$sidebarCollapsed}
+          <button
+            type="button"
+            class="sidebar-nav__pin-btn"
+            class:sidebar-nav__pin-btn--active={isFav}
+            aria-pressed={isFav}
+            aria-label={isFav
+              ? `Quitar ${item.label} de favoritos`
+              : `Fijar ${item.label} a favoritos`}
+            title={isFav ? `Quitar ${item.label} de favoritos` : `Fijar ${item.label} a favoritos`}
+            on:click={(e) => handleToggleFavorite(e, item.href)}
+          >
+            <i class="fa-star" class:fas={isFav} class:far={!isFav} aria-hidden="true"></i>
+          </button>
+        {/if}
       </li>
     {/each}
   </ul>
@@ -229,6 +239,29 @@
       white-space: nowrap;
     }
 
+    // Sección (Favoritos)
+    &__section {
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--op-border);
+      padding-bottom: var(--op-space-1);
+
+      .sidebar-nav__list {
+        flex: none;
+        overflow-y: visible;
+      }
+    }
+
+    &__section-title {
+      margin: 0;
+      padding: var(--op-space-2) var(--op-space-4) var(--op-space-1);
+      font-size: var(--op-font-xs);
+      font-weight: var(--op-weight-bold);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--op-text-secondary);
+      white-space: nowrap;
+    }
+
     // Lista de navegación
     &__list {
       list-style: none;
@@ -239,6 +272,8 @@
     }
 
     &__item {
+      display: flex;
+      align-items: center;
       margin: 1px var(--op-space-2);
     }
 
@@ -256,6 +291,8 @@
         background var(--op-transition),
         color var(--op-transition);
       white-space: nowrap;
+      flex: 1 1 auto;
+      min-width: 0;
 
       &:hover {
         background: var(--op-primary-light);
@@ -289,6 +326,37 @@
     &__label {
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    // Botón fijar/desfijar de favoritos: objetivo táctil >=44px real (el
+    // icono visual es más pequeño, pero el área clicable cumple AA).
+    &__pin-btn {
+      flex-shrink: 0;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      cursor: pointer;
+      border-radius: var(--op-radius-sm);
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-sm);
+      transition: color var(--op-transition);
+
+      &:hover {
+        color: var(--op-primary-dark);
+      }
+
+      &:focus-visible {
+        outline: 2px solid var(--op-primary);
+        outline-offset: 1px;
+      }
+
+      &--active {
+        color: var(--op-primary-dark);
+      }
     }
   }
 </style>

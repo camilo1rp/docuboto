@@ -21,7 +21,8 @@
  * testear componentes SvelteKit con Vitest.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, fireEvent } from "@testing-library/svelte";
+import { tick } from "svelte";
 import { writable } from "svelte/store";
 
 vi.mock("$app/stores", () => {
@@ -31,6 +32,8 @@ vi.mock("$app/stores", () => {
 
 const { default: SidebarNav } = await import("./SidebarNav.svelte");
 const { initSession, clearSession } = await import("$lib/stores/auth.js");
+const { resetFavorites } = await import("$lib/stores/favorites.js");
+const { sidebarCollapsed } = await import("$lib/stores/ui.js");
 
 /** Construye una sesión mínima con los roles/permisos indicados. */
 function sessionWith({ roles = [], permissions = [] } = {}) {
@@ -48,6 +51,8 @@ function sessionWith({ roles = [], permissions = [] } = {}) {
 describe("SidebarNav — espejo del RBAC", () => {
   beforeEach(() => {
     clearSession();
+    window.localStorage.clear();
+    resetFavorites();
   });
 
   it("sin sesión (permisos vacíos) solo muestra los ítems públicos", () => {
@@ -164,5 +169,94 @@ describe("SidebarNav — espejo del RBAC", () => {
     ]) {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
+  });
+});
+
+describe("SidebarNav — favoritos (§10 módulo 04)", () => {
+  beforeEach(() => {
+    clearSession();
+    window.localStorage.clear();
+    resetFavorites();
+    sidebarCollapsed.set(false);
+  });
+
+  it("sin favoritos fijados, la sección 'Favoritos' no se renderiza", () => {
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+    render(SidebarNav);
+
+    expect(screen.queryByText("Favoritos")).not.toBeInTheDocument();
+  });
+
+  it("fijar un ítem lo añade a la sección 'Favoritos' con un botón real accesible", async () => {
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+    render(SidebarNav);
+
+    const pinButton = screen.getByRole("button", { name: "Fijar Bandeja a favoritos" });
+    expect(pinButton).toHaveAttribute("aria-pressed", "false");
+
+    await fireEvent.click(pinButton);
+
+    expect(screen.getByText("Favoritos")).toBeInTheDocument();
+    // Ahora hay dos enlaces "Bandeja": uno en Favoritos y otro en el menú principal.
+    expect(screen.getAllByRole("link", { name: "Bandeja" })).toHaveLength(2);
+    // ...y dos botones "Quitar" (uno por cada aparición del ítem).
+    expect(screen.getAllByRole("button", { name: "Quitar Bandeja de favoritos" })).toHaveLength(2);
+  });
+
+  it("desfijar desde el botón del menú principal quita el ítem de 'Favoritos'", async () => {
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+    render(SidebarNav);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Fijar Bandeja a favoritos" }));
+    expect(screen.getByText("Favoritos")).toBeInTheDocument();
+
+    // El botón del ítem del menú principal (no el de la sección Favoritos) ahora dice "Quitar".
+    const unpinButtons = screen.getAllByRole("button", { name: "Quitar Bandeja de favoritos" });
+    await fireEvent.click(unpinButtons[unpinButtons.length - 1]);
+
+    expect(screen.queryByText("Favoritos")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Bandeja" })).toHaveLength(1);
+  });
+
+  it("la persistencia está espaciada por tenant+usuario: otro usuario no ve los favoritos fijados", async () => {
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+    const { unmount } = render(SidebarNav);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Fijar Bandeja a favoritos" }));
+    expect(screen.getByText("Favoritos")).toBeInTheDocument();
+    unmount();
+
+    initSession({ ...sessionWith({ permissions: ["PERM_RADI"] }), sub: "u-2" });
+    render(SidebarNav);
+    expect(screen.queryByText("Favoritos")).not.toBeInTheDocument();
+  });
+
+  it("REGLA DE SEGURIDAD: un favorito persistido para un permiso ya perdido no se muestra", () => {
+    // Simula que el usuario fijó "Firmas" (PERM_FIRMA) en una sesión previa y
+    // luego perdió el permiso — el href queda huérfano en localStorage.
+    window.localStorage.setItem("op-favorites:icetex:u-1", JSON.stringify(["/firmas"]));
+
+    initSession(sessionWith({ permissions: ["PERM_RADI"] })); // ya no tiene PERM_FIRMA
+    render(SidebarNav);
+
+    expect(screen.queryByText("Favoritos")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Firmas" })).not.toBeInTheDocument();
+  });
+
+  it("en modo colapsado, el ítem favorito sigue siendo comprensible por aria-label/title sin el botón de fijar", async () => {
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+    render(SidebarNav);
+    await fireEvent.click(screen.getByRole("button", { name: "Fijar Bandeja a favoritos" }));
+
+    sidebarCollapsed.set(true);
+    await tick();
+
+    // Sin el botón de fijar/desfijar en colapsado (sin espacio para el control).
+    expect(
+      screen.queryByRole("button", { name: "Quitar Bandeja de favoritos" }),
+    ).not.toBeInTheDocument();
+    // El enlace sigue siendo accesible por su aria-label (dos, uno por sección).
+    const favLinks = screen.getAllByRole("link", { name: "Bandeja" });
+    expect(favLinks.length).toBeGreaterThanOrEqual(1);
   });
 });

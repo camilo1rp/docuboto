@@ -84,6 +84,50 @@
     },
   ];
 
+  // --- DataTable (capacidades avanzadas del Sistema de Diseño §12) ---
+  /** @type {Array<{key: string; label: string; width?: string; sortable?: boolean; filterType?: 'text'|'select'|'dateRange'; filterOptions?: Array<{value:string;label:string}>; editable?: boolean; type?: 'text'|'number'|'date'}>} */
+  const advancedTableColumns = [
+    { key: "radicado", label: "Radicado", width: "170px", sortable: true },
+    { key: "asunto", label: "Asunto", sortable: true, editable: true, type: "text" },
+    {
+      key: "estado",
+      label: "Estado",
+      width: "130px",
+      filterType: "select",
+      filterOptions: [
+        { value: "active", label: "Activo" },
+        { value: "pending", label: "Pendiente" },
+        { value: "closed", label: "Cerrado" },
+      ],
+    },
+    { key: "fecha", label: "Fecha", width: "130px", sortable: true, filterType: "dateRange" },
+  ];
+  const advancedTableRows = [
+    {
+      id: "1",
+      radicado: "2024-ICETEX-E-000001",
+      asunto: "Solicitud de traslado",
+      estado: "active",
+      fecha: "2024-01-15",
+    },
+    {
+      id: "2",
+      radicado: "2024-ICETEX-S-000042",
+      asunto: "Respuesta a derecho de petición",
+      estado: "pending",
+      fecha: "2024-01-20",
+    },
+    {
+      id: "3",
+      radicado: "2024-ICETEX-I-000007",
+      asunto: "Memorando interno",
+      estado: "closed",
+      fecha: "2024-01-22",
+    },
+  ];
+  /** @type {Array<string|number>} */
+  let advancedTableSelected = [];
+
   // --- FormField ---
   let fieldValue = "";
   let selectValue = "";
@@ -274,6 +318,28 @@
           totalCount={0}
           loading
           caption="Tabla cargando"
+        />
+      </Card>
+    </div>
+    <div class="mt-4">
+      <Card
+        padding={false}
+        title="DataTable — capacidades avanzadas (§12: filtros, orden, exportación, columnas, vistas, selección, edición)"
+      >
+        <DataTable
+          tableId="kit-demo-avanzado"
+          columns={advancedTableColumns}
+          rows={advancedTableRows}
+          totalCount={advancedTableRows.length}
+          pageSize={20}
+          caption="Bandeja de radicados — demo de capacidades avanzadas"
+          enableFilters
+          enableSort
+          enableExport
+          enableColumnToggle
+          enableSavedViews
+          enableSelection
+          bind:selected={advancedTableSelected}
         />
       </Card>
     </div>

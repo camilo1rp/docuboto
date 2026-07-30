@@ -12,25 +12,37 @@
 <!--
   /dashboard — Panel principal (T-07, RF-UI-06).
 
-  Muestra métricas clave del tenant:
-    - Total de radicados + desglose por tipo (E/S/I)
-    - Desglose por estado (registered / distributed / in_progress / closed)
-    - Top 5 dependencias con más radicados
-    - Actividad mensual (últimos 6 meses)
+  REDISEÑO (Sistema de Diseño §10): el tablero es FIJO y muestra exclusivamente
+  cuatro módulos centrados en el usuario, en este orden de prioridad (también
+  el orden de apilado en móvil):
 
-  Los datos vienen pre-cargados desde +page.server.js (SSR) llamando al endpoint
-  real GET /api/v1/reports/radicados (E09). Si el backend no está disponible,
-  la vista degrada con EmptyState informativo.
+    01 Radicados pendientes — lo que requiere acción inmediata (primer plano).
+    02 Actividad reciente   — continuidad: dónde se quedó el usuario.
+    03 Alertas              — vencimientos, con jerarquía clara (icono + texto,
+                               nunca solo color).
+    04 Favoritos            — accesos configurables por el usuario mismo.
 
-  Conserva el resumen de sesión del usuario del placeholder T-03.
+  Las métricas agregadas del tenant (antes protagonistas) bajan a una sección
+  secundaria colapsable, CERRADA por defecto (progressive disclosure) — no
+  compiten por la atención con los módulos personales.
+
+  Datos: ver +page.server.js. El módulo 03 "Alertas" usa `due_date` de los
+  radicados abiertos como proxy real (RF-RAD-04) — no hay hoy un endpoint de
+  alertas dedicado; ver la nota de alcance allí y el followup registrado.
 -->
 <script>
   import { onMount } from "svelte";
-  import { sessionUser, tenantSlug } from "$lib/stores/auth.js";
+  import { browser } from "$app/environment";
+  import { navigating } from "$app/stores";
+  import { sessionUser, tenantSlug, permissions, roles } from "$lib/stores/auth.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { favoriteHrefs, initFavorites, pickFavoriteNavItems } from "$lib/stores/favorites.js";
+  import { NAV_ITEMS, filterVisibleNavItems } from "$lib/utils/navItems.js";
   import Card from "$lib/components/ui/Card.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
+  import Loader from "$lib/components/ui/Loader.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -40,24 +52,26 @@
   });
 
   // ---------------------------------------------------------------------------
-  // Datos del resumen (vienen del server load)
+  // Datos de los cuatro módulos (server load, T-07)
   // ---------------------------------------------------------------------------
-
-  /** @type {import('$lib/types/api.js').ReportSummary|null} */
+  $: pendientes = data.pendientes;
+  $: alertas = data.alertas;
+  $: recientes = data.recientes;
   $: summary = data.summary;
   $: summaryError = data.summaryError;
 
-  // Etiquetas legibles para tipos de radicado
-  const DOC_TYPE_LABELS = { E: "Entrada", S: "Salida", I: "Interno" };
+  // Muestra un indicador de carga breve mientras SvelteKit re-ejecuta el load
+  // de esta misma ruta (p. ej. al volver a "Panel principal" desde el breadcrumb).
+  $: isReloading = $navigating?.to?.url?.pathname === "/dashboard";
 
-  // Etiquetas y chips para estados
+  // Etiquetas legibles
+  const DOC_TYPE_LABELS = { E: "Entrada", S: "Salida", I: "Interno" };
   const STATUS_LABELS = {
     registered: "Radicado",
     distributed: "Distribuido",
     in_progress: "En trámite",
     closed: "Cerrado",
   };
-
   const STATUS_CHIP_MAP = {
     registered: "info",
     distributed: "pending",
@@ -65,26 +79,56 @@
     closed: "closed",
   };
 
-  // Top 5 dependencias (server puede devolver todas; limitamos en cliente)
+  /** @param {string|null} iso */
+  function formatDate(iso) {
+    if (!iso) return "";
+    try {
+      return new Date(iso).toLocaleDateString("es-CO", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+    } catch {
+      return iso;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Módulo 04 — Favoritos (§10): MISMA API que SidebarNav, no duplicada
+  // (navItems.js + favorites.js). Se re-inicializa aquí también (idempotente)
+  // para no depender del orden de montaje frente a SidebarNav.
+  // ---------------------------------------------------------------------------
+  let favoritesInitKey = null;
+  $: if (browser) {
+    const nextKey = `${$tenantSlug ?? ""}:${$sessionUser?.sub ?? ""}`;
+    if (nextKey !== favoritesInitKey) {
+      favoritesInitKey = nextKey;
+      initFavorites($tenantSlug, $sessionUser?.sub);
+    }
+  }
+
+  $: visibleNavItems = filterVisibleNavItems(NAV_ITEMS, $permissions, $roles);
+  $: favoriteItems = pickFavoriteNavItems(visibleNavItems, $favoriteHrefs);
+
+  // ---------------------------------------------------------------------------
+  // Sección secundaria: métricas agregadas (progressive disclosure, cerrada
+  // por defecto)
+  // ---------------------------------------------------------------------------
+  let metricsOpen = false;
+
+  $: total = summary?.total ?? 0;
+  $: docTypeEntries = summary
+    ? Object.entries(summary.by_doc_type ?? {}).filter(([, v]) => v > 0)
+    : [];
   $: topDependencias = summary
     ? Object.entries(summary.by_dependencia ?? {})
         .sort(([, a], [, b]) => b - a)
         .slice(0, 5)
     : [];
-
-  // Últimos 6 meses de actividad mensual (ordenados cronológicamente)
   $: monthActivity = summary
     ? [...(summary.by_month ?? [])].sort((a, b) => a.month.localeCompare(b.month)).slice(-6)
     : [];
-
-  // Máximo para la barra de progreso de actividad mensual
   $: maxMonthCount = monthActivity.length ? Math.max(...monthActivity.map((m) => m.count), 1) : 1;
-
-  // Porcentaje por tipo para la barra visual
-  $: total = summary?.total ?? 0;
-  $: docTypeEntries = summary
-    ? Object.entries(summary.by_doc_type ?? {}).filter(([, v]) => v > 0)
-    : [];
 </script>
 
 <svelte:head>
@@ -113,89 +157,176 @@
     </a>
   </header>
 
-  <!-- -----------------------------------------------------------------------
-    Estado de error de carga
-  ----------------------------------------------------------------------- -->
-  {#if summaryError && !summary}
-    <EmptyState
-      icon="fas fa-exclamation-circle"
-      title="No se pudieron cargar las métricas"
-      description={summaryError}
-    />
-  {:else if !summary}
-    <!-- Skeleton de carga inicial (renderizado antes de que el server load resuelva) -->
-    <div class="dashboard__skeleton" aria-busy="true" aria-label="Cargando métricas…">
-      {#each Array(4) as _, i (i)}
-        <div class="skeleton-card">
-          <div
-            class="skeleton skeleton--sm"
-            style="width: 40%; margin-bottom: var(--op-space-2);"
-          ></div>
-          <div class="skeleton skeleton--lg" style="width: 60%;"></div>
-        </div>
-      {/each}
+  {#if isReloading}
+    <div class="dashboard__reloading">
+      <Loader type="spinner" size="sm" label="Actualizando panel…" />
+      <span aria-hidden="true">Actualizando…</span>
     </div>
-  {:else}
-    <!-- ===================================================================
-      Contenido real del dashboard
-    =================================================================== -->
+  {/if}
 
-    <!-- Indicadores clave (KPIs) -->
-    <section class="dashboard__kpis" aria-labelledby="kpis-heading">
-      <h2 id="kpis-heading" class="sr-only">Indicadores clave</h2>
+  <!-- -----------------------------------------------------------------------
+    Módulos personales (§10) — contenido principal, visible sin scroll.
+    Orden de prioridad = orden en el DOM = orden de apilado en móvil.
+  ----------------------------------------------------------------------- -->
+  <div class="dashboard__modules">
+    <!-- ===================== 01 Radicados pendientes ===================== -->
+    <section
+      class="dashboard__module dashboard__module--pendientes"
+      aria-labelledby="pendientes-heading"
+    >
+      <Card>
+        <svelte:fragment slot="header">
+          <h2 id="pendientes-heading" class="module-title">
+            <i class="fas fa-inbox module-title__icon" aria-hidden="true"></i>
+            Radicados pendientes
+          </h2>
+          {#if pendientes.total > 0}
+            <span class="module-count" aria-label="{pendientes.total} radicados pendientes">
+              {pendientes.total.toLocaleString("es-CO")}
+            </span>
+          {/if}
+        </svelte:fragment>
 
-      <!-- Total radicados -->
-      <Card shadow={true}>
-        <div class="kpi">
-          <div class="kpi__icon kpi__icon--primary" aria-hidden="true">
-            <i class="fas fa-file-alt"></i>
-          </div>
-          <div class="kpi__data">
-            <span class="kpi__value">{summary.total.toLocaleString("es-CO")}</span>
-            <span class="kpi__label">Total radicados</span>
-          </div>
-        </div>
+        {#if pendientes.error}
+          <EmptyState
+            icon="fas fa-exclamation-circle"
+            title="No se pudieron cargar los pendientes"
+            description={pendientes.error}
+          />
+        {:else if pendientes.items.length === 0}
+          <EmptyState
+            icon="fas fa-check-circle"
+            title="Vas al día"
+            description="No tienes radicados pendientes de trámite en este momento."
+          />
+        {:else}
+          <ul class="doc-list" role="list">
+            {#each pendientes.items as doc (doc.id)}
+              <li class="doc-list__item">
+                <div class="doc-list__main">
+                  <span class="doc-list__tracking">{doc.tracking_number}</span>
+                  <span class="doc-list__subject" title={doc.subject}>{doc.subject}</span>
+                </div>
+                <div class="doc-list__meta">
+                  <StatusChip
+                    status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
+                    label={STATUS_LABELS[doc.status] ?? doc.status}
+                    dot={true}
+                  />
+                  {#if doc.due_date}
+                    <span class="doc-list__due">Vence {formatDate(doc.due_date)}</span>
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        <svelte:fragment slot="footer">
+          <a href="/bandeja?status=distributed" class="module-link">
+            Ver toda la bandeja
+            <i class="fas fa-arrow-right" aria-hidden="true"></i>
+          </a>
+        </svelte:fragment>
       </Card>
-
-      <!-- Por tipo de radicado -->
-      {#each docTypeEntries as [type, count] (type)}
-        <Card shadow={true}>
-          <div class="kpi">
-            <div class="kpi__icon kpi__icon--neutral" aria-hidden="true">
-              <i class="fas fa-tag"></i>
-            </div>
-            <div class="kpi__data">
-              <span class="kpi__value">{count.toLocaleString("es-CO")}</span>
-              <span class="kpi__label">{DOC_TYPE_LABELS[type] ?? type}</span>
-            </div>
-          </div>
-        </Card>
-      {/each}
     </section>
 
-    <!-- Desglose por estado -->
-    <section class="dashboard__section" aria-labelledby="status-heading">
-      <Card title="Radicados por estado">
-        <h2 id="status-heading" class="sr-only">Radicados por estado</h2>
-        {#if Object.keys(summary.by_status).length === 0}
-          <p class="dashboard__empty-msg">Sin radicados registrados.</p>
+    <!-- ===================== 02 Actividad reciente ===================== -->
+    <section
+      class="dashboard__module dashboard__module--recientes"
+      aria-labelledby="recientes-heading"
+    >
+      <Card>
+        <svelte:fragment slot="header">
+          <h2 id="recientes-heading" class="module-title">
+            <i class="fas fa-clock-rotate-left module-title__icon" aria-hidden="true"></i>
+            Actividad reciente
+          </h2>
+        </svelte:fragment>
+
+        {#if recientes.error}
+          <EmptyState
+            icon="fas fa-exclamation-circle"
+            title="No se pudo cargar la actividad reciente"
+            description={recientes.error}
+          />
+        {:else if recientes.items.length === 0}
+          <EmptyState
+            icon="fas fa-clock-rotate-left"
+            title="Sin actividad reciente"
+            description="Los últimos radicados que registres o consultes aparecerán aquí."
+          />
         {:else}
-          <ul class="status-list" role="list">
-            {#each Object.entries(summary.by_status) as [status, count] (status)}
-              <li class="status-list__item">
-                <StatusChip
-                  status={STATUS_CHIP_MAP[status] ?? "neutral"}
-                  label={STATUS_LABELS[status] ?? status}
-                  dot={true}
-                />
-                <div class="status-list__bar" role="presentation">
-                  <div
-                    class="status-list__fill"
-                    style="width: {total > 0 ? Math.round((count / total) * 100) : 0}%"
-                  ></div>
+          <ul class="doc-list" role="list">
+            {#each recientes.items as doc (doc.id)}
+              <li class="doc-list__item">
+                <div class="doc-list__main">
+                  <span class="doc-list__tracking">{doc.tracking_number}</span>
+                  <span class="doc-list__subject" title={doc.subject}>{doc.subject}</span>
                 </div>
-                <span class="status-list__count" aria-label="{count} radicados">
-                  {count.toLocaleString("es-CO")}
+                <div class="doc-list__meta">
+                  <StatusChip
+                    status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
+                    label={STATUS_LABELS[doc.status] ?? doc.status}
+                    dot={true}
+                  />
+                  <span class="doc-list__date">{formatDate(doc.updated_at)}</span>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </Card>
+    </section>
+
+    <!-- ===================== 03 Alertas ===================== -->
+    <section class="dashboard__module dashboard__module--alertas" aria-labelledby="alertas-heading">
+      <Card>
+        <svelte:fragment slot="header">
+          <h2 id="alertas-heading" class="module-title">
+            <i class="fas fa-triangle-exclamation module-title__icon" aria-hidden="true"></i>
+            Alertas
+          </h2>
+        </svelte:fragment>
+
+        {#if alertas.error}
+          <EmptyState
+            icon="fas fa-exclamation-circle"
+            title="No se pudieron cargar las alertas"
+            description={alertas.error}
+          />
+        {:else if alertas.items.length === 0}
+          <EmptyState
+            icon="fas fa-bell-slash"
+            title="Sin vencimientos próximos"
+            description="No hay radicados con fecha límite de respuesta cercana."
+          />
+        {:else}
+          <ul class="alert-list" role="list">
+            {#each alertas.items as doc (doc.id)}
+              {@const vencido = doc.diasRestantes < 0}
+              {@const proximo = !vencido && doc.diasRestantes <= 3}
+              <li
+                class="alert-list__item"
+                class:alert-list__item--critical={vencido}
+                class:alert-list__item--warning={proximo}
+              >
+                <span class="alert-list__icon" aria-hidden="true">
+                  <i class={vencido ? "fas fa-circle-exclamation" : "fas fa-clock"}></i>
+                </span>
+                <div class="alert-list__body">
+                  <span class="alert-list__tracking">{doc.tracking_number}</span>
+                  <span class="alert-list__subject" title={doc.subject}>{doc.subject}</span>
+                </div>
+                <span class="alert-list__due">
+                  {#if vencido}
+                    Vencido hace {Math.abs(doc.diasRestantes)}
+                    {Math.abs(doc.diasRestantes) === 1 ? "día" : "días"}
+                  {:else if doc.diasRestantes === 0}
+                    Vence hoy
+                  {:else}
+                    Vence en {doc.diasRestantes} {doc.diasRestantes === 1 ? "día" : "días"}
+                  {/if}
                 </span>
               </li>
             {/each}
@@ -204,63 +335,184 @@
       </Card>
     </section>
 
-    <!-- Top dependencias + Actividad mensual -->
-    <div class="dashboard__grid-2">
-      <!-- Top 5 dependencias -->
-      <section aria-labelledby="dep-heading">
-        <Card title="Top dependencias">
-          <h2 id="dep-heading" class="sr-only">Top dependencias con más radicados</h2>
-          {#if topDependencias.length === 0}
-            <p class="dashboard__empty-msg">Sin datos de dependencia.</p>
-          {:else}
-            <ol class="dep-list" role="list">
-              {#each topDependencias as [dep, count], i (dep)}
-                <li class="dep-list__item">
-                  <span class="dep-list__rank" aria-hidden="true">{i + 1}</span>
-                  <span class="dep-list__name" title={dep}>{dep}</span>
-                  <span class="dep-list__count">{count.toLocaleString("es-CO")}</span>
-                </li>
-              {/each}
-            </ol>
-          {/if}
-        </Card>
-      </section>
+    <!-- ===================== 04 Favoritos ===================== -->
+    <section
+      class="dashboard__module dashboard__module--favoritos"
+      aria-labelledby="favoritos-heading"
+    >
+      <Card>
+        <svelte:fragment slot="header">
+          <h2 id="favoritos-heading" class="module-title">
+            <i class="fas fa-star module-title__icon" aria-hidden="true"></i>
+            Favoritos
+          </h2>
+        </svelte:fragment>
 
-      <!-- Actividad mensual -->
-      <section aria-labelledby="month-heading">
-        <Card title="Actividad mensual (últimos 6 meses)">
-          <h2 id="month-heading" class="sr-only">Actividad mensual de radicados</h2>
-          {#if monthActivity.length === 0}
-            <p class="dashboard__empty-msg">Sin actividad mensual registrada.</p>
+        {#if favoriteItems.length === 0}
+          <EmptyState
+            icon="fas fa-star"
+            title="Sin accesos fijados"
+            description="Fija tus pantallas de uso frecuente desde el icono de estrella en el menú lateral."
+          />
+        {:else}
+          <ul class="favorites-grid" role="list">
+            {#each favoriteItems as item (item.href)}
+              <li>
+                <a href={item.href} class="favorites-grid__item">
+                  <i class="{item.icon} favorites-grid__icon" aria-hidden="true"></i>
+                  <span>{item.label}</span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </Card>
+    </section>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+    Sección secundaria: métricas agregadas del tenant (progressive disclosure)
+    Espejo del RBAC (ADR-013/020): mismo permiso que gatea la entrada de menú
+    "Reportes" (navItems.js). Si el usuario no lo tiene, el gateway rechazaría
+    GET /reports/radicados con 403 — la UI no debe ofrecer lo que la API niega.
+  ----------------------------------------------------------------------- -->
+  {#if $permissions.includes("SGD_PERM_ESTADISTICA")}
+    <section class="dashboard__metrics" aria-labelledby="metrics-heading">
+      <h2 id="metrics-heading" class="dashboard__metrics-heading">
+        <Button
+          variant="ghost"
+          icon={metricsOpen ? "fas fa-chevron-down" : "fas fa-chevron-right"}
+          on:click={() => (metricsOpen = !metricsOpen)}
+          aria-expanded={metricsOpen}
+          aria-controls="metrics-panel"
+        >
+          Métricas del tenant
+        </Button>
+      </h2>
+
+      {#if metricsOpen}
+        <div id="metrics-panel" class="dashboard__metrics-panel">
+          {#if summaryError && !summary}
+            <EmptyState
+              icon="fas fa-exclamation-circle"
+              title="No se pudieron cargar las métricas"
+              description={summaryError}
+            />
+          {:else if !summary}
+            <div class="dashboard__skeleton" aria-busy="true" aria-label="Cargando métricas…">
+              <Loader type="skeleton" lines={4} label="Cargando métricas…" />
+            </div>
           {:else}
-            <ul class="month-bars" role="list" aria-label="Barras de actividad mensual">
-              {#each monthActivity as { month, count } (month)}
-                <li class="month-bars__item">
-                  <div
-                    class="month-bars__bar"
-                    role="meter"
-                    aria-label="{month}: {count} radicados"
-                    aria-valuenow={count}
-                    aria-valuemin={0}
-                    aria-valuemax={maxMonthCount}
-                    style="height: {Math.max(Math.round((count / maxMonthCount) * 80), 4)}px"
-                  ></div>
-                  <span class="month-bars__label">{month.slice(5)}</span>
-                  <span class="month-bars__count">{count}</span>
-                </li>
+            <!-- Indicadores clave (KPIs) -->
+            <div class="dashboard__kpis" role="list" aria-label="Indicadores clave">
+              <Card shadow={false}>
+                <div class="kpi">
+                  <div class="kpi__icon kpi__icon--primary" aria-hidden="true">
+                    <i class="fas fa-file-alt"></i>
+                  </div>
+                  <div class="kpi__data">
+                    <span class="kpi__value">{summary.total.toLocaleString("es-CO")}</span>
+                    <span class="kpi__label">Total radicados</span>
+                  </div>
+                </div>
+              </Card>
+
+              {#each docTypeEntries as [type, count] (type)}
+                <Card shadow={false}>
+                  <div class="kpi">
+                    <div class="kpi__icon kpi__icon--neutral" aria-hidden="true">
+                      <i class="fas fa-tag"></i>
+                    </div>
+                    <div class="kpi__data">
+                      <span class="kpi__value">{count.toLocaleString("es-CO")}</span>
+                      <span class="kpi__label">{DOC_TYPE_LABELS[type] ?? type}</span>
+                    </div>
+                  </div>
+                </Card>
               {/each}
-            </ul>
+            </div>
+
+            <!-- Desglose por estado -->
+            <Card title="Radicados por estado" shadow={false}>
+              {#if Object.keys(summary.by_status).length === 0}
+                <p class="dashboard__empty-msg">Sin radicados registrados.</p>
+              {:else}
+                <ul class="status-list" role="list">
+                  {#each Object.entries(summary.by_status) as [status, count] (status)}
+                    <li class="status-list__item">
+                      <StatusChip
+                        status={STATUS_CHIP_MAP[status] ?? "neutral"}
+                        label={STATUS_LABELS[status] ?? status}
+                        dot={true}
+                      />
+                      <div class="status-list__bar" role="presentation">
+                        <div
+                          class="status-list__fill"
+                          style="width: {total > 0 ? Math.round((count / total) * 100) : 0}%"
+                        ></div>
+                      </div>
+                      <span class="status-list__count" aria-label="{count} radicados">
+                        {count.toLocaleString("es-CO")}
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </Card>
+
+            <!-- Top dependencias + Actividad mensual -->
+            <div class="dashboard__grid-2">
+              <Card title="Top dependencias" shadow={false}>
+                {#if topDependencias.length === 0}
+                  <p class="dashboard__empty-msg">Sin datos de dependencia.</p>
+                {:else}
+                  <ol class="dep-list" role="list">
+                    {#each topDependencias as [dep, count], i (dep)}
+                      <li class="dep-list__item">
+                        <span class="dep-list__rank" aria-hidden="true">{i + 1}</span>
+                        <span class="dep-list__name" title={dep}>{dep}</span>
+                        <span class="dep-list__count">{count.toLocaleString("es-CO")}</span>
+                      </li>
+                    {/each}
+                  </ol>
+                {/if}
+              </Card>
+
+              <Card title="Actividad mensual (últimos 6 meses)" shadow={false}>
+                {#if monthActivity.length === 0}
+                  <p class="dashboard__empty-msg">Sin actividad mensual registrada.</p>
+                {:else}
+                  <ul class="month-bars" role="list" aria-label="Barras de actividad mensual">
+                    {#each monthActivity as { month, count } (month)}
+                      <li class="month-bars__item">
+                        <div
+                          class="month-bars__bar"
+                          role="meter"
+                          aria-label="{month}: {count} radicados"
+                          aria-valuenow={count}
+                          aria-valuemin={0}
+                          aria-valuemax={maxMonthCount}
+                          style="height: {Math.max(Math.round((count / maxMonthCount) * 80), 4)}px"
+                        ></div>
+                        <span class="month-bars__label">{month.slice(5)}</span>
+                        <span class="month-bars__count">{count}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </Card>
+            </div>
           {/if}
-        </Card>
-      </section>
-    </div>
+        </div>
+      {/if}
+    </section>
   {/if}
 </div>
 
 <style lang="scss">
   .dashboard {
     padding: var(--op-space-6);
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
     display: flex;
     flex-direction: column;
@@ -305,7 +557,7 @@
     display: inline-flex;
     align-items: center;
     gap: var(--op-space-2);
-    background: var(--op-primary);
+    background: var(--op-primary-dark);
     color: var(--op-surface);
     font-size: var(--op-font-sm);
     font-weight: var(--op-weight-medium);
@@ -316,7 +568,7 @@
     transition: background var(--op-transition);
 
     &:hover {
-      background: var(--op-primary-dark);
+      background: var(--op-brand-700);
     }
     &:focus-visible {
       outline: 2px solid var(--op-primary);
@@ -324,41 +576,310 @@
     }
   }
 
-  // ---- Skeleton ----
-  .dashboard__skeleton {
+  .dashboard__reloading {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+  }
+
+  // ---- Módulos personales (§10) ----
+  .dashboard__modules {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: 1fr 1fr;
+    gap: var(--op-space-5);
+
+    @media (max-width: 900px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  // 01 Pendientes en primer plano: fila completa arriba.
+  .dashboard__module--pendientes {
+    grid-column: 1 / -1;
+    order: 1;
+  }
+  .dashboard__module--recientes {
+    order: 2;
+  }
+  .dashboard__module--alertas {
+    order: 3;
+  }
+  .dashboard__module--favoritos {
+    grid-column: 1 / -1;
+    order: 4;
+  }
+
+  @media (max-width: 900px) {
+    // En móvil, orden de prioridad = orden de apilado: 01, 02, 03, 04.
+    .dashboard__module--pendientes {
+      order: 1;
+    }
+    .dashboard__module--recientes {
+      order: 2;
+    }
+    .dashboard__module--alertas {
+      order: 3;
+    }
+    .dashboard__module--favoritos {
+      order: 4;
+    }
+  }
+
+  .module-title {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    font-size: var(--op-font-md);
+    font-weight: var(--op-weight-bold);
+    color: var(--op-text);
+    margin: 0;
+    flex: 1;
+
+    &__icon {
+      color: var(--op-primary);
+      font-size: 0.9em;
+    }
+  }
+
+  .module-count {
+    background: var(--op-primary-light);
+    color: var(--op-primary-dark);
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-bold);
+    padding: 2px var(--op-space-2);
+    border-radius: var(--op-radius-pill, 999px);
+  }
+
+  .module-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    font-size: var(--op-font-sm);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-primary-dark);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: 2px;
+    }
+  }
+
+  // ---- Listas de radicados (pendientes / recientes) ----
+  .doc-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-3);
+  }
+
+  .doc-list__item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--op-space-3);
+    flex-wrap: wrap;
+    padding-bottom: var(--op-space-3);
+    border-bottom: 1px solid var(--op-border);
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+  }
+
+  .doc-list__main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .doc-list__tracking {
+    // --op-font-mono es un TAMAÑO (12px), no una familia: usar el stack real
+    // hasta que exista un token de familia monoespaciada en _tokens.scss.
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+  }
+
+  .doc-list__subject {
+    font-size: var(--op-font-sm);
+    color: var(--op-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 320px;
+  }
+
+  .doc-list__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    flex-shrink: 0;
+  }
+
+  .doc-list__due,
+  .doc-list__date {
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+    white-space: nowrap;
+  }
+
+  // ---- Alertas: jerarquía por icono + texto, no solo color ----
+  .alert-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-3);
+  }
+
+  .alert-list__item {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-3);
+    padding: var(--op-space-2) var(--op-space-3);
+    border-radius: var(--op-radius-sm);
+    border: 1px solid var(--op-border);
+
+    &--warning {
+      border-color: var(--op-warning);
+      background: var(--op-warning-bg);
+    }
+    &--critical {
+      border-color: var(--op-error);
+      background: var(--op-error-bg);
+    }
+  }
+
+  .alert-list__icon {
+    flex-shrink: 0;
+    color: var(--op-text-secondary);
+    font-size: 1rem;
+  }
+  .alert-list__item--warning .alert-list__icon {
+    color: var(--op-warning-fg);
+  }
+  .alert-list__item--critical .alert-list__icon {
+    color: var(--op-error-fg);
+  }
+
+  .alert-list__body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .alert-list__tracking {
+    // --op-font-mono es un TAMAÑO (12px), no una familia: usar el stack real
+    // hasta que exista un token de familia monoespaciada en _tokens.scss.
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+  }
+  .alert-list__item--warning .alert-list__tracking {
+    color: var(--op-warning-fg);
+  }
+  .alert-list__item--critical .alert-list__tracking {
+    color: var(--op-error-fg);
+  }
+
+  .alert-list__subject {
+    font-size: var(--op-font-sm);
+    color: var(--op-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .alert-list__due {
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-text-secondary);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .alert-list__item--warning .alert-list__due {
+    color: var(--op-warning-fg);
+  }
+  .alert-list__item--critical .alert-list__due {
+    color: var(--op-error-fg);
+  }
+
+  // ---- Favoritos ----
+  .favorites-grid {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: var(--op-space-3);
+  }
+
+  .favorites-grid__item {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    padding: var(--op-space-3);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    color: var(--op-text);
+    text-decoration: none;
+    font-size: var(--op-font-sm);
+    font-weight: var(--op-weight-medium);
+    min-height: 44px;
+    transition:
+      background var(--op-transition),
+      border-color var(--op-transition);
+
+    &:hover {
+      background: var(--op-primary-light);
+      border-color: var(--op-primary);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: 2px;
+    }
+  }
+
+  .favorites-grid__icon {
+    color: var(--op-primary);
+  }
+
+  // ---- Sección secundaria: métricas ----
+  .dashboard__metrics {
+    padding-top: var(--op-space-4);
+    border-top: 1px solid var(--op-border);
+    display: flex;
+    flex-direction: column;
     gap: var(--op-space-4);
   }
 
-  .skeleton-card {
-    background: var(--op-surface);
-    border: 1px solid var(--op-border);
-    border-radius: var(--op-radius-lg);
+  .dashboard__metrics-heading {
+    margin: 0;
+    font-size: var(--op-font-sm);
+    font-weight: var(--op-weight-bold);
+  }
+
+  .dashboard__metrics-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-5);
+  }
+
+  .dashboard__skeleton {
     padding: var(--op-space-5);
-  }
-
-  .skeleton {
-    background: linear-gradient(90deg, var(--op-bg) 25%, var(--op-border) 50%, var(--op-bg) 75%);
-    background-size: 200% 100%;
-    animation: skeleton-shimmer 1.4s ease infinite;
-    border-radius: var(--op-radius-sm);
-
-    &--sm {
-      height: 14px;
-    }
-    &--lg {
-      height: 28px;
-    }
-  }
-
-  @keyframes skeleton-shimmer {
-    0% {
-      background-position: 200% 0;
-    }
-    100% {
-      background-position: -200% 0;
-    }
   }
 
   // ---- KPIs ----
@@ -418,10 +939,6 @@
     text-overflow: ellipsis;
   }
 
-  // ---- Sección genérica ----
-  .dashboard__section {
-    width: 100%;
-  }
   .dashboard__empty-msg {
     font-size: var(--op-font-sm);
     color: var(--op-text-secondary);
@@ -490,7 +1007,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--op-space-2);
-    counter-reset: dep-counter;
   }
 
   .dep-list__item {
@@ -567,4 +1083,8 @@
     font-weight: var(--op-weight-medium);
     color: var(--op-text-secondary);
   }
+
+  // Respeta prefers-reduced-motion (Sistema de Diseño): las transiciones de
+  // ancho/alto de las barras arriba ya usan --op-transition/duraciones cortas
+  // en el resto de la hoja; la regla global vive en styles/global.scss.
 </style>

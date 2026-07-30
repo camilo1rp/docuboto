@@ -18,11 +18,19 @@
     - Mes (por fecha de radicación)
     - Dependencia destino
 
-  El botón "Descargar CSV" apunta a /reportes/api/csv (proxy SSR) que lee el
-  token de la cookie httpOnly — el token nunca alcanza el cliente (D-05).
+  El botón "Descargar CSV" del encabezado apunta a /reportes/api/csv (proxy SSR)
+  que lee el token de la cookie httpOnly — el token nunca alcanza el cliente
+  (D-05). Exporta el reporte COMPLETO desde el backend, con los mismos filtros
+  de fecha activos.
 
-  No se usan librerías de charting. Las visualizaciones son tablas Bulma/Sass
-  con barras de proporción vía CSS (tokens --op-*) para contexto visual rápido.
+  Cada uno de los cuatro paneles usa además el DataTable compartido (Sistema de
+  Diseño §12): exportación CSV LOCAL de las filas visibles del panel (con
+  filtro/orden ya aplicados) y ordenamiento. Ambas exportaciones son
+  complementarias: la del encabezado trae todo el período desde el gateway; la
+  de cada panel exporta justo lo que el usuario está mirando en ese momento.
+  No se usan librerías de charting: las barras de proporción son CSS con
+  tokens --op-*, dibujadas dentro de una celda controlada vía slot="row" (el
+  renderizado automático de DataTable no sabe dibujar una barra).
 -->
 <script>
   import { onMount } from "svelte";
@@ -33,6 +41,7 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import DataTable from "$lib/components/ui/DataTable.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -102,6 +111,88 @@
     const months = data.summary?.by_month ?? [];
     return Math.max(...months.map((m) => m.count ?? 0), 0);
   })();
+
+  // ---------------------------------------------------------------------------
+  // Filas derivadas para cada DataTable — cada fila lleva ya los campos de
+  // TEXTO que la exportación CSV va a leer (`buildCsv` lee `row[col.key]`
+  // literal; si dejáramos solo `count`/`doc_type` crudos, exportar perdería la
+  // etiqueta legible y el % ya calculado que el usuario ve en pantalla).
+  // ---------------------------------------------------------------------------
+
+  $: typeRows = (data.summary?.by_type ?? []).map((row) => {
+    const count = row.count ?? 0;
+    const pct = grandTotal > 0 ? Math.round((count / grandTotal) * 100) : 0;
+    return {
+      doc_type: row.doc_type,
+      type_label: DOC_TYPE_LABELS[row.doc_type] ?? row.doc_type,
+      count,
+      pct,
+      pct_label: `${pct}%`,
+    };
+  });
+
+  $: statusRows = (data.summary?.by_status ?? []).map((row) => {
+    const count = row.count ?? 0;
+    const pct = grandTotal > 0 ? Math.round((count / grandTotal) * 100) : 0;
+    return {
+      status: row.status,
+      status_label: STATUS_LABELS[row.status] ?? row.status,
+      count,
+      pct,
+      pct_label: `${pct}%`,
+    };
+  });
+
+  $: monthRows = (data.summary?.by_month ?? []).map((row) => {
+    const count = row.count ?? 0;
+    const share = maxMonthCount > 0 ? Math.round((count / maxMonthCount) * 100) : 0;
+    return {
+      month: row.month,
+      month_label: formatMonth(row.month),
+      count,
+      share_label: `${share}%`,
+    };
+  });
+
+  $: deptRows = (data.summary?.by_dept ?? []).map((row) => {
+    const count = row.count ?? 0;
+    const share = maxDeptCount > 0 ? Math.round((count / maxDeptCount) * 100) : 0;
+    return {
+      dept: row.dept ?? row.dest_dept ?? null,
+      dept_label: row.dept ?? row.dest_dept ?? "Sin dependencia",
+      count,
+      share_label: `${share}%`,
+    };
+  });
+
+  const typeColumns = [
+    { key: "type_label", label: "Tipo", sortable: true },
+    { key: "count", label: "Cantidad", sortable: true },
+    { key: "pct_label", label: "%", sortable: true },
+  ];
+
+  const statusColumns = [
+    { key: "status_label", label: "Estado", sortable: true },
+    { key: "count", label: "Cantidad", sortable: true },
+    { key: "pct_label", label: "%", sortable: true },
+  ];
+
+  const monthColumns = [
+    { key: "month_label", label: "Mes", sortable: true, filterType: /** @type {const} */ ("text") },
+    { key: "count", label: "Radicados", sortable: true },
+    { key: "share_label", label: "Distribución", sortable: true },
+  ];
+
+  const deptColumns = [
+    {
+      key: "dept_label",
+      label: "Dependencia",
+      sortable: true,
+      filterType: /** @type {const} */ ("text"),
+    },
+    { key: "count", label: "Radicados", sortable: true },
+    { key: "share_label", label: "Distribución", sortable: true },
+  ];
 
   // ---------------------------------------------------------------------------
   // Aplicar filtros — goto() actualiza la URL y re-ejecuta el server load (SSR)
@@ -195,7 +286,10 @@
       {/if}
     </div>
     <!-- Descarga CSV vía fetch→blob; el proxy SSR lee el token de la cookie httpOnly.
-         No usar <a download> porque guardaría el JSON de error como archivo .csv. -->
+         No usar <a download> porque guardaría el JSON de error como archivo .csv.
+         Trae el reporte COMPLETO del período desde el backend (a diferencia de
+         la exportación por-panel de cada DataTable, que solo exporta las filas
+         visibles de ese panel). -->
     <button
       type="button"
       class="csv-download-btn"
@@ -247,7 +341,25 @@
   <!-- -------------------------------------------------------------------------
     Contenido principal
   ------------------------------------------------------------------------- -->
-  <div class="reportes__content" aria-live="polite" aria-busy={loading}>
+  <!--
+    El aria-live vive en un nodo pequeño y estático (Fix #6, patrón replicado de
+    busqueda/+page.svelte) para no reanunciar los cuatro paneles/tablas completos
+    en cada filtro/orden/skeleton; cada DataTable ya trae su propia región
+    aria-live interna para sus propios cambios.
+  -->
+  <p class="sr-only" aria-live="polite" aria-atomic="true">
+    {#if loading}
+      Cargando reporte…
+    {:else if data.loadError}
+      No se pudo cargar el reporte.
+    {:else}
+      Reporte actualizado: {grandTotal.toLocaleString("es-CO")} radicado{grandTotal !== 1
+        ? "s"
+        : ""} en el período.
+    {/if}
+  </p>
+
+  <div class="reportes__content" aria-busy={loading}>
     {#if loading}
       <div class="reportes__loading">
         <Loader type="skeleton" lines={6} label="Cargando reporte…" />
@@ -273,51 +385,36 @@
         ================================================================= -->
         <section class="report-panel" aria-labelledby="panel-tipo-heading">
           <h2 id="panel-tipo-heading" class="report-panel__title">Por tipo</h2>
-          {#if (data.summary.by_type ?? []).length === 0}
-            <p class="report-panel__empty">Sin datos</p>
-          {:else}
-            <table class="report-table" aria-label="Radicados por tipo">
-              <caption class="sr-only">Conteo de radicados agrupados por tipo</caption>
-              <thead>
-                <tr>
-                  <th scope="col" class="report-table__th">Tipo</th>
-                  <th scope="col" class="report-table__th report-table__th--num">Cantidad</th>
-                  <th scope="col" class="report-table__th report-table__th--num">%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each data.summary.by_type as row (row.doc_type)}
-                  {@const pct = grandTotal > 0 ? Math.round((row.count / grandTotal) * 100) : 0}
-                  <tr class="report-table__row">
-                    <td class="report-table__td">
-                      <span
-                        class="doc-type-badge doc-type-badge--{(row.doc_type ?? '').toLowerCase()}"
-                      >
-                        {DOC_TYPE_LABELS[row.doc_type] ?? row.doc_type}
-                      </span>
-                    </td>
-                    <td class="report-table__td report-table__td--num">
-                      {row.count?.toLocaleString("es-CO") ?? 0}
-                    </td>
-                    <td class="report-table__td report-table__td--num">
-                      <span class="pct-bar" aria-hidden="true">
-                        <span class="pct-bar__fill" style="width: {pct}%"></span>
-                      </span>
-                      <span class="pct-text">{pct}%</span>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-              <tfoot>
-                <tr class="report-table__total">
-                  <td class="report-table__td">Total</td>
-                  <td class="report-table__td report-table__td--num">
-                    <strong>{grandTotal.toLocaleString("es-CO")}</strong>
-                  </td>
-                  <td class="report-table__td report-table__td--num">100%</td>
-                </tr>
-              </tfoot>
-            </table>
+          <DataTable
+            tableId="reportes-tipo"
+            columns={typeColumns}
+            rows={typeRows}
+            totalCount={typeRows.length}
+            pageSize={Math.max(typeRows.length, 1)}
+            enableSort
+            enableExport
+            exportFilename="reportes-por-tipo.csv"
+            caption="Radicados por tipo"
+          >
+            <svelte:fragment slot="row" let:row>
+              <td class="op-datatable__td">
+                <span class="doc-type-badge doc-type-badge--{(row.doc_type ?? '').toLowerCase()}">
+                  {row.type_label}
+                </span>
+              </td>
+              <td class="op-datatable__td report-cell--num">{row.count.toLocaleString("es-CO")}</td>
+              <td class="op-datatable__td">
+                <span class="pct-bar" aria-hidden="true">
+                  <span class="pct-bar__fill" style="width: {row.pct}%"></span>
+                </span>
+                <span class="pct-text">{row.pct_label}</span>
+              </td>
+            </svelte:fragment>
+          </DataTable>
+          {#if typeRows.length > 0}
+            <p class="report-panel__total">
+              Total: <strong>{grandTotal.toLocaleString("es-CO")}</strong> (100%)
+            </p>
           {/if}
         </section>
 
@@ -326,39 +423,28 @@
         ================================================================= -->
         <section class="report-panel" aria-labelledby="panel-estado-heading">
           <h2 id="panel-estado-heading" class="report-panel__title">Por estado</h2>
-          {#if (data.summary.by_status ?? []).length === 0}
-            <p class="report-panel__empty">Sin datos</p>
-          {:else}
-            <table class="report-table" aria-label="Radicados por estado">
-              <caption class="sr-only">Conteo de radicados agrupados por estado</caption>
-              <thead>
-                <tr>
-                  <th scope="col" class="report-table__th">Estado</th>
-                  <th scope="col" class="report-table__th report-table__th--num">Cantidad</th>
-                  <th scope="col" class="report-table__th report-table__th--num">%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each data.summary.by_status as row (row.status)}
-                  {@const pct = grandTotal > 0 ? Math.round((row.count / grandTotal) * 100) : 0}
-                  <tr class="report-table__row">
-                    <td class="report-table__td">
-                      {STATUS_LABELS[row.status] ?? row.status}
-                    </td>
-                    <td class="report-table__td report-table__td--num">
-                      {row.count?.toLocaleString("es-CO") ?? 0}
-                    </td>
-                    <td class="report-table__td report-table__td--num">
-                      <span class="pct-bar" aria-hidden="true">
-                        <span class="pct-bar__fill" style="width: {pct}%"></span>
-                      </span>
-                      <span class="pct-text">{pct}%</span>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
+          <DataTable
+            tableId="reportes-estado"
+            columns={statusColumns}
+            rows={statusRows}
+            totalCount={statusRows.length}
+            pageSize={Math.max(statusRows.length, 1)}
+            enableSort
+            enableExport
+            exportFilename="reportes-por-estado.csv"
+            caption="Radicados por estado"
+          >
+            <svelte:fragment slot="row" let:row>
+              <td class="op-datatable__td">{row.status_label}</td>
+              <td class="op-datatable__td report-cell--num">{row.count.toLocaleString("es-CO")}</td>
+              <td class="op-datatable__td">
+                <span class="pct-bar" aria-hidden="true">
+                  <span class="pct-bar__fill" style="width: {row.pct}%"></span>
+                </span>
+                <span class="pct-text">{row.pct_label}</span>
+              </td>
+            </svelte:fragment>
+          </DataTable>
         </section>
 
         <!-- =================================================================
@@ -366,40 +452,32 @@
         ================================================================= -->
         <section class="report-panel report-panel--wide" aria-labelledby="panel-mes-heading">
           <h2 id="panel-mes-heading" class="report-panel__title">Actividad mensual</h2>
-          {#if (data.summary.by_month ?? []).length === 0}
-            <p class="report-panel__empty">Sin datos</p>
-          {:else}
-            <table class="report-table" aria-label="Radicados por mes">
-              <caption class="sr-only">Conteo de radicados agrupados por mes de radicación</caption>
-              <thead>
-                <tr>
-                  <th scope="col" class="report-table__th">Mes</th>
-                  <th scope="col" class="report-table__th report-table__th--num">Radicados</th>
-                  <th scope="col" class="report-table__th report-table__th--bar">Distribución</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each data.summary.by_month as row (row.month)}
-                  <tr class="report-table__row">
-                    <td class="report-table__td">
-                      <time datetime={row.month}>{formatMonth(row.month)}</time>
-                    </td>
-                    <td class="report-table__td report-table__td--num">
-                      {row.count?.toLocaleString("es-CO") ?? 0}
-                    </td>
-                    <td class="report-table__td report-table__td--bar">
-                      <span class="bar-visual" aria-hidden="true">
-                        <span
-                          class="bar-visual__fill"
-                          style="width: {barWidth(row.count, maxMonthCount)}"
-                        ></span>
-                      </span>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
+          <DataTable
+            tableId="reportes-mes"
+            columns={monthColumns}
+            rows={monthRows}
+            totalCount={monthRows.length}
+            pageSize={Math.max(monthRows.length, 1)}
+            enableSort
+            enableFilters
+            enableExport
+            exportFilename="reportes-actividad-mensual.csv"
+            caption="Radicados por mes"
+          >
+            <svelte:fragment slot="row" let:row>
+              <td class="op-datatable__td">
+                <time datetime={row.month}>{row.month_label}</time>
+              </td>
+              <td class="op-datatable__td report-cell--num">{row.count.toLocaleString("es-CO")}</td>
+              <td class="op-datatable__td">
+                <span class="bar-visual" aria-hidden="true">
+                  <span class="bar-visual__fill" style="width: {barWidth(row.count, maxMonthCount)}"
+                  ></span>
+                </span>
+                <span class="pct-text">{row.share_label}</span>
+              </td>
+            </svelte:fragment>
+          </DataTable>
         </section>
 
         <!-- =================================================================
@@ -407,42 +485,31 @@
         ================================================================= -->
         <section class="report-panel report-panel--wide" aria-labelledby="panel-dept-heading">
           <h2 id="panel-dept-heading" class="report-panel__title">Por dependencia destino</h2>
-          {#if (data.summary.by_dept ?? []).length === 0}
-            <p class="report-panel__empty">Sin datos</p>
-          {:else}
-            <table class="report-table" aria-label="Radicados por dependencia destino">
-              <caption class="sr-only"
-                >Conteo de radicados agrupados por dependencia destino</caption
-              >
-              <thead>
-                <tr>
-                  <th scope="col" class="report-table__th">Dependencia</th>
-                  <th scope="col" class="report-table__th report-table__th--num">Radicados</th>
-                  <th scope="col" class="report-table__th report-table__th--bar">Distribución</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each data.summary.by_dept as row (row.dept ?? row.dest_dept)}
-                  <tr class="report-table__row">
-                    <td class="report-table__td">
-                      {row.dept ?? row.dest_dept ?? "Sin dependencia"}
-                    </td>
-                    <td class="report-table__td report-table__td--num">
-                      {row.count?.toLocaleString("es-CO") ?? 0}
-                    </td>
-                    <td class="report-table__td report-table__td--bar">
-                      <span class="bar-visual" aria-hidden="true">
-                        <span
-                          class="bar-visual__fill"
-                          style="width: {barWidth(row.count, maxDeptCount)}"
-                        ></span>
-                      </span>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
+          <DataTable
+            tableId="reportes-dependencia"
+            columns={deptColumns}
+            rows={deptRows}
+            totalCount={deptRows.length}
+            pageSize={Math.max(deptRows.length, 1)}
+            enableSort
+            enableFilters
+            enableExport
+            virtualize
+            exportFilename="reportes-por-dependencia.csv"
+            caption="Radicados por dependencia destino"
+          >
+            <svelte:fragment slot="row" let:row>
+              <td class="op-datatable__td">{row.dept_label}</td>
+              <td class="op-datatable__td report-cell--num">{row.count.toLocaleString("es-CO")}</td>
+              <td class="op-datatable__td">
+                <span class="bar-visual" aria-hidden="true">
+                  <span class="bar-visual__fill" style="width: {barWidth(row.count, maxDeptCount)}"
+                  ></span>
+                </span>
+                <span class="pct-text">{row.share_label}</span>
+              </td>
+            </svelte:fragment>
+          </DataTable>
         </section>
       </div>
     {/if}
@@ -500,7 +567,7 @@
     align-items: center;
     gap: var(--op-space-2);
     padding: var(--op-space-2) var(--op-space-4);
-    background: var(--op-primary);
+    background: var(--op-primary-dark);
     color: var(--op-surface);
     border: none;
     border-radius: var(--op-radius);
@@ -511,7 +578,7 @@
     flex-shrink: 0;
 
     &:hover:not(:disabled) {
-      background: var(--op-primary-dark);
+      background: var(--op-brand-700);
     }
 
     &:disabled {
@@ -609,6 +676,14 @@
     flex-direction: column;
     gap: var(--op-space-3);
 
+    // El DataTable trae su propio scroll horizontal (§12); dentro de un panel
+    // con padding lateral no debe desbordar la tarjeta.
+    :global(.op-datatable) {
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      overflow: hidden;
+    }
+
     &--wide {
       grid-column: 1 / -1;
     }
@@ -623,80 +698,24 @@
     border-bottom: 1px solid var(--op-border);
   }
 
-  .report-panel__empty {
+  // Total del panel "Por tipo" — el DataTable no tiene fila de pie (tfoot);
+  // esta es la divergencia declarada, ver informe de la fase.
+  .report-panel__total {
     font-size: var(--op-font-sm);
     color: var(--op-text-secondary);
-    font-style: italic;
-    margin: var(--op-space-4) 0;
-    text-align: center;
+    text-align: right;
+    margin: 0;
+    padding-top: var(--op-space-2);
+    border-top: 1px solid var(--op-border);
   }
 
   // ---------------------------------------------------------------------------
-  // Tablas de reporte
+  // Celdas numéricas (renderizado manual vía slot="row")
   // ---------------------------------------------------------------------------
 
-  .report-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--op-font-sm);
-
-    &__th {
-      padding: var(--op-space-2) var(--op-space-3);
-      text-align: left;
-      font-size: var(--op-font-xs);
-      font-weight: var(--op-weight-bold);
-      color: var(--op-text-secondary);
-      background: var(--op-bg);
-      border-bottom: 1px solid var(--op-border);
-      white-space: nowrap;
-
-      &--num {
-        text-align: right;
-        width: 80px;
-      }
-      &--bar {
-        width: 180px;
-      }
-    }
-
-    &__row {
-      transition: background var(--op-transition);
-
-      &:hover {
-        background: var(--op-bg);
-      }
-
-      &:not(:last-child) .report-table__td {
-        border-bottom: 1px solid var(--op-border);
-      }
-    }
-
-    &__td {
-      padding: var(--op-space-2) var(--op-space-3);
-      vertical-align: middle;
-      color: var(--op-text);
-
-      &--num {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-        color: var(--op-text);
-      }
-
-      &--bar {
-        vertical-align: middle;
-      }
-    }
-
-    &__total {
-      background: var(--op-bg);
-      border-top: 2px solid var(--op-border);
-
-      .report-table__td {
-        font-weight: var(--op-weight-bold);
-        color: var(--op-text);
-        padding: var(--op-space-2) var(--op-space-3);
-      }
-    }
+  .report-cell--num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   // ---------------------------------------------------------------------------

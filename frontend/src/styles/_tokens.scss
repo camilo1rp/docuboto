@@ -23,66 +23,96 @@
 // 1. Variables Sass (alimentan Bulma en tiempo de build)
 // -----------------------------------------------------------------------------
 
-// Paleta cromática
-$op-primary: #459940;
-$op-primary-dark: #305336;
-$op-primary-light: #dceed7;
-$op-on-primary: #ffffff; // texto sobre superficie primaria (usar con --op-primary-dark: ~7:1, AA)
-$op-accent: #94bc2f;
+// Paleta cromática — Sistema de Diseño OrpycaMCP v1.0
+// Fuente: DesignPhilosophyDocument/"Sistema de Diseno OrpycaMCP.dc.html"
+$op-primary: #2a8c3a; // marca 500 — acción principal
+$op-primary-dark: #1c6b33; // marca 600 — hover/activo, y color AA-seguro para TEXTO
+// sobre superficies claras u oscuras (ver nota de contraste más abajo)
+$op-primary-light: #dceed7; // fondos sutiles / selección (tinte pálido del verde 500)
+$op-on-primary: #ffffff; // texto sobre superficie primaria oscura (op-primary-dark: 6.56:1 AA)
+$op-accent: #8dbf3c; // marca lime 300 — acentos puntuales, NUNCA como texto sobre claro (2.18:1)
 
-$op-text: #212421;
-$op-text-secondary: #515551;
+// Extensión de marca (no listados como --op-primary/-dark pero útiles para degradados
+// y fondos de marca profundos; ver v1.0 "marca 700/deep" y "marca 400").
+$op-brand-700: #173a22; // marca 700/deep
+$op-brand-400: #4fa84b; // marca 400
 
-$op-border: #d8ddd6;
-$op-bg: #f5f7f4;
-$op-surface: #ffffff;
+$op-text: #232624; // ink
+$op-text-secondary: #6e7370; // muted
 
-// Estados semánticos — color del borde/icono (border-left, dot)
-$op-success: #459940;
-$op-warning: #d8a32e;
-$op-error: #d9534f;
-$op-info: #3e7fa6;
+$op-border: #e7eae2; // hairline
+$op-bg: #fbfcf8; // canvas
+$op-surface: #ffffff; // surface
 
-// Fondos y textos de estado para chips, toasts y semáforos
-// Verificados con contraste AA (≥4.5:1) sobre sus fondos respectivos.
+// Estados semánticos — color del borde/icono (border-left, dot). Estos valores
+// cumplen el mínimo de contraste no-textual (≥3:1) pero NO se usan como color de
+// texto directo (ver $op-*-fg más abajo, que sí están verificados a ≥4.5:1 AA).
+$op-success: #2a8c3a; // = $op-primary
+$op-warning: #c8881c;
+$op-error: #c4452c;
+$op-info: #2b6cb0;
+
+// Fondos y textos de estado para chips, toasts y semáforos.
+// Verificados con contraste AA (≥4.5:1 texto normal) sobre sus fondos respectivos
+// (cálculo de luminancia relativa WCAG 2.x, no estimado — ver reporte de la tarea):
+//   success-bg/success-fg  → 5.39:1
+//   warning-bg/warning-fg  → 5.96:1 (además 6.58:1 sobre blanco)
+//   error-bg/error-fg      → 7.90:1
+//   info-bg/info-fg        → 7.53:1
 $op-success-bg: #dceed7; // = $op-primary-light  (reutiliza la paleta verde)
-$op-success-fg: #305336; // = $op-primary-dark   (ratio ~7:1)
-$op-warning-bg: #fdf3dc; // amarillo pálido        (ratio ~5.6:1 con fg)
-$op-warning-fg: #7a5700; // marrón oscuro           (ratio ~5.6:1)
-$op-error-bg: #fce8e8; // rojo pálido             (ratio ~6.3:1 con fg)
-$op-error-fg: #8b1a1a; // rojo oscuro             (ratio ~6.3:1)
-$op-info-bg: #e0eef7; // azul pálido             (ratio ~5.1:1 con fg)
-$op-info-fg: #1e4e6b; // azul marino             (ratio ~5.1:1)
-// Fondo de semáforo vencido (estado crítico — contraste ~7:1)
+$op-success-fg: #1c6b33; // = $op-primary-dark   (ratio 5.39:1 sobre success-bg, 6.56:1 sobre blanco)
+$op-warning-bg: #fdf3dc; // amarillo pálido        (ratio ~5.96:1 con fg)
+$op-warning-fg: #7a5700; // marrón oscuro           (ratio ~5.96:1)
+$op-error-bg: #fce8e8; // rojo pálido             (ratio ~7.9:1 con fg)
+$op-error-fg: #8b1a1a; // rojo oscuro             (ratio ~7.9:1)
+$op-info-bg: #e0eef7; // azul pálido             (ratio ~7.53:1 con fg)
+$op-info-fg: #1e4e6b; // azul marino             (ratio ~7.53:1)
+// Fondo de semáforo vencido (estado crítico — contraste ~14:1)
 $op-error-strong-bg: #3b0000;
 $op-error-strong-fg: #ffdddd;
 
-// Focus rings tokenizados
-$op-focus-ring: rgba(69, 153, 64, 0.15); // primario al 15%
-$op-error-ring: rgba(217, 83, 79, 0.15); // error al 15%
+// Focus rings tokenizados (halo no-textual, no exige 4.5:1; alfa sobre el color base)
+$op-focus-ring: rgba(42, 140, 58, 0.15); // primario (#2a8c3a) al 15%
+$op-error-ring: rgba(196, 69, 44, 0.15); // error (#c4452c) al 15%
 
-// Tipografía
+// -----------------------------------------------------------------------------
+// Tipografía — Space Grotesk (display/cifras) + Public Sans (UI/cuerpo)
+// Self-hosted vía @fontsource (sin CDN externo). Fallback real al stack de
+// sistema si la fuente no carga.
+// -----------------------------------------------------------------------------
 $op-font-family:
+  "Public Sans",
   "Segoe UI",
   system-ui,
   -apple-system,
   sans-serif;
-$op-font-size-base: 14px; // densidad cómoda para jornadas largas en gestión documental
-$op-line-height: 1.55;
+$op-font-display:
+  "Space Grotesk",
+  "Segoe UI",
+  system-ui,
+  -apple-system,
+  sans-serif;
+$op-font-size-base: 15px; // Body 15/400, v1.0
+$op-line-height: 1.6; // Body interlínea 1.6, v1.0
 
-// Escala tipográfica (múltiplos de 2px sobre base 14)
-$op-font-xs: 12px;
-$op-font-sm: 13px;
-$op-font-base: 14px;
+// Escala tipográfica v1.0 (Display 46/700 · H1 28/600 · H2 22/600 · Body 15/400 ·
+// Small 13/500 · Mono 12/500). Se conservan los nombres xs..2xl (usados por 19
+// pantallas) y se añaden display/h1/h2/mono como tokens nuevos.
+$op-font-xs: 12px; // = Mono v1.0
+$op-font-sm: 13px; // = Small v1.0
+$op-font-base: 15px; // = Body v1.0
 $op-font-md: 16px;
 $op-font-lg: 18px;
-$op-font-xl: 22px;
-$op-font-2xl: 28px;
+$op-font-xl: 22px; // = H2 v1.0
+$op-font-2xl: 28px; // = H1 v1.0
+$op-font-size-display: 46px; // = Display v1.0 (cifras destacadas, hero)
+$op-font-mono: 12px; // = Mono v1.0 (números de radicado)
 
 // Pesos
 $op-weight-regular: 400;
 $op-weight-medium: 500;
 $op-weight-bold: 600;
+$op-weight-display: 700; // peso del Display v1.0
 
 // Espaciado — unidad base 8px
 $op-space-1: 4px; // 0.5u
@@ -94,23 +124,36 @@ $op-space-6: 32px; // 4u
 $op-space-7: 48px; // 6u
 $op-space-8: 64px; // 8u
 
-// Radio de borde
-$op-radius-sm: 4px;
-$op-radius: 6px;
-$op-radius-lg: 10px;
+// Radio de borde v1.0: sm 6 (chips/inputs) · md 10 (botones/tarjetas) ·
+// lg 16 (modales/paneles) · pill 999px (etiquetas).
+// Se conservan los nombres $op-radius/-lg (19 pantallas dependen de ellos):
+// $op-radius (antes "6px genérico") pasa a cumplir el rol de "md" de v1.0.
+$op-radius-sm: 6px;
+$op-radius: 10px; // = "md" v1.0
+$op-radius-lg: 16px;
 $op-radius-full: 999px; // badge redondeado (pill)
 
-// Sombras
-$op-shadow-sm: 0 1px 3px rgba(33, 36, 33, 0.08);
-$op-shadow: 0 2px 8px rgba(33, 36, 33, 0.12);
-$op-shadow-lg: 0 4px 16px rgba(33, 36, 33, 0.16);
+// Sombras v1.0 — siempre muy suaves
+$op-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+$op-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
+$op-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); // = "md" v1.0
+$op-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.06); // alias de -lg mantenido (mismo valor que "md",
+// v1.0 no define un escalón mayor); ver $op-shadow para el uso recomendado
 
-// Transiciones
-$op-transition: 150ms ease;
+// Movimiento v1.0 — 120ms micro (hover/foco/toggles) · 200ms estándar
+// (modales/paneles/colapsos) · 300ms pantalla completa. Easing único.
+$op-motion-fast: 120ms;
+$op-motion-base: 200ms;
+$op-motion-slow: 300ms;
+$op-motion-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-// Layout — sidebar/topbar
-$op-sidebar-width: 220px;
-$op-sidebar-collapsed-width: 52px;
+// Transición genérica (nombre histórico, mantenido — 19 pantallas lo consumen).
+// Se realinea a la duración/easing "estándar" de v1.0 en vez del valor anterior.
+$op-transition: #{$op-motion-base} #{$op-motion-easing};
+
+// Layout — sidebar/topbar. v1.0 especifica sidebar 264px expandido / 64px colapsado.
+$op-sidebar-width: 264px;
+$op-sidebar-collapsed-width: 64px;
 $op-topbar-height: 52px;
 $op-breadcrumb-height: 36px;
 
@@ -127,6 +170,8 @@ $op-breadcrumb-height: 36px;
   --op-primary-light: #{$op-primary-light};
   --op-on-primary: #{$op-on-primary};
   --op-accent: #{$op-accent};
+  --op-brand-700: #{$op-brand-700};
+  --op-brand-400: #{$op-brand-400};
 
   // Texto
   --op-text: #{$op-text};
@@ -161,6 +206,7 @@ $op-breadcrumb-height: 36px;
 
   // Tipografía
   --op-font-family: #{$op-font-family};
+  --op-font-display: #{$op-font-display};
   --op-font-size-base: #{$op-font-size-base};
   --op-line-height: #{$op-line-height};
 
@@ -171,10 +217,13 @@ $op-breadcrumb-height: 36px;
   --op-font-lg: #{$op-font-lg};
   --op-font-xl: #{$op-font-xl};
   --op-font-2xl: #{$op-font-2xl};
+  --op-font-size-display: #{$op-font-size-display};
+  --op-font-mono: #{$op-font-mono};
 
   --op-weight-regular: #{$op-weight-regular};
   --op-weight-medium: #{$op-weight-medium};
   --op-weight-bold: #{$op-weight-bold};
+  --op-weight-display: #{$op-weight-display};
 
   // Espaciado
   --op-space-1: #{$op-space-1};
@@ -192,15 +241,45 @@ $op-breadcrumb-height: 36px;
   --op-radius-lg: #{$op-radius-lg};
   --op-radius-full: #{$op-radius-full};
 
+  --op-shadow-xs: #{$op-shadow-xs};
   --op-shadow-sm: #{$op-shadow-sm};
   --op-shadow: #{$op-shadow};
   --op-shadow-lg: #{$op-shadow-lg};
 
   --op-transition: #{$op-transition};
 
+  // Movimiento (duraciones + easing tokenizados, v1.0)
+  --op-motion-fast: #{$op-motion-fast};
+  --op-motion-base: #{$op-motion-base};
+  --op-motion-slow: #{$op-motion-slow};
+  --op-motion-easing: #{$op-motion-easing};
+
   // Layout
   --op-sidebar-width: #{$op-sidebar-width};
   --op-sidebar-collapsed-width: #{$op-sidebar-collapsed-width};
   --op-topbar-height: #{$op-topbar-height};
   --op-breadcrumb-height: #{$op-breadcrumb-height};
+}
+
+// -----------------------------------------------------------------------------
+// 3. Accesibilidad de movimiento — prefers-reduced-motion (requisito v1.0)
+//    Anula duraciones y usa la transición genérica; el resto de archivos siguen
+//    escribiendo `transition: ... var(--op-transition)` con normalidad.
+// -----------------------------------------------------------------------------
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --op-motion-fast: 0ms;
+    --op-motion-base: 0ms;
+    --op-motion-slow: 0ms;
+    --op-transition: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

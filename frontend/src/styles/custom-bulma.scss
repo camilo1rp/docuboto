@@ -27,41 +27,62 @@
 // Bulma en build-time. En TODOS los demás contextos (componentes, layout,
 // utilities) se consume var(--op-*). Esta es la ÚNICA excepción permitida.
 
-$op-primary: #459940;
-$op-primary-dark: #305336;
+$op-primary: #2a8c3a;
+$op-primary-dark: #1c6b33;
 $op-primary-light: #dceed7;
-$op-accent: #94bc2f;
-$op-text: #212421;
-$op-text-secondary: #515551;
-$op-border: #d8ddd6;
-$op-bg: #f5f7f4;
+$op-brand-700: #173a22;
+$op-accent: #8dbf3c;
+$op-text: #232624;
+$op-text-secondary: #6e7370;
+$op-border: #e7eae2;
+$op-bg: #fbfcf8;
 $op-surface: #ffffff;
-$op-success: #459940;
-$op-warning: #d8a32e;
-$op-error: #d9534f;
-$op-info: #3e7fa6;
+$op-success: #2a8c3a;
+$op-warning: #c8881c;
+$op-error: #c4452c;
+$op-info: #2b6cb0;
 
 // Tipografía
 $op-font-family:
+  "Public Sans",
   "Segoe UI",
   system-ui,
   -apple-system,
   sans-serif;
-$op-font-base: 14px;
-$op-line-height: 1.55;
-$op-radius-sm: 4px;
-$op-radius: 6px;
-$op-radius-lg: 10px;
+$op-font-display:
+  "Space Grotesk",
+  "Segoe UI",
+  system-ui,
+  -apple-system,
+  sans-serif;
+$op-font-base: 15px;
+$op-line-height: 1.6;
+$op-radius-sm: 6px;
+$op-radius: 10px;
+$op-radius-lg: 16px;
+
+// Nota de contraste AA (WCAG 2.x, cálculo real — no estimado):
+//   $op-primary (#2a8c3a) sobre blanco/#fbfcf8 = 4.28:1 → NO cumple 4.5:1 para
+//   texto normal (solo sirve para bordes/iconos/foco, que exigen 3:1).
+//   Por eso $primary (alimenta clases de texto/botón autogeneradas por Bulma:
+//   .has-text-primary, .is-primary, enlaces) se declara con $op-primary-dark
+//   (#1c6b33 → 6.56:1 sobre blanco), que SÍ cumple AA como texto. El token
+//   runtime --op-primary (custom-bulma no lo toca) conserva el valor exacto
+//   de v1.0 para usos decorativos/foco.
+$op-primary-text: $op-primary-dark;
 
 // --- Overrides de variables Bulma (declarados antes del @import) -------------
 
 // Colores
-$primary: $op-primary;
-$link: $op-primary;
-$link-hover: $op-primary-dark;
-$link-active: $op-primary-dark;
-$link-focus: $op-primary;
-$link-visited: $op-primary-dark;
+// $primary/$link alimentan clases de TEXTO autogeneradas por Bulma
+// (.has-text-primary, .is-primary sin overridear, enlaces de contenido):
+// se usa $op-primary-text (= $op-primary-dark) para garantizar AA (ver nota arriba).
+$primary: $op-primary-text;
+$link: $op-primary-text;
+$link-hover: $op-brand-700;
+$link-active: $op-brand-700;
+$link-focus: $op-primary-text;
+$link-visited: $op-primary-text;
 
 $success: $op-success;
 $warning: $op-warning;
@@ -97,9 +118,9 @@ $button-hover-border-color: $op-primary;
 // Navbar
 $navbar-background-color: $op-surface;
 $navbar-item-color: $op-text;
-$navbar-item-hover-color: $op-primary;
+$navbar-item-hover-color: $op-primary-text; // texto AA (ver nota de contraste)
 $navbar-item-hover-background-color: $op-bg;
-$navbar-item-active-color: $op-primary;
+$navbar-item-active-color: $op-primary-text;
 
 // Inputs
 $input-border-color: $op-border;
@@ -111,7 +132,7 @@ $input-background-color: $op-surface;
 // Card
 $card-color: $op-text;
 $card-background-color: $op-surface;
-$card-shadow: 0 2px 8px rgba(33, 36, 33, 0.12);
+$card-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); // = $op-shadow (v1.0 "md")
 
 // Tag
 $tag-background-color: $op-primary-light;
@@ -142,29 +163,33 @@ $modal-card-foot-border-top: 1px solid $op-border;
 // -----------------------------------------------------------------------
 
 // Botón primario
+// Nota AA: el fondo usa --op-primary-dark (no --op-primary) porque el par
+// #2a8c3a/blanco mide 4.28:1 (no cumple 4.5:1 de texto normal); #1c6b33/blanco
+// mide 6.56:1. --op-primary en su valor exacto de v1.0 queda para usos
+// decorativos/no-textuales (bordes, iconos, foco), que solo exigen 3:1.
 .button.is-primary {
-  background-color: var(--op-primary);
+  background-color: var(--op-primary-dark);
   border-color: transparent;
   color: var(--op-surface);
 
   &:hover,
   &:focus {
-    background-color: var(--op-primary-dark);
+    background-color: var(--op-brand-700);
     border-color: transparent;
     color: var(--op-surface);
   }
 
   &:active {
-    background-color: var(--op-primary-dark);
+    background-color: var(--op-brand-700);
   }
 
   &.is-outlined {
     background-color: transparent;
-    border-color: var(--op-primary);
-    color: var(--op-primary);
+    border-color: var(--op-primary-dark);
+    color: var(--op-primary-dark);
 
     &:hover {
-      background-color: var(--op-primary);
+      background-color: var(--op-primary-dark);
       color: var(--op-surface);
     }
   }
@@ -181,9 +206,9 @@ $modal-card-foot-border-top: 1px solid $op-border;
   }
 }
 
-// Tag primario
+// Tag primario (mismo criterio AA que el botón)
 .tag.is-primary {
-  background-color: var(--op-primary);
+  background-color: var(--op-primary-dark);
   color: var(--op-surface);
 }
 
@@ -192,12 +217,12 @@ $modal-card-foot-border-top: 1px solid $op-border;
   color: var(--op-primary-dark);
 }
 
-// Links globales
+// Links globales (texto: --op-primary-dark cumple AA; --op-primary no)
 a {
-  color: var(--op-primary);
+  color: var(--op-primary-dark);
 
   &:hover {
-    color: var(--op-primary-dark);
+    color: var(--op-brand-700);
   }
 }
 
@@ -209,6 +234,16 @@ body {
   font-family: var(--op-font-family);
   font-size: var(--op-font-size-base);
   line-height: var(--op-line-height);
+}
+
+// Tipografía display (Space Grotesk) — títulos y cifras destacadas.
+// El resto de la UI (formularios, tablas, cuerpo) usa --op-font-family.
+h1,
+h2,
+h3,
+.title,
+.op-display {
+  font-family: var(--op-font-display);
 }
 
 // Reset de box-sizing complementario

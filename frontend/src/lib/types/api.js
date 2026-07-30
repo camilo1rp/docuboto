@@ -251,6 +251,23 @@
  */
 
 /**
+ * Estado de la anulación de un radicado (paso 1 solicitar, paso 2 decidir).
+ * GET/POST /api/v1/documents/{id}/anulacion[/aprobar|/rechazar].
+ *
+ * @typedef {object} AnulacionResponse
+ * @property {string}                                id
+ * @property {string}                                radicado_id
+ * @property {'solicitada'|'aprobada'|'rechazada'}    estado
+ * @property {string}                                causal
+ * @property {string|null}                           motivo         — de la solicitud
+ * @property {string|null}                           solicitado_por — UUID
+ * @property {string}                                solicitado_at  — ISO 8601 UTC
+ * @property {string|null}                           decidido_por   — UUID
+ * @property {string|null}                           decidido_at    — ISO 8601 UTC
+ * @property {string|null}                           observacion    — de la decisión
+ */
+
+/**
  * Cuerpo para firma en lote.
  *
  * @typedef {object} SignatureBatchBody

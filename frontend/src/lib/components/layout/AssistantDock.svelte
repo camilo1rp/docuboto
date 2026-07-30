@@ -397,8 +397,8 @@
       }
 
       &--error {
-        background: var(--op-error-ring);
-        color: var(--op-error);
+        background: var(--op-error-bg);
+        color: var(--op-error-fg);
       }
 
       i {
@@ -449,7 +449,7 @@
       align-self: flex-end;
 
       .assistant-turn__bubble {
-        background: var(--op-primary);
+        background: var(--op-primary-dark);
         color: var(--op-surface);
         border-bottom-right-radius: 2px;
       }

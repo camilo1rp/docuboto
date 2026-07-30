@@ -257,6 +257,12 @@
     &__input {
       height: 36px;
       padding: 0 var(--op-space-3);
+
+      // Objetivo táctil >=44px (v1.0 A11y) en dispositivos táctiles, sin
+      // alterar la densidad visual en escritorio (mouse/trackpad).
+      @media (pointer: coarse) {
+        min-height: 44px;
+      }
     }
 
     &__select-wrapper {
@@ -268,6 +274,10 @@
       padding: 0 var(--op-space-6) 0 var(--op-space-3);
       appearance: none;
       cursor: pointer;
+
+      @media (pointer: coarse) {
+        min-height: 44px;
+      }
     }
 
     &__select-icon {

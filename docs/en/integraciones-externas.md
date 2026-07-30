@@ -113,6 +113,50 @@ The MCP layer is thus **complete** (tools + resources + prompts + both transport
 
 ---
 
+## 7. Migration from legacy Orfeo — **out of scope for this repository**
+
+**Scope decision: this codebase does not carry, and will not carry, data-migration
+tooling for existing Orfeo installations.** That work is done externally, outside
+the repository.
+
+### Why
+
+Every institution configured its Orfeo differently: 14- or 15-digit registration
+numbers, metadata in dynamic tables, its own password scheme, different database
+engines. A generic extractor does not exist; what exists is per-installation
+mapping work. Putting it here would mean maintaining a set of special cases in
+the core that help nobody else and age with every client.
+
+### What this repository does provide, and it is enough
+
+The way in is the **interoperable importer**, which is generic and documented:
+
+- `POST /api/v1/import` in `document-service` — takes a ZIP package with
+  `manifiesto.json`, `esquema/radicado.schema.json` (JSON Schema draft 2020-12
+  **published inside the package itself**), the records as JSON and their
+  attachments.
+- **All-or-nothing** validation: if a schema or a SHA-256 does not match, no
+  partial state is left in the database.
+- **Identity preserved**: the original registration number is not regenerated
+  (AGN Agreement 060/2001, Law 594/2000 art. 19). A collision is skipped, never
+  overwritten.
+- Idempotent by number, which allows repeated incremental loads.
+
+In short: the input contract is stable and public. **What gets built outside is
+the translator** from the source system into that format.
+
+### Practical consequences
+
+- Orfeo-specific ETL, per-client adapters and legacy-database extraction scripts
+  are not accepted in this repository.
+- The analysis material from real installations lives in the private
+  `documentos/planesMigracion/` repository and is **business-rule reference**,
+  not migration code.
+- If a migration hits a limitation of the **generic importer** — say the accepted
+  registration-number format, or reconciling the numbering sequence after a load
+  — that is work for this repository, because it affects the input contract and
+  benefits any source, not only Orfeo.
+
 ## Summary
 
 | Capability | Service | Swap | Needs |
@@ -123,5 +167,8 @@ The MCP layer is thus **complete** (tools + resources + prompts + both transport
 | MCP protocol (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | done (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
 | Embeddings/RAG | knowledge-service | `embeddings.py` | model/LLM |
 | Postal operator | document-service | `postal_provider.py` | API credentials |
+| Migration from Orfeo | — | **out of scope** | external translator into `POST /api/v1/import` |
 
 All integrations preserve their contract; enabling each one means implementing the adapter and providing the dependency/credential — **with no changes to the domain logic**.
+
+Migration is the exception, and that is why it has no service: it is not an adapter that plugs in here, but work done outside against a stable input contract (§7).

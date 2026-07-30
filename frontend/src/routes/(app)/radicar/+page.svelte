@@ -1261,7 +1261,7 @@
     &__meta-warning {
       margin: var(--op-space-2) 0 0;
       font-size: var(--op-font-xs);
-      color: var(--op-warning);
+      color: var(--op-warning-fg);
     }
 
     &__empty {

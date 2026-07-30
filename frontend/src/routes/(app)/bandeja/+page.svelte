@@ -45,6 +45,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
   import { NIVEL_OPTIONS, getNivelChip } from "$lib/utils/nivelSeguridad.js";
+  import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -71,6 +72,14 @@
   /** @type {import('$lib/types/api.js').DocumentResponse|null} */
   let selectedDoc = null;
   let detailLoading = false;
+
+  // Estado de la anulación del radicado abierto en el drawer (si tiene una),
+  // para que el solicitante vea en qué quedó su solicitud (T-Fase0 anulaciones).
+  // Reutiliza el proxy de /anulaciones (GET /documents/{id}/anulacion) — no se
+  // duplica el proxy en /bandeja/api.
+  /** @type {import('$lib/types/api.js').AnulacionResponse|null} */
+  let anulacionStatus = null;
+  let anulacionStatusLoading = false;
 
   // ---------------------------------------------------------------------------
   // Acciones inline
@@ -242,6 +251,7 @@
   async function openDrawer(doc) {
     selectedDoc = doc;
     drawerOpen = true;
+    anulacionStatus = null;
 
     // Cargar detalle completo (incluye anexos y metadata)
     detailLoading = true;
@@ -255,11 +265,29 @@
     } finally {
       detailLoading = false;
     }
+
+    // Estado de anulación (si el radicado tiene una solicitud, en cualquier
+    // estado): 404 es el caso normal (nunca se solicitó anulación) y no se
+    // notifica como error — solo se omite la sección.
+    anulacionStatusLoading = true;
+    try {
+      const res = await fetch(`/anulaciones/api/${encodeURIComponent(doc.id)}`);
+      if (res.ok) {
+        anulacionStatus = await res.json();
+      } else {
+        anulacionStatus = null;
+      }
+    } catch {
+      anulacionStatus = null;
+    } finally {
+      anulacionStatusLoading = false;
+    }
   }
 
   function closeDrawer() {
     drawerOpen = false;
     selectedDoc = null;
+    anulacionStatus = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -1080,6 +1108,33 @@
               </li>
             {/each}
           </ul>
+        </section>
+      {/if}
+
+      <!-- Estado de anulación (si el radicado tiene/tuvo una solicitud) -->
+      {#if anulacionStatusLoading}
+        <section class="doc-detail__section" aria-label="Estado de anulación">
+          <Loader type="skeleton" lines={2} label="Consultando estado de anulación…" />
+        </section>
+      {:else if anulacionStatus}
+        <section class="doc-detail__section" aria-labelledby="detail-anulacion-heading">
+          <h4 id="detail-anulacion-heading" class="doc-detail__section-title">Anulación</h4>
+          <dl class="doc-detail__dl">
+            <dt>Estado</dt>
+            <dd>
+              <StatusChip
+                status={ANULACION_ESTADO_CHIP[anulacionStatus.estado] ?? "neutral"}
+                label={ANULACION_ESTADO_LABEL[anulacionStatus.estado] ?? anulacionStatus.estado}
+                dot
+              />
+            </dd>
+            <dt>Causal</dt>
+            <dd>{anulacionStatus.causal}</dd>
+            {#if anulacionStatus.observacion}
+              <dt>Observación del aprobador</dt>
+              <dd>{anulacionStatus.observacion}</dd>
+            {/if}
+          </dl>
         </section>
       {/if}
     </article>

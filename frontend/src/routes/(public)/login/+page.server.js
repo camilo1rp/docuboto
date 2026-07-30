@@ -32,13 +32,43 @@ import { KEYCLOAK_AUTH_URL, KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
 const VERIFIER_BYTES = 32;
 
 /**
+ * Mensajes en español para los códigos de error que puede reenviar
+ * /login/callback. Se usa un mapa cerrado (nunca el string crudo de
+ * Keycloak) porque `error` puede contener el `error_description` del
+ * proveedor, y ese texto no es de confianza para reflejarlo tal cual.
+ */
+const LOGIN_ERROR_MESSAGES = {
+  access_denied: "Se canceló el inicio de sesión.",
+  state_missing: "La sesión de inicio de sesión expiró. Intenta de nuevo.",
+  state_mismatch: "La sesión de inicio de sesión expiró. Intenta de nuevo.",
+  verifier_missing: "La sesión de inicio de sesión expiró. Intenta de nuevo.",
+  invalid_callback: "No se pudo completar el inicio de sesión. Intenta de nuevo.",
+  authentication_failed:
+    "No fue posible autenticarte con el proveedor de identidad. Intenta de nuevo o contacta al administrador de tu entidad.",
+};
+
+const LOGIN_ERROR_FALLBACK =
+  "No fue posible iniciar sesión. Intenta de nuevo o contacta al administrador de tu entidad.";
+
+/**
  * load — Si ya hay sesión activa, redirige al dashboard.
- * Si no, genera el estado PKCE, guarda en cookies httpOnly
+ * Si `/login/callback` reenvió un error (?error=...), se muestra en esta
+ * misma página en vez de reiniciar el flujo PKCE — de lo contrario un error
+ * persistente (consentimiento cancelado, cuenta deshabilitada) produce un
+ * bucle infinito Keycloak↔/login.
+ * En cualquier otro caso, genera el estado PKCE, guarda en cookies httpOnly
  * y redirige al Authorization Endpoint de Keycloak.
  *
  * @param {import('@sveltejs/kit').RequestEvent} event
  */
 export async function load({ cookies, url }) {
+  // Si /login/callback reenvió un error, mostrarlo aquí y NO reiniciar el
+  // flujo — evita el bucle de redirects hacia Keycloak.
+  const errorParam = url.searchParams.get("error");
+  if (errorParam) {
+    return { error: LOGIN_ERROR_MESSAGES[errorParam] ?? LOGIN_ERROR_FALLBACK };
+  }
+
   // Si ya hay sesión válida, no mostrar el login
   const existingToken = cookies.get(COOKIE_ACCESS_TOKEN);
   if (existingToken) {

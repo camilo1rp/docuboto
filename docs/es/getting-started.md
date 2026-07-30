@@ -165,6 +165,67 @@ curl -X POST 'http://localhost:19080/api/v1/assistant/chat' \
 # Respuesta: texto en lenguaje natural con citas a los radicados consultados (RAG, solo lectura)
 ```
 
+## La interfaz web: primeros pasos
+
+Con la plataforma levantada, el frontend queda en <http://localhost:19300>.
+
+### 1. La landing pública (`/`)
+
+La raíz del sitio es una **página pública** que no requiere sesión: describe qué es
+OrpycaMCP, el marco normativo que implementa (Ley 594/2000, Acuerdo AGN 060/2001), sus
+capacidades y su linaje respecto a Orfeo, y termina en la licencia AGPL v3. Es la puerta
+de entrada del producto y el único lugar del sitio donde se usa el logotipo completo.
+
+Si el navegador ya tiene una sesión activa, `/` **redirige automáticamente (302) a
+`/dashboard`**: un usuario autenticado nunca ve la landing. Para volver a verla, cerrar
+sesión desde el menú de usuario.
+
+Desde la landing, «Iniciar sesión» lleva a `/login`, que arranca el flujo OAuth2
+Authorization Code + PKCE contra Keycloak (el intercambio del código y la custodia del
+token ocurren **server-side**; el JWT vive en una cookie `httpOnly` y nunca es visible al
+JavaScript del navegador).
+
+### 2. El panel personal (`/dashboard`)
+
+Tras iniciar sesión, el panel abre con **cuatro módulos personales** —lo que le toca
+hacer a *este* usuario, no las cifras del tenant:
+
+| Módulo | Qué muestra |
+|---|---|
+| 01 Radicados pendientes | Radicados distribuidos o en trámite que esperan acción |
+| 02 Actividad reciente | Últimos radicados sobre los que hubo movimiento |
+| 03 Alertas | Radicados abiertos cuya fecha de vencimiento (`due_date`, RF-RAD-04) está próxima o vencida |
+| 04 Favoritos | Los destinos de navegación que el usuario haya fijado en el sidebar |
+
+Las **métricas agregadas del tenant** (radicados por estado, top dependencias, actividad
+mensual) siguen disponibles, pero en una sección secundaria colapsable, cerrada por
+defecto, y **solo si el usuario tiene el permiso `SGD_PERM_ESTADISTICA`** — el mismo que
+habilita la vista `/reportes`.
+
+### 3. Búsqueda global desde cualquier pantalla
+
+La barra superior lleva un campo de **búsqueda global** disponible en todas las pantallas
+autenticadas. Se puede enfocar con el atajo de teclado <kbd>/</kbd> (el atajo se inhibe
+si el foco ya está dentro de un campo de texto, para no interferir con la escritura). En
+pantallas estrechas el campo se despliega desde un icono de lupa.
+
+Al enviar, la búsqueda navega a `/busqueda?q=<término>`, que es la misma vista de
+búsqueda full-text (FTS de PostgreSQL, `GET /api/v1/search` a través del gateway) con sus
+filtros avanzados. Como el término viaja en la URL, cualquier búsqueda es **enlazable y
+compartible**, y el botón "atrás" del navegador funciona como se espera.
+
+### 4. Favoritos en la barra lateral
+
+Cada entrada del menú lateral tiene un control de **fijar/desfijar**. Los ítems fijados
+suben a una sección «Favoritos» al principio del menú y aparecen también en el módulo 04
+del panel. Los favoritos se guardan en el navegador, separados por institución y usuario,
+así que dos usuarios del mismo equipo no comparten lista.
+
+Los favoritos **no eluden el RBAC**: si a un usuario se le retira un permiso, la entrada
+correspondiente desaparece tanto del menú como de sus favoritos, sin necesidad de
+limpiarla a mano. Como en todo el frontend, esto es defensa en profundidad: el backend
+revalida permiso y clearance en cada petición.
+
 Ver también: [Pantallas del sistema](pantallas.md) para la contraparte de cada uno de
 estos ejemplos en la interfaz web.
 

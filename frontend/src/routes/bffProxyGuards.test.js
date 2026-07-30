@@ -48,6 +48,10 @@ import { POST as expedienteTransferPost } from "./(app)/expedientes/[id]/api/tra
 import { POST as radicarDocumentsPost } from "./(app)/radicar/api/documents/+server.js";
 import { POST as borradorRadicarPost } from "./(app)/borradores/api/[id]/radicar/+server.js";
 import { POST as transferenciaEnviarPost } from "./(app)/transferencias/api/[id]/enviar/+server.js";
+import { GET as anulacionEstadoGet } from "./(app)/anulaciones/api/[id]/+server.js";
+import { POST as anulacionAprobarPost } from "./(app)/anulaciones/api/[id]/aprobar/+server.js";
+import { POST as anulacionRechazarPost } from "./(app)/anulaciones/api/[id]/rechazar/+server.js";
+import { GET as anulacionBuscarGet } from "./(app)/anulaciones/api/buscar/+server.js";
 
 const url = (path = "/") => new URL(`http://localhost${path}`);
 
@@ -131,6 +135,24 @@ describe("Proxies BFF — 401 sin locals.accessToken (D-05)", () => {
     const res = await metadataTemplatesGet({
       locals: NO_SESSION_LOCALS,
       url: url("/expedientes/api/metadata-templates"),
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("unauthenticated");
+  });
+
+  it("anulaciones/api/[id] GET → 401 unauthenticated (antes de validar el UUID)", async () => {
+    const res = await anulacionEstadoGet({
+      locals: NO_SESSION_LOCALS,
+      params: { id: "no-es-un-uuid" },
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("unauthenticated");
+  });
+
+  it("anulaciones/api/buscar GET → 401 unauthenticated (antes de validar `q`)", async () => {
+    const res = await anulacionBuscarGet({
+      locals: NO_SESSION_LOCALS,
+      url: url("/anulaciones/api/buscar"),
     });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe("unauthenticated");
@@ -228,6 +250,26 @@ describe("Proxies BFF de ESCRITURA — 401 sin locals.accessToken (D-05)", () =>
     const res = await transferenciaEnviarPost({
       locals: NO_SESSION_LOCALS,
       params: { id: "trf-1" },
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("unauthenticated");
+  });
+
+  it("anulaciones/api/[id]/aprobar POST → 401 (guard corre antes de leer el body)", async () => {
+    const res = await anulacionAprobarPost({
+      locals: NO_SESSION_LOCALS,
+      params: { id: "rad-1" },
+      request: requestThatMustNotBeRead(),
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("unauthenticated");
+  });
+
+  it("anulaciones/api/[id]/rechazar POST → 401 (guard corre antes de leer el body)", async () => {
+    const res = await anulacionRechazarPost({
+      locals: NO_SESSION_LOCALS,
+      params: { id: "rad-1" },
+      request: requestThatMustNotBeRead(),
     });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe("unauthenticated");

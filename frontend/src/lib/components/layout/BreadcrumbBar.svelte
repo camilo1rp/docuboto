@@ -77,7 +77,7 @@
 
     &__link {
       font-size: var(--op-font-sm);
-      color: var(--op-primary);
+      color: var(--op-primary-dark);
       text-decoration: none;
       font-weight: var(--op-weight-medium);
 

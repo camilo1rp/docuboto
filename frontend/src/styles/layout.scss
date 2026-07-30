@@ -58,7 +58,9 @@
     gap: var(--op-space-2);
     font-weight: var(--op-weight-bold);
     font-size: var(--op-font-md);
-    color: var(--op-primary);
+    // AA: texto sobre superficie clara — --op-primary-dark cumple 4.5:1,
+    // --op-primary mide 4.28:1.
+    color: var(--op-primary-dark);
     text-decoration: none;
     white-space: nowrap;
   }
@@ -209,7 +211,8 @@
 
   &:hover {
     background: var(--op-bg);
-    color: var(--op-primary);
+    // AA: --op-primary-dark cumple 4.5:1 sobre --op-bg; --op-primary mide ~4.28:1.
+    color: var(--op-primary-dark);
   }
 
   &.is-active {
@@ -281,7 +284,7 @@
     text-decoration: none;
 
     &:hover {
-      color: var(--op-primary);
+      color: var(--op-primary-dark);
     }
   }
 

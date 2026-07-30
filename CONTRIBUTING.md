@@ -171,6 +171,31 @@ docker compose exec postgres psql -U orpycamcp -d orpycamcp_db \
   -c "SELECT schema_name FROM information_schema.schemata;"
 ```
 
+## Out of scope: data migration from legacy Orfeo
+
+**This repository does not accept data-migration tooling for existing Orfeo
+installations.** That work is done externally.
+
+Not accepted here: Orfeo-specific ETL, per-client extraction scripts, adapters
+for a particular legacy database, or password-rehashing paths for a specific
+installation. Every institution configured its Orfeo differently — 14- or
+15-digit registration numbers, metadata in dynamic tables, its own password
+scheme, different database engines — so this would mean carrying a set of
+special cases in the core that help nobody else and age with every client.
+
+What the project does provide, and it is enough: the generic interoperable
+importer, `POST /api/v1/import`, whose package format (ZIP + published JSON
+Schema + SHA-256 fixity, all-or-nothing validation, original registration number
+preserved) is a stable, public contract. **Write the translator outside, against
+that contract.**
+
+Do belong here: improvements to the generic importer itself — accepted
+registration-number formats, sequence reconciliation after a load, case files or
+users in the package, asynchronous jobs. Those affect the input contract and
+benefit any source system, not only Orfeo.
+
+See `docs/es/integraciones-externas.md` §7.
+
 ## Architecture Decisions
 
 All significant architectural decisions are recorded in `docs/adr/` as Architecture Decision Records (ADRs):

@@ -77,13 +77,15 @@ export async function GET({ locals, url }) {
       return json(data, { status: res.status });
     }
 
-    // Normalizar respuesta: { items, total } o array con X-Total-Count
+    // SearchResponse devuelve { query, total, hits, page, size }; `hits` es el nombre
+    // real del campo en app/schemas/search.py. Se mantienen `items`/`results` como
+    // respaldo por si otro endpoint reutiliza este normalizador.
     let results, total;
     if (Array.isArray(data)) {
       results = data;
       total = Number(res.headers.get("X-Total-Count") ?? data.length);
     } else {
-      results = data.items ?? data.results ?? [];
+      results = data.hits ?? data.items ?? data.results ?? [];
       total = data.total ?? Number(res.headers.get("X-Total-Count") ?? 0);
     }
 

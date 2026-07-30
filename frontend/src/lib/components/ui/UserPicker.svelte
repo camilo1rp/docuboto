@@ -380,6 +380,7 @@
     }
 
     &__btn {
+      position: relative;
       width: 28px;
       height: 28px;
       display: inline-flex;
@@ -396,13 +397,21 @@
         color var(--op-transition),
         border-color var(--op-transition);
 
+      // Objetivo táctil >=44px (v1.0 A11y) sin alterar el tamaño visual.
+      &::after {
+        content: "";
+        position: absolute;
+        inset: -8px;
+      }
+
       &:hover:not(:disabled) {
         border-color: var(--op-primary);
         color: var(--op-primary);
       }
 
       &:focus-visible {
-        outline: none;
+        outline: 2px solid var(--op-primary);
+        outline-offset: 2px;
         box-shadow: 0 0 0 3px var(--op-focus-ring);
       }
 

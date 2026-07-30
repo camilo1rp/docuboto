@@ -78,6 +78,7 @@ export const ROUTES = {
   borradores: "/borradores",
   envios: "/envios",
   firmas: "/firmas",
+  anulaciones: "/anulaciones",
   admin: "/admin",
   adminPlantillas: "/admin/plantillas",
 };

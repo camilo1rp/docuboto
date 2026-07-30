@@ -108,6 +108,7 @@
     }
 
     &__close {
+      position: relative;
       background: none;
       border: none;
       cursor: pointer;
@@ -120,6 +121,13 @@
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
+
+      // Objetivo táctil >=44px (v1.0 A11y) sin alterar el tamaño visual del icono.
+      &::after {
+        content: "";
+        position: absolute;
+        inset: -12px;
+      }
 
       &:hover {
         opacity: 1;

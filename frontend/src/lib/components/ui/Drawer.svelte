@@ -198,6 +198,7 @@
     }
 
     &__close {
+      position: relative;
       background: none;
       border: none;
       cursor: pointer;
@@ -208,6 +209,13 @@
       align-items: center;
       justify-content: center;
       border-radius: var(--op-radius-sm);
+
+      /* Objetivo táctil >=44px (v1.0 A11y) sin alterar el tamaño visual. */
+      &::after {
+        content: "";
+        position: absolute;
+        inset: -6px;
+      }
 
       &:hover {
         background: var(--op-bg);

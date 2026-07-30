@@ -31,14 +31,15 @@
 -->
 <script>
   import { onMount } from "svelte";
+  import { browser } from "$app/environment";
   import { goto } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { notifyError } from "$lib/stores/notifications.js";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
-  import Loader from "$lib/components/ui/Loader.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import DataTable from "$lib/components/ui/DataTable.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -79,6 +80,15 @@
   // ---------------------------------------------------------------------------
   onMount(() => {
     setBreadcrumbs([{ label: "Búsqueda avanzada" }]);
+
+    if (!browser) return;
+    const mql = window.matchMedia("(max-width: 768px)");
+    const syncViewport = () => {
+      isNarrowViewport = mql.matches;
+    };
+    syncViewport();
+    mql.addEventListener("change", syncViewport);
+    return () => mql.removeEventListener("change", syncViewport);
   });
 
   // ---------------------------------------------------------------------------
@@ -97,6 +107,30 @@
     in_progress: "active",
     closed: "closed",
   };
+
+  // Columnas de DataTable — el renderizado real de cada celda lo controla el
+  // slot="row" de abajo (radicado en monoespaciada, badge de tipo, StatusChip,
+  // enlace de acción), así que `label` es lo único que consume el <thead>
+  // automático de DataTable.
+  const TABLE_COLUMNS = [
+    { key: "tracking_number", label: "Radicado", width: "160px" },
+    { key: "doc_type", label: "Tipo", width: "90px" },
+    { key: "subject", label: "Asunto" },
+    { key: "dest_dept", label: "Dependencia destino", width: "180px" },
+    { key: "registered_at", label: "Fecha", width: "110px" },
+    { key: "status", label: "Estado", width: "140px" },
+    { key: "actions", label: "Acciones", width: "150px" },
+  ];
+
+  // La columna "Dependencia destino" se oculta en viewports estrechos — se
+  // calcula en la FUENTE (no solo por CSS) para que el <th> generado por
+  // DataTable y el <td> de la fila desaparezcan juntos y no se rompa la
+  // asociación encabezado↔dato para lectores de pantalla (mismo breakpoint
+  // que el resto del layout responsive de esta pantalla, 768px).
+  let isNarrowViewport = false;
+  $: tableColumns = isNarrowViewport
+    ? TABLE_COLUMNS.filter((col) => col.key !== "dest_dept")
+    : TABLE_COLUMNS;
 
   /**
    * Formatea una fecha ISO 8601 como fecha legible en español.
@@ -366,11 +400,7 @@
         : ""} encontrado{total !== 1 ? "s" : ""}{/if}
   </p>
   <section class="busqueda__results" aria-label="Resultados de búsqueda" aria-busy={loading}>
-    {#if loading}
-      <div class="busqueda__loading">
-        <Loader type="skeleton" lines={5} label="Buscando radicados…" />
-      </div>
-    {:else if data.loadError}
+    {#if data.loadError}
       <EmptyState
         icon="fas fa-exclamation-circle"
         title="Error en la búsqueda"
@@ -384,7 +414,7 @@
         title="Realiza una búsqueda"
         description="Introduce al menos 2 caracteres en el campo de búsqueda y pulsa Buscar."
       />
-    {:else if results.length === 0}
+    {:else if !loading && results.length === 0}
       <EmptyState
         icon="fas fa-file-search"
         title="Sin resultados"
@@ -397,98 +427,58 @@
     {:else}
       <!-- Tabla de resultados -->
       <div class="busqueda__table-wrapper">
-        <table class="search-table" aria-label="Resultados de búsqueda de radicados">
-          <caption class="search-table__caption">
-            {total.toLocaleString("es-CO")} radicado{total !== 1 ? "s" : ""} encontrado{total !== 1
-              ? "s"
-              : ""}
-            {#if data.initialFilters?.q}para "{data.initialFilters.q}"{/if}
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col" class="search-table__th search-table__th--tracking">Radicado</th>
-              <th scope="col" class="search-table__th">Tipo</th>
-              <th scope="col" class="search-table__th search-table__th--subject">Asunto</th>
-              <th scope="col" class="search-table__th search-table__th--dep">Dependencia destino</th
+        <DataTable
+          columns={tableColumns}
+          rows={results}
+          totalCount={total}
+          page={currentPage}
+          {pageSize}
+          {loading}
+          caption="Resultados de búsqueda de radicados{data.initialFilters?.q
+            ? ` para "${data.initialFilters.q}"`
+            : ''}"
+          on:pageChange={(e) => goToPage(e.detail.page)}
+        >
+          <svelte:fragment slot="row" let:row>
+            <td class="op-datatable__td">
+              <span class="tracking-number">{row.tracking_number}</span>
+            </td>
+            <td class="op-datatable__td">
+              <span class="doc-type-badge doc-type-badge--{row.doc_type?.toLowerCase()}">
+                {DOC_TYPE_LABELS[row.doc_type] ?? row.doc_type ?? "—"}
+              </span>
+            </td>
+            <td class="op-datatable__td search-table__td--subject">
+              <span class="subject-text" title={row.subject}>{row.subject ?? "—"}</span>
+            </td>
+            {#if !isNarrowViewport}
+              <td class="op-datatable__td search-table__td--dep">
+                {row.dest_dept ?? "—"}
+              </td>
+            {/if}
+            <td class="op-datatable__td search-table__td--date">
+              <time datetime={row.registered_at}>{formatDate(row.registered_at)}</time>
+            </td>
+            <td class="op-datatable__td">
+              <StatusChip
+                status={STATUS_CHIP_MAP[row.status] ?? "neutral"}
+                label={STATUS_LABELS[row.status] ?? row.status ?? "—"}
+                dot={true}
+              />
+            </td>
+            <td class="op-datatable__td search-table__td--actions">
+              <a
+                href="/bandeja"
+                class="action-link"
+                aria-label="Ver radicado {row.tracking_number} en la bandeja"
+                title="Ver en bandeja"
               >
-              <th scope="col" class="search-table__th">Fecha</th>
-              <th scope="col" class="search-table__th">Estado</th>
-              <th scope="col" class="search-table__th search-table__th--actions">
-                <span class="sr-only">Acciones</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each results as item (item.id)}
-              <tr class="search-table__row">
-                <td class="search-table__td">
-                  <span class="tracking-number">{item.tracking_number}</span>
-                </td>
-                <td class="search-table__td">
-                  <span class="doc-type-badge doc-type-badge--{item.doc_type?.toLowerCase()}">
-                    {DOC_TYPE_LABELS[item.doc_type] ?? item.doc_type ?? "—"}
-                  </span>
-                </td>
-                <td class="search-table__td search-table__td--subject">
-                  <span class="subject-text" title={item.subject}>{item.subject ?? "—"}</span>
-                </td>
-                <td class="search-table__td search-table__td--dep">
-                  {item.dest_dept ?? "—"}
-                </td>
-                <td class="search-table__td search-table__td--date">
-                  <time datetime={item.registered_at}>{formatDate(item.registered_at)}</time>
-                </td>
-                <td class="search-table__td">
-                  <StatusChip
-                    status={STATUS_CHIP_MAP[item.status] ?? "neutral"}
-                    label={STATUS_LABELS[item.status] ?? item.status ?? "—"}
-                    dot={true}
-                  />
-                </td>
-                <td class="search-table__td search-table__td--actions">
-                  <a
-                    href="/bandeja"
-                    class="action-link"
-                    aria-label="Ver radicado {item.tracking_number} en la bandeja"
-                    title="Ver en bandeja"
-                  >
-                    <i class="fas fa-external-link-alt" aria-hidden="true"></i>
-                    Ver en bandeja
-                  </a>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-
-        <!-- Paginación -->
-        {#if totalPages > 1}
-          <nav class="search-pagination" aria-label="Paginación de resultados de búsqueda">
-            <button
-              class="pagination-btn"
-              type="button"
-              aria-label="Página anterior"
-              disabled={currentPage <= 1 || loading}
-              on:click={() => goToPage(currentPage - 1)}
-            >
-              <i class="fas fa-chevron-left" aria-hidden="true"></i>
-            </button>
-
-            <span class="pagination-info" aria-live="polite" aria-atomic="true">
-              Página {currentPage} de {totalPages}
-            </span>
-
-            <button
-              class="pagination-btn"
-              type="button"
-              aria-label="Página siguiente"
-              disabled={currentPage >= totalPages || loading}
-              on:click={() => goToPage(currentPage + 1)}
-            >
-              <i class="fas fa-chevron-right" aria-hidden="true"></i>
-            </button>
-          </nav>
-        {/if}
+                <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                Ver en bandeja
+              </a>
+            </td>
+          </svelte:fragment>
+        </DataTable>
       </div>
     {/if}
   </section>
@@ -583,7 +573,7 @@
     &:focus {
       outline: none;
       border-color: var(--op-primary);
-      box-shadow: 0 0 0 3px rgba(69, 153, 64, 0.15);
+      box-shadow: 0 0 0 3px var(--op-focus-ring);
     }
 
     &--error {
@@ -677,13 +667,6 @@
     min-height: 200px;
   }
 
-  .busqueda__loading {
-    background: var(--op-surface);
-    border: 1px solid var(--op-border);
-    border-radius: var(--op-radius-lg);
-    padding: var(--op-space-6);
-  }
-
   .busqueda__table-wrapper {
     background: var(--op-surface);
     border: 1px solid var(--op-border);
@@ -695,76 +678,22 @@
   // Tabla de resultados
   // ---------------------------------------------------------------------------
 
-  .search-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--op-font-sm);
-
-    &__caption {
-      text-align: left;
-      padding: var(--op-space-3) var(--op-space-4);
-      font-size: var(--op-font-xs);
-      color: var(--op-text-secondary);
-      background: var(--op-bg);
-      border-bottom: 1px solid var(--op-border);
+  // Celdas de datos que DataTable no formatea por sí misma (renderizadas vía
+  // slot="row"). El resto del estilo de tabla/paginación es de DataTable.
+  .search-table__td {
+    &--subject {
+      max-width: 280px;
     }
-
-    &__th {
-      padding: var(--op-space-3) var(--op-space-4);
-      text-align: left;
-      font-size: var(--op-font-xs);
-      font-weight: var(--op-weight-bold);
-      color: var(--op-text-secondary);
-      background: var(--op-bg);
-      border-bottom: 1px solid var(--op-border);
+    &--dep {
+      max-width: 160px;
+    }
+    &--date {
       white-space: nowrap;
-
-      &--tracking {
-        width: 160px;
-      }
-      &--subject {
-        min-width: 200px;
-      }
-      &--dep {
-        width: 160px;
-      }
-      &--actions {
-        width: 150px;
-        text-align: right;
-      }
+      color: var(--op-text-secondary);
     }
-
-    &__row {
-      transition: background var(--op-transition);
-
-      &:hover {
-        background: var(--op-bg);
-      }
-
-      &:not(:last-child) .search-table__td {
-        border-bottom: 1px solid var(--op-border);
-      }
-    }
-
-    &__td {
-      padding: var(--op-space-3) var(--op-space-4);
-      vertical-align: middle;
-      color: var(--op-text);
-
-      &--subject {
-        max-width: 280px;
-      }
-      &--dep {
-        max-width: 160px;
-      }
-      &--date {
-        white-space: nowrap;
-        color: var(--op-text-secondary);
-      }
-      &--actions {
-        text-align: right;
-        white-space: nowrap;
-      }
+    &--actions {
+      text-align: right;
+      white-space: nowrap;
     }
   }
 
@@ -842,51 +771,6 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Paginación
-  // ---------------------------------------------------------------------------
-
-  .search-pagination {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--op-space-4);
-    padding: var(--op-space-3) var(--op-space-5);
-    border-top: 1px solid var(--op-border);
-  }
-
-  .pagination-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: var(--op-radius-sm);
-    border: 1px solid var(--op-border);
-    background: var(--op-surface);
-    color: var(--op-text-secondary);
-    cursor: pointer;
-    transition: background var(--op-transition);
-
-    &:hover:not(:disabled) {
-      background: var(--op-bg);
-      color: var(--op-text);
-    }
-    &:focus-visible {
-      outline: 2px solid var(--op-primary);
-      outline-offset: 2px;
-    }
-    &:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-  }
-
-  .pagination-info {
-    font-size: var(--op-font-sm);
-    color: var(--op-text-secondary);
-  }
-
-  // ---------------------------------------------------------------------------
   // Responsive
   // ---------------------------------------------------------------------------
 
@@ -897,13 +781,6 @@
 
     .search-form__input-row {
       flex-direction: column;
-    }
-
-    .search-table {
-      &__th--dep,
-      &__td--dep {
-        display: none;
-      }
     }
   }
 </style>

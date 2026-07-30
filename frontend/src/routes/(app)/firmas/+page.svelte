@@ -97,6 +97,21 @@
   // Firma en lote
   // ---------------------------------------------------------------------------
   let batchLoading = false;
+  // Confirmación explícita antes de toda escritura irreversible (frontend/CLAUDE.md):
+  // "Firmar seleccionados" dispara firma electrónica de N solicitudes de una sola vez.
+  let modalConfirmBatch = false;
+
+  function abrirConfirmBatch() {
+    if (selectedIds.size === 0) {
+      notifyError("Seleccione al menos una solicitud para firmar.");
+      return;
+    }
+    modalConfirmBatch = true;
+  }
+
+  function cerrarConfirmBatch() {
+    modalConfirmBatch = false;
+  }
 
   async function firmarSeleccionados() {
     if (selectedIds.size === 0) {
@@ -104,6 +119,7 @@
       return;
     }
 
+    modalConfirmBatch = false;
     batchLoading = true;
     try {
       const res = await fetch("/firmas/api/batch", {
@@ -195,10 +211,26 @@
   // Acción: Firmar turno activo
   // ---------------------------------------------------------------------------
   let signLoading = false;
+  // Confirmación explícita antes de toda escritura irreversible (frontend/CLAUDE.md):
+  // firma electrónica con efectos jurídicos (E06). Cierra el Drawer antes de abrir
+  // el Modal para no apilar focus traps (mismo patrón que abrirModalRechazar).
+  let modalConfirmSign = false;
+
+  function abrirConfirmSign() {
+    if (!selectedDetail) return;
+    drawerOpen = false;
+    modalConfirmSign = true;
+  }
+
+  function cerrarConfirmSign() {
+    modalConfirmSign = false;
+    tick().then(() => tituloEl?.focus());
+  }
 
   async function firmarTurno() {
     if (!selectedDetail) return;
 
+    modalConfirmSign = false;
     signLoading = true;
     try {
       const res = await fetch(
@@ -462,7 +494,7 @@
         variant="primary"
         icon="fas fa-signature"
         loading={batchLoading}
-        on:click={firmarSeleccionados}
+        on:click={abrirConfirmBatch}
       >
         Firmar seleccionados ({selectedCount})
       </Button>
@@ -668,7 +700,7 @@
             variant="primary"
             icon="fas fa-signature"
             loading={signLoading}
-            on:click={firmarTurno}
+            on:click={abrirConfirmSign}
           >
             Firmar
           </Button>
@@ -720,6 +752,60 @@
       on:click={rechazarTurno}
     >
       Confirmar rechazo
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- =========================================================================
+     Modal: confirmar firma del turno activo (acción irreversible, E06)
+     ========================================================================= -->
+<Modal
+  open={modalConfirmSign}
+  title="Confirmar firma"
+  size="sm"
+  on:close={cerrarConfirmSign}
+>
+  <div class="firma-modal-form">
+    <p class="firma-modal-form__info">
+      <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+      Vas a firmar electrónicamente esta solicitud. La firma tiene efectos jurídicos
+      y no se puede deshacer.
+    </p>
+  </div>
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={cerrarConfirmSign}>Cancelar</Button>
+    <Button variant="primary" icon="fas fa-signature" loading={signLoading} on:click={firmarTurno}>
+      Confirmar firma
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- =========================================================================
+     Modal: confirmar firma en lote (acción irreversible, E06)
+     ========================================================================= -->
+<Modal
+  open={modalConfirmBatch}
+  title="Confirmar firma en lote"
+  size="sm"
+  on:close={cerrarConfirmBatch}
+>
+  <div class="firma-modal-form">
+    <p class="firma-modal-form__info">
+      <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+      Vas a firmar electrónicamente {selectedCount}
+      {selectedCount === 1 ? "solicitud" : "solicitudes"} de una sola vez. La firma tiene
+      efectos jurídicos y no se puede deshacer.
+    </p>
+  </div>
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={cerrarConfirmBatch}>Cancelar</Button>
+    <Button
+      variant="primary"
+      icon="fas fa-signature"
+      loading={batchLoading}
+      on:click={firmarSeleccionados}
+    >
+      Confirmar firma ({selectedCount})
     </Button>
   </svelte:fragment>
 </Modal>
