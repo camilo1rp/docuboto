@@ -12,10 +12,18 @@
 <!--
   /admin — Dashboard de administración (Fase 0, cierre de desfase API↔UI).
 
-  `navItems.js` ya enlazaba aquí ("Administración", gate `role: tenant_admin"),
-  pero la ruta no existía → 404 real. Esta pantalla es el ÍNDICE de tarjetas
-  por área de configuración; cada entidad se administra a SÍ MISMA (una
-  tarjeta = una subruta propia), nunca desde aquí.
+  `navItems.js` ya enlazaba aquí ("Administración"), pero la ruta no existía →
+  404 real. Esta pantalla es el ÍNDICE de tarjetas por área de configuración;
+  cada entidad se administra a SÍ MISMA (una tarjeta = una subruta propia),
+  nunca desde aquí.
+
+  I11 (revisión UX): el ítem de `navItems.js` gateaba por `role: "tenant_admin"`
+  mientras esta pantalla siempre gateó cada tarjeta por `USUA_PERM_ADMIN` — dos
+  ejes independientes (el rol de Keycloak no otorga el permiso automáticamente,
+  no hay mapeo rol→permiso en auth-service). Unificado: `navItems.js` gatea
+  ahora también por `USUA_PERM_ADMIN`, el mismo permiso que exigen de verdad
+  todas las subrutas (`/admin/plantillas`, `/admin/flujos/reglas`,
+  `/admin/flujos/reasignacion`).
 
   Tarjetas "Próximamente": las áreas que aún no tienen subruta implementada
   se muestran DESHABILITADAS (no navegables, sin href) en vez de omitirse —
@@ -52,6 +60,22 @@
       description: "Plantillas de contenido reutilizables para borradores y radicación.",
       icon: "fas fa-copy",
       href: "/admin/plantillas",
+      permission: "USUA_PERM_ADMIN",
+      implemented: true,
+    },
+    {
+      label: "Reglas de enrutamiento",
+      description: "Reglas automáticas que asignan radicados a una dependencia (E05).",
+      icon: "fas fa-diagram-project",
+      href: "/admin/flujos/reglas",
+      permission: "USUA_PERM_ADMIN",
+      implemented: true,
+    },
+    {
+      label: "Reasignación en cascada",
+      description: "Traslada en bloque los pasos pendientes de un usuario o dependencia.",
+      icon: "fas fa-people-arrows",
+      href: "/admin/flujos/reasignacion",
       permission: "USUA_PERM_ADMIN",
       implemented: true,
     },

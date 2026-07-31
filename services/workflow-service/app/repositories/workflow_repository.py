@@ -35,6 +35,42 @@ def _clearance_condition(idx: int) -> str:
     )
 
 
+def _own_scope_condition(idx: int) -> str:
+    """Predicado de alcance POR DEFECTO de bandeja/pending (cierre de la
+    primitiva de enumeración: `GET /workflows/inbox`/`/pending` sin acotar
+    dejaban ver la carga de TODA la entidad a cualquier usuario autenticado).
+
+    Sin `dept`/`assigned_to` explícitos, el llamante ve lo suyo: pasos
+    asignados a él (`assigned_to = $idx`) O de una dependencia a la que
+    pertenece por URD activa (`urd_usuaroldep`, auth-service) — la
+    correlación es por NOMBRE porque `flow_steps.to_dept`/`from_dept` son
+    texto libre (VARCHAR(100), sin FK a `dependencias`, ver
+    `document-service/migrations/tenant/005_radicado_dept_codes.sql`); es la
+    MISMA convención que usa el resto del sistema (el frontend puebla
+    `to_dept` con `dependencias.nombre` del catálogo SSR, nunca con el
+    código). Ambas tablas viven en el MISMO schema de tenant que `flow_steps`
+    (ADR-002/012), igual que `auth_memberships`/`role_clearance` en
+    `resolve_caller_clearance` — sin llamada HTTP a otro servicio.
+
+    NULL-safe por construcción: si `$idx` es NULL (llamante sin `X-User-Id`),
+    ambas ramas quedan sin match (`assigned_to = NULL` y el `IN` sobre un
+    subquery sin filas) y el predicado entero es NULL → ninguna fila pasa el
+    `WHERE` (fail-closed), sin necesidad de una rama explícita.
+
+    Inline, sin try/except UndefinedTableError: mismo criterio que
+    `_clearance_condition`, que ya referencia sin protección la tabla
+    `radicados` de otro servicio — ambas asumen el schema del tenant
+    totalmente provisionado.
+    """
+    return (
+        f"(assigned_to = ${idx} OR to_dept IN ("
+        f"SELECT d.nombre FROM urd_usuaroldep u "
+        f"JOIN dependencias d ON d.codigo = u.depe_id "
+        f"WHERE u.user_id = ${idx} AND u.is_active = TRUE AND d.activo = TRUE"
+        f"))"
+    )
+
+
 class WorkflowRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -56,6 +92,54 @@ class WorkflowRepository:
             radicado_id,
         )
         return val
+
+    async def get_radicado_tracking_number(self, radicado_id: uuid.UUID) -> str | None:
+        """Resuelve el `tracking_number` REAL desde `radicados` (Bloqueante 3).
+
+        `_create_step` (assign/transfer) nunca debe confiar en el `tracking_number`
+        del cuerpo: es un campo libre del cliente que termina en `flow_events`
+        (append-only) y en `public.audit_log.object_ref` sin más verificación.
+        `None` = el radicado no existe (fail-closed: el llamante debe 404).
+        """
+        await self._set_search_path()
+        return await self._conn.fetchval(
+            "SELECT tracking_number FROM radicados WHERE id = $1", radicado_id
+        )
+
+    async def dependencia_activa(self, nombre: str) -> bool:
+        """¿Existe una dependencia ACTIVA del catálogo con este nombre exacto?
+
+        Gemelo de `get_radicado_tracking_number`: `_create_step` (assign/transfer)
+        no debe confiar en `to_dept`/`from_dept` como texto libre del cliente
+        (`VARCHAR(100)`, sin FK a `dependencias` — ver docstring de
+        `_own_scope_condition`, que ya depende de esta misma correlación por
+        NOMBRE para acotar `inbox`/`pending`). Sin esta comprobación, un
+        `to_dept` con una errata o inventado crea un paso que no coincide con el
+        alcance propio de NADIE: el radicado queda `pending` en BD pero invisible
+        en toda bandeja — pérdida silenciosa de un trámite oficial.
+
+        `dependencias` vive en el MISMO schema de tenant que `flow_steps`
+        (ADR-002/012, mismo criterio que `_own_scope_condition`) — sin llamada
+        HTTP a otro servicio. Dependencia INACTIVA cuenta como inexistente a
+        propósito: un paso hacia una dependencia dada de baja es igual de
+        invisible en la práctica (nadie tiene URD activa apuntando a ella).
+        """
+        await self._set_search_path()
+        return bool(
+            await self._conn.fetchval(
+                "SELECT 1 FROM dependencias WHERE nombre = $1 AND activo = TRUE", nombre
+            )
+        )
+
+    async def user_exists(self, user_id: uuid.UUID) -> bool:
+        """Existencia del destino de una reasignación (Hallazgo C).
+
+        `reassign_cascade` aparca los pasos en `to_assigned_to` sin verificar
+        nada: un UUID equivocado los deja `pending` pero invisibles en cualquier
+        bandeja — denegación de servicio silenciosa del trámite.
+        """
+        await self._set_search_path()
+        return bool(await self._conn.fetchval("SELECT 1 FROM auth_users WHERE id = $1", user_id))
 
     async def complete_active_step(self, radicado_id: uuid.UUID) -> None:
         """Mark the current pending/in_progress step as completed."""
@@ -232,6 +316,7 @@ class WorkflowRepository:
         *,
         dept: str | None,
         assigned_to: uuid.UUID | None,
+        own_scope_user_id: uuid.UUID | None,
         max_clearance: int,
         offset: int,
         limit: int,
@@ -240,7 +325,15 @@ class WorkflowRepository:
         un radicado clasificado por encima del clearance del llamante no aparece en
         la bandeja NI cuenta en el total — el predicado entra en el ``WHERE``
         compartido por el `COUNT(*)` y la página (`X-Total-Count` no debe delatar
-        filas ocultas)."""
+        filas ocultas).
+
+        ``own_scope_user_id``: cierre de la primitiva de enumeración (`GET
+        /workflows/pending` sin acotar). El SERVICIO decide su valor: no
+        ``None`` cuando la petición NO trae `dept`/`assigned_to` (alcance por
+        defecto, `_own_scope_condition`); ``None`` cuando sí los trae (el
+        servicio ya exigió `PERM_TRAMITAR`/`USUA_PERM_ADMIN` para ampliar el
+        alcance) — ambos ejes son mutuamente excluyentes por request.
+        """
         await self._set_search_path()
 
         conditions = ["status IN ('pending', 'in_progress')"]
@@ -255,6 +348,11 @@ class WorkflowRepository:
         if assigned_to is not None:
             conditions.append(f"assigned_to = ${idx}")
             params.append(assigned_to)
+            idx += 1
+
+        if dept is None and assigned_to is None:
+            conditions.append(_own_scope_condition(idx))
+            params.append(own_scope_user_id)
             idx += 1
 
         conditions.append(_clearance_condition(idx))
@@ -288,7 +386,24 @@ class WorkflowRepository:
         )
         return _row_to_model(row) if row is not None else None
 
-    async def complete_step(self, step_id: uuid.UUID, notes: str | None) -> FlowStep | None:
+    async def complete_step(
+        self, step_id: uuid.UUID, notes: str | None, actor: uuid.UUID | None
+    ) -> FlowStep | None:
+        """Cierra un paso, anclando autorización y mutación en el MISMO `UPDATE`
+        (Bloqueantes 1+2): sin ventana TOCTOU entre "¿es tuyo?" y "ciérralo".
+
+        `assigned_to = $4 OR assigned_to IS NULL`: un paso de dependencia sin
+        dueño (los que genera `apply_devolucion`) sigue siendo cerrable por
+        quien tramita — no se rompe ese caso legítimo. Si el `WHERE` no casa
+        (paso ajeno o inexistente), `row` es `None` y el llamante responde el
+        MISMO 404 `step_not_found` en ambos casos (no-oráculo, gemelo de
+        `rollback`/`devolver`): no se distingue "no es tuyo" de "no existe".
+
+        `actor` (el ejecutor real, no `assigned_to`) queda en `flow_events.actor`
+        — antes se asentaba `row["assigned_to"]`, que en una tabla append-only
+        con trigger anti-UPDATE/DELETE dejaba la traza acusando para siempre a
+        la persona equivocada (o sin actor si `assigned_to` era NULL).
+        """
         await self._set_search_path()
         now = datetime.now(tz=UTC)
         async with self._conn.transaction():
@@ -298,12 +413,13 @@ class WorkflowRepository:
                    SET status = 'completed',
                        completed_at = $1,
                        notes = COALESCE($2, notes)
-                 WHERE id = $3
+                 WHERE id = $3 AND (assigned_to = $4 OR assigned_to IS NULL)
                 RETURNING *
                 """,
                 now,
                 notes,
                 step_id,
+                actor,
             )
             if row is None:
                 return None
@@ -313,7 +429,7 @@ class WorkflowRepository:
                 tipo_tx="complete",
                 from_dept=row["to_dept"],
                 to_dept=row["to_dept"],
-                actor=row["assigned_to"],
+                actor=actor,
                 comentario=notes,
                 detalles={"step_id": str(step_id)},
             )
@@ -325,6 +441,7 @@ class WorkflowRepository:
         doc_type: str | None,
         dept: str | None,
         assigned_to: uuid.UUID | None,
+        own_scope_user_id: uuid.UUID | None,
         max_clearance: int,
         offset: int,
         limit: int,
@@ -333,7 +450,10 @@ class WorkflowRepository:
         y/o responsable, priorizados por antigüedad (RF-FLU-03).
 
         ``max_clearance`` es keyword-only y obligatorio (RF-SEG-08, no-read-up):
-        mismo predicado y misma garantía COUNT==SELECT que `list_pending`."""
+        mismo predicado y misma garantía COUNT==SELECT que `list_pending`.
+
+        ``own_scope_user_id``: ver docstring de `list_pending` (gemelo exacto,
+        `box`/`doc_type` es ortogonal al eje de alcance)."""
         await self._set_search_path()
         conditions = ["status IN ('pending', 'in_progress')"]
         params: list[object] = []
@@ -349,6 +469,10 @@ class WorkflowRepository:
         if assigned_to is not None:
             conditions.append(f"assigned_to = ${idx}")
             params.append(assigned_to)
+            idx += 1
+        if dept is None and assigned_to is None:
+            conditions.append(_own_scope_condition(idx))
+            params.append(own_scope_user_id)
             idx += 1
         conditions.append(_clearance_condition(idx))
         params.append(max_clearance)
@@ -493,8 +617,13 @@ class WorkflowRepository:
         current: FlowStep,
         previous: FlowStep,
         actor: uuid.UUID | None,
+        comentario: str | None = None,
     ) -> FlowStep:
-        """Cancela el paso actual y reactiva el anterior, atómicamente (RF-FLU-08)."""
+        """Cancela el paso actual y reactiva el anterior, atómicamente (RF-FLU-08).
+
+        `comentario` es el motivo de la reversión (`RollbackRequest.motivo`,
+        obligatorio desde el router) — queda en `flow_events.comentario`, gemelo
+        de `apply_devolucion` (que ya recibe `comentario` para el mismo campo)."""
         await self._set_search_path()
         now = datetime.now(tz=UTC)
         async with self._conn.transaction():
@@ -517,7 +646,7 @@ class WorkflowRepository:
                 from_dept=current.to_dept,
                 to_dept=previous.to_dept,
                 actor=actor,
-                comentario=None,
+                comentario=comentario,
                 detalles={"cancelled_step": current.step_number},
             )
         return _row_to_model(row)

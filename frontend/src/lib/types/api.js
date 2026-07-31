@@ -283,6 +283,115 @@
  * @property {string|null}        [detalle]    razon si fue omitido
  */
 
+/**
+ * Reto de segundo factor OTP-por-correo emitido para el turno activo del
+ * actor (E06 Inc.2, RF-FIR-13). POST /api/v1/signature/requests/{id}/challenge.
+ * `canal` viene YA enmascarado por el backend (ej. "j***@dominio.gov.co") —
+ * la UI nunca debe intentar desenmascararlo ni mostrar el correo completo.
+ *
+ * @typedef {object} SignatureChallengeResponse
+ * @property {string} challenge_id
+ * @property {'otp_email'} factor_tipo
+ * @property {string} canal        — correo enmascarado
+ * @property {string} expira_at    — ISO 8601 UTC
+ */
+
+/**
+ * Cuerpo opcional para firmar el turno activo, con el segundo factor
+ * (E06 Inc.2/RF-FIR-13). Un objeto PUBLICA sin `firma_2fa_required` puede
+ * firmar con `{}`; RESERVADA/CLASIFICADA lo exige SIEMPRE.
+ *
+ * @typedef {object} SignatureSignBody
+ * @property {string} [challenge_id]  - del ChallengeResponse (factor OTP-correo)
+ * @property {string} [otp]           - código recibido por correo
+ * @property {string} [totp_code]     - factor TOTP alternativo (6 dígitos)
+ */
+
+/**
+ * Cuerpo para crear una nueva cadena de firma sobre un objeto.
+ * POST /api/v1/signature/requests.
+ *
+ * @typedef {object} SignatureRequestCreateBody
+ * @property {string}   objeto_tipo
+ * @property {string}   objeto_id
+ * @property {string[]} firmantes         — UUIDs, al menos uno
+ * @property {string}   [titulo]
+ * @property {string}   [payload_sha256]  - SHA-256 hex (64 caracteres)
+ * @property {1|2|3}    [nivel_seguridad]
+ */
+
+/**
+ * Metadatos completos de una firma individual (certificado técnico de
+ * firma). GET /api/v1/signature/firmas/{firma_id}.
+ *
+ * IMPORTANTE (RF-FIR-15): `acreditado` es SIEMPRE false en este incremento
+ * — la firma es válida bajo Ley 527/1999 art. 7 (reconocimiento general de
+ * firma electrónica), NO art. 28 (firma digital certificada/acreditada
+ * ONAC). La UI que consuma este tipo NUNCA debe presentar la firma como
+ * "acreditada" ni insinuar control exclusivo del firmante: la clave privada
+ * se custodia en servidor (sin sole-control en sentido legal estricto).
+ *
+ * @typedef {object} SignatureCertificado
+ * @property {string}      firma_id
+ * @property {string}      objeto_tipo
+ * @property {string|null} objeto_id
+ * @property {string|null} formato_solicitado
+ * @property {string|null} firmante_id
+ * @property {string}      payload_sha256
+ * @property {'nativa'|'xades_local'|'xades_personal'} provider
+ * @property {string}      sello_tiempo    — ISO 8601 UTC (fecha/hora del acto)
+ * @property {string}      created_at      — ISO 8601 UTC
+ * @property {string|null} [xades_level]        - 'XAdES-B'|'XAdES-T'|'XAdES-LT'|'XAdES-LTA'
+ * @property {string|null} [nivel_conformidad]
+ * @property {'institucional'|'personal'|null} [tipo_firma]
+ * @property {string|null} [certificado_fingerprint]
+ * @property {boolean}     acreditado      — SIEMPRE false (ver docstring arriba)
+ * @property {string|null} [tsa_timestamp]
+ * @property {boolean}     [tsa_acreditado]
+ * @property {boolean}     [lt_material_present]
+ * @property {boolean}     [archive_timestamp_present]
+ * @property {string|null} [revocation_provenance]
+ * @property {string|null} [crl_next_update]
+ * @property {boolean}     [ocsp_present]
+ */
+
+/**
+ * Resultado de verificar una firma existente contra el documento firmado.
+ * POST /api/v1/signature/verify.
+ *
+ * `motivo` explica un `valida: false` sin ambigüedad — la UI SIEMPRE debe
+ * mostrarlo cuando esté presente, nunca reducir la respuesta a un simple
+ * "sí/no".
+ *
+ * @typedef {object} SignatureVerifyResult
+ * @property {string}      firma_id
+ * @property {boolean}     valida
+ * @property {string}      provider
+ * @property {string|null} [xades_level]
+ * @property {string|null} [nivel_conformidad]
+ * @property {boolean}     acreditado
+ * @property {string|null} [motivo]
+ * @property {boolean|null} [sello_tiempo_valido]
+ * @property {string|null}  [revocacion_status]  - 'vigente'|'revocado'|'no_verificable'|'desconocido'
+ * @property {boolean}      [firma_criptograficamente_valida]
+ */
+
+/**
+ * Firma a nivel documento (radicado/anexo) — distinta de la cadena de
+ * firma-service: aquí se firma el hash SHA-256 del contenido directamente.
+ * POST/GET /api/v1/documents/{document_id}/signatures.
+ *
+ * @typedef {object} DocumentSignature
+ * @property {string}      id
+ * @property {string}      radicado_id
+ * @property {string|null} anexo_id
+ * @property {string|null} signer_id
+ * @property {string|null} signer_name
+ * @property {string}      content_hash
+ * @property {string|null} reason
+ * @property {string}      signed_at   — ISO 8601 UTC
+ */
+
 // ---------------------------------------------------------------------------
 // Reportes / estadísticas (reports endpoint, E09)
 // ---------------------------------------------------------------------------
@@ -300,6 +409,30 @@
  * @property {Record<string,number>} by_status      — { registered: n, ... }
  * @property {MonthCount[]}          by_month
  * @property {Record<string,number>} by_dependencia — { nombre_dep: n, ... }
+ */
+
+// ---------------------------------------------------------------------------
+// Flujos de distribución (workflow-service, E05, T-Fase1)
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {object} FlowStepResponse
+ * @property {string}      id            — id del PASO (flow_steps.id) — NUNCA confundir con radicado_id.
+ * @property {string}      radicado_id
+ * @property {string}      tracking_number
+ * @property {number}      step_number
+ * @property {string|null} from_dept
+ * @property {string}      to_dept
+ * @property {string|null} assigned_to   — uuid
+ * @property {string}      assigned_by   — uuid
+ * @property {string}      action        — 'assign'|'transfer'|'return'|'close'
+ * @property {string|null} notes
+ * @property {string}      status        — 'pending'|'in_progress'|'completed'|'cancelled'
+ * @property {string}      created_at
+ * @property {string|null} completed_at
+ * @property {string|null} doc_type      — 'E'|'S'|'I'
+ * @property {string|null} due_at
+ * @property {string|null} semaforo      — 'verde'|'amarillo'|'rojo'|'vencido'
  */
 
 export {};

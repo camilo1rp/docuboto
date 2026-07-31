@@ -25,6 +25,7 @@ from app.schemas.workflow import (
     FlowStepComplete,
     FlowStepCreate,
     FlowStepResponse,
+    RollbackRequest,
     TransactionRequest,
     TransactionTypeResponse,
 )
@@ -238,6 +239,11 @@ async def assign_radicado(
     assigned_by: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
+    # Hallazgo A: `action` es un campo libre del cuerpo — sin forzarlo aquí, un
+    # cliente podía llamar a /assign con action:"return" y escribir en la traza
+    # inmutable una "devolución" que nunca pasó por /devolver (sin causal ni
+    # verificación de tenencia).
+    payload = payload.model_copy(update={"action": "assign"})
     service = WorkflowService(conn, tenant_slug)
     return await service.assign(payload, assigned_by)
 
@@ -255,6 +261,9 @@ async def transfer_radicado(
     assigned_by: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
+    # Hallazgo A: mismo criterio que assign_radicado — con action:"transfer"
+    # falsificado se sorteaba además el 422 missing_from_dept de WorkflowService.transfer.
+    payload = payload.model_copy(update={"action": "transfer"})
     service = WorkflowService(conn, tenant_slug)
     return await service.transfer(payload, assigned_by)
 
@@ -334,13 +343,14 @@ async def devolver_radicado(
 )
 async def rollback_radicado(
     radicado_id: uuid.UUID,
+    payload: RollbackRequest,
     tenant_slug: str = Depends(_require_tenant),
     actor: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
     service = WorkflowService(conn, tenant_slug)
     try:
-        return await service.rollback(radicado_id, actor)
+        return await service.rollback(radicado_id, actor, motivo=payload.motivo)
     except RollbackError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -396,7 +406,11 @@ async def complete_step(
     step_id: uuid.UUID,
     payload: FlowStepComplete,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
+    # Bloqueantes 1+2: única mutación del servicio que llegaba sin identidad del
+    # llamante. Ver WorkflowRepository.complete_step para el anclaje autorización+
+    # mutación en el mismo UPDATE.
     service = WorkflowService(conn, tenant_slug)
-    return await service.complete_step(step_id, payload)
+    return await service.complete_step(step_id, payload, actor)

@@ -297,4 +297,10 @@ export function clearPkceCookies(cookies) {
  * @property {string[]} roles
  * @property {string|null} tenant_slug
  * @property {string[]} permissions
+ * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
+ *   Contexto de dependencia activa (E08/ADR-013) — poblado por
+ *   `(app)/+layout.server.js`, best-effort (puede quedar `null`).
+ * @property {Array<{codigo: number, nombre: string, sigla: string}>} [dependencias]
+ *   Catálogo mínimo de dependencias activas del tenant, para resolver la
+ *   etiqueta legible de `context.active_depe_id` en `DependencySwitcher.svelte`.
  */

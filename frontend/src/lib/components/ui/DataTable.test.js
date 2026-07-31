@@ -286,6 +286,36 @@ describe("DataTable — selección múltiple (enableSelection)", () => {
     expect(onSelectionChange.mock.calls[0][0].detail.selected).toEqual(["1"]);
     expect(screen.getByText("1 seleccionada")).toBeInTheDocument();
   });
+
+  it("re-siembra la selección cuando el padre cambia `selected` por contenido (no solo al montar)", async () => {
+    const { component } = render(DataTable, {
+      props: { columns: richColumns, rows: richRows, enableSelection: true, selected: ["1"] },
+    });
+    expect(screen.getByLabelText("Seleccionar fila 1").checked).toBe(true);
+
+    // El padre limpia la selección (p. ej. tras una nueva búsqueda) — antes de
+    // este fix, la tabla ignoraba este cambio porque ya se había "sembrado"
+    // una vez al montar (bug: selección fantasma "Vincular (4)" con la
+    // tabla mostrando 0 y el padre desincronizado).
+    await component.$set({ selected: [] });
+    expect(screen.getByLabelText("Seleccionar fila 1").checked).toBe(false);
+
+    // Y el padre puede volver a imponer una selección nueva (p. ej. restaurar
+    // seleccionados guardados entre búsquedas).
+    await component.$set({ selected: ["2"] });
+    expect(screen.getByLabelText("Seleccionar fila 1").checked).toBe(false);
+    expect(screen.getByLabelText("Seleccionar fila 2").checked).toBe(true);
+  });
+
+  it("no entra en bucle: marcar una fila desde la UI no revierte la selección del usuario", async () => {
+    const { component } = render(DataTable, {
+      props: { columns: richColumns, rows: richRows, enableSelection: true, selected: [] },
+    });
+    await fireEvent.click(screen.getByLabelText("Seleccionar fila 2"));
+    // Si `emitSelection` (que reasigna `selected` internamente) disparara una
+    // re-siembra espuria, esto se revertiría a la prop original ([]).
+    expect(screen.getByLabelText("Seleccionar fila 2").checked).toBe(true);
+  });
 });
 
 describe("DataTable — columnas configurables (enableColumnToggle) y persistencia", () => {
@@ -379,8 +409,27 @@ describe("DataTable — exportación CSV (enableExport)", () => {
 
   it("el botón de exportar dispara la descarga sin lanzar", async () => {
     render(DataTable, { props: { columns: richColumns, rows: richRows, enableExport: true } });
-    await fireEvent.click(screen.getByRole("button", { name: "Exportar CSV" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Exportar página (2)" }));
     expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  // I6 (revisión UX): "Exportar CSV" a secas exportaba solo `displayRows` (la
+  // página visible) sin decirlo — el usuario podía creer que se llevó TODO
+  // el resultado del backend. La etiqueta ahora declara el alcance real.
+  it("I6: la etiqueta declara que exporta solo la página visible, no el total del backend", () => {
+    render(DataTable, {
+      props: { columns: richColumns, rows: richRows, enableExport: true, totalCount: 137 },
+    });
+    expect(screen.getByRole("button", { name: "Exportar página (2)" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Exportar CSV" })).toBeNull();
+  });
+
+  it("I6: si hay más filas en el backend que las visibles, el anuncio accesible también lo advierte", async () => {
+    render(DataTable, {
+      props: { columns: richColumns, rows: richRows, enableExport: true, totalCount: 137 },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Exportar página (2)" }));
+    expect(screen.getByText(/exportadas 2 filas de 137 a csv/i)).toBeTruthy();
   });
 });
 

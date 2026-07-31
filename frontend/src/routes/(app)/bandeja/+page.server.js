@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * bandeja/+page.server.js — Carga SSR de la primera página de radicados (T-08, RF-UI-03).
+ * bandeja/+page.server.js — Carga SSR de la bandeja (T-08/T-Fase1, RF-UI-03/RF-FLU-03).
  *
  * Endpoint real: GET /api/v1/documents?doc_type=&status=&page=&size=
  *   - Filtros soportados por el backend: doc_type (E|S|I), status, page, size
@@ -19,12 +19,25 @@
  * y acciones de operador (avanzar estado, ver detalle) usan el endpoint local
  * /bandeja/api[/id] que lee la cookie httpOnly en el servidor (D-05, ADR-011).
  *
+ * `vista` (T-Fase1, tablero de distribución): conmutador resuelto EN SSR por
+ * query param — `?vista=tablero` (default) | `lista` | `pendientes`. No hay
+ * ruta `/workflows` separada: una sola bandeja con vistas (decisión de
+ * arquitectura, ver el prompt de la tarea). `pendientes` solo es alcanzable
+ * en el cliente si el usuario tiene USUA_PERM_ADMIN o PERM_TRAMITAR — la UI la
+ * oculta, pero como con todo en este proyecto, el backend re-valida.
+ *
+ * `dependencias`: catálogo de dependencias activas (mismo patrón que
+ * `radicar/+page.server.js`), usado por WorkflowBoard para poblar los
+ * selects de destino de AsignarModal/TrasladarModal.
+ *
  * El access_token NO se expone en $page.data — nunca alcanza el JS del cliente.
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { attachSafeBody } from "$lib/server/sanitizeHtml.js";
+
+const VALID_VISTAS = new Set(["tablero", "lista", "pendientes"]);
 
 // Nota: el token se lee aquí solo para la carga SSR inicial.
 // Las llamadas cliente-side usan /bandeja/api[/id] que leen la cookie en el servidor.
@@ -36,7 +49,15 @@ export async function load({ cookies, parent, url, fetch }) {
   const token = cookies.get(COOKIE_ACCESS_TOKEN) ?? "";
   const tenant = user?.tenant_slug ?? "";
 
-  // Leer filtros iniciales de query params (deep-link friendly)
+  const vistaParam = url.searchParams.get("vista") ?? "tablero";
+  const vista = VALID_VISTAS.has(vistaParam) ? vistaParam : "tablero";
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "X-Tenant-Slug": tenant,
+  };
+
+  // Leer filtros iniciales de query params (deep-link friendly, vista Lista)
   const docType = url.searchParams.get("doc_type") ?? "";
   const status = url.searchParams.get("status") ?? "";
   const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
@@ -50,13 +71,11 @@ export async function load({ cookies, parent, url, fetch }) {
   let total = 0;
   let loadError = null;
 
+  // La vista Tablero (default) no necesita el listado de /documents — solo la
+  // vista Lista lo usa. Se carga siempre igual (barato, ya paginado a 20) para
+  // no complicar el cambio de vista en cliente sin recargar.
   try {
-    const res = await fetch(`${API_V1}/documents?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Tenant-Slug": tenant,
-      },
-    });
+    const res = await fetch(`${API_V1}/documents?${params.toString()}`, { headers });
 
     if (res.ok) {
       total = Number(res.headers.get("X-Total-Count") ?? 0);
@@ -74,10 +93,23 @@ export async function load({ cookies, parent, url, fetch }) {
     loadError = "No se pudo conectar al servidor de documentos.";
   }
 
+  // Dependencias activas (mismo endpoint que radicar/+page.server.js) — solo
+  // hace falta para el Tablero, pero es barato y evita un segundo viaje al
+  // cambiar de vista en cliente.
+  let dependencias = [];
+  try {
+    const depRes = await fetch(`${API_V1}/dependencias?activo=true`, { headers });
+    if (depRes.ok) dependencias = await depRes.json().catch(() => []);
+  } catch {
+    dependencias = [];
+  }
+
   return {
     documents,
     total,
     loadError,
+    vista,
+    dependencias,
     // Filtros activos al cargar (para deep-link)
     initialFilters: { docType, status, page },
     // token y tenant NO se exponen: las llamadas cliente usan /bandeja/api (D-05)

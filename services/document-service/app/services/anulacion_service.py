@@ -19,6 +19,13 @@ PERMANENTEMENTE el chunk indexado del radicado anulado (residual
 "purga-en-anulación": un radicado ANULADO no debe seguir siendo consultable en el
 índice semántico). Solicitar/rechazar NO emiten evento: solo aprobar cambia el
 estado del radicado.
+
+Auditoría (ADR-008/010): los TRES actos (solicitar/aprobar/rechazar) dejan un
+asiento propio en `public.audit_log`, DENTRO de la misma transacción que la
+mutación (patrón gemelo de `DocumentService.create`, `document_service.py:214`)
+— si `audit.append` falla, la mutación entera revierte (una anulación aprobada
+sin traza es peor que una anulación fallida). `object_ref` es SIEMPRE el
+`tracking_number` resuelto server-side desde la BD, nunca un campo del body.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
-from orpycamcp_common import events
+from orpycamcp_common import audit, events
 
 from app.repositories.anulacion_repository import AnulacionRepository
 from app.schemas.anulacion import (
@@ -40,6 +47,7 @@ from app.schemas.anulacion import (
 
 logger = logging.getLogger(__name__)
 
+_SERVICE = "document-service"
 _STREAM = "orpycamcp.document.events"
 
 
@@ -48,9 +56,36 @@ def _resp(row) -> AnulacionResponse:
 
 
 class AnulacionService:
-    def __init__(self, conn: asyncpg.Connection, redis: Any | None = None) -> None:
+    def __init__(
+        self,
+        conn: asyncpg.Connection,
+        redis: Any | None = None,
+        tenant_slug: str | None = None,
+    ) -> None:
+        self._conn = conn
         self._repo = AnulacionRepository(conn)
         self._redis = redis
+        self._slug = tenant_slug
+
+    def _audit_tenant(self) -> str:
+        """Tenant al que se imputa el asiento — fail-closed.
+
+        `tenant_slug` es opcional en el constructor porque `get` (lectura) no
+        audita y se construye sin él. Pero en las tres ESCRITURAS es
+        obligatorio: `audit.append` hace `tenant_slug or SYSTEM_TENANT`, así
+        que un llamante que lo omitiera archivaría la anulación de un
+        documento oficial bajo el tenant del sistema — la fila existe, pero
+        queda fuera de la vista de auditoría de la entidad y de su cadena de
+        hash, que es justo donde un auditor la buscaría. Preferimos que la
+        anulación falle a que su traza se archive en el sitio equivocado.
+        """
+        if not self._slug:
+            raise RuntimeError(
+                "AnulacionService requiere tenant_slug para auditar una escritura "
+                "(imputar el asiento al tenant del sistema lo ocultaría de la "
+                "auditoría de la entidad)"
+            )
+        return self._slug
 
     async def solicitar(
         self,
@@ -74,13 +109,34 @@ class AnulacionService:
                     "status": 409,
                 },
             )
+        actor = str(solicitado_por) if solicitado_por else None
         try:
-            row = await self._repo.insert_solicitud(
-                radicado_id=radicado_id,
-                causal=payload.causal,
-                motivo=payload.motivo,
-                solicitado_por=solicitado_por,
-            )
+            # La solicitud y su asiento de auditoría son atómicos (ADR-008): si
+            # `audit.append` falla, la solicitud entera revierte — ver docstring
+            # del módulo.
+            async with self._conn.transaction():
+                row = await self._repo.insert_solicitud(
+                    radicado_id=radicado_id,
+                    causal=payload.causal,
+                    motivo=payload.motivo,
+                    solicitado_por=solicitado_por,
+                )
+                tracking_number = await self._repo.get_tracking_number(radicado_id)
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._audit_tenant(),
+                    service=_SERVICE,
+                    action="document.anulacion_solicitada",
+                    object_type="radicado",
+                    object_ref=tracking_number,
+                    actor=actor,
+                    payload={
+                        "id": str(radicado_id),
+                        "anulacion_id": str(row["id"]),
+                        "causal": payload.causal,
+                        "motivo": payload.motivo,
+                    },
+                )
         except asyncpg.UniqueViolationError:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -100,7 +156,6 @@ class AnulacionService:
         payload: AnulacionDecision,
         decidido_por: uuid.UUID | None,
         max_clearance: int,
-        tenant_slug: str | None = None,
     ) -> AnulacionResponse:
         active = await self._repo.get_active(radicado_id, max_clearance)
         if active is None:
@@ -112,19 +167,40 @@ class AnulacionService:
                     "status": 404,
                 },
             )
-        row = await self._repo.decide(
-            anulacion_id=active["id"],
-            radicado_id=radicado_id,
-            aprobar=aprobar,
-            decidido_por=decidido_por,
-            observacion=payload.observacion,
-        )
-        # `repo.decide` ya commiteó (UPDATE radicado_anulacion + UPDATE radicados
-        # en una sola transacción). El evento es best-effort y SOLO se publica al
-        # aprobar — solicitar/rechazar no cambian el estado del radicado.
-        if aprobar:
+        actor = str(decidido_por) if decidido_por else None
+        # object_ref = tracking_number, resuelto SERVER-SIDE desde la BD (nunca
+        # de un campo del body). La decisión y su asiento de auditoría son
+        # atómicos (ADR-008): `repo.decide` abre su propia transacción interna,
+        # que degrada a SAVEPOINT dentro de esta — si `audit.append` falla, la
+        # decisión completa (aprobar o rechazar) revierte.
+        async with self._conn.transaction():
+            row = await self._repo.decide(
+                anulacion_id=active["id"],
+                radicado_id=radicado_id,
+                aprobar=aprobar,
+                decidido_por=decidido_por,
+                observacion=payload.observacion,
+            )
             tracking_number = await self._repo.get_tracking_number(radicado_id)
-            await self._emit_annulled(radicado_id, tracking_number, tenant_slug, decidido_por)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._audit_tenant(),
+                service=_SERVICE,
+                action="document.anulacion_aprobada" if aprobar else "document.anulacion_rechazada",
+                object_type="radicado",
+                object_ref=tracking_number,
+                actor=actor,
+                payload={
+                    "id": str(radicado_id),
+                    "anulacion_id": str(active["id"]),
+                    "observacion": payload.observacion,
+                },
+            )
+        # El evento de dominio se publica tras confirmar la transacción. Es
+        # best-effort y SOLO se publica al aprobar — solicitar/rechazar no
+        # cambian el estado del radicado.
+        if aprobar:
+            await self._emit_annulled(radicado_id, tracking_number, self._slug, decidido_por)
         return _resp(row)
 
     async def _emit_annulled(
@@ -154,7 +230,7 @@ class AnulacionService:
             )
 
     async def aprobar(
-        self, radicado_id, payload, decidido_por, max_clearance: int, tenant_slug: str | None = None
+        self, radicado_id, payload, decidido_por, max_clearance: int
     ) -> AnulacionResponse:
         return await self._decidir(
             radicado_id,
@@ -162,7 +238,6 @@ class AnulacionService:
             payload=payload,
             decidido_por=decidido_por,
             max_clearance=max_clearance,
-            tenant_slug=tenant_slug,
         )
 
     async def rechazar(

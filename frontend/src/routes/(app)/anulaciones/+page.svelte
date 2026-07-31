@@ -77,6 +77,14 @@
   let searchLoading = false;
   let searched = false;
   let searchError = "";
+  // C3 (revisión UX): un fallo de RED/gateway (503, etc.) caía en el mismo
+  // `catch` que "sin resultados" — `searchResults = []` con `searched = true`
+  // pintaba el EmptyState "Ningún radicado coincide con la búsqueda". Un
+  // aprobador que busca un radicado del que le avisaron por teléfono leería
+  // eso como "la solicitud no existe" y cerraría el caso, exactamente lo que
+  // el banner de esta pantalla dice combatir. `searchFailed` distingue el
+  // caso "consulté y no hay nada" del caso "no pude consultar".
+  let searchFailed = false;
 
   /**
    * Estado de la anulación de cada fila visible, por `row.id` (A5b, revisión
@@ -88,6 +96,21 @@
    * @type {Record<string, {loading: boolean, estado: string|null, notFound: boolean, error: boolean}>}
    */
   let rowAnulacionStatus = {};
+
+  /** @param {any} row */
+  async function fetchRowStatus(row) {
+    try {
+      const res = await fetch(`/anulaciones/api/${encodeURIComponent(row.id)}`);
+      // 404 es el caso NORMAL "este radicado no tiene solicitud de
+      // anulación" (mismo criterio no-read-up del backend) — no un error.
+      if (res.status === 404) return { estado: null, notFound: true, error: false };
+      if (!res.ok) return { estado: null, notFound: false, error: true };
+      const data = await res.json();
+      return { estado: data?.estado ?? null, notFound: false, error: false };
+    } catch {
+      return { estado: null, notFound: false, error: true };
+    }
+  }
 
   /** @param {any[]} rows Filas de la búsqueda actual (SearchHit[]) */
   async function cargarEstadosAnulacion(rows) {
@@ -104,22 +127,28 @@
     // tumbar el estado de los demás — así Promise.allSettled solo sirve para
     // saber cuándo terminó el lote completo.
     const tasks = rows.map((row) =>
-      fetch(`/anulaciones/api/${encodeURIComponent(row.id)}`)
-        .then(async (res) => {
-          // 404 es el caso NORMAL "este radicado no tiene solicitud de
-          // anulación" (mismo criterio no-read-up del backend) — no un error.
-          if (res.status === 404) return { estado: null, notFound: true, error: false };
-          if (!res.ok) return { estado: null, notFound: false, error: true };
-          const data = await res.json();
-          return { estado: data?.estado ?? null, notFound: false, error: false };
-        })
-        .catch(() => ({ estado: null, notFound: false, error: true }))
-        .then((value) => {
-          rowAnulacionStatus = { ...rowAnulacionStatus, [row.id]: { loading: false, ...value } };
-        }),
+      fetchRowStatus(row).then((value) => {
+        rowAnulacionStatus = { ...rowAnulacionStatus, [row.id]: { loading: false, ...value } };
+      }),
     );
 
     await Promise.allSettled(tasks);
+  }
+
+  /**
+   * Menor (revisión UX): si la consulta de estado de UNA fila falla, el chip
+   * ya lo decía ("No se pudo consultar") pero el botón "Ver anulación" solo
+   * aparecía con `estado` truthy — la fila quedaba sin forma de reintentar
+   * ni de llegar al detalle. Reintenta solo esa fila (no toda la búsqueda).
+   * @param {any} row
+   */
+  async function retryRowStatus(row) {
+    rowAnulacionStatus = {
+      ...rowAnulacionStatus,
+      [row.id]: { loading: true, estado: null, notFound: false, error: false },
+    };
+    const value = await fetchRowStatus(row);
+    rowAnulacionStatus = { ...rowAnulacionStatus, [row.id]: { loading: false, ...value } };
   }
 
   async function buscar() {
@@ -131,6 +160,7 @@
     }
     searchLoading = true;
     searched = true;
+    searchFailed = false;
     try {
       const res = await fetch(`/anulaciones/api/buscar?q=${encodeURIComponent(q)}`);
       const result = await res.json();
@@ -145,6 +175,9 @@
     } catch (/** @type {any} */ err) {
       searchResults = [];
       searchTotal = 0;
+      // C3: la búsqueda no pudo resolverse — esto NO es "sin resultados".
+      searchFailed = true;
+      searchError = err?.detail ?? "No se pudo consultar el servidor de búsqueda.";
       notifyError(err?.detail ?? "No se pudo buscar radicados.");
     } finally {
       searchLoading = false;
@@ -365,7 +398,8 @@
         <DataTable
           columns={TABLE_COLUMNS}
           rows={searchResults}
-          totalCount={searchResults.length}
+          totalCount={searchTotal}
+          disableNav
           loading={searchLoading}
           caption="Radicados encontrados"
         >
@@ -402,17 +436,47 @@
                 >
                   Ver anulación
                 </Button>
+              {:else if rowAnulacionStatus[row.id]?.error}
+                <!-- Menor (revisión UX): antes esta fila quedaba SIN botón —
+                  ni reintento ni acceso al detalle — cuando la consulta de su
+                  estado fallaba. -->
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="fas fa-rotate-right"
+                  on:click={() => retryRowStatus(row)}
+                  aria-label="Reintentar consultar la anulación del radicado {row.tracking_number}"
+                >
+                  Reintentar
+                </Button>
               {/if}
             </td>
           </svelte:fragment>
         </DataTable>
       </div>
       {#if searchTotal > searchResults.length}
+        <!-- Menor (revisión UX): el total ya lo dice la propia tabla ("1–20
+          de {searchTotal}", vía `totalCount={searchTotal}` arriba) — antes
+          esta pantalla lo repetía con OTRO número ("1–20 de 20" de la tabla
+          vs "primeros 20 de {searchTotal}" de este párrafo), una
+          contradicción. Este aviso ya no repite la cifra: solo orienta. -->
         <p class="anulaciones-table__truncated">
-          Se muestran los primeros {searchResults.length} de {searchTotal} resultados; refina la búsqueda
-          para encontrar el radicado que buscas.
+          Hay más resultados de los que se muestran aquí; refina la búsqueda para encontrar el
+          radicado que buscas.
         </p>
       {/if}
+    {:else if searchFailed && !searchLoading}
+      <!-- C3: un fallo de red/gateway NUNCA se presenta como "no hay nada
+        que resolver" — estado persistente y distinto del EmptyState de "sin
+        resultados", con reintento explícito. -->
+      <EmptyState
+        icon="fas fa-triangle-exclamation"
+        title="No se pudo consultar el servidor de búsqueda"
+        description={searchError ||
+          "Hubo un problema al buscar radicados. Esto no significa que no existan — vuelve a intentarlo."}
+      >
+        <Button variant="primary" on:click={buscar}>Reintentar</Button>
+      </EmptyState>
     {:else if searched && !searchLoading}
       <EmptyState
         icon="fas fa-search"

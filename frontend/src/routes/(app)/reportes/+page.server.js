@@ -17,6 +17,15 @@
  * La descarga CSV usa el endpoint local /reportes/api/csv (proxy SSR),
  * no esta carga SSR — el botón apunta a ese endpoint con los mismos params.
  *
+ * Pestaña "Índice de clasificados" (E08, Ley 1712 art. 20, Fase 4 cierre
+ * desfase API↔UI): esta carga SOLO expone `canSeeIndice` (espejo del gate
+ * real `PERM_RECLASIFICAR` de GET /reports/indice-reservado) — la UI no
+ * ofrece la pestaña si el backend la rechazaría. El contenido del índice se
+ * pide de forma perezosa desde el cliente al activar la pestaña (mismo
+ * patrón que las facetas bajo demanda del workspace de expediente), vía
+ * /reportes/api/indice-reservado — no se precarga aquí para no penalizar la
+ * carga inicial de quien nunca abre esa pestaña.
+ *
  * El access_token NO se expone en $page.data — nunca alcanza el JS del cliente.
  */
 
@@ -68,6 +77,9 @@ export async function load({ cookies, parent, url }) {
     loadError,
     // Filtros activos para inicializar el formulario y construir la URL del CSV
     initialFilters: { dateFrom, dateTo },
+    // Espejo del gate real del backend (PERM_RECLASIFICAR) — controla si la
+    // pestaña "Índice de clasificados" se ofrece; el backend re-valida igual.
+    canSeeIndice: (user?.permissions ?? []).includes("PERM_RECLASIFICAR"),
     // token NO se expone: el botón CSV llama a /reportes/api/csv (D-05)
   };
 }

@@ -419,6 +419,8 @@ Historial completo de pasos ordenado por `step_number ASC`.
 ### `GET /api/v1/workflows/inbox`
 Bandeja tipada de pasos activos (RF-FLU-03). `?box=entrada|salida|internos` (mapea a `doc_type` E/S/I), `&dept=&assigned_to=&page=&size=`. Prioriza por antigüedad; cabecera `X-Total-Count`. `400 invalid_box` si el box no es válido. Cada paso incluye `due_at` y `semaforo` (verde/amarillo/rojo/vencido, RF-FLU-07).
 
+**Acotado por dependencia (RF-SEG-08):** sin `dept`/`assigned_to`, el llamante ve **lo suyo** — pasos asignados a él o de una dependencia a la que pertenece (URD activa). Pasar `dept` y/o `assigned_to` **amplía** el alcance a otra dependencia u otro usuario y exige `PERM_TRAMITAR` o `USUA_PERM_ADMIN`; sin ese permiso, `403 forbidden` (no se ignora el parámetro en silencio). `X-Total-Count` siempre refleja el mismo filtro que las filas devueltas.
+
 ### `POST /api/v1/workflows/overdue/scan`
 Barrido de vencimientos (RF-FLU-07): detecta pasos activos vencidos no alertados, emite `workflow.step.overdue` al bus (→ notificaciones) y los marca para no duplicar. Idempotente por paso; pensado para invocación periódica por un scheduler. Responde `{ "alerted": N }`. Exige `USUA_PERM_ADMIN` (barrido transversal del tenant). La reasignación masiva `POST /api/v1/workflows/reassign/cascade` (RF-FLU-08) exige el mismo permiso de administración.
 
@@ -435,7 +437,7 @@ Re-enruta un radicado mal asignado: `{ "to_dept": "...", "causal": "DEV-DEP", "c
 - `POST /api/v1/workflows/{radicado_id}/transactions` `{ "tipo_tx": "anular", "comentario": "...", "detalles": {} }` — ejecuta la transacción: aplica el efecto al paso activo (p. ej. `marcar_leido`→in_progress, `anular`→cancelled) y registra el evento append-only. **Enforcement RBAC por-tipo (RF-SEG-03):** cada tipo declara en `transaction_types.requires_permission` el permiso que exige (`anular`→`PERM_ANULAR`, `cerrar_exp`→`PERM_CERRAR_EXP`, `vobo`→`PERM_VOBO`…); sin él, `403 forbidden` y la transacción **no** se aplica. Un tipo con `requires_permission = NULL` es abierto. `404 unknown_transaction` / `no_flow`. `PATCH /{step_id}/complete` exige `PERM_TRAMITAR`.
 
 ### `POST /api/v1/workflows/{radicado_id}/rollback`
-Revierte la última asignación (RF-FLU-08): cancela el paso vigente —solo si sigue `pending`— y reactiva el anterior, atómicamente, con evento `tipo_tx=rollback`. `409 no_active_step` (sin paso activo) o `cannot_rollback_initial` (es la radicación inicial).
+`{motivo}` (**obligatorio**, 5-500 caracteres). Revierte la última asignación (RF-FLU-08): cancela el paso vigente —solo si sigue `pending`— y reactiva el anterior, atómicamente, con evento `tipo_tx=rollback`. El `motivo` queda registrado en dos trazas atómicas con la mutación (una sola transacción): `flow_events.comentario` (hoja de ruta operativa) y `public.audit_log.payload` (traza legal forense, mismo patrón que la asignación). `409 no_active_step` (sin paso activo) o `cannot_rollback_initial` (es la radicación inicial). `422` si falta el `motivo` o no alcanza el mínimo de caracteres.
 
 ### `POST /api/v1/workflows/reassign/cascade`
 Reasigna en una transacción todos los pasos activos de un usuario o dependencia a un nuevo responsable, sin dejar radicados huérfanos (RF-FLU-08).
@@ -460,6 +462,8 @@ Paso activo actual del radicado. `404` si está cerrado o sin asignar.
 
 ### `GET /api/v1/workflows/pending`
 Radicados pendientes. Filtros: `?dept=Dirección+Jurídica&assigned_to={uuid}&page=1&size=20`.
+
+**Acotado por dependencia (RF-SEG-08):** mismo criterio que `/inbox` — por defecto, lo propio (asignado al llamante o a una dependencia a la que pertenece por URD activa); `dept`/`assigned_to` amplían el alcance y exigen `PERM_TRAMITAR` o `USUA_PERM_ADMIN` (`403 forbidden` sin el permiso).
 
 ### `PATCH /api/v1/workflows/{step_id}/complete`
 Marca un paso como completado.

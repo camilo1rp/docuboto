@@ -31,6 +31,7 @@
 -->
 <script>
   import { invalidateAll } from "$app/navigation";
+  import { tick } from "svelte";
 
   import Card from "$lib/components/ui/Card.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
@@ -38,6 +39,10 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import FormField from "$lib/components/ui/FormField.svelte";
+  import VincularRadicadosDrawer from "$lib/components/features/expedientes/VincularRadicadosDrawer.svelte";
+  import EditarMetadatosModal from "$lib/components/features/expedientes/EditarMetadatosModal.svelte";
+  import DisposicionExpedienteDrawer from "$lib/components/features/disposicion/DisposicionExpedienteDrawer.svelte";
 
   import { permissions } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
@@ -69,15 +74,71 @@
   // cada endpoint.
   $: canClose = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
   $: canTransfer = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "closed";
+  // Vincular/excluir radicados (link/unlink, archive_service.py) exige el
+  // expediente en estado 'open' — cerrado/transferido responde 409
+  // expediente_not_open. La UI no ofrece lo que la API rechazaría.
+  $: canLinkUnlink = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
+  $: canEditMetadata = can("USUA_PERM_EXPEDIENTE");
+  $: canExport = can("USUA_PERM_EXPEDIENTE");
+  // Disposición final (RF-MET-08/E04, Fase 4 cierre desfase API↔UI): de solo
+  // lectura (se materializa al cerrar), visible con el mismo permiso que el
+  // resto de la gestión del expediente.
+  $: canVerDisposicion = can("USUA_PERM_EXPEDIENTE");
+  // POST /indice/firmar exige USUA_PERM_EXPEDIENTE Y PERM_FIRMA (routers/indice.py).
+  $: canFirmarIndice = can("USUA_PERM_EXPEDIENTE") && can("PERM_FIRMA");
+
+  // ---------------------------------------------------------------------------
+  // A6 (revisión UX): el backend exige nivel de escritura (min_crud=3) para
+  // cerrar/transferir/excluir, pero el store de sesión solo expone permisos
+  // como lista plana ("¿lo tiene o no?"), sin nivel CRUD — la UI no puede
+  // reflejar ese matiz todavía (DEUDA anotada, no resuelta aquí). Lo que SÍ se
+  // arregla: cuando el backend rechaza por eso, no se reenvía el `detail`
+  // crudo del backend ("Se requiere el permiso USUA_PERM_EXPEDIENTE" —
+  // confuso para un usuario que SÍ tiene ese permiso en modo lectura), sino un
+  // mensaje propio que explica que falta el NIVEL, no el permiso en sí.
+  /** @param {any} err @param {string} fallback */
+  function friendlyActionError(err, fallback) {
+    if (err?.error === "forbidden") {
+      return "No tiene el nivel de permiso necesario para esta acción; consulte con el administrador de su entidad.";
+    }
+    return err?.detail ?? fallback;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Descarga de blob (export ZIP, anexo, XML del índice) — helper compartido
+  // ---------------------------------------------------------------------------
+  /**
+   * Menor (revisión UX): un `<a>` que nunca se inserta en el DOM, con
+   * `revokeObjectURL` disparado de forma síncrona justo después de `click()`,
+   * puede abortar la descarga en Firefox (el navegador procesa el click de
+   * forma asíncrona y la URL del blob ya pudo quedar revocada). Se inserta el
+   * ancla en el DOM y se revoca en un `setTimeout(0)`, dando margen a que el
+   * navegador tome el blob antes de liberarlo.
+   * @param {Blob} blob
+   * @param {string} filename
+   */
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
 
   // ---------------------------------------------------------------------------
   // Pestañas (tablist ARIA)
   // ---------------------------------------------------------------------------
   const TABS = [
-    { id: "resumen", label: "Resumen", icon: "fa-folder-open" },
-    { id: "indice", label: "Índice (E15)", icon: "fa-list-ol" },
+    { id: "resumen", label: "Contenido", icon: "fa-folder-open" },
+    { id: "indice", label: "Índice electrónico", icon: "fa-list-ol" },
+    { id: "foliado", label: "Foliado", icon: "fa-hashtag" },
     { id: "anexos", label: "Anexos", icon: "fa-paperclip" },
     { id: "flujo", label: "Flujo / Historial", icon: "fa-route" },
+    { id: "preservacion", label: "Preservación", icon: "fa-box-archive" },
+    { id: "acceso", label: "Acceso", icon: "fa-user-shield" },
     { id: "fisico", label: "Ubicación física", icon: "fa-archive" },
   ];
   let activeTab = "resumen";
@@ -113,6 +174,17 @@
   let showTransferModal = false;
   let actionLoading = false;
 
+  // Drawer de disposición final (solo lectura) — ver DisposicionExpedienteDrawer.svelte
+  let showDisposicionDrawer = false;
+
+  // I2 (revisión UX): `invalidateAll()` corría ANTES de cerrar el Modal —
+  // al cerrarse, `Modal.svelte` intentaba reenfocar el botón "Cerrar
+  // expediente"/"Transferir expediente", pero ese botón ya había salido del
+  // DOM (canClose/canTransfer cambian con el nuevo status) y `focus()` sobre
+  // un nodo desconectado no hace nada: el foco caía al <body>, justo tras un
+  // acto irreversible con valor legal. Se cierra el Modal ANTES de invalidar
+  // y se mueve el foco explícitamente a un ancla estable (patrón A7, igual
+  // que `handleExcluir`).
   async function handleClose() {
     actionLoading = true;
     try {
@@ -120,12 +192,15 @@
       const result = await res.json();
       if (!res.ok) throw result;
       notifySuccess(`Expediente ${expediente.code} cerrado correctamente.`);
+      showCloseModal = false;
       await invalidateAll();
+      await tick();
+      document.getElementById("exp-workspace-title")?.focus();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo cerrar el expediente.");
+      notifyError(friendlyActionError(err, "No se pudo cerrar el expediente."));
+      showCloseModal = false;
     } finally {
       actionLoading = false;
-      showCloseModal = false;
     }
   }
 
@@ -136,14 +211,391 @@
       const result = await res.json();
       if (!res.ok) throw result;
       notifySuccess(`Expediente ${expediente.code} transferido correctamente.`);
+      showTransferModal = false;
       await invalidateAll();
+      await tick();
+      document.getElementById("exp-workspace-title")?.focus();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo transferir el expediente.");
+      notifyError(friendlyActionError(err, "No se pudo transferir el expediente."));
+      showTransferModal = false;
     } finally {
       actionLoading = false;
-      showTransferModal = false;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Vincular / excluir radicados (Fase 2 — capacidad central del módulo)
+  // ---------------------------------------------------------------------------
+  let showVincularDrawer = false;
+  $: linkedIds = new Set((expediente?.radicados ?? []).map((r) => r.radicado_id));
+
+  let showExcluirModal = false;
+  /** @type {{radicado_id: string, tracking_number: string} | null} */
+  let excluirTarget = null;
+  let excluirCausal = "";
+  let excluirCausalError = "";
+  let excluirLoading = false;
+
+  function openExcluirModal(rad) {
+    excluirTarget = rad;
+    excluirCausal = "";
+    excluirCausalError = "";
+    showExcluirModal = true;
+  }
+
+  function closeExcluirModal() {
+    showExcluirModal = false;
+    excluirTarget = null;
+    excluirCausal = "";
+    excluirCausalError = "";
+  }
+
+  // M2 (revisión UX): antes el botón "Confirmar exclusión" simplemente
+  // quedaba deshabilitado sin motivo sin causal — un lector de pantalla
+  // anunciaba un botón inerte sin explicar por qué. Ahora se valida al
+  // intentar confirmar, con un error asociado (aria-describedby vía
+  // FormField) que SÍ se anuncia, y el foco vuelve al campo.
+  function validateExcluirCausal() {
+    if (!excluirCausal.trim()) {
+      excluirCausalError = "El motivo de la exclusión es obligatorio.";
+      return false;
+    }
+    if (excluirCausal.trim().length > 500) {
+      excluirCausalError = "El motivo no puede superar 500 caracteres.";
+      return false;
+    }
+    excluirCausalError = "";
+    return true;
+  }
+
+  async function handleExcluir() {
+    if (!excluirTarget) return;
+    if (!validateExcluirCausal()) {
+      document.getElementById("excluir-causal")?.focus();
+      return;
+    }
+    excluirLoading = true;
+    try {
+      const res = await fetch(
+        `/expedientes/${expediente.id}/api/radicados/${excluirTarget.radicado_id}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ causal: excluirCausal.trim() }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw data;
+      notifySuccess(`Radicado ${excluirTarget.tracking_number} excluido del expediente.`);
+      closeExcluirModal();
+      resetIndiceInspectionState();
+      await invalidateAll();
+      // A7 (revisión UX): tras un acto irreversible, el foco NO debe caer al
+      // <body> porque el botón "Excluir" de esa fila desapareció del DOM. Se
+      // enfoca un ancla estable: el encabezado de la tarjeta de radicados.
+      await tick();
+      document.getElementById("radicados-vinculados-heading")?.focus();
+    } catch (err) {
+      notifyError(friendlyActionError(err, "No se pudo excluir el radicado."));
+    } finally {
+      excluirLoading = false;
+    }
+  }
+
+  // A5 (revisión UX): vincular/excluir regeneran el índice (nueva huella) —
+  // si el usuario ya había verificado o abierto el historial de versiones
+  // ANTES del cambio, esos paneles debían quedar en "idle" para no seguir
+  // afirmando un estado que el cambio de índice ya volvió obsoleto.
+  function resetIndiceInspectionState() {
+    indiceVerifyState = { status: "idle", data: null, errorMsg: null };
+    indiceVersionsState = { status: "idle", items: [], total: 0, errorMsg: null };
+  }
+
+  async function handleVinculado() {
+    resetIndiceInspectionState();
+    await invalidateAll();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Editar metadatos (name/description/trd_serie_id — ver contrato verificado
+  // en EditarMetadatosModal.svelte: `metadata` NO es un campo de este PATCH)
+  // ---------------------------------------------------------------------------
+  let showMetadataModal = false;
+
+  async function handleMetadataSaved() {
+    await invalidateAll();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Exportar ZIP (índice + manifiesto + anexos)
+  // ---------------------------------------------------------------------------
+  let exporting = false;
+
+  async function handleExport() {
+    exporting = true;
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/export`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw err;
+      }
+      const blob = await res.blob();
+      triggerBlobDownload(blob, `expediente_${expediente.code}.zip`);
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo exportar el expediente.");
+    } finally {
+      exporting = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Índice electrónico — versiones / verificación / firma (valor legal, E06)
+  // ---------------------------------------------------------------------------
+  let indiceVersionsState = { status: "idle", items: [], total: 0, errorMsg: null };
+  let indiceVerifyState = { status: "idle", data: null, errorMsg: null };
+  let showFirmarModal = false;
+  let firmarLoading = false;
+
+  async function loadIndiceVersions() {
+    if (indiceVersionsState.status === "loading") return;
+    indiceVersionsState = { status: "loading", items: [], total: 0, errorMsg: null };
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/indice/versions`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw data;
+      const items = data.items ?? [];
+      indiceVersionsState = {
+        status: "loaded",
+        items,
+        // A2 (revisión UX): el badge/pie deben reflejar el TOTAL real
+        // (`X-Total-Count`), no `items.length` (esta vista pide una sola
+        // página de 20) — si no, un expediente con 30 versiones muestra "20"
+        // y las 10 restantes son inalcanzables sin decirlo.
+        total: Number(data.total ?? items.length),
+        errorMsg: null,
+      };
+    } catch (err) {
+      indiceVersionsState = {
+        status: "error",
+        items: [],
+        total: 0,
+        errorMsg: err?.detail ?? "No se pudieron cargar las versiones del índice.",
+      };
+    }
+  }
+
+  async function loadIndiceVerify() {
+    if (indiceVerifyState.status === "loading") return;
+    indiceVerifyState = { status: "loading", data: null, errorMsg: null };
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/indice/verify`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw data;
+      indiceVerifyState = { status: "loaded", data, errorMsg: null };
+    } catch (err) {
+      indiceVerifyState = {
+        status: "error",
+        data: null,
+        errorMsg: err?.detail ?? "No se pudo verificar el índice.",
+      };
+    }
+  }
+
+  async function handleFirmarIndice() {
+    firmarLoading = true;
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/indice/firmar`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw data;
+      notifySuccess("Índice electrónico firmado.");
+      showFirmarModal = false;
+      // A5 (revisión UX): firmar SÍ cambia el índice (pasa a "firmado") pero
+      // antes esto no limpiaba `indiceVerifyState`/`indiceVersionsState` — si
+      // el usuario había verificado ANTES de firmar, el panel de
+      // verificación seguía diciendo "Firma: ausente, no válida" junto al
+      // chip que ya decía "Firmado". Sobre un artefacto con valor legal eso
+      // es la peor forma de mostrar "vacío"/desactualizado como si fuera la
+      // verdad vigente: se resetea a idle para forzar una relectura explícita.
+      resetIndiceInspectionState();
+      await invalidateAll();
+      // I2 (revisión UX): firmar retira el botón "Firmar índice" del DOM
+      // (`!indiceFirmado` pasa a false) — Modal.svelte reenfocaría un nodo
+      // desconectado. Se mueve el foco al encabezado de la tarjeta del
+      // índice, ancla estable (mismo patrón que cerrar/transferir).
+      await tick();
+      document.getElementById("indice-electronico-heading")?.focus();
+    } catch (err) {
+      notifyError(err?.detail ?? "No se pudo firmar el índice.");
+    } finally {
+      firmarLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Foliado — carga perezosa al activar la pestaña
+  // ---------------------------------------------------------------------------
+  let foliadoState = { status: "idle", data: null, errorMsg: null };
+
+  async function loadFoliado() {
+    if (foliadoState.status !== "idle") return;
+    foliadoState = { status: "loading", data: null, errorMsg: null };
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/foliado`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw data;
+      foliadoState = { status: "loaded", data, errorMsg: null };
+    } catch (err) {
+      foliadoState = {
+        status: "error",
+        data: null,
+        errorMsg: err?.detail ?? "No se pudo cargar la foliación.",
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Preservación (AIP + eventos PREMIS) — carga perezosa, en paralelo
+  // ---------------------------------------------------------------------------
+  // Crítico 1 (revisión UX): antes `errorMsg` solo se llenaba cuando las DOS
+  // peticiones (AIP y eventos) fallaban a la vez. Si una sola fallaba (p. ej.
+  // un 503 puntual del gateway), la otra rama entregaba `null`/`[]` y la
+  // vista mostraba una afirmación categórica de "vacío" ("Sin AIP
+  // empaquetado", "Sin eventos de preservación") — un fallo de red se leía
+  // como "este expediente no tiene preservación". En preservación/auditoría
+  // de accesos eso puede llevar a concluir erróneamente que falta un AIP que
+  // SÍ existe, o que nadie ha leído un expediente reservado. Cada faceta
+  // (AIP, eventos) ahora lleva su PROPIO {status, errorMsg}; la plantilla
+  // elige "no se pudo cargar" vs. "está vacío" según la promesa de ESA
+  // faceta, nunca derivado de un `catch` compartido.
+  let preservacionState = {
+    status: "idle", // idle|loading|loaded — solo gatilla loadPreservacion() una vez
+    aip: { status: "idle", data: null, errorMsg: null },
+    eventos: { status: "idle", items: [], errorMsg: null },
+  };
+
+  async function loadPreservacion() {
+    if (preservacionState.status !== "idle") return;
+    preservacionState = {
+      status: "loading",
+      aip: { status: "loading", data: null, errorMsg: null },
+      eventos: { status: "loading", items: [], errorMsg: null },
+    };
+    const [aipRes, eventosRes] = await Promise.allSettled([
+      fetch(`/expedientes/${expediente.id}/api/aip`).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        // C1 (revisión UX): el proxy retransmite el status real del backend
+        // (`res.status`) — se conserva aquí para distinguir el 404 NEUTRO
+        // (sin AIP / sin visibilidad, ver archive_service.py get_aip) de un
+        // fallo real (5xx, red). Antes CUALQUIER !ok pasaba por `error`, así
+        // que el caso normal (todavía no hay AIP) se presentaba como fallo
+        // del sistema y la rama honesta "empty" quedaba inalcanzable.
+        if (!r.ok) throw { ...d, status: r.status };
+        return d;
+      }),
+      fetch(`/expedientes/${expediente.id}/api/preservacion-eventos`).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw d;
+        return d;
+      }),
+    ]);
+    preservacionState = {
+      status: "loaded",
+      aip:
+        aipRes.status === "fulfilled"
+          ? { status: "loaded", data: aipRes.value, errorMsg: null }
+          : aipRes.reason?.status === 404
+            ? { status: "empty", data: null, errorMsg: null }
+            : {
+                status: "error",
+                data: null,
+                errorMsg:
+                  aipRes.reason?.detail ?? "No se pudo cargar el paquete de preservación (AIP).",
+              },
+      eventos:
+        eventosRes.status === "fulfilled"
+          ? {
+              status: eventosRes.value?.length ? "loaded" : "empty",
+              items: eventosRes.value ?? [],
+              errorMsg: null,
+            }
+          : {
+              status: "error",
+              items: [],
+              errorMsg:
+                eventosRes.reason?.detail ?? "No se pudieron cargar los eventos de preservación.",
+            },
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Acceso (historial de lecturas + roles autorizados) — carga perezosa
+  // ---------------------------------------------------------------------------
+  // Misma corrección del Crítico 1: historial y roles llevan estado propio.
+  let accesoState = {
+    status: "idle",
+    historial: { status: "idle", items: [], total: 0, errorMsg: null },
+    roles: { status: "idle", items: [], errorMsg: null },
+  };
+
+  async function loadAcceso() {
+    if (accesoState.status !== "idle") return;
+    accesoState = {
+      status: "loading",
+      historial: { status: "loading", items: [], total: 0, errorMsg: null },
+      roles: { status: "loading", items: [], errorMsg: null },
+    };
+    const [historialRes, rolesRes] = await Promise.allSettled([
+      fetch(`/expedientes/${expediente.id}/api/historial-acceso`).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw d;
+        return d;
+      }),
+      fetch(`/expedientes/${expediente.id}/api/roles-autorizados`).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw d;
+        return d;
+      }),
+    ]);
+    accesoState = {
+      status: "loaded",
+      historial:
+        historialRes.status === "fulfilled"
+          ? {
+              status: (historialRes.value.items ?? []).length ? "loaded" : "empty",
+              items: historialRes.value.items ?? [],
+              // A2: total real (`X-Total-Count`), no el tamaño de esta única
+              // página pedida — ver comentario homólogo en loadIndiceVersions.
+              total: Number(historialRes.value.total ?? (historialRes.value.items ?? []).length),
+              errorMsg: null,
+            }
+          : {
+              status: "error",
+              items: [],
+              total: 0,
+              errorMsg: historialRes.reason?.detail ?? "No se pudo cargar el historial de acceso.",
+            },
+      roles:
+        rolesRes.status === "fulfilled"
+          ? {
+              status: (rolesRes.value ?? []).length ? "loaded" : "empty",
+              items: rolesRes.value ?? [],
+              errorMsg: null,
+            }
+          : {
+              status: "error",
+              items: [],
+              errorMsg:
+                rolesRes.reason?.detail ?? "No se pudo cargar la matriz de grupos autorizados.",
+            },
+    };
+  }
+
+  // Carga perezosa al activar cada pestaña por primera vez.
+  $: if (activeTab === "foliado") loadFoliado();
+  $: if (activeTab === "preservacion") loadPreservacion();
+  $: if (activeTab === "acceso") loadAcceso();
 
   // ---------------------------------------------------------------------------
   // Descarga de anexo (mediada por document-service — E07, RF-SEG-08, D-02)
@@ -167,12 +619,7 @@
         throw err;
       }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, filename);
     } catch (err) {
       notifyError(err?.detail ?? "No se pudo descargar el anexo.");
     }
@@ -193,12 +640,7 @@
         throw err;
       }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `indice_${expediente.code}.xml`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, `indice_${expediente.code}.xml`);
     } catch (err) {
       notifyError(err?.detail ?? "No se pudo obtener el XML del índice.");
     } finally {
@@ -245,6 +687,58 @@
     transferred: "Transferido",
   };
   $: statusLabel = STATUS_LABELS[expediente?.status] ?? expediente?.status;
+  // M6 (revisión UX): "closed" es el curso normal del ciclo de vida de un
+  // expediente (se cerró como corresponde), NO un fallo — mapearlo al rojo
+  // de "error" (mapeo por defecto de StatusChip) lo hace leerse como algo
+  // que salió mal. Se resuelve localmente (sin tocar StatusChip.svelte, que
+  // es compartido con otras pantallas fuera de esta zona) pidiendo
+  // explícitamente una variante neutra/informativa — mismo patrón ya usado
+  // en /expedientes (listado).
+  const STATUS_CHIP_MAP = { open: "active", closed: "neutral", transferred: "info" };
+  $: statusChipVariant = STATUS_CHIP_MAP[expediente?.status] ?? "neutral";
+
+  // M5 (revisión UX): valores crudos del backend (enums en inglés, p. ej.
+  // "success"/"completo") no deben mostrarse literalmente en una interfaz en
+  // español — se traducen con un diccionario y se cae a una versión
+  // "humanizada" del valor crudo (guiones bajos → espacios, capitalizado)
+  // para no ocultar un valor nuevo que el diccionario todavía no conozca.
+  /** @param {string|null|undefined} value */
+  function humanize(value) {
+    if (!value) return "—";
+    return String(value)
+      .replace(/_/g, " ")
+      .replace(/^./, (c) => c.toUpperCase());
+  }
+  const AIP_ESTADO_LABELS = {
+    completo: "Completo",
+    pendiente: "Pendiente",
+    en_proceso: "En proceso",
+    error: "Error",
+  };
+  /** @param {string} estado */
+  function aipEstadoLabel(estado) {
+    return AIP_ESTADO_LABELS[estado] ?? humanize(estado);
+  }
+  const PREMIS_RESULTADO_LABELS = {
+    success: "Correcto",
+    error: "Con error",
+    warning: "Con advertencia",
+  };
+  /** @param {string} resultado */
+  function premisResultadoLabel(resultado) {
+    return PREMIS_RESULTADO_LABELS[resultado] ?? humanize(resultado);
+  }
+  const ACCESO_ACCION_LABELS = {
+    read: "Lectura",
+    read_index: "Lectura del índice",
+    download: "Descarga",
+    download_xml: "Descarga del XML",
+    verify: "Verificación de integridad",
+  };
+  /** @param {string} action */
+  function accesoAccionLabel(action) {
+    return ACCESO_ACCION_LABELS[action] ?? humanize(action);
+  }
 
   // ---------------------------------------------------------------------------
   // Anexos por radicado (E07) — carga perezosa, panel Anexos
@@ -346,9 +840,9 @@
         <span aria-current="page">{expediente?.code}</span>
       </nav>
 
-      <h1 class="exp-workspace__title">
+      <h1 id="exp-workspace-title" class="exp-workspace__title" tabindex="-1">
         {expediente?.name}
-        <StatusChip status={expediente?.status ?? "neutral"} label={statusLabel} dot />
+        <StatusChip status={statusChipVariant} label={statusLabel} dot />
       </h1>
 
       {#if expediente?.description}
@@ -357,6 +851,26 @@
     </div>
 
     <div class="exp-workspace__actions" role="group" aria-label="Acciones del expediente">
+      {#if canEditMetadata}
+        <Button variant="ghost" on:click={() => (showMetadataModal = true)}>
+          <i class="fas fa-pen" aria-hidden="true"></i> Editar metadatos
+        </Button>
+      {/if}
+      {#if canExport}
+        <Button
+          variant="secondary"
+          on:click={handleExport}
+          disabled={exporting}
+          loading={exporting}
+        >
+          <i class="fas fa-file-zipper" aria-hidden="true"></i> Exportar ZIP
+        </Button>
+      {/if}
+      {#if canVerDisposicion}
+        <Button variant="ghost" on:click={() => (showDisposicionDrawer = true)}>
+          <i class="fas fa-box-archive" aria-hidden="true"></i> Disposición final
+        </Button>
+      {/if}
       {#if canClose}
         <Button variant="secondary" on:click={() => (showCloseModal = true)}>
           <i class="fas fa-lock" aria-hidden="true"></i> Cerrar expediente
@@ -415,7 +929,7 @@
             <div class="exp-meta-list__item">
               <dt>Estado</dt>
               <dd>
-                <StatusChip status={expediente?.status ?? "neutral"} label={statusLabel} dot />
+                <StatusChip status={statusChipVariant} label={statusLabel} dot />
               </dd>
             </div>
             <div class="exp-meta-list__item">
@@ -456,7 +970,16 @@
           </dl>
 
           {#if expediente?.metadata && Object.keys(expediente.metadata).length}
-            <h3 class="exp-section-subtitle">Metadatos adicionales</h3>
+            <!-- M12 (revisión UX): estos campos vienen del json_schema de la
+                 plantilla de la serie TRD asignada al crear el expediente —
+                 el PATCH de este expediente (`ExpedienteUpdate`, `extra="forbid"`)
+                 NO acepta el campo `metadata`, así que no se ofrecen en el modal
+                 de edición. Antes esto no se explicaba: se veían como
+                 "Metadatos adicionales" sin más, y el usuario no tenía forma de
+                 saber por qué no podía cambiarlos ahí. -->
+            <h3 class="exp-section-subtitle">
+              Metadatos de la serie TRD (solo lectura — se definen al crear el expediente)
+            </h3>
             <dl class="exp-meta-list">
               {#each Object.entries(expediente.metadata) as [k, v] (k)}
                 <div class="exp-meta-list__item">
@@ -470,16 +993,41 @@
 
         <!-- Radicados vinculados -->
         <Card>
-          <h2 slot="header" class="op-card-title">
+          <!-- A7: ancla de foco estable tras excluir un radicado — el botón
+               "Excluir" de la fila desaparece del DOM al recargar, así que el
+               foco no puede volver ahí; se enfoca este encabezado en su lugar. -->
+          <h2 id="radicados-vinculados-heading" slot="header" class="op-card-title" tabindex="-1">
             Radicados vinculados
             <span class="exp-count-badge">{expediente?.radicados?.length ?? 0}</span>
+            {#if canLinkUnlink}
+              <Button
+                variant="primary"
+                size="sm"
+                icon="fas fa-link"
+                on:click={() => (showVincularDrawer = true)}
+              >
+                Vincular radicados
+              </Button>
+            {/if}
           </h2>
+          {#if !canLinkUnlink && expediente?.status !== "open" && can("USUA_PERM_EXPEDIENTE")}
+            <p class="exp-panel__info">
+              <i class="fas fa-info-circle" aria-hidden="true"></i>
+              Un expediente {statusLabel?.toLowerCase()} no admite vincular ni excluir radicados.
+            </p>
+          {/if}
           {#if !expediente?.radicados?.length}
             <EmptyState
-              icon="fa-inbox"
+              icon="fas fa-inbox"
               title="Sin radicados"
               description="Este expediente no tiene radicados vinculados todavía."
-            />
+            >
+              {#if canLinkUnlink}
+                <Button variant="primary" size="sm" on:click={() => (showVincularDrawer = true)}>
+                  Vincular el primer radicado
+                </Button>
+              {/if}
+            </EmptyState>
           {:else}
             <div class="exp-radicado-list" role="list" aria-label="Radicados del expediente">
               {#each expediente.radicados as rad (rad.tracking_number)}
@@ -492,6 +1040,16 @@
                     {rad.tracking_number}
                   </a>
                   <span class="exp-radicado-list__date">{fmtDate(rad.added_at)}</span>
+                  {#if canLinkUnlink}
+                    <button
+                      type="button"
+                      class="exp-action-link exp-action-link--danger"
+                      aria-label="Excluir {rad.tracking_number} del expediente"
+                      on:click={() => openExcluirModal(rad)}
+                    >
+                      <i class="fas fa-link-slash" aria-hidden="true"></i> Excluir
+                    </button>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -514,27 +1072,38 @@
       {#if facetas.indice.error}
         <Card>
           <EmptyState
-            icon="fa-exclamation-circle"
+            icon="fas fa-exclamation-circle"
             title="No se pudo cargar el índice"
             description={facetas.indice.error.detail}
           />
         </Card>
       {:else if !facetas.indice.data}
+        <!-- C2 (revisión UX): el 404 de GET /expedientes/{id}/indice es NEUTRO
+             (no-read-up, RF-SEG-08, igual que get_expediente) — cubre tanto
+             "no se ha generado todavía" como "usted no tiene visibilidad
+             sobre este expediente". No se puede afirmar categóricamente que
+             el índice "no existe": el backend deliberadamente no distingue. -->
         <EmptyState
-          icon="fa-list-ol"
+          icon="fas fa-list-ol"
           title="Índice no disponible"
-          description="El índice electrónico no ha sido generado para este expediente."
+          description="El índice electrónico no ha sido generado para este expediente, o usted no tiene visibilidad sobre él."
         />
       {:else}
         {@const indice = facetas.indice.data}
+        {@const indiceFirmado = indice.estado === "firmado"}
+        <!-- "Apariencia de certificado" (Sistema de Diseño v1.0): el índice y su
+             firma tienen valor legal (E06/E15) — se presentan con un marco propio
+             en vez de mezclarse con el resto de tarjetas de la vista. -->
         <Card>
-          <h2 slot="header" class="op-card-title">
+          <h2 id="indice-electronico-heading" slot="header" class="op-card-title" tabindex="-1">
+            <i class="fas fa-file-shield" aria-hidden="true"></i>
             Índice electrónico
             <span class="exp-indice-meta">
               v{indice.version} · {indice.num_documentos} doc(s)
               <StatusChip
-                status={indice.estado === "vigente" ? "success" : "warning"}
-                label={indice.estado}
+                status={indiceFirmado ? "success" : "warning"}
+                label={indiceFirmado ? "Firmado" : "Pendiente de firma"}
+                dot
               />
             </span>
           </h2>
@@ -552,6 +1121,27 @@
                 <i class="fas fa-file-code" aria-hidden="true"></i> Descargar XML
               {/if}
             </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              on:click={loadIndiceVerify}
+              disabled={indiceVerifyState.status === "loading"}
+            >
+              <i class="fas fa-shield-halved" aria-hidden="true"></i> Verificar integridad
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              on:click={loadIndiceVersions}
+              disabled={indiceVersionsState.status === "loading"}
+            >
+              <i class="fas fa-clock-rotate-left" aria-hidden="true"></i> Ver versiones
+            </Button>
+            {#if canFirmarIndice && !indiceFirmado}
+              <Button variant="primary" size="sm" on:click={() => (showFirmarModal = true)}>
+                <i class="fas fa-signature" aria-hidden="true"></i> Firmar índice
+              </Button>
+            {/if}
             <dl class="exp-indice-summary">
               <div>
                 <dt>SHA-256</dt>
@@ -568,9 +1158,97 @@
             </dl>
           </div>
 
+          <!-- Resultado de verificación — nunca comunicado solo por color -->
+          {#if indiceVerifyState.status === "loading"}
+            <Loader size="sm" label="Verificando índice…" />
+          {:else if indiceVerifyState.status === "error"}
+            <p class="exp-indice-verify-error" role="alert">
+              <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+              {indiceVerifyState.errorMsg}
+            </p>
+          {:else if indiceVerifyState.status === "loaded"}
+            {@const v = indiceVerifyState.data}
+            <div
+              class="exp-indice-verify"
+              class:exp-indice-verify--ok={v.valido}
+              class:exp-indice-verify--fail={!v.valido}
+              role="status"
+            >
+              <i class="fas {v.valido ? 'fa-circle-check' : 'fa-circle-xmark'}" aria-hidden="true"
+              ></i>
+              <div class="exp-indice-verify__body">
+                <strong>
+                  {v.valido ? "Índice íntegro y válido" : "El índice presenta inconsistencias"}
+                </strong>
+                <ul class="exp-indice-verify__list">
+                  <li>Huella del XML: {v.huella_indice_ok ? "coincide" : "NO coincide"}</li>
+                  <li>
+                    Firma: {v.firma?.presente ? "presente" : "ausente"},
+                    {v.firma?.valida ? "válida" : "no válida"}
+                    {#if v.firma?.motivo}(motivo: {v.firma.motivo}){/if}
+                  </li>
+                  <li>
+                    Documentos con huella verificada: {v.documentos?.filter((d) => d.coincide)
+                      .length ?? 0} / {v.documentos?.length ?? 0}
+                  </li>
+                </ul>
+                <span class="exp-indice-verify__ts"
+                  >Verificado: {fmtDatetime(v.fecha_verificacion)}</span
+                >
+              </div>
+            </div>
+          {/if}
+
+          <!-- Historial de versiones -->
+          {#if indiceVersionsState.status === "loading"}
+            <Loader size="sm" label="Cargando versiones…" />
+          {:else if indiceVersionsState.status === "error"}
+            <p class="exp-indice-verify-error" role="alert">
+              <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+              {indiceVersionsState.errorMsg}
+            </p>
+          {:else if indiceVersionsState.status === "loaded"}
+            {#if indiceVersionsState.total > indiceVersionsState.items.length}
+              <p class="exp-panel__info">
+                <i class="fas fa-info-circle" aria-hidden="true"></i>
+                Mostrando las {indiceVersionsState.items.length} versiones más recientes de {indiceVersionsState.total}
+                en total.
+              </p>
+            {/if}
+            <div class="exp-table-wrap" role="region" aria-label="Versiones del índice">
+              <table class="exp-table" aria-label="Historial de versiones del índice">
+                <thead>
+                  <tr>
+                    <th scope="col">Versión</th>
+                    <th scope="col">Estado</th>
+                    <th scope="col">Documentos</th>
+                    <th scope="col">Generado</th>
+                    <th scope="col">Por</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each indiceVersionsState.items as v (v.version)}
+                    <tr>
+                      <td>{v.version}</td>
+                      <td>
+                        <StatusChip
+                          status={v.estado === "firmado" ? "success" : "warning"}
+                          label={v.estado === "firmado" ? "Firmado" : "Pendiente de firma"}
+                        />
+                      </td>
+                      <td>{v.num_documentos}</td>
+                      <td>{fmtDatetime(v.generado_ts)}</td>
+                      <td>{v.generado_por ?? "—"}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+
           {#if !indice.items?.length}
             <EmptyState
-              icon="fa-list-ol"
+              icon="fas fa-list-ol"
               title="Sin documentos en el índice"
               description="El índice existe pero no contiene documentos."
             />
@@ -619,6 +1297,86 @@
     </div>
 
     <!-- -----------------------------------------------------------------------
+         Panel — Foliado (E02)
+         ----------------------------------------------------------------------- -->
+    <div
+      id="panel-foliado"
+      role="tabpanel"
+      aria-labelledby="tab-foliado"
+      hidden={activeTab !== "foliado"}
+      tabindex="0"
+      class="exp-panel"
+    >
+      {#if foliadoState.status === "loading"}
+        <Loader label="Cargando foliación…" />
+      {:else if foliadoState.status === "error"}
+        <Card>
+          <EmptyState
+            icon="fas fa-exclamation-circle"
+            title="No se pudo cargar la foliación"
+            description={foliadoState.errorMsg}
+          />
+        </Card>
+      {:else if foliadoState.status === "loaded"}
+        {@const foliado = foliadoState.data}
+        <Card>
+          <h2 slot="header" class="op-card-title">
+            Foliación
+            <span class="exp-count-badge">{foliado.total_folios} folio(s)</span>
+          </h2>
+          {#if !foliado.items?.length}
+            <EmptyState
+              icon="fas fa-hashtag"
+              title="Sin foliación"
+              description="Este expediente no tiene documentos foliados todavía."
+            />
+          {:else}
+            <div class="exp-table-wrap" role="region" aria-label="Foliación del expediente">
+              <table class="exp-table" aria-label="Foliación ordenada del expediente">
+                <thead>
+                  <tr>
+                    <th scope="col">Orden</th>
+                    <th scope="col">Documento</th>
+                    <th scope="col">Tipología</th>
+                    <th scope="col">Incorporado</th>
+                    <th scope="col">Huella (SHA-256)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each foliado.items as item (item.document_id)}
+                    <tr>
+                      <td>{item.orden}</td>
+                      <td>
+                        {#if item.titulo}
+                          {item.titulo}
+                        {:else}
+                          <span class="exp-uuid">{item.document_id}</span>
+                        {/if}
+                      </td>
+                      <td>{item.tipologia ?? "—"}</td>
+                      <td>
+                        {item.fecha_incorporacion ? fmtDatetime(item.fecha_incorporacion) : "—"}
+                      </td>
+                      <td>
+                        {#if item.valor_huella}
+                          <code class="exp-hash" title={item.valor_huella}
+                            >{item.valor_huella.slice(0, 12)}…</code
+                          >
+                        {:else}
+                          —
+                        {/if}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </Card>
+      {/if}
+    </div>
+
+    <!-- -----------------------------------------------------------------------
          Panel 2 — Anexos E07
          ----------------------------------------------------------------------- -->
     <div
@@ -641,16 +1399,15 @@
 
         {#if !expediente?.radicados?.length}
           <EmptyState
-            icon="fa-paperclip"
+            icon="fas fa-paperclip"
             title="Sin radicados"
             description="Este expediente no tiene radicados vinculados de los que listar anexos."
           />
         {:else}
           <p class="exp-panel__info">
             <i class="fas fa-info-circle" aria-hidden="true"></i>
-            Expanda un radicado para consultar sus anexos. Se cargan bajo demanda desde document-service,
-            que aplica el control de acceso del radicado dueño del anexo (GET /api/v1/documents/{"{"}document_id{"}"}/anexos).
-            La descarga la media el mismo servicio (GET /api/v1/documents/{"{"}document_id{"}"}/anexos/{"{"}file_id{"}"}/download).
+            Expanda un radicado para consultar sus anexos. Se cargan al momento de expandirlo y quedan
+            sujetos al control de acceso del radicado dueño del anexo.
           </p>
 
           <ul class="exp-anexos-accordion" aria-label="Radicados del expediente">
@@ -767,14 +1524,14 @@
       {#if facetas.eventos.error}
         <Card>
           <EmptyState
-            icon="fa-exclamation-circle"
+            icon="fas fa-exclamation-circle"
             title="No se pudo cargar el historial"
             description={facetas.eventos.error.detail}
           />
         </Card>
       {:else if !facetas.eventos.data?.length}
         <EmptyState
-          icon="fa-route"
+          icon="fas fa-route"
           title="Sin eventos registrados"
           description="Este expediente aún no tiene eventos en su hoja de ruta."
         />
@@ -787,8 +1544,8 @@
 
           <p class="exp-panel__info">
             <i class="fas fa-info-circle" aria-hidden="true"></i>
-            Hoja de ruta del ciclo de vida del expediente (E02 §9). El historial de flujo por radicado
-            se accede desde la bandeja de cada radicado.
+            Hoja de ruta del ciclo de vida del expediente. El historial de flujo por radicado se accede
+            desde la bandeja de cada radicado.
           </p>
 
           <ol class="exp-timeline" aria-label="Eventos del expediente">
@@ -830,6 +1587,241 @@
     </div>
 
     <!-- -----------------------------------------------------------------------
+         Panel — Preservación (E10: AIP + eventos PREMIS)
+         ----------------------------------------------------------------------- -->
+    <div
+      id="panel-preservacion"
+      role="tabpanel"
+      aria-labelledby="tab-preservacion"
+      hidden={activeTab !== "preservacion"}
+      tabindex="0"
+      class="exp-panel"
+    >
+      {#if preservacionState.status === "loading"}
+        <Loader label="Cargando información de preservación…" />
+      {:else}
+        <div class="exp-panel__grid">
+          <Card>
+            <h2 slot="header" class="op-card-title">Paquete de preservación (AIP)</h2>
+            {#if preservacionState.aip.status === "error"}
+              <EmptyState
+                icon="fas fa-exclamation-circle"
+                title="No se pudo cargar el AIP"
+                description={preservacionState.aip.errorMsg}
+              />
+            {:else if preservacionState.aip.status === "empty" || preservacionState.aip.status === "idle"}
+              <!-- C1 (revisión UX): el 404 de GET /expedientes/{id}/aip es NEUTRO
+                   (archive_service.py get_aip) — cubre "sin AIP empaquetado
+                   todavía" Y "sin visibilidad sobre este expediente" con la
+                   misma forma, a propósito (no-read-up, RF-SEG-08). No se
+                   afirma categóricamente que el AIP no existe. -->
+              <EmptyState
+                icon="fas fa-box-archive"
+                title="Sin AIP empaquetado"
+                description="Este expediente no tiene un paquete de preservación generado, o usted no tiene visibilidad sobre él."
+              />
+            {:else}
+              {@const aip = preservacionState.aip.data}
+              <dl class="exp-meta-list">
+                <div class="exp-meta-list__item">
+                  <dt>Estado</dt>
+                  <dd>
+                    <StatusChip
+                      status={aip.estado === "completo" ? "success" : "warning"}
+                      label={aipEstadoLabel(aip.estado)}
+                    />
+                  </dd>
+                </div>
+                <div class="exp-meta-list__item">
+                  <dt>Documentos</dt>
+                  <dd>{aip.num_documentos}</dd>
+                </div>
+                <div class="exp-meta-list__item">
+                  <dt>Generado</dt>
+                  <dd>{fmtDatetime(aip.created_at)}</dd>
+                </div>
+                <div class="exp-meta-list__item">
+                  <dt>SHA-256 (AIP)</dt>
+                  <dd class="exp-indice-hash">{aip.aip_sha256}</dd>
+                </div>
+                {#if aip.indice_sha256}
+                  <div class="exp-meta-list__item">
+                    <dt>SHA-256 (índice)</dt>
+                    <dd class="exp-indice-hash">{aip.indice_sha256}</dd>
+                  </div>
+                {/if}
+              </dl>
+            {/if}
+          </Card>
+
+          <Card>
+            <h2 slot="header" class="op-card-title">
+              Eventos PREMIS
+              <!-- I1 (revisión UX): el badge NO puede afirmar "0" cuando la
+                   carga falló — se leería como "no hubo actividad de
+                   preservación" en vez de "no se pudo consultar". -->
+              <span class="exp-count-badge">
+                {preservacionState.eventos.status === "error"
+                  ? "—"
+                  : preservacionState.eventos.items.length}
+              </span>
+            </h2>
+            {#if preservacionState.eventos.status === "error"}
+              <EmptyState
+                icon="fas fa-exclamation-circle"
+                title="No se pudieron cargar los eventos"
+                description={preservacionState.eventos.errorMsg}
+              />
+            {:else if preservacionState.eventos.status === "empty" || preservacionState.eventos.status === "idle"}
+              <EmptyState
+                icon="fas fa-timeline"
+                title="Sin eventos de preservación"
+                description="Este expediente no tiene actividad de preservación registrada todavía."
+              />
+            {:else}
+              <ol class="exp-timeline" aria-label="Eventos PREMIS de preservación">
+                {#each preservacionState.eventos.items as evento (evento.id)}
+                  <li class="exp-timeline__item">
+                    <div class="exp-timeline__marker" aria-hidden="true"></div>
+                    <div class="exp-timeline__content">
+                      <div class="exp-timeline__header">
+                        <strong class="exp-timeline__accion">{evento.tipo}</strong>
+                        <StatusChip
+                          status={evento.resultado === "success" ? "success" : "error"}
+                          label={premisResultadoLabel(evento.resultado)}
+                        />
+                        <time class="exp-timeline__ts" datetime={evento.ts}>
+                          {fmtDatetime(evento.ts)}
+                        </time>
+                      </div>
+                      {#if evento.agente}
+                        <span class="exp-timeline__actor">
+                          <i class="fas fa-robot" aria-hidden="true"></i>
+                          {evento.agente}
+                        </span>
+                      {/if}
+                    </div>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+          </Card>
+        </div>
+      {/if}
+    </div>
+
+    <!-- -----------------------------------------------------------------------
+         Panel — Acceso (E15 perfil v4 R3-b/R4-b: historial + roles autorizados)
+         ----------------------------------------------------------------------- -->
+    <div
+      id="panel-acceso"
+      role="tabpanel"
+      aria-labelledby="tab-acceso"
+      hidden={activeTab !== "acceso"}
+      tabindex="0"
+      class="exp-panel"
+    >
+      {#if accesoState.status === "loading"}
+        <Loader label="Cargando información de acceso…" />
+      {:else}
+        <div class="exp-panel__grid">
+          <Card>
+            <h2 slot="header" class="op-card-title">
+              Grupos autorizados
+              <!-- I1 (revisión UX): ver comentario homólogo en Eventos PREMIS. -->
+              <span class="exp-count-badge">
+                {accesoState.roles.status === "error" ? "—" : accesoState.roles.items.length}
+              </span>
+            </h2>
+            <p class="exp-panel__info">
+              <i class="fas fa-info-circle" aria-hidden="true"></i>
+              Vista actual de los grupos con acceso — no forma parte del índice firmado, porque la política
+              de acceso puede cambiar con el tiempo y el índice firmado no se actualiza retroactivamente.
+            </p>
+            {#if accesoState.roles.status === "error"}
+              <EmptyState
+                icon="fas fa-exclamation-circle"
+                title="No se pudo cargar la matriz de acceso"
+                description={accesoState.roles.errorMsg}
+              />
+            {:else if accesoState.roles.status === "empty" || accesoState.roles.status === "idle"}
+              <EmptyState
+                icon="fas fa-user-shield"
+                title="Sin grupos autorizados"
+                description="No hay grupos con acceso configurado para el nivel de este expediente."
+              />
+            {:else}
+              <div class="exp-table-wrap" role="region" aria-label="Grupos autorizados">
+                <table class="exp-table" aria-label="Grupos autorizados a leer el expediente">
+                  <thead>
+                    <tr>
+                      <th scope="col">Grupo</th>
+                      <th scope="col">Clearance máx.</th>
+                      <th scope="col">CRUD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each accesoState.roles.items as rol (rol.grupo)}
+                      <tr>
+                        <td>{rol.grupo}</td>
+                        <td>{rol.clearanceMax}</td>
+                        <td>{rol.crud}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          </Card>
+
+          <Card>
+            <h2 slot="header" class="op-card-title">
+              Historial de acceso
+              <!-- I1 (revisión UX): CRÍTICO en este panel específicamente — un
+                   "0" falso sobre un fallo de carga se lee como "nadie ha
+                   consultado este expediente reservado", una afirmación falsa
+                   sobre un dato sensible en un panel de auditoría de lecturas. -->
+              <span class="exp-count-badge">
+                {accesoState.historial.status === "error" ? "—" : accesoState.historial.total}
+              </span>
+            </h2>
+            {#if accesoState.historial.status === "error"}
+              <EmptyState
+                icon="fas fa-exclamation-circle"
+                title="No se pudo cargar el historial"
+                description={accesoState.historial.errorMsg}
+              />
+            {:else if accesoState.historial.status === "empty" || accesoState.historial.status === "idle"}
+              <EmptyState
+                icon="fas fa-clock-rotate-left"
+                title="Sin lecturas registradas"
+                description="Todavía no hay lecturas auditadas de este expediente o su índice."
+              />
+            {:else}
+              {#if accesoState.historial.total > accesoState.historial.items.length}
+                <p class="exp-panel__info">
+                  <i class="fas fa-info-circle" aria-hidden="true"></i>
+                  Mostrando las {accesoState.historial.items.length} lecturas más recientes de {accesoState
+                    .historial.total}
+                  en total.
+                </p>
+              {/if}
+              <ul class="exp-radicado-list" aria-label="Historial de acceso">
+                {#each accesoState.historial.items as entry (entry.ts + entry.action)}
+                  <li class="exp-radicado-list__item">
+                    <span class="exp-uuid">{entry.actor ?? "sistema"}</span>
+                    <span>{accesoAccionLabel(entry.action)}</span>
+                    <span class="exp-radicado-list__date">{fmtDatetime(entry.ts)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </Card>
+        </div>
+      {/if}
+    </div>
+
+    <!-- -----------------------------------------------------------------------
          Panel 4 — Ubicación física E17
          ----------------------------------------------------------------------- -->
     <div
@@ -843,14 +1835,14 @@
       {#if facetas.ubicacion.error}
         <Card>
           <EmptyState
-            icon="fa-exclamation-circle"
+            icon="fas fa-exclamation-circle"
             title="No se pudo cargar la ubicación"
             description={facetas.ubicacion.error.detail}
           />
         </Card>
       {:else if !facetas.ubicacion.data?.length}
         <EmptyState
-          icon="fa-archive"
+          icon="fas fa-archive"
           title="Sin ubicación física registrada"
           description="Este expediente no ha sido ubicado en ninguna unidad de conservación."
         />
@@ -937,6 +1929,103 @@
   </svelte:fragment>
 </Modal>
 
+<!-- =========================================================================
+     Modal: Confirmar exclusión de radicado (soft-delete, E15 perfil v3)
+     ========================================================================= -->
+<Modal
+  open={showExcluirModal}
+  title="Excluir radicado del expediente"
+  size="sm"
+  on:close={closeExcluirModal}
+>
+  <p>
+    ¿Confirma excluir el radicado <strong>{excluirTarget?.tracking_number}</strong> de este expediente?
+    El vínculo quedará marcado como excluido (hueco trazable en el índice), no se borra físicamente.
+  </p>
+  <FormField
+    id="excluir-causal"
+    label="Motivo de la exclusión"
+    type="textarea"
+    required
+    bind:value={excluirCausal}
+    rows={3}
+    hint="Obligatorio, máximo 500 caracteres."
+    error={excluirCausalError}
+  />
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={closeExcluirModal} disabled={excluirLoading}>Cancelar</Button>
+    <Button
+      variant="danger"
+      on:click={handleExcluir}
+      disabled={excluirLoading}
+      loading={excluirLoading}
+    >
+      Confirmar exclusión
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- =========================================================================
+     Modal: Confirmar firma del índice electrónico (acto con valor legal, E06)
+     ========================================================================= -->
+<Modal
+  open={showFirmarModal}
+  title="Firmar índice electrónico"
+  size="sm"
+  on:close={() => (showFirmarModal = false)}
+>
+  <p>
+    ¿Confirma la firma XAdES-B del índice electrónico vigente del expediente
+    <strong>{expediente?.code}</strong>? Una vez firmado, esta versión del índice es inmutable.
+  </p>
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={() => (showFirmarModal = false)} disabled={firmarLoading}>
+      Cancelar
+    </Button>
+    <Button
+      variant="primary"
+      on:click={handleFirmarIndice}
+      disabled={firmarLoading}
+      loading={firmarLoading}
+    >
+      <i class="fas fa-signature" aria-hidden="true"></i>
+      Confirmar firma
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- =========================================================================
+     Drawer: Vincular radicados (capacidad central del módulo)
+     ========================================================================= -->
+<VincularRadicadosDrawer
+  open={showVincularDrawer}
+  expedienteId={expediente?.id ?? ""}
+  {linkedIds}
+  on:close={() => (showVincularDrawer = false)}
+  on:linked={handleVinculado}
+/>
+
+<!-- =========================================================================
+     Modal: Editar metadatos del expediente
+     ========================================================================= -->
+<EditarMetadatosModal
+  open={showMetadataModal}
+  {expediente}
+  trdSeries={data.trdSeries ?? []}
+  on:close={() => (showMetadataModal = false)}
+  on:saved={handleMetadataSaved}
+/>
+
+<!-- =========================================================================
+     Drawer: Disposición final (solo lectura) — RF-MET-08/E04
+     ========================================================================= -->
+<DisposicionExpedienteDrawer
+  open={showDisposicionDrawer}
+  {expediente}
+  trdSerieDetail={data.trdSerieDetail ?? null}
+  on:close={() => (showDisposicionDrawer = false)}
+/>
+
 <style lang="scss">
   // =========================================================================
   // Workspace
@@ -965,7 +2054,10 @@
     margin-bottom: var(--op-space-2);
 
     a {
-      color: var(--op-primary);
+      // A3 (revisión UX): `--op-primary` como color de TEXTO no alcanza AA
+      // (4.28:1 sobre blanco, 4.15:1 sobre `--op-bg`, el fondo real detrás de
+      // este breadcrumb). `--op-primary-dark` sí: 6.37:1.
+      color: var(--op-primary-dark);
       text-decoration: none;
 
       &:hover {
@@ -1208,7 +2300,9 @@
       font-family: monospace;
       font-size: var(--op-font-sm);
       font-weight: var(--op-weight-bold);
-      color: var(--op-primary);
+      // A3: ver comentario en .exp-workspace__breadcrumb — mismo problema de
+      // contraste, mismo fix (`--op-primary-dark`, 6.37:1 sobre `--op-bg`).
+      color: var(--op-primary-dark);
       text-decoration: none;
 
       &:hover {
@@ -1339,9 +2433,15 @@
 
   .exp-link,
   .exp-action-link {
-    color: var(--op-primary);
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    // A3: ver .exp-workspace__breadcrumb — mismo fix de contraste AA.
+    color: var(--op-primary-dark);
     text-decoration: none;
     font-size: var(--op-font-xs);
+    cursor: pointer;
 
     &:hover {
       text-decoration: underline;
@@ -1352,10 +2452,95 @@
       outline-offset: 2px;
       border-radius: 2px;
     }
+
+    &--danger {
+      color: var(--op-error);
+      margin-left: var(--op-space-2);
+    }
   }
 
   .exp-icon--success {
     color: var(--op-success);
+  }
+
+  // =========================================================================
+  // Índice — verificación de integridad ("apariencia de certificado")
+  // =========================================================================
+
+  .exp-indice-verify-error {
+    color: var(--op-error-fg);
+    font-size: var(--op-font-sm);
+    margin: 0 0 var(--op-space-4);
+
+    i {
+      margin-right: var(--op-space-1);
+    }
+  }
+
+  .exp-indice-verify {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-3);
+    padding: var(--op-space-4);
+    border-radius: var(--op-radius);
+    border: 1px solid var(--op-border);
+    margin-bottom: var(--op-space-4);
+
+    i {
+      font-size: var(--op-font-lg);
+      margin-top: 2px;
+    }
+
+    &--ok {
+      // Menor (revisión UX): el fallback `var(--op-primary-light)` estaba
+      // muerto — `--op-success-bg` SÍ está definido en _tokens.scss.
+      background: var(--op-success-bg);
+      border-color: var(--op-success);
+
+      i {
+        color: var(--op-success);
+      }
+    }
+
+    &--fail {
+      background: var(--op-error-bg);
+      border-color: var(--op-error);
+
+      i {
+        color: var(--op-error);
+      }
+    }
+
+    &__body {
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-1);
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+    }
+
+    &__list {
+      margin: var(--op-space-1) 0 0;
+      padding-left: var(--op-space-4);
+      font-size: var(--op-font-xs);
+      // A4 (revisión UX): esta lista dice si la huella coincide y si la firma
+      // es válida — justo el detalle con valor legal — a tamaño xs.
+      // `--op-text-secondary` sobre `--op-success-bg`/`--op-error-bg` (los
+      // fondos reales de `.exp-indice-verify--ok`/`--fail`) mide 3.97:1/4.10:1,
+      // por debajo de AA. `--op-text` da 12.56:1 sobre esos mismos fondos.
+      color: var(--op-text);
+    }
+
+    &__ts {
+      font-size: var(--op-font-xs);
+      // I3 (revisión UX): igual que `&__list` arriba (comentario A4) —
+      // `--op-text-secondary` sobre `--op-success-bg`/`--op-error-bg` mide
+      // 3.97:1/4.10:1, bajo el 4.5:1 de AA (medido en tamaño xs). El
+      // comentario A4 ya lo había corregido para `&__list` pero no bajó a
+      // `&__ts`. `--op-text` da 12.56:1 sobre esos mismos fondos.
+      color: var(--op-text);
+      margin-top: var(--op-space-1);
+    }
   }
 
   // =========================================================================
@@ -1391,6 +2576,17 @@
 
       &:hover {
         background: var(--op-primary-light);
+
+        // I4 (revisión UX): `--op-text-secondary` sobre `--op-primary-light`
+        // (el mismo fondo que `--op-success-bg`) mide 3.97:1, bajo el 4.5:1
+        // de AA, justo mientras el puntero está encima. Se sube a
+        // `--op-text` (12.56:1) SOLO en hover — el resto del componente ya
+        // usa `--op-text-secondary` sobre `--op-bg`, que sí cumple.
+        .exp-anexos-accordion__date,
+        i.fa-chevron-right,
+        i.fa-chevron-down {
+          color: var(--op-text);
+        }
       }
 
       &:focus-visible {
@@ -1523,7 +2719,8 @@
 
       summary {
         font-size: var(--op-font-xs);
-        color: var(--op-primary);
+        // A3: ver .exp-workspace__breadcrumb — mismo fix de contraste AA.
+        color: var(--op-primary-dark);
         cursor: pointer;
 
         &:focus-visible {
@@ -1560,5 +2757,21 @@
     align-items: center;
     flex-wrap: wrap;
     gap: var(--op-space-2);
+  }
+
+  // A7 / I2: anclas de foco programático (tabindex="-1") — visibles solo
+  // cuando realmente reciben el foco (nunca en el tabbing normal del
+  // teclado). #exp-workspace-title y #indice-electronico-heading replican el
+  // patrón de #radicados-vinculados-heading para cerrar/transferir/firmar
+  // (I2, revisión UX): sin esto, al retirarse del DOM el botón que originó
+  // la acción, `Modal.svelte` reenfoca un nodo desconectado y el foco cae al
+  // <body>, dejando al usuario de teclado/lector de pantalla desorientado
+  // justo tras un acto irreversible con valor legal.
+  :global(#radicados-vinculados-heading:focus-visible),
+  :global(#exp-workspace-title:focus-visible),
+  :global(#indice-electronico-heading:focus-visible) {
+    outline: 2px solid var(--op-primary);
+    outline-offset: 4px;
+    border-radius: var(--op-radius-sm);
   }
 </style>

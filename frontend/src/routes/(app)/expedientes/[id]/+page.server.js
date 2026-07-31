@@ -45,6 +45,22 @@
  * Las acciones del cliente (cerrar/transferir, descargar XML/anexos) usan los
  * endpoints locales /expedientes/[id]/api/* que leen la cookie httpOnly (D-05).
  * El access_token NO se expone en $page.data.
+ *
+ * Faceta 5 — trdSeries (Fase 2, cierre desfase API↔UI): catálogo de series
+ * TRD activas (mismo endpoint que /expedientes/+page.server.js) para poblar
+ * el <select> del Modal "Editar metadatos". Faceta NO crítica: si falla, el
+ * modal degrada a mostrar solo la serie actual del expediente (si tiene una)
+ * en vez de bloquear la edición de name/description.
+ *
+ * Faceta 6 — trdSerieDetail (Fase 4 cierre desfase API↔UI): SOLO si el
+ * expediente tiene `trd_serie_id`, se resuelve la serie completa vía
+ * GET /api/v1/trd/{serie_id} (services/archive-service/app/routers/trd.py:109,
+ * sin gate de permiso adicional) para que el Drawer de "Disposición final"
+ * pueda mostrar la REGLA (nombre, código, años de retención, disposición)
+ * que justificará la fecha — no solo un UUID crudo (`trdSeries`, tamaño 100,
+ * podría no incluir la serie si está inactiva o si hay más de 100 series
+ * activas; esta faceta la resuelve de forma directa e infalible). Faceta NO
+ * crítica: si falla, el Drawer degrada a mostrar el UUID crudo.
  */
 
 import { error } from "@sveltejs/kit";
@@ -111,19 +127,28 @@ export async function load({ params, cookies, parent }) {
   // -------------------------------------------------------------------------
   // Facetas en paralelo — allSettled: el fallo de una no tumba las demás
   // -------------------------------------------------------------------------
-  const [resumenResult, indiceResult, eventosResult, ubicacionResult] = await Promise.allSettled([
-    // Faceta 1: Resumen (expediente + radicados[])
-    gatewayGet(`/expedientes/${id}`, token, tenant, userId ? { "X-User-Id": userId } : {}),
+  const [resumenResult, indiceResult, eventosResult, ubicacionResult, trdSeriesResult] =
+    await Promise.allSettled([
+      // Faceta 1: Resumen (expediente + radicados[])
+      gatewayGet(`/expedientes/${id}`, token, tenant, userId ? { "X-User-Id": userId } : {}),
 
-    // Faceta 2: Índice electrónico E15
-    gatewayGet(`/expedientes/${id}/indice`, token, tenant),
+      // Faceta 2: Índice electrónico E15
+      gatewayGet(`/expedientes/${id}/indice`, token, tenant),
 
-    // Faceta 3: Eventos / hoja de ruta (E02 §9); X-User-Id acota por clearance
-    gatewayGet(`/expedientes/${id}/eventos`, token, tenant, userId ? { "X-User-Id": userId } : {}),
+      // Faceta 3: Eventos / hoja de ruta (E02 §9); X-User-Id acota por clearance
+      gatewayGet(
+        `/expedientes/${id}/eventos`,
+        token,
+        tenant,
+        userId ? { "X-User-Id": userId } : {},
+      ),
 
-    // Faceta 4: Ubicación física E17
-    gatewayGet(`/expedientes/${id}/unidades`, token, tenant),
-  ]);
+      // Faceta 4: Ubicación física E17
+      gatewayGet(`/expedientes/${id}/unidades`, token, tenant),
+
+      // Faceta 5: catálogo de series TRD activas (Modal "Editar metadatos")
+      gatewayGet(`/trd?is_active=true&size=100`, token, tenant),
+    ]);
 
   // Si el expediente principal falla → error de página (no puede mostrar nada útil)
   if (resumenResult.status === "rejected") {
@@ -138,13 +163,48 @@ export async function load({ params, cookies, parent }) {
   }
 
   // -------------------------------------------------------------------------
+  // Faceta 6: detalle de la serie TRD del expediente (Drawer "Disposición
+  // final"). Depende de `expediente.trd_serie_id`, que solo se conoce tras
+  // resolver la faceta 1 — por eso va DESPUÉS del allSettled, no dentro, y
+  // solo se dispara si el expediente tiene una serie asignada. NO crítica:
+  // un fallo aquí no tumba la página, el Drawer degrada a mostrar el UUID.
+  // -------------------------------------------------------------------------
+  const trdSerieId = resumenResult.value?.trd_serie_id ?? null;
+  let trdSerieDetail = null;
+  if (trdSerieId) {
+    try {
+      trdSerieDetail = await gatewayGet(`/trd/${trdSerieId}`, token, tenant);
+    } catch {
+      trdSerieDetail = null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Serializar resultados — cada faceta expone { data, error }
   // -------------------------------------------------------------------------
 
-  /** @param {PromiseSettledResult<any>} result */
-  function settle(result) {
+  // Algunas facetas usan el mismo 404 NEUTRO que `get_expediente`
+  // (no-read-up, RF-SEG-08) para dos situaciones indistinguibles a
+  // propósito: "el expediente no es visible para este clearance" y "es
+  // visible pero la faceta aún no existe" (p. ej. el índice electrónico no
+  // se ha generado). Para esas facetas el 404 NO es un fallo de carga — es
+  // un estado vacío legítimo — así que se resuelve a {data:null, error:null}
+  // en vez de pintar "no se pudo cargar". Verificado contra el backend
+  // (archive_service.py): aplica a `indice` (get_indice) y `ubicacion`
+  // (units_of_expediente, que en la práctica hoy nunca 404 — devuelve lista
+  // vacía — pero se cubre por si el contrato endurece a 404 más adelante).
+  // `eventos` (list_eventos) tampoco 404 nunca — filtra por clearance
+  // devolviendo lista vacía — así que se deja fuera de esta lista a propósito.
+  /**
+   * @param {PromiseSettledResult<any>} result
+   * @param {{ treat404AsEmpty?: boolean }} [opts]
+   */
+  function settle(result, { treat404AsEmpty = false } = {}) {
     if (result.status === "fulfilled") {
       return { data: result.value, error: null };
+    }
+    if (treat404AsEmpty && result.reason?.status === 404) {
+      return { data: null, error: null };
     }
     return {
       data: null,
@@ -159,10 +219,15 @@ export async function load({ params, cookies, parent }) {
   return {
     expediente: resumenResult.value,
     facetas: {
-      indice: settle(indiceResult),
+      indice: settle(indiceResult, { treat404AsEmpty: true }),
       eventos: settle(eventosResult),
-      ubicacion: settle(ubicacionResult),
+      ubicacion: settle(ubicacionResult, { treat404AsEmpty: true }),
     },
+    // No crítica (M2): si falla, el select del Modal "Editar metadatos" degrada.
+    trdSeries: trdSeriesResult.status === "fulfilled" ? trdSeriesResult.value : [],
+    // No crítica (faceta 6): si falla o el expediente no tiene serie, el Drawer
+    // de disposición degrada a mostrar el UUID crudo de trd_serie_id.
+    trdSerieDetail,
     // token, tenant y userId NO se exponen: las acciones cliente usan /expedientes/[id]/api/* (D-05)
   };
 }

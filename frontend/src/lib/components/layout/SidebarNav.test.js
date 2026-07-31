@@ -117,20 +117,19 @@ describe("SidebarNav — espejo del RBAC", () => {
     expect(screen.getByRole("link", { name: "Reportes" })).toBeInTheDocument();
   });
 
-  it("USUA_PERM_ADMIN habilita Plantillas (independiente del rol tenant_admin)", () => {
+  it("USUA_PERM_ADMIN habilita tanto Administración como Plantillas (I11: mismo eje RBAC)", () => {
     initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
     render(SidebarNav);
 
+    expect(screen.getByRole("link", { name: "Administración" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Plantillas" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Administración" })).not.toBeInTheDocument();
   });
 
-  it("el rol tenant_admin habilita Administración (gate por rol, no por permiso)", () => {
+  it("el rol tenant_admin por sí solo NO habilita Administración (I11: el backend gatea por USUA_PERM_ADMIN, no por rol de Keycloak)", () => {
     initSession(sessionWith({ roles: ["tenant_admin"] }));
     render(SidebarNav);
 
-    expect(screen.getByRole("link", { name: "Administración" })).toBeInTheDocument();
-    // El rol NO otorga por sí solo Plantillas (gateado por USUA_PERM_ADMIN)
+    expect(screen.queryByRole("link", { name: "Administración" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Plantillas" })).not.toBeInTheDocument();
   });
 

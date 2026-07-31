@@ -1,0 +1,90 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+/**
+ * /bandeja/api/inbox — Proxy SSR: bandeja tipada de pasos activos (D-05, ADR-011,
+ * E05 §Fase 1, RF-FLU-03).
+ *
+ * El token se lee de la cookie httpOnly del servidor y nunca se expone al JS del
+ * cliente. El backend re-valida tenant y resuelve el clearance real del llamante
+ * (RF-SEG-08, no-read-up) — X-User-Id es opcional aquí: sin identidad el
+ * workflow-service degrada a clearance PUBLICA (fail-closed), no rompe la bandeja.
+ *
+ * GET → lista tipada de pasos (`GET /workflows/inbox`)
+ *   Parámetros: box (entrada|salida|internos), dept, assigned_to (uuid), page, size
+ *   Respuesta: { items: FlowStepResponse[], total: number } (mismo envoltorio que
+ *   /bandeja/api, derivado de la cabecera X-Total-Count del backend).
+ */
+
+import { json } from "@sveltejs/kit";
+import { API_V1 } from "$lib/utils/config.server.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VALID_BOXES = new Set(["entrada", "salida", "internos"]);
+
+/** @type {import('./$types').RequestHandler} */
+export async function GET({ locals, url }) {
+  const token = locals.accessToken ?? "";
+  if (!token) {
+    return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
+  }
+  const tenant = locals.user?.tenant_slug ?? "";
+  const userId = locals.user?.sub ?? "";
+
+  const box = url.searchParams.get("box") ?? "";
+  if (box && !VALID_BOXES.has(box)) {
+    return json(
+      { error: "validation_error", detail: "box debe ser uno de: entrada, salida, internos." },
+      { status: 400 },
+    );
+  }
+
+  const assignedTo = url.searchParams.get("assigned_to") ?? "";
+  if (assignedTo && !UUID_RE.test(assignedTo)) {
+    return json(
+      { error: "validation_error", detail: "assigned_to debe ser un UUID válido." },
+      { status: 400 },
+    );
+  }
+
+  const dept = url.searchParams.get("dept") ?? "";
+  const page = url.searchParams.get("page") ?? "1";
+  const size = url.searchParams.get("size") ?? "20";
+
+  // Allowlist de query params: solo los que el backend acepta (RF-FLU-03).
+  const params = new URLSearchParams({ page, size });
+  if (box) params.set("box", box);
+  if (dept) params.set("dept", dept);
+  if (assignedTo) params.set("assigned_to", assignedTo);
+
+  /** @type {Record<string, string>} */
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "X-Tenant-Slug": tenant,
+  };
+  if (userId) headers["X-User-Id"] = userId;
+
+  try {
+    const res = await fetch(`${API_V1}/workflows/inbox?${params}`, { headers });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return json(data, { status: res.status });
+    }
+
+    const total = Number(res.headers.get("X-Total-Count") ?? 0);
+    const items = await res.json().catch(() => []);
+    return json({ items, total });
+  } catch {
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de flujos." },
+      { status: 503 },
+    );
+  }
+}

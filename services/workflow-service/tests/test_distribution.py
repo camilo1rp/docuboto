@@ -93,3 +93,89 @@ async def test_auto_distribute_no_rule_match() -> None:
 
     dept = await auto_distribute(conn, "demo", _PAYLOAD)
     assert dept is None
+
+
+@pytest.mark.asyncio
+async def test_auto_distribute_rule_dept_no_catalogado_no_rompe_el_motor() -> None:
+    """Cierre del agujero de disponibilidad (`_create_step` ahora valida
+    `to_dept` contra `dependencias`): si una regla vieja/con errata apunta a
+    una dependencia que NO está activa en el catálogo, el motor de
+    auto-distribución NO debe lanzar ni dejar el mensaje reintentando en la
+    PEL contra un dato permanentemente inválido — se resuelve como "sin
+    distribuir" (mismo resultado que `no_rule_match`), y se loguea para que se
+    corrija la regla.
+
+    `conn.fetchval.side_effect`: 1) get_next_step_number → 1 (no distribuido
+    aún); 2) dependencia_activa(assign_to_dept) → None (no está en el catálogo).
+    """
+    conn = _conn()
+    conn.fetchval.side_effect = [1, None]
+    conn.fetch.return_value = [_rule_row(assign_to_dept="Dependencia Fantasma")]
+
+    dept = await auto_distribute(conn, "demo", _PAYLOAD)
+
+    assert dept is None
+    conn.fetchrow.assert_not_awaited()  # nunca llega a WorkflowService.assign
+
+
+@pytest.mark.asyncio
+async def test_auto_distribute_rule_dept_no_catalogado_deja_traza_audit_log() -> None:
+    """Segunda mitad del residual (cerrado 2026-07-30): la rama de degradación
+    silenciosa (solo `logger.warning`) ahora además deja un asiento en
+    `public.audit_log` (Canal A) — verificado por mutación real (`audit.append`
+    hace `execute` para el advisory lock + INSERT, no mockeado aparte).
+
+    `conn.fetchval.side_effect`: 1) get_next_step_number → 1; 2)
+    dependencia_activa(assign_to_dept) → None; 3) `audit.append`'s prev_hash
+    lookup → None (cadena vacía)."""
+    conn = _conn()
+    conn.fetchval.side_effect = [1, None, None]
+    conn.fetch.return_value = [_rule_row(assign_to_dept="Dependencia Fantasma")]
+
+    dept = await auto_distribute(conn, "demo", _PAYLOAD)
+
+    assert dept is None
+    conn.fetchrow.assert_not_awaited()
+    # execute() se llama para: SET search_path (x2, dentro de get_next_step_number
+    # y dependencia_activa) + pg_advisory_xact_lock + INSERT INTO audit_log.
+    insert_calls = [
+        c for c in conn.execute.await_args_list if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(insert_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_distribute_audit_append_fallido_no_rompe_la_degradacion() -> None:
+    """Best-effort a propósito: si `audit.append` falla (p. ej. error transitorio
+    de BD), `auto_distribute` sigue devolviendo `None` (mismo resultado que sin
+    la traza) — un fallo de AUDITORÍA no debe escalar a "reintentar el mensaje"
+    contra una regla permanentemente inválida (eso sería ruido de DLQ)."""
+    conn = _conn()
+    conn.fetchval.side_effect = [1, None, RuntimeError("db down")]
+    conn.fetch.return_value = [_rule_row(assign_to_dept="Dependencia Fantasma")]
+
+    dept = await auto_distribute(conn, "demo", _PAYLOAD)
+
+    assert dept is None
+    conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_distribute_sigue_funcionando_con_dependencia_valida() -> None:
+    """Control positivo del motor tras el cierre: una regla que apunta a una
+    dependencia SÍ activa en el catálogo sigue autoasignando sin cambios de
+    comportamiento (gemelo de `test_auto_distribute_assigns_on_match`, pero
+    con `dependencia_activa` diferenciada explícitamente en el side_effect en
+    vez de depender del `return_value` blanket)."""
+    conn = _conn()
+    # 1) get_next_step_number → 1; 2) dependencia_activa(to_dept) → True (dentro
+    # de auto_distribute); 3) get_radicado_tracking_number (_create_step) → OK;
+    # 4) dependencia_activa(to_dept) (_create_step) → True; 5) get_next_step_number
+    # (_create_step) → 1; 6) audit.append prev_hash → None
+    conn.fetchval.side_effect = [1, 1, TRACKING_NUMBER, 1, 1, None]
+    conn.fetch.return_value = [_rule_row()]
+    conn.fetchrow.return_value = make_step_record(action="assign")
+
+    dept = await auto_distribute(conn, "demo", _PAYLOAD)
+
+    assert dept == "Dirección Jurídica"

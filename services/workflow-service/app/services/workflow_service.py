@@ -86,6 +86,16 @@ _TRAMITE_ACTION = "workflow.tramite_consultado"
 _BOX_TO_DOC_TYPE = {"entrada": "E", "salida": "S", "internos": "I"}
 VALID_BOXES = frozenset(_BOX_TO_DOC_TYPE)
 
+# Cierre de la primitiva de enumeración de `inbox`/`pending`: ampliar el
+# alcance por defecto (pasar `dept`/`assigned_to`) exige UNO de estos dos
+# permisos — cualquiera de los dos basta, gemelo del criterio ya usado en
+# `reassign_cascade`/`scan_overdue` (administración) salvo que aquí
+# PERM_TRAMITAR (permiso ORDINARIO de trámite) también habilita, porque
+# consultar la carga de otra dependencia concreta es parte del trabajo normal
+# de quien tramita — solo el listado SIN acotar (todo el tenant) queda
+# cerrado por defecto.
+_SCOPE_WIDENING_PERMS = ("PERM_TRAMITAR", "USUA_PERM_ADMIN")
+
 logger = logging.getLogger(__name__)
 
 
@@ -231,14 +241,38 @@ class WorkflowService:
         latest = await self._repo.get_latest_step(radicado_id)
         if latest is None:
             raise TransactionError("no_flow")
-        event = await self._repo.apply_transaction(
-            latest=latest,
-            tipo_tx=payload.tipo_tx,
-            target_step_status=tt["target_step_status"],
-            actor=actor,
-            comentario=payload.comentario,
-            detalles=payload.detalles,
-        )
+        # Auditoría forense (Canal A, cierre de deuda declarada 2026-07-30):
+        # object_ref = tracking_number de `latest` (ya resuelto server-side por
+        # `_create_step`/`WorkflowRepository._row_to_model` al crear el paso,
+        # NUNCA del cuerpo de la petición — mismo criterio que el Bloqueante 3
+        # de `_create_step`). `audit.append` va DENTRO de la misma transacción
+        # que envuelve `apply_transaction` (savepoint sobre su tx interna,
+        # mismo patrón que `rollback`/`complete_step`): si la traza falla, la
+        # transacción de trámite entera revierte.
+        async with self._conn.transaction():
+            event = await self._repo.apply_transaction(
+                latest=latest,
+                tipo_tx=payload.tipo_tx,
+                target_step_status=tt["target_step_status"],
+                actor=actor,
+                comentario=payload.comentario,
+                detalles=payload.detalles,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="workflow.transaccion",
+                object_type="radicado",
+                object_ref=latest.tracking_number,
+                actor=str(actor) if actor else None,
+                payload={
+                    "tipo_tx": payload.tipo_tx,
+                    "comentario": payload.comentario,
+                    "target_step_status": tt["target_step_status"],
+                    "requires_permission": required_perm,
+                },
+            )
         return _to_event_response(event)
 
     async def inbox(
@@ -254,14 +288,25 @@ class WorkflowService:
     ) -> tuple[list[FlowStepResponse], int]:
         """Bandeja tipada (RF-FLU-03): box ∈ entrada|salida|internos → doc_type E|S|I.
 
-        RF-SEG-08 (no-read-up) + RF-BUS-10 (traza agregada de consulta)."""
+        RF-SEG-08 (no-read-up) + RF-BUS-10 (traza agregada de consulta).
+
+        Alcance por dependencia (cierre de la primitiva de enumeración): sin
+        `dept`/`assigned_to`, el llamante ve lo suyo (`own_scope_user_id`,
+        `_own_scope_condition`); con cualquiera de los dos, amplía el alcance
+        y debe tener `PERM_TRAMITAR`/`USUA_PERM_ADMIN` (`_require_scope_
+        widening_permission`) — ambos ejes son mutuamente excluyentes por
+        request, ver `WorkflowRepository.list_inbox`."""
         doc_type = _BOX_TO_DOC_TYPE.get(box) if box else None
         offset = (page - 1) * size
+        widening_scope = dept is not None or assigned_to is not None
+        if widening_scope:
+            await self._require_scope_widening_permission(user_id)
         max_clearance = await self._repo.caller_clearance(user_id)
         steps, total = await self._repo.list_inbox(
             doc_type=doc_type,
             dept=dept,
             assigned_to=assigned_to,
+            own_scope_user_id=None if widening_scope else user_id,
             max_clearance=max_clearance,
             offset=offset,
             limit=size,
@@ -316,7 +361,9 @@ class WorkflowService:
         await self._repo.mark_overdue_notified(notified)
         return len(notified)
 
-    async def rollback(self, radicado_id: uuid.UUID, actor: uuid.UUID | None) -> FlowStepResponse:
+    async def rollback(
+        self, radicado_id: uuid.UUID, actor: uuid.UUID | None, motivo: str
+    ) -> FlowStepResponse:
         """Revierte la última asignación (solo si el paso sigue pending) (RF-FLU-08).
 
         `CLEARANCE_SIN_RESTRICCION`: revertir un trámite es una acción de gestión,
@@ -331,6 +378,14 @@ class WorkflowService:
         "no hay paso activo" (no-oráculo): distinguir "existe pero no es tuyo" de
         "no hay paso" filtraría la existencia/asignación de un radicado clasificado
         a cualquier autenticado del tenant que conozca el UUID.
+
+        `motivo` (obligatorio, `RollbackRequest`): queda en DOS trazas atómicas
+        con la mutación (mismo criterio que `_create_step`, un solo acto) — el
+        `comentario` de `flow_events` (Canal B, hoja de ruta operativa) y el
+        `payload` de `public.audit_log` (Canal A, traza legal forense). Antes de
+        este contrato el frontend recogía el motivo y lo descartaba (no había
+        dónde enviarlo): si `audit.append` falla, la reversión entera revierte —
+        no queda un rollback sin motivo auditable.
         """
         current = await self._repo.get_current(radicado_id, max_clearance=CLEARANCE_SIN_RESTRICCION)
         if current is None or current.status != "pending":
@@ -341,9 +396,24 @@ class WorkflowService:
         previous = await self._repo.get_previous_step(radicado_id, current.step_number)
         if previous is None:
             raise RollbackError("cannot_rollback_initial")
-        reactivated = await self._repo.apply_rollback(
-            current=current, previous=previous, actor=actor
-        )
+        async with self._conn.transaction():
+            reactivated = await self._repo.apply_rollback(
+                current=current, previous=previous, actor=actor, comentario=motivo
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="workflow-service",
+                action="workflow.rollback",
+                object_type="radicado",
+                object_ref=current.tracking_number,
+                actor=str(actor) if actor else None,
+                payload={
+                    "from_dept": current.to_dept,
+                    "to_dept": previous.to_dept,
+                    "motivo": motivo,
+                },
+            )
         return _to_response(reactivated)
 
     async def devolver(
@@ -377,13 +447,34 @@ class WorkflowService:
         current = await self._repo.get_current(radicado_id, max_clearance=CLEARANCE_SIN_RESTRICCION)
         if current is None or current.assigned_to != actor:
             raise _no_active_step_error(radicado_id)
-        new_step = await self._repo.apply_devolucion(
-            current=current,
-            to_dept=to_dept,
-            causal=causal,
-            comentario=comentario,
-            actor=actor,
-        )
+        # Auditoría forense (Canal A, cierre de deuda declarada 2026-07-30):
+        # mismo criterio que `rollback` — `audit.append` DENTRO de la misma
+        # transacción que envuelve `apply_devolucion` (savepoint sobre su tx
+        # interna). Si la traza falla, la devolución entera revierte: no queda
+        # un cambio de dependencia sin asiento forense.
+        async with self._conn.transaction():
+            new_step = await self._repo.apply_devolucion(
+                current=current,
+                to_dept=to_dept,
+                causal=causal,
+                comentario=comentario,
+                actor=actor,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="workflow.devolver",
+                object_type="radicado",
+                object_ref=current.tracking_number,
+                actor=str(actor) if actor else None,
+                payload={
+                    "from_dept": current.to_dept,
+                    "to_dept": to_dept,
+                    "causal": causal,
+                    "comentario": comentario,
+                },
+            )
         return _to_response(new_step)
 
     async def reassign_cascade(
@@ -394,13 +485,58 @@ class WorkflowService:
         to_assigned_to: uuid.UUID,
         actor: uuid.UUID | None,
     ) -> int:
-        """Reasigna todos los pasos activos del origen al nuevo responsable (RF-FLU-08)."""
-        return await self._repo.reassign_cascade(
-            from_assigned_to=from_assigned_to,
-            from_dept=from_dept,
-            to_assigned_to=to_assigned_to,
-            actor=actor,
-        )
+        """Reasigna todos los pasos activos del origen al nuevo responsable (RF-FLU-08).
+
+        Hallazgo C: `to_assigned_to` no se verificaba — un UUID equivocado aparcaba
+        toda la carga en un usuario inexistente; los pasos seguían `pending` pero no
+        aparecían en NINGUNA bandeja (denegación de servicio silenciosa del trámite).
+        Fail-closed: 422 si el destino no existe, antes de tocar `flow_steps`.
+        """
+        if not await self._repo.user_exists(to_assigned_to):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "to_assigned_to_not_found",
+                    "detail": f"Usuario {to_assigned_to} no existe",
+                    "status": 422,
+                },
+            )
+        # Auditoría forense (Canal A, cierre de deuda declarada 2026-07-30): esto
+        # es un barrido transversal, no la acción sobre UN radicado — no hay
+        # tracking_number único que fabricar (haciéndolo se inventaría una
+        # identidad falsa en una tabla append-only). `object_type="flow_steps"` +
+        # `object_ref=to_assigned_to` (el único identificador estable y NO
+        # opcional del payload — `from_assigned_to`/`from_dept` pueden venir
+        # ambos vacíos) documentan el barrido en sí; el `payload` lleva el
+        # conteo REAL de filas movidas (`reassigned`, devuelto por el repo) —
+        # una traza de un barrido masivo que no dice cuántas filas tocó es
+        # forensemente inútil. `audit.append` va DENTRO de la misma transacción
+        # que envuelve la llamada al repo (savepoint sobre su tx interna, mismo
+        # patrón que `rollback`/`devolver`/`execute_transaction`): si la traza
+        # falla, ninguna reasignación queda persistida.
+        async with self._conn.transaction():
+            reassigned = await self._repo.reassign_cascade(
+                from_assigned_to=from_assigned_to,
+                from_dept=from_dept,
+                to_assigned_to=to_assigned_to,
+                actor=actor,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="workflow.reasignacion_cascada",
+                object_type="flow_steps",
+                object_ref=str(to_assigned_to),
+                actor=str(actor) if actor else None,
+                payload={
+                    "from_assigned_to": str(from_assigned_to) if from_assigned_to else None,
+                    "from_dept": from_dept,
+                    "to_assigned_to": str(to_assigned_to),
+                    "reassigned": reassigned,
+                },
+            )
+        return reassigned
 
     async def get_current(
         self,
@@ -439,12 +575,18 @@ class WorkflowService:
         user_id: uuid.UUID | None = None,
         canal: str = "system",
     ) -> tuple[list[FlowStepResponse], int]:
-        """RF-SEG-08 (no-read-up) + RF-BUS-10 (traza agregada de consulta)."""
+        """RF-SEG-08 (no-read-up) + RF-BUS-10 (traza agregada de consulta).
+
+        Alcance por dependencia: gemelo exacto de `inbox`, ver su docstring."""
         offset = (page - 1) * size
+        widening_scope = dept is not None or assigned_to is not None
+        if widening_scope:
+            await self._require_scope_widening_permission(user_id)
         max_clearance = await self._repo.caller_clearance(user_id)
         steps, total = await self._repo.list_pending(
             dept=dept,
             assigned_to=assigned_to,
+            own_scope_user_id=None if widening_scope else user_id,
             max_clearance=max_clearance,
             offset=offset,
             limit=size,
@@ -460,17 +602,40 @@ class WorkflowService:
         return [_to_response(s) for s in steps], total
 
     async def complete_step(
-        self, step_id: uuid.UUID, payload: FlowStepComplete
+        self, step_id: uuid.UUID, payload: FlowStepComplete, actor: uuid.UUID
     ) -> FlowStepResponse:
-        step = await self._repo.complete_step(step_id, payload.notes)
-        if step is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "step_not_found",
-                    "detail": f"Flow step {step_id} not found",
-                    "status": 404,
-                },
+        """Cierra un paso (Bloqueantes 1+2, RF-SEG-03): `actor` es OBLIGATORIO —
+        antes este era el único endpoint de mutación del servicio sin identidad,
+        lo que permitía a cualquier tenedor de `PERM_TRAMITAR` cerrar el paso
+        activo de OTRA dependencia con solo conocer el `step_id` (enumerable vía
+        `GET /workflows/pending`, no acotado por dependencia).
+
+        Autorización + mutación en el MISMO `UPDATE` (ver
+        `WorkflowRepository.complete_step`, sin ventana TOCTOU). `audit.append`
+        (Canal A) queda DENTRO de la misma `conn.transaction()` que la mutación
+        (mismo criterio que `_create_step`): si la traza forense falla, el
+        cierre entero revierte — no queda un cierre sin auditar.
+        """
+        async with self._conn.transaction():
+            step = await self._repo.complete_step(step_id, payload.notes, actor)
+            if step is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "step_not_found",
+                        "detail": f"Flow step {step_id} not found",
+                        "status": 404,
+                    },
+                )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="workflow.complete",
+                object_type="radicado",
+                object_ref=step.tracking_number,
+                actor=str(actor) if actor else None,
+                payload={"step_id": str(step_id), "to_dept": step.to_dept},
             )
         await self._publish(_EVT_COMPLETED, step)
         return _to_response(step)
@@ -591,7 +756,101 @@ class WorkflowService:
             },
         )
 
+    async def _require_scope_widening_permission(self, actor: uuid.UUID | None) -> None:
+        """Eleva 403 si `actor` carece de `PERM_TRAMITAR` Y de `USUA_PERM_ADMIN`
+        (RF-SEG-08 extensión "bandeja acotada por dependencia").
+
+        Se invoca SOLO cuando la petición trae `dept` y/o `assigned_to`
+        explícitos en `inbox`/`list_pending` — el alcance POR DEFECTO (sin esos
+        parámetros) nunca pasa por aquí, ver `_own_scope_condition`. Deniega
+        (no ignora) el intento de ampliar el alcance sin permiso: más simple de
+        razonar que "ignorar el parámetro en silencio y degradar a lo propio",
+        y consistente con el resto del servicio (fail-closed explícito, p. ej.
+        `_require_permission`/`require_permission`).
+
+        Mismo patrón que `_require_permission`: fija el search_path (`get_db_conn`
+        no lo hace) y dos permisos posibles en vez de uno — no hay variante de
+        `check_permission` para "cualquiera de N", así que se prueba en orden y
+        se corta en el primero que otorgue.
+        """
+        await self._conn.execute(f'SET search_path TO "{tenant_schema(self._tenant_slug)}", public')
+        for perm_name in _SCOPE_WIDENING_PERMS:
+            if await check_permission(self._conn, actor, perm_name):
+                return
+        if audit is not None and actor is not None:
+            try:
+                await audit.append_denial(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    actor=str(actor),
+                    perm_name="|".join(_SCOPE_WIDENING_PERMS),
+                    min_crud=1,
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning("audit.append_denial failed", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": (
+                    "Se requiere PERM_TRAMITAR o USUA_PERM_ADMIN para consultar "
+                    "la bandeja de otra dependencia o de otro usuario"
+                ),
+                "status": 403,
+            },
+        )
+
+    async def _validate_dept_catalog(self, nombre: str, *, field: str) -> None:
+        """422 fail-closed si `nombre` no es una dependencia ACTIVA del catálogo.
+
+        Ver `WorkflowRepository.dependencia_activa` para la justificación completa.
+        `field` distingue `to_dept`/`from_dept` en el detalle del error, para que
+        el cliente sepa cuál de los dos rechazó.
+        """
+        if await self._repo.dependencia_activa(nombre):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "dependencia_desconocida",
+                "detail": f"'{nombre}' no es una dependencia activa del catálogo ({field})",
+                "field": field,
+                "status": 422,
+            },
+        )
+
     async def _create_step(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStep:
+        # Bloqueante 3: el tracking_number del CUERPO nunca es de fiar (campo libre
+        # del cliente) — se resuelve SIEMPRE desde `radicados`, que además sirve de
+        # comprobación de existencia del radicado (`flow_steps` no tiene FK). Sin
+        # esto, un `radicado_id` inventado + el `tracking_number` de OTRO radicado
+        # generaban un paso fantasma público (el predicado de clearance no
+        # encuentra la fila) y una entrada forense atribuyendo un movimiento sobre
+        # el radicado de otra persona.
+        tracking_number = await self._repo.get_radicado_tracking_number(payload.radicado_id)
+        if tracking_number is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "radicado_not_found",
+                    "detail": f"Radicado {payload.radicado_id} not found",
+                    "status": 404,
+                },
+            )
+        # Agujero de disponibilidad cerrado: `to_dept`/`from_dept` son texto libre
+        # del cliente (VARCHAR(100), sin FK — ver `_own_scope_condition`), y hasta
+        # ahora nadie los comprobaba contra el catálogo `dependencias` antes de
+        # escribir. Un `to_dept` con una errata o inventado no coincide con el
+        # alcance propio de NINGÚN usuario (`_own_scope_condition` correlaciona
+        # por nombre exacto contra `dependencias.nombre`): el paso queda
+        # `pending` en BD pero invisible en toda bandeja — pérdida silenciosa de
+        # un radicado dentro del flujo. Fail-closed ANTES de la transacción: no
+        # se escribe ninguna fila si el destino (o el origen, en `transfer`) no
+        # es una dependencia activa del catálogo.
+        await self._validate_dept_catalog(payload.to_dept, field="to_dept")
+        if payload.from_dept is not None:
+            await self._validate_dept_catalog(payload.from_dept, field="from_dept")
         step_number = await self._repo.get_next_step_number(payload.radicado_id)
         # Atomicidad (hallazgo 2.1): cerrar el paso activo, abrir el nuevo y dejar la
         # traza forense commitean juntos. Si audit.append falla, el cambio de paso no
@@ -602,7 +861,7 @@ class WorkflowService:
             await self._repo.complete_active_step(payload.radicado_id)
             step = await self._repo.create(
                 radicado_id=payload.radicado_id,
-                tracking_number=payload.tracking_number,
+                tracking_number=tracking_number,
                 step_number=step_number,
                 from_dept=payload.from_dept,
                 to_dept=payload.to_dept,
@@ -615,14 +874,15 @@ class WorkflowService:
             )
             # Auditoría forense transversal (E08 §9, Canal A): además del historial
             # operativo flow_events (Canal B), cada transacción de trámite deja traza
-            # legal en public.audit_log.
+            # legal en public.audit_log. object_ref = tracking_number RESUELTO desde
+            # BD, no el del payload (Bloqueante 3).
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
                 service="workflow-service",
                 action=f"workflow.{payload.action}",
                 object_type="radicado",
-                object_ref=payload.tracking_number,
+                object_ref=tracking_number,
                 actor=str(assigned_by) if assigned_by else None,
                 payload={"to_dept": payload.to_dept, "from_dept": payload.from_dept},
             )

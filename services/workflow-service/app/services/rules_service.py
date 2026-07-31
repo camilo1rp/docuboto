@@ -16,8 +16,10 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from fastapi import HTTPException, status
 
 from app.core.database import tenant_schema
+from app.repositories.workflow_repository import WorkflowRepository
 from app.schemas.rules import (
     RuleBatchEvaluationRequest,
     RuleBatchEvaluationResponse,
@@ -67,10 +69,40 @@ class WorkflowRulesService:
         schema = tenant_schema(self.tenant_slug)  # valida + normaliza (fail-closed)
         await self.conn.execute(f'SET search_path TO "{schema}", public')
 
+    async def _validate_assign_to_dept(self, nombre: str) -> None:
+        """422 fail-closed si `assign_to_dept` no es una dependencia ACTIVA del
+        catálogo — mismo criterio y helper (`WorkflowRepository.dependencia_activa`)
+        que `WorkflowService._validate_dept_catalog` usa para `to_dept`/`from_dept`
+        en `_create_step`; NO se escribe una consulta nueva.
+
+        Cierra el residual declarado en CLAUDE.md (2026-07-29): `assign_to_dept`
+        (texto libre, sin FK) no se comprobaba al crear/editar una regla, así que
+        una regla mal configurada se aceptaba en silencio y solo se descubría en
+        ejecución — radicado a radicado, vía el `logger.warning` de
+        `app/services/distribution.py:auto_distribute` que nadie lee. Validar al
+        CONFIGURAR la regla pone el error delante de un administrador que acaba de
+        teclear el nombre, en el momento en que puede corregirlo. Dependencia
+        INACTIVA se trata igual que inexistente, mismo criterio ya establecido en
+        `WorkflowService._validate_dept_catalog`/`WorkflowRepository.dependencia_activa`.
+        """
+        repo = WorkflowRepository(self.conn, self.tenant_slug)
+        if await repo.dependencia_activa(nombre):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "dependencia_desconocida",
+                "detail": f"'{nombre}' no es una dependencia activa del catálogo (assign_to_dept)",
+                "field": "assign_to_dept",
+                "status": 422,
+            },
+        )
+
     async def create_rule(
         self, payload: WorkflowRuleCreate, created_by: UUID
     ) -> WorkflowRuleResponse:
         await self._set_search_path()
+        await self._validate_assign_to_dept(payload.assign_to_dept)
         row = await self.conn.fetchrow(
             """
             INSERT INTO workflow_rules
@@ -124,6 +156,13 @@ class WorkflowRulesService:
         data = payload.model_dump(exclude_unset=True)
         if not data:
             return await self.get_rule(rule_id)
+
+        # PATCH parcial: solo se valida si el cliente TOCÓ `assign_to_dept` en
+        # esta petición (`exclude_unset`, no `data.get(...)` sobre el payload
+        # completo) — un PATCH que edita `name`/`priority`/etc. sin mencionar
+        # `assign_to_dept` no debe re-validar (ni romper) el valor ya vigente.
+        if data.get("assign_to_dept") is not None:
+            await self._validate_assign_to_dept(data["assign_to_dept"])
 
         set_parts: list[str] = []
         values: list[Any] = []

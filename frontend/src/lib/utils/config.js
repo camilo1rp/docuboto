@@ -81,4 +81,8 @@ export const ROUTES = {
   anulaciones: "/anulaciones",
   admin: "/admin",
   adminPlantillas: "/admin/plantillas",
+  adminFlujosReglas: "/admin/flujos/reglas",
+  adminFlujosReasignacion: "/admin/flujos/reasignacion",
+  adminSeguridadClaves: "/admin/seguridad/claves",
+  perfil: "/perfil",
 };

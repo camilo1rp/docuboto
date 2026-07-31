@@ -13,9 +13,11 @@ Tests for workflow-service endpoints.
 DB and Redis are fully mocked — no real infrastructure required.
 
 Repository call sequence for ASSIGN / TRANSFER:
-  1. fetchval  — SET search_path + MAX(step_number) → next step number
-  2. execute   — SET search_path + UPDATE completed_at on active step
-  3. fetchrow  — SET search_path + INSERT INTO flow_steps RETURNING *
+  1. fetchval  — SET search_path + tracking_number lookup on `radicados`
+  2. fetchval  — SET search_path + dependencia_activa(to_dept) [+ from_dept for transfer]
+  3. fetchval  — SET search_path + MAX(step_number) → next step number
+  4. execute   — SET search_path + UPDATE completed_at on active step
+  5. fetchrow  — SET search_path + INSERT INTO flow_steps RETURNING *
 
 Repository call sequence for GET HISTORY:
   1. execute   — SET search_path (via fetch)
@@ -38,9 +40,10 @@ Repository call sequence for COMPLETE STEP:
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -156,6 +159,108 @@ async def test_assign_sin_permiso_403(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v1/workflows/assign — Bloqueante 3 (radicado_id inventado /
+# tracking_number falsificado)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assign_radicado_inexistente_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """`radicado_id` sin fila en `radicados` → 404 `radicado_not_found`, y no
+    queda ninguna fila creada en `flow_steps` (se corta antes de la tx)."""
+    client, mock_conn, mock_redis = client_with_conn
+    # 1) require_permission (PERM_TRAMITAR) → True; 2) get_radicado_tracking_number → None
+    mock_conn.fetchval.side_effect = [1, None]
+
+    response = await client.post(
+        "/api/v1/workflows/assign",
+        json=_ASSIGN_PAYLOAD,
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "radicado_not_found"
+    mock_conn.fetchrow.assert_not_awaited()  # ni INSERT INTO flow_steps
+    mock_redis.xadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assign_persiste_tracking_number_de_bd_no_del_cuerpo(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un `tracking_number` en el cuerpo que NO corresponde al `radicado_id`
+    (p. ej. el de otro radicado) se ignora: se persiste el resuelto desde
+    `radicados`, tanto en el `INSERT` de `flow_steps` como en `audit_log.object_ref`."""
+    client, mock_conn, _ = client_with_conn
+    real_tracking = "2024-DEMO-E-999999"
+    # 1) require_permission → True; 2) get_radicado_tracking_number → real_tracking;
+    # 3) dependencia_activa(to_dept) → True; 4) get_next_step_number → 1;
+    # 5) audit.append's prev_hash lookup → None
+    mock_conn.fetchval.side_effect = [1, real_tracking, 1, 1, None]
+    mock_conn.fetchrow.return_value = make_step_record(
+        step_id=STEP_ID, tracking_number=real_tracking, action="assign"
+    )
+
+    payload = {**_ASSIGN_PAYLOAD, "tracking_number": "TRACKING-AJENO-FALSIFICADO"}
+    response = await client.post(
+        "/api/v1/workflows/assign",
+        json=payload,
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+
+    insert_step_calls = [
+        c for c in mock_conn.fetchrow.await_args_list if "INSERT INTO flow_steps" in c.args[0]
+    ]
+    assert len(insert_step_calls) == 1
+    assert "TRACKING-AJENO-FALSIFICADO" not in insert_step_calls[0].args
+    assert real_tracking in insert_step_calls[0].args
+
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    assert audit_calls[0].args[7] == real_tracking  # object_ref
+
+
+@pytest.mark.asyncio
+async def test_assign_action_falsificado_se_ignora(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Hallazgo A: `action` en el cuerpo se sobrescribe SIEMPRE a "assign" en
+    este endpoint — un cliente no puede escribir "return"/"transfer" en la
+    traza inmutable vía `/assign`."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.return_value = make_step_record(step_id=STEP_ID, action="assign")
+
+    payload = {**_ASSIGN_PAYLOAD, "action": "return"}
+    response = await client.post(
+        "/api/v1/workflows/assign",
+        json=payload,
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    insert_step_calls = [
+        c for c in mock_conn.fetchrow.await_args_list if "INSERT INTO flow_steps" in c.args[0]
+    ]
+    assert "assign" in insert_step_calls[0].args
+    assert "return" not in insert_step_calls[0].args
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert audit_calls[0].args[5] == "workflow.assign"  # action
+
+
+# ---------------------------------------------------------------------------
 # POST /api/v1/workflows/transfer
 # ---------------------------------------------------------------------------
 
@@ -190,6 +295,36 @@ async def test_transfer_radicado(
     # complete_active_step must have been called (execute for UPDATE)
     mock_conn.execute.assert_awaited()
     mock_redis.xadd.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_transfer_action_falsificado_se_ignora(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Hallazgo A gemelo de `test_assign_action_falsificado_se_ignora`, en
+    `/transfer`: con `action` falsificado se sorteaba además el 422
+    `missing_from_dept`, porque `WorkflowService.transfer` valida `from_dept`
+    ANTES de llegar a `_create_step` — la sobrescritura ocurre en el router,
+    previa a esa validación, así que no cambia."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 2
+    mock_conn.fetchrow.return_value = make_step_record(
+        step_id=STEP_ID, step_number=2, action="transfer"
+    )
+
+    payload = {**_TRANSFER_PAYLOAD, "action": "return"}
+    response = await client.post(
+        "/api/v1/workflows/transfer",
+        json=payload,
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    insert_step_calls = [
+        c for c in mock_conn.fetchrow.await_args_list if "INSERT INTO flow_steps" in c.args[0]
+    ]
+    assert "transfer" in insert_step_calls[0].args
+    assert "return" not in insert_step_calls[0].args
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +464,10 @@ async def test_list_pending(
 async def test_complete_step(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
+    """Control positivo: cerrar el paso propio (assigned_to == actor) sigue
+    funcionando tras anclar la autorización en el `UPDATE` (Bloqueantes 1+2)."""
     client, mock_conn, mock_redis = client_with_conn
-    record = make_step_record(step_id=STEP_ID, step_status="completed")
+    record = make_step_record(step_id=STEP_ID, step_status="completed", assigned_to=USER_ID)
     mock_conn.fetchrow.return_value = record
 
     response = await client.patch(
@@ -346,6 +483,102 @@ async def test_complete_step(
     mock_redis.xadd.assert_awaited_once()
     args = mock_redis.xadd.call_args[0]
     assert args[1]["event_type"] == "workflow.step.completed"
+
+    # El `UPDATE` ancla la autorización por tenencia (assigned_to = actor O
+    # assigned_to IS NULL) en el MISMO statement — sin ventana TOCTOU.
+    update_calls = [
+        c for c in mock_conn.fetchrow.await_args_list if "UPDATE flow_steps" in c.args[0]
+    ]
+    assert len(update_calls) == 1
+    sql = update_calls[0].args[0]
+    assert "assigned_to = $4 OR assigned_to IS NULL" in sql
+    assert update_calls[0].args[-1] == USER_ID  # actor real, no assigned_to
+
+    # La traza forense (Canal A) asienta el actor REAL, no `assigned_to` (Bloqueante 2).
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    assert audit_calls[0].args[3] == str(USER_ID)  # posición del actor en _INSERT_SQL
+
+    # ...y el evento operativo append-only (Canal B) también.
+    flow_event_calls = [
+        c for c in mock_conn.execute.await_args_list if "INSERT INTO flow_events" in c.args[0]
+    ]
+    assert len(flow_event_calls) == 1
+    assert flow_event_calls[0].args[6] == USER_ID  # actor en _insert_flow_event
+
+
+@pytest.mark.asyncio
+async def test_complete_step_paso_ajeno_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Cerrar el paso de OTRA dependencia (el `WHERE` no casa `assigned_to`) es
+    byte-a-byte indistinguible de "no existe": mismo 404 `step_not_found`
+    (no-oráculo, gemelo de rollback/devolver)."""
+    client, mock_conn, mock_redis = client_with_conn
+    mock_conn.fetchrow.return_value = None  # WHERE assigned_to=$4 OR IS NULL no matchea
+
+    response = await client.patch(
+        f"/api/v1/workflows/{STEP_ID}/complete",
+        json={"notes": "Procesado"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "step_not_found"
+    # El paso no cambia: ni el evento append-only ni la traza forense se escriben.
+    mock_redis.xadd.assert_not_awaited()
+    assert not any(
+        "INSERT INTO flow_events" in c.args[0] for c in mock_conn.execute.await_args_list
+    )
+    assert not any(
+        "INSERT INTO public.audit_log" in c.args[0] for c in mock_conn.execute.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_step_dependencia_sin_dueno_ok(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un paso de dependencia SIN dueño (`assigned_to IS NULL`, generado por
+    `apply_devolucion`) sigue siendo cerrable por quien tramita: no se rompe
+    ese caso legítimo al anclar la autorización en el UPDATE."""
+    client, mock_conn, mock_redis = client_with_conn
+    record = make_step_record(step_id=STEP_ID, step_status="completed")
+    record["assigned_to"] = None  # make_step_record's `or` no deja pasar None directo
+    mock_conn.fetchrow.return_value = record
+
+    response = await client.patch(
+        f"/api/v1/workflows/{STEP_ID}/complete",
+        json={"notes": "Procesado"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    mock_redis.xadd.assert_awaited_once()
+    update_calls = [
+        c for c in mock_conn.fetchrow.await_args_list if "UPDATE flow_steps" in c.args[0]
+    ]
+    assert "assigned_to IS NULL" in update_calls[0].args[0]
+
+
+@pytest.mark.asyncio
+async def test_complete_step_sin_user_header_403(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """`PATCH /complete` ahora exige identidad (Bloqueante 1): sin X-User-Id la
+    petición ni siquiera resuelve el RBAC de `PERM_TRAMITAR` con un actor real."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None  # check_permission(user_id=None) → False
+    response = await client.patch(
+        f"/api/v1/workflows/{STEP_ID}/complete",
+        json={"notes": "Procesado"},
+        headers={"X-Tenant-Slug": TENANT_SLUG},  # sin X-User-Id
+    )
+    assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +809,91 @@ async def test_execute_transaction_tipo_abierto_sin_permiso_ok(
 
 
 @pytest.mark.asyncio
+async def test_execute_transaction_deja_traza_forense_en_audit_log(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Cierre de deuda declarada 2026-07-30: `execute_transaction` ahora deja
+    asiento en `public.audit_log` (Canal A), gemelo de `flow_events` (Canal B) que
+    ya dejaba `apply_transaction`. `object_ref` = `tracking_number` de `latest`
+    (resuelto server-side por `_create_step`/`_row_to_model`, nunca del cuerpo)."""
+    client, mock_conn, _ = client_with_conn
+    tt = {
+        "code": "anular",
+        "nombre": "Anular",
+        "descripcion": None,
+        "requires_permission": "PERM_ANULAR",
+        "target_step_status": "cancelled",
+        "activo": True,
+    }
+    latest = make_step_record(step_status="pending", to_dept="Jurídica")
+    event = make_event_record(tipo_tx="anular", to_dept="Jurídica")
+    mock_conn.fetchrow.side_effect = [tt, latest, event]
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/transactions",
+        json={"tipo_tx": "anular", "comentario": "Duplicado"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    call = audit_calls[0]
+    assert call.args[3] == str(USER_ID)  # actor
+    assert call.args[5] == "workflow.transaccion"  # action
+    assert call.args[6] == "radicado"  # object_type
+    assert call.args[7] == TRACKING_NUMBER  # object_ref
+    payload = json.loads(call.args[8])
+    assert payload == {
+        "tipo_tx": "anular",
+        "comentario": "Duplicado",
+        "target_step_status": "cancelled",
+        "requires_permission": "PERM_ANULAR",
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_transaction_audit_failure_aborta_la_transaccion(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Atomicidad: si `audit.append` falla, la transacción de trámite entera
+    revierte (mismo criterio que `rollback`/`complete_step`/`devolver`)."""
+    client, mock_conn, _ = client_with_conn
+    tt = {
+        "code": "informar",
+        "nombre": "Informar",
+        "descripcion": None,
+        "requires_permission": None,
+        "target_step_status": None,
+        "activo": True,
+    }
+    latest = make_step_record(step_status="pending")
+    event = make_event_record(tipo_tx="informar")
+    mock_conn.fetchrow.side_effect = [tt, latest, event]
+
+    # `AsyncClient(transport=ASGITransport(...))` re-lanza las excepciones no
+    # manejadas por la app (no las convierte en un 500 HTTP) — se comprueba que
+    # la excepción se propaga hasta aquí, es decir, que ninguna respuesta 200
+    # llega al cliente confirmando una transacción de trámite sin traza forense.
+    with (
+        patch(
+            "app.services.workflow_service.audit.append",
+            new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
+        ),
+        pytest.raises(RuntimeError, match="audit_log no disponible"),
+    ):
+        await client.post(
+            f"/api/v1/workflows/{RADICADO_ID}/transactions",
+            json={"tipo_tx": "informar"},
+            headers=TENANT_HEADERS,
+        )
+
+
+@pytest.mark.asyncio
 async def test_execute_transaction_unknown(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
@@ -710,6 +1028,76 @@ async def test_devolver_no_active_step(
 
 
 @pytest.mark.asyncio
+async def test_devolver_deja_traza_forense_en_audit_log(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Cierre de deuda declarada 2026-07-30: `devolver` ahora deja asiento en
+    `public.audit_log` (Canal A) además del `flow_events.comentario` (Canal B) que
+    ya dejaba. `object_ref` = el `tracking_number` del paso activo (resuelto
+    server-side, no del cuerpo)."""
+    client, mock_conn, _ = client_with_conn
+    current = make_step_record(
+        step_number=2, step_status="pending", to_dept="Jurídica", assigned_to=USER_ID
+    )
+    devuelto = make_step_record(step_number=3, step_status="pending", to_dept="Ventanilla")
+    mock_conn.fetchrow.side_effect = [current, devuelto]
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/devolver",
+        json={"to_dept": "Ventanilla", "causal": "DEV-DEP", "comentario": "No competencia"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    call = audit_calls[0]
+    assert call.args[3] == str(USER_ID)  # actor
+    assert call.args[5] == "workflow.devolver"  # action
+    assert call.args[6] == "radicado"  # object_type
+    assert call.args[7] == TRACKING_NUMBER  # object_ref (tracking_number del paso activo)
+    payload = json.loads(call.args[8])
+    assert payload == {
+        "from_dept": "Jurídica",
+        "to_dept": "Ventanilla",
+        "causal": "DEV-DEP",
+        "comentario": "No competencia",
+    }
+
+
+@pytest.mark.asyncio
+async def test_devolver_audit_failure_aborta_la_devolucion(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Atomicidad (mismo criterio que `rollback`/`_create_step`): si `audit.append`
+    falla, la devolución entera revierte — no debe llegar a la respuesta 200 que
+    confirmaría al cliente un cambio de dependencia sin traza forense."""
+    client, mock_conn, _ = client_with_conn
+    current = make_step_record(
+        step_number=2, step_status="pending", to_dept="Jurídica", assigned_to=USER_ID
+    )
+    devuelto = make_step_record(step_number=3, step_status="pending", to_dept="Ventanilla")
+    mock_conn.fetchrow.side_effect = [current, devuelto]
+
+    with (
+        patch(
+            "app.services.workflow_service.audit.append",
+            new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
+        ),
+        pytest.raises(RuntimeError, match="audit_log no disponible"),
+    ):
+        await client.post(
+            f"/api/v1/workflows/{RADICADO_ID}/devolver",
+            json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
+            headers=TENANT_HEADERS,
+        )
+
+
+@pytest.mark.asyncio
 async def test_devolver_not_current_holder_is_neutral_404(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
@@ -736,6 +1124,9 @@ async def test_devolver_not_current_holder_is_neutral_404(
     assert no_step_body["detail"]["detail"] == f"No active flow step found for radicado {RADICADO_ID}"
 
 
+ROLLBACK_MOTIVO = "Se asignó a la dependencia incorrecta por error de digitación."
+
+
 @pytest.mark.asyncio
 async def test_rollback_reactivates_previous(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
@@ -752,10 +1143,31 @@ async def test_rollback_reactivates_previous(
     mock_conn.fetchrow.side_effect = [current, previous, reactivated]
 
     response = await client.post(
-        f"/api/v1/workflows/{RADICADO_ID}/rollback", headers=TENANT_HEADERS
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={"motivo": ROLLBACK_MOTIVO},
+        headers=TENANT_HEADERS,
     )
     assert response.status_code == 200
     assert response.json()["status"] == "pending"
+
+    # El motivo queda en el asiento operativo (flow_events.comentario, Canal B —
+    # hoja de ruta) vía `execute`, no solo en el 200 de la respuesta.
+    flow_event_calls = [
+        c for c in mock_conn.execute.await_args_list if "INSERT INTO flow_events" in c.args[0]
+    ]
+    assert len(flow_event_calls) == 1
+    assert ROLLBACK_MOTIVO in flow_event_calls[0].args
+
+    # ...y en la traza legal forense (public.audit_log.payload, Canal A) —
+    # atómica con la mutación (mismo `conn.transaction()` que `_create_step`).
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    payload = json.loads(audit_calls[0].args[8])  # posición del payload jsonb en _INSERT_SQL
+    assert payload["motivo"] == ROLLBACK_MOTIVO
 
 
 @pytest.mark.asyncio
@@ -766,7 +1178,9 @@ async def test_rollback_no_active_step(
     mock_conn.fetchrow.return_value = None  # get_current → None
 
     response = await client.post(
-        f"/api/v1/workflows/{RADICADO_ID}/rollback", headers=TENANT_HEADERS
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={"motivo": ROLLBACK_MOTIVO},
+        headers=TENANT_HEADERS,
     )
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "no_active_step"
@@ -786,7 +1200,9 @@ async def test_rollback_by_non_holder_is_neutral_no_active_step(
     mock_conn.fetchrow.return_value = current  # solo se consulta get_current
 
     response = await client.post(
-        f"/api/v1/workflows/{RADICADO_ID}/rollback", headers=TENANT_HEADERS
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={"motivo": ROLLBACK_MOTIVO},
+        headers=TENANT_HEADERS,
     )
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "no_active_step"
@@ -804,10 +1220,47 @@ async def test_rollback_initial_step_rejected(
     mock_conn.fetchrow.side_effect = [current, None]  # sin paso previo
 
     response = await client.post(
-        f"/api/v1/workflows/{RADICADO_ID}/rollback", headers=TENANT_HEADERS
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={"motivo": ROLLBACK_MOTIVO},
+        headers=TENANT_HEADERS,
     )
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "cannot_rollback_initial"
+
+
+@pytest.mark.asyncio
+async def test_rollback_without_motivo_is_rejected(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """El motivo es obligatorio (espejo del modal `RevertirModal.svelte`, que ya
+    lo exige): sin él, la petición ni siquiera llega al servicio — 422, y ninguna
+    consulta/mutación se ejecuta contra la BD."""
+    client, mock_conn, _ = client_with_conn
+
+    response = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={},
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 422
+    mock_conn.fetchrow.assert_not_awaited()
+    mock_conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rollback_with_too_short_motivo_is_rejected(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Espejo del mínimo de 5 caracteres exigido por el modal del frontend."""
+    client, mock_conn, _ = client_with_conn
+
+    response = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={"motivo": "abc"},
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 422
+    mock_conn.fetchrow.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -837,6 +1290,92 @@ async def test_reassign_cascade_requires_source(
         headers=TENANT_HEADERS,
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reassign_cascade_destino_inexistente_422(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Hallazgo C: `to_assigned_to` que no existe en `auth_users` → 422
+    fail-closed, y NINGUNA fila de `flow_steps` se toca (el `SELECT`/`UPDATE`
+    de `reassign_cascade` en el repo ni se ejecutan)."""
+    client, mock_conn, _ = client_with_conn
+    # 1) require_permission (USUA_PERM_ADMIN) → True; 2) user_exists → False
+    mock_conn.fetchval.side_effect = [1, None]
+
+    response = await client.post(
+        "/api/v1/workflows/reassign/cascade",
+        json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(uuid.uuid4())},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "to_assigned_to_not_found"
+    mock_conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reassign_cascade_deja_traza_forense_en_audit_log(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Cierre de deuda declarada 2026-07-30: `reassign_cascade` ahora deja
+    asiento en `public.audit_log` (Canal A). Es un barrido transversal (sin UN
+    radicado único): `object_type="flow_steps"`, `object_ref=to_assigned_to`
+    (el único identificador estable no-opcional del payload), y el `payload`
+    lleva el conteo REAL de filas reasignadas."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = [make_step_record(), make_step_record()]
+    to_assigned_to = uuid.uuid4()
+
+    response = await client.post(
+        "/api/v1/workflows/reassign/cascade",
+        json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(to_assigned_to)},
+        headers=TENANT_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["reassigned"] == 2
+
+    audit_calls = [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1
+    call = audit_calls[0]
+    assert call.args[3] == str(USER_ID)  # actor
+    assert call.args[5] == "workflow.reasignacion_cascada"  # action
+    assert call.args[6] == "flow_steps"  # object_type
+    assert call.args[7] == str(to_assigned_to)  # object_ref
+    payload = json.loads(call.args[8])
+    assert payload == {
+        "from_assigned_to": None,
+        "from_dept": "Dirección Jurídica",
+        "to_assigned_to": str(to_assigned_to),
+        "reassigned": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_reassign_cascade_audit_failure_aborta_la_reasignacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Atomicidad: si `audit.append` falla, ninguna reasignación queda
+    persistida (mismo criterio que `rollback`/`devolver`/`execute_transaction`)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = [make_step_record(), make_step_record()]
+
+    with (
+        patch(
+            "app.services.workflow_service.audit.append",
+            new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
+        ),
+        pytest.raises(RuntimeError, match="audit_log no disponible"),
+    ):
+        await client.post(
+            "/api/v1/workflows/reassign/cascade",
+            json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(uuid.uuid4())},
+            headers=TENANT_HEADERS,
+        )
 
 
 # ---------------------------------------------------------------------------

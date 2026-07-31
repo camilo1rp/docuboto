@@ -244,7 +244,293 @@ async def test_create_rule_with_conditions(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_evaluate_missing_tenant_is_400(client_with_conn) -> None:
+async def test_evaluate_missing_tenant_is_403(client_with_conn) -> None:
+    """`/evaluate` ahora cuelga de `require_permission` (Hallazgo B): sin
+    X-Tenant-Slug esa dependency deniega explícitamente con 403 ANTES de que
+    `_require_tenant` pueda dar su propio 400 — mismo comportamiento que
+    `assign`/`transfer` (cf. `test_assign_missing_tenant_header`)."""
     client, _, _ = client_with_conn
     resp = await client.post("/api/v1/workflow/rules/evaluate", json=_EVAL_REQ)
-    assert resp.status_code == 400
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Autorización del CRUD (USUA_PERM_ADMIN) — cierre de la brecha: antes ningún
+# endpoint de este router estaba gateado y cualquier usuario autenticado del
+# tenant podía crear/editar/borrar reglas de enrutamiento automático.
+# `/evaluate` y `/evaluate/batch` (Hallazgo B, cerrado 2026-07-29): eran un
+# oráculo del mismo CRUD (permiten reconstruir la tabla de enrutamiento
+# iterando metadatos sintéticos) y ahora comparten el mismo gate — verificado
+# que ningún llamante HTTP real existe (el motor de distribución usa la clase
+# de servicio en proceso, no HTTP).
+# ---------------------------------------------------------------------------
+
+_CREATE_PAYLOAD = {
+    "name": "Entrada o Salida",
+    "match_mode": "any",
+    "conditions": [{"field": "doc_type", "op": "in", "value": "E,S"}],
+    "assign_to_dept": "Ventanilla",
+}
+
+_UPDATE_PAYLOAD = {"name": "Renombrada"}
+
+
+@pytest.mark.asyncio
+async def test_create_rule_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None  # check_permission → False
+    resp = await client.post(
+        "/api/v1/workflow/rules", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_rules_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get("/api/v1/workflow/rules", headers=TENANT_HEADERS)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_rule_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.get(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_update_rule_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.patch(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}",
+        json=_UPDATE_PAYLOAD,
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_delete_rule_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.delete(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_rules_con_permiso_ok(client_with_conn) -> None:
+    """El administrador legítimo (fetchval por defecto = 1, ver conftest) sigue
+    pudiendo operar el CRUD tras el cierre."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = [make_rule_record()]
+    resp = await client.get("/api/v1/workflow/rules", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_delete_rule_con_permiso_ok(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1  # check_permission → True (admin)
+    # delete_rule usa el resultado de execute() ("DELETE 1") para saber si borró.
+    mock_conn.execute.return_value = "DELETE 1"
+    resp = await client.delete(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_evaluate_sin_permiso_403(client_with_conn) -> None:
+    """Hallazgo B (cerrado): `/evaluate` es ahora el mismo oráculo que el CRUD
+    protege — sin USUA_PERM_ADMIN, 403 fail-closed (fetchval=None ⇒
+    check_permission → False), y las reglas NUNCA se leen (`fetch` no se invoca)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.post(
+        "/api/v1/workflow/rules/evaluate", json=_EVAL_REQ, headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_con_permiso_ok(client_with_conn) -> None:
+    """Control positivo: el administrador legítimo (fetchval=1, ver conftest)
+    sigue pudiendo evaluar tras el cierre del Hallazgo B."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = [
+        make_rule_record(conditions=[{"field": "doc_type", "op": "eq", "value": "E"}])
+    ]
+    resp = await client.post(
+        "/api/v1/workflow/rules/evaluate", json=_EVAL_REQ, headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.json()["matched"] is True
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+    payload = {
+        "items": [
+            {"radicado_id": str(uuid.uuid4()), "tracking_number": "T1", "doc_type": "E"},
+        ]
+    }
+    resp = await client.post(
+        "/api/v1/workflow/rules/evaluate/batch", json=payload, headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_con_permiso_ok(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = [
+        make_rule_record(conditions=[{"field": "doc_type", "op": "eq", "value": "E"}])
+    ]
+    payload = {
+        "items": [
+            {"radicado_id": str(uuid.uuid4()), "tracking_number": "T1", "doc_type": "E"},
+        ]
+    }
+    resp = await client.post(
+        "/api/v1/workflow/rules/evaluate/batch", json=payload, headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.json()["results"][0]["matched"] is True
+
+
+# ---------------------------------------------------------------------------
+# `assign_to_dept` validado contra el catálogo `dependencias` (cierre del
+# residual declarado en CLAUDE.md 2026-07-29): `POST`/`PATCH` ahora reutilizan
+# `WorkflowRepository.dependencia_activa` (mismo helper que `_create_step`)
+# ANTES de escribir la fila. Secuencia de `fetchval` en cada caso:
+#   1) require_permission (USUA_PERM_ADMIN) → True
+#   2) dependencia_activa(assign_to_dept) → True/None
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_rule_dependencia_inexistente_422(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia_activa → False
+
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={**_CREATE_PAYLOAD, "assign_to_dept": "Dependencia Inventada"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 422
+    body = resp.json()["detail"]
+    assert body["error"] == "dependencia_desconocida"
+    assert "Dependencia Inventada" in body["detail"]
+    mock_conn.fetchrow.assert_not_awaited()  # ninguna fila escrita si falla
+
+
+@pytest.mark.asyncio
+async def test_create_rule_dependencia_inactiva_422(client_with_conn) -> None:
+    """`dependencia_activa` filtra `activo = TRUE` en la propia consulta SQL —
+    una dependencia dada de baja es indistinguible de una inexistente desde la
+    capa de servicio (`fetchval` devuelve `None` en ambos casos), mismo
+    criterio ya establecido en `WorkflowService._validate_dept_catalog`."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia INACTIVA
+
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={**_CREATE_PAYLOAD, "assign_to_dept": "Dependencia De Baja"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "dependencia_desconocida"
+    mock_conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_rule_dependencia_activa_ok(client_with_conn) -> None:
+    """Control positivo: con la dependencia activa en el catálogo, el cierre no
+    rompe el flujo de creación normal (gemelo de `test_create_rule_with_conditions`)."""
+    client, mock_conn, _ = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.side_effect = [1, 1]  # permiso OK, dependencia_activa → True
+    mock_conn.fetchrow.return_value = make_rule_record(rule_id=rid)
+
+    resp = await client.post(
+        "/api/v1/workflow/rules", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["id"] == str(rid)
+
+
+@pytest.mark.asyncio
+async def test_update_rule_sin_tocar_assign_to_dept_no_valida(client_with_conn) -> None:
+    """PATCH parcial que NO incluye `assign_to_dept` no debe validarlo ni
+    romperse — solo un `fetchval` (el del gate de permiso); `dependencia_activa`
+    nunca se invoca porque el PATCH no tocó el campo."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1  # solo el gate de permiso
+    mock_conn.fetchrow.return_value = make_rule_record(name="Renombrada")
+
+    resp = await client.patch(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}",
+        json=_UPDATE_PAYLOAD,  # {"name": "Renombrada"} — sin assign_to_dept
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    assert mock_conn.fetchval.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_update_rule_con_assign_to_dept_dependencia_inexistente_422(
+    client_with_conn,
+) -> None:
+    """PATCH que SÍ toca `assign_to_dept` se valida igual que en `create_rule`."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia_activa → False
+
+    resp = await client.patch(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}",
+        json={"assign_to_dept": "Dependencia Inventada"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "dependencia_desconocida"
+    mock_conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_rule_con_assign_to_dept_valido_ok(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, 1]  # permiso OK, dependencia_activa → True
+    mock_conn.fetchrow.return_value = make_rule_record(assign_to_dept="Ventanilla Nueva")
+
+    resp = await client.patch(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}",
+        json={"assign_to_dept": "Ventanilla Nueva"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["assign_to_dept"] == "Ventanilla Nueva"

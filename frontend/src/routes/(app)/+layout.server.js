@@ -20,6 +20,16 @@
  *     las páginas hijas vía `data.user`.
  *
  * Los tokens quedan en cookies httpOnly; nunca en el bundle cliente.
+ *
+ * Fase 3 (cierre de desfase API↔UI, /perfil): también carga el contexto de
+ * dependencia activa (`GET /auth/context`, E08/ADR-013) y el catálogo de
+ * dependencias del tenant (`GET /dependencias?activo=true`, mismo endpoint
+ * que ya usan `/bandeja` y `/admin/flujos/reasignacion`) para que el
+ * conmutador de dependencia del topbar (`AppLayout.svelte` →
+ * `DependencySwitcher.svelte`) esté disponible en CUALQUIER pantalla, no
+ * solo en `/perfil`. Ambas llamadas son best-effort (igual que `/auth/me`
+ * arriba): si fallan, `user.context`/`user.dependencias` quedan vacíos y el
+ * conmutador simplemente no se muestra — nunca bloquean la sesión.
  */
 
 import { redirect } from "@sveltejs/kit";
@@ -89,6 +99,37 @@ export async function load({ cookies, url, fetch }) {
   } catch {
     // Error de red hacia el gateway — se degrada sin permisos granulares
     user.permissions = [];
+  }
+
+  // --- Contexto de dependencia activa + catálogo de dependencias ---
+  // En paralelo, best-effort: ninguna de las dos bloquea la sesión si falla.
+  const authHeaders = {
+    Authorization: `Bearer ${accessToken}`,
+    "X-Tenant-Slug": user.tenant_slug ?? "",
+    ...(user.sub ? { "X-User-Id": user.sub } : {}),
+  };
+
+  const [contextResult, dependenciasResult] = await Promise.allSettled([
+    fetch(`${API_V1}/auth/context`, { headers: authHeaders }),
+    fetch(`${API_V1}/dependencias?activo=true`, { headers: authHeaders }),
+  ]);
+
+  user.context = null;
+  if (contextResult.status === "fulfilled" && contextResult.value.ok) {
+    user.context = await contextResult.value.json().catch(() => null);
+  }
+
+  user.dependencias = [];
+  if (dependenciasResult.status === "fulfilled" && dependenciasResult.value.ok) {
+    const raw = await dependenciasResult.value.json().catch(() => []);
+    // Proyección mínima: el conmutador solo necesita código+nombre+sigla
+    // para resolver la etiqueta legible de `context.active_depe_id`
+    // (`URDResponse.depe_id` referencia `dependencias.codigo`, no el `id` UUID).
+    user.dependencias = (Array.isArray(raw) ? raw : []).map((d) => ({
+      codigo: d.codigo,
+      nombre: d.nombre,
+      sigla: d.sigla,
+    }));
   }
 
   return { user };

@@ -87,6 +87,20 @@ class TransactionRequest(BaseModel):
     detalles: dict = Field(default_factory=dict)
 
 
+class RollbackRequest(BaseModel):
+    """Motivo de la reversión de la última asignación (RF-FLU-08).
+
+    Obligatorio: el modal del frontend (`RevertirModal.svelte`) ya lo exige antes
+    de habilitar el botón — hacerlo opcional en el backend dejaría esa exigencia
+    sin efecto (el motivo se perdería en el camino, como pasaba antes de este
+    contrato). A diferencia de `AnulacionDecision.observacion` (opcional, señalado
+    como debilidad): aquí el invariante "toda reversión declara por qué" se fija
+    donde manda, en el backend.
+    """
+
+    motivo: str = Field(..., min_length=5, max_length=500)
+
+
 class DevolucionRequest(BaseModel):
     to_dept: str = Field(..., min_length=1, max_length=100)
     causal: str = Field(..., min_length=1, max_length=15)

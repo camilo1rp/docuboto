@@ -127,4 +127,10 @@ export function clearSession() {
  * @property {string[]} roles
  * @property {string|null} tenant_slug
  * @property {string[]} permissions
+ * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
+ *   Contexto de dependencia activa (E08/ADR-013) — cargado por
+ *   `(app)/+layout.server.js`, consumido por `DependencySwitcher.svelte`.
+ * @property {Array<{codigo: number, nombre: string, sigla: string}>} [dependencias]
+ *   Catálogo mínimo de dependencias activas del tenant, para resolver la
+ *   etiqueta legible de `context.active_depe_id`.
  */

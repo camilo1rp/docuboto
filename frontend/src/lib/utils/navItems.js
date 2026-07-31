@@ -99,6 +99,16 @@ export const NAV_ITEMS = [
     permission: "PERM_PANU_CODI",
   },
   {
+    label: "Mi perfil",
+    href: ROUTES.perfil,
+    icon: "fas fa-id-badge",
+    // Sin `permission`/`role`: identidad, 2FA (TOTP) y credencial de firma
+    // personal son propias de CUALQUIER usuario autenticado — los tres
+    // routers de auth-service que consume (/me/totp, /me/signing-key,
+    // /context) solo exigen `get_caller` (identidad propia), sin permiso
+    // adicional (Fase 3, cierre de desfase API↔UI).
+  },
+  {
     label: "Archivo físico",
     href: ROUTES.archivoFisico,
     icon: "fas fa-box-archive",
@@ -115,13 +125,43 @@ export const NAV_ITEMS = [
     label: "Administración",
     href: ROUTES.admin,
     icon: "fas fa-cog",
-    role: "tenant_admin",
+    // I11 (revisión UX): antes gateado por `role: "tenant_admin"`, un eje
+    // INDEPENDIENTE del que aplica de verdad el backend. Todas las subrutas
+    // reales (/admin/plantillas, /admin/flujos/reglas, /admin/flujos/reasignacion)
+    // y el propio admin/+page.svelte exigen USUA_PERM_ADMIN — el rol Keycloak
+    // `tenant_admin` no otorga ese permiso automáticamente (no hay mapeo
+    // rol→permiso en auth-service, ADR-013: los permisos viven en
+    // `auth_permissions`/asignación por usuario). Con el gate por rol, un
+    // tenant_admin sin la asignación de permiso veía el enlace y aterrizaba en
+    // "Sin permisos de administración" — enlace muerto. Unificado al mismo eje
+    // que ya usa `admin/+page.svelte::ADMIN_AREAS`.
+    permission: "USUA_PERM_ADMIN",
   },
   {
     label: "Plantillas",
     href: ROUTES.adminPlantillas,
     icon: "fas fa-copy",
     // USUA_PERM_ADMIN: gestión de plantillas de contenido (T-12c, D-11)
+    permission: "USUA_PERM_ADMIN",
+  },
+  {
+    label: "Flujos y reglas",
+    href: ROUTES.adminFlujosReglas,
+    icon: "fas fa-diagram-project",
+    // USUA_PERM_ADMIN: administración de reglas de enrutamiento automático y
+    // reasignación en cascada (E05, /admin/flujos).
+    permission: "USUA_PERM_ADMIN",
+  },
+  {
+    label: "Claves de firma",
+    href: ROUTES.adminSeguridadClaves,
+    icon: "fas fa-key",
+    // USUA_PERM_ADMIN: gate REAL del backend en
+    // `POST /auth/admin/users/{user_id}/signing-key/revoke`
+    // (admin_router de services/auth-service/app/routers/signing_key.py,
+    // `dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))]`
+    // a nivel de router). Revocación administrativa de la credencial PKI
+    // de OTRO usuario (Fase 3, cierre de desfase API↔UI).
     permission: "USUA_PERM_ADMIN",
   },
 ];

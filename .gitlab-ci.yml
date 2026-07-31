@@ -210,6 +210,47 @@ pages:
   only:
     - main
 
+# ─── Deploy: avisar al sitio para que republique la documentación ─────────────
+# El sitio orpyca.com publica ESTA documentación en orpyca.com/docs: su pipeline
+# clona este repositorio y corre `mkdocs build` (ver su ADR-004). Como la
+# documentación vive aquí y el sitio está en otro proyecto, un commit nuestro no
+# dispara nada allá: hay que avisarle explícitamente.
+#
+# Solo se dispara cuando cambia algo que el sitio publica — la documentación o la
+# configuración de MkDocs —, no en cada commit de código.
+#
+# Requiere dos variables en Settings → CI/CD → Variables de ESTE proyecto:
+#   ORPYCAWEB_PROJECT_ID    → id numérico del proyecto del sitio en GitLab
+#   ORPYCAWEB_TRIGGER_TOKEN → token de disparo creado en el sitio
+#                             (Settings → CI/CD → Pipeline trigger tokens),
+#                             marcado como masked y protected
+#
+# Si las variables no están definidas el job no falla el pipeline: avisa y sale.
+# Así el repositorio sigue siendo usable por quien no despliegue el sitio.
+notify-website-docs:
+  stage: deploy
+  image: curlimages/curl:latest
+  interruptible: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - docs/**/*
+        - mkdocs.yml
+  script:
+    - |
+      if [ -z "$ORPYCAWEB_TRIGGER_TOKEN" ] || [ -z "$ORPYCAWEB_PROJECT_ID" ]; then
+        echo "AVISO: falta ORPYCAWEB_TRIGGER_TOKEN u ORPYCAWEB_PROJECT_ID."
+        echo "La documentación NO se republicará en orpyca.com/docs."
+        exit 0
+      fi
+    - |
+      curl --fail --silent --show-error --request POST \
+        --form "token=${ORPYCAWEB_TRIGGER_TOKEN}" \
+        --form "ref=main" \
+        --form "variables[MOTIVO]=docs actualizadas en ${CI_PROJECT_PATH}@${CI_COMMIT_SHORT_SHA}" \
+        "${CI_API_V4_URL}/projects/${ORPYCAWEB_PROJECT_ID}/trigger/pipeline"
+    - echo "Sitio avisado. La documentación se republica en orpyca.com/docs en unos minutos."
+
 # ─── Scheduled: Weekly dependency audit ───────────────────────────────────────
 # Audita dependencias y, si hay hallazgos, abre un MR con el informe (no push a main).
 dependency-audit:

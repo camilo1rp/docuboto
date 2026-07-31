@@ -122,7 +122,70 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
     expect(screen.getByText(/esto no significa que no haya anulaciones pendientes/i)).toBeTruthy();
   });
 
-  it("A3: el paginador no promete resultados inalcanzables cuando el backend trunca a 20", async () => {
+  // C3 (crítico, revisión UX): regresión de "un fallo de red se lee como
+  // 'no hay nada que resolver'". Antes, un 503 del proxy caía en el mismo
+  // `catch` que "cero resultados" y pintaba el EmptyState de "Ningún
+  // radicado coincide" — indistinguible de una búsqueda legítima sin
+  // coincidencias. Un aprobador que busca un radicado del que le avisaron
+  // por teléfono leería eso como "la solicitud no existe" y cerraría el
+  // caso: justo lo que el banner de esta pantalla dice combatir.
+  it("C3: un fallo de red al buscar NO se confunde con 'sin resultados' — estado de error persistente con reintento", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: "connection_error", detail: "Gateway no disponible." }),
+    }));
+    globalThis.fetch = fetchMock;
+    render(AnulacionesPage);
+
+    await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
+      target: { value: "2026-ICETEX-E-000999" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+
+    // El estado de error tiene su PROPIO título — nunca el de "sin resultados".
+    await waitFor(() =>
+      expect(screen.getByText(/no se pudo consultar el servidor de búsqueda/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/ningún radicado coincide con la búsqueda/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /reintentar/i })).toBeTruthy();
+  });
+
+  it("C3: tras un fallo, Reintentar vuelve a llamar al proxy con la misma búsqueda", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call += 1;
+      if (call === 1) {
+        return { ok: false, status: 503, json: async () => ({ error: "connection_error" }) };
+      }
+      return { ok: true, json: async () => ({ results: [], total: 0 }) };
+    });
+    globalThis.fetch = fetchMock;
+    render(AnulacionesPage);
+
+    await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
+      target: { value: "2026-ICETEX-E-000999" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    // Título del EmptyState de error (sin punto final) — único, a diferencia
+    // del mensaje de `searchError`, que además aparece bajo el campo y (sin
+    // `err.detail`) coincide textualmente con la descripción del EmptyState.
+    await waitFor(() =>
+      expect(screen.getByText("No se pudo consultar el servidor de búsqueda")).toBeTruthy(),
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: /reintentar/i }));
+
+    // La segunda llamada SÍ resuelve — y ahora el estado vacío legítimo
+    // (distinto del de error) es el que se muestra.
+    await waitFor(() =>
+      expect(screen.getByText(/ningún radicado coincide con la búsqueda/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText("No se pudo consultar el servidor de búsqueda")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("A3/menor: el resumen de la tabla dice el TOTAL real (searchTotal), no solo lo cargado, y el paginador no ofrece 'Siguiente' inalcanzable", async () => {
     const manyResults = Array.from({ length: 20 }, (_, i) => ({
       id: `22222222-2222-2222-2222-${String(i).padStart(12, "0")}`,
       tracking_number: `2026-ICETEX-E-0001${i}`,
@@ -145,9 +208,14 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
     });
     await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/se muestran los primeros 20 de 87 resultados/i)).toBeTruthy(),
-    );
+    // Menor (revisión UX): antes la tabla decía "1–20 de 20" (contradiciendo
+    // el párrafo "primeros 20 de 87") — ahora el total real se dice UNA sola
+    // vez, en el resumen de la propia tabla.
+    await waitFor(() => expect(screen.getByText(/1.20 de 87/)).toBeTruthy());
+    expect(screen.getByText(/hay más resultados de los que se muestran aquí/i)).toBeTruthy();
+    // Sin paginación real conectada (el backend siempre trae página 1, size
+    // 20): no debe ofrecerse un botón "Página siguiente" que no hace nada.
+    expect(screen.queryByRole("button", { name: /página siguiente/i })).toBeNull();
   });
 
   it("A5b: resuelve el estado por fila en paralelo — 'Ver anulación' solo aparece donde hay solicitud", async () => {
@@ -219,6 +287,77 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
     expect(
       screen.queryByRole("button", { name: /ver anulación del radicado 2026-icetex-e-000456/i }),
     ).toBeNull();
+  });
+
+  // Menor (revisión UX): si la consulta de estado de UNA fila falla, el chip
+  // decía "No se pudo consultar" pero antes no había ningún botón — ni
+  // reintento ni acceso al detalle — para esa fila.
+  it("menor: una fila cuyo estado falló ofrece 'Reintentar' (no queda sin botón ni acceso)", async () => {
+    const ROW_ID = "55555555-5555-5555-5555-555555555555";
+    let rowCalls = 0;
+    const fetchMock = vi.fn(async (input) => {
+      const u = String(input);
+      if (u.startsWith("/anulaciones/api/buscar")) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: [
+              {
+                id: ROW_ID,
+                tracking_number: "2026-ICETEX-E-000789",
+                doc_type: "E",
+                subject: "Radicado con backend inestable",
+              },
+            ],
+            total: 1,
+          }),
+        };
+      }
+      if (u.startsWith(`/anulaciones/api/${ROW_ID}`)) {
+        rowCalls += 1;
+        if (rowCalls === 1) {
+          return { ok: false, status: 500, json: async () => ({ error: "internal_error" }) };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "a-9",
+            radicado_id: ROW_ID,
+            estado: "solicitada",
+            causal: "ERROR_RADICACION",
+            motivo: "m",
+            solicitado_por: "u-2",
+            solicitado_at: "2026-07-01T10:00:00Z",
+            decidido_por: null,
+            decidido_at: null,
+            observacion: null,
+          }),
+        };
+      }
+      throw new Error(`fetch no esperado: ${u}`);
+    });
+    globalThis.fetch = fetchMock;
+
+    render(AnulacionesPage);
+
+    await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
+      target: { value: "inestable" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+
+    await waitFor(() => expect(screen.getByText("No se pudo consultar")).toBeTruthy());
+    const retryBtn = screen.getByRole("button", {
+      name: /reintentar consultar la anulación del radicado 2026-icetex-e-000789/i,
+    });
+    expect(retryBtn).toBeTruthy();
+
+    await fireEvent.click(retryBtn);
+
+    await waitFor(() => expect(screen.getByText("Pendiente de decisión")).toBeTruthy());
+    expect(
+      screen.getByRole("button", { name: /ver anulación del radicado 2026-icetex-e-000789/i }),
+    ).toBeTruthy();
   });
 
   it("busca, ve el estado de una anulación pendiente y exige motivo antes de aprobar", async () => {

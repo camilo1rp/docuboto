@@ -36,6 +36,12 @@
   Props nuevas de la tabla (todas opt-in, default = comportamiento actual):
     tableId            string|null  — identificador estable de esta tabla, requerido
                                        para persistir columnas/vistas (p. ej. "bandeja-entrada")
+    disableNav          boolean (default false) — oculta los botones ‹anterior/siguiente›
+                                       mientras conserva el resumen "X–Y de Z"; para
+                                       consumidores que conocen el `totalCount` real del
+                                       backend pero SOLO cargaron una página fija (sin
+                                       `on:pageChange` conectado a un refetch) — evita un
+                                       botón "Siguiente" que no hace nada (ver anulaciones/+page.svelte)
     enableFilters       boolean (default false)
     enableSort          boolean (default false)
     enableExport        boolean (default false) — exporta displayRows visibles a CSV
@@ -165,7 +171,7 @@
 <script>
   import EmptyState from "./EmptyState.svelte";
   import Button from "./Button.svelte";
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
   import { sessionUser } from "$lib/stores/auth.js";
   import { buildCsv, downloadCsv } from "$lib/utils/csvExport.js";
   import { buildStorageKey, readJson, writeJson } from "$lib/utils/tablePersistence.js";
@@ -185,6 +191,7 @@
   // --- Capacidades nuevas (todas opt-in) ---------------------------------
   /** Identificador estable de esta tabla — requerido para persistir columnas/vistas. */
   export let tableId = /** @type {string|null} */ (null);
+  export let disableNav = false;
   export let enableFilters = false;
   export let enableSort = false;
   export let enableExport = false;
@@ -216,10 +223,21 @@
   }
 
   // --- Región aria-live (anuncia filtro/orden/selección/edición) ---------
+  // I5b (revisión UX): se limpia sola tras ~1s (mismo patrón que
+  // WorkflowBoard.svelte) — dos acciones idénticas seguidas (p. ej. exportar
+  // dos veces la misma tabla) repetían el mismo texto y el lector de
+  // pantalla podía no anunciar la segunda vez sin este reinicio.
   let liveMessage = "";
+  let liveMessageTimer;
   function announce(message) {
     liveMessage = message;
+    clearTimeout(liveMessageTimer);
+    liveMessageTimer = setTimeout(() => {
+      liveMessage = "";
+    }, 1000);
   }
+
+  onDestroy(() => clearTimeout(liveMessageTimer));
 
   // --- Persistencia (columnas visibles + vistas guardadas) ---------------
   // Clave espaciada por tenant + usuario + tabla (ver tablePersistence.js).
@@ -352,13 +370,27 @@
 
   /** @type {Set<string|number>} */
   let selectedKeys = new Set();
-  let selectionInitialized = false;
-  // Solo se siembra desde `selected` UNA vez (montaje/primer uso): tras eso,
-  // esta tabla es la fuente de verdad de la selección y la propaga vía
-  // `bind:selected` + `selectionChange`. Documentado como límite conocido.
-  $: if (enableSelection && !selectionInitialized) {
-    selectionInitialized = true;
-    selectedKeys = new Set(selected ?? []);
+  // Huella (firma por contenido, sin importar el orden) de la última `selected`
+  // que esta tabla ya reflejó en `selectedKeys`. Antes esto se sembraba UNA
+  // sola vez (flag `selectionInitialized`) y luego la tabla ignoraba cambios
+  // externos de `selected` — si el padre limpiaba/reponía la prop (p. ej. tras
+  // una nueva búsqueda), la tabla seguía mostrando la selección vieja mientras
+  // el padre creía que ya no había nada seleccionado: "Vincular (4)" con 0
+  // filas reales marcadas. Ahora se compara CONTENIDO en cada cambio de
+  // `selected` y se re-siembra si difiere. No hay bucle: `emitSelection()`
+  // asigna `selected = [...selectedKeys]`, lo que sí dispara este bloque de
+  // nuevo, pero la firma calculada coincidirá con `lastSelectedSignature`
+  // (se fija ANTES de que `selectedKeys` cambie más), así que no se re-siembra.
+  let lastSelectedSignature = /** @type {string | null} */ (null);
+  function signatureOf(list) {
+    return [...(list ?? [])].map(String).sort().join(" ");
+  }
+  $: if (enableSelection) {
+    const incomingSignature = signatureOf(selected);
+    if (incomingSignature !== lastSelectedSignature) {
+      lastSelectedSignature = incomingSignature;
+      selectedKeys = new Set(selected ?? []);
+    }
   }
 
   $: currentPageKeys = displayRows.map((row, idx) => resolveRowKey(row, idx));
@@ -447,13 +479,25 @@
   }
 
   // --- Exportación CSV -------------------------------------------------------
+  // I6 (revisión UX): `exportCsv` SIEMPRE serializó `displayRows` — la página
+  // visible, no el `totalCount` del backend — pero el botón decía "Exportar
+  // CSV" a secas junto a un resumen "1–20 de 137": quien lo pulsaba se
+  // llevaba 20 filas creyendo que exportó las 137. La etiqueta ahora declara
+  // el alcance real y, si hay más filas en el backend que las visibles, el
+  // anuncio accesible también lo advierte (no solo el texto del botón).
+  $: exportLabel = `Exportar página (${displayRows.length})`;
+
   function exportCsv() {
     // Disparado únicamente por un clic real (nunca en SSR: no hay eventos DOM
     // en el servidor), así que `downloadCsv` puede tocar `document`/`URL` sin
     // guardia adicional.
     const csv = buildCsv(visibleColumns, displayRows);
     downloadCsv(csv, exportFilename);
-    announce(`Exportadas ${displayRows.length} filas a CSV.`);
+    announce(
+      totalCount > displayRows.length
+        ? `Exportadas ${displayRows.length} filas de ${totalCount} a CSV (solo la página visible).`
+        : `Exportadas ${displayRows.length} filas a CSV.`,
+    );
   }
 
   // --- Edición rápida en celda ---------------------------------------------
@@ -471,7 +515,12 @@
     const oldValue = row[col.key];
     dispatch("cellEdit", { row, rowIdx, key: col.key, value: editValue, oldValue });
     editingCell = null;
-    announce(`Celda ${col.label} actualizada.`);
+    // I7 (revisión UX): DataTable NO muta `rows` — es el consumidor quien
+    // confirma (o revierte) el cambio contra el gateway (ver doc del evento
+    // `cellEdit` arriba). Anunciar "actualizada" aquí afirmaba un éxito que
+    // todavía no ocurrió: si el gateway rechaza, la celda vuelve al valor
+    // anterior pero el lector de pantalla ya dijo que se guardó.
+    announce(`Cambio en ${col.label} enviado…`);
   }
 
   function cancelEdit() {
@@ -583,7 +632,7 @@
 
       {#if enableExport}
         <Button variant="secondary" size="sm" icon="fas fa-file-csv" on:click={exportCsv}>
-          Exportar CSV
+          {exportLabel}
         </Button>
       {/if}
 
@@ -604,6 +653,7 @@
           {#if enableSelection}
             <th scope="col" class="op-datatable__th op-datatable__th--select">
               <input
+                class="op-datatable__checkbox"
                 type="checkbox"
                 aria-label="Seleccionar todas las filas de esta página"
                 checked={headerCheckboxState === "all"}
@@ -635,12 +685,20 @@
           {/each}
         </tr>
         {#if enableFilters && filtersOpen}
+          <!--
+            I9 (revisión UX): esta fila NO es de encabezados — es un
+            formulario inline de filtros. Con `<th scope="col">` cada celda
+            de datos quedaba asociada a DOS encabezados de columna (el real y
+            este), rompiendo la navegación por tabla de los lectores de
+            pantalla. `<td>` es legal dentro de `<thead>` y no participa del
+            modelo de encabezados.
+          -->
           <tr id="{instanceId}-filter-row" class="op-datatable__filter-row">
             {#if enableSelection}
-              <th scope="col" class="op-datatable__th op-datatable__th--select"></th>
+              <td class="op-datatable__td op-datatable__td--select"></td>
             {/if}
             {#each visibleColumns as col (col.key)}
-              <th scope="col" class="op-datatable__th op-datatable__filter-th">
+              <td class="op-datatable__td op-datatable__filter-th">
                 {#if col.filterType === "select"}
                   <select
                     class="op-datatable__filter-select"
@@ -686,7 +744,7 @@
                     on:input={(e) => setFilter(col.key, e.currentTarget.value)}
                   />
                 {/if}
-              </th>
+              </td>
             {/each}
           </tr>
         {/if}
@@ -719,6 +777,7 @@
                 {@const key = resolveRowKey(row, rowIdx)}
                 <td class="op-datatable__td op-datatable__td--select">
                   <input
+                    class="op-datatable__checkbox"
                     type="checkbox"
                     aria-label={`Seleccionar fila ${rowIdx + 1}`}
                     checked={selectedKeys.has(key)}
@@ -781,31 +840,33 @@
         {/if}
       </span>
 
-      <div class="op-datatable__pages">
-        <button
-          type="button"
-          class="op-datatable__page-btn"
-          disabled={!hasPrev}
-          aria-label="Página anterior"
-          on:click={() => goTo(page - 1)}
-        >
-          <i class="fas fa-chevron-left" aria-hidden="true"></i>
-        </button>
+      {#if !disableNav}
+        <div class="op-datatable__pages">
+          <button
+            type="button"
+            class="op-datatable__page-btn"
+            disabled={!hasPrev}
+            aria-label="Página anterior"
+            on:click={() => goTo(page - 1)}
+          >
+            <i class="fas fa-chevron-left" aria-hidden="true"></i>
+          </button>
 
-        <span class="op-datatable__page-info" aria-live="polite">
-          {page} / {totalPages}
-        </span>
+          <span class="op-datatable__page-info" aria-live="polite">
+            {page} / {totalPages}
+          </span>
 
-        <button
-          type="button"
-          class="op-datatable__page-btn"
-          disabled={!hasNext}
-          aria-label="Página siguiente"
-          on:click={() => goTo(page + 1)}
-        >
-          <i class="fas fa-chevron-right" aria-hidden="true"></i>
-        </button>
-      </div>
+          <button
+            type="button"
+            class="op-datatable__page-btn"
+            disabled={!hasNext}
+            aria-label="Página siguiente"
+            on:click={() => goTo(page + 1)}
+          >
+            <i class="fas fa-chevron-right" aria-hidden="true"></i>
+          </button>
+        </div>
+      {/if}
     </nav>
   {/if}
 </div>
@@ -840,6 +901,12 @@
         border: 1px solid var(--op-border);
         border-radius: var(--op-radius-sm);
         min-height: 36px;
+
+        /* I5 (revisión UX): objetivo táctil >=44px en dispositivos táctiles
+           (mismo patrón que Button/FormField/WorkflowCard/RevertirModal). */
+        @media (pointer: coarse) {
+          min-height: 44px;
+        }
 
         &::-webkit-details-marker {
           display: none;
@@ -1066,6 +1133,25 @@
 
       &--select {
         width: 40px;
+
+        @media (pointer: coarse) {
+          min-height: 44px;
+        }
+      }
+    }
+
+    /* I5 (revisión UX): las casillas de selección no tenían dimensión propia
+       — con el hitbox nativo del navegador (~13px) muy por debajo del
+       mínimo táctil. Se dimensionan siempre y crecen al mínimo 44px en
+       dispositivos táctiles (mismo patrón que RevertirModal). */
+    &__checkbox {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+
+      @media (pointer: coarse) {
+        width: 24px;
+        height: 24px;
       }
     }
 
@@ -1148,6 +1234,14 @@
       cursor: pointer;
       color: var(--op-text-secondary);
       font-size: var(--op-font-xs);
+
+      /* I5 (revisión UX): 28×28px es el único objetivo táctil de todo el
+         sistema de diseño que no llegaba a 44px en dispositivos táctiles
+         (mismo patrón que Button/FormField/WorkflowCard/RevertirModal). */
+      @media (pointer: coarse) {
+        min-width: 44px;
+        min-height: 44px;
+      }
 
       &:not(:disabled):hover {
         background: var(--op-surface);

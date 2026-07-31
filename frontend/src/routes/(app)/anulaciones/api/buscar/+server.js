@@ -18,12 +18,10 @@
  * para que el aprobador localice el radicado por número de radicado o texto
  * y luego consulte su estado de anulación uno por uno vía `/anulaciones/api/[id]`.
  *
- * Proxy PROPIO (no se reutiliza `/busqueda/api`): ese proxy mapea
- * `data.items ?? data.results ?? []`, pero `GET /search` responde
- * `{ query, total, hits, page, size }` — la clave es `hits`, no
- * `items`/`results`. Reusarlo tal cual habría devuelto una lista vacía
- * SIEMPRE (bug preexistente, fuera de alcance de esta tarea — se reporta,
- * no se toca `/busqueda/api`). Este proxy lee la clave correcta.
+ * Proxy PROPIO (no se reutiliza `/busqueda/api`): esta ruta tiene su propio
+ * contrato de respuesta (`{ results, total }`, distinto del `{ items }` que
+ * consume la pantalla /busqueda) y su propia validación de `q` — no porque
+ * `/busqueda/api` esté roto (ya lee `data.hits` primero).
  *
  * GET → { results: SearchHit[], total: number }
  *   Parámetros: q (≥2 caracteres, obligatorio)

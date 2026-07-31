@@ -35,6 +35,7 @@
   import SidebarNav from "./SidebarNav.svelte";
   import BreadcrumbBar from "./BreadcrumbBar.svelte";
   import AssistantDock from "./AssistantDock.svelte";
+  import DependencySwitcher from "$lib/components/features/perfil/DependencySwitcher.svelte";
   import {
     sidebarCollapsed,
     sidebarMobileOpen,
@@ -256,6 +257,19 @@
       >
         <i class="fas fa-robot" aria-hidden="true"></i>
       </button>
+
+      <!-- Conmutador de dependencia activa (E08/ADR-013) — visible en
+           cualquier pantalla; oculto si el usuario solo tiene una
+           dependencia o si el contexto no cargó (best-effort, ver
+           (app)/+layout.server.js). -->
+      {#if $sessionUser?.context}
+        <DependencySwitcher
+          compact
+          activeDepeId={$sessionUser.context.active_depe_id}
+          availableDepts={$sessionUser.context.available_depts ?? []}
+          dependencias={$sessionUser.dependencias ?? []}
+        />
+      {/if}
 
       <!-- Avatar / nombre del usuario -->
       {#if $sessionUser}

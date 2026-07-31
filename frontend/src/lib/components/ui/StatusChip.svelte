@@ -46,7 +46,17 @@
   $: displayLabel = label || status.charAt(0).toUpperCase() + status.slice(1);
 </script>
 
-<span class="op-status-chip op-status-chip--{variant}" aria-label="Estado: {displayLabel}">
+<!--
+  Menor (revisión UX): `aria-label` sobre un <span> sin `role` explícito
+  queda sobre el rol implícito ARIA `generic`, donde `aria-label` está
+  PROHIBIDO por ARIA 1.2 y los lectores de pantalla lo ignoran (mismo
+  defecto ya corregido en admin/+page.svelte, M11). El texto ya es visible
+  (`displayLabel` se renderiza como contenido), así que no hace falta ningún
+  nombre accesible adicional — se retira el `aria-label` en vez de añadir un
+  `role` que cambiaría la semántica (p. ej. `status` dispararía anuncios de
+  región viva no deseados en un chip estático).
+-->
+<span class="op-status-chip op-status-chip--{variant}">
   {#if dot}
     <span class="op-status-chip__dot" aria-hidden="true"></span>
   {/if}

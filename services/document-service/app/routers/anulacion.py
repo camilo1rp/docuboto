@@ -60,7 +60,8 @@ async def solicitar_anulacion(
     """Solicita la anulación (paso 1). No-read-up: 404 neutro si el radicado no
     existe o supera el clearance del llamante (RF-SEG-08)."""
     clearance = await resolve_caller_clearance(conn, _actor(request))
-    return await AnulacionService(conn).solicitar(document_id, payload, _actor(request), clearance)
+    service = AnulacionService(conn, tenant_slug=_tenant_slug(request))
+    return await service.solicitar(document_id, payload, _actor(request), clearance)
 
 
 @router.get("/{document_id}/anulacion", response_model=AnulacionResponse)
@@ -95,13 +96,8 @@ async def aprobar_anulacion(
     radicado que no se puede ver sería mutar su ciclo de vida sin autoridad
     (Ley 594/2000 art. 28)."""
     clearance = await resolve_caller_clearance(conn, _actor(request))
-    return await AnulacionService(conn, redis).aprobar(
-        document_id,
-        payload,
-        _actor(request),
-        clearance,
-        tenant_slug=_tenant_slug(request),
-    )
+    service = AnulacionService(conn, redis, tenant_slug=_tenant_slug(request))
+    return await service.aprobar(document_id, payload, _actor(request), clearance)
 
 
 @router.post(
@@ -118,4 +114,5 @@ async def rechazar_anulacion(
 ) -> AnulacionResponse:
     """Rechaza la anulación (paso 2). Mismo gate de clearance que aprobar."""
     clearance = await resolve_caller_clearance(conn, _actor(request))
-    return await AnulacionService(conn).rechazar(document_id, payload, _actor(request), clearance)
+    service = AnulacionService(conn, tenant_slug=_tenant_slug(request))
+    return await service.rechazar(document_id, payload, _actor(request), clearance)

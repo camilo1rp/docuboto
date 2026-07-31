@@ -43,6 +43,8 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import SignAssistant from "$lib/components/features/firmas/SignAssistant.svelte";
+  import CertificadoDrawer from "$lib/components/features/firmas/CertificadoDrawer.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -208,53 +210,51 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Acción: Firmar turno activo
+  // Acción: Firmar turno activo — asistente Stepper (Confirmar → OTP → Comprobante)
   // ---------------------------------------------------------------------------
-  let signLoading = false;
   // Confirmación explícita antes de toda escritura irreversible (frontend/CLAUDE.md):
   // firma electrónica con efectos jurídicos (E06). Cierra el Drawer antes de abrir
-  // el Modal para no apilar focus traps (mismo patrón que abrirModalRechazar).
-  let modalConfirmSign = false;
+  // el asistente para no apilar focus traps (mismo patrón que abrirModalRechazar).
+  let signAssistantOpen = false;
 
   function abrirConfirmSign() {
     if (!selectedDetail) return;
     drawerOpen = false;
-    modalConfirmSign = true;
+    signAssistantOpen = true;
   }
 
-  function cerrarConfirmSign() {
-    modalConfirmSign = false;
+  function cerrarSignAssistant() {
+    signAssistantOpen = false;
     tick().then(() => tituloEl?.focus());
   }
 
-  async function firmarTurno() {
-    if (!selectedDetail) return;
+  /** @param {CustomEvent<import('$lib/types/api.js').SignatureRequestResponse>} e */
+  function onDocumentoFirmado(e) {
+    const firmado = e.detail;
+    notifySuccess("Documento firmado correctamente.");
+    signAssistantOpen = false;
+    closeDrawer();
+    // Eliminar de la lista local; el item ya no está en el turno del usuario
+    pendientes = pendientes.filter((p) => p.solicitud_id !== firmado?.solicitud_id);
+    total = Math.max(0, total - 1);
+    selectedIds.delete(firmado?.solicitud_id ?? "");
+    selectedIds = selectedIds;
+  }
 
-    modalConfirmSign = false;
-    signLoading = true;
-    try {
-      const res = await fetch(
-        `/firmas/api/${encodeURIComponent(selectedDetail.solicitud_id)}/sign`,
-        { method: "POST" },
-      );
-      const result = await res.json();
+  // ---------------------------------------------------------------------------
+  // Certificado de firma (Drawer con apariencia de certificado)
+  // ---------------------------------------------------------------------------
+  let certDrawerOpen = false;
+  /** @type {string|null} */
+  let certFirmaId = null;
 
-      if (res.ok) {
-        notifySuccess("Documento firmado correctamente.");
-        closeDrawer();
-        // Eliminar de la lista local; el item ya no está en el turno del usuario
-        pendientes = pendientes.filter((p) => p.solicitud_id !== selectedDetail?.solicitud_id);
-        total = Math.max(0, total - 1);
-        selectedIds.delete(selectedDetail?.solicitud_id ?? "");
-        selectedIds = selectedIds;
-      } else {
-        handleSignError(res.status, result);
-      }
-    } catch {
-      notifyError("No se pudo conectar al servidor de firmas.");
-    } finally {
-      signLoading = false;
-    }
+  function verCertificado(/** @type {string} */ firmaId) {
+    certFirmaId = firmaId;
+    certDrawerOpen = true;
+  }
+
+  function cerrarCertDrawer() {
+    certDrawerOpen = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -522,78 +522,78 @@
        Cuando la bandeja está vacía mostramos SOLO el EmptyState propio (más claro que
        el genérico interno del DataTable, que menciona "criterios" inexistentes aquí). -->
   {#if loading || pendientes.length > 0}
-  <div class="firmas-table-wrap">
-    <DataTable
-      columns={TABLE_COLUMNS}
-      rows={pendientes}
-      totalCount={total}
-      bind:page={currentPage}
-      {pageSize}
-      {loading}
-      caption="Bandeja de solicitudes de firma pendientes"
-      on:pageChange={onPageChange}
-    >
-      <svelte:fragment slot="row" let:row>
-        <!-- Checkbox de selección (batch) -->
-        <td class="op-datatable__td firmas-table__check">
-          {#if hasFirma}
-            <label class="firmas-table__check-label">
-              <input
-                type="checkbox"
-                class="firmas-table__check-input"
-                checked={selectedIds.has(row.solicitud_id)}
-                on:change={() => toggleRow(row.solicitud_id)}
-                aria-label="Seleccionar solicitud {row.titulo ?? row.solicitud_id}"
-              />
-            </label>
-          {:else}
-            <span aria-hidden="true"></span>
-          {/if}
-        </td>
+    <div class="firmas-table-wrap">
+      <DataTable
+        columns={TABLE_COLUMNS}
+        rows={pendientes}
+        totalCount={total}
+        bind:page={currentPage}
+        {pageSize}
+        {loading}
+        caption="Bandeja de solicitudes de firma pendientes"
+        on:pageChange={onPageChange}
+      >
+        <svelte:fragment slot="row" let:row>
+          <!-- Checkbox de selección (batch) -->
+          <td class="op-datatable__td firmas-table__check">
+            {#if hasFirma}
+              <label class="firmas-table__check-label">
+                <input
+                  type="checkbox"
+                  class="firmas-table__check-input"
+                  checked={selectedIds.has(row.solicitud_id)}
+                  on:change={() => toggleRow(row.solicitud_id)}
+                  aria-label="Seleccionar solicitud {row.titulo ?? row.solicitud_id}"
+                />
+              </label>
+            {:else}
+              <span aria-hidden="true"></span>
+            {/if}
+          </td>
 
-        <!-- Título / objeto -->
-        <td class="op-datatable__td firmas-table__titulo">
-          <span class="firmas-table__titulo-text">{row.titulo ?? "—"}</span>
-          <span class="firmas-table__objeto-id">{row.objeto_id}</span>
-        </td>
+          <!-- Título / objeto -->
+          <td class="op-datatable__td firmas-table__titulo">
+            <span class="firmas-table__titulo-text">{row.titulo ?? "—"}</span>
+            <span class="firmas-table__objeto-id">{row.objeto_id}</span>
+          </td>
 
-        <!-- Tipo de objeto -->
-        <td class="op-datatable__td">
-          <span class="firmas-table__tipo">
-            {TIPO_LABEL[row.objeto_tipo] ?? row.objeto_tipo}
-          </span>
-        </td>
+          <!-- Tipo de objeto -->
+          <td class="op-datatable__td">
+            <span class="firmas-table__tipo">
+              {TIPO_LABEL[row.objeto_tipo] ?? row.objeto_tipo}
+            </span>
+          </td>
 
-        <!-- Turno (orden) -->
-        <td class="op-datatable__td firmas-table__orden">
-          <span class="firmas-table__turno" aria-label="Turno {row.orden}">
-            <i class="fas fa-user-check" aria-hidden="true"></i>
-            Turno {row.orden}
-          </span>
-        </td>
+          <!-- Turno (orden) -->
+          <td class="op-datatable__td firmas-table__orden">
+            <span class="firmas-table__turno" aria-label="Turno {row.orden}">
+              <i class="fas fa-user-check" aria-hidden="true"></i>
+              Turno {row.orden}
+            </span>
+          </td>
 
-        <!-- Fecha recibida -->
-        <td class="op-datatable__td firmas-table__date">
-          <time datetime={row.created_at} title={row.created_at}>
-            {formatDate(row.created_at)}
-          </time>
-        </td>
+          <!-- Fecha recibida -->
+          <td class="op-datatable__td firmas-table__date">
+            <time datetime={row.created_at} title={row.created_at}>
+              {formatDate(row.created_at)}
+            </time>
+          </td>
 
-        <!-- Acciones -->
-        <td class="op-datatable__td firmas-table__actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="fas fa-eye"
-            on:click={() => openDetail(row)}
-            aria-label="Ver y firmar solicitud {row.titulo ?? row.solicitud_id}"
-          >
-            Ver / Firmar
-          </Button>
-        </td>
-      </svelte:fragment>
-    </DataTable>
-  </div>
+          <!-- Acciones -->
+          <td class="op-datatable__td firmas-table__actions">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="fas fa-eye"
+              on:click={() => openDetail(row)}
+              aria-label="Ver y firmar solicitud {row.titulo ?? row.solicitud_id}"
+            >
+              Ver / Firmar
+            </Button>
+          </td>
+        </svelte:fragment>
+      </DataTable>
+    </div>
   {:else if !data.loadError}
     <EmptyState
       icon="fas fa-signature"
@@ -683,6 +683,16 @@
                 {#if turno.comentario}
                   <p class="firma-chain__comentario">{turno.comentario}</p>
                 {/if}
+                {#if turno.estado === "firmado" && turno.firma_id}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="fas fa-certificate"
+                    on:click={() => verCertificado(/** @type {string} */ (turno.firma_id))}
+                  >
+                    Ver certificado
+                  </Button>
+                {/if}
               </div>
             </li>
           {/each}
@@ -696,12 +706,7 @@
         <hr class="firma-detail__divider" aria-hidden="true" />
         <p class="firma-detail__actions-title">Acciones sobre tu turno</p>
         <div class="firma-detail__actions-row">
-          <Button
-            variant="primary"
-            icon="fas fa-signature"
-            loading={signLoading}
-            on:click={abrirConfirmSign}
-          >
+          <Button variant="primary" icon="fas fa-signature" on:click={abrirConfirmSign}>
             Firmar
           </Button>
           <Button
@@ -757,28 +762,26 @@
 </Modal>
 
 <!-- =========================================================================
-     Modal: confirmar firma del turno activo (acción irreversible, E06)
+     Asistente de firma del turno activo — Confirmar → OTP → Comprobante
+     (acción irreversible, E06 Inc.2/RF-FIR-13). Se remonta con {#key} por
+     solicitud para partir siempre de un estado interno limpio.
      ========================================================================= -->
-<Modal
-  open={modalConfirmSign}
-  title="Confirmar firma"
-  size="sm"
-  on:close={cerrarConfirmSign}
->
-  <div class="firma-modal-form">
-    <p class="firma-modal-form__info">
-      <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
-      Vas a firmar electrónicamente esta solicitud. La firma tiene efectos jurídicos
-      y no se puede deshacer.
-    </p>
-  </div>
-  <svelte:fragment slot="footer">
-    <Button variant="ghost" on:click={cerrarConfirmSign}>Cancelar</Button>
-    <Button variant="primary" icon="fas fa-signature" loading={signLoading} on:click={firmarTurno}>
-      Confirmar firma
-    </Button>
-  </svelte:fragment>
-</Modal>
+{#if selectedDetail}
+  {#key selectedDetail.solicitud_id}
+    <SignAssistant
+      open={signAssistantOpen}
+      solicitudId={selectedDetail.solicitud_id}
+      titulo={selectedDetail.titulo ?? selectedDetail.objeto_id}
+      on:close={cerrarSignAssistant}
+      on:signed={onDocumentoFirmado}
+    />
+  {/key}
+{/if}
+
+<!-- =========================================================================
+     Drawer: certificado de una firma individual (apariencia de certificado)
+     ========================================================================= -->
+<CertificadoDrawer open={certDrawerOpen} firmaId={certFirmaId} on:close={cerrarCertDrawer} />
 
 <!-- =========================================================================
      Modal: confirmar firma en lote (acción irreversible, E06)
@@ -793,8 +796,12 @@
     <p class="firma-modal-form__info">
       <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
       Vas a firmar electrónicamente {selectedCount}
-      {selectedCount === 1 ? "solicitud" : "solicitudes"} de una sola vez. La firma tiene
-      efectos jurídicos y no se puede deshacer.
+      {selectedCount === 1 ? "solicitud" : "solicitudes"} de una sola vez. La firma tiene efectos jurídicos
+      y no se puede deshacer.
+    </p>
+    <p class="firma-modal-form__hint">
+      Los documentos que requieran un código de verificación (reservados/clasificados) se omitirán
+      del lote — fírmalos individualmente desde "Ver / Firmar" para completar la verificación.
     </p>
   </div>
   <svelte:fragment slot="footer">
@@ -1198,6 +1205,12 @@
       border: 1px solid var(--op-warning);
       border-radius: var(--op-radius-sm);
       padding: var(--op-space-3);
+      margin: 0;
+    }
+
+    &__hint {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
       margin: 0;
     }
   }

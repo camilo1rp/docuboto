@@ -31,6 +31,8 @@
 -->
 <script>
   import { onMount, tick } from "svelte";
+  import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
@@ -44,6 +46,10 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
+  import HojaRuta from "$lib/components/workflow/HojaRuta.svelte";
+  import WorkflowBoard from "$lib/components/workflow/WorkflowBoard.svelte";
+  import AsignarModal from "$lib/components/workflow/AsignarModal.svelte";
+  import DisposicionRadicadoDrawer from "$lib/components/features/disposicion/DisposicionRadicadoDrawer.svelte";
   import { NIVEL_OPTIONS, getNivelChip } from "$lib/utils/nivelSeguridad.js";
   import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
 
@@ -59,11 +65,81 @@
   let total = data.total ?? 0;
   let loading = false;
 
-  // Filtros activos (inicializados desde los query params del server load)
-  let filterDocType = data.initialFilters?.docType ?? "";
-  let filterStatus = data.initialFilters?.status ?? "";
-  let currentPage = data.initialFilters?.page ?? 1;
+  // ---------------------------------------------------------------------------
+  // T-Fase1: conmutador de vista (tablero de distribución / lista / pendientes
+  // del equipo). Resuelto EN SSR por query param (?vista=) — ver
+  // bandeja/+page.server.js. Los enlaces de las pestañas son <a href="…">
+  // normales (ver `vistaHref`, que preserva doc_type/status/page): SvelteKit
+  // los intercepta como navegación cliente (sin recarga completa) pero
+  // vuelven a ejecutar `load`, así el deep-link siempre resuelve el mismo
+  // estado en servidor y cliente.
+  // ---------------------------------------------------------------------------
+  $: vista = data.vista ?? "tablero";
+  $: dependenciaOptions = (data.dependencias ?? []).map((d) => ({
+    value: d.nombre,
+    label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
+  }));
+
+  /**
+   * href de las pestañas del conmutador de vista: preserva doc_type/status/
+   * page vigentes en la URL y solo cambia `vista` — así ir de Lista a
+   * Tablero y volver a Lista NO descarta los filtros que el operador ya
+   * había puesto (hallazgo de revisión UX Fase 1, #1).
+   * @param {string} targetVista
+   */
+  function vistaHref(targetVista) {
+    const params = new URLSearchParams($page.url.searchParams);
+    params.set("vista", targetVista);
+    return `?${params.toString()}`;
+  }
+
+  // Filtros activos — resincronizados desde la URL (D-05, mismo patrón que
+  // expedientes/+page.svelte): así atrás/adelante del navegador y una
+  // recarga completa siempre reflejan el mismo estado que ve el servidor.
+  let filterDocType = "";
+  let filterStatus = "";
+  let currentPage = 1;
   const pageSize = 20;
+
+  /** @param {{docType?: string, status?: string, page?: number}|undefined} filters */
+  function syncFiltersFromUrl(filters) {
+    filterDocType = filters?.docType ?? "";
+    filterStatus = filters?.status ?? "";
+    currentPage = filters?.page ?? 1;
+  }
+
+  $: syncFiltersFromUrl(data.initialFilters);
+
+  /**
+   * Construye la URL de navegación para un cambio de filtro/página,
+   * preservando el resto de los parámetros vigentes (p. ej. `vista`).
+   * Es SOLO para reflejar el estado en la URL (deep-link/bookmarkeable) —
+   * el dato en pantalla lo trae `loadDocuments()` (endpoint local
+   * /bandeja/api, D-05). No se leen los datos que devuelve el `load()` que
+   * este `goto()` vuelve a ejecutar, así que no hay bucle entre el load del
+   * servidor y esta escritura del cliente (#1 de la revisión UX Fase 1).
+   * @param {{docType: string, status: string, page: number}} filters
+   */
+  function buildFilterUrl({ docType, status, page: pageNum }) {
+    const params = new URLSearchParams($page.url.searchParams);
+    if (docType) params.set("doc_type", docType);
+    else params.delete("doc_type");
+    if (status) params.set("status", status);
+    else params.delete("status");
+    if (pageNum > 1) params.set("page", String(pageNum));
+    else params.delete("page");
+    const qs = params.toString();
+    return qs ? `?${qs}` : "?";
+  }
+
+  /** @param {{docType: string, status: string, page: number}} filters */
+  function syncUrl(filters) {
+    // replaceState: no llenar el historial con cada tecleo de filtro/página
+    // (el usuario esperaría que "Atrás" lo saque de la bandeja, no que lo
+    // pasee por sus propios filtros). keepFocus/noScroll: la escritura de la
+    // URL no debe robarle el foco al operador ni saltar el scroll.
+    goto(buildFilterUrl(filters), { replaceState: true, keepFocus: true, noScroll: true });
+  }
 
   // ---------------------------------------------------------------------------
   // Drawer de detalle
@@ -81,6 +157,16 @@
   let anulacionStatus = null;
   let anulacionStatusLoading = false;
 
+  // T-ASIGNAR: si el radicado abierto en el drawer YA tiene un paso de flujo
+  // activo (GET /bandeja/api/[id]/current). Determina si "Asignar a flujo" es
+  // una acción válida aquí (solo aplica a radicados SIN paso — para los que ya
+  // tienen uno existe "Trasladar" en el Tablero). null = aún no se sabe (carga
+  // en curso o la consulta falló con un error distinto de 404): en ese caso NO
+  // se ofrece el botón, para no afirmar algo que la pantalla no puede saber.
+  /** @type {boolean|null} */
+  let hasActiveStep = null;
+  let hasActiveStepLoading = false;
+
   // ---------------------------------------------------------------------------
   // Acciones inline
   // ---------------------------------------------------------------------------
@@ -94,6 +180,7 @@
   let modalResponder = false;
   let modalVoBo = false;
   let modalCrearCadena = false;
+  let modalAsignar = false;
 
   // ---------------------------------------------------------------------------
   // T-RECLASIFICAR: modal de reclasificación de nivel de seguridad (RF-SEG-08)
@@ -216,6 +303,7 @@
   function applyFilters() {
     currentPage = 1;
     loadDocuments();
+    syncUrl({ docType: filterDocType, status: filterStatus, page: 1 });
   }
 
   function clearFilters() {
@@ -223,6 +311,7 @@
     filterStatus = "";
     currentPage = 1;
     loadDocuments();
+    syncUrl({ docType: "", status: "", page: 1 });
   }
 
   // ---------------------------------------------------------------------------
@@ -231,10 +320,11 @@
 
   $: totalPages = Math.ceil(total / pageSize);
 
-  function goToPage(page) {
-    if (page < 1 || page > totalPages) return;
-    currentPage = page;
+  function goToPage(targetPage) {
+    if (targetPage < 1 || targetPage > totalPages) return;
+    currentPage = targetPage;
     loadDocuments();
+    syncUrl({ docType: filterDocType, status: filterStatus, page: targetPage });
   }
 
   // ---------------------------------------------------------------------------
@@ -246,12 +336,18 @@
    * Si el item ya está en el listado usamos esos datos; luego cargamos el
    * detalle completo (con anexos, metadata) en background.
    * Llama al endpoint local /bandeja/api/[id] — el token permanece en el servidor.
-   * @param {import('$lib/types/api.js').DocumentResponse} doc
+   * Acepta un objeto parcial (ver openDrawerFromStep): el fetch de detalle de
+   * abajo reemplaza `selectedDoc` con el `DocumentResponse` completo apenas llega.
+   * @param {Pick<import('$lib/types/api.js').DocumentResponse, 'id'> & Partial<import('$lib/types/api.js').DocumentResponse>} doc
    */
   async function openDrawer(doc) {
-    selectedDoc = doc;
+    // El detalle completo llega abajo (fetch); hasta entonces el drawer puede
+    // mostrar un doc parcial (ver openDrawerFromStep) sin romper el tipo de
+    // `selectedDoc` en el resto del componente.
+    selectedDoc = /** @type {import('$lib/types/api.js').DocumentResponse} */ (doc);
     drawerOpen = true;
     anulacionStatus = null;
+    hasActiveStep = null;
 
     // Cargar detalle completo (incluye anexos y metadata)
     detailLoading = true;
@@ -282,12 +378,83 @@
     } finally {
       anulacionStatusLoading = false;
     }
+
+    // ¿Ya tiene un paso de flujo? Determina si "Asignar a flujo" aplica aquí
+    // (T-ASIGNAR). GET /bandeja/api/[id]/current: 200 = tiene paso activo,
+    // 404 no_active_step = no tiene (caso normal, no se notifica como error).
+    // Cualquier otro resultado (403, 5xx, red caída) deja hasActiveStep en
+    // null — no se ofrece el botón, pero tampoco se afirma que no tiene paso.
+    hasActiveStepLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(doc.id)}/current`);
+      if (res.status === 200) {
+        hasActiveStep = true;
+      } else if (res.status === 404) {
+        hasActiveStep = false;
+      } else {
+        hasActiveStep = null;
+      }
+    } catch {
+      hasActiveStep = null;
+    } finally {
+      hasActiveStepLoading = false;
+    }
   }
 
   function closeDrawer() {
     drawerOpen = false;
     selectedDoc = null;
     anulacionStatus = null;
+    hasActiveStep = null;
+    hasActiveStepLoading = false;
+  }
+
+  /**
+   * Abre el modal de "Asignar a flujo" para el radicado actualmente en el drawer.
+   * Cierra el drawer ANTES de abrir el modal — mismo patrón que
+   * openModalReclasificar: no apilar focus traps (A11y, frontend/CLAUDE.md).
+   * No se llama a closeDrawer() porque esa función anula `selectedDoc`, que
+   * AsignarModal necesita como prop `radicado` mientras está abierto.
+   */
+  function openModalAsignar() {
+    drawerOpen = false;
+    modalAsignar = true;
+  }
+
+  /**
+   * Cierra el modal de "Asignar a flujo" devolviendo el foco al título de la
+   * página — el disparador vivía en el drawer ya cerrado, así que el retorno
+   * de foco nativo del Modal caería en <body> (patrón de cerrarModalReclasificar).
+   */
+  function cerrarModalAsignar() {
+    modalAsignar = false;
+    tick().then(() => tituloEl?.focus());
+  }
+
+  /**
+   * El paso de flujo se creó desde el drawer de detalle.
+   * POST /bandeja/api/assign se ejecuta dentro de AsignarModal; aquí solo se
+   * cierra y se refresca (mismo patrón que las demás acciones de operador).
+   */
+  async function onAsignarSuccess() {
+    modalAsignar = false;
+    await loadDocuments();
+    tick().then(() => tituloEl?.focus());
+  }
+
+  /**
+   * A3 (revisión UX): "Ver detalle" en una tarjeta del tablero abre el mismo
+   * cajón que la vista Lista. FlowStepResponse no trae el asunto del
+   * documento (limitación real del contrato, ver WorkflowBoard.svelte); por
+   * eso openDrawer() vuelve a resolverlo con GET /bandeja/api/[id].
+   * @param {import('$lib/types/api.js').FlowStepResponse} step
+   */
+  function openDrawerFromStep(step) {
+    openDrawer({
+      id: step.radicado_id,
+      tracking_number: step.tracking_number,
+      doc_type: step.doc_type,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -607,6 +774,36 @@
     tick().then(() => tituloEl?.focus());
   }
 
+  // ---------------------------------------------------------------------------
+  // Disposición final (RF-MET-08, Fase 4 cierre desfase API↔UI)
+  // ---------------------------------------------------------------------------
+  let disposicionOpen = false;
+  /** @type {{id: string; tracking_number: string} | null} */
+  let disposicionRadicado = null;
+
+  /**
+   * Abre el drawer de disposición final para el radicado actualmente en el
+   * drawer de detalle. Cierra el drawer de detalle ANTES de abrir este —
+   * mismo patrón que openModalReclasificar/openModalAsignar: no apilar
+   * focus traps (A11y).
+   */
+  function openDisposicion() {
+    if (!selectedDoc) return;
+    disposicionRadicado = { id: selectedDoc.id, tracking_number: selectedDoc.tracking_number };
+    drawerOpen = false;
+    disposicionOpen = true;
+  }
+
+  /**
+   * Cierra el drawer de disposición devolviendo el foco al título de la
+   * página — el disparador vivía en el drawer de detalle ya desmontado
+   * (mismo patrón que cerrarModalReclasificar).
+   */
+  function cerrarDisposicion() {
+    disposicionOpen = false;
+    tick().then(() => tituloEl?.focus());
+  }
+
   /**
    * Envía la reclasificación al proxy SSR.
    * POST /bandeja/api/[id]/security-level → PATCH /api/v1/documents/{id}/security-level.
@@ -737,6 +934,17 @@
   $: canDevolverInDrawer =
     canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
   $: canReclasificar = $permissions.includes("PERM_RECLASIFICAR");
+  // Disposición final (RF-MET-08, Fase 4 cierre desfase API↔UI): mismo permiso
+  // que gatea GET/PATCH /documents/{id}/disposition en el backend.
+  $: canDisposicion = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  // T-Fase1 (tablero de distribución): PERM_TRAMITAR gatea assign/transfer/complete
+  // en workflow-service (ver workflow-service/CLAUDE.md). "Pendientes del equipo"
+  // (GET /workflows/pending) es una bandeja gerencial — se oculta a quien no
+  // administra ni tramita, aunque el backend no la restrinja por permiso (solo
+  // por clearance/no-read-up): espejo de RBAC, no fuente de verdad (D-05).
+  $: canAsignarFlujo = $permissions.includes("PERM_TRAMITAR");
+  $: canVerPendientesEquipo =
+    $permissions.includes("USUA_PERM_ADMIN") || $permissions.includes("PERM_TRAMITAR");
   // Nivel seleccionado como entero (para mostrar/ocultar campos opcionales de reserva en template)
   $: nivelReclasificarInt = parseInt(reclasificarNivel, 10) || 0;
 </script>
@@ -751,238 +959,311 @@
   ----------------------------------------------------------------------- -->
   <header class="bandeja__header">
     <h1 class="bandeja__title" bind:this={tituloEl} tabindex="-1">Bandeja de radicados</h1>
-    <span class="bandeja__total" aria-live="polite">
-      {#if !loading}
-        {total.toLocaleString("es-CO")} radicado{total !== 1 ? "s" : ""}
-      {/if}
-    </span>
+    {#if vista === "lista"}
+      <!-- A6 (revisión UX): este total viene de GET /documents — solo describe
+        la vista Lista. En Tablero/Pendientes se leería como si contara pasos
+        de flujo (WorkflowBoard ya muestra su propio contador de pasos). -->
+      <span class="bandeja__total" aria-live="polite">
+        {#if !loading}
+          {total.toLocaleString("es-CO")} radicado{total !== 1 ? "s" : ""}
+        {/if}
+      </span>
+    {/if}
   </header>
 
   <!-- -----------------------------------------------------------------------
+    Conmutador de vista (T-Fase1) — resuelto en SSR por ?vista=, ver
+    bandeja/+page.server.js. Enlaces normales (funcionan sin JS); SvelteKit
+    los intercepta como navegación cliente sin recarga completa. Los href
+    preservan doc_type/status/page vigentes (vistaHref) — cambiar de pestaña
+    y volver a Lista NO descarta los filtros (revisión UX Fase 1, #1).
+  ----------------------------------------------------------------------- -->
+  <nav class="bandeja__vista-tabs" aria-label="Vista de la bandeja">
+    <a
+      href={vistaHref("tablero")}
+      class="bandeja__vista-tab"
+      class:bandeja__vista-tab--active={vista === "tablero"}
+      aria-current={vista === "tablero" ? "page" : undefined}
+    >
+      <i class="fas fa-table-columns" aria-hidden="true"></i>
+      Tablero
+    </a>
+    <a
+      href={vistaHref("lista")}
+      class="bandeja__vista-tab"
+      class:bandeja__vista-tab--active={vista === "lista"}
+      aria-current={vista === "lista" ? "page" : undefined}
+    >
+      <i class="fas fa-list" aria-hidden="true"></i>
+      Lista
+    </a>
+    {#if canVerPendientesEquipo}
+      <a
+        href={vistaHref("pendientes")}
+        class="bandeja__vista-tab"
+        class:bandeja__vista-tab--active={vista === "pendientes"}
+        aria-current={vista === "pendientes" ? "page" : undefined}
+      >
+        <i class="fas fa-users" aria-hidden="true"></i>
+        Pendientes del equipo
+      </a>
+    {/if}
+  </nav>
+
+  {#if vista === "tablero"}
+    <!-- -----------------------------------------------------------------------
+      Vista Tablero (default, T-Fase1): tablero de distribución sobre
+      GET /workflows/inbox — qué PASO tengo asignado, no solo qué documento
+      existe. Ver la cabecera de WorkflowBoard.svelte para el porqué de las
+      columnas y de qué acciones van por arrastre vs. por botón.
+    ----------------------------------------------------------------------- -->
+    <WorkflowBoard
+      source="inbox"
+      dependencias={dependenciaOptions}
+      canTramitar={canAsignarFlujo}
+      on:verDetalle={(e) => openDrawerFromStep(e.detail)}
+    />
+  {:else if vista === "pendientes"}
+    <!-- Vista Pendientes del equipo (T-Fase1): GET /workflows/pending, misma
+      pieza de UI que el Tablero pero sin filtro por tipo (el endpoint no lo
+      soporta) y sin "Asignar a flujo" (esa acción es individual, no gerencial). -->
+    <WorkflowBoard
+      source="pending"
+      dependencias={dependenciaOptions}
+      canTramitar={canAsignarFlujo}
+      on:verDetalle={(e) => openDrawerFromStep(e.detail)}
+    />
+  {:else}
+    <!-- -----------------------------------------------------------------------
+    Vista Lista (T-08 original, preservada sin degradar): la única con
+    exportación, filtros y búsqueda masiva vía DataTable. No se reescribe.
+  ----------------------------------------------------------------------- -->
+    <!-- -----------------------------------------------------------------------
     Filtros
   ----------------------------------------------------------------------- -->
-  <section class="bandeja__filters" aria-label="Filtros de la bandeja">
-    <form
-      class="filters-form"
-      on:submit|preventDefault={applyFilters}
-      role="search"
-      aria-label="Filtrar radicados"
-    >
-      <div class="filters-form__fields">
-        <FormField
-          label="Tipo"
-          type="select"
-          id="filter-type"
-          bind:value={filterDocType}
-          options={[
-            { value: "", label: "Todos los tipos" },
-            { value: "E", label: "Entrada" },
-            { value: "S", label: "Salida" },
-            { value: "I", label: "Interno" },
-          ]}
-        />
+    <section class="bandeja__filters" aria-label="Filtros de la bandeja">
+      <form
+        class="filters-form"
+        on:submit|preventDefault={applyFilters}
+        role="search"
+        aria-label="Filtrar radicados"
+      >
+        <div class="filters-form__fields">
+          <FormField
+            label="Tipo"
+            type="select"
+            id="filter-type"
+            bind:value={filterDocType}
+            options={[
+              { value: "", label: "Todos los tipos" },
+              { value: "E", label: "Entrada" },
+              { value: "S", label: "Salida" },
+              { value: "I", label: "Interno" },
+            ]}
+          />
 
-        <FormField
-          label="Estado"
-          type="select"
-          id="filter-status"
-          bind:value={filterStatus}
-          options={[
-            { value: "", label: "Todos los estados" },
-            { value: "registered", label: "Radicado" },
-            { value: "distributed", label: "Distribuido" },
-            { value: "in_progress", label: "En trámite" },
-            { value: "closed", label: "Cerrado" },
-          ]}
-        />
-      </div>
+          <FormField
+            label="Estado"
+            type="select"
+            id="filter-status"
+            bind:value={filterStatus}
+            options={[
+              { value: "", label: "Todos los estados" },
+              { value: "registered", label: "Radicado" },
+              { value: "distributed", label: "Distribuido" },
+              { value: "in_progress", label: "En trámite" },
+              { value: "closed", label: "Cerrado" },
+            ]}
+          />
+        </div>
 
-      <div class="filters-form__actions">
-        <Button type="submit" variant="primary" size="sm">
-          <i class="fas fa-filter" aria-hidden="true"></i>
-          Filtrar
-        </Button>
-        {#if filterDocType || filterStatus}
-          <Button type="button" variant="ghost" size="sm" on:click={clearFilters}>
-            <i class="fas fa-times" aria-hidden="true"></i>
-            Limpiar
+        <div class="filters-form__actions">
+          <Button type="submit" variant="primary" size="sm">
+            <i class="fas fa-filter" aria-hidden="true"></i>
+            Filtrar
           </Button>
-        {/if}
-      </div>
-    </form>
+          {#if filterDocType || filterStatus}
+            <Button type="button" variant="ghost" size="sm" on:click={clearFilters}>
+              <i class="fas fa-times" aria-hidden="true"></i>
+              Limpiar
+            </Button>
+          {/if}
+        </div>
+      </form>
 
-    <!-- Nota: filtros por fecha y dependencia disponibles en Búsqueda avanzada (T-11) -->
-    <p class="filters-note">
-      Para filtrar por fecha, dependencia o texto libre usa
-      <a href="/busqueda" class="filters-note__link">Búsqueda avanzada</a>.
-    </p>
-  </section>
+      <!-- Nota: filtros por fecha y dependencia disponibles en Búsqueda avanzada (T-11) -->
+      <p class="filters-note">
+        Para filtrar por fecha, dependencia o texto libre usa
+        <a href="/busqueda" class="filters-note__link">Búsqueda avanzada</a>.
+      </p>
+    </section>
 
-  <!-- -----------------------------------------------------------------------
+    <!-- -----------------------------------------------------------------------
     Error de carga inicial
   ----------------------------------------------------------------------- -->
-  {#if data.loadError && documents.length === 0}
-    <EmptyState
-      icon="fas fa-exclamation-circle"
-      title="Error al cargar la bandeja"
-      description={data.loadError}
-    >
-      <Button variant="primary" on:click={loadDocuments}>Reintentar</Button>
-    </EmptyState>
-  {:else}
-    <!-- =====================================================================
+    {#if data.loadError && documents.length === 0}
+      <EmptyState
+        icon="fas fa-exclamation-circle"
+        title="Error al cargar la bandeja"
+        description={data.loadError}
+      >
+        <Button variant="primary" on:click={loadDocuments}>Reintentar</Button>
+      </EmptyState>
+    {:else}
+      <!-- =====================================================================
       Tabla de radicados
     ===================================================================== -->
-    <section class="bandeja__table-wrapper" aria-label="Lista de radicados">
-      {#if loading}
-        <div class="bandeja__loading" aria-live="polite">
-          <Loader type="skeleton" lines={5} label="Cargando radicados…" />
-        </div>
-      {:else if documents.length === 0}
-        <EmptyState
-          icon="fas fa-inbox"
-          title="Sin radicados"
-          description="No hay radicados que coincidan con los filtros aplicados."
-        >
-          {#if filterDocType || filterStatus}
-            <Button variant="ghost" on:click={clearFilters}>Limpiar filtros</Button>
-          {/if}
-        </EmptyState>
-      {:else}
-        <table class="bandeja-table" aria-label="Radicados">
-          <thead>
-            <tr>
-              <th scope="col" class="bandeja-table__th bandeja-table__th--tracking">Radicado</th>
-              <th scope="col" class="bandeja-table__th">Tipo</th>
-              <th scope="col" class="bandeja-table__th">Asunto</th>
-              <th scope="col" class="bandeja-table__th bandeja-table__th--dep"
-                >Dependencia destino</th
-              >
-              <th scope="col" class="bandeja-table__th">Fecha</th>
-              <th scope="col" class="bandeja-table__th">Estado</th>
-              <th scope="col" class="bandeja-table__th bandeja-table__th--actions">
-                <span class="sr-only">Acciones</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each documents as doc (doc.id)}
-              <tr
-                class="bandeja-table__row"
-                class:bandeja-table__row--selected={selectedDoc?.id === doc.id}
-              >
-                <td class="bandeja-table__td">
-                  <span class="tracking-number">{doc.tracking_number}</span>
-                </td>
-                <td class="bandeja-table__td">
-                  <span class="doc-type-badge doc-type-badge--{doc.doc_type.toLowerCase()}">
-                    {DOC_TYPE_LABELS[doc.doc_type] ?? doc.doc_type}
-                  </span>
-                </td>
-                <td class="bandeja-table__td bandeja-table__td--subject">
-                  <span class="subject-text" title={doc.subject}>{doc.subject}</span>
-                </td>
-                <td class="bandeja-table__td bandeja-table__td--dep">
-                  {doc.dest_dept ?? "—"}
-                </td>
-                <td class="bandeja-table__td bandeja-table__td--date">
-                  <time datetime={doc.registered_at}>{formatDate(doc.registered_at)}</time>
-                </td>
-                <td class="bandeja-table__td">
-                  <StatusChip
-                    status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
-                    label={STATUS_LABELS[doc.status] ?? doc.status}
-                    dot={true}
-                  />
-                </td>
-                <td class="bandeja-table__td bandeja-table__td--actions">
-                  <button
-                    class="action-btn action-btn--detail"
-                    type="button"
-                    aria-label="Ver detalle de radicado {doc.tracking_number}"
-                    on:click={() => openDrawer(doc)}
-                  >
-                    <i class="fas fa-eye" aria-hidden="true"></i>
-                    Detalle
-                  </button>
+      <section class="bandeja__table-wrapper" aria-label="Lista de radicados">
+        {#if loading}
+          <div class="bandeja__loading" aria-live="polite">
+            <Loader type="skeleton" lines={5} label="Cargando radicados…" />
+          </div>
+        {:else if documents.length === 0}
+          <EmptyState
+            icon="fas fa-inbox"
+            title="Sin radicados"
+            description="No hay radicados que coincidan con los filtros aplicados."
+          >
+            {#if filterDocType || filterStatus}
+              <Button variant="ghost" on:click={clearFilters}>Limpiar filtros</Button>
+            {/if}
+          </EmptyState>
+        {:else}
+          <table class="bandeja-table" aria-label="Radicados">
+            <thead>
+              <tr>
+                <th scope="col" class="bandeja-table__th bandeja-table__th--tracking">Radicado</th>
+                <th scope="col" class="bandeja-table__th">Tipo</th>
+                <th scope="col" class="bandeja-table__th">Asunto</th>
+                <th scope="col" class="bandeja-table__th bandeja-table__th--dep"
+                  >Dependencia destino</th
+                >
+                <th scope="col" class="bandeja-table__th">Fecha</th>
+                <th scope="col" class="bandeja-table__th">Estado</th>
+                <th scope="col" class="bandeja-table__th bandeja-table__th--actions">
+                  <span class="sr-only">Acciones</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each documents as doc (doc.id)}
+                <tr
+                  class="bandeja-table__row"
+                  class:bandeja-table__row--selected={selectedDoc?.id === doc.id}
+                >
+                  <td class="bandeja-table__td">
+                    <span class="tracking-number">{doc.tracking_number}</span>
+                  </td>
+                  <td class="bandeja-table__td">
+                    <span class="doc-type-badge doc-type-badge--{doc.doc_type.toLowerCase()}">
+                      {DOC_TYPE_LABELS[doc.doc_type] ?? doc.doc_type}
+                    </span>
+                  </td>
+                  <td class="bandeja-table__td bandeja-table__td--subject">
+                    <span class="subject-text" title={doc.subject}>{doc.subject}</span>
+                  </td>
+                  <td class="bandeja-table__td bandeja-table__td--dep">
+                    {doc.dest_dept ?? "—"}
+                  </td>
+                  <td class="bandeja-table__td bandeja-table__td--date">
+                    <time datetime={doc.registered_at}>{formatDate(doc.registered_at)}</time>
+                  </td>
+                  <td class="bandeja-table__td">
+                    <StatusChip
+                      status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
+                      label={STATUS_LABELS[doc.status] ?? doc.status}
+                      dot={true}
+                    />
+                  </td>
+                  <td class="bandeja-table__td bandeja-table__td--actions">
+                    <button
+                      class="action-btn action-btn--detail"
+                      type="button"
+                      aria-label="Ver detalle de radicado {doc.tracking_number}"
+                      on:click={() => openDrawer(doc)}
+                    >
+                      <i class="fas fa-eye" aria-hidden="true"></i>
+                      Detalle
+                    </button>
 
-                  <!-- Acción inline: avanzar estado (T-08 básico) -->
-                  {#if canManage}
-                    {#if doc.status === "registered"}
+                    <!-- Acción inline: avanzar estado (T-08 básico) -->
+                    {#if canManage}
+                      {#if doc.status === "registered"}
+                        <button
+                          class="action-btn action-btn--advance"
+                          type="button"
+                          aria-label="Distribuir radicado {doc.tracking_number}"
+                          disabled={actionLoading}
+                          on:click={() => advanceStatus(doc.id, "distributed")}
+                        >
+                          <i class="fas fa-paper-plane" aria-hidden="true"></i>
+                          Distribuir
+                        </button>
+                      {:else if doc.status === "distributed"}
+                        <button
+                          class="action-btn action-btn--advance"
+                          type="button"
+                          aria-label="Iniciar trámite del radicado {doc.tracking_number}"
+                          disabled={actionLoading}
+                          on:click={() => advanceStatus(doc.id, "in_progress")}
+                        >
+                          <i class="fas fa-play" aria-hidden="true"></i>
+                          Iniciar trámite
+                        </button>
+                      {/if}
+                    {/if}
+                    <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
+                    {#if canAnular && doc.status !== "closed" && doc.status !== "cancelled"}
                       <button
-                        class="action-btn action-btn--advance"
+                        class="action-btn action-btn--danger"
                         type="button"
-                        aria-label="Distribuir radicado {doc.tracking_number}"
+                        aria-label="Solicitar anulación del radicado {doc.tracking_number}"
                         disabled={actionLoading}
-                        on:click={() => advanceStatus(doc.id, "distributed")}
+                        on:click={() => openAnulacionFromRow(doc)}
                       >
-                        <i class="fas fa-paper-plane" aria-hidden="true"></i>
-                        Distribuir
-                      </button>
-                    {:else if doc.status === "distributed"}
-                      <button
-                        class="action-btn action-btn--advance"
-                        type="button"
-                        aria-label="Iniciar trámite del radicado {doc.tracking_number}"
-                        disabled={actionLoading}
-                        on:click={() => advanceStatus(doc.id, "in_progress")}
-                      >
-                        <i class="fas fa-play" aria-hidden="true"></i>
-                        Iniciar trámite
+                        <i class="fas fa-ban" aria-hidden="true"></i>
+                        Anular
                       </button>
                     {/if}
-                  {/if}
-                  <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
-                  {#if canAnular && doc.status !== "closed" && doc.status !== "cancelled"}
-                    <button
-                      class="action-btn action-btn--danger"
-                      type="button"
-                      aria-label="Solicitar anulación del radicado {doc.tracking_number}"
-                      disabled={actionLoading}
-                      on:click={() => openAnulacionFromRow(doc)}
-                    >
-                      <i class="fas fa-ban" aria-hidden="true"></i>
-                      Anular
-                    </button>
-                  {/if}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
 
-        <!-- ==============================================================
+          <!-- ==============================================================
           Paginación
         ============================================================== -->
-        {#if totalPages > 1}
-          <nav class="bandeja-pagination" aria-label="Paginación de radicados">
-            <button
-              class="pagination-btn"
-              type="button"
-              aria-label="Página anterior"
-              disabled={currentPage <= 1 || loading}
-              on:click={() => goToPage(currentPage - 1)}
-            >
-              <i class="fas fa-chevron-left" aria-hidden="true"></i>
-            </button>
+          {#if totalPages > 1}
+            <nav class="bandeja-pagination" aria-label="Paginación de radicados">
+              <button
+                class="pagination-btn"
+                type="button"
+                aria-label="Página anterior"
+                disabled={currentPage <= 1 || loading}
+                on:click={() => goToPage(currentPage - 1)}
+              >
+                <i class="fas fa-chevron-left" aria-hidden="true"></i>
+              </button>
 
-            <span class="pagination-info" aria-live="polite" aria-atomic="true">
-              Página {currentPage} de {totalPages}
-            </span>
+              <span class="pagination-info" aria-live="polite" aria-atomic="true">
+                Página {currentPage} de {totalPages}
+              </span>
 
-            <button
-              class="pagination-btn"
-              type="button"
-              aria-label="Página siguiente"
-              disabled={currentPage >= totalPages || loading}
-              on:click={() => goToPage(currentPage + 1)}
-            >
-              <i class="fas fa-chevron-right" aria-hidden="true"></i>
-            </button>
-          </nav>
+              <button
+                class="pagination-btn"
+                type="button"
+                aria-label="Página siguiente"
+                disabled={currentPage >= totalPages || loading}
+                on:click={() => goToPage(currentPage + 1)}
+              >
+                <i class="fas fa-chevron-right" aria-hidden="true"></i>
+              </button>
+            </nav>
+          {/if}
         {/if}
-      {/if}
-    </section>
+      </section>
+    {/if}
   {/if}
 </div>
 
@@ -1137,6 +1418,15 @@
           </dl>
         </section>
       {/if}
+
+      <!-- Hoja de ruta (T-Fase1): trazabilidad de flujo del radicado abierto en el
+           drawer. No navega a otra pantalla — mismo objeto, sin perder la bandeja. -->
+      <section class="doc-detail__section" aria-labelledby="detail-hoja-ruta-heading">
+        <h4 id="detail-hoja-ruta-heading" class="doc-detail__section-title">Hoja de ruta</h4>
+        {#key selectedDoc.id}
+          <HojaRuta radicadoId={selectedDoc.id} />
+        {/key}
+      </section>
     </article>
   {/if}
 
@@ -1204,6 +1494,14 @@
         </Button>
       {/if}
     {/if}
+    {#if selectedDoc && canAsignarFlujo && !hasActiveStepLoading && hasActiveStep === false}
+      <!-- T-ASIGNAR: solo aplica a radicados SIN paso de flujo (ver openDrawer).
+           Los que ya tienen uno se trasladan desde el Tablero (Trasladar). -->
+      <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openModalAsignar}>
+        <i class="fas fa-inbox" aria-hidden="true"></i>
+        Asignar a flujo
+      </Button>
+    {/if}
     {#if selectedDoc && canReclasificar}
       <Button
         variant="secondary"
@@ -1215,9 +1513,24 @@
         Reclasificar nivel
       </Button>
     {/if}
+    {#if selectedDoc && canDisposicion}
+      <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openDisposicion}>
+        <i class="fas fa-box-archive" aria-hidden="true"></i>
+        Disposición final
+      </Button>
+    {/if}
     <Button variant="ghost" size="sm" on:click={closeDrawer}>Cerrar</Button>
   </svelte:fragment>
 </Drawer>
+
+<!-- =========================================================================
+  Drawer de disposición final (RF-MET-08)
+========================================================================= -->
+<DisposicionRadicadoDrawer
+  open={disposicionOpen}
+  radicado={disposicionRadicado}
+  on:close={cerrarDisposicion}
+/>
 
 <!-- =========================================================================
   T-08b: Modales de acciones de operador
@@ -1487,6 +1800,16 @@
   </svelte:fragment>
 </Modal>
 
+<!-- Modal: Asignar a flujo (T-ASIGNAR) — el radicado va ya resuelto, sin campos
+  de identificador a mano (ver AsignarModal.svelte). -->
+<AsignarModal
+  open={modalAsignar}
+  radicado={selectedDoc}
+  dependencias={dependenciaOptions}
+  on:close={cerrarModalAsignar}
+  on:success={onAsignarSuccess}
+/>
+
 <!-- Modal: Reclasificar nivel de seguridad (RF-SEG-08, Ley 1712) -->
 <Modal
   open={modalReclasificar}
@@ -1612,6 +1935,48 @@
     font-size: var(--op-font-sm);
     color: var(--op-text-secondary);
     flex-shrink: 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Conmutador de vista (T-Fase1)
+  // ---------------------------------------------------------------------------
+
+  .bandeja__vista-tabs {
+    display: flex;
+    gap: var(--op-space-2);
+    border-bottom: 1px solid var(--op-border);
+  }
+
+  .bandeja__vista-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    font-size: var(--op-font-sm);
+    font-weight: var(--op-weight-medium);
+    color: var(--op-text-secondary);
+    text-decoration: none;
+    padding: var(--op-space-2) var(--op-space-3);
+    border-bottom: 2px solid transparent;
+    transition:
+      color var(--op-transition),
+      border-color var(--op-transition);
+
+    // Objetivo táctil >=44px (v1.0 A11y) en dispositivos táctiles.
+    @media (pointer: coarse) {
+      min-height: 44px;
+    }
+
+    &:hover {
+      color: var(--op-text);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: 2px;
+    }
+    &--active {
+      color: var(--op-primary-dark);
+      border-bottom-color: var(--op-primary);
+    }
   }
 
   // ---------------------------------------------------------------------------

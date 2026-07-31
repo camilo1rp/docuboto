@@ -408,6 +408,12 @@
                   </td>
                   <td>{fmtDate(t.created_at ?? t.fecha)}</td>
                   <td class="tr-actions-cell">
+                    <!-- Detalle: acta de entrega en apariencia de certificado -->
+                    <Button variant="ghost" size="sm" href={`/transferencias/${t.id}`}>
+                      <i class="fas fa-file-signature" aria-hidden="true"></i>
+                      <span>Detalle / acta</span>
+                    </Button>
+
                     <!-- Ver FUID siempre disponible -->
                     <button
                       class="button is-small is-light"
