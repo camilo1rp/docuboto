@@ -34,16 +34,24 @@ from app.schemas.archive import (
     ExpedienteIndice,
     ExpedienteRadicadoResponse,
     ExpedienteResponse,
+    ExpedienteRevisionPendienteResponse,
     ExpedienteUpdate,
     HistorialAccesoEntry,
     IndiceItem,
     RadicadoLink,
     RetentionSchedule,
     RolAutorizado,
+    TrdSerieAprobar,
+    TrdSerieConvalidar,
     TrdSerieCreate,
+    TrdSerieDevolver,
+    TrdSerieRegistrarRusd,
     TrdSerieResponse,
     TrdSerieUpdate,
     TrdSerieVersionCreate,
+    TvdAgrupacionCreate,
+    TvdAgrupacionUpdate,
+    TvdAgrupacionVersionCreate,
 )
 from app.services.metadata_service import validate_metadata
 
@@ -1175,7 +1183,7 @@ class ArchiveService:
                                 f"La serie TRD '{pinned.code}' no tiene ninguna "
                                 "version convalidada ni migrada vigente: no puede "
                                 "gobernar el cierre de un expediente bajo un "
-                                "instrumento no convalidado (Ac. AGN 004/2019, "
+                                "instrumento no convalidado (Ac. AGN 001/2024, que compila el 004/2019, "
                                 "ADR-025)."
                             ),
                             "status": 409,
@@ -1258,7 +1266,7 @@ class ArchiveService:
                 # se ha intentado en este punto — el payload declara solo lo que
                 # es cierto en el instante del commit: la versión final del
                 # índice ya persistida, sin sellar, más el efecto jurídico del
-                # cierre (Ley 594/2000 art. 24; Acuerdo AGN 004/2019) — la
+                # cierre (Ley 594/2000 art. 24; Acuerdo AGN 001/2024, que compila el 004/2019) — la
                 # disposición TRD materializada y el estado anterior (H4): antes
                 # solo vivía en `expedientes.disposition`, una columna MUTABLE,
                 # sin traza inmutable del acto.
@@ -2092,6 +2100,16 @@ class ArchiveService:
             )
         return _to_trd_response(serie)
 
+    async def get_trd_serie_versiones(self, code: str) -> list[TrdSerieResponse]:
+        """`GET /api/v1/trd/{code}/versiones` (ADR-026): gemelo que ADR-025
+        declaró aditivo y nunca implementó -- la pantalla de TVD lo necesita
+        desde el día uno y dejar la TRD sin él consolidaba la asimetría.
+        Historia completa (cualquier estado), más reciente primero; lista
+        vacía si el código nunca existió (no es un 404: "sin versiones" es
+        una respuesta válida, no un error)."""
+        series = await self._repo.list_trd_serie_versiones_by_code(code)
+        return [_to_trd_response(s) for s in series]
+
     # Campos SUSTANTIVOS del contenido convalidado (ADR-025 D1): los mismos
     # que el trigger `trg_trd_series_append_only` rechaza fuera de `borrador`.
     # `pdfa_profile` NO está aquí a propósito -- es la única excepción
@@ -2137,7 +2155,7 @@ class ArchiveService:
                     "detail": (
                         f"La version {existing.version} del codigo '{existing.code}' "
                         f"esta en estado '{existing.estado}': su contenido es "
-                        "append-only (Ac. AGN 004/2019, ADR-025). Use "
+                        "append-only (Ac. AGN 001/2024, que compila el 004/2019, ADR-025). Use "
                         f"POST /api/v1/trd/{existing.code}/versiones para crear "
                         "una version nueva."
                     ),
@@ -2201,20 +2219,30 @@ class ArchiveService:
         `ux_trd_series_en_tramite` (037) impide que dos versiones en trámite
         (`borrador`/`aprobada`) coexistan para el mismo código -- lo que aquí
         se traduce a un `409` legible en vez de dejar escapar la
-        `UniqueViolationError` cruda de Postgres."""
+        `UniqueViolationError` cruda de Postgres.
+
+        Migración 038 (hallazgo #3 del dictamen): si `code` NO tiene versión
+        vigente (todas sus versiones quedaron `derogada` -- p. ej. tras un
+        `derogar` explícito sin sucesora) se cae a la ÚLTIMA versión por
+        número, sea cual sea su estado, como base para clonar. Sin este
+        respaldo, un código totalmente derogado quedaba sin ningún camino de
+        vuelta: ni siquiera se podía abrir un `borrador` nuevo que
+        eventualmente se convalidara. `404` se reserva para el caso real de
+        "este código nunca existió"."""
         vigente = await self._repo.get_trd_serie_vigente_by_code(code)
-        if vigente is None:
+        base = vigente
+        if base is None:
+            base = await self._repo.get_trd_serie_ultima_by_code(code)
+        if base is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "trd_code_not_found",
-                    "detail": (
-                        f"No existe una version vigente (convalidada/migrada) "
-                        f"para el codigo de serie '{code}'."
-                    ),
+                    "detail": f"No existe ninguna version para el codigo de serie '{code}'.",
                     "status": 404,
                 },
             )
+        vigente = base
         # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie`).
         async with self._conn.transaction():
             try:
@@ -2270,8 +2298,12 @@ class ArchiveService:
                         "error": "trd_version_en_tramite",
                         "detail": (
                             f"Ya existe una version en tramite (borrador/aprobada) "
-                            f"para el codigo '{vigente.code}'; convalidela o "
-                            "derogela antes de abrir otra (ADR-025, Increment 2)."
+                            f"para el codigo '{vigente.code}'; concluyala "
+                            "(aprobar + convalidar) o devuelvala a borrador "
+                            f"(POST /api/v1/trd/{vigente.code}/versiones/"
+                            f"{{version}}/devolver) antes de abrir otra. "
+                            "'derogar' NO es una salida valida desde borrador/"
+                            "aprobada (ADR-025, Increment 2 / migracion 038)."
                         ),
                         "status": 409,
                     },
@@ -2293,6 +2325,1274 @@ class ArchiveService:
                 },
             )
         return _to_trd_response(new_serie)
+
+    # ------------------------------------------------------------------
+    # Circuito de convalidación (ADR-025 D2/D6, Increment 2): aprobar /
+    # convalidar / derogar. Máquina de estados AISLADA en el service layer
+    # (no en el router), validada explícitamente ANTES de tocar BD
+    # (fail-fast 409) -- el CHECK/índice de Postgres queda como defensa en
+    # profundidad, nunca como el único guardián. Ver ADR-025 §"Máquina de
+    # estados del instrumento".
+    # ------------------------------------------------------------------
+
+    _TRD_APROBAR_DESDE = frozenset({"borrador"})
+    _TRD_CONVALIDAR_DESDE = frozenset({"aprobada", "migrada"})
+    _TRD_DEROGAR_DESDE = frozenset({"convalidada", "migrada"})
+    # Migración 038 (hallazgo #1): "devolver con observaciones" es la puerta
+    # de salida honesta de `aprobada` -- antes la ÚNICA salida era
+    # `convalidar`, que exige declarar un acto administrativo. Sin esta
+    # transición, un administrador atascado en `aprobada` (sin convalidación
+    # todavía) no tenía forma de editar el instrumento salvo mentir sobre la
+    # convalidación.
+    _TRD_DEVOLVER_DESDE = frozenset({"aprobada"})
+
+    async def _trd_serie_by_code_version_or_404(self, code: str, version: int) -> TrdSerie:
+        serie = await self._repo.get_trd_serie_by_code_version(code, version)
+        if serie is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "trd_version_not_found",
+                    "detail": f"No existe la version {version} del codigo de serie '{code}'.",
+                    "status": 404,
+                },
+            )
+        return serie
+
+    def _assert_trd_action_from(self, serie: TrdSerie, action: str, valid_from: frozenset[str]) -> None:
+        if serie.estado not in valid_from:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_transicion_invalida",
+                    "detail": (
+                        f"La version {serie.version} del codigo '{serie.code}' esta en "
+                        f"estado '{serie.estado}': '{action}' solo es valido desde "
+                        f"{sorted(valid_from)} (ADR-025, maquina de estados del instrumento)."
+                    ),
+                    "status": 409,
+                },
+            )
+
+    def _trd_race_conflict(self, action: str) -> HTTPException:
+        """El `WHERE ... AND estado = <origen esperado>` del repositorio (H3,
+        mismo patrón que `transition_expediente`) no devolvió fila: otra
+        petición concurrente ganó la carrera entre la lectura de `existing` y
+        este `UPDATE`. Nunca se aplica la transición sobre un estado que el
+        llamante ya no observó."""
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "trd_transicion_invalida",
+                "detail": (
+                    f"'{action}' no se aplico: el estado de la version cambio "
+                    "concurrentemente (ADR-025)."
+                ),
+                "status": 409,
+            },
+        )
+
+    async def aprobar_trd_serie_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieAprobar,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`borrador -> aprobada` (ADR-025 D2, Increment 2): aprobación del
+        Comité Institucional de Gestión y Desempeño (Ac. AGN 001/2024, que
+        compila el 004/2019) -- condición necesaria y NO suficiente para
+        gobernar un cierre (D5); sin convalidación del Consejo, el
+        instrumento no es oponible.
+
+        Migración 038 (hallazgo #5 del dictamen): ahora exige y escribe el
+        PRIMER acto del circuito (`acta_comite`/`fecha_aprobacion_comite`) --
+        antes el endpoint no recibía body y el sistema solo podía registrar
+        el SEGUNDO acto (la convalidación), dejando una fila `convalidada`
+        indistinguible por contenido de una `migrada` ratificada."""
+        existing = await self._trd_serie_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "aprobar", self._TRD_APROBAR_DESDE)
+        # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie_version`).
+        async with self._conn.transaction():
+            updated = await self._repo.aprobar_trd_serie(
+                existing.id,
+                acta_comite=payload.acta_comite,
+                fecha_aprobacion_comite=payload.fecha_aprobacion_comite,
+            )
+            if updated is None:
+                raise self._trd_race_conflict("aprobar")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_version_aprobada",
+                object_type="trd_serie",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "acta_comite": updated.acta_comite,
+                    "fecha_aprobacion_comite": (
+                        updated.fecha_aprobacion_comite.isoformat()
+                        if updated.fecha_aprobacion_comite
+                        else None
+                    ),
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def devolver_trd_serie_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieDevolver,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`POST /trd/{code}/versiones/{version}/devolver` (ADR-025,
+        migración 038 -- hallazgo #1): `aprobada -> borrador`, con motivo
+        obligatorio. Es la vía honesta de "devolución con observaciones" que
+        contempla Ac. AGN 001/2024 -- un paso ORDINARIO del procedimiento,
+        no una excepción; sin ella, la única transición disponible desde
+        `aprobada` era `convalidar`, que exige declarar un acto
+        administrativo que tal vez todavía no existe.
+
+        Limpia `acta_comite`/`fecha_aprobacion_comite` (repositorio): la
+        aprobación queda VOID -- el contenido se va a editar de nuevo, así
+        que exige una aprobación NUEVA antes de poder convalidar otra vez."""
+        existing = await self._trd_serie_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "devolver", self._TRD_DEVOLVER_DESDE)
+        async with self._conn.transaction():
+            updated = await self._repo.devolver_trd_serie_a_borrador(existing.id)
+            if updated is None:
+                raise self._trd_race_conflict("devolver")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_version_devuelta",
+                object_type="trd_serie",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "estado_anterior": "aprobada",
+                    "motivo": payload.motivo,
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def convalidar_trd_serie_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieConvalidar,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`POST /trd/{code}/versiones/{version}/convalidar` (ADR-025 D2/D6,
+        Increment 2). Dos orígenes válidos, la MISMA acción los cubre:
+
+        - Desde `aprobada` (circuito normal): `aprobada -> convalidada`, y en
+          la MISMA transacción deroga la versión previamente vigente del
+          mismo código (si existía) -- exactamente el patrón que
+          `create_trd_serie_version` ya usaba al ABRIR la versión nueva, solo
+          que la derogación real ocurre aquí, al CONVALIDARLA (ver máquina de
+          estados del ADR). También re-apunta (`UPDATE`, no clona) las FK
+          huérfanas de `tipos_documentales`/`expediente_metadata_templates`
+          (aviso #3 del ADR) de la versión derogada a la nueva.
+        - Desde `migrada` (ratificación D6): `migrada -> convalidada` SIN
+          crear versión nueva ni derogar nada -- es la MISMA fila, se le
+          añaden los campos del acto -- y limpia
+          `trd_revision_requerida`/`trd_revision_motivo` de los expedientes
+          `closed`/`transferred` amarrados a esta fila cuyo motivo sea
+          EXACTAMENTE `cerrado_bajo_serie_migrada` (otros motivos no se
+          resuelven con esta ratificación).
+
+        Derogar la vigente previa ANTES de convalidar la nueva (no al
+        revés): el índice único parcial `ux_trd_series_vigente` solo admite
+        una fila vigente por código -- promover la nueva primero violaría
+        transitoriamente esa unicidad.
+
+        Migración 038 (hallazgos del dictamen):
+
+        - **#5**: desde `aprobada` exige que el PRIMER acto ya conste
+          (`acta_comite`/`fecha_aprobacion_comite`, escritos por `aprobar`) --
+          sin este chequeo, una fila `convalidada` era indistinguible por
+          contenido de una `migrada` ratificada (ninguna de las dos, hasta
+          ahora, dejaba ver si el Comité aprobó antes del Consejo).
+        - **Seguridad (huérfanos en carrera)**: si `vigente_previa` se leyó
+          pero OTRA transacción la derogó primero (`derogada is None` tras
+          `derogar_vigente_por_code`), esto ya NO se trata como "no había
+          nada que derogar" -- se aborta fail-closed, porque las FK de
+          `tipos_documentales`/`expediente_metadata_templates` quedarían
+          colgando de una fila derogada por otro actor sin re-apuntar.
+        - **Seguridad (colisión de FK)**: el re-apunte ahora es
+          colisión-segura (`NOT EXISTS`, ver `repoint_*`) y audita también
+          los `omitidos`; `UniqueViolationError` residual se traduce a 409."""
+        existing = await self._trd_serie_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "convalidar", self._TRD_CONVALIDAR_DESDE)
+
+        if existing.estado == "aprobada" and (
+            existing.acta_comite is None or existing.fecha_aprobacion_comite is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_aprobacion_comite_requerida",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        "esta 'aprobada' pero no tiene registrado el acto del Comite "
+                        "(acta_comite/fecha_aprobacion_comite): la convalidacion del "
+                        "Consejo no puede afirmar un primer acto que el sistema no "
+                        "puede verificar (Ac. AGN 001/2024, ADR-025 D2, migracion 038)."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie`).
+        async with self._conn.transaction():
+            if existing.estado == "aprobada":
+                vigente_previa = await self._repo.get_trd_serie_vigente_by_code(existing.code)
+                derogada: TrdSerie | None = None
+                if vigente_previa is not None:
+                    derogada = await self._repo.derogar_vigente_por_code(
+                        existing.code, exclude_id=existing.id
+                    )
+                    if derogada is None:
+                        # Otra transaccion concurrente ya la derogo/movio
+                        # entre la lectura de `vigente_previa` y este UPDATE
+                        # -- abortar en vez de convalidar dejando FK
+                        # huerfanas de una fila que este acto ya no controla.
+                        raise self._trd_race_conflict("convalidar")
+
+                updated = await self._repo.convalidar_trd_serie_desde_aprobada(
+                    existing.id,
+                    acto_administrativo=payload.acto_administrativo,
+                    fecha_convalidacion=payload.fecha_convalidacion,
+                    instancia_convalidante=payload.instancia_convalidante,
+                    rusd_radicado=payload.rusd_radicado,
+                    fecha_publicacion=payload.fecha_publicacion,
+                )
+                if updated is None:
+                    raise self._trd_race_conflict("convalidar")
+
+                n_tipos = n_tipos_omitidos = n_templates = n_templates_omitidos = 0
+                if derogada is not None:
+                    # Aviso #3 (ADR-025 §"Impacto en lo existente"): estos
+                    # hijos apuntan a la FILA, no al código -- sin
+                    # re-apuntarlos, la convalidación de la N+1 los dejaría
+                    # huérfanos de la versión que acaba de derogarse.
+                    # Colisión-segura (038): una clave que YA existe en la
+                    # versión nueva se OMITE, nunca revienta la tx.
+                    try:
+                        n_tipos, n_tipos_omitidos = await self._repo.repoint_tipos_documentales(
+                            old_serie_id=derogada.id, new_serie_id=updated.id
+                        )
+                        (
+                            n_templates,
+                            n_templates_omitidos,
+                        ) = await self._repo.repoint_expediente_metadata_templates(
+                            old_serie_id=derogada.id, new_serie_id=updated.id
+                        )
+                    except asyncpg.UniqueViolationError as exc:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={
+                                "error": "trd_repoint_colision",
+                                "detail": (
+                                    "No se pudo re-apuntar tipos_documentales/"
+                                    "expediente_metadata_templates de la version "
+                                    f"derogada ({derogada.code} v{derogada.version}) a la "
+                                    f"nueva vigente: colision de clave no cubierta por "
+                                    "el filtro de exclusion (ADR-025, migracion 038)."
+                                ),
+                                "status": 409,
+                            },
+                        ) from exc
+
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.trd_version_convalidada",
+                    object_type="trd_serie",
+                    object_ref=updated.code,
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "id": str(updated.id),
+                        "code": updated.code,
+                        "version": updated.version,
+                        "acto_administrativo": updated.acto_administrativo,
+                        "fecha_convalidacion": (
+                            updated.fecha_convalidacion.isoformat()
+                            if updated.fecha_convalidacion
+                            else None
+                        ),
+                        "instancia_convalidante": updated.instancia_convalidante,
+                        "rusd_radicado": updated.rusd_radicado,
+                        "fecha_publicacion": (
+                            updated.fecha_publicacion.isoformat()
+                            if updated.fecha_publicacion
+                            else None
+                        ),
+                        "ratificacion": False,
+                        "estado_anterior": "aprobada",
+                        "derogada_id": str(derogada.id) if derogada else None,
+                        "derogada_version": derogada.version if derogada else None,
+                        "tipos_documentales_repointed": n_tipos,
+                        "tipos_documentales_omitidos": n_tipos_omitidos,
+                        "expediente_metadata_templates_repointed": n_templates,
+                        "expediente_metadata_templates_omitidos": n_templates_omitidos,
+                    },
+                )
+                if derogada is not None:
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="archive.trd_version_derogada",
+                        object_type="trd_serie",
+                        object_ref=derogada.code,
+                        actor=str(actor) if actor else None,
+                        payload={
+                            "id": str(derogada.id),
+                            "code": derogada.code,
+                            "version": derogada.version,
+                            # `derogada` YA trae `estado='derogada'` (RETURNING
+                            # del propio UPDATE) -- el estado ANTERIOR es el
+                            # que se observó en `vigente_previa` antes de este acto.
+                            "estado_anterior": vigente_previa.estado,
+                            "motivo": "supersedida_por_convalidacion",
+                            "supersedida_por": str(updated.id),
+                            "supersedida_por_version": updated.version,
+                        },
+                    )
+            else:  # existing.estado == "migrada" -- ratificación D6.
+                updated = await self._repo.convalidar_trd_serie_desde_migrada(
+                    existing.id,
+                    acto_administrativo=payload.acto_administrativo,
+                    fecha_convalidacion=payload.fecha_convalidacion,
+                    instancia_convalidante=payload.instancia_convalidante,
+                    rusd_radicado=payload.rusd_radicado,
+                    fecha_publicacion=payload.fecha_publicacion,
+                )
+                if updated is None:
+                    raise self._trd_race_conflict("convalidar")
+
+                n_ratificados = await self._repo.clear_revision_pendiente_por_serie(
+                    updated.id, motivo="cerrado_bajo_serie_migrada"
+                )
+
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.trd_version_convalidada",
+                    object_type="trd_serie",
+                    object_ref=updated.code,
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "id": str(updated.id),
+                        "code": updated.code,
+                        "version": updated.version,
+                        "acto_administrativo": updated.acto_administrativo,
+                        "fecha_convalidacion": (
+                            updated.fecha_convalidacion.isoformat()
+                            if updated.fecha_convalidacion
+                            else None
+                        ),
+                        "instancia_convalidante": updated.instancia_convalidante,
+                        "rusd_radicado": updated.rusd_radicado,
+                        "fecha_publicacion": (
+                            updated.fecha_publicacion.isoformat()
+                            if updated.fecha_publicacion
+                            else None
+                        ),
+                        "ratificacion": True,
+                        "estado_anterior": "migrada",
+                        "expedientes_ratificados": n_ratificados,
+                    },
+                )
+        return _to_trd_response(updated)
+
+    async def derogar_trd_serie_version(
+        self, code: str, version: int, actor: uuid.UUID | None = None
+    ) -> TrdSerieResponse:
+        """`convalidada`/`migrada` -> `derogada` (baja explícita del
+        instrumento, sin sucesora, ADR-025 Increment 2 / migración 038 --
+        hallazgo #3 del dictamen). `valid_to`/`is_active` los fija el
+        repositorio; ninguna consecuencia retroactiva -- los expedientes ya
+        cerrados bajo esta versión conservan su snapshot congelado (D3/D4).
+
+        Decisión (#3, ver ADR-025 addendum): se exige que NINGÚN expediente
+        `open` esté clasificado bajo `code` -- si los hay, `close_expediente`
+        re-resolvería por código al cerrarlos y no encontraría ninguna
+        versión vigente (`409 trd_version_no_vigente` para siempre, salvo
+        que se convalide una sucesora después). Se descartó exigir una
+        sucesora YA convalidada como precondición de `derogar` porque este
+        endpoint es también el camino LEGÍTIMO para retirar una serie que ya
+        no produce documentos (dependencia eliminada, competencia trasladada)
+        -- exigir sucesora bloquearía exactamente ese caso de uso. El código
+        nunca queda sin camino de vuelta: `create_trd_serie_version` (038)
+        cae a la última versión por número cuando no hay vigente, así que
+        siempre se puede abrir un `borrador` nuevo y convalidarlo."""
+        existing = await self._trd_serie_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "derogar", self._TRD_DEROGAR_DESDE)
+
+        n_open = await self._repo.count_expedientes_open_por_trd_serie_code(existing.code)
+        if n_open:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_derogacion_bloqueada_expedientes_abiertos",
+                    "detail": (
+                        f"Hay {n_open} expediente(s) 'open' clasificados bajo el "
+                        f"codigo '{existing.code}': derogar esta version sin una "
+                        "sucesora los dejaria sin ningun instrumento vigente que "
+                        "gobierne su cierre. Convalide una version sucesora, o "
+                        "reclasifique esos expedientes, antes de derogar "
+                        "(ADR-025, migracion 038)."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        async with self._conn.transaction():
+            updated = await self._repo.derogar_trd_serie(existing.id)
+            if updated is None:
+                raise self._trd_race_conflict("derogar")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_version_derogada",
+                object_type="trd_serie",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "estado_anterior": existing.estado,
+                    "motivo": "derogacion_explicita",
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def registrar_rusd_trd_serie_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieRegistrarRusd,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`POST /trd/{code}/versiones/{version}/registrar-rusd` (ADR-025,
+        migración 038 -- hallazgo #4 del dictamen). El RUSD y la publicación
+        (Ac. AGN 001/2024, que compila el 004/2019) tienen hasta 30 días
+        hábiles DESPUÉS de la convalidación para completarse -- este
+        endpoint es el único momento en que el sistema los acepta fuera de
+        `convalidar`. Solo aplica sobre `convalidada`; cada campo solo puede
+        rellenarse UNA vez (de NULL a un valor) -- el trigger de la 038 lo
+        blinda a nivel de motor, pero el chequeo aquí da un 409 legible en
+        vez de la excepción cruda de Postgres."""
+        existing = await self._trd_serie_by_code_version_or_404(code, version)
+        if existing.estado != "convalidada":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_version_no_convalidada",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"esta en estado '{existing.estado}': el RUSD y la "
+                        "publicacion solo se registran sobre una version "
+                        "'convalidada' (ADR-025, migracion 038)."
+                    ),
+                    "status": 409,
+                },
+            )
+        if payload.rusd_radicado is not None and existing.rusd_radicado is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_rusd_ya_registrado",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        "ya tiene un rusd_radicado registrado; es inmutable una "
+                        "vez puesto (ADR-025, migracion 038)."
+                    ),
+                    "status": 409,
+                },
+            )
+        if payload.fecha_publicacion is not None and existing.fecha_publicacion is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_fecha_publicacion_ya_registrada",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        "ya tiene fecha_publicacion registrada; es inmutable una "
+                        "vez puesta (ADR-025, migracion 038)."
+                    ),
+                    "status": 409,
+                },
+            )
+        async with self._conn.transaction():
+            updated = await self._repo.registrar_rusd_trd_serie(
+                existing.id,
+                rusd_radicado=payload.rusd_radicado,
+                fecha_publicacion=payload.fecha_publicacion,
+            )
+            if updated is None:
+                raise self._trd_race_conflict("registrar-rusd")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_rusd_registrado",
+                object_type="trd_serie",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "rusd_radicado": updated.rusd_radicado,
+                    "fecha_publicacion": (
+                        updated.fecha_publicacion.isoformat()
+                        if updated.fecha_publicacion
+                        else None
+                    ),
+                },
+            )
+        return _to_trd_response(updated)
+
+    # ------------------------------------------------------------------
+    # TVD agrupaciones (ADR-026, Increment 1): la TVD es el MISMO instrumento
+    # con otro contenido (discriminador `tipo_instrumento` sobre
+    # `trd_series`, D1) -- el circuito de convalidación (aprobar/devolver/
+    # convalidar/registrar-rusd/derogar) es TYPE-AGNOSTIC a nivel de
+    # repositorio (opera por `id`/`estado`, nunca filtra por tipo) y se
+    # REUTILIZA íntegro; solo cambian aquí: (a) las lecturas por código, que
+    # pasan por `v_tvd_agrupaciones` (Capa 2) para que un id/código de TRD no
+    # sea alcanzable desde esta superficie, y (b) los nombres de asiento de
+    # auditoría (`archive.tvd_*`, D2: en `audit_log` la decisión es la
+    # contraria a la del modelo de datos, a propósito).
+    #
+    # `tipo_instrumento` NUNCA se acepta del cliente (ADR-026 §"Superficie de
+    # API"): estos métodos lo fijan ellos mismos al llamar al repositorio.
+    # ------------------------------------------------------------------
+
+    _TVD_APROBAR_DESDE = _TRD_APROBAR_DESDE
+    # Una TVD nunca alcanza `migrada` (nace en `borrador`, D6 no aplica) --
+    # el origen de `convalidar` para TVD es únicamente `aprobada`.
+    _TVD_CONVALIDAR_DESDE = frozenset({"aprobada"})
+    _TVD_DEROGAR_DESDE = frozenset({"convalidada"})
+    _TVD_DEVOLVER_DESDE = _TRD_DEVOLVER_DESDE
+
+    async def _tvd_code_conflict(self, code: str) -> HTTPException:
+        """ADR-026 Capa 1: el espacio de `code` es único y COMPARTIDO entre
+        TRD y TVD -- lo traduce a un `409 instrumento_code_en_uso` legible,
+        indicando de qué tipo es el ocupante, en vez de dejar escapar la
+        `UniqueViolationError` cruda de `trd_series_code_version_key`."""
+        ocupante_tipo = await self._repo.get_ocupante_tipo_por_code(code)
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "instrumento_code_en_uso",
+                "detail": (
+                    f"El codigo '{code}' ya esta en uso por un instrumento "
+                    f"de tipo '{ocupante_tipo or '(desconocido)'}'. TRD y TVD "
+                    "comparten el mismo espacio de codigos (ADR-026 Capa 1): "
+                    "una entidad no puede reutilizar el mismo codigo entre "
+                    "instrumentos."
+                ),
+                "status": 409,
+                "ocupante_tipo": ocupante_tipo,
+            },
+        )
+
+    async def create_tvd_agrupacion(
+        self, payload: TvdAgrupacionCreate, actor: uuid.UUID | None = None
+    ) -> TrdSerieResponse:
+        """`POST /api/v1/tvd` (ADR-026, Increment 1). Crea la agrupación
+        version 1 en `borrador`. Mismo patrón de atomicidad mutación<->asiento
+        que `create_trd_serie`."""
+        async with self._conn.transaction():
+            try:
+                agrupacion = await self._repo.create_tvd_agrupacion(
+                    code=payload.code,
+                    name=payload.name,
+                    description=payload.description,
+                    total_retention=payload.total_retention,
+                    disposition=payload.disposition,
+                    parent_id=payload.parent_id,
+                    fondo_nombre=payload.fondo_nombre,
+                    fecha_extrema_inicial=payload.fecha_extrema_inicial,
+                    fecha_extrema_final=payload.fecha_extrema_final,
+                    justificacion_valoracion=payload.justificacion_valoracion,
+                    archivo_central_years=payload.archivo_central_years,
+                    pdfa_profile=payload.pdfa_profile,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                raise await self._tvd_code_conflict(payload.code) from exc
+            # Auditoría forense transversal (E08 §9, Canal A) -- gemela de
+            # `archive.trd_serie_created`, nombre distinto a propósito (D2).
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_agrupacion_created",
+                object_type="tvd_agrupacion",
+                object_ref=agrupacion.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(agrupacion.id),
+                    "code": agrupacion.code,
+                    "name": agrupacion.name,
+                    "description": agrupacion.description,
+                    "total_retention": agrupacion.total_retention,
+                    "disposition": agrupacion.disposition,
+                    "parent_id": str(agrupacion.parent_id) if agrupacion.parent_id else None,
+                    "archivo_central_years": agrupacion.archivo_central_years,
+                    "pdfa_profile": agrupacion.pdfa_profile,
+                    "fondo_nombre": agrupacion.fondo_nombre,
+                    "fecha_extrema_inicial": agrupacion.fecha_extrema_inicial.isoformat()
+                    if agrupacion.fecha_extrema_inicial
+                    else None,
+                    "fecha_extrema_final": agrupacion.fecha_extrema_final.isoformat()
+                    if agrupacion.fecha_extrema_final
+                    else None,
+                    "justificacion_valoracion": agrupacion.justificacion_valoracion,
+                },
+            )
+        return _to_trd_response(agrupacion)
+
+    async def list_tvd_agrupaciones(
+        self, *, is_active: bool | None, page: int, size: int
+    ) -> tuple[list[TrdSerieResponse], int]:
+        offset = (page - 1) * size
+        agrupaciones, total = await self._repo.list_tvd_agrupaciones(
+            is_active=is_active, offset=offset, limit=size
+        )
+        return [_to_trd_response(s) for s in agrupaciones], total
+
+    async def get_tvd_agrupacion(self, agrupacion_id: uuid.UUID) -> TrdSerieResponse:
+        agrupacion = await self._repo.get_tvd_agrupacion_by_id(agrupacion_id)
+        if agrupacion is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "tvd_agrupacion_not_found",
+                    "detail": f"TVD agrupacion {agrupacion_id} not found",
+                    "status": 404,
+                },
+            )
+        return _to_trd_response(agrupacion)
+
+    async def get_tvd_agrupacion_versiones(self, code: str) -> list[TrdSerieResponse]:
+        """Gemela de `get_trd_serie_versiones` sobre `v_tvd_agrupaciones`."""
+        agrupaciones = await self._repo.list_tvd_agrupacion_versiones_by_code(code)
+        return [_to_trd_response(s) for s in agrupaciones]
+
+    async def update_tvd_agrupacion(
+        self,
+        agrupacion_id: uuid.UUID,
+        payload: TvdAgrupacionUpdate,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`PATCH /api/v1/tvd/{id}` (ADR-026): gemela de `update_trd_serie`."""
+        existing = await self._repo.get_tvd_agrupacion_by_id(agrupacion_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "tvd_agrupacion_not_found",
+                    "detail": f"TVD agrupacion {agrupacion_id} not found",
+                    "status": 404,
+                },
+            )
+        substantive_fields = (
+            "name",
+            "description",
+            "total_retention",
+            "disposition",
+            "fondo_nombre",
+            "fecha_extrema_inicial",
+            "fecha_extrema_final",
+            "justificacion_valoracion",
+        )
+        has_substantive_change = any(
+            getattr(payload, field) is not None for field in substantive_fields
+        )
+        if existing.estado != "borrador" and has_substantive_change:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_version_inmutable",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"esta en estado '{existing.estado}': su contenido es "
+                        "append-only (Ac. AGN 001/2024, que compila el 004/2019, ADR-026). Use "
+                        f"POST /api/v1/tvd/{existing.code}/versiones para crear "
+                        "una version nueva."
+                    ),
+                    "status": 409,
+                },
+            )
+        async with self._conn.transaction():
+            updated = await self._repo.update_tvd_agrupacion(
+                agrupacion_id,
+                name=payload.name,
+                description=payload.description,
+                total_retention=payload.total_retention,
+                disposition=payload.disposition,
+                pdfa_profile=payload.pdfa_profile,
+                fondo_nombre=payload.fondo_nombre,
+                fecha_extrema_inicial=payload.fecha_extrema_inicial,
+                fecha_extrema_final=payload.fecha_extrema_final,
+                justificacion_valoracion=payload.justificacion_valoracion,
+            )
+            changes: dict[str, dict[str, Any]] = {}
+            for field in (*substantive_fields, "pdfa_profile"):
+                sent = getattr(payload, field)
+                if sent is None:
+                    continue
+                before = getattr(existing, field)
+                if sent != before:
+                    changes[field] = {
+                        "before": before.isoformat() if hasattr(before, "isoformat") else before,
+                        "after": sent.isoformat() if hasattr(sent, "isoformat") else sent,
+                    }
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_agrupacion_updated",
+                object_type="tvd_agrupacion",
+                object_ref=existing.code,
+                actor=str(actor) if actor else None,
+                payload={"id": str(agrupacion_id), "changes": changes},
+            )
+        return _to_trd_response(updated)  # type: ignore[arg-type]
+
+    async def create_tvd_agrupacion_version(
+        self,
+        code: str,
+        payload: TvdAgrupacionVersionCreate,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`POST /api/v1/tvd/{code}/versiones` (ADR-026): gemela de
+        `create_trd_serie_version` sobre la vista/tabla TVD."""
+        vigente = await self._repo.get_tvd_agrupacion_vigente_por_code(code)
+        base = vigente
+        if base is None:
+            base = await self._repo.get_tvd_agrupacion_ultima_por_code(code)
+        if base is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "tvd_code_not_found",
+                    "detail": f"No existe ninguna version para el codigo de agrupacion '{code}'.",
+                    "status": 404,
+                },
+            )
+        vigente = base
+        async with self._conn.transaction():
+            try:
+                new_agrupacion = await self._repo.create_tvd_agrupacion_version(
+                    code=vigente.code,
+                    version=vigente.version + 1,
+                    supersede_a=vigente.id,
+                    created_by=actor,
+                    name=payload.name if payload.name is not None else vigente.name,
+                    description=(
+                        payload.description
+                        if payload.description is not None
+                        else vigente.description
+                    ),
+                    total_retention=(
+                        payload.total_retention
+                        if payload.total_retention is not None
+                        else vigente.total_retention
+                    ),
+                    disposition=(
+                        payload.disposition
+                        if payload.disposition is not None
+                        else vigente.disposition
+                    ),
+                    parent_id=(
+                        payload.parent_id if payload.parent_id is not None else vigente.parent_id
+                    ),
+                    fondo_nombre=(
+                        payload.fondo_nombre
+                        if payload.fondo_nombre is not None
+                        else vigente.fondo_nombre
+                    ),
+                    fecha_extrema_inicial=(
+                        payload.fecha_extrema_inicial
+                        if payload.fecha_extrema_inicial is not None
+                        else vigente.fecha_extrema_inicial
+                    ),
+                    fecha_extrema_final=(
+                        payload.fecha_extrema_final
+                        if payload.fecha_extrema_final is not None
+                        else vigente.fecha_extrema_final
+                    ),
+                    justificacion_valoracion=(
+                        payload.justificacion_valoracion
+                        if payload.justificacion_valoracion is not None
+                        else vigente.justificacion_valoracion
+                    ),
+                    archivo_central_years=(
+                        payload.archivo_central_years
+                        if payload.archivo_central_years is not None
+                        else vigente.archivo_central_years
+                    ),
+                    pdfa_profile=(
+                        payload.pdfa_profile
+                        if payload.pdfa_profile is not None
+                        else vigente.pdfa_profile
+                    ),
+                )
+            except asyncpg.UniqueViolationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "trd_version_en_tramite",
+                        "detail": (
+                            f"Ya existe una version en tramite (borrador/aprobada) "
+                            f"para el codigo '{vigente.code}'; concluyala "
+                            "(aprobar + convalidar) o devuelvala a borrador "
+                            f"(POST /api/v1/tvd/{vigente.code}/versiones/"
+                            f"{{version}}/devolver) antes de abrir otra "
+                            "(ADR-026)."
+                        ),
+                        "status": 409,
+                    },
+                ) from exc
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_version_creada",
+                object_type="tvd_agrupacion",
+                object_ref=new_agrupacion.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(new_agrupacion.id),
+                    "code": new_agrupacion.code,
+                    "version": new_agrupacion.version,
+                    "supersede_a": str(vigente.id),
+                    "supersede_a_version": vigente.version,
+                },
+            )
+        return _to_trd_response(new_agrupacion)
+
+    async def _tvd_agrupacion_by_code_version_or_404(self, code: str, version: int) -> TrdSerie:
+        agrupacion = await self._repo.get_tvd_agrupacion_by_code_version(code, version)
+        if agrupacion is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "tvd_version_not_found",
+                    "detail": f"No existe la version {version} del codigo de agrupacion '{code}'.",
+                    "status": 404,
+                },
+            )
+        return agrupacion
+
+    async def aprobar_tvd_agrupacion_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieAprobar,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`borrador -> aprobada` (ADR-026). El circuito lo sostiene el mismo
+        repositorio type-agnostic que TRD (`ArchiveRepository.aprobar_trd_serie`)."""
+        existing = await self._tvd_agrupacion_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "aprobar", self._TVD_APROBAR_DESDE)
+        async with self._conn.transaction():
+            updated = await self._repo.aprobar_trd_serie(
+                existing.id,
+                acta_comite=payload.acta_comite,
+                fecha_aprobacion_comite=payload.fecha_aprobacion_comite,
+            )
+            if updated is None:
+                raise self._trd_race_conflict("aprobar")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_version_aprobada",
+                object_type="tvd_agrupacion",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "acta_comite": updated.acta_comite,
+                    "fecha_aprobacion_comite": (
+                        updated.fecha_aprobacion_comite.isoformat()
+                        if updated.fecha_aprobacion_comite
+                        else None
+                    ),
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def devolver_tvd_agrupacion_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieDevolver,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`aprobada -> borrador` (ADR-026, gemela de `devolver_trd_serie_version`)."""
+        existing = await self._tvd_agrupacion_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "devolver", self._TVD_DEVOLVER_DESDE)
+        async with self._conn.transaction():
+            updated = await self._repo.devolver_trd_serie_a_borrador(existing.id)
+            if updated is None:
+                raise self._trd_race_conflict("devolver")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_version_devuelta",
+                object_type="tvd_agrupacion",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "estado_anterior": "aprobada",
+                    "motivo": payload.motivo,
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def convalidar_tvd_agrupacion_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieConvalidar,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`aprobada -> convalidada` (ADR-026). Único origen: una TVD nunca
+        llega a `migrada` (nace en `borrador`, D6 no aplica -- §"Máquina de
+        estados"). Deroga la vigente previa del mismo código en la misma
+        transacción, mismo patrón que `convalidar_trd_serie_version`; el
+        re-apunte de `tipos_documentales`/`expediente_metadata_templates`
+        tiene el mismo sentido archivístico en un fondo acumulado."""
+        existing = await self._tvd_agrupacion_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "convalidar", self._TVD_CONVALIDAR_DESDE)
+
+        if existing.acta_comite is None or existing.fecha_aprobacion_comite is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_aprobacion_comite_requerida",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        "esta 'aprobada' pero no tiene registrado el acto del Comite "
+                        "(acta_comite/fecha_aprobacion_comite): la convalidacion del "
+                        "Consejo no puede afirmar un primer acto que el sistema no "
+                        "puede verificar (Ac. AGN 001/2024, ADR-026)."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        async with self._conn.transaction():
+            vigente_previa = await self._repo.get_tvd_agrupacion_vigente_por_code(existing.code)
+            derogada: TrdSerie | None = None
+            if vigente_previa is not None:
+                derogada = await self._repo.derogar_vigente_por_code(
+                    existing.code, exclude_id=existing.id
+                )
+                if derogada is None:
+                    raise self._trd_race_conflict("convalidar")
+
+            updated = await self._repo.convalidar_trd_serie_desde_aprobada(
+                existing.id,
+                acto_administrativo=payload.acto_administrativo,
+                fecha_convalidacion=payload.fecha_convalidacion,
+                instancia_convalidante=payload.instancia_convalidante,
+                rusd_radicado=payload.rusd_radicado,
+                fecha_publicacion=payload.fecha_publicacion,
+            )
+            if updated is None:
+                raise self._trd_race_conflict("convalidar")
+
+            n_tipos = n_tipos_omitidos = n_templates = n_templates_omitidos = 0
+            if derogada is not None:
+                try:
+                    n_tipos, n_tipos_omitidos = await self._repo.repoint_tipos_documentales(
+                        old_serie_id=derogada.id, new_serie_id=updated.id
+                    )
+                    (
+                        n_templates,
+                        n_templates_omitidos,
+                    ) = await self._repo.repoint_expediente_metadata_templates(
+                        old_serie_id=derogada.id, new_serie_id=updated.id
+                    )
+                except asyncpg.UniqueViolationError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "trd_repoint_colision",
+                            "detail": (
+                                "No se pudo re-apuntar tipos_documentales/"
+                                "expediente_metadata_templates de la version "
+                                f"derogada ({derogada.code} v{derogada.version}) a la "
+                                f"nueva vigente: colision de clave no cubierta por "
+                                "el filtro de exclusion (ADR-026)."
+                            ),
+                            "status": 409,
+                        },
+                    ) from exc
+
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_version_convalidada",
+                object_type="tvd_agrupacion",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "acto_administrativo": updated.acto_administrativo,
+                    "fecha_convalidacion": (
+                        updated.fecha_convalidacion.isoformat()
+                        if updated.fecha_convalidacion
+                        else None
+                    ),
+                    "instancia_convalidante": updated.instancia_convalidante,
+                    "rusd_radicado": updated.rusd_radicado,
+                    "fecha_publicacion": (
+                        updated.fecha_publicacion.isoformat() if updated.fecha_publicacion else None
+                    ),
+                    "fondo_nombre": updated.fondo_nombre,
+                    "justificacion_valoracion": updated.justificacion_valoracion,
+                    "derogada_id": str(derogada.id) if derogada else None,
+                    "derogada_version": derogada.version if derogada else None,
+                    "tipos_documentales_repointed": n_tipos,
+                    "tipos_documentales_omitidos": n_tipos_omitidos,
+                    "expediente_metadata_templates_repointed": n_templates,
+                    "expediente_metadata_templates_omitidos": n_templates_omitidos,
+                },
+            )
+            if derogada is not None:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.tvd_version_derogada",
+                    object_type="tvd_agrupacion",
+                    object_ref=derogada.code,
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "id": str(derogada.id),
+                        "code": derogada.code,
+                        "version": derogada.version,
+                        "estado_anterior": vigente_previa.estado,
+                        "motivo": "supersedida_por_convalidacion",
+                        "supersedida_por": str(updated.id),
+                        "supersedida_por_version": updated.version,
+                    },
+                )
+        return _to_trd_response(updated)
+
+    async def derogar_tvd_agrupacion_version(
+        self, code: str, version: int, actor: uuid.UUID | None = None
+    ) -> TrdSerieResponse:
+        """`convalidada -> derogada` (ADR-026). No se exige "sin expedientes
+        open bajo el codigo" como precondicion adicional a la de TRD: la
+        misma guarda (`count_expedientes_open_por_trd_serie_code`) aplica
+        igual -- en fondo acumulado casi nunca hay expedientes `open` (se
+        registran ya cerrados, ver ADR-026 §"Maquina de estados"), asi que en
+        la practica casi nunca bloquea, pero se conserva por si alguna
+        entidad SI abre expedientes bajo una TVD entre el Increment 1 y 2."""
+        existing = await self._tvd_agrupacion_by_code_version_or_404(code, version)
+        self._assert_trd_action_from(existing, "derogar", self._TVD_DEROGAR_DESDE)
+
+        n_open = await self._repo.count_expedientes_open_por_trd_serie_code(existing.code)
+        if n_open:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_derogacion_bloqueada_expedientes_abiertos",
+                    "detail": (
+                        f"Hay {n_open} expediente(s) 'open' clasificados bajo el "
+                        f"codigo '{existing.code}': derogar esta version sin una "
+                        "sucesora los dejaria sin ningun instrumento vigente que "
+                        "gobierne su cierre (ADR-026)."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        async with self._conn.transaction():
+            updated = await self._repo.derogar_trd_serie(existing.id)
+            if updated is None:
+                raise self._trd_race_conflict("derogar")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_version_derogada",
+                object_type="tvd_agrupacion",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "estado_anterior": existing.estado,
+                    "motivo": "derogacion_explicita",
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def registrar_rusd_tvd_agrupacion_version(
+        self,
+        code: str,
+        version: int,
+        payload: TrdSerieRegistrarRusd,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`registrar-rusd` (ADR-026, gemela de `registrar_rusd_trd_serie_version`)."""
+        existing = await self._tvd_agrupacion_by_code_version_or_404(code, version)
+        if existing.estado != "convalidada":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_version_no_convalidada",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"esta en estado '{existing.estado}': el RUSD y la "
+                        "publicacion solo se registran sobre una version "
+                        "'convalidada' (ADR-026)."
+                    ),
+                    "status": 409,
+                },
+            )
+        if payload.rusd_radicado is not None and existing.rusd_radicado is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_rusd_ya_registrado",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        "ya tiene un rusd_radicado registrado; es inmutable una "
+                        "vez puesto (ADR-026)."
+                    ),
+                    "status": 409,
+                },
+            )
+        if payload.fecha_publicacion is not None and existing.fecha_publicacion is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_fecha_publicacion_ya_registrada",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        "ya tiene fecha_publicacion registrada; es inmutable una "
+                        "vez puesta (ADR-026)."
+                    ),
+                    "status": 409,
+                },
+            )
+        async with self._conn.transaction():
+            updated = await self._repo.registrar_rusd_trd_serie(
+                existing.id,
+                rusd_radicado=payload.rusd_radicado,
+                fecha_publicacion=payload.fecha_publicacion,
+            )
+            if updated is None:
+                raise self._trd_race_conflict("registrar-rusd")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tvd_rusd_registrado",
+                object_type="tvd_agrupacion",
+                object_ref=updated.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(updated.id),
+                    "code": updated.code,
+                    "version": updated.version,
+                    "rusd_radicado": updated.rusd_radicado,
+                    "fecha_publicacion": (
+                        updated.fecha_publicacion.isoformat()
+                        if updated.fecha_publicacion
+                        else None
+                    ),
+                },
+            )
+        return _to_trd_response(updated)
+
+    async def list_expedientes_revision_pendiente(
+        self,
+        *,
+        page: int,
+        size: int,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> tuple[list[ExpedienteRevisionPendienteResponse], int]:
+        """`GET /trd/revision-pendiente` (ADR-025, Increment 2): informe de
+        expedientes marcados `trd_revision_requerida` (D4/D6) -- paginado,
+        mismo patrón que `list_trd_series`.
+
+        Hallazgo de seguridad [Alta, BLOQUEANTE], migración 038: este informe
+        NO filtraba por clearance -- `USUA_PERM_TRD` es ORTOGONAL al
+        clearance (potestad sobre el instrumento no es nivel para leer los
+        expedientes que gobierna), así que cualquier portador enumeraba
+        RESERVADA/CLASIFICADA, agravado porque el backfill de la 037 marcó
+        masivamente todo el archivo cerrado histórico. No-read-up con el
+        MISMO criterio que `list_expedientes` -- ver esa docstring y la de
+        `ArchiveRepository.list_expedientes_revision_pendiente`. También deja
+        traza AGREGADA de consulta (RF-BUS-10), gemela de `list_expedientes`:
+        antes este listado de expedientes clasificados no dejaba rastro de
+        quién lo consultó."""
+        offset = (page - 1) * size
+        clearance = await self._repo.caller_clearance(user_id)
+        rows, total = await self._repo.list_expedientes_revision_pendiente(
+            offset=offset, limit=size, max_clearance=clearance
+        )
+        await self._audit_search_access(
+            action="archive.expediente_revision_pendiente_listado",
+            filtros={},
+            total=total,
+            page=page,
+            size=size,
+            user_id=user_id,
+            canal=canal,
+        )
+        items = [
+            ExpedienteRevisionPendienteResponse(
+                id=r["id"],
+                code=r["code"],
+                status=r["status"],
+                trd_serie_id=r["trd_serie_id"],
+                trd_serie_code=r["trd_serie_code"],
+                trd_revision_motivo=r["trd_revision_motivo"],
+                closed_at=r["closed_at"],
+            )
+            for r in rows
+        ]
+        return items, total
 
 
 # ------------------------------------------------------------------
@@ -2414,6 +3714,7 @@ def _to_trd_response(s: TrdSerie) -> TrdSerieResponse:
         estado=s.estado,
         valid_to=s.valid_to,
         acto_administrativo=s.acto_administrativo,
+        acta_comite=s.acta_comite,
         fecha_aprobacion_comite=s.fecha_aprobacion_comite,
         fecha_convalidacion=s.fecha_convalidacion,
         instancia_convalidante=s.instancia_convalidante,
@@ -2421,4 +3722,9 @@ def _to_trd_response(s: TrdSerie) -> TrdSerieResponse:
         fecha_publicacion=s.fecha_publicacion,
         supersede_a=s.supersede_a,
         created_by=s.created_by,
+        tipo_instrumento=s.tipo_instrumento,
+        fondo_nombre=s.fondo_nombre,
+        fecha_extrema_inicial=s.fecha_extrema_inicial,
+        fecha_extrema_final=s.fecha_extrema_final,
+        justificacion_valoracion=s.justificacion_valoracion,
     )

@@ -1,10 +1,10 @@
 # ADR-025 — La TRD es un instrumento convalidado, no una tabla de configuración: versionado append-only y fijación de la versión que gobierna cada expediente
 
-**Estado**: Propuesto (Increment 1 especificado; 2 y 3 declarados como hoja de ruta, no deuda oculta). Diseño de `orfeo-architect` a petición de `archival-compliance-auditor` (hallazgo **Crítico**). Pendiente de implementación (`fastapi-developer`) y de re-auditoría por `archival-compliance-auditor` + `tenant-security-auditor`.
+**Estado**: **Implementado** — Increment 1 (versionado append-only, congelación del amarre) e Increment 2 (circuito de convalidación: `aprobar`/`devolver`/`convalidar`/`registrar-rusd`/`derogar`) en producción, migraciones 037 y 038 aplicadas (commit `32fc631` para la 037; la 038 remedia el dictamen de `archival-compliance-auditor` sobre el Increment 2 — ver addendum al final de este documento). Increment 3 (perfil v5 del índice, UI versionada, re-baselining explícito) queda como hoja de ruta declarada, no deuda oculta. Diseño original de `orfeo-architect` a petición de `archival-compliance-auditor` (hallazgo **Crítico**); implementado por `fastapi-developer`; re-auditado por `archival-compliance-auditor` (Increment 2) con remediación en la migración 038.
 
-**Fecha**: 2026-07-31.
+**Fecha**: 2026-07-31 (Increment 1+2); addendum 2026-08-01 (migración 038).
 
-**Contexto normativo**: Ley 594/2000 arts. 24-26; **Acuerdo AGN 004/2019** (elaboración, aprobación por el Comité Institucional de Gestión y Desempeño, **convalidación** por el Consejo Departamental/Distrital de Archivos, publicación e inscripción en el **RUSD**); Acuerdo AGN 004/2013 (derogado en lo pertinente por 004/2019, citado en ADR-015); Acuerdo AGN 001/2024 art. 4.3.2.6 (retención del expediente electrónico).
+**Contexto normativo**: Ley 594/2000 arts. 24-26; **Acuerdo AGN 001/2024** (Acuerdo Único de la Función Archivística), que **compila** el derogado **Acuerdo AGN 004/2019** (elaboración, aprobación por el Comité Institucional de Gestión y Desempeño, **convalidación** por el Consejo Departamental/Distrital de Archivos, publicación e inscripción en el **RUSD**) — el procedimiento sustantivo que cita este ADR se conserva íntegro en la compilación, así que las referencias de código/mensajes de error se normalizan a "Ac. AGN 001/2024, que compila el 004/2019"; Acuerdo AGN 004/2013 (derogado en lo pertinente, citado en ADR-015); Acuerdo AGN 001/2024 art. 4.3.2.6 (retención del expediente electrónico).
 
 ---
 
@@ -61,7 +61,7 @@ Excepción explícita y acotada: `pdfa_profile` **sí** es editable en sitio en 
 
 ### D2 — Estado del instrumento y acto administrativo
 
-Se añaden `estado`, `valid_to` y los campos del acto: `acto_administrativo`, `fecha_aprobacion_comite`, `fecha_convalidacion`, `instancia_convalidante`, `rusd_radicado`, `fecha_publicacion`. **El circuito del Acuerdo 004/2019 se modela como estado, no como texto libre.**
+Se añaden `estado`, `valid_to` y los campos del acto: `acto_administrativo`, `fecha_aprobacion_comite`, `fecha_convalidacion`, `instancia_convalidante`, `rusd_radicado`, `fecha_publicacion`. **El circuito del Acuerdo AGN 001/2024 (que compila el 004/2019) se modela como estado, no como texto libre.**
 
 ### D3 — El expediente fija la versión: `trd_serie_id` **es** el amarre (recomendación al punto 6)
 
@@ -90,7 +90,7 @@ Esto también resuelve, sin batch ni job, el "switching en caliente" que ADR-015
 
 ### D4 — Retroactividad: **congelar**, y marcar lo que no se puede congelar honestamente
 
-Recomendación: **congelación**. El calendario de un expediente lo gobierna la versión convalidada vigente **en su fecha de cierre**, y una convalidación posterior **no lo altera**. Es la lectura correcta del Acuerdo 004/2019 (la actualización rige hacia adelante) y es, exactamente, la fuga que este ADR cierra: recalcular hacia atrás *es* el defecto.
+Recomendación: **congelación**. El calendario de un expediente lo gobierna la versión convalidada vigente **en su fecha de cierre**, y una convalidación posterior **no lo altera**. Es la lectura correcta del Acuerdo AGN 001/2024, que compila el 004/2019 (la actualización rige hacia adelante) y es, exactamente, la fuga que este ADR cierra: recalcular hacia atrás *es* el defecto.
 
 - **Recalcular** — descartado. Es el estado actual del sistema. Hace irreconstruible el fundamento de cualquier eliminación y, vía WORM COMPLIANCE, produce efectos irreversibles.
 - **Marcar todo para revisión** — descartado como política general. Convertiría cada actualización de TRD en una cola de trabajo manual proporcional al archivo histórico; en la práctica se ignora, y una marca que todos ignoran es peor que no tenerla porque simula control.
@@ -103,7 +103,7 @@ Caso residual honesto: los expedientes ya cerrados **sin** snapshot (`dispositio
 - **Cerrar** un expediente (que solo *proyecta* un calendario) exige serie en estado `convalidada` **o** `migrada`. `borrador`, `aprobada` y `derogada` → `409 trd_version_no_vigente`.
 - **Ejecutar** la disposición final (eliminación efectiva — **hoy no existe ningún job que elimine**; el único job es la renovación WORM de series CT) exigirá `convalidada` **estricto**, sin excepción para `migrada`. Como esa ruta aún no existe, la regla se escribe ahora y se hace exigible cuando se implemente (Increment 2).
 
-`aprobada` no habilita el cierre a propósito: la aprobación del Comité es condición necesaria y **no suficiente** (Acuerdo 004/2019); sin convalidación del Consejo, el instrumento no es oponible.
+`aprobada` no habilita el cierre a propósito: la aprobación del Comité es condición necesaria y **no suficiente** (Acuerdo AGN 001/2024, que compila el 004/2019); sin convalidación del Consejo, el instrumento no es oponible.
 
 ### D6 — Backfill: `migrada`, y el motor impide que `migrada` se disfrace de convalidada
 
@@ -121,7 +121,7 @@ Para que `migrada` no derive hacia una convalidación de facto, se refuerza en t
 
 ---
 
-## Modelo de datos — migración propuesta (**no aplicada**)
+## Modelo de datos — migración 037 (**aplicada**, commit `32fc631`)
 
 `services/archive-service/migrations/tenant/037_trd_versionado_convalidacion.sql`. Idempotente y **acotada a `current_schema()`** en todos los guards (lección de las migraciones 016/017/019/035, reparadas por la 036: un guard que filtra por nombre de objeto sin schema **omite silenciosamente** el objeto en el tenant #2 y siguientes).
 
@@ -503,7 +503,7 @@ UI de administración TRD versionada (hoy `admin/trd` edita en sitio) · versió
 
 **Positivas**: el calendario de disposición de un expediente cerrado deja de ser alterable retroactivamente, que es el hallazgo; la eliminación en 2032 podrá exhibir la versión, el acto y la instancia que la fundamentaron; el `retain_until` WORM COMPLIANCE deja de depender de una fila editable; la API deja de afirmar un versionado inexistente; el "switching en caliente" que ADR-015 difirió se resuelve **sin** reclasificación masiva (re-resolución por código en el cierre); el motor —no la convención— impide tanto mutar una versión cerrada como que una serie `migrada` se disfrace de convalidada.
 
-**Negativas / límites**: el `PATCH` de TRD cambia de semántica y rompe flujos de administración y tests existentes (ruptura buscada, pero real); toda serie preexistente queda `migrada` y todo expediente cerrado queda marcado para revisión — un volumen de marcas proporcional al archivo histórico, que solo la ratificación limpia; el circuito completo del Acuerdo 004/2019 (aprobación, convalidación, publicación, RUSD) **no** está en el Increment 1, de modo que entre el 1 y el 2 el sistema sabe declarar honestamente que no hay convalidación pero **no** ofrece todavía la ruta para registrarla; la FK queda `NOT VALID` hasta el Increment 2 (verifica escrituras nuevas, no las históricas); nada de esto acerca al proyecto a la acreditación ONAC ni a un repositorio WORM acreditado — sigue sin estarlo.
+**Negativas / límites**: el `PATCH` de TRD cambia de semántica y rompe flujos de administración y tests existentes (ruptura buscada, pero real); toda serie preexistente queda `migrada` y todo expediente cerrado queda marcado para revisión — un volumen de marcas proporcional al archivo histórico, que solo la ratificación limpia; el circuito completo del Acuerdo AGN 001/2024, que compila el 004/2019 (aprobación, convalidación, publicación, RUSD) **no** está en el Increment 1, de modo que entre el 1 y el 2 el sistema sabe declarar honestamente que no hay convalidación pero **no** ofrece todavía la ruta para registrarla; la FK queda `NOT VALID` hasta el Increment 2 (verifica escrituras nuevas, no las históricas); nada de esto acerca al proyecto a la acreditación ONAC ni a un repositorio WORM acreditado — sigue sin estarlo.
 
 **Lo que este ADR NO afirma**: que las TRD existentes estén convalidadas (precisamente lo contrario); que el sistema pueda determinar por sí mismo si lo estuvieron; que la ratificación pueda ser automática. La convalidación es un hecho externo y solo puede entrar declarada por un actor identificable con el acto en la mano.
 
@@ -517,6 +517,34 @@ UI de administración TRD versionada (hoy `admin/trd` edita en sitio) · versió
 - **Solo snapshot JSONB, sin versionar la tabla**: descartado. Congela la prueba pero deja la fuente mutable, no da integridad referencial ni permite consultar por serie, y no impide que una serie no convalidada gobierne un cierre.
 - **Backfill a `estado='convalidada'`**: descartado por el criterio central del proyecto — el sistema no afirma lo que no verificó (RF-FIR-15). Sería, además, la afirmación falsa que se invocaría para justificar una eliminación futura.
 - **Bloquear de entrada todo cierre bajo serie no convalidada**: descartado para el Increment 1. Dejaría a todos los tenants sin poder cerrar expedientes desde el día del despliegue, sin ruta para arreglarlo (los endpoints de convalidación son Increment 2). `migrada` + declaración en el snapshot + marca de revisión da la misma honestidad sin parar la operación.
+
+---
+
+## Addendum (2026-08-01) — migración 038: remediación del dictamen sobre el Increment 2
+
+`archival-compliance-auditor` re-auditó el Increment 2 (ya implementado) y encontró cinco hallazgos de conformidad más varios de seguridad sobre el mismo código. `services/archive-service/migrations/tenant/038_trd_convalidacion_devolucion_rusd.sql` los cierra:
+
+**[Alta] #1 — `aprobada` era un callejón sin salida.** Sin `DELETE`, sin `derogar` (`_TRD_DEROGAR_DESDE` nunca incluyó `aprobada`) y con `PATCH` cerrado (append-only fuera de `borrador`), la única transición disponible desde `aprobada` era `convalidar` — que exige declarar un acto administrativo. Un instrumento aprobado pero no listo para convalidarse empujaba al administrador a mentir sobre la convalidación para desatascarlo. Se añade **`POST /trd/{code}/versiones/{version}/devolver`** (`aprobada → borrador`, `motivo` obligatorio, asiento `archive.trd_version_devuelta`) — la devolución con observaciones es un paso ordinario del Ac. AGN 001/2024, no una excepción. Limpia `acta_comite`/`fecha_aprobacion_comite`: la aprobación queda VOID y exige una nueva antes de poder volver a convalidar. También se corrigió el mensaje de `409 trd_version_en_tramite`, que instruía "conválidela o deróguela" cuando derogar desde `aprobada` es y era imposible.
+
+**[Alta] #2 — El gate D5 tenía el criterio contrario al del ADR.** `assert_serie_convalidada_para_disposicion_final` exigía `estado == "convalidada"` sobre la fila **viva** de `trd_series`. Un expediente cerrado bajo una versión convalidada que años después se deroga (porque el instrumento se actualizó) habría visto ese gate RECHAZAR una eliminación legítima — el incumplimiento simétrico al que motivó este ADR (conservar indefinidamente lo que debía eliminarse). Corregido: el gate (renombrado `assert_disposicion_final_autorizada`, `app/core/trd_disposition.py`) ahora recibe el **snapshot congelado** (`serie_estado`/`acto_administrativo`, las mismas claves que ya viajan en `expedientes.disposition` desde el Increment 1) y autoriza si `serie_estado == "convalidada"` o (`"derogada"` con `acto_administrativo` presente) — el CHECK `trd_series_migrada_sin_acto_check` (037) garantiza que una `migrada` derogada nunca tiene acto, así que el discriminante es fiable. Los tests (`tests/test_trd_disposition_gate.py`) se reescribieron íntegros contra el criterio corregido. El residual (gate sin *caller* porque el job de eliminación efectiva todavía no existe) queda registrado en `documentos/specDrive/trazabilidad.md`, ligado a la épica de eliminación — no solo en el docstring del módulo.
+
+**[Alta por impacto] #3 — `derogar` sin sucesora mataba el código de serie.** Decisión (se pidió criterio, no comodidad): **`derogar` se bloquea (`409 trd_derogacion_bloqueada_expedientes_abiertos`) mientras exista algún expediente `open` clasificado bajo el código** (resuelto vía `JOIN` con `trd_series.code` a través de `trd_serie_id`, no por `trd_serie_code` — esa columna solo se escribe al cerrar, D3). Se descartó exigir una sucesora ya convalidada como precondición porque `derogar` es también el camino legítimo para retirar una serie que ya no produce documentos (dependencia eliminada, competencia trasladada) — exigir sucesora habría bloqueado exactamente ese caso de uso. Complementa la decisión: `create_trd_serie_version` ahora cae a la **última versión por número, cualquier estado**, cuando el código no tiene vigente — un código totalmente derogado nunca queda sin ningún camino de vuelta.
+
+**[Media] #5 — La aprobación del Comité no dejaba acto ni fecha.** `aprobar` no recibía body; `fecha_aprobacion_comite` (037) era vestigial. Se añaden columna `acta_comite` (038) y body obligatorio `{acta_comite, fecha_aprobacion_comite}` en `aprobar`; `convalidar` desde `aprobada` ahora exige que ya consten (`409 trd_aprobacion_comite_requerida` si no) — cierra la indistinguibilidad entre una fila convalidada por el circuito completo y una `migrada` ratificada.
+
+**[Media] #4 — RUSD y publicación solo eran capturables en el instante equivocado.** La norma da hasta 30 días hábiles después de la convalidación para el RUSD; antes, el único momento en que el sistema los aceptaba era `POST /convalidar`. Nuevo **`POST /trd/{code}/versiones/{version}/registrar-rusd`** (`{rusd_radicado?, fecha_publicacion?}`, al menos uno), solo sobre `convalidada`, con asiento `archive.trd_rusd_registrado`.
+
+**[Baja pero visible] #10 — Citas normativas y estado del ADR desincronizado.** El Acuerdo AGN 004/2019 está derogado y compilado por el **001/2024**; mensajes de error, docstrings y este documento se normalizaron a "Ac. AGN 001/2024, que compila el 004/2019" (el procedimiento sustantivo no cambia). El encabezado de este ADR pasó de "Propuesto/pendiente de implementación" a **Implementado**.
+
+**Hallazgos de seguridad del mismo dictamen, cerrados en el mismo incremento:**
+
+- **`GET /trd/revision-pendiente` sin filtro de clearance [Alta, BLOQUEANTE].** `USUA_PERM_TRD` es ortogonal al clearance (potestad sobre el instrumento ≠ nivel para leer los expedientes que gobierna); el informe no filtraba `nivel_seguridad`, y el backfill de la 037 marcó masivamente el archivo histórico. Corregido con el mismo criterio no-read-up que `list_expedientes` (`nivel_seguridad <= $1` como primera condición, compartida por `COUNT` y página) + traza agregada de consulta (RF-BUS-10) vía `_audit_search_access`.
+- **Re-apunte de FK plantable con 500 [Media].** `repoint_tipos_documentales`/`repoint_expediente_metadata_templates` hacían un `UPDATE` ciego contra columnas `UNIQUE`; una colisión legítima (tipos documentales ya definidos en la versión nueva antes de convalidar) reventaba con `UniqueViolationError`. Ahora excluyen colisiones (`NOT EXISTS`) y auditan `omitidos`; el residual se traduce a `409 trd_repoint_colision`.
+- **Huérfanos silenciosos en carrera [Media].** Si `vigente_previa` se leía pero otra transacción la derogaba primero, la convalidación seguía adelante sin re-apuntar las FK. Ahora aborta fail-closed (`409 trd_transicion_invalida`).
+- **Auditoría sin `estado_anterior` [Media].** Los tres asientos `archive.trd_version_derogada`/`convalidada` relevantes ahora incluyen `estado_anterior` — derogar una `convalidada` y derogar una `migrada` que nunca pasó el circuito son actos jurídicamente distintos y ahora distinguibles en el log.
+- **El motor no protegía el fundamento jurídico [Media].** El trigger de la 038 extiende `reject_trd_version_mutation`: desde `convalidada`, el único destino de `estado` es `derogada`, y `acto_administrativo`/`fecha_convalidacion`/`instancia_convalidante` son inmutables; `rusd_radicado`/`fecha_publicacion` admiten el *fill-once* (NULL → valor, nunca valor → otro valor) que exige el hallazgo #4.
+
+**Verificación**: 701 tests unitarios pasan (145 → 151 `skipped`, los nuevos de integración) + 151 de integración contra Postgres real (antes 679/145 y 145 respectivamente) — sin roturas, incluida la validación de la migración 038 en dos schemas de tenant (idempotencia + trigger extendido probado por mutación).
 
 ---
 

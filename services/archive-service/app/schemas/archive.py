@@ -257,6 +257,173 @@ class TrdSerieVersionCreate(BaseModel):
         return _validate_pdfa_profile(value)
 
 
+class TrdSerieAprobar(BaseModel):
+    """`POST /api/v1/trd/{code}/versiones/{version}/aprobar` (ADR-025 D2,
+    migración 038 -- hallazgo #5 del dictamen). Antes este endpoint no
+    recibía body: el sistema registraba el SEGUNDO acto del circuito
+    (convalidación) y nunca el PRIMERO (aprobación del Comité Institucional
+    de Gestión y Desempeño, Ac. AGN 001/2024 que compila 004/2019) --
+    `fecha_aprobacion_comite` existía en el modelo desde la 037 pero ningún
+    camino de código la escribía. Ambos campos son obligatorios: una
+    aprobación sin acta ni fecha es la misma afirmación no verificada que
+    este proyecto rechaza en la convalidación (RF-FIR-15)."""
+
+    acta_comite: str = Field(..., min_length=1)
+    fecha_aprobacion_comite: date
+
+
+class TrdSerieDevolver(BaseModel):
+    """`POST /api/v1/trd/{code}/versiones/{version}/devolver` (ADR-025,
+    migración 038 -- hallazgo #1 del dictamen). `aprobada -> borrador`: la
+    instancia convalidante (o el propio Comité) devuelve el instrumento con
+    observaciones para ajustes -- paso ORDINARIO del procedimiento (Ac. AGN
+    001/2024), no una excepción. `motivo` es obligatorio: sin él, el asiento
+    `archive.trd_version_devuelta` no explicaría por qué un instrumento
+    aprobado volvió a edición."""
+
+    motivo: str = Field(..., min_length=1)
+
+
+class TrdSerieRegistrarRusd(BaseModel):
+    """`POST /api/v1/trd/{code}/versiones/{version}/registrar-rusd` (ADR-025,
+    migración 038 -- hallazgo #4 del dictamen). El Registro Único de Series
+    Documentales (RUSD) y la publicación tienen, por norma, hasta 30 días
+    hábiles DESPUÉS de la convalidación para completarse -- el único momento
+    en que el sistema los aceptaba era `POST .../convalidar`, y luego el
+    `PATCH` queda cerrado para cualquier estado que no sea `borrador`
+    (append-only, D1). Al menos un campo debe venir; ambos quedan opcionales
+    entre sí porque el RUSD y la publicación no siempre llegan juntos."""
+
+    rusd_radicado: str | None = Field(default=None, min_length=1)
+    fecha_publicacion: date | None = None
+
+    @model_validator(mode="after")
+    def _al_menos_un_campo(self) -> "TrdSerieRegistrarRusd":
+        if self.rusd_radicado is None and self.fecha_publicacion is None:
+            raise ValueError("registrar-rusd exige al menos rusd_radicado o fecha_publicacion")
+        return self
+
+
+class TrdSerieConvalidar(BaseModel):
+    """`POST /api/v1/trd/{code}/versiones/{version}/convalidar` (ADR-025 D2,
+    Increment 2). Exige el acto: `acto_administrativo`, `fecha_convalidacion`
+    e `instancia_convalidante` son obligatorios en el body -- el CHECK
+    `trd_series_convalidada_acto_check` (migración 037) ya lo exige a nivel
+    BD, pero el 422 de Pydantic es más legible que el 500/23514 crudo de
+    Postgres. `rusd_radicado`/`fecha_publicacion` quedan opcionales: el
+    registro RUSD (Ac. AGN 001/2024, que compila el 004/2019) puede llegar
+    después de la convalidación del Consejo -- ver `TrdSerieRegistrarRusd`
+    para el camino que lo captura cuando llega tarde (hallazgo #4)."""
+
+    acto_administrativo: str = Field(..., min_length=1)
+    fecha_convalidacion: date
+    instancia_convalidante: str = Field(..., min_length=1)
+    rusd_radicado: str | None = None
+    fecha_publicacion: date | None = None
+
+
+class TvdAgrupacionCreate(BaseModel):
+    """`POST /api/v1/tvd` (ADR-026, Increment 1). Espejo de `TrdSerieCreate`
+    salvo lo que ADR-026 D2 (Capa 3) exige/prohíbe para el instrumento de
+    valoración: NO acepta `archivo_gestion_years` (la TVD no tiene fase de
+    archivo de gestión, siempre NULL) ni `retention_years` (siempre 0 para
+    el instrumento -- la retención de un fondo acumulado la fija
+    `archivo_central_years` desde `fecha_extrema_final`, D4, Increment 2) ni
+    `estado`/`tipo_instrumento` (nunca del cliente, fijado por el router).
+    `fondo_nombre`/`fecha_extrema_inicial`/`fecha_extrema_final`/
+    `justificacion_valoracion` son OBLIGATORIOS: son el objeto del
+    instrumento (D5), no un dato secundario."""
+
+    code: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+    disposition: _DISPOSITION = "E"
+    parent_id: uuid.UUID | None = None
+    total_retention: int = Field(default=10, ge=0)
+    archivo_central_years: int | None = Field(default=None, ge=0)
+    pdfa_profile: str | None = None
+    fondo_nombre: str = Field(..., min_length=1)
+    fecha_extrema_inicial: date
+    fecha_extrema_final: date
+    justificacion_valoracion: str = Field(..., min_length=1)
+
+    @field_validator("pdfa_profile")
+    @classmethod
+    def _check_pdfa_profile(cls, value: str | None) -> str | None:
+        return _validate_pdfa_profile(value)
+
+    @model_validator(mode="after")
+    def _fechas_extremas_coherentes(self) -> "TvdAgrupacionCreate":
+        if self.fecha_extrema_final < self.fecha_extrema_inicial:
+            raise ValueError(
+                "fecha_extrema_final debe ser >= fecha_extrema_inicial "
+                "(trd_series_tvd_forma_check, ADR-026)"
+            )
+        return self
+
+
+class TvdAgrupacionUpdate(BaseModel):
+    """`PATCH /api/v1/tvd/{id}` (ADR-026): solo aplicable EN SITIO cuando la
+    versión está en `borrador` (+ `pdfa_profile` en cualquier estado), mismo
+    gate que `TrdSerieUpdate`. `retention_years`/`archivo_gestion_years`
+    quedan fuera a propósito: son 0/NULL por construcción para TVD."""
+
+    name: str | None = None
+    description: str | None = None
+    total_retention: int | None = Field(default=None, ge=0)
+    disposition: str | None = None
+    pdfa_profile: str | None = None
+    fondo_nombre: str | None = Field(default=None, min_length=1)
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
+    justificacion_valoracion: str | None = Field(default=None, min_length=1)
+
+    @field_validator("pdfa_profile")
+    @classmethod
+    def _check_pdfa_profile(cls, value: str | None) -> str | None:
+        return _validate_pdfa_profile(value)
+
+
+class TvdAgrupacionVersionCreate(BaseModel):
+    """`POST /api/v1/tvd/{code}/versiones` (ADR-026): clona la vigente como
+    `borrador` `version+1`. Espejo de `TrdSerieVersionCreate` sin
+    `archivo_gestion_years`/`retention_years`, con los campos propios de TVD
+    opcionales (se copian de la vigente cuando se omiten)."""
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    disposition: _DISPOSITION | None = None
+    parent_id: uuid.UUID | None = None
+    total_retention: int | None = Field(default=None, ge=0)
+    archivo_central_years: int | None = Field(default=None, ge=0)
+    pdfa_profile: str | None = None
+    fondo_nombre: str | None = Field(default=None, min_length=1)
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
+    justificacion_valoracion: str | None = Field(default=None, min_length=1)
+
+    @field_validator("pdfa_profile")
+    @classmethod
+    def _check_pdfa_profile(cls, value: str | None) -> str | None:
+        return _validate_pdfa_profile(value)
+
+
+class ExpedienteRevisionPendienteResponse(BaseModel):
+    """Fila de `GET /api/v1/trd/revision-pendiente` (ADR-025 D4/D6,
+    Increment 2): expedientes con `trd_revision_requerida=true`, cualquier
+    motivo -- `cerrado_bajo_serie_migrada` (D6, se limpia al ratificar),
+    `cierre_sin_snapshot_de_retencion` y `serie_no_resoluble` (D4, ninguno de
+    los dos se resuelve ratificando: ver ADR-025 §"Plan de backfill")."""
+
+    id: uuid.UUID
+    code: str
+    status: str
+    trd_serie_id: uuid.UUID | None
+    trd_serie_code: str | None
+    trd_revision_motivo: str | None
+    closed_at: datetime | None
+
+
 class TrdSerieResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -281,6 +448,7 @@ class TrdSerieResponse(BaseModel):
     estado: str = "borrador"
     valid_to: date | None = None
     acto_administrativo: str | None = None
+    acta_comite: str | None = None
     fecha_aprobacion_comite: date | None = None
     fecha_convalidacion: date | None = None
     instancia_convalidante: str | None = None
@@ -288,6 +456,14 @@ class TrdSerieResponse(BaseModel):
     fecha_publicacion: date | None = None
     supersede_a: uuid.UUID | None = None
     created_by: uuid.UUID | None = None
+    # ADR-026 (Increment 1): discriminador TVD, aditivo -- una TRD responde
+    # `tipo_instrumento="TRD"` y las cuatro columnas de contenido TVD en
+    # `None` (negación declarada por CHECK, ver `trd_series_trd_forma_check`).
+    tipo_instrumento: str = "TRD"
+    fondo_nombre: str | None = None
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
+    justificacion_valoracion: str | None = None
 
 
 class IndiceItem(BaseModel):

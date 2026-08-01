@@ -137,6 +137,42 @@ Entidad
 
 **Regla crítica:** Sin TRD configurada para una serie, no se puede cerrar el expediente que la usa.
 
+**La TRD es un instrumento convalidado, no una tabla de configuración ([ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md)).** Cada versión de una serie es una fila **append-only**: una modificación sustantiva (retención, disposición, nombre…) nunca se aplica en sitio salvo sobre una versión en `borrador` — crea una versión nueva (`version+1`). El expediente fija, al **cerrarse**, la versión concreta que lo gobierna (`trd_serie_id` se congela para siempre en ese instante); versiones posteriores de la misma serie **nunca** alteran retroactivamente el calendario de disposición de un expediente ya cerrado.
+
+Circuito del Acuerdo AGN 001/2024 (que compila el 004/2019), modelado como estado del instrumento:
+
+```
+[ nueva serie ] ──► borrador ──aprobar──► aprobada ──convalidar──► convalidada
+                        ▲                    │                          │
+                        └────devolver────────┘   (deroga la vigente     │
+                          (motivo obligatorio,     previa, re-apunta    │
+                           el acta del Comité      huérfanas)           │
+                           queda VOID)                                  ▼
+   [ series preexistentes ] ──► migrada ──ratificar (acto real)──► convalidada
+                                    │                                    │
+                                    └────────── derogar ─────────────────┴──► derogada
+```
+
+| Estado | Gobierna un **cierre** | Gobierna la **eliminación efectiva** | Contenido mutable |
+|---|---|---|---|
+| `borrador` | No | No | Sí (único estado editable en sitio) |
+| `aprobada` | No (aprobación del Comité, condición necesaria pero no suficiente) | No | No |
+| `convalidada` | Sí | Sí | No (salvo `pdfa_profile`; el acto es inmutable a nivel de motor — migración 038) |
+| `migrada` | Sí, **declarándolo** (`serie_estado: "migrada"` en el snapshot; expediente marcado `trd_revision_requerida`) | No | No (salvo `pdfa_profile`) |
+| `derogada` | No | Solo si el snapshot congelado muestra que **fue convalidada** antes de derogarse (`acto_administrativo` presente) — nunca si derogó una `migrada` que jamás pasó por el circuito | No |
+
+`migrada` es el estado honesto de backfill: "esta serie existía antes del modelo de convalidación; el sistema no sabe si fue convalidada ni bajo qué acto" — nunca se afirma una convalidación que nadie hizo (RF-FIR-15). La **ratificación** (`migrada → convalidada`, con el acto administrativo real) no crea versión nueva y limpia la marca `trd_revision_requerida` de los expedientes cerrados bajo ella. `aprobada` tiene ahora una salida honesta además de `convalidar`: **`devolver`** (migración 038) regresa a `borrador` con motivo, para el caso ordinario de "la instancia convalidante pide ajustes" — antes la única puerta era declarar una convalidación que quizá no correspondía.
+
+La eliminación efectiva (disposición final; hoy sin job que la ejecute) exige que el **snapshot congelado** que quedó en `expedientes.disposition` al cerrar describa un instrumento convalidado: `serie_estado == "convalidada"`, o `"derogada"` con `acto_administrativo` presente (D5, gate corregido en la migración 038 — el criterio original leía la fila VIVA y habría bloqueado eliminaciones legítimas de expedientes cuyo instrumento fue convalidado y luego derogado por una actualización posterior).
+
+#### TVD — Tabla de Valoración Documental de fondo acumulado ([ADR-026](adr/ADR-026-tvd-fondo-acumulado.md), Increment 1)
+
+**¿Por qué existe?** Una entidad con **fondo acumulado** — documentación ya producida, acumulada sin criterio archivístico, típicamente de dependencias suprimidas o entidades liquidadas — no tiene TRD que aplicar (la TRD ordena la producción **futura**; el fondo acumulado ya está producido). El Ac. AGN 001/2024 (que compila el 004/2019) somete la TVD al **mismo circuito** que la TRD: elaboración, aprobación del Comité, convalidación del Consejo, RUSD, publicación.
+
+**Es el mismo instrumento, otro contenido.** La TVD **no** es una tabla propia: es un discriminador `tipo_instrumento ∈ {TRD, TVD}` sobre la misma `trd_series` (razón: `expedientes.trd_serie_id` es el seam único por el que nueve puntos derivan consecuencias jurídicas, siete de ellos alimentando `retain_until` WORM COMPLIANCE — irreversible; bifurcar ese seam es el diseño que el ADR descarta). Comparte con la TRD: el circuito de convalidación completo, los estados, el append-only, el gate de disposición final. Se diferencia en: no tiene fase de **archivo de gestión** (ya está en central/histórico), sus fechas extremas (`fecha_extrema_inicial`/`fecha_extrema_final`) son del **fondo**, no de un cierre, y su `justificacion_valoracion` **es el objeto** del instrumento — el fundamento que se citaría en un acta de eliminación.
+
+**Propiedad que define el Increment 1 (lo único implementado hoy): una TVD todavía no gobierna ningún expediente.** El motor lo garantiza con un trigger que rechaza **cualquier** expediente amarrado a una fila TVD — riesgo WORM cero por construcción. La entidad puede registrar, aprobar, convalidar, inscribir en RUSD y publicar su TVD desde ya; amarrar expedientes de fondo acumulado a ella y calcular su calendario de retención (desde la fecha extrema, **nunca** desde `closed_at` — calcular desde hoy volvería imborrable durante décadas documentación cuya retención ya venció) es el Increment 2, todavía sin construir.
+
 ---
 
 ### Anexo

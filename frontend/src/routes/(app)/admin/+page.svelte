@@ -112,6 +112,16 @@
       implemented: true,
     },
     {
+      label: "TVD",
+      description: "Tablas de Valoración Documental: fondo acumulado, con fechas extremas y justificación (ADR-026).",
+      icon: "fas fa-box-archive",
+      href: "/admin/tvd",
+      // ADR-026 reutiliza a propósito el permiso de TRD (misma potestad
+      // archivística, mismo Comité) — igual que la tarjeta "TRD / CCD".
+      permission: "USUA_PERM_TRD",
+      implemented: true,
+    },
+    {
       label: "Metadatos",
       description: "Esquemas de metadatos variables por tipo documental (E03).",
       icon: "fas fa-tags",
@@ -148,6 +158,14 @@
       description: "Historial de envíos y registro de webhooks salientes.",
       icon: "fas fa-bell",
       href: "/admin/notificaciones",
+      permission: "USUA_PERM_ADMIN",
+      implemented: true,
+    },
+    {
+      label: "PINAR",
+      description: "Plan Institucional de Archivos: ciclo de vida y tablero de avance (Ac. AGN 003/2015).",
+      icon: "fas fa-map",
+      href: "/admin/pinar",
       permission: "USUA_PERM_ADMIN",
       implemented: true,
     },

@@ -596,6 +596,38 @@ class ArchiveRepository:
         offset: int,
         limit: int,
     ) -> tuple[list[TrdSerie], int]:
+        """ADR-026 (Increment 1, Capa 2): lee `v_trd_series`, NUNCA la tabla
+        base -- es LA consulta de la clase "filtro olvidado" que motivó el
+        diseño de la vista (antes `SELECT * FROM trd_series WHERE 1=1`, sin
+        ningún filtro de tipo). El aislamiento entre TRD y TVD deja de
+        depender de acordarse de un `WHERE`: es el nombre del objeto
+        consultado."""
+        return await self._list_instrumento_series("v_trd_series", is_active=is_active, offset=offset, limit=limit)
+
+    async def list_tvd_agrupaciones(
+        self,
+        *,
+        is_active: bool | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[TrdSerie], int]:
+        """Gemela de `list_trd_series` sobre `v_tvd_agrupaciones` (ADR-026)."""
+        return await self._list_instrumento_series(
+            "v_tvd_agrupaciones", is_active=is_active, offset=offset, limit=limit
+        )
+
+    async def _list_instrumento_series(
+        self,
+        view: str,
+        *,
+        is_active: bool | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[TrdSerie], int]:
+        # `view` NUNCA viene del cliente -- es una constante elegida en este
+        # mismo módulo (`"v_trd_series"` / `"v_tvd_agrupaciones"`), así que
+        # interpolarla en el nombre del objeto consultado no es una
+        # inyección: es exactamente el mecanismo de la Capa 2 (ADR-026 D2).
         await self._set_search_path()
 
         conditions = ["1=1"]
@@ -610,12 +642,12 @@ class ArchiveRepository:
         where = " AND ".join(conditions)
 
         total: int = await self._conn.fetchval(
-            f"SELECT COUNT(*) FROM trd_series WHERE {where}", *params
+            f"SELECT COUNT(*) FROM {view} WHERE {where}", *params
         )
 
         rows = await self._conn.fetch(
             f"""
-            SELECT * FROM trd_series
+            SELECT * FROM {view}
              WHERE {where}
              ORDER BY code ASC
              LIMIT ${idx} OFFSET ${idx + 1}
@@ -629,6 +661,252 @@ class ArchiveRepository:
     async def get_trd_serie_by_id(self, serie_id: uuid.UUID) -> TrdSerie | None:
         await self._set_search_path()
         row = await self._conn.fetchrow("SELECT * FROM trd_series WHERE id = $1", serie_id)
+        return _row_to_trd_serie(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # TVD agrupaciones (ADR-026, Increment 1): mismo instrumento, discriminador
+    # `tipo_instrumento` -- lecturas SIEMPRE por `v_tvd_agrupaciones` (Capa 2).
+    # ------------------------------------------------------------------
+
+    async def get_tvd_agrupacion_by_id(self, agrupacion_id: uuid.UUID) -> TrdSerie | None:
+        """Gemela de `get_trd_serie_by_id`, pero por la VISTA: un id de TRD
+        no "se filtra", directamente no está en `v_tvd_agrupaciones` -- 404,
+        no 403 (ADR-026 §"Superficie de API")."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM v_tvd_agrupaciones WHERE id = $1", agrupacion_id
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def get_tvd_agrupacion_vigente_por_code(self, code: str) -> TrdSerie | None:
+        """Gemela de `get_trd_serie_vigente_by_code` sobre la vista TVD. En la
+        práctica una TVD nunca alcanza `migrada` (D6 no aplica: nace en
+        `borrador`) -- se conserva la misma condición por simetría/DRY con el
+        circuito compartido, es inocua."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            SELECT * FROM v_tvd_agrupaciones
+             WHERE code = $1 AND estado IN ('convalidada', 'migrada') AND valid_to IS NULL
+            """,
+            code,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def get_tvd_agrupacion_ultima_por_code(self, code: str) -> TrdSerie | None:
+        """Gemela de `get_trd_serie_ultima_by_code` (respaldo de
+        `create_tvd_agrupacion_version` cuando `code` quedó sin vigente)."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM v_tvd_agrupaciones WHERE code = $1 ORDER BY version DESC LIMIT 1",
+            code,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def get_tvd_agrupacion_by_code_version(
+        self, code: str, version: int
+    ) -> TrdSerie | None:
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM v_tvd_agrupaciones WHERE code = $1 AND version = $2", code, version
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def list_trd_serie_versiones_by_code(self, code: str) -> list[TrdSerie]:
+        """`GET /api/v1/trd/{code}/versiones` (ADR-026: gemelo declarado por
+        ADR-025 y nunca implementado). Historia completa, cualquier estado,
+        más reciente primero."""
+        return await self._list_instrumento_versiones_by_code("v_trd_series", code)
+
+    async def list_tvd_agrupacion_versiones_by_code(self, code: str) -> list[TrdSerie]:
+        """Gemela de `list_trd_serie_versiones_by_code` sobre la vista TVD."""
+        return await self._list_instrumento_versiones_by_code("v_tvd_agrupaciones", code)
+
+    async def _list_instrumento_versiones_by_code(self, view: str, code: str) -> list[TrdSerie]:
+        await self._set_search_path()
+        rows = await self._conn.fetch(
+            f"SELECT * FROM {view} WHERE code = $1 ORDER BY version DESC", code
+        )
+        return [_row_to_trd_serie(r) for r in rows]
+
+    async def get_ocupante_tipo_por_code(self, code: str) -> str | None:
+        """ADR-026 Capa 1: el espacio de `code` es único y COMPARTIDO entre
+        TRD y TVD -- antes de reventar con la `UniqueViolationError` cruda de
+        `trd_series_code_version_key`, el service necesita saber DE QUÉ TIPO
+        es el ocupante para el `409 instrumento_code_en_uso` (cualquier
+        versión de `code` sirve, todas comparten tipo por el trigger de
+        inmutabilidad de `tipo_instrumento`)."""
+        await self._set_search_path()
+        return await self._conn.fetchval(
+            "SELECT tipo_instrumento FROM trd_series WHERE code = $1 LIMIT 1", code
+        )
+
+    async def create_tvd_agrupacion(
+        self,
+        *,
+        code: str,
+        name: str,
+        description: str | None,
+        total_retention: int,
+        disposition: str,
+        parent_id: uuid.UUID | None,
+        fondo_nombre: str,
+        fecha_extrema_inicial: date,
+        fecha_extrema_final: date,
+        justificacion_valoracion: str,
+        archivo_central_years: int | None,
+        pdfa_profile: str | None,
+    ) -> TrdSerie:
+        """`POST /api/v1/tvd` (ADR-026, Increment 1). `tipo_instrumento='TVD'`
+        fijo -- nunca tomado del payload (fijado por el router/servicio, no
+        por el cliente). `archivo_gestion_years` NUNCA se escribe: se deja
+        NULL, que satisface `COALESCE(archivo_gestion_years,0)=0`
+        (`trd_series_tvd_forma_check`) sin necesitar que el llamante lo
+        declare -- la TVD no tiene fase de archivo de gestión, punto."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO trd_series (
+                tipo_instrumento, code, name, description, retention_years,
+                total_retention, disposition, parent_id, archivo_central_years,
+                pdfa_profile, fondo_nombre, fecha_extrema_inicial,
+                fecha_extrema_final, justificacion_valoracion
+            )
+            VALUES ('TVD', $1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING *
+            """,
+            code,
+            name,
+            description,
+            total_retention,
+            disposition,
+            parent_id,
+            archivo_central_years,
+            pdfa_profile,
+            fondo_nombre,
+            fecha_extrema_inicial,
+            fecha_extrema_final,
+            justificacion_valoracion,
+        )
+        return _row_to_trd_serie(row)
+
+    async def create_tvd_agrupacion_version(
+        self,
+        *,
+        code: str,
+        version: int,
+        supersede_a: uuid.UUID,
+        created_by: uuid.UUID | None,
+        name: str,
+        description: str | None,
+        total_retention: int,
+        disposition: str,
+        parent_id: uuid.UUID | None,
+        fondo_nombre: str,
+        fecha_extrema_inicial: date,
+        fecha_extrema_final: date,
+        justificacion_valoracion: str,
+        archivo_central_years: int | None,
+        pdfa_profile: str | None,
+    ) -> TrdSerie:
+        """Gemela de `create_trd_serie_version` (D1: fila NUEVA, nunca
+        `UPDATE` de la vigente). `retention_years=0`/`archivo_gestion_years`
+        NULL, mismo motivo que `create_tvd_agrupacion`."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO trd_series (
+                tipo_instrumento, code, name, description, retention_years,
+                total_retention, disposition, parent_id, archivo_central_years,
+                pdfa_profile, version, supersede_a, created_by, fondo_nombre,
+                fecha_extrema_inicial, fecha_extrema_final, justificacion_valoracion
+            )
+            VALUES ('TVD', $1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            RETURNING *
+            """,
+            code,
+            name,
+            description,
+            total_retention,
+            disposition,
+            parent_id,
+            archivo_central_years,
+            pdfa_profile,
+            version,
+            supersede_a,
+            created_by,
+            fondo_nombre,
+            fecha_extrema_inicial,
+            fecha_extrema_final,
+            justificacion_valoracion,
+        )
+        return _row_to_trd_serie(row)
+
+    async def update_tvd_agrupacion(
+        self,
+        agrupacion_id: uuid.UUID,
+        *,
+        name: str | None,
+        description: str | None,
+        total_retention: int | None,
+        disposition: str | None,
+        pdfa_profile: str | None,
+        fondo_nombre: str | None,
+        fecha_extrema_inicial: date | None,
+        fecha_extrema_final: date | None,
+        justificacion_valoracion: str | None,
+    ) -> TrdSerie | None:
+        """`PATCH /api/v1/tvd/{id}` (ADR-026): gemela de `update_trd_serie`,
+        campos propios de TVD además de los compartidos. Igual que la TRD,
+        solo llamable por el servicio sobre `borrador` (o `pdfa_profile` en
+        cualquier estado) -- el trigger append-only es el cinturón de
+        seguridad de motor."""
+        await self._set_search_path()
+
+        assignments: list[str] = []
+        params: list[object] = []
+        idx = 1
+
+        def _add(column: str, value: object) -> None:
+            nonlocal idx
+            assignments.append(f"{column} = ${idx}")
+            params.append(value)
+            idx += 1
+
+        if name is not None:
+            _add("name", name)
+        if description is not None:
+            _add("description", description)
+        if total_retention is not None:
+            _add("total_retention", total_retention)
+        if disposition is not None:
+            _add("disposition", disposition)
+        if pdfa_profile is not None:
+            _add("pdfa_profile", pdfa_profile)
+        if fondo_nombre is not None:
+            _add("fondo_nombre", fondo_nombre)
+        if fecha_extrema_inicial is not None:
+            _add("fecha_extrema_inicial", fecha_extrema_inicial)
+        if fecha_extrema_final is not None:
+            _add("fecha_extrema_final", fecha_extrema_final)
+        if justificacion_valoracion is not None:
+            _add("justificacion_valoracion", justificacion_valoracion)
+
+        if not assignments:
+            return await self.get_tvd_agrupacion_by_id(agrupacion_id)
+
+        set_clause = ", ".join(assignments)
+        params.append(agrupacion_id)
+
+        row = await self._conn.fetchrow(
+            f"""
+            UPDATE trd_series
+               SET {set_clause}
+             WHERE id = ${idx}
+            RETURNING *
+            """,
+            *params,
+        )
         return _row_to_trd_serie(row) if row is not None else None
 
     async def get_trd_serie_vigente_by_code(self, code: str) -> TrdSerie | None:
@@ -645,6 +923,46 @@ class ArchiveRepository:
             code,
         )
         return _row_to_trd_serie(row) if row is not None else None
+
+    async def get_trd_serie_ultima_by_code(self, code: str) -> TrdSerie | None:
+        """Última versión (por número, CUALQUIER estado) de `code` (ADR-025,
+        migración 038 -- hallazgo #3): respaldo de `get_trd_serie_vigente_by_code`
+        cuando un código quedó SIN vigente (todas sus versiones `derogada`).
+        Sin esta consulta, `create_trd_serie_version` respondería `404`
+        permanente y el código de serie quedaría sin ningún camino de vuelta
+        -- ni siquiera para abrir un `borrador` nuevo que se pueda convalidar."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM trd_series WHERE code = $1 ORDER BY version DESC LIMIT 1",
+            code,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def count_expedientes_open_por_trd_serie_code(self, code: str) -> int:
+        """ADR-025, migración 038 -- hallazgo #3: guarda de `derogar` (baja
+        explícita SIN sucesora). Un expediente `open` NO está amarrado a una
+        fila concreta (D3: `trd_serie_id` FLOTA hasta el cierre) -- lo que
+        importa es el CÓDIGO, porque `close_expediente` re-resuelve por
+        código en ese instante. Derogar el único código vigente mientras hay
+        expedientes abiertos bajo él los dejaría sin ningún instrumento que
+        pueda gobernar su cierre.
+
+        `expedientes.trd_serie_code` (denormalización de D3) solo se escribe
+        al CERRAR -- mientras `open`, la columna está NULL, así que filtrar
+        por ella aquí no encontraría nada. Se resuelve el código con un JOIN
+        contra `trd_series` a través de `trd_serie_id` (la fila CONCRETA que
+        el expediente trae arrastrada, sea cual sea su versión) en vez de
+        filtrar por `trd_serie_code`."""
+        await self._set_search_path()
+        return await self._conn.fetchval(
+            """
+            SELECT COUNT(*)
+              FROM expedientes e
+              JOIN trd_series s ON s.id = e.trd_serie_id
+             WHERE s.code = $1 AND e.status = 'open'
+            """,
+            code,
+        )
 
     async def create_trd_serie_version(
         self,
@@ -759,6 +1077,363 @@ class ArchiveRepository:
             *params,
         )
         return _row_to_trd_serie(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # Circuito de convalidación (ADR-025, Increment 2): aprobar/convalidar/
+    # derogar. Cada `UPDATE` cierra su `WHERE` con el estado de ORIGEN
+    # esperado (mismo patrón fail-closed que `transition_expediente`, H3):
+    # devuelve `None` si la fila ya no está en ese estado -- otra petición
+    # concurrente ganó la carrera -- en vez de aplicar la transición sobre un
+    # estado que el llamante ya no observó. El SERVICE valida la transición
+    # ANTES (fail-fast, 409 legible); este `WHERE` es el cinturón de
+    # seguridad de motor para la carrera, no la primera línea de defensa.
+    # ------------------------------------------------------------------
+
+    async def get_trd_serie_by_code_version(
+        self, code: str, version: int
+    ) -> TrdSerie | None:
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM trd_series WHERE code = $1 AND version = $2", code, version
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def aprobar_trd_serie(
+        self,
+        serie_id: uuid.UUID,
+        *,
+        acta_comite: str,
+        fecha_aprobacion_comite: date,
+    ) -> TrdSerie | None:
+        """`borrador -> aprobada` (ADR-025, Increment 2). Migración 038
+        (hallazgo #5): escribe el PRIMER acto del circuito (aprobación del
+        Comité) -- antes solo cambiaba `estado`, y `fecha_aprobacion_comite`
+        quedaba vestigial porque ningún camino de código la poblaba. El
+        trigger `trg_trd_series_append_only` no restringe nada sobre una
+        fila TODAVÍA en `borrador`."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET estado                  = 'aprobada',
+                   acta_comite              = $2,
+                   fecha_aprobacion_comite  = $3
+             WHERE id = $1 AND estado = 'borrador'
+            RETURNING *
+            """,
+            serie_id,
+            acta_comite,
+            fecha_aprobacion_comite,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def devolver_trd_serie_a_borrador(self, serie_id: uuid.UUID) -> TrdSerie | None:
+        """`aprobada -> borrador` (ADR-025, migración 038 -- hallazgo #1 del
+        dictamen: "devolver con observaciones" es un paso ORDINARIO del
+        procedimiento, no un callejón sin salida que empuje a declarar una
+        convalidación falsa para desatascar el instrumento). Limpia
+        `acta_comite`/`fecha_aprobacion_comite`: la aprobación que se
+        devuelve queda VOID -- el contenido se va a editar, así que esa
+        aprobación ya no describe lo que finalmente se apruebe/convalide."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET estado                  = 'borrador',
+                   acta_comite              = NULL,
+                   fecha_aprobacion_comite  = NULL
+             WHERE id = $1 AND estado = 'aprobada'
+            RETURNING *
+            """,
+            serie_id,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def registrar_rusd_trd_serie(
+        self,
+        serie_id: uuid.UUID,
+        *,
+        rusd_radicado: str | None,
+        fecha_publicacion: date | None,
+    ) -> TrdSerie | None:
+        """`POST /trd/{code}/versiones/{version}/registrar-rusd` (ADR-025,
+        migración 038 -- hallazgo #4). Solo sobre `convalidada`; el `SET`
+        usa `COALESCE(columna, $n)` para rellenar EXCLUSIVAMENTE de NULL a
+        un valor -- si la columna ya tenía un valor, `COALESCE` la deja
+        intacta (no-op silencioso) y es el SERVICE quien detecta ese caso
+        ANTES de llamar aquí para devolver un 409 legible (mismo patrón que
+        el resto del circuito: el trigger de la 038 es el cinturón de
+        seguridad de motor, no la primera línea de defensa)."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET rusd_radicado     = COALESCE(rusd_radicado, $2),
+                   fecha_publicacion = COALESCE(fecha_publicacion, $3)
+             WHERE id = $1 AND estado = 'convalidada'
+            RETURNING *
+            """,
+            serie_id,
+            rusd_radicado,
+            fecha_publicacion,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def convalidar_trd_serie_desde_aprobada(
+        self,
+        serie_id: uuid.UUID,
+        *,
+        acto_administrativo: str,
+        fecha_convalidacion: date,
+        instancia_convalidante: str,
+        rusd_radicado: str | None,
+        fecha_publicacion: date | None,
+    ) -> TrdSerie | None:
+        """`aprobada -> convalidada` (circuito normal, ADR-025 D2/Increment
+        2). `valid_to` permanece NULL: esta es la versión que pasa a ser la
+        VIGENTE (`ux_trd_series_vigente`) -- la derogación de la versión
+        previa es una fila DISTINTA (`derogar_vigente_por_code`), y debe
+        ejecutarse ANTES de este `UPDATE` en la misma transacción para que el
+        índice único parcial nunca vea dos filas vigentes simultáneas."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET estado                  = 'convalidada',
+                   acto_administrativo     = $2,
+                   fecha_convalidacion     = $3,
+                   instancia_convalidante  = $4,
+                   rusd_radicado           = $5,
+                   fecha_publicacion       = $6
+             WHERE id = $1 AND estado = 'aprobada'
+            RETURNING *
+            """,
+            serie_id,
+            acto_administrativo,
+            fecha_convalidacion,
+            instancia_convalidante,
+            rusd_radicado,
+            fecha_publicacion,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def convalidar_trd_serie_desde_migrada(
+        self,
+        serie_id: uuid.UUID,
+        *,
+        acto_administrativo: str,
+        fecha_convalidacion: date,
+        instancia_convalidante: str,
+        rusd_radicado: str | None,
+        fecha_publicacion: date | None,
+    ) -> TrdSerie | None:
+        """`migrada -> convalidada` (D6, ratificación): la MISMA fila, sin
+        crear versión nueva ni derogar nada -- el contenido no cambió; lo
+        único que se registra es el acto administrativo que ya existía en
+        papel."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET estado                  = 'convalidada',
+                   acto_administrativo     = $2,
+                   fecha_convalidacion     = $3,
+                   instancia_convalidante  = $4,
+                   rusd_radicado           = $5,
+                   fecha_publicacion       = $6
+             WHERE id = $1 AND estado = 'migrada'
+            RETURNING *
+            """,
+            serie_id,
+            acto_administrativo,
+            fecha_convalidacion,
+            instancia_convalidante,
+            rusd_radicado,
+            fecha_publicacion,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def derogar_vigente_por_code(
+        self, code: str, *, exclude_id: uuid.UUID
+    ) -> TrdSerie | None:
+        """Deroga la versión VIGENTE actual de `code` (si existe) -- usado al
+        convalidar la versión N+1 (`aprobada -> convalidada`), SIEMPRE antes
+        de promover la nueva a vigente (ver docstring de
+        `convalidar_trd_serie_desde_aprobada`). `exclude_id` evita
+        auto-derogar la propia fila que se está convalidando en el caso
+        límite de que ya compartiera código/estuviera marcada vigente."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET estado = 'derogada', valid_to = CURRENT_DATE, is_active = false
+             WHERE code = $1 AND estado IN ('convalidada', 'migrada')
+               AND valid_to IS NULL AND id <> $2
+            RETURNING *
+            """,
+            code,
+            exclude_id,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def derogar_trd_serie(self, serie_id: uuid.UUID) -> TrdSerie | None:
+        """`convalidada`/`migrada` -> `derogada` (baja explícita del
+        instrumento, ADR-025 Increment 2)."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            UPDATE trd_series
+               SET estado = 'derogada', valid_to = CURRENT_DATE, is_active = false
+             WHERE id = $1 AND estado IN ('convalidada', 'migrada')
+            RETURNING *
+            """,
+            serie_id,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def repoint_tipos_documentales(
+        self, *, old_serie_id: uuid.UUID, new_serie_id: uuid.UUID
+    ) -> tuple[int, int]:
+        """Cierra el aviso #3 de ADR-025 §"Impacto en lo existente": al
+        convalidar la versión N+1 (que deroga la N), `tipos_documentales`
+        apunta a la FILA, no al código -- sin este re-apuntado quedarían
+        huérfanos de la versión derogada. `UPDATE`, nunca clonación.
+
+        Hallazgo de seguridad (Media): `UNIQUE (trd_serie_id, code)` revienta
+        con `UniqueViolationError` si la versión nueva YA tiene un tipo
+        documental con el mismo `code` (flujo LEGÍTIMO: alguien definió los
+        tipos de la versión nueva antes de convalidarla). El `NOT EXISTS`
+        excluye esas filas del `UPDATE` en vez de fallar -- se devuelve
+        `(re_apuntados, omitidos_por_colision)` para que el caller lo audite;
+        `UniqueViolationError` queda como red de seguridad residual (si
+        aparece de todas formas, es un bug de esta condición, no un caso
+        esperado) y el SERVICE la traduce a 409."""
+        await self._set_search_path()
+        moved = await self._conn.execute(
+            """
+            UPDATE tipos_documentales AS t
+               SET trd_serie_id = $2
+             WHERE t.trd_serie_id = $1
+               AND NOT EXISTS (
+                     SELECT 1 FROM tipos_documentales x
+                      WHERE x.trd_serie_id = $2 AND x.code = t.code
+                   )
+            """,
+            old_serie_id,
+            new_serie_id,
+        )
+        skipped: int = await self._conn.fetchval(
+            """
+            SELECT COUNT(*) FROM tipos_documentales t
+             WHERE t.trd_serie_id = $1
+               AND EXISTS (
+                     SELECT 1 FROM tipos_documentales x
+                      WHERE x.trd_serie_id = $2 AND x.code = t.code
+                   )
+            """,
+            old_serie_id,
+            new_serie_id,
+        )
+        return int(moved.split()[-1]), int(skipped)
+
+    async def repoint_expediente_metadata_templates(
+        self, *, old_serie_id: uuid.UUID, new_serie_id: uuid.UUID
+    ) -> tuple[int, int]:
+        """Gemela de `repoint_tipos_documentales` para
+        `expediente_metadata_templates` (mismo aviso #3 del ADR, mismo
+        hallazgo de seguridad): `UNIQUE (trd_serie_id, version)` + el índice
+        parcial de la plantilla activa pueden colisionar si la versión nueva
+        ya tiene sus propias plantillas."""
+        await self._set_search_path()
+        moved = await self._conn.execute(
+            """
+            UPDATE expediente_metadata_templates AS t
+               SET trd_serie_id = $2
+             WHERE t.trd_serie_id = $1
+               AND NOT EXISTS (
+                     SELECT 1 FROM expediente_metadata_templates x
+                      WHERE x.trd_serie_id = $2 AND x.version = t.version
+                   )
+            """,
+            old_serie_id,
+            new_serie_id,
+        )
+        skipped: int = await self._conn.fetchval(
+            """
+            SELECT COUNT(*) FROM expediente_metadata_templates t
+             WHERE t.trd_serie_id = $1
+               AND EXISTS (
+                     SELECT 1 FROM expediente_metadata_templates x
+                      WHERE x.trd_serie_id = $2 AND x.version = t.version
+                   )
+            """,
+            old_serie_id,
+            new_serie_id,
+        )
+        return int(moved.split()[-1]), int(skipped)
+
+    async def clear_revision_pendiente_por_serie(
+        self, serie_id: uuid.UUID, *, motivo: str
+    ) -> int:
+        """D6 — ratificación (`migrada -> convalidada`): limpia
+        `trd_revision_requerida`/`trd_revision_motivo` SOLO de los
+        expedientes `closed`/`transferred` amarrados a `serie_id` cuyo
+        motivo sea EXACTAMENTE `motivo` (por defecto, el caller pasa
+        `'cerrado_bajo_serie_migrada'`) -- otros motivos
+        (`cierre_sin_snapshot_de_retencion`, `serie_no_resoluble`) no se
+        resuelven con esta ratificación y quedan intactos."""
+        await self._set_search_path()
+        result = await self._conn.execute(
+            """
+            UPDATE expedientes
+               SET trd_revision_requerida = false, trd_revision_motivo = NULL
+             WHERE trd_serie_id = $1
+               AND status IN ('closed', 'transferred')
+               AND trd_revision_requerida
+               AND trd_revision_motivo = $2
+            """,
+            serie_id,
+            motivo,
+        )
+        return int(result.split()[-1])
+
+    async def list_expedientes_revision_pendiente(
+        self, *, offset: int, limit: int, max_clearance: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """`GET /trd/revision-pendiente` (ADR-025, Increment 2): informe de
+        expedientes marcados `trd_revision_requerida` -- cualquier motivo
+        (D4/D6), no solo `cerrado_bajo_serie_migrada`.
+
+        Hallazgo de seguridad [Alta, BLOQUEANTE]: este informe filtraba
+        `WHERE trd_revision_requerida` a secas -- sin `nivel_seguridad <=
+        max_clearance`, cualquier portador de `USUA_PERM_TRD` (permiso
+        ORTOGONAL al clearance: tener potestad sobre el instrumento no es
+        tener nivel para leer los expedientes que gobierna) enumeraba
+        RESERVADA/CLASIFICADA. Mismo criterio, MISMA condición como PRIMERA
+        del `WHERE`, compartida por el `COUNT` y la página, que
+        `list_expedientes` (ver esa docstring)."""
+        await self._set_search_path()
+        total: int = await self._conn.fetchval(
+            """
+            SELECT COUNT(*) FROM expedientes
+             WHERE nivel_seguridad <= $1 AND trd_revision_requerida
+            """,
+            max_clearance,
+        )
+        rows = await self._conn.fetch(
+            """
+            SELECT id, code, status, trd_serie_id, trd_serie_code,
+                   trd_revision_motivo, closed_at
+              FROM expedientes
+             WHERE nivel_seguridad <= $1 AND trd_revision_requerida
+             ORDER BY closed_at ASC NULLS LAST, code ASC
+             LIMIT $2 OFFSET $3
+            """,
+            max_clearance,
+            limit,
+            offset,
+        )
+        return rows, total
 
     # ------------------------------------------------------------------
     # Tipos documentales (3.er nivel TRD, RF-MET-07)
@@ -979,6 +1654,7 @@ def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
         estado=row["estado"],
         valid_to=row["valid_to"],
         acto_administrativo=row["acto_administrativo"],
+        acta_comite=row["acta_comite"],
         fecha_aprobacion_comite=row["fecha_aprobacion_comite"],
         fecha_convalidacion=row["fecha_convalidacion"],
         instancia_convalidante=row["instancia_convalidante"],
@@ -986,4 +1662,18 @@ def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
         fecha_publicacion=row["fecha_publicacion"],
         supersede_a=row["supersede_a"],
         created_by=row["created_by"],
+        # ADR-026 (Increment 1, migración 039): `row.get` con default para
+        # tolerar filas leídas ANTES de la 039 en algún path residual de test
+        # -- en producción la columna siempre existe tras la migración.
+        tipo_instrumento=row["tipo_instrumento"] if "tipo_instrumento" in row.keys() else "TRD",
+        fondo_nombre=row["fondo_nombre"] if "fondo_nombre" in row.keys() else None,
+        fecha_extrema_inicial=(
+            row["fecha_extrema_inicial"] if "fecha_extrema_inicial" in row.keys() else None
+        ),
+        fecha_extrema_final=(
+            row["fecha_extrema_final"] if "fecha_extrema_final" in row.keys() else None
+        ),
+        justificacion_valoracion=(
+            row["justificacion_valoracion"] if "justificacion_valoracion" in row.keys() else None
+        ),
     )

@@ -45,6 +45,7 @@ from app.routers.oai import router as oai_router
 from app.routers.tipos_documentales import router as tipos_documentales_router
 from app.routers.transferencias import router as transferencias_router
 from app.routers.trd import router as trd_router
+from app.routers.tvd import router as tvd_router
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -189,6 +190,7 @@ app.include_router(metadata_router)
 app.include_router(oai_router)
 app.include_router(tipos_documentales_router)
 app.include_router(trd_router)
+app.include_router(tvd_router)
 app.include_router(health_router)
 
 

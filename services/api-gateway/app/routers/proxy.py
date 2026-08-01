@@ -66,6 +66,10 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/expediente-metadata/", app_state.archive_service_url),
         ("/api/v1/tipos-documentales/", app_state.archive_service_url),
         ("/api/v1/trd/", app_state.archive_service_url),
+        # ADR-026 (Increment 1): TVD es el mismo instrumento que TRD
+        # (discriminador `tipo_instrumento` sobre `trd_series`) -- ruta
+        # separada, sin ella el frontend recibe 404 sin pista del gateway.
+        ("/api/v1/tvd/", app_state.archive_service_url),
         ("/api/v1/ubicaciones/", app_state.archive_service_url),
         ("/api/v1/unidades/", app_state.archive_service_url),
         ("/api/v1/prestamos/", app_state.archive_service_url),

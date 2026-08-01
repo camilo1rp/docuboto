@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest_asyncio
@@ -168,6 +168,7 @@ def make_trd_serie_record(
     estado: str = "migrada",
     valid_to=None,
     acto_administrativo: str | None = None,
+    acta_comite: str | None = None,
     fecha_aprobacion_comite=None,
     fecha_convalidacion=None,
     instancia_convalidante: str | None = None,
@@ -175,6 +176,11 @@ def make_trd_serie_record(
     fecha_publicacion=None,
     supersede_a: uuid.UUID | None = None,
     created_by: uuid.UUID | None = None,
+    tipo_instrumento: str = "TRD",
+    fondo_nombre: str | None = None,
+    fecha_extrema_inicial=None,
+    fecha_extrema_final=None,
+    justificacion_valoracion: str | None = None,
 ) -> dict:
     return {
         "id": serie_id or SERIE_ID,
@@ -195,6 +201,7 @@ def make_trd_serie_record(
         "estado": estado,
         "valid_to": valid_to,
         "acto_administrativo": acto_administrativo,
+        "acta_comite": acta_comite,
         "fecha_aprobacion_comite": fecha_aprobacion_comite,
         "fecha_convalidacion": fecha_convalidacion,
         "instancia_convalidante": instancia_convalidante,
@@ -202,7 +209,88 @@ def make_trd_serie_record(
         "fecha_publicacion": fecha_publicacion,
         "supersede_a": supersede_a,
         "created_by": created_by,
+        # ADR-026 (Increment 1): discriminador TVD, aditivo -- default 'TRD'
+        # conserva el comportamiento de TODOS los tests preexistentes que
+        # construyen filas TRD sin conocer este campo.
+        "tipo_instrumento": tipo_instrumento,
+        "fondo_nombre": fondo_nombre,
+        "fecha_extrema_inicial": fecha_extrema_inicial,
+        "fecha_extrema_final": fecha_extrema_final,
+        "justificacion_valoracion": justificacion_valoracion,
     }
+
+
+def make_tvd_agrupacion_record(
+    *,
+    serie_id: uuid.UUID | None = None,
+    code: str = "FONDO-100",
+    name: str = "Fondo acumulado Dependencia X",
+    description: str | None = "Documentacion de dependencia suprimida",
+    total_retention: int = 10,
+    disposition: str = "CT",
+    is_active: bool = True,
+    created_at: datetime | None = None,
+    parent_id: uuid.UUID | None = None,
+    archivo_central_years: int | None = 10,
+    version: int = 1,
+    valid_from=None,
+    pdfa_profile: str | None = None,
+    estado: str = "borrador",
+    valid_to=None,
+    acto_administrativo: str | None = None,
+    acta_comite: str | None = None,
+    fecha_aprobacion_comite=None,
+    fecha_convalidacion=None,
+    instancia_convalidante: str | None = None,
+    rusd_radicado: str | None = None,
+    fecha_publicacion=None,
+    supersede_a: uuid.UUID | None = None,
+    created_by: uuid.UUID | None = None,
+    fondo_nombre: str = "Fondo Instituto Departamental de X (liquidado 2003)",
+    fecha_extrema_inicial=date(1975, 1, 1),
+    fecha_extrema_final=date(1998, 12, 31),
+    justificacion_valoracion: str = "Valoracion secundaria: sin valores primarios vigentes.",
+) -> dict:
+    """ADR-026 (Increment 1): gemela de `make_trd_serie_record` para TVD --
+    `tipo_instrumento='TVD'`, `archivo_gestion_years=None` (la TVD no tiene
+    fase de archivo de gestión, `retention_years=0`) y las cuatro columnas de
+    contenido valorado SIEMPRE pobladas (CHECK `trd_series_tvd_forma_check`).
+    Estado por defecto `borrador` (nunca `migrada`: una TVD nace vacía, D6 no
+    aplica -- a diferencia del default `migrada` de `make_trd_serie_record`,
+    que espeja el backfill de la 037)."""
+    return make_trd_serie_record(
+        serie_id=serie_id,
+        code=code,
+        name=name,
+        description=description,
+        retention_years=0,
+        total_retention=total_retention,
+        disposition=disposition,
+        is_active=is_active,
+        created_at=created_at,
+        parent_id=parent_id,
+        archivo_gestion_years=None,
+        archivo_central_years=archivo_central_years,
+        version=version,
+        valid_from=valid_from,
+        pdfa_profile=pdfa_profile,
+        estado=estado,
+        valid_to=valid_to,
+        acto_administrativo=acto_administrativo,
+        acta_comite=acta_comite,
+        fecha_aprobacion_comite=fecha_aprobacion_comite,
+        fecha_convalidacion=fecha_convalidacion,
+        instancia_convalidante=instancia_convalidante,
+        rusd_radicado=rusd_radicado,
+        fecha_publicacion=fecha_publicacion,
+        supersede_a=supersede_a,
+        created_by=created_by,
+        tipo_instrumento="TVD",
+        fondo_nombre=fondo_nombre,
+        fecha_extrema_inicial=fecha_extrema_inicial,
+        fecha_extrema_final=fecha_extrema_final,
+        justificacion_valoracion=justificacion_valoracion,
+    )
 
 
 def _make_mock_conn() -> AsyncMock:

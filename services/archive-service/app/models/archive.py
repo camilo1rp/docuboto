@@ -103,6 +103,11 @@ class TrdSerie:
     estado: str = "borrador"
     valid_to: date | None = None
     acto_administrativo: str | None = None
+    # Migración 038 (ADR-025 hallazgo #5): evidencia del PRIMER acto del
+    # circuito (aprobación del Comité Institucional de Gestión y Desempeño,
+    # Ac. AGN 001/2024 que compila 004/2019) -- antes solo se escribía la
+    # fecha, nunca el acta; ningún camino del código la poblaba.
+    acta_comite: str | None = None
     fecha_aprobacion_comite: date | None = None
     fecha_convalidacion: date | None = None
     instancia_convalidante: str | None = None
@@ -110,3 +115,13 @@ class TrdSerie:
     fecha_publicacion: date | None = None
     supersede_a: uuid.UUID | None = None
     created_by: uuid.UUID | None = None
+    # ADR-026 (Increment 1): discriminador TVD sobre la misma tabla (D1/D2).
+    # `tipo_instrumento='TRD'` es el default de columna -- toda fila anterior
+    # a la migración 039 y toda TRD nueva cae aquí sin código nuevo. Las
+    # cuatro columnas de contenido TVD son NULL en una TRD por CHECK
+    # (`trd_series_trd_forma_check`) -- una negación declarada, no huérfana.
+    tipo_instrumento: str = "TRD"
+    fondo_nombre: str | None = None
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
+    justificacion_valoracion: str | None = None

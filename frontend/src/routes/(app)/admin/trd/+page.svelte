@@ -38,9 +38,27 @@
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
+  import InstrumentLifecycleActions from "$lib/components/features/admin/InstrumentLifecycleActions.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
+
+  // Circuito de convalidación (ADR-025/ADR-026): mismos estados/chips que
+  // /admin/tvd -- componente compartido `InstrumentLifecycleActions`.
+  const ESTADO_LABELS = {
+    borrador: "Borrador",
+    aprobada: "Aprobada",
+    convalidada: "Convalidada",
+    migrada: "Migrada",
+    derogada: "Derogada",
+  };
+  const ESTADO_CHIP_MAP = {
+    borrador: "neutral",
+    aprobada: "pending",
+    convalidada: "success",
+    migrada: "info",
+    derogada: "closed",
+  };
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -405,6 +423,17 @@
     return series.find((s) => s.id === id)?.name ?? null;
   }
 
+  // Circuito de convalidación: reemplaza/inserta EN SITIO (mismo patrón que
+  // /admin/tvd), sin recargar todo el árbol.
+  function onLifecycleChanged(event) {
+    const { item, isNewVersion } = event.detail;
+    if (isNewVersion) {
+      series = [...series, item];
+    } else {
+      series = series.map((s) => (s.id === item.id ? item : s));
+    }
+  }
+
   onMount(() => {
     setBreadcrumbs([{ label: "Administración", href: "/admin" }, { label: "TRD / CCD" }]);
   });
@@ -462,11 +491,11 @@
         <th scope="col">Nombre</th>
         <th scope="col">Disposición</th>
         <th scope="col">Retención (gest./cent.)</th>
-        <th scope="col">Estado</th>
+        <th scope="col">Estado del instrumento</th>
       </svelte:fragment>
 
       <svelte:fragment slot="row" let:item>
-        <td><code>{item.code}</code></td>
+        <td><code>{item.code}</code> <span class="trd-page__version">v{item.version}</span></td>
         <td>
           <span class="trd-page__indent" style="--depth: {item.depth}">
             {#if item.depth > 0}<i class="fas fa-turn-up trd-page__branch" aria-hidden="true"></i>{/if}
@@ -476,7 +505,7 @@
         <td>{item.disposition}</td>
         <td>{item.retention_years}a / {item.total_retention}a</td>
         <td>
-          <StatusChip status={item.is_active ? "success" : "neutral"} label={item.is_active ? "Activa" : "Inactiva"} dot />
+          <StatusChip status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"} label={ESTADO_LABELS[item.estado] ?? item.estado} dot />
         </td>
       </svelte:fragment>
 
@@ -488,6 +517,13 @@
         {#if canWrite}
           <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openSerieEdit(item)}>Editar</Button>
         {/if}
+        <InstrumentLifecycleActions
+          {item}
+          {canWrite}
+          basePath="/admin/trd/api"
+          instrumentLabel="TRD"
+          on:changed={onLifecycleChanged}
+        />
       </svelte:fragment>
 
       <svelte:fragment slot="create-form">
@@ -724,6 +760,11 @@
     }
 
     &__branch {
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-xs);
+    }
+
+    &__version {
       color: var(--op-text-secondary);
       font-size: var(--op-font-xs);
     }

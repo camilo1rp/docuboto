@@ -329,6 +329,8 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/expedientes/abc": "http://archive:8004",
         "/api/v1/tipos-documentales": "http://archive:8004",
         "/api/v1/trd/series": "http://archive:8004",
+        # ADR-026 (Increment 1): TVD es el mismo instrumento que TRD.
+        "/api/v1/tvd/agrupaciones": "http://archive:8004",
         "/api/v1/workflows/inbox": "http://workflow:8006",
         "/api/v1/workflow/rules/eval": "http://workflow:8006",
         # E18: el asistente conversacional enruta al mcp-server.
