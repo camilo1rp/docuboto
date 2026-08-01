@@ -66,25 +66,31 @@ describe("/admin — con USUA_PERM_ADMIN", () => {
     expect(plantillasLink.getAttribute("href")).toBe("/admin/plantillas");
   });
 
-  it("las áreas sin subruta implementada se muestran deshabilitadas, no como enlaces", () => {
+  // Al cerrar la Fase 5 ya no queda ninguna área con `implemented: false`: las
+  // diez subpáginas existen. Este test cambió de premisa — antes comprobaba que
+  // "Usuarios" se pintara deshabilitada; ahora comprueba lo contrario, porque
+  // seguir anunciándola como "Próximamente" sería mentir sobre una pantalla que
+  // ya está construida.
+  //
+  // No es un test que se limite a describir el presente: sirve de guarda. Si
+  // alguien vuelve a añadir una tarjeta sin `href` (o marca una existente como
+  // no implementada), reaparece el badge "Próximamente" y esto falla, obligando
+  // a decidir conscientemente si el índice debe volver a anunciar un hueco.
+  it("no queda ninguna área anunciada como pendiente: todas son enlaces navegables", () => {
     render(AdminPage);
 
-    // "Usuarios" no tiene subruta implementada: no debe ser un <a> navegable.
-    expect(screen.queryByRole("link", { name: /^Usuarios/i })).toBeNull();
+    expect(screen.getByRole("link", { name: /^Usuarios/i })).toBeTruthy();
+    expect(screen.queryAllByText("Próximamente")).toHaveLength(0);
+    expect(document.querySelectorAll(".admin-card--disabled")).toHaveLength(0);
+  });
 
-    // Debe existir como tarjeta deshabilitada con marca de texto "Próximamente"
-    // (no solo un cambio de color — regla de accesibilidad).
-    const proximamenteBadges = screen.getAllByText("Próximamente");
-    expect(proximamenteBadges.length).toBeGreaterThan(0);
-
-    // M11 (revisión UX Fase 0): la tarjeta deshabilitada ya no lleva
-    // `aria-disabled`/`aria-label` (rol implícito `generic`, ARIA 1.2 los
-    // ignora) — la señal es el badge de texto + el icono/candado visibles.
-    const usuariosLabel = screen.getByText("Usuarios");
-    const disabledCard = usuariosLabel.closest(".admin-card--disabled");
-    expect(disabledCard).toBeTruthy();
-    expect(disabledCard.hasAttribute("aria-disabled")).toBe(false);
-    expect(disabledCard.hasAttribute("aria-label")).toBe(false);
+  // El gate real de las tres colas de dead-letter es PERM_DLQ_ADMIN, no
+  // USUA_PERM_ADMIN (ver `colas/+page.server.js`). Ofrecer la tarjeta a quien
+  // no puede entrar produce un enlace que solo lleva a un 403 — el mismo modo
+  // de fallo que ya se corrigió en el ítem "Administración" de `navItems.js`.
+  it("la tarjeta de colas se rige por PERM_DLQ_ADMIN, no por USUA_PERM_ADMIN", () => {
+    render(AdminPage);
+    expect(screen.queryByText("Colas de errores")).toBeNull();
   });
 
   it("todas las áreas del catálogo aparecen (habilitadas o como mapa deshabilitado)", () => {
@@ -100,9 +106,21 @@ describe("/admin — con USUA_PERM_ADMIN", () => {
       "Parámetros",
       "Auditoría",
       "Notificaciones",
-      "Colas de errores",
     ]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
+  });
+});
+
+describe("/admin — con USUA_PERM_ADMIN + PERM_DLQ_ADMIN", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN", "PERM_DLQ_ADMIN"] }));
+  });
+
+  it("con el permiso de colas, la tarjeta aparece y enlaza a /admin/colas", () => {
+    render(AdminPage);
+    const colasLink = screen.getByRole("link", { name: /Colas de errores/i });
+    expect(colasLink.getAttribute("href")).toBe("/admin/colas");
   });
 });

@@ -30,6 +30,8 @@ Los archivos completos están en `docs/es/adr/`.
 | [ADR-021](adr/ADR-021-reclamacion-deadletter-eventos.md) | Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams (signature/workflow/notification-service) | Aceptado |
 | [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md) | Perfil v2 del índice electrónico — metadatos RT-15 por documento (formato, tamaño, foliación) | Aceptado |
 | [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md) | WORM / Object-Lock de preservación (MinIO) y hoja de ruta AIP/PREMIS | Aceptado (Increment A) |
+| [ADR-024](adr/ADR-024-root-fuera-de-banda.md) | `USUA_PERM_ROOT` no se concede desde la API — el administrador de entidad no es el techo de su entidad; ROOT solo se aprovisiona fuera de banda | Aceptado |
+| [ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md) | La TRD es un instrumento convalidado, no una tabla de configuración: versionado append-only y fijación de la versión que gobierna cada expediente | Propuesto |
 
 ## Cómo proponer un nuevo ADR
 

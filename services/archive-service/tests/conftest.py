@@ -56,6 +56,13 @@ def make_expediente_record(
     metadata_template_id: uuid.UUID | None = None,
     disposition: dict | None = None,
     nivel_seguridad: int = 1,
+    # ADR-025 (Increment 1): denormalización de clasificación (congelada al
+    # cerrar) + marca honesta de revisión pendiente. `None`/`False` por
+    # defecto -- el expediente `open` típico de los tests aún no tiene amarre
+    # congelado.
+    trd_serie_code: str | None = None,
+    trd_revision_requerida: bool = False,
+    trd_revision_motivo: str | None = None,
 ) -> dict:
     return {
         "id": exp_id or EXPEDIENTE_ID,
@@ -74,6 +81,9 @@ def make_expediente_record(
         # E15 perfil v3 (RT-15 art. 4.3.2.3): <listaControlAcceso> hereda este
         # nivel. 1=PUBLICA (default), 2=RESERVADA, 3=CLASIFICADA.
         "nivel_seguridad": nivel_seguridad,
+        "trd_serie_code": trd_serie_code,
+        "trd_revision_requerida": trd_revision_requerida,
+        "trd_revision_motivo": trd_revision_motivo,
     }
 
 
@@ -151,6 +161,20 @@ def make_trd_serie_record(
     version: int = 1,
     valid_from=None,
     pdfa_profile: str | None = None,
+    # ADR-025 (Increment 1): default 'migrada' -- la MAYORÍA de los tests
+    # existentes asumen una serie ya "usable" (gobierna un cierre) sin ejercer
+    # el circuito de convalidación; espejo del backfill de la migración 037.
+    # Los tests que SÍ ejercen el append-only/gate pasan `estado=` explícito.
+    estado: str = "migrada",
+    valid_to=None,
+    acto_administrativo: str | None = None,
+    fecha_aprobacion_comite=None,
+    fecha_convalidacion=None,
+    instancia_convalidante: str | None = None,
+    rusd_radicado: str | None = None,
+    fecha_publicacion=None,
+    supersede_a: uuid.UUID | None = None,
+    created_by: uuid.UUID | None = None,
 ) -> dict:
     return {
         "id": serie_id or SERIE_ID,
@@ -168,6 +192,16 @@ def make_trd_serie_record(
         "version": version,
         "valid_from": valid_from or NOW.date(),
         "pdfa_profile": pdfa_profile,
+        "estado": estado,
+        "valid_to": valid_to,
+        "acto_administrativo": acto_administrativo,
+        "fecha_aprobacion_comite": fecha_aprobacion_comite,
+        "fecha_convalidacion": fecha_convalidacion,
+        "instancia_convalidante": instancia_convalidante,
+        "rusd_radicado": rusd_radicado,
+        "fecha_publicacion": fecha_publicacion,
+        "supersede_a": supersede_a,
+        "created_by": created_by,
     }
 
 

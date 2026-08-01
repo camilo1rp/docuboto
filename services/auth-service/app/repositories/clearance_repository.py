@@ -36,6 +36,18 @@ class ClearanceRepository:
         val = await self._conn.fetchval("SELECT 1 FROM security_levels WHERE code = $1", code)
         return val is not None
 
+    async def group_exists(self, group_id: uuid.UUID) -> bool:
+        val = await self._conn.fetchval("SELECT 1 FROM auth_groups WHERE id = $1", group_id)
+        return val is not None
+
+    async def get_group_clearance(self, group_id: uuid.UUID) -> int | None:
+        """Nivel máximo vigente del grupo, o ``None`` si no tiene fila en `role_clearance`
+        (efectivamente PUBLICA=1 por defecto, ver `caller_max_level`)."""
+        val = await self._conn.fetchval(
+            "SELECT max_level FROM role_clearance WHERE group_id = $1", group_id
+        )
+        return int(val) if val is not None else None
+
     async def set_group_clearance(self, group_id: uuid.UUID, max_level: int) -> None:
         await self._conn.execute(
             """

@@ -58,6 +58,15 @@ class GroupPermissionSet(BaseModel):
     crud: int = Field(..., ge=0, le=5)  # 0=Ninguno..5=Nivel_2
 
 
+class GroupPermissionItem(BaseModel):
+    """Permiso asignado a un grupo (lectura de `GET /groups/{group_id}/permissions`)."""
+
+    permission_id: uuid.UUID
+    nombre: str
+    descripcion: str | None
+    crud: int
+
+
 class EffectivePermissions(BaseModel):
     user_id: uuid.UUID
     is_root: bool

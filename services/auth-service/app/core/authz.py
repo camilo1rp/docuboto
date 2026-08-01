@@ -112,7 +112,7 @@ async def get_caller(
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning("audit.append_denial failed", exc_info=True)
         raise _forbidden("Caller is not provisioned in this tenant")
-    service = RBACService(repo)
+    service = RBACService(conn)
     perms = await service.resolve_effective_permissions(user["id"])
     return Caller(
         user_id=user["id"],

@@ -321,6 +321,11 @@ class ArchiveRepository:
         status: str,
         expected_status: str,
         disposition: dict | None = None,
+        pin_trd: bool = False,
+        new_trd_serie_id: uuid.UUID | None = None,
+        new_trd_serie_code: str | None = None,
+        trd_revision_requerida: bool = False,
+        trd_revision_motivo: str | None = None,
     ) -> Expediente | None:
         """Cambia el estado del ciclo de vida (cierre/transferencia) y, al cerrar,
         materializa la disposición calculada (E02/ADR-015).
@@ -336,7 +341,17 @@ class ArchiveRepository:
         hoja de ruta append-only e `audit_log` INDELEBLE. Con la guarda dentro del
         `WHERE`, solo el primer `UPDATE` en llegar casa (`status` ya cambió para el
         segundo) — el `None` que devuelve el perdedor pasa a ser un caso
-        SIGNIFICATIVO y alcanzable, no un fail-closed defensivo teórico."""
+        SIGNIFICATIVO y alcanzable, no un fail-closed defensivo teórico.
+
+        `pin_trd` (ADR-025 D3, Increment 1): al cerrar, `ArchiveService`
+        re-resuelve por `trd_serie_code` la versión VIGENTE (convalidada/
+        migrada) y pide congelar `trd_serie_id`/`trd_serie_code` aquí, en la
+        MISMA sentencia que la transición — es la ÚLTIMA escritura de esa
+        columna en la vida del expediente (el trigger
+        `trg_expedientes_trd_pin_immutable` la rechaza después: pasa aquí
+        porque `OLD.status` todavía es `'open'`). Cuando `pin_trd=False`
+        (transferencia, o cierre sin serie asignada) esas columnas no se
+        tocan."""
         await self._set_search_path()
         now = datetime.now(tz=UTC)
         assignments = ["status = $1", "updated_at = $2"]
@@ -349,6 +364,19 @@ class ArchiveRepository:
         if disposition is not None:
             assignments.append(f"disposition = ${idx}::jsonb")
             params.append(json.dumps(disposition, default=str))
+            idx += 1
+        if pin_trd:
+            assignments.append(f"trd_serie_id = ${idx}")
+            params.append(new_trd_serie_id)
+            idx += 1
+            assignments.append(f"trd_serie_code = ${idx}")
+            params.append(new_trd_serie_code)
+            idx += 1
+            assignments.append(f"trd_revision_requerida = ${idx}")
+            params.append(trd_revision_requerida)
+            idx += 1
+            assignments.append(f"trd_revision_motivo = ${idx}")
+            params.append(trd_revision_motivo)
             idx += 1
         id_idx = idx
         params.append(expediente_id)
@@ -603,6 +631,68 @@ class ArchiveRepository:
         row = await self._conn.fetchrow("SELECT * FROM trd_series WHERE id = $1", serie_id)
         return _row_to_trd_serie(row) if row is not None else None
 
+    async def get_trd_serie_vigente_by_code(self, code: str) -> TrdSerie | None:
+        """La versión que gobierna HOY el código de serie (ADR-025 D1/D5):
+        `estado IN ('convalidada','migrada') AND valid_to IS NULL`. El índice
+        parcial único `ux_trd_series_vigente` garantiza que a lo sumo una fila
+        cumple esto por código -- no hay ambigüedad que resolver aquí."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            SELECT * FROM trd_series
+             WHERE code = $1 AND estado IN ('convalidada', 'migrada') AND valid_to IS NULL
+            """,
+            code,
+        )
+        return _row_to_trd_serie(row) if row is not None else None
+
+    async def create_trd_serie_version(
+        self,
+        *,
+        code: str,
+        version: int,
+        supersede_a: uuid.UUID,
+        created_by: uuid.UUID | None,
+        name: str,
+        description: str | None,
+        retention_years: int,
+        total_retention: int,
+        disposition: str,
+        parent_id: uuid.UUID | None,
+        archivo_gestion_years: int | None,
+        archivo_central_years: int | None,
+        pdfa_profile: str | None,
+    ) -> TrdSerie:
+        """Inserta la versión N+1 como fila NUEVA (ADR-025 D1): nunca un
+        `UPDATE` de la fila vigente. `estado` no se especifica -- cae al
+        DEFAULT de columna `'borrador'` (037), consistente con `create_trd_serie`."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO trd_series (
+                code, name, description, retention_years, total_retention,
+                disposition, parent_id, archivo_gestion_years, archivo_central_years,
+                pdfa_profile, version, supersede_a, created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING *
+            """,
+            code,
+            name,
+            description,
+            retention_years,
+            total_retention,
+            disposition,
+            parent_id,
+            archivo_gestion_years,
+            archivo_central_years,
+            pdfa_profile,
+            version,
+            supersede_a,
+            created_by,
+        )
+        return _row_to_trd_serie(row)
+
     async def update_trd_serie(
         self,
         serie_id: uuid.UUID,
@@ -612,9 +702,16 @@ class ArchiveRepository:
         retention_years: int | None,
         total_retention: int | None,
         disposition: str | None,
-        is_active: bool | None,
         pdfa_profile: str | None = None,
     ) -> TrdSerie | None:
+        """Edición EN SITIO. Solo llamable por el servicio sobre una fila en
+        `borrador` (o, para `pdfa_profile`, en cualquier estado -- ADR-025 D1).
+        El trigger `trg_trd_series_append_only` es el cinturón de seguridad
+        de motor; este método no repite esa validación, confía en el gate del
+        servicio (`ArchiveService.update_trd_serie`) para devolver un 409
+        legible en vez de una excepción cruda de Postgres. `is_active` YA NO
+        es aceptado aquí (ADR-025 contrato API): la baja de una versión es
+        `derogar`, Increment 2 -- ver ADR-025 §"Contratos de API afectados"."""
         await self._set_search_path()
 
         assignments: list[str] = []
@@ -640,10 +737,6 @@ class ArchiveRepository:
         if disposition is not None:
             assignments.append(f"disposition = ${idx}")
             params.append(disposition)
-            idx += 1
-        if is_active is not None:
-            assignments.append(f"is_active = ${idx}")
-            params.append(is_active)
             idx += 1
         if pdfa_profile is not None:
             assignments.append(f"pdfa_profile = ${idx}")
@@ -841,6 +934,9 @@ def _row_to_expediente(row: asyncpg.Record) -> Expediente:
         metadata_template_id=row["metadata_template_id"],
         disposition=(_json_obj(row["disposition"]) if row["disposition"] is not None else None),
         nivel_seguridad=row["nivel_seguridad"],
+        trd_serie_code=row["trd_serie_code"],
+        trd_revision_requerida=row["trd_revision_requerida"],
+        trd_revision_motivo=row["trd_revision_motivo"],
     )
 
 
@@ -880,4 +976,14 @@ def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
         version=row["version"],
         valid_from=row["valid_from"],
         pdfa_profile=row["pdfa_profile"],
+        estado=row["estado"],
+        valid_to=row["valid_to"],
+        acto_administrativo=row["acto_administrativo"],
+        fecha_aprobacion_comite=row["fecha_aprobacion_comite"],
+        fecha_convalidacion=row["fecha_convalidacion"],
+        instancia_convalidante=row["instancia_convalidante"],
+        rusd_radicado=row["rusd_radicado"],
+        fecha_publicacion=row["fecha_publicacion"],
+        supersede_a=row["supersede_a"],
+        created_by=row["created_by"],
     )

@@ -20,6 +20,7 @@ from httpx import AsyncClient
 from app.core.authz import Caller, get_caller
 from app.core.database import get_tenant_conn
 from app.main import app
+from app.services import urd_service as urd_service_module
 
 USER_ID = uuid.uuid4()
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
@@ -157,3 +158,131 @@ async def test_context_switch_no_urd_is_400(client: AsyncClient) -> None:
     )
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "no_urd_for_dependency"
+
+
+# --- Canal A: auditoría inmutable de escrituras de URD ----------------------
+def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    mock_append = AsyncMock(return_value="fake-hash")
+    monkeypatch.setattr(urd_service_module, "_audit", MagicMock(append=mock_append))
+    monkeypatch.setattr(urd_service_module, "_AUDIT_AVAILABLE", True)
+    return mock_append
+
+
+@pytest.mark.asyncio
+async def test_create_urd_audits_action(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_append = _patch_audit(monkeypatch)
+    conn = _conn()
+    urd_row = _urd_row(depe_id=120)
+    conn.fetchrow.return_value = urd_row
+    _override(conn)
+
+    resp = await client.post(
+        f"/api/v1/auth/users/{USER_ID}/urd",
+        json={"depe_id": 120, "rol_id": str(uuid.uuid4()), "es_principal": True},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    mock_append.assert_awaited_once()
+    kwargs = mock_append.call_args.kwargs
+    assert kwargs["action"] == "urd.creada"
+    assert kwargs["tenant_slug"] == "demo"
+    assert kwargs["actor"] == str(_ADMIN.user_id)
+    assert kwargs["object_ref"] == str(urd_row["id"])
+    assert kwargs["payload"]["depe_id"] == 120
+
+
+@pytest.mark.asyncio
+async def test_create_urd_failure_leaves_no_audit_entry(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomicidad (mitad 1): la mutación falla (URD duplicada) → sin asiento."""
+    mock_append = _patch_audit(monkeypatch)
+    conn = _conn()
+    conn.fetchrow.side_effect = asyncpg.UniqueViolationError("dup")
+    _override(conn)
+
+    resp = await client.post(
+        f"/api/v1/auth/users/{USER_ID}/urd",
+        json={"depe_id": 120, "rol_id": str(uuid.uuid4())},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 409
+    mock_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_urd_audit_failure_reverts_mutation(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomicidad (mitad 2): si `_audit.append` falla, la excepción propaga
+    fuera de `async with conn.transaction()` — la mutación no se confirma
+    como éxito (500, no 201)."""
+    mock_append = AsyncMock(side_effect=RuntimeError("audit backend down"))
+    monkeypatch.setattr(urd_service_module, "_audit", MagicMock(append=mock_append))
+    monkeypatch.setattr(urd_service_module, "_AUDIT_AVAILABLE", True)
+    conn = _conn()
+    conn.fetchrow.return_value = _urd_row(depe_id=120)
+    _override(conn)
+
+    with pytest.raises(RuntimeError, match="audit backend down"):
+        await client.post(
+            f"/api/v1/auth/users/{USER_ID}/urd",
+            json={"depe_id": 120, "rol_id": str(uuid.uuid4())},
+            headers=TENANT_HEADERS,
+        )
+    mock_append.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_urd_audits_action(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_append = _patch_audit(monkeypatch)
+    conn = _conn()
+    conn.execute.return_value = "DELETE 1"
+    _override(conn)
+    urd_id = uuid.uuid4()
+
+    resp = await client.delete(
+        f"/api/v1/auth/users/{USER_ID}/urd/{urd_id}", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 204
+    mock_append.assert_awaited_once()
+    kwargs = mock_append.call_args.kwargs
+    assert kwargs["action"] == "urd.eliminada"
+    assert kwargs["object_ref"] == str(urd_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_urd_not_found_leaves_no_audit_entry(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_append = _patch_audit(monkeypatch)
+    conn = _conn()
+    conn.execute.return_value = "DELETE 0"
+    _override(conn)
+
+    resp = await client.delete(
+        f"/api/v1/auth/users/{USER_ID}/urd/{uuid.uuid4()}", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 404
+    mock_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_urd_write_500_when_audit_lib_unavailable(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(urd_service_module, "_AUDIT_AVAILABLE", False)
+    conn = _conn()
+    _override(conn)
+
+    resp = await client.post(
+        f"/api/v1/auth/users/{USER_ID}/urd",
+        json={"depe_id": 120, "rol_id": str(uuid.uuid4())},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 500
+    assert resp.json()["detail"]["error"] == "auditoria_no_disponible"

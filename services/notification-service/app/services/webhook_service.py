@@ -18,6 +18,7 @@ consumidor del bus (un webhook caído no afecta al SGDEA).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -25,7 +26,9 @@ import logging
 
 import httpx
 
+from app.core.config import settings
 from app.core.database import acquire_tenant
+from app.core.webhook_security import validate_webhook_target
 from app.repositories.webhook_repository import WebhookRepository
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,26 @@ async def _deliver_one(client: httpx.AsyncClient, sub, body: bytes) -> bool:
     if sub["secret"]:
         headers["X-OrpycaMCP-Signature"] = sign(sub["secret"], body)
     for attempt in range(1, _MAX_ATTEMPTS + 1):
+        # Re-valida el destino en CADA intento (no solo al crear la
+        # suscripción): cierra el caso de DNS rebinding (un dominio que
+        # resolvía a IP pública al suscribirse y luego se re-apunta a una IP
+        # interna) y también cubre suscripciones PREEXISTENTES a la política
+        # (creadas antes de este endurecimiento, o con
+        # webhook_allow_private_targets=True en su momento). Una suscripción
+        # rechazada aquí NO se borra ni se desactiva — sigue existiendo,
+        # simplemente no entrega mientras su destino sea inválido; el
+        # administrador decide (ver DELETE /api/v1/webhooks/{id}). Queda un
+        # TOCTOU residual y aceptado: ver docstring de
+        # app.core.webhook_security.
+        try:
+            await asyncio.to_thread(
+                validate_webhook_target,
+                sub["url"],
+                allow_private=settings.webhook_allow_private_targets,
+            )
+        except ValueError as exc:
+            logger.warning("webhook %s destino rechazado, no se entrega: %s", sub["url"], exc)
+            return False
         try:
             resp = await client.post(sub["url"], content=body, headers=headers)
             if resp.status_code < 400:

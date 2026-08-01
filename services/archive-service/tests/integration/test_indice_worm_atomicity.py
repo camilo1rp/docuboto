@@ -47,7 +47,7 @@ from app.schemas.archive import ExpedienteCreate, TrdSerieCreate
 from app.services.archive_service import ArchiveService
 from app.services.index_service import IndexService
 
-from .conftest import DSN
+from .conftest import DSN, convalidate_for_test
 
 
 async def _seed_expediente_firmado(
@@ -82,6 +82,11 @@ async def _seed_expediente_firmado(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): 'borrador' (DEFAULT nuevo) no gobierna ningún
+    # cierre (D5) -- este helper cierra el expediente unas líneas más abajo,
+    # así que la serie necesita quedar vigente. 'migrada' es el atajo de
+    # test correcto (D6), nunca 'convalidada' (no hay acto real).
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,

@@ -141,6 +141,13 @@ class ExpedienteResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     disposition: dict[str, Any] | None = None
     radicados: list[ExpedienteRadicadoResponse] = []
+    # ADR-025 (Increment 1, aditivo): denormalización de clasificación
+    # (sobrevive a la versión concreta) + marca honesta de revisión pendiente
+    # (D4/D6) -- ver `TrdSerieResponse.estado`/`disposition["serie_estado"]`
+    # para el detalle de bajo qué instrumento se cerró.
+    trd_serie_code: str | None = None
+    trd_revision_requerida: bool = False
+    trd_revision_motivo: str | None = None
 
 
 class ExpedienteDisposicionResult(BaseModel):
@@ -207,12 +214,41 @@ class TrdSerieCreate(BaseModel):
 
 
 class TrdSerieUpdate(BaseModel):
+    """`PATCH /api/v1/trd/{serie_id}` (ADR-025, Increment 1): solo aplicable EN
+    SITIO cuando la versión está en `borrador` -- cualquier otro estado
+    responde `409 trd_version_inmutable` (una modificación sustantiva exige
+    `POST /trd/{code}/versiones`). `pdfa_profile` es la ÚNICA excepción: sigue
+    aceptándose en cualquier estado (D1, política de preservación técnica, no
+    contenido convalidado). `is_active` YA NO se acepta -- la baja de una
+    versión es `derogar` (Increment 2), nunca un efecto colateral del PATCH."""
+
     name: str | None = None
     description: str | None = None
     retention_years: int | None = None
     total_retention: int | None = None
     disposition: str | None = None
-    is_active: bool | None = None
+    pdfa_profile: str | None = None
+
+    @field_validator("pdfa_profile")
+    @classmethod
+    def _check_pdfa_profile(cls, value: str | None) -> str | None:
+        return _validate_pdfa_profile(value)
+
+
+class TrdSerieVersionCreate(BaseModel):
+    """`POST /api/v1/trd/{code}/versiones` (ADR-025, Increment 1, nuevo):
+    clona la versión VIGENTE (convalidada/migrada) del código como una fila
+    NUEVA `version+1`, estado `borrador`. Solo los campos enviados se
+    sobre-escriben; el resto se copia de la versión vigente."""
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    retention_years: int | None = None
+    total_retention: int | None = None
+    disposition: _DISPOSITION | None = None
+    parent_id: uuid.UUID | None = None
+    archivo_gestion_years: int | None = Field(default=None, ge=0)
+    archivo_central_years: int | None = Field(default=None, ge=0)
     pdfa_profile: str | None = None
 
     @field_validator("pdfa_profile")
@@ -239,6 +275,19 @@ class TrdSerieResponse(BaseModel):
     version: int = 1
     valid_from: date | None = None
     pdfa_profile: str | None = None
+    # ADR-025 (Increment 1): `version`/`valid_from` dejan de ser vestigiales
+    # (RF-FIR-15) -- `estado` es la fuente de verdad del ciclo de vida del
+    # instrumento; los campos del acto son NULL salvo en `convalidada`.
+    estado: str = "borrador"
+    valid_to: date | None = None
+    acto_administrativo: str | None = None
+    fecha_aprobacion_comite: date | None = None
+    fecha_convalidacion: date | None = None
+    instancia_convalidante: str | None = None
+    rusd_radicado: str | None = None
+    fecha_publicacion: date | None = None
+    supersede_a: uuid.UUID | None = None
+    created_by: uuid.UUID | None = None
 
 
 class IndiceItem(BaseModel):
@@ -452,6 +501,16 @@ class RetentionSchedule(BaseModel):
     fin_archivo_central: date
     disposition_code: str
     disposition_label: str
+    # ADR-025 (Increment 1): procedencia del instrumento que gobernó el
+    # cálculo -- viaja dentro del snapshot (`expedientes.disposition`) como
+    # PRUEBA oponible (no como integridad referencial, ver ADR-025 D3).
+    serie_version: int = 1
+    serie_estado: str = "borrador"
+    acto_administrativo: str | None = None
+    fecha_convalidacion: date | None = None
+    instancia_convalidante: str | None = None
+    rusd_radicado: str | None = None
+    snapshot_at: datetime | None = None
 
 
 class TipoDocumentalCreate(BaseModel):

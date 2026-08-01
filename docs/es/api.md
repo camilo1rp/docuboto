@@ -118,17 +118,33 @@ El secreto TOTP (RFC 6238) es una **credencial de identidad durable** y vive en 
 - *(Interno, **no** enrutado por el gateway)* `POST /internal/signing-key/sign-digest` `{digest_b64, alg:"RSA-SHA256", prehashed:true, totp_code}` — lo llama signature-service al firmar un acto personal de la cadena: deriva el usuario del **bearer reenviado** (sin IDOR), **verifica-y-consume el TOTP atómicamente** con la firma, descifra la clave **solo en memoria** (vida mínima), firma el digest, y devuelve `{signature_value_b64, certificado_pem, certificado_fingerprint, serial, not_after}` — la privada nunca se devuelve. Es la interfaz "firmar un digest" de un HSM (seam a firma cualificada). `X-Internal-Token` comparado con `compare_digest`. La activación pendiente→activo deja asiento `signing_key.activada` atómico.
 
 ### Gestión de usuarios RBAC (E14)
-- `POST /api/v1/auth/users` · `GET /api/v1/auth/users` (paginado, `X-Total-Count`) · `GET /api/v1/auth/users/{id}/permissions` — administración de usuarios. Todo el router exige `USUA_PERM_ADMIN`.
+- `POST /api/v1/auth/users` · `GET /api/v1/auth/users` (paginado, `X-Total-Count`) · `GET /api/v1/auth/users/{id}/permissions` — administración de usuarios. Todo el router exige `USUA_PERM_ADMIN`. `POST` deja asiento `rbac.usuario_creado` en `audit_log`, **atómico** con el INSERT (ver nota de auditoría abajo).
+  - **`POST` con `is_root: true` → `403 forbidden` si el llamante no es ROOT** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md), cierre de hallazgo Alto de auto-escalada). Un `USUA_PERM_ADMIN` no-ROOT nunca puede crear un usuario ROOT; ROOT sí. El primer ROOT de un tenant se aprovisiona fuera de banda (`app/ops/grant_root.py`, no HTTP).
 - `GET /api/v1/auth/users/pickable?size=N` — proyección mínima `[{id, username}]` de usuarios **activos**, para selectores de UI (p. ej. el `UserPicker` de cadenas de visto bueno, T-08c). Gateado con `PERM_RADI` (no admin); no expone `email` ni metadatos administrativos (D-10). `size` en `[1, 500]`.
 
 ### URD y contexto de dependencia (E08)
-- `GET /api/v1/auth/users/{user_id}/urd` · `POST` · `DELETE /{urd_id}` — administra las asignaciones Usuario-Rol-Dependencia (una por (usuario, dependencia); una sola principal). Exige `USUA_PERM_ADMIN`.
+- `GET /api/v1/auth/users/{user_id}/urd` · `POST` · `DELETE /{urd_id}` — administra las asignaciones Usuario-Rol-Dependencia (una por (usuario, dependencia); una sola principal). Exige `USUA_PERM_ADMIN`. `POST`/`DELETE` dejan asiento `urd.creada`/`urd.eliminada`, **atómico** con la mutación.
 - `GET /api/v1/auth/context` — contexto del llamante: `{user_id, active_depe_id, available_depts[]}`.
-- `POST /api/v1/auth/context/switch` `{ "depe_id": 120 }` — fija la dependencia activa del propio usuario. **No reemite token** (ADR-013): persiste el contexto y lo audita. `400 no_urd_for_dependency` si no tiene URD activa allí.
+- `POST /api/v1/auth/context/switch` `{ "depe_id": 120 }` — fija la dependencia activa del propio usuario. **No reemite token** (ADR-013): persiste el contexto y lo audita en `usua_historico` (Canal B, no `audit_log`). `400 no_urd_for_dependency` si no tiene URD activa allí.
+
+### Grupos, membresías y permisos (E08)
+Todo el router exige `USUA_PERM_ADMIN`.
+- `POST /api/v1/auth/groups` · `GET /api/v1/auth/groups` — alta y listado de grupos. `POST` deja asiento `rbac.grupo_creado`.
+- `GET /api/v1/auth/permissions` — catálogo de permisos (`{id, nombre, descripcion}`). **`USUA_PERM_ROOT` se omite del catálogo si el llamante no es ROOT** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md)) — no se lista una opción que el `PUT .../permissions/{id}` de abajo va a rechazar.
+- `POST /api/v1/auth/groups/{group_id}/members/{user_id}` · `DELETE .../members/{user_id}` — alta/baja de un usuario en un grupo. Dejan asiento `rbac.miembro_agregado`/`rbac.miembro_removido`.
+- `GET /api/v1/auth/groups/{group_id}/members` (paginado, `X-Total-Count`) — usuarios del grupo. Espejo de lectura del alta/baja anterior.
+- `PUT /api/v1/auth/groups/{group_id}/permissions/{permission_id}` `{ "crud": 3 }` — fija el CRUD (0-5) de un permiso para el grupo. Deja asiento `rbac.permiso_grupo_asignado` (payload con `permission_id`/`crud`).
+  - **Conceder (`crud > 0`) `USUA_PERM_ROOT` → `403 forbidden` si el llamante no es ROOT** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md)). Revocar (`crud = 0`) siempre está permitido, incluso a un no-ROOT — solo la concesión está bloqueada. Cierra la vía de auto-escalada vía el grupo del que el propio actor es miembro.
+- `GET /api/v1/auth/groups/{group_id}/permissions` — permisos asignados al grupo: `[{permission_id, nombre, descripcion, crud}]`. Espejo de lectura del `PUT` anterior.
+- `group_id` de un grupo inexistente **o de otro tenant** → `404` indistinguible (el `search_path` ya acota el schema del tenant; nunca `403`, que confirmaría la existencia del grupo ajeno).
+
+**Auditoría de escrituras RBAC/URD (E08, cierra hueco de trazabilidad):** todo `POST`/`PUT`/`DELETE` de esta sección y de "URD" deja asiento en `public.audit_log` **dentro de la misma transacción** que la mutación (`async with conn.transaction()`) — no *best-effort*: si `audit.append` falla, la mutación se revierte; si la librería de auditoría no está instalada, la escritura responde `500 auditoria_no_disponible` **antes** de tocar ninguna fila (mismo patrón fail-closed que `signing-key`/`totp`). `tenant_slug` es obligatorio internamente (`X-Tenant-Slug`, ya exigido por `get_tenant_conn`); el actor es el `X-User-Id` resuelto por el gate.
 
 ### Clasificación de seguridad (E08, RF-SEG-08, Ley 1712/2014)
 - `GET /api/v1/auth/security-levels` — catálogo de niveles (1 Pública, 2 Reservada, 3 Clasificada).
-- `PUT /api/v1/auth/groups/{group_id}/clearance` `{ "max_level": 2 }` — fija el nivel máximo accesible de un grupo (exige `USUA_PERM_ADMIN`).
+- `PUT /api/v1/auth/groups/{group_id}/clearance` `{ "max_level": 2 }` — fija el nivel máximo accesible de un grupo (exige `USUA_PERM_ADMIN`). Deja asiento `clearance.grupo_actualizado` con `{group_id, previous_max_level, new_max_level}` (**atómico**, mismas garantías fail-closed que RBAC/URD arriba) — el nivel anterior permite distinguir una subida de una bajada.
+  - **No-write-up → `403 forbidden` si `max_level` excede el clearance efectivo del llamante** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md)). Un admin con clearance RESERVADA (2) no puede fijar CLASIFICADA (3) en ningún grupo, incluido el suyo propio; ROOT no tiene este límite (bypass total, `_MAX_LEVEL`=3).
+- `GET /api/v1/auth/groups/{group_id}/clearance` — clearance vigente del grupo: `{group_id, max_level}` (`max_level: null` si el grupo no tiene fila en `role_clearance`, lo que implica PUBLICA=1 por defecto). Exige `USUA_PERM_ADMIN`; mismo `404` indistinguible que el `PUT` para grupo inexistente/de otro tenant.
 - `GET /api/v1/auth/clearance` — clearance del llamante: `{user_id, max_level, accessible_levels[]}` (MAX sobre sus grupos; ROOT = 3).
 - `GET /api/v1/auth/clearance/check?level=N` — `{level, max_level, allowed}` (mínimo privilegio: `allowed = max_level ≥ level`).
 
@@ -153,7 +169,21 @@ Recalcula la cadena de hash del tenant y reporta su integridad (ADR-008). Exige 
 
 ## tenant-service — puerto 8002
 
-### `POST /api/v1/tenants`
+### `POST /api/v1/tenants` — **NO enrutado por el gateway**
+
+> **Cierre de hallazgo Crítico (auditoría 2026-07):** el registro de tenants vive
+> en el schema `public` (sin `search_path` de tenant) y no tenía **ningún** gate
+> de autorización — cualquier usuario autenticado de la entidad A podía
+> enumerar (`GET`) y **escribir** (`PATCH`) el registro de la entidad B. La
+> corrección quirúrgica fue sacar el prefijo `/api/v1/tenants/` de la tabla de
+> ruteo del gateway (`api-gateway/app/routers/proxy.py`): no hay consumidor
+> legítimo externo (el frontend no lo llama, y el alta de tenants la hace
+> `scripts/init_tenant.py` escribiendo directo a `public.tenants` — operación
+> de plataforma, no de aplicación). Los endpoints siguen existiendo en
+> tenant-service para ese script/uso interno, pero **ya no son alcanzables**
+> desde `http://localhost:19080` — una petición a `/api/v1/tenants/` responde
+> `404 route_not_found` sin llegar siquiera a validar el token.
+
 Crea una institución y provisiona su schema PostgreSQL `tenant_{slug}`.
 
 ```json
@@ -176,28 +206,46 @@ Crea una institución y provisiona su schema PostgreSQL `tenant_{slug}`.
 - `code`: mayúsculas alfanuméricas (`^[A-Z0-9_]+$`) — aparece en números de radicado — inmutable
 - 409 si slug o code ya existen
 
-### `GET /api/v1/tenants`
+### `GET /api/v1/tenants` — NO enrutado por el gateway
 Lista instituciones. Query: `?status=active&page=1&size=20`. Header `X-Total-Count`.
 
-### `GET /api/v1/tenants/{id}`
+### `GET /api/v1/tenants/{id}` — NO enrutado por el gateway
 Obtener por UUID.
 
-### `GET /api/v1/tenants/by-slug/{slug}`
+### `GET /api/v1/tenants/by-slug/{slug}` — NO enrutado por el gateway
 Obtener por slug. Usado por otros servicios para validar el tenant del JWT.
 
-### `PATCH /api/v1/tenants/{id}`
+### `PATCH /api/v1/tenants/{id}` — NO enrutado por el gateway
 Actualizar `name` o `status`. `slug` y `code` son inmutables.
 
 ### Administración del tenant (E14)
-- **Dependencias** (organigrama): `GET/POST/PATCH /api/v1/dependencias`, `GET /api/v1/dependencias/by-codigo/{codigo}` (jerárquicas).
-- **Catálogos** (lookup): `GET/POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
-- **Parámetros**: `GET /api/v1/config/params`, `GET /api/v1/config/params/{key}`.
-- **Días no hábiles / festivos**: `GET /api/v1/config/holidays` (`?year=`), `POST /api/v1/config/holidays` (alta), `DELETE /api/v1/config/holidays/{id}`, `POST /api/v1/config/holidays/seed` (`{year}` → siembra los festivos colombianos calculados automáticamente).
-- **Días hábiles**: `GET /api/v1/business-days/calculate?from_date=&days=` — calcula la fecha de vencimiento aplicando fines de semana + festivos + no laborables del tenant (base de RF-RAD-04).
+
+> **Autorización (cierre de hallazgo Crítico, auditoría 2026-07):** el servicio
+> no tenía **ningún** gate de autorización (`app/core/authz.py` no existía) —
+> cualquier autenticado del tenant podía crear/editar/borrar dependencias,
+> catálogos, festivos y parámetros. Las escrituras ahora exigen
+> `USUA_PERM_ADMIN` (`app/core/authz.py`, mismo patrón `require_permission` que
+> document-service/archive-service) y dejan asiento en `public.audit_log`
+> dentro de la misma transacción (fail-closed, patrón `RBACService`). Los `GET`
+> quedan **solo autenticados**: son catálogos/calendario que la UI de
+> radicación y el cálculo de plazos (RF-RAD-04) necesitan para cualquier
+> usuario, no solo administradores.
+
+- **Dependencias** (organigrama): `GET /api/v1/dependencias` (autenticado) · `POST/PATCH/DELETE /api/v1/dependencias` (**`USUA_PERM_ADMIN`**) · `GET /api/v1/dependencias/by-codigo/{codigo}` (jerárquicas, autenticado).
+- **Catálogos** (lookup): `GET /api/v1/catalogos/{catalogo}` (autenticado) · `POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` (**`USUA_PERM_ADMIN`**) — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
+- **Parámetros**: `GET /api/v1/config/params`, `GET /api/v1/config/params/{key}` (autenticados) · `PUT /api/v1/config/params/{key}` (**`USUA_PERM_ADMIN`**).
+- **Días no hábiles / festivos**: `GET /api/v1/config/holidays` (`?year=`, autenticado) · `POST /api/v1/config/holidays`, `DELETE /api/v1/config/holidays/{id}`, `POST /api/v1/config/holidays/seed` (`{year_from, year_to}` → siembra los festivos colombianos calculados automáticamente) — las 3 escrituras exigen **`USUA_PERM_ADMIN`**.
+- **Días hábiles**: `GET /api/v1/business-days/calculate?from=&days=` (autenticado) — calcula la fecha de vencimiento aplicando fines de semana + festivos + no laborables del tenant (base de RF-RAD-04).
 
 ### PINAR — Plan Institucional de Archivos (E14, RF-ADM-08, Acuerdo AGN 003/2015)
 
-Instrumento de planeación archivística por tenant. Requiere rol administrador (mediado por el gateway). El actor imputable llega en `X-User-Id`.
+Instrumento de planeación archivística por tenant. Todas las escrituras (ciclo de
+vida del plan, aspectos, priorización, objetivos, proyectos, seguimiento,
+instrumentos) exigen **`USUA_PERM_ADMIN`** (`app/core/authz.py`, cierre del mismo
+hallazgo Crítico que catálogos/dependencias/config — antes no había ningún gate
+de rol, pese a que la spec §10.3 restringe la gestión al administrador). Los
+`GET` (tableros, mapa de ruta, catálogo de ejes) quedan solo autenticados. El
+actor imputable llega en `X-User-Id`.
 
 - **Ejes** (catálogo fijo, seed de 5): `GET /api/v1/pinar/ejes`.
 - **Plan**: `POST /api/v1/pinar/planes` (crea en `borrador`, `version = max+1`) · `GET /api/v1/pinar/planes` (`?estado=`) · `GET /api/v1/pinar/planes/{id}` · `PATCH /api/v1/pinar/planes/{id}` (visión/vigencia, solo en `borrador`).
@@ -267,8 +315,10 @@ Registra un nuevo radicado. Asigna número de radicado atómico.
 - `metadata` (opcional): metadatos variables del tipo documental (ADR-007). Si el `doc_class` tiene una **plantilla activa**, los valores se validan contra su JSON Schema antes de radicar; si no cumplen → `422 metadata_validation_failed` y no se radica. Sin plantilla, se almacenan tal cual. La columna está indexada con GIN.
 - `nivel_seguridad` (opcional, default `1`): clasificación de seguridad del radicado (RF-SEG-08) — `1`=PUBLICA, `2`=RESERVADA, `3`=CLASIFICADA (= `security_levels.code`). La búsqueda oculta a cada usuario los radicados por encima de su *clearance* (ver _Full-Text Search_).
 
+> **Control de acceso (catálogo de metadatos):** las **mutaciones** — `POST /api/v1/metadata/templates` y `POST/PATCH/DELETE /api/v1/metadata/elements` — exigen **`USUA_PERM_TRD`** (fail-closed: `403` sin tenant/user-id/permiso), el mismo permiso que gobierna su gemelo `POST /api/v1/expediente-metadata/templates` en archive-service (una plantilla que relaja la validación obligatoria de un tipo documental es tan consecuente como la de un expediente). `DELETE /metadata/elements/{id}` exige además **`crud≥3`** (RF-SEG-03; precedente `DELETE /tipos-documentales/{id}`). Las cuatro escrituras dejan asiento en `audit_log`. Las **lecturas** GET quedan abiertas (solo tenant).
+
 ### `POST /api/v1/metadata/templates`
-Define la plantilla de metadatos (JSON Schema) de un tipo documental. Una sola plantilla activa por `tipo_documental`.
+Define la plantilla de metadatos (JSON Schema) de un tipo documental. Una sola plantilla activa por `tipo_documental`. Exige `USUA_PERM_TRD`.
 
 ```json
 // Request
@@ -282,7 +332,7 @@ Define la plantilla de metadatos (JSON Schema) de un tipo documental. Una sola p
 Lista plantillas; filtro opcional `?tipo_documental=Factura`.
 
 ### `/api/v1/metadata/elements` (catálogo de elementos de metadato, RF-MET-03)
-CRUD de definiciones reutilizables de campos de metadato (`POST`/`GET`/`GET {id}`/`PATCH {id}`/`DELETE {id}`). Atributos: `clave`, `etiqueta`, `tipo_dato` (text/number/date/boolean/select), `longitud`, `ocurrencia_min/max`, `modificable`, `valor_default`, `opciones`, `orden`, `searchable`, `mapeo_dublin_core` (gancho RF-MET-09). `409` si la clave ya existe.
+CRUD de definiciones reutilizables de campos de metadato (`POST`/`GET`/`GET {id}`/`PATCH {id}`/`DELETE {id}`). Atributos: `clave`, `etiqueta`, `tipo_dato` (text/number/date/boolean/select), `longitud`, `ocurrencia_min/max`, `modificable`, `valor_default`, `opciones`, `orden`, `searchable`, `mapeo_dublin_core` (gancho RF-MET-09). `409` si la clave ya existe. `POST`/`PATCH` exigen `USUA_PERM_TRD`; `DELETE` exige `USUA_PERM_TRD` con `crud≥3`.
 
 ### `GET /api/v1/documents`
 Listar radicados. Filtros: `?doc_type=E&status=registered&page=1&size=20`. **Filtro por metadato** (RF-MET-02): `?meta.<campo>=valor` (uno o varios) usa contención JSONB sobre el índice GIN, p. ej. `?meta.area=juridica`. **Control de acceso (RF-SEG-08):** el listado se acota por la clasificación del radicado igual que la búsqueda — cada usuario solo ve los de `nivel_seguridad ≤` su *clearance* (*fail-closed* a PUBLICA).
@@ -695,10 +745,10 @@ Capa **advisoria/derivada y opt-in** (no es fuente de verdad). Embeddings con pr
 > **Ingesta event-driven (E21, MVP):** además del `POST /ingest` manual, el knowledge-service **consume `orpycamcp.document.events`** (consumer group `knowledge-ingest` + DLQ, ADR-021) y auto-indexa cada radicado al crearse (`document.radicado.created` → `subject`/`sender`, `source_type="radicado"`, `source_ref=tracking_number`). El `nivel_seguridad` se **replica del evento** (fail-closed a CLASIFICADA si falta) y se **mantiene consistente ante reclasificación** (`document.radicado.reclassified`): una subida a RESERVADA+ con proveedor de embeddings externo **purga el contenido** (tombstone), y el nivel de un fragmento **nunca baja** salvo por una reclasificación explícita, sea cual sea el orden de llegada de los eventos. Material RESERVADA+ **no se embebe** con un proveedor externo (queda registrado en `audit_log`). Un radicado **anulado** (`document.radicado.annulled`) se marca *voided* de forma **permanente** y queda excluido de la búsqueda a cualquier clearance (no se re-indexa aunque un evento de creación se reprocese después). Es una capa **derivada/advisoria** (ADR-006): no es fuente de verdad; el registro legal vive en document/archive.
 
 ### Webhooks salientes (E11, ADR-018)
-- `POST /api/v1/webhooks` `{url, event_types: [...], secret?}` — suscribe un endpoint externo (`event_types` vacío = todos los eventos). El `secret` no se devuelve. **Exige `USUA_PERM_ADMIN`** (todo el CRUD): registrar una suscripción entrega cada evento del tenant a la URL indicada, así que es config de administración — sin el gate sería un canal de exfiltración (y SSRF).
+- `POST /api/v1/webhooks` `{url, event_types: [...], secret?}` — suscribe un endpoint externo (`event_types` vacío = todos los eventos). El `secret` no se devuelve. **Exige `USUA_PERM_ADMIN`** (todo el CRUD): registrar una suscripción entrega cada evento del tenant a la URL indicada, así que es config de administración — sin el gate sería un canal de exfiltración (y SSRF). **`422` nuevo** si `url` apunta a un destino interno/no enrutable (loopback `127.0.0.0/8`/`::1`/`localhost`, link-local `169.254.0.0/16`/`fe80::/10` — incluye el endpoint de metadata cloud, privado `10.0.0.0/8`/`172.16.0.0/12`/`192.168.0.0/16`/`fc00::/7`, un nombre de servicio de la red Docker interna de OrpycaMCP, o un esquema distinto de `http`/`https`): el `detail` explica el motivo concreto del rechazo, no un "URL inválida" genérico. Estricto por defecto; relajable solo en desarrollo con `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` en notification-service (kill-switch, nunca en producción).
 - `GET /api/v1/webhooks` — lista las suscripciones (`X-Total-Count`). Exige `USUA_PERM_ADMIN`.
 - `DELETE /api/v1/webhooks/{id}` — elimina una suscripción. Exige `USUA_PERM_ADMIN`.
-- Al ocurrir un evento de dominio, OrpycaMCP hace `POST` del sobre canónico a las suscripciones que coinciden, firmado en la cabecera `X-OrpycaMCP-Signature: sha256=<hmac>` (best-effort con reintentos). El receptor debe ser idempotente.
+- Al ocurrir un evento de dominio, OrpycaMCP hace `POST` del sobre canónico a las suscripciones que coinciden, firmado en la cabecera `X-OrpycaMCP-Signature: sha256=<hmac>` (best-effort con reintentos). El receptor debe ser idempotente. Cada intento de entrega **re-valida el destino con resolución DNS real** (no solo al crear la suscripción): cierra el caso de un dominio que resolvía a IP pública al suscribirse y luego se re-apunta a una IP interna (DNS rebinding), y también cubre suscripciones preexistentes a este endurecimiento — si el destino ya no es válido, la entrega se omite y se registra, pero la suscripción **no se borra ni se desactiva** automáticamente. Limitación aceptada: queda una ventana TOCTOU entre esa revalidación y la conexión real de `httpx` (ver `app/core/webhook_security.py`).
 
 ---
 

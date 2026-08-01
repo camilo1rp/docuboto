@@ -9,14 +9,32 @@
 
 """Tests del archivo físico: ubicaciones, unidades, signatura, vínculo (E17)."""
 
+import json
 import uuid
 from datetime import UTC, date, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS
+import app.services.fisico_service as fisico_service_module
+from app.schemas.fisico import PrestamoCreate
+from app.services.fisico_service import FisicoService
+from tests.conftest import TENANT_HEADERS, TENANT_SLUG, USER_ID
 
 NOW = datetime.now(tz=UTC)
+
+
+def _audit_log_calls(mock_conn) -> list[tuple]:
+    """Extrae los `execute(...)` que insertan en `public.audit_log`.
+
+    args: (sql, tenant, service, actor, canal, action, object_type,
+    object_ref, payload, prev_hash, hash) -- mismo orden que `test_trd.py`.
+    """
+    return [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
 
 
 def _ubicacion_row(**kw) -> dict:
@@ -546,3 +564,278 @@ async def test_create_ubicacion_con_permiso_201(client_with_conn) -> None:
     )
     assert resp.status_code == 201
     assert resp.json()["codigo"] == "DEP01"
+
+
+# ---------------------------------------------------------------------------
+# Cadena de custodia física (Ley 594/2000 art. 26): asientos de auditoría
+# de los 5 endpoints mutantes de `fisico.py`. Hallazgo Alto del auditor de
+# conformidad -- `fisico_service.py` tenía 8 llamadas a `audit.append` sin
+# UN SOLO test que las verificara; un refactor podía borrarlas sin que nadie
+# se enterara. Sigue el patrón de `test_trd.py::test_create_trd_serie_writes_audit_entry`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_ubicacion_writes_audit_entry(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.fetchrow.return_value = _ubicacion_row(codigo="DEP01")
+    mock_conn.fetch.return_value = [{"codigo": "DEP01"}]  # ubicacion_path
+
+    resp = await client.post(
+        "/api/v1/ubicaciones",
+        json={
+            "nivel": "deposito",
+            "codigo": "DEP01",
+            "nombre": "Depósito 1",
+            "tipo_archivo": "central",
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][3] == TENANT_HEADERS["X-User-Id"]
+    assert audit_calls[0][5] == "archive.ubicacion_created"
+    assert audit_calls[0][6] == "ubicacion"
+    assert audit_calls[0][7] == "DEP01"
+    payload = json.loads(audit_calls[0][8])
+    assert payload["codigo"] == "DEP01"
+    assert payload["nivel"] == "deposito"
+
+
+@pytest.mark.asyncio
+async def test_create_unidad_writes_audit_entry(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    mock_conn.fetchrow.return_value = _unidad_row(signatura=None, codigo="C0124")
+    mock_conn.fetch.return_value = []  # sin ubicacion_id -> no ubicacion_path
+
+    resp = await client.post(
+        "/api/v1/unidades",
+        json={"tipo": "caja", "codigo": "C0124", "soporte": "papel", "num_folios": 200},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][3] == TENANT_HEADERS["X-User-Id"]
+    assert audit_calls[0][5] == "archive.unidad_created"
+    assert audit_calls[0][6] == "unidad"
+    # object_ref = signatura si existe, si no el codigo (aquí sin ubicacion -> codigo)
+    assert audit_calls[0][7] == "C0124"
+    payload = json.loads(audit_calls[0][8])
+    assert payload["codigo"] == "C0124"
+    assert payload["tipo"] == "caja"
+
+
+@pytest.mark.asyncio
+async def test_create_unidad_writes_audit_entry_con_signatura(client_with_conn) -> None:
+    """object_ref usa la SIGNATURA (no el código pelado) cuando la unidad
+    está ubicada -- es el identificador topográfico real de custodia."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    ub_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _ubicacion_row(id=ub_id, codigo="DEP01"),
+        _unidad_row(ubicacion_id=ub_id, signatura="DEP01-C0124", codigo="C0124"),
+    ]
+    mock_conn.fetch.return_value = [{"codigo": "DEP01"}]
+
+    resp = await client.post(
+        "/api/v1/unidades",
+        json={
+            "tipo": "caja",
+            "codigo": "C0124",
+            "ubicacion_id": str(ub_id),
+            "soporte": "papel",
+            "num_folios": 200,
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][7] == "DEP01-C0124"
+    payload = json.loads(audit_calls[0][8])
+    assert payload["signatura"] == "DEP01-C0124"
+
+
+@pytest.mark.asyncio
+async def test_link_expediente_writes_audit_entry(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    unidad_id = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    mock_conn.fetchrow.return_value = _unidad_row(id=unidad_id)  # get_unidad -> existe
+    mock_conn.execute.return_value = None
+
+    resp = await client.post(
+        f"/api/v1/unidades/{unidad_id}/expedientes",
+        json={"expediente_id": str(exp_id), "folio_inicio": 1, "folio_fin": 200},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 204
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][3] == TENANT_HEADERS["X-User-Id"]
+    assert audit_calls[0][5] == "archive.unidad_expediente_linked"
+    assert audit_calls[0][6] == "unidad"
+    assert audit_calls[0][7] == str(unidad_id)
+    payload = json.loads(audit_calls[0][8])
+    assert payload["expediente_id"] == str(exp_id)
+    assert payload["folio_inicio"] == 1
+    assert payload["folio_fin"] == 200
+
+
+@pytest.mark.asyncio
+async def test_create_prestamo_writes_audit_entry(client_with_conn) -> None:
+    """Cadena de custodia -- alta del préstamo: A QUIÉN se prestó y la fecha
+    PREVISTA de devolución quedan en el payload del asiento (art. 26 Ley
+    594/2000). `prestado_por` (quién lo entrega) también viaja, aunque el
+    auditor solo exige los dos primeros."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    unidad_id = uuid.uuid4()
+    prestamo_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _unidad_row(id=unidad_id),  # get_unidad
+        None,  # active_loan -> ninguno
+        _prestamo_row(id=prestamo_id, unidad_id=unidad_id),  # insert_prestamo
+    ]
+    resp = await client.post(
+        f"/api/v1/unidades/{unidad_id}/prestamos",
+        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        headers={**TENANT_HEADERS, "X-Username": "ana"},
+    )
+    assert resp.status_code == 201
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][3] == TENANT_HEADERS["X-User-Id"]
+    assert audit_calls[0][5] == "archive.prestamo_created"
+    assert audit_calls[0][6] == "prestamo"
+    assert audit_calls[0][7] == str(prestamo_id)
+    payload = json.loads(audit_calls[0][8])
+    assert payload["unidad_id"] == str(unidad_id)
+    assert payload["prestado_a"] == "Jurídica"
+    assert payload["fecha_devolucion_esperada"] == "2099-01-01"
+
+
+@pytest.mark.asyncio
+async def test_devolver_prestamo_writes_audit_entry(client_with_conn) -> None:
+    """Cadena de custodia -- cierre del préstamo: el payload debe permitir
+    reconstruir A QUIÉN se había prestado, la fecha PREVISTA y la fecha
+    REAL de devolución -- los tres datos que exige el auditor. Los mocks
+    devuelven filas DISTINTAS para el estado previo y el resultado de la
+    devolución (si fueran la misma fila, `fecha_devolucion_real` saldría
+    `None` en ambos lados y el test no distinguiría un bug de un acierto)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # D-08 gate
+    pid = uuid.uuid4()
+    unidad_id = uuid.uuid4()
+    devuelto_ts = datetime(2099, 3, 1, 12, 0, tzinfo=UTC)
+    mock_conn.fetchrow.side_effect = [
+        _prestamo_row(id=pid, unidad_id=unidad_id, prestado_a="Jurídica"),  # get_prestamo (previo)
+        _prestamo_row(  # devolver_prestamo (fila DISTINTA: ya devuelta)
+            id=pid,
+            unidad_id=unidad_id,
+            prestado_a="Jurídica",
+            estado="devuelto",
+            fecha_devolucion_real=devuelto_ts,
+        ),
+    ]
+    resp = await client.post(f"/api/v1/prestamos/{pid}/devolver", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    audit_calls = _audit_log_calls(mock_conn)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][3] == TENANT_HEADERS["X-User-Id"]
+    assert audit_calls[0][5] == "archive.prestamo_devuelto"
+    assert audit_calls[0][6] == "prestamo"
+    assert audit_calls[0][7] == str(pid)
+    payload = json.loads(audit_calls[0][8])
+    assert payload["unidad_id"] == str(unidad_id)
+    # Los tres datos de custodia que exige el auditor, en el MISMO asiento:
+    assert payload["prestado_a"] == "Jurídica"
+    assert payload["fecha_devolucion_esperada"] == date(2099, 1, 1).isoformat()
+    assert payload["fecha_devolucion_real"] == devuelto_ts.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed: si `audit.append` revienta, la mutación NO se confirma como
+# éxito. Se invoca el servicio directamente (mismo patrón que
+# `test_expediente_metadata_audit.py::...late_failure_propagates_not_a_fake_success`),
+# porque `client_with_conn` mockea `conn.transaction()` como un context
+# manager vacío: no hay rollback real de Postgres que observar aquí (eso es
+# tier integración, ver `tests/integration/`), pero SÍ podemos comprobar que
+# la excepción se propaga hasta el llamante en vez de ser tragada -- que es
+# la diferencia entre "el endpoint responde 500" y "el endpoint responde 201
+# con un préstamo/devolución sin rastro forense".
+# ---------------------------------------------------------------------------
+
+
+async def _boom(*args: object, **kwargs: object) -> str:
+    raise RuntimeError("audit failure (simulated)")
+
+
+@pytest.mark.asyncio
+async def test_create_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = AsyncMock()
+    mock_conn.fetchval.return_value = True
+    mock_conn.execute.return_value = None
+    mock_conn.fetch.return_value = []
+    mock_conn.transaction = MagicMock(return_value=AsyncMock())
+
+    unidad_id = uuid.uuid4()
+    prestamo_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _unidad_row(id=unidad_id),  # get_unidad
+        None,  # active_loan
+        _prestamo_row(id=prestamo_id, unidad_id=unidad_id),  # insert_prestamo (nunca debe "ganar")
+    ]
+
+    monkeypatch.setattr(fisico_service_module.audit, "append", _boom)
+
+    service = FisicoService(mock_conn, TENANT_SLUG)
+    payload = PrestamoCreate(prestado_a="Jurídica", fecha_devolucion_esperada=date(2099, 1, 1))
+
+    with pytest.raises(RuntimeError, match="audit failure"):
+        await service.create_prestamo(unidad_id, payload, "ana", actor=USER_ID)
+
+    # El INSERT del préstamo (y su movimiento RETIRADO) ya se había pedido
+    # dentro de la MISMA transacción cuando `audit.append` reventó -- el
+    # fallo es TARDÍO, no evita que se intente la escritura, pero SÍ evita
+    # que el llamante reciba una `PrestamoResponse` de éxito sin asiento.
+    assert mock_conn.fetchrow.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_devolver_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = AsyncMock()
+    mock_conn.fetchval.return_value = True
+    mock_conn.execute.return_value = None
+    mock_conn.fetch.return_value = []
+    mock_conn.transaction = MagicMock(return_value=AsyncMock())
+
+    pid = uuid.uuid4()
+    unidad_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _prestamo_row(id=pid, unidad_id=unidad_id),  # get_prestamo
+        _prestamo_row(  # devolver_prestamo
+            id=pid, unidad_id=unidad_id, estado="devuelto", fecha_devolucion_real=NOW
+        ),
+    ]
+
+    monkeypatch.setattr(fisico_service_module.audit, "append", _boom)
+
+    service = FisicoService(mock_conn, TENANT_SLUG)
+
+    with pytest.raises(RuntimeError, match="audit failure"):
+        await service.devolver_prestamo(pid, "ana", actor=USER_ID)
+
+    assert mock_conn.fetchrow.call_count == 2

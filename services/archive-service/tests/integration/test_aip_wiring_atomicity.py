@@ -46,7 +46,7 @@ from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
 from app.services.archive_service import ArchiveService
 from app.services.aip_wiring_service import AipWiringService
 
-from .conftest import DSN
+from .conftest import DSN, convalidate_for_test
 
 
 async def _seed_expediente(
@@ -69,6 +69,12 @@ async def _seed_expediente(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): una serie recién creada nace en 'borrador' -- NO
+    # gobierna ningún cierre (D5). Este helper cierra el expediente más abajo
+    # (vía los tests que lo llaman), así que necesita una versión VIGENTE
+    # (convalidada/migrada); 'migrada' es el atajo de test correcto (D6): no
+    # simula un acto administrativo que nunca ocurrió.
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,

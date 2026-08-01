@@ -31,3 +31,10 @@ class ClearanceCheck(BaseModel):
     level: int
     max_level: int
     allowed: bool
+
+
+class GroupClearance(BaseModel):
+    """Clearance vigente de un grupo (lectura de `GET /groups/{group_id}/clearance`)."""
+
+    group_id: str
+    max_level: int | None  # None = sin fila en role_clearance (implícito PUBLICA=1)

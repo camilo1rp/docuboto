@@ -224,7 +224,12 @@ async def test_close_disposition_present_with_trd_serie(client_with_conn) -> Non
         disposition={"disposition_code": "CT", "disposition_label": "Conservación Total"},
     )
     mock_conn.fetchval.return_value = True
-    mock_conn.fetchrow.side_effect = [exp_open, trd, exp_closed]
+    # ADR-025 (Increment 1): `close_expediente` ahora re-resuelve la version
+    # VIGENTE por codigo antes de calcular -- 3 lecturas de `trd_series`
+    # (pinned / vigente / la que hace `compute_retention` sobre `vigente.id`)
+    # en vez de 1. Misma fila (mock) las tres veces: no cambia el contrato
+    # que este test aisla (el `disposition` calculado).
+    mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed]
     mock_conn.fetch.return_value = []
 
     patch_regen, patch_firmar = _patch_index_service()

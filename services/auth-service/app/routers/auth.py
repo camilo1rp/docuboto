@@ -220,7 +220,7 @@ async def me(
         if user is not None:
             # Replace keycloak sub with the internal id for coherence with X-User-Id.
             user_info = user_info.model_copy(update={"user_id": str(user["id"])})
-            rbac = RBACService(repo)
+            rbac = RBACService(conn)
             # resolve_effective_permissions embeds USUA_PERM_ROOT for root users
             # (consistent with rbac.py:88 and has_permission() logic).
             perms = await rbac.resolve_effective_permissions(user["id"])

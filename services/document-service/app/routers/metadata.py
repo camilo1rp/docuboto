@@ -13,11 +13,19 @@ Router de plantillas de metadatos (E03, ADR-007).
 CRUD mínimo de `metadata_templates`: definir el JSON Schema de los campos de
 metadato válidos por tipo documental. Los radicados se validan contra la
 plantilla activa en su creación (document_service).
+
+Crear una plantilla exige `USUA_PERM_TRD` — el mismo permiso que gobierna su
+gemelo exacto en archive-service (`expediente-metadata/templates`): ambos
+mutan el molde de validación obligatoria de metadatos para toda la entidad,
+así que el permiso es uno solo. La escritura audita (ver `metadata_service.py`).
 """
 
-import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import uuid
 
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from app.core.clearance import require_permission
 from app.core.database import get_tenant_conn
 from app.schemas.metadata import MetadataTemplateCreate, MetadataTemplateResponse
 from app.services.metadata_service import (
@@ -28,19 +36,39 @@ from app.services.metadata_service import (
 router = APIRouter(prefix="/api/v1/metadata/templates", tags=["metadata"])
 
 
+def _actor(request: Request) -> str | None:
+    raw = request.headers.get("X-User-Id")
+    if not raw:
+        return None
+    try:
+        uuid.UUID(raw)
+    except ValueError:
+        return None
+    return raw
+
+
+def _tenant_slug(request: Request) -> str:
+    # get_tenant_conn ya garantiza que el header está presente y es válido.
+    return request.headers.get("X-Tenant-Slug", "")
+
+
 @router.post(
     "",
     response_model=MetadataTemplateResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Crear una plantilla de metadatos para un tipo documental",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
 )
 async def create_template(
     payload: MetadataTemplateCreate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> MetadataTemplateResponse:
     service = MetadataTemplateService(conn)
     try:
-        return await service.create(payload)
+        return await service.create(
+            payload, tenant_slug=_tenant_slug(request), actor=_actor(request)
+        )
     except MetadataValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

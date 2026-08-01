@@ -35,6 +35,16 @@ class Expediente:
     # nunca se leía de vuelta al dataclass. El índice electrónico lo necesita
     # para <listaControlAcceso> por documento (heredado del expediente).
     nivel_seguridad: int = 1
+    # ADR-025 (Increment 1): `trd_serie_id` es el amarre (apunta a una
+    # fila-versión), `trd_serie_code` es la denormalización de clasificación
+    # (sobrevive aunque la fila-versión cambie). Ambas se congelan al cerrar
+    # y jamás se reescriben después (trigger `trg_expedientes_trd_pin_immutable`).
+    trd_serie_code: str | None = None
+    # Marca honesta (D4/D6): el expediente quedó cerrado bajo un instrumento
+    # que el sistema no puede o no pudo verificar como convalidado (serie
+    # `migrada`, sin snapshot histórico, o `trd_serie_id` huérfano).
+    trd_revision_requerida: bool = False
+    trd_revision_motivo: str | None = None
 
 
 @dataclass
@@ -86,3 +96,17 @@ class TrdSerie:
     # propia, el AIP cae al default global de storage-service.
     pdfa_profile: str | None = None
     valid_from: date | None = None
+    # ADR-025 (Increment 1): la TRD como instrumento convalidado, no como
+    # tabla de configuración. `estado` es la fuente de verdad del ciclo de
+    # vida (borrador/aprobada/convalidada/migrada/derogada); `is_active`
+    # queda como columna derivada/legado (ver ADR-025 D5).
+    estado: str = "borrador"
+    valid_to: date | None = None
+    acto_administrativo: str | None = None
+    fecha_aprobacion_comite: date | None = None
+    fecha_convalidacion: date | None = None
+    instancia_convalidante: str | None = None
+    rusd_radicado: str | None = None
+    fecha_publicacion: date | None = None
+    supersede_a: uuid.UUID | None = None
+    created_by: uuid.UUID | None = None

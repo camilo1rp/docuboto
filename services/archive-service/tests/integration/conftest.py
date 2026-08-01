@@ -465,6 +465,22 @@ async def tenant_ctx(
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
+async def convalidate_for_test(conn: asyncpg.Connection, serie_id: uuid.UUID) -> None:
+    """ADR-025 (Increment 1): `ArchiveService.create_trd_serie` ahora deja la
+    serie en `borrador` (DEFAULT de columna, migración 037) -- un instrumento
+    en trámite no gobierna ningún cierre (D5). Este helper de TESTS mueve la
+    serie recién creada directamente a `estado='migrada'` por SQL crudo (el
+    circuito real de convalidación -- `aprobar`/`convalidar` -- es Increment
+    2, todavía inexistente): la transición `borrador -> cualquier estado` la
+    permite el trigger `trg_trd_series_append_only` sin restricción (solo
+    bloquea mutaciones SOBRE una fila que YA NO está en `borrador`), así que
+    este `UPDATE` no viola el append-only que el propio ADR-025 introduce --
+    es exactamente el atajo de pruebas que sustituye al acto administrativo
+    real, nunca lo simula como si hubiera ocurrido (por eso `migrada`, nunca
+    `convalidada`: ver D6)."""
+    await conn.execute("UPDATE trd_series SET estado = 'migrada' WHERE id = $1", serie_id)
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _no_real_http_acta_sign() -> AsyncGenerator[None, None]:
     """H-H (E06/F4): `TransferenciaService.recibir` intenta el sellado

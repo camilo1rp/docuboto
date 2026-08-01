@@ -43,6 +43,7 @@ from app.schemas.archive import (
     TrdSerieCreate,
     TrdSerieResponse,
     TrdSerieUpdate,
+    TrdSerieVersionCreate,
 )
 from app.services.metadata_service import validate_metadata
 
@@ -1135,15 +1136,76 @@ class ArchiveService:
         try:
             self._assert_transition(exp.status, "closed")
             disposition = None
+            # ADR-025 (Increment 1) — congelación del amarre (D3/D4): mientras
+            # el expediente está `open`, `exp.trd_serie_id` FLOTA y puede
+            # apuntar a una versión ya derogada sin daño (ninguna consecuencia
+            # jurídica se deriva de un expediente abierto). Al CERRAR se
+            # re-resuelve por CÓDIGO la versión VIGENTE (convalidada/migrada)
+            # EN ESTE INSTANTE — nunca la que el expediente traía arrastrada —
+            # y esa es la que se congela: la ÚLTIMA escritura de `trd_serie_id`
+            # en la vida del expediente (el trigger `trg_expedientes_trd_pin_
+            # immutable` la rechaza después de este punto).
+            pin_trd = False
+            new_trd_serie_id: uuid.UUID | None = None
+            new_trd_serie_code: str | None = None
+            trd_revision_requerida = False
+            trd_revision_motivo: str | None = None
             if exp.trd_serie_id is not None:
+                pinned = await self._repo.get_trd_serie_by_id(exp.trd_serie_id)
+                if pinned is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail={
+                            "error": "trd_serie_not_found",
+                            "detail": f"TRD serie {exp.trd_serie_id} not found",
+                            "status": 404,
+                        },
+                    )
+                vigente = await self._repo.get_trd_serie_vigente_by_code(pinned.code)
+                if vigente is None:
+                    # D5 — gate de disposición: `borrador`/`aprobada`/`derogada`
+                    # no gobiernan ningún cierre. Un expediente NUNCA queda
+                    # gobernado por un instrumento que el sistema no puede
+                    # afirmar como convalidado (RF-FIR-15).
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "trd_version_no_vigente",
+                            "detail": (
+                                f"La serie TRD '{pinned.code}' no tiene ninguna "
+                                "version convalidada ni migrada vigente: no puede "
+                                "gobernar el cierre de un expediente bajo un "
+                                "instrumento no convalidado (Ac. AGN 004/2019, "
+                                "ADR-025)."
+                            ),
+                            "status": 409,
+                        },
+                    )
                 schedule = await self.compute_retention(
-                    exp.trd_serie_id, datetime.now(tz=UTC).date()
+                    vigente.id, datetime.now(tz=UTC).date()
                 )
                 disposition = schedule.model_dump(mode="json")
+                pin_trd = True
+                new_trd_serie_id = vigente.id
+                new_trd_serie_code = vigente.code
+                # D6: `migrada` SÍ gobierna el cierre, pero DECLARÁNDOLO — marca
+                # de revisión honesta (nunca bloqueante: el cierre no se detiene
+                # a esperar la ratificación del Increment 2).
+                if vigente.estado == "migrada":
+                    trd_revision_requerida = True
+                    trd_revision_motivo = "cerrado_bajo_serie_migrada"
 
             async with self._conn.transaction():
                 transitioned = await self._repo.transition_expediente(
-                    expediente_id, status="closed", expected_status=exp.status, disposition=disposition
+                    expediente_id,
+                    status="closed",
+                    expected_status=exp.status,
+                    disposition=disposition,
+                    pin_trd=pin_trd,
+                    new_trd_serie_id=new_trd_serie_id,
+                    new_trd_serie_code=new_trd_serie_code,
+                    trd_revision_requerida=trd_revision_requerida,
+                    trd_revision_motivo=trd_revision_motivo,
                 )
                 # Fail-closed DENTRO de la tx: `transition_expediente` cierra el
                 # `WHERE` con `AND status = $N` (H3) — un `None` aquí ya no es
@@ -1219,7 +1281,16 @@ class ArchiveService:
                         "indice_estado": "no_firmado",
                         "status_anterior": exp.status,
                         "closed_at": transitioned.closed_at,
-                        "trd_serie_id": str(exp.trd_serie_id) if exp.trd_serie_id else None,
+                        # ADR-025: el amarre CONGELADO (la version VIGENTE
+                        # re-resuelta al cerrar), no el que el expediente traia
+                        # arrastrado antes de este acto -- ver `new_trd_serie_id`
+                        # más arriba. Puede diferir de `exp.trd_serie_id` si la
+                        # serie tuvo versiones nuevas mientras el expediente
+                        # estaba abierto.
+                        "trd_serie_id_previo": str(exp.trd_serie_id) if exp.trd_serie_id else None,
+                        "trd_serie_id": str(new_trd_serie_id) if new_trd_serie_id else None,
+                        "trd_serie_code": new_trd_serie_code,
+                        "trd_revision_requerida": trd_revision_requerida,
                         "disposition": disposition,
                     },
                 )
@@ -1908,31 +1979,51 @@ class ArchiveService:
     async def create_trd_serie(
         self, payload: TrdSerieCreate, actor: uuid.UUID | None = None
     ) -> TrdSerieResponse:
-        serie = await self._repo.create_trd_serie(
-            code=payload.code,
-            name=payload.name,
-            description=payload.description,
-            retention_years=payload.retention_years,
-            total_retention=payload.total_retention,
-            disposition=payload.disposition,
-            parent_id=payload.parent_id,
-            archivo_gestion_years=payload.archivo_gestion_years,
-            archivo_central_years=payload.archivo_central_years,
-            pdfa_profile=payload.pdfa_profile,
-        )
-        # Auditoría forense transversal (E08 §9, Canal A): la TRD gobierna
-        # retención y disposición final (Ley 594/2000 art. 24) — su alta debe
-        # quedar trazada igual que la de un expediente.
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.trd_serie_created",
-            object_type="trd_serie",
-            object_ref=serie.code,
-            actor=str(actor) if actor else None,
-            payload={"id": str(serie.id)},
-        )
+        # Atomicidad mutación<->asiento (mismo patrón que `update_expediente`/
+        # `close_expediente`): el INSERT y `audit.append` son un único acto
+        # dentro de una sola `conn.transaction()` — si el asiento falla, el
+        # alta de la serie no queda persistida (fail-closed, ver [[auditoria-actos-custodia]]).
+        async with self._conn.transaction():
+            serie = await self._repo.create_trd_serie(
+                code=payload.code,
+                name=payload.name,
+                description=payload.description,
+                retention_years=payload.retention_years,
+                total_retention=payload.total_retention,
+                disposition=payload.disposition,
+                parent_id=payload.parent_id,
+                archivo_gestion_years=payload.archivo_gestion_years,
+                archivo_central_years=payload.archivo_central_years,
+                pdfa_profile=payload.pdfa_profile,
+            )
+            # Auditoría forense transversal (E08 §9, Canal A): la TRD gobierna
+            # retención y disposición final (Ley 594/2000 art. 24) — su alta
+            # debe quedar trazada igual que la de un expediente. Estado
+            # INICIAL completo (no solo `id`): sin él la cadena de
+            # reconstrucción before/after de `update_trd_serie` no tiene punto
+            # de partida.
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_serie_created",
+                object_type="trd_serie",
+                object_ref=serie.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(serie.id),
+                    "code": serie.code,
+                    "name": serie.name,
+                    "description": serie.description,
+                    "retention_years": serie.retention_years,
+                    "total_retention": serie.total_retention,
+                    "disposition": serie.disposition,
+                    "parent_id": str(serie.parent_id) if serie.parent_id else None,
+                    "archivo_gestion_years": serie.archivo_gestion_years,
+                    "archivo_central_years": serie.archivo_central_years,
+                    "pdfa_profile": serie.pdfa_profile,
+                },
+            )
         return _to_trd_response(serie)
 
     async def compute_retention(self, serie_id: uuid.UUID, closed_at: date) -> RetentionSchedule:
@@ -1963,6 +2054,16 @@ class ArchiveService:
             fin_archivo_central=fin_central,
             disposition_code=code,
             disposition_label=label,
+            # ADR-025 (Increment 1): procedencia del instrumento -- se
+            # DECLARA tal cual está en la fila (nunca se afirma una
+            # convalidación que no ocurrió, RF-FIR-15; ver D6).
+            serie_version=serie.version,
+            serie_estado=serie.estado,
+            acto_administrativo=serie.acto_administrativo,
+            fecha_convalidacion=serie.fecha_convalidacion,
+            instancia_convalidante=serie.instancia_convalidante,
+            rusd_radicado=serie.rusd_radicado,
+            snapshot_at=datetime.now(tz=UTC),
         )
 
     async def list_trd_series(
@@ -1991,12 +2092,30 @@ class ArchiveService:
             )
         return _to_trd_response(serie)
 
+    # Campos SUSTANTIVOS del contenido convalidado (ADR-025 D1): los mismos
+    # que el trigger `trg_trd_series_append_only` rechaza fuera de `borrador`.
+    # `pdfa_profile` NO está aquí a propósito -- es la única excepción
+    # editable en sitio en cualquier estado.
+    _TRD_SUBSTANTIVE_FIELDS = (
+        "name",
+        "description",
+        "retention_years",
+        "total_retention",
+        "disposition",
+    )
+
     async def update_trd_serie(
         self,
         serie_id: uuid.UUID,
         payload: TrdSerieUpdate,
         actor: uuid.UUID | None = None,
     ) -> TrdSerieResponse:
+        """`PATCH /trd/{serie_id}` (ADR-025, Increment 1): edición EN SITIO,
+        solo legítima sobre `borrador` -- es el `UPDATE` retroactivo que
+        causaba el hallazgo Crítico (ver ADR-025 §"Por qué es Crítico").
+        Cualquier otro estado responde `409 trd_version_inmutable`, salvo que
+        el ÚNICO campo sustantivo enviado sea `pdfa_profile` (D1, política de
+        preservación técnica, no contenido convalidado)."""
         existing = await self._repo.get_trd_serie_by_id(serie_id)
         if existing is None:
             raise HTTPException(
@@ -2007,33 +2126,173 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        updated = await self._repo.update_trd_serie(
-            serie_id,
-            name=payload.name,
-            description=payload.description,
-            retention_years=payload.retention_years,
-            total_retention=payload.total_retention,
-            disposition=payload.disposition,
-            is_active=payload.is_active,
-            pdfa_profile=payload.pdfa_profile,
+        has_substantive_change = any(
+            getattr(payload, field) is not None for field in self._TRD_SUBSTANTIVE_FIELDS
         )
-        # Auditoría forense transversal (E08 §9, Canal A): mutar la TRD es un
-        # acto administrativo sobre el instrumento archivístico (Ley 594/2000
-        # art. 24) — debe quedar quién cambió qué, igual que en expedientes.
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.trd_serie_updated",
-            object_type="trd_serie",
-            object_ref=existing.code,
-            actor=str(actor) if actor else None,
-            payload={
-                "id": str(serie_id),
-                "changes": payload.model_dump(exclude_unset=True),
-            },
-        )
+        if existing.estado != "borrador" and has_substantive_change:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "trd_version_inmutable",
+                    "detail": (
+                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"esta en estado '{existing.estado}': su contenido es "
+                        "append-only (Ac. AGN 004/2019, ADR-025). Use "
+                        f"POST /api/v1/trd/{existing.code}/versiones para crear "
+                        "una version nueva."
+                    ),
+                    "status": 409,
+                },
+            )
+        # Atomicidad mutación<->asiento (mismo patrón que `update_expediente`):
+        # el UPDATE y `audit.append` son un único acto dentro de una sola
+        # `conn.transaction()` — si el asiento falla, el cambio de retención/
+        # disposición no queda persistido (fail-closed).
+        async with self._conn.transaction():
+            updated = await self._repo.update_trd_serie(
+                serie_id,
+                name=payload.name,
+                description=payload.description,
+                retention_years=payload.retention_years,
+                total_retention=payload.total_retention,
+                disposition=payload.disposition,
+                pdfa_profile=payload.pdfa_profile,
+            )
+            # Diff before/after POR CAMPO (E08 §9, Canal A / Ley 594/2000 art.
+            # 24): `payload.model_dump(exclude_unset=True)` solo decía el
+            # valor NUEVO -- si alguien bajaba `retention_years` de 20 a 2, el
+            # asiento no permitía reconstruir el valor anterior. Compara
+            # contra `existing` (ya leído antes del UPDATE, no hace falta
+            # releer) y solo incluye los campos que REALMENTE cambiaron: un
+            # campo enviado con el mismo valor que ya tenía no es un cambio
+            # auditable.
+            changes: dict[str, dict[str, Any]] = {}
+            for field in (*self._TRD_SUBSTANTIVE_FIELDS, "pdfa_profile"):
+                sent = getattr(payload, field)
+                if sent is None:
+                    continue
+                before = getattr(existing, field)
+                if sent != before:
+                    changes[field] = {"before": before, "after": sent}
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_serie_updated",
+                object_type="trd_serie",
+                object_ref=existing.code,
+                actor=str(actor) if actor else None,
+                payload={"id": str(serie_id), "changes": changes},
+            )
         return _to_trd_response(updated)  # type: ignore[arg-type]
+
+    async def create_trd_serie_version(
+        self,
+        code: str,
+        payload: TrdSerieVersionCreate,
+        actor: uuid.UUID | None = None,
+    ) -> TrdSerieResponse:
+        """`POST /trd/{code}/versiones` (ADR-025, Increment 1, nuevo): clona la
+        versión VIGENTE (convalidada/migrada) de `code` como una fila NUEVA
+        `version+1`, estado `borrador` -- NUNCA un `UPDATE` de la fila vigente
+        (D1). Los campos omitidos en `payload` se copian de la vigente; los
+        enviados la sobre-escriben en la versión nueva.
+
+        `ux_trd_series_en_tramite` (037) impide que dos versiones en trámite
+        (`borrador`/`aprobada`) coexistan para el mismo código -- lo que aquí
+        se traduce a un `409` legible en vez de dejar escapar la
+        `UniqueViolationError` cruda de Postgres."""
+        vigente = await self._repo.get_trd_serie_vigente_by_code(code)
+        if vigente is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "trd_code_not_found",
+                    "detail": (
+                        f"No existe una version vigente (convalidada/migrada) "
+                        f"para el codigo de serie '{code}'."
+                    ),
+                    "status": 404,
+                },
+            )
+        # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie`).
+        async with self._conn.transaction():
+            try:
+                new_serie = await self._repo.create_trd_serie_version(
+                    code=vigente.code,
+                    version=vigente.version + 1,
+                    supersede_a=vigente.id,
+                    created_by=actor,
+                    name=payload.name if payload.name is not None else vigente.name,
+                    description=(
+                        payload.description
+                        if payload.description is not None
+                        else vigente.description
+                    ),
+                    retention_years=(
+                        payload.retention_years
+                        if payload.retention_years is not None
+                        else vigente.retention_years
+                    ),
+                    total_retention=(
+                        payload.total_retention
+                        if payload.total_retention is not None
+                        else vigente.total_retention
+                    ),
+                    disposition=(
+                        payload.disposition
+                        if payload.disposition is not None
+                        else vigente.disposition
+                    ),
+                    parent_id=(
+                        payload.parent_id if payload.parent_id is not None else vigente.parent_id
+                    ),
+                    archivo_gestion_years=(
+                        payload.archivo_gestion_years
+                        if payload.archivo_gestion_years is not None
+                        else vigente.archivo_gestion_years
+                    ),
+                    archivo_central_years=(
+                        payload.archivo_central_years
+                        if payload.archivo_central_years is not None
+                        else vigente.archivo_central_years
+                    ),
+                    pdfa_profile=(
+                        payload.pdfa_profile
+                        if payload.pdfa_profile is not None
+                        else vigente.pdfa_profile
+                    ),
+                )
+            except asyncpg.UniqueViolationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "trd_version_en_tramite",
+                        "detail": (
+                            f"Ya existe una version en tramite (borrador/aprobada) "
+                            f"para el codigo '{vigente.code}'; convalidela o "
+                            "derogela antes de abrir otra (ADR-025, Increment 2)."
+                        ),
+                        "status": 409,
+                    },
+                ) from exc
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.trd_version_creada",
+                object_type="trd_serie",
+                object_ref=new_serie.code,
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(new_serie.id),
+                    "code": new_serie.code,
+                    "version": new_serie.version,
+                    "supersede_a": str(vigente.id),
+                    "supersede_a_version": vigente.version,
+                },
+            )
+        return _to_trd_response(new_serie)
 
 
 # ------------------------------------------------------------------
@@ -2061,6 +2320,9 @@ def _to_expediente_response(exp: Expediente) -> ExpedienteResponse:
         # colarse en esta vista de conjunto ACTIVO (ver
         # `ArchiveRepository._get_radicados`).
         radicados=[_to_radicado_response(r) for r in exp.radicados if r.estado == "vinculado"],
+        trd_serie_code=exp.trd_serie_code,
+        trd_revision_requerida=exp.trd_revision_requerida,
+        trd_revision_motivo=exp.trd_revision_motivo,
     )
 
 
@@ -2149,4 +2411,14 @@ def _to_trd_response(s: TrdSerie) -> TrdSerieResponse:
         version=s.version,
         valid_from=s.valid_from,
         pdfa_profile=s.pdfa_profile,
+        estado=s.estado,
+        valid_to=s.valid_to,
+        acto_administrativo=s.acto_administrativo,
+        fecha_aprobacion_comite=s.fecha_aprobacion_comite,
+        fecha_convalidacion=s.fecha_convalidacion,
+        instancia_convalidante=s.instancia_convalidante,
+        rusd_radicado=s.rusd_radicado,
+        fecha_publicacion=s.fecha_publicacion,
+        supersede_a=s.supersede_a,
+        created_by=s.created_by,
     )

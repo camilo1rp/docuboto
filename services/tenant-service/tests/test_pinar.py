@@ -59,7 +59,11 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
     conn = AsyncMock()
     conn.fetch.return_value = []
     conn.fetchrow.return_value = None
-    conn.fetchval.return_value = 0
+    # Las escrituras del PINAR ahora exigen USUA_PERM_ADMIN (app/core/authz.py),
+    # gate resuelto vía conn.fetchval — truthy por defecto (permiso concedido) para
+    # no romper las aserciones de negocio de los tests existentes; los tests que SÍ
+    # ejercen fetchval con fines de negocio (p. ej. max_version) lo sobreescriben.
+    conn.fetchval.return_value = True
     conn.execute.return_value = None
     # `async with conn.transaction()` debe ser un CM async REENTRANTE (lección E21).
     conn.transaction = MagicMock(side_effect=lambda *a, **k: _noop_tx())
@@ -118,14 +122,32 @@ async def test_create_plan_bumps_version_and_audits(
 
 
 @pytest.mark.asyncio
-async def test_create_plan_requires_actor(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
-    """Acto imputable: sin X-User-Id → 400 (nunca un asiento con actor NULL)."""
+async def test_create_plan_without_identity_is_forbidden(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Sin X-User-Id el gate RBAC (USUA_PERM_ADMIN) rechaza con 403 ANTES de
+    llegar al router — `_require_actor` (400 actor_requerido, defensa en
+    profundidad para el acto imputable) queda así estructuralmente inalcanzable
+    por esta vía: no hay forma de demostrar el permiso sin X-User-Id, así que
+    la ausencia de actor nunca llega a la capa de negocio."""
     client, conn = client_conn
-    conn.fetchval.return_value = 0
     conn.fetchrow.return_value = _plan_row()
     resp = await client.post("/api/v1/pinar/planes", json={"vision": "x"})
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "actor_requerido"
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_create_plan_forbidden_without_permission(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """403 con identidad presente pero sin USUA_PERM_ADMIN (gate denegado)."""
+    client, conn = client_conn
+    conn.fetchval.return_value = False  # permiso denegado
+    conn.fetchrow.return_value = _plan_row()
+    resp = await client.post("/api/v1/pinar/planes", json={"vision": "x"}, headers=_HDRS)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
 
 
 @pytest.mark.asyncio
@@ -154,9 +176,12 @@ async def test_update_plan_only_in_borrador(client_conn: tuple[AsyncClient, Asyn
 @pytest.mark.asyncio
 async def test_aprobar_requires_acto(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, _ = client_conn
-    # acto_administrativo vacío → 422 del schema
+    # acto_administrativo vacío → 422 del schema (con permiso concedido, para
+    # llegar hasta la validación de negocio en vez de quedarse en el gate).
     resp = await client.post(
-        f"/api/v1/pinar/planes/{uuid.uuid4()}/aprobar", json={"acto_administrativo": ""}
+        f"/api/v1/pinar/planes/{uuid.uuid4()}/aprobar",
+        json={"acto_administrativo": ""},
+        headers=_HDRS,
     )
     assert resp.status_code == 422
 
@@ -223,6 +248,7 @@ async def test_create_aspecto_blocked_when_en_ejecucion(
     resp = await client.post(
         f"/api/v1/pinar/planes/{uuid.uuid4()}/aspectos",
         json={"descripcion": "Sin política de preservación"},
+        headers=_HDRS,
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "plan_no_editable"
@@ -239,6 +265,7 @@ async def test_create_aspecto_blocked_when_aprobado(
     resp = await client.post(
         f"/api/v1/pinar/planes/{uuid.uuid4()}/aspectos",
         json={"descripcion": "tardío"},
+        headers=_HDRS,
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "plan_no_editable"
@@ -254,7 +281,7 @@ async def test_create_aspecto_ok_in_borrador(client_conn: tuple[AsyncClient, Asy
         {"id": aid, "plan_id": pid, "descripcion": "x", "riesgo": None, "orden": 0},  # insert
     ]
     resp = await client.post(
-        f"/api/v1/pinar/planes/{pid}/aspectos", json={"descripcion": "x"}
+        f"/api/v1/pinar/planes/{pid}/aspectos", json={"descripcion": "x"}, headers=_HDRS
     )
     assert resp.status_code == 201
     assert resp.json()["id"] == str(aid)
@@ -278,6 +305,7 @@ async def test_seguimiento_blocked_in_borrador(client_conn: tuple[AsyncClient, A
     resp = await client.post(
         f"/api/v1/pinar/proyectos/{prid}/seguimiento",
         json={"fecha": "2026-07-21", "avance_pct": 30},
+        headers=_HDRS,
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "plan_no_seguible"
@@ -308,6 +336,7 @@ async def test_seguimiento_ok_and_projects_avance(
     resp = await client.post(
         f"/api/v1/pinar/proyectos/{prid}/seguimiento",
         json={"fecha": "2026-07-21", "avance_pct": 55},
+        headers=_HDRS,
     )
     assert resp.status_code == 201
     assert resp.json()["avance_pct"] == 55
@@ -353,5 +382,6 @@ async def test_instrumento_tipo_invalido_422(client_conn: tuple[AsyncClient, Asy
     resp = await client.post(
         f"/api/v1/pinar/planes/{uuid.uuid4()}/instrumentos",
         json={"tipo": "inventado", "ref": "TRD-2026"},
+        headers=_HDRS,
     )
     assert resp.status_code == 422

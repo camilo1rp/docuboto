@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import HTTPException, status
+from orpycamcp_common import audit
 
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.fisico_repository import FisicoRepository
@@ -41,6 +42,7 @@ from app.schemas.fisico import (
 )
 
 _FUID_NS = "urn:orpycamcp:fuid:v1"
+_SERVICE = "archive-service"
 
 
 def _fuid_to_xml(fuid: FuidResponse) -> str:
@@ -77,14 +79,34 @@ def _not_found(detail: str) -> HTTPException:
 
 class FisicoService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+        self._conn = conn
+        self._tenant_slug = tenant_slug
         self._repo = FisicoRepository(conn, tenant_slug)
         self._archive = ArchiveRepository(conn, tenant_slug)
 
     # -- ubicaciones ---------------------------------------------------
 
-    async def create_ubicacion(self, payload: UbicacionCreate) -> UbicacionResponse:
+    async def create_ubicacion(
+        self, payload: UbicacionCreate, *, actor: uuid.UUID | None = None
+    ) -> UbicacionResponse:
+        # Atomicidad mutación<->asiento (mismo patrón que TRD/`update_expediente`):
+        # el alta y `audit.append` son un único acto dentro de una sola
+        # `conn.transaction()` — antes `fisico_service.py` no dejaba NINGÚN
+        # rastro (0 `audit.append`), pese a que la topología del depósito es
+        # el soporte de la cadena de custodia física (Ley 594/2000 art. 26).
         try:
-            row = await self._repo.insert_ubicacion(payload.model_dump())
+            async with self._conn.transaction():
+                row = await self._repo.insert_ubicacion(payload.model_dump())
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.ubicacion_created",
+                    object_type="ubicacion",
+                    object_ref=row["codigo"],
+                    actor=str(actor) if actor else None,
+                    payload={"id": str(row["id"]), "nivel": row["nivel"], "codigo": row["codigo"]},
+                )
         except asyncpg.UniqueViolationError:
             raise _conflict(f"Ya existe una ubicación con código '{payload.codigo}'")
         except asyncpg.ForeignKeyViolationError:
@@ -109,7 +131,9 @@ class FisicoService:
 
     # -- unidades ------------------------------------------------------
 
-    async def create_unidad(self, payload: UnidadCreate) -> UnidadResponse:
+    async def create_unidad(
+        self, payload: UnidadCreate, *, actor: uuid.UUID | None = None
+    ) -> UnidadResponse:
         data = payload.model_dump()
         signatura = None
         if payload.ubicacion_id is not None:
@@ -120,7 +144,23 @@ class FisicoService:
             signatura = "-".join([*path, payload.codigo])
         data["signatura"] = signatura
         try:
-            row = await self._repo.insert_unidad(data)
+            async with self._conn.transaction():
+                row = await self._repo.insert_unidad(data)
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.unidad_created",
+                    object_type="unidad",
+                    object_ref=row["signatura"] or row["codigo"],
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "id": str(row["id"]),
+                        "tipo": row["tipo"],
+                        "codigo": row["codigo"],
+                        "signatura": row["signatura"],
+                    },
+                )
         except asyncpg.UniqueViolationError:
             raise _conflict(f"Signatura topográfica duplicada: '{signatura}'")
         except asyncpg.ForeignKeyViolationError:
@@ -141,16 +181,37 @@ class FisicoService:
 
     # -- vínculo N:M ---------------------------------------------------
 
-    async def link_expediente(self, unidad_id: uuid.UUID, payload: ExpedienteUnidadLink) -> None:
+    async def link_expediente(
+        self,
+        unidad_id: uuid.UUID,
+        payload: ExpedienteUnidadLink,
+        *,
+        actor: uuid.UUID | None = None,
+    ) -> None:
         if await self._repo.get_unidad(unidad_id) is None:
             raise _not_found(f"Unidad {unidad_id} no encontrada")
         try:
-            await self._repo.link_expediente(
-                expediente_id=payload.expediente_id,
-                unidad_id=unidad_id,
-                folio_inicio=payload.folio_inicio,
-                folio_fin=payload.folio_fin,
-            )
+            async with self._conn.transaction():
+                await self._repo.link_expediente(
+                    expediente_id=payload.expediente_id,
+                    unidad_id=unidad_id,
+                    folio_inicio=payload.folio_inicio,
+                    folio_fin=payload.folio_fin,
+                )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.unidad_expediente_linked",
+                    object_type="unidad",
+                    object_ref=str(unidad_id),
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "expediente_id": str(payload.expediente_id),
+                        "folio_inicio": payload.folio_inicio,
+                        "folio_fin": payload.folio_fin,
+                    },
+                )
         except asyncpg.UniqueViolationError:
             raise _conflict("El expediente ya está vinculado a esta unidad")
         except asyncpg.ForeignKeyViolationError:
@@ -191,43 +252,94 @@ class FisicoService:
         )
 
     async def create_prestamo(
-        self, unidad_id: uuid.UUID, payload: PrestamoCreate, performed_by: str | None
+        self,
+        unidad_id: uuid.UUID,
+        payload: PrestamoCreate,
+        performed_by: str | None,
+        *,
+        actor: uuid.UUID | None = None,
     ) -> PrestamoResponse:
         if await self._repo.get_unidad(unidad_id) is None:
             raise _not_found(f"Unidad {unidad_id} no encontrada")
         if await self._repo.active_loan(unidad_id) is not None:
             raise _conflict("La unidad ya está prestada")
-        row = await self._repo.insert_prestamo(
-            unidad_id=unidad_id,
-            prestado_a=payload.prestado_a,
-            prestado_por=payload.prestado_por,
-            fecha_devolucion_esperada=payload.fecha_devolucion_esperada,
-        )
-        await self._repo.insert_movimiento(
-            unidad_id=unidad_id,
-            accion="RETIRADO",
-            ubicacion_before=None,
-            ubicacion_after=None,
-            performed_by=performed_by,
-        )
+        # Cadena de custodia física (art. 26 Ley 594/2000): el préstamo saca la
+        # unidad de su ubicación de control -- el asiento fija A QUIÉN se
+        # prestó y la fecha PREVISTA de devolución, mismo patrón fail-closed
+        # (tx envolviendo repo-write + `audit.append` al final) que TRD.
+        async with self._conn.transaction():
+            row = await self._repo.insert_prestamo(
+                unidad_id=unidad_id,
+                prestado_a=payload.prestado_a,
+                prestado_por=payload.prestado_por,
+                fecha_devolucion_esperada=payload.fecha_devolucion_esperada,
+            )
+            await self._repo.insert_movimiento(
+                unidad_id=unidad_id,
+                accion="RETIRADO",
+                ubicacion_before=None,
+                ubicacion_after=None,
+                performed_by=performed_by,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.prestamo_created",
+                object_type="prestamo",
+                object_ref=str(row["id"]),
+                actor=str(actor) if actor else None,
+                payload={
+                    "unidad_id": str(unidad_id),
+                    "prestado_a": payload.prestado_a,
+                    "prestado_por": payload.prestado_por,
+                    "fecha_devolucion_esperada": payload.fecha_devolucion_esperada.isoformat(),
+                },
+            )
         return self._prestamo_response(row)
 
     async def devolver_prestamo(
-        self, prestamo_id: uuid.UUID, performed_by: str | None
+        self,
+        prestamo_id: uuid.UUID,
+        performed_by: str | None,
+        *,
+        actor: uuid.UUID | None = None,
     ) -> PrestamoResponse:
         existing = await self._repo.get_prestamo(prestamo_id)
         if existing is None:
             raise _not_found(f"Préstamo {prestamo_id} no encontrado")
-        row = await self._repo.devolver_prestamo(prestamo_id)
-        if row is None:
-            raise _conflict("El préstamo ya estaba devuelto")
-        await self._repo.insert_movimiento(
-            unidad_id=row["unidad_id"],
-            accion="DEVUELTO",
-            ubicacion_before=None,
-            ubicacion_after=None,
-            performed_by=performed_by,
-        )
+        # Ídem `create_prestamo`: cierra la cadena de custodia con la fecha
+        # REAL de devolución (art. 26 Ley 594/2000).
+        async with self._conn.transaction():
+            row = await self._repo.devolver_prestamo(prestamo_id)
+            if row is None:
+                raise _conflict("El préstamo ya estaba devuelto")
+            await self._repo.insert_movimiento(
+                unidad_id=row["unidad_id"],
+                accion="DEVUELTO",
+                ubicacion_before=None,
+                ubicacion_after=None,
+                performed_by=performed_by,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.prestamo_devuelto",
+                object_type="prestamo",
+                object_ref=str(prestamo_id),
+                actor=str(actor) if actor else None,
+                payload={
+                    "unidad_id": str(row["unidad_id"]),
+                    "prestado_a": row["prestado_a"],
+                    "fecha_devolucion_esperada": row["fecha_devolucion_esperada"].isoformat(),
+                    "fecha_devolucion_real": (
+                        row["fecha_devolucion_real"].isoformat()
+                        if row["fecha_devolucion_real"]
+                        else None
+                    ),
+                },
+            )
         return self._prestamo_response(row)
 
     async def list_prestamos(

@@ -17,14 +17,15 @@ por request (ADR-013); ROOT hace bypass. El api-gateway inyecta la identidad val
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.core.authz import require_permission
+from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_tenant_conn
 from app.repositories.rbac_repository import RBACRepository
 from app.schemas.rbac import (
     EffectivePermissions,
     GroupCreate,
+    GroupPermissionItem,
     GroupPermissionSet,
     GroupResponse,
     PermissionResponse,
@@ -83,15 +84,21 @@ def _not_found(detail: str) -> HTTPException:
 # --- usuarios ---------------------------------------------------------------
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
-    payload: UserCreate, conn: asyncpg.Connection = Depends(get_tenant_conn)
+    payload: UserCreate,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> UserResponse:
-    repo = RBACRepository(conn)
+    service = RBACService(conn)
     try:
-        row = await repo.create_user(
+        row = await service.create_user(
             username=payload.username,
             email=payload.email,
             keycloak_sub=payload.keycloak_sub,
             is_root=payload.is_root,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            actor=str(caller.user_id),
+            caller_is_root=caller.is_root,
         )
     except asyncpg.UniqueViolationError:
         raise _conflict(f"User '{payload.username}' already exists")
@@ -118,7 +125,7 @@ async def user_permissions(
     repo = RBACRepository(conn)
     if await repo.get_user(user_id) is None:
         raise _not_found(f"User {user_id} not found")
-    service = RBACService(repo)
+    service = RBACService(conn)
     perms = await service.resolve_effective_permissions(user_id)
     return EffectivePermissions(
         user_id=user_id,
@@ -130,11 +137,19 @@ async def user_permissions(
 # --- grupos -----------------------------------------------------------------
 @router.post("/groups", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
 async def create_group(
-    payload: GroupCreate, conn: asyncpg.Connection = Depends(get_tenant_conn)
+    payload: GroupCreate,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> GroupResponse:
-    repo = RBACRepository(conn)
+    service = RBACService(conn)
     try:
-        row = await repo.create_group(name=payload.name, description=payload.description)
+        row = await service.create_group(
+            name=payload.name,
+            description=payload.description,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            actor=str(caller.user_id),
+        )
     except asyncpg.UniqueViolationError:
         raise _conflict(f"Group '{payload.name}' already exists")
     return GroupResponse(**dict(row))
@@ -151,10 +166,15 @@ async def list_groups(
 # --- permisos ---------------------------------------------------------------
 @router.get("/permissions", response_model=list[PermissionResponse])
 async def list_permissions(
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[PermissionResponse]:
-    repo = RBACRepository(conn)
-    return [PermissionResponse(**dict(r)) for r in await repo.list_permissions()]
+    """Catálogo de permisos. `USUA_PERM_ROOT` se OMITE para un llamante no-ROOT
+    (no ofrecer en el selector de UI un permiso que el llamante no puede conceder,
+    ver `RBACService.list_permissions`)."""
+    service = RBACService(conn)
+    rows = await service.list_permissions(caller_is_root=caller.is_root)
+    return [PermissionResponse(**dict(r)) for r in rows]
 
 
 # --- membresías y permisos de grupo ----------------------------------------
@@ -162,11 +182,18 @@ async def list_permissions(
 async def add_member(
     group_id: uuid.UUID,
     user_id: uuid.UUID,
+    request: Request,
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, str]:
-    repo = RBACRepository(conn)
+    service = RBACService(conn)
     try:
-        await repo.add_membership(user_id=user_id, group_id=group_id)
+        await service.add_member(
+            user_id=user_id,
+            group_id=group_id,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            actor=str(caller.user_id),
+        )
     except asyncpg.ForeignKeyViolationError:
         raise _not_found("User or group not found")
     return {"status": "ok"}
@@ -176,10 +203,51 @@ async def add_member(
 async def remove_member(
     group_id: uuid.UUID,
     user_id: uuid.UUID,
+    request: Request,
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> None:
+    service = RBACService(conn)
+    await service.remove_member(
+        user_id=user_id,
+        group_id=group_id,
+        tenant_slug=request.headers.get("X-Tenant-Slug"),
+        actor=str(caller.user_id),
+    )
+
+
+@router.get("/groups/{group_id}/members", response_model=list[UserResponse])
+async def list_group_members(
+    group_id: uuid.UUID,
+    response: Response,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[UserResponse]:
+    """Usuarios del grupo. Espejo de lectura de `POST/DELETE .../members/{user_id}`.
+
+    404 si el grupo no existe en el tenant del llamante (search_path ya acota el
+    schema: un group_id de OTRO tenant nunca aparece aquí — 404 indistinguible).
+    """
     repo = RBACRepository(conn)
-    await repo.remove_membership(user_id=user_id, group_id=group_id)
+    if await repo.get_group(group_id) is None:
+        raise _not_found(f"Group {group_id} not found")
+    rows, total = await repo.list_group_members(group_id, limit=size, offset=(page - 1) * size)
+    response.headers["X-Total-Count"] = str(total)
+    return [UserResponse(**dict(r)) for r in rows]
+
+
+@router.get("/groups/{group_id}/permissions", response_model=list[GroupPermissionItem])
+async def list_group_permissions(
+    group_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[GroupPermissionItem]:
+    """Permisos asignados al grupo. Espejo de lectura de `PUT .../permissions/{permission_id}`."""
+    repo = RBACRepository(conn)
+    if await repo.get_group(group_id) is None:
+        raise _not_found(f"Group {group_id} not found")
+    rows = await repo.list_group_permissions(group_id)
+    return [GroupPermissionItem(**dict(r)) for r in rows]
 
 
 @router.put("/groups/{group_id}/permissions/{permission_id}", status_code=status.HTTP_200_OK)
@@ -187,12 +255,19 @@ async def set_group_permission(
     group_id: uuid.UUID,
     permission_id: uuid.UUID,
     payload: GroupPermissionSet,
+    request: Request,
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, int | str]:
-    repo = RBACRepository(conn)
+    service = RBACService(conn)
     try:
-        await repo.set_group_permission(
-            group_id=group_id, permission_id=permission_id, crud=payload.crud
+        await service.set_group_permission(
+            group_id=group_id,
+            permission_id=permission_id,
+            crud=payload.crud,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            actor=str(caller.user_id),
+            caller_is_root=caller.is_root,
         )
     except asyncpg.ForeignKeyViolationError:
         raise _not_found("Group or permission not found")

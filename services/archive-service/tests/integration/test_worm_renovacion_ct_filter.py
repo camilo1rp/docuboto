@@ -52,6 +52,8 @@ from app.services.archive_service import ArchiveService
 from app.services.index_service import IndexService
 from app.services.transferencia_service import TransferenciaService
 
+from .conftest import convalidate_for_test
+
 _CT_CODES = list(CT_DISPOSITION_CODES)
 
 
@@ -84,6 +86,9 @@ async def _seed_expediente_indice_firmado(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): 'borrador' (DEFAULT nuevo) no gobierna el cierre
+    # de más abajo (D5); 'migrada' es el atajo de test correcto (D6).
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,
@@ -154,6 +159,9 @@ async def _seed_acta_firmada(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): 'borrador' (DEFAULT nuevo) no gobierna el cierre
+    # de más abajo (D5); 'migrada' es el atajo de test correcto (D6).
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,
@@ -243,6 +251,9 @@ async def _seed_expediente_aip_empaquetado(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): 'borrador' (DEFAULT nuevo) no gobierna el cierre
+    # de más abajo (D5); 'migrada' es el atajo de test correcto (D6).
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,

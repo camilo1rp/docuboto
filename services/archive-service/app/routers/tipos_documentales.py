@@ -19,6 +19,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
+from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.repositories.archive_repository import ArchiveRepository
@@ -45,22 +46,6 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "X-User-Id must be a valid UUID",
-                "status": 400,
-            },
-        )
-
-
 def _not_found() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -77,12 +62,15 @@ def _not_found() -> HTTPException:
 async def create_tipo(
     payload: TipoDocumentalCreate,
     tenant_slug: str = Depends(_require_tenant),
-    actor: uuid.UUID | None = Depends(_optional_user),
+    # Gateado por `USUA_PERM_TRD`: siempre hay un usuario autenticado, así que
+    # `X-User-Id` ausente es una cabecera perdida, no un caso legítimo
+    # (fail-closed 400, mismo helper único que `trd.py`/expedientes.py).
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TipoDocumentalResponse:
     service = TipoDocumentalService(conn, tenant_slug)
     try:
-        return await service.create(payload.model_dump(), actor=actor)
+        return await service.create(payload.model_dump(), actor=actor.id)
     except asyncpg.UniqueViolationError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -127,11 +115,12 @@ async def update_tipo(
     tipo_id: uuid.UUID,
     payload: TipoDocumentalUpdate,
     tenant_slug: str = Depends(_require_tenant),
-    actor: uuid.UUID | None = Depends(_optional_user),
+    # Ídem `create_tipo`: mutación exige actor fail-closed.
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TipoDocumentalResponse:
     service = TipoDocumentalService(conn, tenant_slug)
-    row = await service.update(tipo_id, payload.model_dump(exclude_unset=True), actor=actor)
+    row = await service.update(tipo_id, payload.model_dump(exclude_unset=True), actor=actor.id)
     if row is None:
         raise _not_found()
     return row
@@ -145,8 +134,9 @@ async def update_tipo(
 async def delete_tipo(
     tipo_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
-    actor: uuid.UUID | None = Depends(_optional_user),
+    # Ídem `create_tipo`: mutación exige actor fail-closed.
+    actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> None:
-    if not await TipoDocumentalService(conn, tenant_slug).delete(tipo_id, actor=actor):
+    if not await TipoDocumentalService(conn, tenant_slug).delete(tipo_id, actor=actor.id):
         raise _not_found()

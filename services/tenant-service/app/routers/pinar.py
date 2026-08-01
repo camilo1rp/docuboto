@@ -13,11 +13,10 @@ Acuerdo AGN 003/2015. Prefijo /api/v1/pinar. El api-gateway autentica el JWT y
 propaga X-User-Id / X-Tenant-Slug / X-User-Roles server-side (nunca del cuerpo del
 cliente); el actor imputable de la auditoría se toma de X-User-Id.
 
-NOTA (authz): igual que catalogos/config, hoy NO hay gate por rol admin ni en el
-gateway (solo mapea prefijo→upstream) ni in-service — es el TODO de RBAC del tenant
-documentado en core/config.py. La spec §10.3 restringe la gestión al rol
-administrador; cuando el JWT esté enriquecido (E08) debe añadirse el gate aquí o en
-el gateway por-ruta. No se documenta un control que no exista.
+La spec §10.3 restringe la gestión al rol administrador: todas las escrituras
+(ciclo de vida del plan, aspectos, priorización, objetivos, proyectos, seguimiento,
+instrumentos) exigen `USUA_PERM_ADMIN` (`app/core/authz.py`). Los GET (tableros,
+mapa de ruta, catálogo de ejes) quedan solo autenticados — son consulta, no gestión.
 """
 
 import uuid
@@ -25,6 +24,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 
+from app.core.authz import require_permission
 from app.core.database import get_tenant_conn
 from app.schemas.pinar import (
     AspectoCreate,
@@ -112,7 +112,12 @@ async def list_ejes(svc: PinarService = Depends(_svc)) -> list[EjeResponse]:
 # ── Plan ──────────────────────────────────────────────────────────────────────
 
 
-@router.post("/planes", response_model=PlanResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/planes",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def create_plan(
     payload: PlanCreate, request: Request, svc: PinarService = Depends(_svc)
 ) -> PlanResponse:
@@ -136,7 +141,11 @@ async def get_plan(plan_id: uuid.UUID, svc: PinarService = Depends(_svc)) -> Pla
         raise _not_found(exc)
 
 
-@router.patch("/planes/{plan_id}", response_model=PlanResponse)
+@router.patch(
+    "/planes/{plan_id}",
+    response_model=PlanResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def update_plan(
     plan_id: uuid.UUID,
     payload: PlanUpdate,
@@ -154,7 +163,11 @@ async def update_plan(
         raise _conflict(exc)
 
 
-@router.post("/planes/{plan_id}/aprobar", response_model=PlanResponse)
+@router.post(
+    "/planes/{plan_id}/aprobar",
+    response_model=PlanResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def aprobar_plan(
     plan_id: uuid.UUID,
     payload: PlanAprobar,
@@ -170,7 +183,11 @@ async def aprobar_plan(
         raise _conflict(exc)
 
 
-@router.post("/planes/{plan_id}/ejecutar", response_model=PlanResponse)
+@router.post(
+    "/planes/{plan_id}/ejecutar",
+    response_model=PlanResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def ejecutar_plan(
     plan_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
 ) -> PlanResponse:
@@ -183,7 +200,11 @@ async def ejecutar_plan(
         raise _conflict(exc)
 
 
-@router.post("/planes/{plan_id}/cerrar", response_model=PlanResponse)
+@router.post(
+    "/planes/{plan_id}/cerrar",
+    response_model=PlanResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def cerrar_plan(
     plan_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
 ) -> PlanResponse:
@@ -203,6 +224,7 @@ async def cerrar_plan(
     "/planes/{plan_id}/aspectos",
     response_model=AspectoResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def create_aspecto(
     plan_id: uuid.UUID,
@@ -229,7 +251,11 @@ async def list_aspectos(
         raise _not_found(exc)
 
 
-@router.patch("/aspectos/{aspecto_id}", response_model=AspectoResponse)
+@router.patch(
+    "/aspectos/{aspecto_id}",
+    response_model=AspectoResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def update_aspecto(
     aspecto_id: uuid.UUID,
     payload: AspectoUpdate,
@@ -247,7 +273,11 @@ async def update_aspecto(
         raise _conflict(exc)
 
 
-@router.delete("/aspectos/{aspecto_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/aspectos/{aspecto_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def delete_aspecto(
     aspecto_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
 ) -> None:
@@ -262,7 +292,11 @@ async def delete_aspecto(
 # ── Priorización ──────────────────────────────────────────────────────────────
 
 
-@router.put("/planes/{plan_id}/priorizacion", status_code=status.HTTP_204_NO_CONTENT)
+@router.put(
+    "/planes/{plan_id}/priorizacion",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def set_priorizacion(
     plan_id: uuid.UUID,
     request: Request,
@@ -312,6 +346,7 @@ async def get_priorizacion(
     "/planes/{plan_id}/objetivos",
     response_model=ObjetivoResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def create_objetivo(
     plan_id: uuid.UUID,
@@ -338,7 +373,11 @@ async def list_objetivos(
         raise _not_found(exc)
 
 
-@router.patch("/objetivos/{objetivo_id}", response_model=ObjetivoResponse)
+@router.patch(
+    "/objetivos/{objetivo_id}",
+    response_model=ObjetivoResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def update_objetivo(
     objetivo_id: uuid.UUID,
     payload: ObjetivoUpdate,
@@ -356,7 +395,11 @@ async def update_objetivo(
         raise _conflict(exc)
 
 
-@router.delete("/objetivos/{objetivo_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/objetivos/{objetivo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def delete_objetivo(
     objetivo_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
 ) -> None:
@@ -375,6 +418,7 @@ async def delete_objetivo(
     "/planes/{plan_id}/proyectos",
     response_model=ProyectoResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def create_proyecto(
     plan_id: uuid.UUID,
@@ -401,7 +445,11 @@ async def list_proyectos(
         raise _not_found(exc)
 
 
-@router.patch("/proyectos/{proyecto_id}", response_model=ProyectoResponse)
+@router.patch(
+    "/proyectos/{proyecto_id}",
+    response_model=ProyectoResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def update_proyecto(
     proyecto_id: uuid.UUID,
     payload: ProyectoUpdate,
@@ -419,7 +467,11 @@ async def update_proyecto(
         raise _conflict(exc)
 
 
-@router.delete("/proyectos/{proyecto_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/proyectos/{proyecto_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def delete_proyecto(
     proyecto_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
 ) -> None:
@@ -431,7 +483,11 @@ async def delete_proyecto(
         raise _conflict(exc)
 
 
-@router.put("/proyectos/{proyecto_id}/aspectos", response_model=list[uuid.UUID])
+@router.put(
+    "/proyectos/{proyecto_id}/aspectos",
+    response_model=list[uuid.UUID],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def set_proyecto_aspectos(
     proyecto_id: uuid.UUID,
     request: Request,
@@ -453,6 +509,7 @@ async def set_proyecto_aspectos(
     "/proyectos/{proyecto_id}/seguimiento",
     response_model=SeguimientoResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def add_seguimiento(
     proyecto_id: uuid.UUID,
@@ -489,6 +546,7 @@ async def list_seguimiento(
     "/planes/{plan_id}/instrumentos",
     response_model=InstrumentoRefResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def create_instrumento(
     plan_id: uuid.UUID,
@@ -520,6 +578,7 @@ async def list_instrumentos(
 @router.delete(
     "/planes/{plan_id}/instrumentos/{instrumento_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def delete_instrumento(
     plan_id: uuid.UUID,

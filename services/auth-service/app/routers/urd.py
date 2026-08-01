@@ -17,9 +17,9 @@ vive en routers/context.py (no es admin).
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from app.core.authz import require_permission
+from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_tenant_conn
 from app.schemas.urd import URDCreate, URDResponse
 from app.services.urd_service import URDService
@@ -43,10 +43,17 @@ async def list_urd(
 async def create_urd(
     user_id: uuid.UUID,
     payload: URDCreate,
+    request: Request,
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> URDResponse:
     try:
-        return await URDService(conn).create(user_id, payload)
+        return await URDService(conn).create(
+            user_id,
+            payload,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            actor=str(caller.user_id),
+        )
     except asyncpg.UniqueViolationError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -71,9 +78,17 @@ async def create_urd(
 async def delete_urd(
     user_id: uuid.UUID,
     urd_id: uuid.UUID,
+    request: Request,
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> None:
-    if not await URDService(conn).delete(user_id, urd_id):
+    deleted = await URDService(conn).delete(
+        user_id,
+        urd_id,
+        tenant_slug=request.headers.get("X-Tenant-Slug"),
+        actor=str(caller.user_id),
+    )
+    if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "not_found", "detail": "URD no encontrada", "status": 404},

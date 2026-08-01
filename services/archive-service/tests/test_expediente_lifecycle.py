@@ -39,9 +39,10 @@ async def test_close_applies_trd_disposition(client_with_conn) -> None:
         disposition={"disposition_code": "CT", "disposition_label": "Conservación Total"},
     )
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
-    # fetchrow: exp(open) → trd → exp(closed update) → exp(reload).
-    # El índice (regenerar+firmar) se aísla parcheando IndexService.
-    mock_conn.fetchrow.side_effect = [exp_open, trd, exp_closed, exp_closed]
+    # fetchrow: exp(open) → trd(pinned) → trd(vigente, ADR-025) →
+    # trd(compute_retention sobre la vigente) → exp(closed update) →
+    # exp(reload). El índice (regenerar+firmar) se aísla parcheando IndexService.
+    mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
     from app.services.index_service import IndexService
@@ -276,6 +277,100 @@ async def test_close_expediente_audit_uses_real_regenerate_result_not_redacted(
     closed_payloads = [a[8] for a in audit_calls if a[5] == "archive.expediente_closed"]
     assert closed_payloads
     assert '"v4-real-marker"' in closed_payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_close_expediente_with_borrador_serie_returns_409_trd_version_no_vigente(
+    client_with_conn,
+) -> None:
+    """ADR-025 D5: cerrar un expediente cuya serie TRD pinneada NO tiene
+    ninguna versión vigente (convalidada/migrada) -- p. ej. sigue en
+    `borrador`, jamás convalidada -- se rechaza. El gate corta ANTES de abrir
+    la transacción: no hay transición, ni evento, ni regeneración de índice."""
+    client, mock_conn = client_with_conn
+    serie_id = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    exp_open = make_expediente_record(exp_id=exp_id, trd_serie_id=serie_id, exp_status="open")
+    trd_borrador = make_trd_serie_record(serie_id=serie_id, code="100", estado="borrador")
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    # fetchrow: exp(open) -> trd(pinned, borrador) -> vigente_by_code (None:
+    # no hay convalidada/migrada para el código).
+    mock_conn.fetchrow.side_effect = [exp_open, trd_borrador, None]
+
+    from app.services.index_service import IndexService
+
+    with (
+        patch.object(IndexService, "regenerate", new=AsyncMock()) as mock_regenerate,
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
+    ):
+        resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["error"] == "trd_version_no_vigente"
+    mock_regenerate.assert_not_awaited()
+    # Ningún `UPDATE`/transición se emitió (el gate cortó antes de la tx).
+    assert not any(
+        c.args and isinstance(c.args[0], str) and "UPDATE expedientes" in c.args[0]
+        for c in mock_conn.fetchrow.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("estado", ["migrada", "convalidada"])
+async def test_close_expediente_with_vigente_serie_succeeds(
+    client_with_conn, estado: str
+) -> None:
+    """Contraparte: `migrada` (backfill, D6) y `convalidada` (circuito
+    completo) SÍ gobiernan el cierre -- ambas son "vigentes" para
+    `get_trd_serie_vigente_by_code`. El snapshot declara `serie_estado` tal
+    cual (RF-FIR-15, nunca se afirma una convalidación que no ocurrió)."""
+    client, mock_conn = client_with_conn
+    serie_id = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    exp_open = make_expediente_record(exp_id=exp_id, trd_serie_id=serie_id, exp_status="open")
+    trd = make_trd_serie_record(
+        serie_id=serie_id,
+        code="100",
+        estado=estado,
+        disposition="conserve",
+        archivo_gestion_years=3,
+        archivo_central_years=7,
+        acto_administrativo="Resolución 001" if estado == "convalidada" else None,
+        fecha_convalidacion="2026-01-01" if estado == "convalidada" else None,
+        instancia_convalidante="Consejo Departamental" if estado == "convalidada" else None,
+    )
+    exp_closed = make_expediente_record(
+        exp_id=exp_id,
+        trd_serie_id=serie_id,
+        exp_status="closed",
+        trd_serie_code="100",
+        disposition={"disposition_code": "CT", "serie_estado": estado},
+        trd_revision_requerida=(estado == "migrada"),
+        trd_revision_motivo=("cerrado_bajo_serie_migrada" if estado == "migrada" else None),
+    )
+    mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
+    # fetchrow: exp(open) -> trd(pinned) -> trd(vigente_by_code) ->
+    # trd(compute_retention sobre la vigente) -> exp(closed update) -> exp(reload).
+    mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed, exp_closed]
+    mock_conn.fetch.return_value = []
+
+    from app.services.index_service import IndexService
+
+    with (
+        patch.object(IndexService, "regenerate", new=AsyncMock()),
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
+    ):
+        resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # `POST /close` responde `ExpedienteDisposicionResult` (M2, RF-SEG-08):
+    # deliberadamente NO trae `trd_serie_code`/`trd_revision_requerida` (esos
+    # campos SÍ están en `GET /expedientes/{id}` -- `ExpedienteResponse`,
+    # cubierto en la fixture de `exp_closed` más arriba). Aquí solo se
+    # confirma que el cierre tuvo éxito y materializó la disposición.
+    assert body["status"] == "closed"
+    assert body["disposition"]["disposition_code"] == "CT"
 
 
 @pytest.mark.asyncio

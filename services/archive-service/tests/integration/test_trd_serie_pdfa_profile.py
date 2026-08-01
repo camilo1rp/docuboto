@@ -49,7 +49,7 @@ from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, 
 from app.services.archive_service import ArchiveService
 from app.services.aip_wiring_service import AipWiringService
 
-from .conftest import DSN
+from .conftest import DSN, convalidate_for_test
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations" / "tenant"
 _MIGRATION_035_PATH = _MIGRATIONS_DIR / "035_trd_series_pdfa_profile.sql"
@@ -240,6 +240,10 @@ async def _seed_ready_with_serie(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): 'borrador' (DEFAULT nuevo) no gobierna el cierre
+    # de más abajo (D5); 'migrada' es el atajo de test correcto (D6) -- no
+    # relacionado con lo que este helper aísla (`pdfa_profile`).
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,

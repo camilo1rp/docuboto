@@ -41,6 +41,8 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
+  import RagSuggestButton from "$lib/components/features/rag/RagSuggestButton.svelte";
+  import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -520,6 +522,15 @@
         on:change={handlePlantillaChange}
       />
     {/if}
+
+    <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper crear/editar
+         el borrador si el servicio de conocimiento no responde. -->
+    <RagSuggestButton
+      endpoint="/borradores/api/rag/suggest"
+      query={fSubject}
+      disabled={!hasPerm || (editingBorrador !== null && !canEdit)}
+      on:insert={(e) => (fCuerpo = appendGeneratedHtml(fCuerpo, e.detail.html))}
+    />
 
     <!-- Editor de cuerpo -->
     <RichEditor

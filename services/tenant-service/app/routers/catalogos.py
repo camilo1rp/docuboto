@@ -17,8 +17,10 @@ whitelist `CATALOGS`; cualquier otro valor → 404.
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
+from app.core import audit as audit_core
+from app.core.authz import require_permission
 from app.core.database import get_tenant_conn
 from app.repositories.catalogos_repository import CATALOGS, CatalogoRepository
 from app.schemas.catalogos import (
@@ -61,16 +63,32 @@ async def list_items(
 
 
 @router.post(
-    "/{catalogo}", response_model=CatalogoItemResponse, status_code=status.HTTP_201_CREATED
+    "/{catalogo}",
+    response_model=CatalogoItemResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
 async def create_item(
     payload: CatalogoItemCreate,
+    request: Request,
     catalogo: str = Path(...),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> CatalogoItemResponse:
     repo = CatalogoRepository(conn, _resolve(catalogo))
     try:
-        row = await repo.insert(codigo=payload.codigo, nombre=payload.nombre, activo=payload.activo)
+        async with conn.transaction():
+            row = await repo.insert(
+                codigo=payload.codigo, nombre=payload.nombre, activo=payload.activo
+            )
+            await audit_core.append(
+                conn,
+                tenant_slug=request.headers.get("X-Tenant-Slug"),
+                action="catalogo.item_creado",
+                object_type="catalogo_item",
+                object_ref=f"{catalogo}:{row['codigo']}",
+                actor=audit_core.actor_from(request),
+                payload={"catalogo": catalogo, "codigo": row["codigo"], "nombre": row["nombre"]},
+            )
     except asyncpg.UniqueViolationError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -83,32 +101,62 @@ async def create_item(
     return CatalogoItemResponse(**dict(row))
 
 
-@router.patch("/{catalogo}/{item_id}", response_model=CatalogoItemResponse)
+@router.patch(
+    "/{catalogo}/{item_id}",
+    response_model=CatalogoItemResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def update_item(
     payload: CatalogoItemUpdate,
+    request: Request,
     catalogo: str = Path(...),
     item_id: uuid.UUID = Path(...),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> CatalogoItemResponse:
     repo = CatalogoRepository(conn, _resolve(catalogo))
-    row = await repo.update(item_id, fields=payload.model_dump(exclude_unset=True))
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "not_found", "detail": "Item not found", "status": 404},
+    async with conn.transaction():
+        row = await repo.update(item_id, fields=payload.model_dump(exclude_unset=True))
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "not_found", "detail": "Item not found", "status": 404},
+            )
+        await audit_core.append(
+            conn,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            action="catalogo.item_actualizado",
+            object_type="catalogo_item",
+            object_ref=f"{catalogo}:{item_id}",
+            actor=audit_core.actor_from(request),
+            payload={"catalogo": catalogo, "fields": payload.model_dump(exclude_unset=True)},
         )
     return CatalogoItemResponse(**dict(row))
 
 
-@router.delete("/{catalogo}/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{catalogo}/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def delete_item(
+    request: Request,
     catalogo: str = Path(...),
     item_id: uuid.UUID = Path(...),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> None:
     repo = CatalogoRepository(conn, _resolve(catalogo))
-    if not await repo.delete(item_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "not_found", "detail": "Item not found", "status": 404},
+    async with conn.transaction():
+        if not await repo.delete(item_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "not_found", "detail": "Item not found", "status": 404},
+            )
+        await audit_core.append(
+            conn,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            action="catalogo.item_eliminado",
+            object_type="catalogo_item",
+            object_ref=f"{catalogo}:{item_id}",
+            actor=audit_core.actor_from(request),
+            payload={"catalogo": catalogo},
         )

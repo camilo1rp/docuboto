@@ -7,16 +7,62 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""URD y contexto activo de dependencia (E08)."""
+"""URD y contexto activo de dependencia (E08).
+
+Crear/eliminar una URD (Usuario-Rol-Dependencia) es una vía de escalada de
+privilegio (asigna un rol al usuario en una dependencia) — se audita en Canal A
+(``public.audit_log``) dentro de la MISMA transacción que la mutación, no
+best-effort (ver ``RBACService`` para la justificación completa del patrón).
+"""
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import asyncpg
+from fastapi import HTTPException, status
 
 from app.repositories.urd_repository import URDRepository
 from app.schemas.urd import ContextResponse, URDCreate, URDResponse
+
+logger = logging.getLogger(__name__)
+
+try:
+    from orpycamcp_common import audit as _audit
+
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover — common not installed in some test envs
+    _audit = None  # type: ignore[assignment]
+    _AUDIT_AVAILABLE = False
+
+_SERVICE = "auth-service"
+
+
+def _require_audit_available() -> None:
+    if not _AUDIT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "auditoria_no_disponible",
+                "detail": "Auditoría inmutable no disponible — no se puede "
+                "escribir una URD sin traza",
+                "status": 500,
+            },
+        )
+
+
+def _audit_tenant(tenant_slug: str | None) -> str:
+    """Fail-closed — ver ``rbac_service._audit_tenant`` (mismo razonamiento:
+    una URD asigna un rol/dependencia, así que su asiento no puede quedar
+    imputado al tenant del sistema por omisión)."""
+    if not tenant_slug:
+        raise RuntimeError(
+            "URDService requiere tenant_slug para auditar una escritura "
+            "(imputar el asiento al tenant del sistema lo ocultaría de la "
+            "auditoría de la entidad)"
+        )
+    return tenant_slug
 
 
 def _to_urd(row: asyncpg.Record) -> URDResponse:
@@ -33,22 +79,70 @@ def _to_urd(row: asyncpg.Record) -> URDResponse:
 
 class URDService:
     def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
         self._repo = URDRepository(conn)
 
     async def list(self, user_id: uuid.UUID) -> list[URDResponse]:
         return [_to_urd(r) for r in await self._repo.list_by_user(user_id)]
 
-    async def create(self, user_id: uuid.UUID, payload: URDCreate) -> URDResponse:
-        row = await self._repo.insert(
-            user_id=user_id,
-            depe_id=payload.depe_id,
-            rol_id=payload.rol_id,
-            es_principal=payload.es_principal,
-        )
+    async def create(
+        self,
+        user_id: uuid.UUID,
+        payload: URDCreate,
+        *,
+        tenant_slug: str | None,
+        actor: str,
+    ) -> URDResponse:
+        _require_audit_available()
+        tenant = _audit_tenant(tenant_slug)
+        async with self._conn.transaction():
+            row = await self._repo.insert(
+                user_id=user_id,
+                depe_id=payload.depe_id,
+                rol_id=payload.rol_id,
+                es_principal=payload.es_principal,
+            )
+            await _audit.append(
+                self._conn,
+                tenant_slug=tenant,
+                service=_SERVICE,
+                action="urd.creada",
+                object_type="urd",
+                object_ref=str(row["id"]),
+                actor=actor,
+                payload={
+                    "user_id": str(user_id),
+                    "depe_id": payload.depe_id,
+                    "rol_id": str(payload.rol_id),
+                    "es_principal": payload.es_principal,
+                },
+            )
         return _to_urd(row)
 
-    async def delete(self, user_id: uuid.UUID, urd_id: uuid.UUID) -> bool:
-        return await self._repo.delete(user_id, urd_id)
+    async def delete(
+        self,
+        user_id: uuid.UUID,
+        urd_id: uuid.UUID,
+        *,
+        tenant_slug: str | None,
+        actor: str,
+    ) -> bool:
+        _require_audit_available()
+        tenant = _audit_tenant(tenant_slug)
+        async with self._conn.transaction():
+            deleted = await self._repo.delete(user_id, urd_id)
+            if deleted:
+                await _audit.append(
+                    self._conn,
+                    tenant_slug=tenant,
+                    service=_SERVICE,
+                    action="urd.eliminada",
+                    object_type="urd",
+                    object_ref=str(urd_id),
+                    actor=actor,
+                    payload={"user_id": str(user_id)},
+                )
+        return deleted
 
     async def context(self, user_id: uuid.UUID) -> ContextResponse:
         active = await self._repo.get_active_depe(user_id)

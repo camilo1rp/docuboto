@@ -47,6 +47,27 @@ class RBACRepository:
             user_id,
         )
 
+    async def get_user_by_username(self, username: str) -> asyncpg.Record | None:
+        """Usado por el script de ops `grant_root` (E08) para resolver el usuario
+        a promover a partir de su username (los usernames se guardan en mayúsculas,
+        ver `create_user`)."""
+        return await self._conn.fetchrow(
+            "SELECT id, username, email, keycloak_sub, is_root, is_active "
+            "FROM auth_users WHERE username = $1",
+            username.upper(),
+        )
+
+    async def set_root(self, user_id: uuid.UUID) -> asyncpg.Record:
+        """Promueve un usuario a ROOT. Solo invocado por el script de ops
+        `grant_root` — la API HTTP nunca voltea `is_root` a true por sí misma
+        (ver el docstring de `upsert_user_by_keycloak_sub` y el hallazgo Alto
+        de auto-escalada que cierra `RBACService.create_user`)."""
+        return await self._conn.fetchrow(
+            "UPDATE auth_users SET is_root = true WHERE id = $1 "
+            "RETURNING id, username, email, keycloak_sub, is_root, is_active",
+            user_id,
+        )
+
     async def get_user_by_keycloak_sub(self, sub: str) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
             "SELECT id, username, email, keycloak_sub, is_root, is_active "
@@ -119,10 +140,26 @@ class RBACRepository:
     async def list_groups(self) -> list[asyncpg.Record]:
         return await self._conn.fetch("SELECT id, name, description FROM auth_groups ORDER BY name")
 
+    async def get_group(self, group_id: uuid.UUID) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(
+            "SELECT id, name, description FROM auth_groups WHERE id = $1", group_id
+        )
+
     # --- permisos -----------------------------------------------------------
     async def list_permissions(self) -> list[asyncpg.Record]:
         return await self._conn.fetch(
             "SELECT id, nombre, descripcion FROM auth_permissions ORDER BY nombre"
+        )
+
+    async def get_permission_name(self, permission_id: uuid.UUID) -> str | None:
+        """``nombre`` de un permiso por id, o ``None`` si no existe.
+
+        Usado por el gate de no-auto-concesión de ``USUA_PERM_ROOT``
+        (`RBACService.set_group_permission`): el endpoint solo recibe el
+        UUID, así que hace falta resolver el nombre para compararlo.
+        """
+        return await self._conn.fetchval(
+            "SELECT nombre FROM auth_permissions WHERE id = $1", permission_id
         )
 
     # --- membresías y permisos de grupo ------------------------------------
@@ -138,6 +175,41 @@ class RBACRepository:
         await self._conn.execute(
             "DELETE FROM auth_memberships WHERE user_id = $1 AND group_id = $2",
             user_id,
+            group_id,
+        )
+
+    async def list_group_members(
+        self, group_id: uuid.UUID, *, limit: int, offset: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Usuarios del grupo (espejo de lectura de `add_membership`/`remove_membership`)."""
+        rows = await self._conn.fetch(
+            """
+            SELECT u.id, u.username, u.email, u.keycloak_sub, u.is_root, u.is_active
+            FROM auth_memberships m
+            JOIN auth_users u ON u.id = m.user_id
+            WHERE m.group_id = $1
+            ORDER BY u.username
+            LIMIT $2 OFFSET $3
+            """,
+            group_id,
+            limit,
+            offset,
+        )
+        total: int = await self._conn.fetchval(
+            "SELECT count(*) FROM auth_memberships WHERE group_id = $1", group_id
+        )
+        return rows, total
+
+    async def list_group_permissions(self, group_id: uuid.UUID) -> list[asyncpg.Record]:
+        """Permisos asignados al grupo (espejo de lectura de `set_group_permission`)."""
+        return await self._conn.fetch(
+            """
+            SELECT ap.id AS permission_id, ap.nombre, ap.descripcion, agp.crud
+            FROM auth_group_permissions agp
+            JOIN auth_permissions ap ON ap.id = agp.permission_id
+            WHERE agp.group_id = $1
+            ORDER BY ap.nombre
+            """,
             group_id,
         )
 

@@ -247,7 +247,14 @@ async def test_update_tipo_writes_audit_entry(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # USUA_PERM_TRD granted (gate)
     tid = uuid.uuid4()
-    mock_conn.fetchrow.return_value = _tipo_row(tid, nombre="Resolución renombrada")
+    # DOS filas distintas a propósito: la 1ª es la lectura del estado ACTUAL
+    # (`before`), la 2ª el resultado del UPDATE (`after`). Con una sola fila
+    # compartida, `before` y `after` coincidirían y el diff saldría vacío —
+    # correctamente, porque un campo enviado con su mismo valor no es un cambio.
+    mock_conn.fetchrow.side_effect = [
+        _tipo_row(tid, nombre="Resolución"),
+        _tipo_row(tid, nombre="Resolución renombrada"),
+    ]
 
     resp = await client.patch(
         f"/api/v1/tipos-documentales/{tid}",
@@ -265,7 +272,11 @@ async def test_update_tipo_writes_audit_entry(client_with_conn) -> None:
     assert audit_calls[0][3] == TENANT_HEADERS["X-User-Id"]
     assert audit_calls[0][5] == "archive.tipo_documental_updated"
     assert audit_calls[0][6] == "tipo_documental"
-    assert json.loads(audit_calls[0][8])["changes"] == {"nombre": "Resolución renombrada"}
+    # Diff con valor anterior (mismo criterio que las series TRD): el asiento
+    # debe permitir reconstruir el cambio, no solo declarar el estado final.
+    assert json.loads(audit_calls[0][8])["changes"] == {
+        "nombre": {"before": "Resolución", "after": "Resolución renombrada"}
+    }
 
 
 @pytest.mark.asyncio

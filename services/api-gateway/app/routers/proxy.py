@@ -27,7 +27,17 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/auth/", app_state.auth_service_url),
         ("/api/v1/audit/", app_state.auth_service_url),
         # tenant-service
-        ("/api/v1/tenants/", app_state.tenant_service_url),
+        # /api/v1/tenants/ NO se enruta a propósito (hallazgo Crítico de
+        # seguridad, auditoría 2026-07): el registro de tenants vive en el
+        # schema `public` (get_db_conn, sin search_path de tenant) — cualquier
+        # usuario autenticado de la entidad A podía enumerar y ESCRIBIR el
+        # registro de la entidad B. No hay consumidor legítimo desde el
+        # exterior: el frontend no lo llama (verificado, ningún fetch en
+        # frontend/src) y el alta de tenants la hace `scripts/init_tenant.py`
+        # escribiendo directo a `public.tenants` (operación de plataforma, no
+        # de aplicación). El agregador de OpenAPI del gateway
+        # (`routers/openapi.py`) sigue llamando a tenant-service directo por
+        # su URL interna para /docs — eso no pasa por esta tabla de ruteo.
         ("/api/v1/dependencias/", app_state.tenant_service_url),
         ("/api/v1/catalogos/", app_state.tenant_service_url),
         ("/api/v1/config/", app_state.tenant_service_url),

@@ -209,11 +209,16 @@ async def test_update_trd_serie_omitting_pdfa_profile_does_not_clear_it(
     client, mock_conn = client_with_conn
     _grant_permission(mock_conn)
     serie_id = uuid.uuid4()
-    existing = make_trd_serie_record(serie_id=serie_id, code="301", pdfa_profile="1b")
+    # ADR-025 (Increment 1): `name` es un cambio SUSTANTIVO -- solo legítimo
+    # sobre `borrador` (ruptura buscada, no relacionada con lo que este test
+    # aísla: la persistencia de `pdfa_profile`).
+    existing = make_trd_serie_record(
+        serie_id=serie_id, code="301", pdfa_profile="1b", estado="borrador"
+    )
     # El repositorio real, sin `pdfa_profile` en `assignments`, devolvería la
     # fila con el perfil INTACTO -- se simula aquí devolviendo el mismo valor.
     updated = make_trd_serie_record(
-        serie_id=serie_id, code="301", name="renombrada", pdfa_profile="1b"
+        serie_id=serie_id, code="301", name="renombrada", pdfa_profile="1b", estado="borrador"
     )
     mock_conn.fetchrow.side_effect = [existing, updated]
 

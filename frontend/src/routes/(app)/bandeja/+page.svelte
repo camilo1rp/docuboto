@@ -167,6 +167,12 @@
   let hasActiveStep = null;
   let hasActiveStepLoading = false;
 
+  // F6: Salidas que responden a este radicado (GET /documents/{id}/respuestas,
+  // no-read-up ya aplicado por document-service). Sección "Respuestas" del detalle.
+  /** @type {import('$lib/types/api.js').RespuestaItem[]} */
+  let respuestas = [];
+  let respuestasLoading = false;
+
   // ---------------------------------------------------------------------------
   // Acciones inline
   // ---------------------------------------------------------------------------
@@ -399,6 +405,18 @@
     } finally {
       hasActiveStepLoading = false;
     }
+
+    // F6: Salidas que responden a este radicado. Lista vacía es el caso normal
+    // (no toda Entrada tiene respuesta vinculada) — no se notifica como error.
+    respuestasLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(doc.id)}/respuestas`);
+      respuestas = res.ok ? await res.json() : [];
+    } catch {
+      respuestas = [];
+    } finally {
+      respuestasLoading = false;
+    }
   }
 
   function closeDrawer() {
@@ -407,6 +425,8 @@
     anulacionStatus = null;
     hasActiveStep = null;
     hasActiveStepLoading = false;
+    respuestas = [];
+    respuestasLoading = false;
   }
 
   /**
@@ -1386,6 +1406,35 @@
                     ({(anexo.file_size / 1024).toFixed(1)} KB)
                   </span>
                 {/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      <!-- F6: Salidas que responden a este radicado -->
+      {#if respuestasLoading}
+        <section class="doc-detail__section" aria-label="Respuestas">
+          <Loader type="skeleton" lines={2} label="Consultando respuestas…" />
+        </section>
+      {:else if respuestas.length > 0}
+        <section class="doc-detail__section" aria-labelledby="detail-respuestas-heading">
+          <h4 id="detail-respuestas-heading" class="doc-detail__section-title">
+            Respuestas ({respuestas.length})
+          </h4>
+          <ul class="respuestas-list" role="list">
+            {#each respuestas as r (r.id)}
+              <li class="respuestas-list__item">
+                <span class="respuestas-list__tracking">{r.tracking_number}</span>
+                <StatusChip
+                  status={STATUS_CHIP_MAP[r.status] ?? "neutral"}
+                  label={STATUS_LABELS[r.status] ?? r.status}
+                  dot
+                />
+                <span class="respuestas-list__subject" title={r.subject}>{r.subject}</span>
+                <time datetime={r.registered_at} class="respuestas-list__date">
+                  {formatDate(r.registered_at)}
+                </time>
               </li>
             {/each}
           </ul>
@@ -2448,6 +2497,49 @@
   }
 
   .anexos-list__size {
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+    flex-shrink: 0;
+  }
+
+  .respuestas-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-2);
+  }
+
+  .respuestas-list__item {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--op-space-2);
+    font-size: var(--op-font-sm);
+    padding: var(--op-space-2) var(--op-space-3);
+    background: var(--op-bg);
+    border-radius: var(--op-radius-sm);
+    border: 1px solid var(--op-border);
+  }
+
+  .respuestas-list__tracking {
+    font-family: monospace;
+    font-size: var(--op-font-xs);
+    color: var(--op-text);
+    font-weight: var(--op-weight-medium);
+  }
+
+  .respuestas-list__subject {
+    flex: 1 1 160px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--op-text-secondary);
+  }
+
+  .respuestas-list__date {
     font-size: var(--op-font-xs);
     color: var(--op-text-secondary);
     flex-shrink: 0;

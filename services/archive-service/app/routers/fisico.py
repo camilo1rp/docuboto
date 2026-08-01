@@ -86,9 +86,10 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
 async def create_ubicacion(
     payload: UbicacionCreate,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> UbicacionResponse:
-    return await FisicoService(conn, tenant_slug).create_ubicacion(payload)
+    return await FisicoService(conn, tenant_slug).create_ubicacion(payload, actor=actor)
 
 
 @router.get(
@@ -132,9 +133,10 @@ async def get_ubicacion(
 async def create_unidad(
     payload: UnidadCreate,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> UnidadResponse:
-    return await FisicoService(conn, tenant_slug).create_unidad(payload)
+    return await FisicoService(conn, tenant_slug).create_unidad(payload, actor=actor)
 
 
 @router.get(
@@ -179,9 +181,10 @@ async def link_expediente(
     unidad_id: uuid.UUID,
     payload: ExpedienteUnidadLink,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> None:
-    await FisicoService(conn, tenant_slug).link_expediente(unidad_id, payload)
+    await FisicoService(conn, tenant_slug).link_expediente(unidad_id, payload, actor=actor)
 
 
 @router.get(
@@ -244,10 +247,11 @@ async def create_prestamo(
     payload: PrestamoCreate,
     request: Request,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> PrestamoResponse:
     return await FisicoService(conn, tenant_slug).create_prestamo(
-        unidad_id, payload, _performed_by(request)
+        unidad_id, payload, _performed_by(request), actor=actor
     )
 
 
@@ -286,10 +290,11 @@ async def devolver_prestamo(
     prestamo_id: uuid.UUID,
     request: Request,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> PrestamoResponse:
     return await FisicoService(conn, tenant_slug).devolver_prestamo(
-        prestamo_id, _performed_by(request)
+        prestamo_id, _performed_by(request), actor=actor
     )
 
 

@@ -40,48 +40,81 @@ class TipoDocumentalService:
     async def create(
         self, data: dict[str, Any], *, actor: uuid.UUID | None
     ) -> TipoDocumentalResponse:
-        row = await self._repo.create_tipo_documental(data)
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.tipo_documental_created",
-            object_type="tipo_documental",
-            object_ref=row["code"],
-            actor=str(actor) if actor else None,
-            payload={"id": str(row["id"])},
-        )
+        # Atomicidad mutación<->asiento (mismo patrón que TRD/`update_expediente`):
+        # el INSERT y `audit.append` son un único acto dentro de una sola
+        # `conn.transaction()` — si el asiento falla, el alta no queda
+        # persistida (fail-closed).
+        async with self._conn.transaction():
+            row = await self._repo.create_tipo_documental(data)
+            # Estado inicial completo (no solo `id`), por consistencia con la
+            # corrección del mismo defecto en `create_trd_serie`.
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.tipo_documental_created",
+                object_type="tipo_documental",
+                object_ref=row["code"],
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(row["id"]),
+                    "trd_serie_id": str(row["trd_serie_id"]) if row["trd_serie_id"] else None,
+                    "code": row["code"],
+                    "nombre": row["nombre"],
+                    "obligatorio": row["obligatorio"],
+                    "metadata_template": row["metadata_template"],
+                    "activo": row["activo"],
+                },
+            )
         return TipoDocumentalResponse(**dict(row))
 
     async def update(
         self, tipo_id: uuid.UUID, data: dict[str, Any], *, actor: uuid.UUID | None
     ) -> TipoDocumentalResponse | None:
-        row = await self._repo.update_tipo_documental(tipo_id, data)
-        if row is None:
-            return None
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="archive.tipo_documental_updated",
-            object_type="tipo_documental",
-            object_ref=row["code"],
-            actor=str(actor) if actor else None,
-            payload={"id": str(tipo_id), "changes": data},
-        )
-        return TipoDocumentalResponse(**dict(row))
-
-    async def delete(self, tipo_id: uuid.UUID, *, actor: uuid.UUID | None) -> bool:
-        deleted = await self._repo.delete_tipo_documental(tipo_id)
-        if deleted:
+        # Atomicidad mutación<->asiento: el UPDATE y `audit.append` son un
+        # único acto dentro de una sola `conn.transaction()`.
+        async with self._conn.transaction():
+            existing = await self._repo.get_tipo_documental(tipo_id)
+            if existing is None:
+                return None
+            row = await self._repo.update_tipo_documental(tipo_id, data)
+            if row is None:
+                return None
+            # Diff before/after POR CAMPO (mismo defecto que `update_trd_serie`,
+            # severidad menor): `data` ya viene con `exclude_unset=True` desde
+            # el router, así que sus claves son las que el llamante realmente
+            # envió — pero un campo enviado con el mismo valor que ya tenía no
+            # es un cambio auditable.
+            changes: dict[str, dict[str, Any]] = {}
+            for field, sent in data.items():
+                before = existing[field]
+                if sent != before:
+                    changes[field] = {"before": before, "after": sent}
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
                 service=_SERVICE,
-                action="archive.tipo_documental_deleted",
+                action="archive.tipo_documental_updated",
                 object_type="tipo_documental",
-                object_ref=str(tipo_id),
+                object_ref=row["code"],
                 actor=str(actor) if actor else None,
-                payload={},
+                payload={"id": str(tipo_id), "changes": changes},
             )
+        return TipoDocumentalResponse(**dict(row))
+
+    async def delete(self, tipo_id: uuid.UUID, *, actor: uuid.UUID | None) -> bool:
+        # Atomicidad mutación<->asiento, mismo patrón que create/update.
+        async with self._conn.transaction():
+            deleted = await self._repo.delete_tipo_documental(tipo_id)
+            if deleted:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.tipo_documental_deleted",
+                    object_type="tipo_documental",
+                    object_ref=str(tipo_id),
+                    actor=str(actor) if actor else None,
+                    payload={},
+                )
         return deleted

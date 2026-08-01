@@ -10,15 +10,18 @@
 """Endpoints de dependencias (organigrama) por tenant (E14).
 
 CRUD jerárquico. E01 consume `GET /dependencias/by-codigo/{codigo}` para numerar
-radicados por dependencia. El gate de permiso del llamante se añade con el JWT
-enriquecido (E08); hoy el api-gateway media el acceso.
+radicados por dependencia. Las escrituras exigen `USUA_PERM_ADMIN`
+(`app/core/authz.py`); los GET quedan solo autenticados — E01 y otros
+consumidores internos los necesitan para resolver dependencias por código.
 """
 
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.core import audit as audit_core
+from app.core.authz import require_permission
 from app.core.database import get_tenant_conn
 from app.repositories.dependencias_repository import DependenciaRepository
 from app.schemas.dependencias import (
@@ -107,20 +110,37 @@ async def get_dependencia(
     return DependenciaResponse(**dict(row))
 
 
-@router.post("", response_model=DependenciaResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=DependenciaResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def create_dependencia(
-    payload: DependenciaCreate, conn: asyncpg.Connection = Depends(get_tenant_conn)
+    payload: DependenciaCreate,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> DependenciaResponse:
     repo = DependenciaRepository(conn)
     try:
-        row = await repo.insert(
-            codigo=payload.codigo,
-            sigla=payload.sigla,
-            nombre=payload.nombre,
-            parent_id=payload.parent_id,
-            depe_rad_tp2=payload.depe_rad_tp2,
-            activo=payload.activo,
-        )
+        async with conn.transaction():
+            row = await repo.insert(
+                codigo=payload.codigo,
+                sigla=payload.sigla,
+                nombre=payload.nombre,
+                parent_id=payload.parent_id,
+                depe_rad_tp2=payload.depe_rad_tp2,
+                activo=payload.activo,
+            )
+            await audit_core.append(
+                conn,
+                tenant_slug=request.headers.get("X-Tenant-Slug"),
+                action="dependencia.creada",
+                object_type="dependencia",
+                object_ref=str(row["id"]),
+                actor=audit_core.actor_from(request),
+                payload={"codigo": row["codigo"], "sigla": row["sigla"], "nombre": row["nombre"]},
+            )
     except asyncpg.UniqueViolationError:
         raise _conflict(f"codigo {payload.codigo} already exists")
     except asyncpg.ForeignKeyViolationError:
@@ -128,10 +148,15 @@ async def create_dependencia(
     return DependenciaResponse(**dict(row))
 
 
-@router.patch("/{dependencia_id}", response_model=DependenciaResponse)
+@router.patch(
+    "/{dependencia_id}",
+    response_model=DependenciaResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def update_dependencia(
     dependencia_id: uuid.UUID,
     payload: DependenciaUpdate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> DependenciaResponse:
     if payload.parent_id == dependencia_id:
@@ -146,26 +171,51 @@ async def update_dependencia(
     repo = DependenciaRepository(conn)
     fields = payload.model_dump(exclude_unset=True)
     try:
-        row = await repo.update(dependencia_id, fields=fields)
+        async with conn.transaction():
+            row = await repo.update(dependencia_id, fields=fields)
+            if row is None:
+                raise _not_found()
+            await audit_core.append(
+                conn,
+                tenant_slug=request.headers.get("X-Tenant-Slug"),
+                action="dependencia.actualizada",
+                object_type="dependencia",
+                object_ref=str(dependencia_id),
+                actor=audit_core.actor_from(request),
+                payload={"fields": fields},
+            )
     except asyncpg.UniqueViolationError:
         raise _conflict("codigo already exists")
     except asyncpg.ForeignKeyViolationError:
         raise _bad_parent()
-    if row is None:
-        raise _not_found()
     return DependenciaResponse(**dict(row))
 
 
-@router.delete("/{dependencia_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{dependencia_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 async def delete_dependencia(
-    dependencia_id: uuid.UUID, conn: asyncpg.Connection = Depends(get_tenant_conn)
+    dependencia_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> None:
     repo = DependenciaRepository(conn)
     if await repo.has_children(dependencia_id):
         raise _conflict("dependencia has children; reassign or delete them first")
     try:
-        deleted = await repo.delete(dependencia_id)
+        async with conn.transaction():
+            deleted = await repo.delete(dependencia_id)
+            if not deleted:
+                raise _not_found()
+            await audit_core.append(
+                conn,
+                tenant_slug=request.headers.get("X-Tenant-Slug"),
+                action="dependencia.eliminada",
+                object_type="dependencia",
+                object_ref=str(dependencia_id),
+                actor=audit_core.actor_from(request),
+            )
     except asyncpg.ForeignKeyViolationError:
         raise _conflict("dependencia is referenced by other records")
-    if not deleted:
-        raise _not_found()

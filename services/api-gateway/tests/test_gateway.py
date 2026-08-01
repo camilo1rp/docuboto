@@ -47,10 +47,17 @@ async def test_proxy_auth_token_public_route(test_client):
 
 
 async def test_proxy_requires_auth(test_client):
-    """GET /api/v1/tenants/ without Authorization header returns 401."""
+    """GET /api/v1/dependencias/ without Authorization header returns 401.
+
+    (Antes usaba /api/v1/tenants/ como ejemplo genérico; ese prefijo ya NO se
+    enruta desde el gateway — hallazgo Crítico de seguridad, auditoría
+    2026-07: el registro de tenants vivía en `public`, sin scoping de tenant,
+    y cualquier usuario autenticado de la entidad A podía leer/escribir el
+    registro de la entidad B. /dependencias/ sigue siendo tenant-service.)
+    """
     client, _, _ = test_client
 
-    response = await client.get("/api/v1/tenants/")
+    response = await client.get("/api/v1/dependencias/")
 
     assert response.status_code == 401
     body = response.json()
@@ -65,7 +72,7 @@ async def test_proxy_invalid_token(test_client):
     http_client.get = AsyncMock(return_value=make_validate_response(valid=False))
 
     response = await client.get(
-        "/api/v1/tenants/",
+        "/api/v1/dependencias/",
         headers={"Authorization": "Bearer bad-token"},
     )
 
@@ -79,7 +86,7 @@ async def test_proxy_valid_token_forwards_request(test_client):
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
 
-    upstream_body = {"items": [{"id": "abc", "slug": "icetex"}], "total": 1}
+    upstream_body = {"items": [{"id": "abc", "codigo": 100}], "total": 1}
     http_client.request = AsyncMock(
         return_value=httpx.Response(
             status_code=200,
@@ -89,7 +96,7 @@ async def test_proxy_valid_token_forwards_request(test_client):
     )
 
     response = await client.get(
-        "/api/v1/tenants/",
+        "/api/v1/dependencias/",
         headers={"Authorization": "Bearer valid-token"},
     )
 
@@ -102,6 +109,41 @@ async def test_proxy_valid_token_forwards_request(test_client):
     assert "X-User-Id" in forwarded_headers
     assert "X-Tenant-Slug" in forwarded_headers
     assert forwarded_headers["X-Tenant-Slug"] == "icetex"
+
+
+async def test_tenants_endpoint_not_routed_even_with_valid_token(test_client):
+    """Hallazgo 2 (Crítico, auditoría 2026-07): /api/v1/tenants/ no se enruta.
+
+    Antes de esta remediación, un usuario autenticado de la entidad A podía
+    GET/PATCH el registro de la entidad B (`routers/tenants.py` usa
+    `get_db_conn`, sin `search_path` de tenant, y no tenía gate). La
+    corrección más quirúrgica es sacar el prefijo de la tabla de ruteo: ya no
+    hay upstream registrado, así que ni siquiera un token válido llega a
+    tenant-service — el gateway responde 404 antes de proxyar nada.
+    """
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(200, json={"leak": "should never be called"})
+    )
+
+    response = await client.get(
+        "/api/v1/tenants/",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "route_not_found"
+    http_client.request.assert_not_called()
+
+    response_patch = await client.patch(
+        "/api/v1/tenants/00000000-0000-0000-0000-000000000000",
+        json={"status": "suspended"},
+        headers={"Authorization": "Bearer valid-token"},
+    )
+    assert response_patch.status_code == 404
+    http_client.request.assert_not_called()
 
 
 async def test_proxy_service_unavailable(test_client):
@@ -132,7 +174,7 @@ async def test_rate_limit_exceeded(test_client):
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
 
     response = await client.get(
-        "/api/v1/tenants/",
+        "/api/v1/dependencias/",
         headers={"Authorization": "Bearer valid-token"},
     )
 
@@ -194,7 +236,7 @@ async def test_auth_service_unavailable(test_client):
     http_client.get = AsyncMock(side_effect=httpx.ConnectError("auth-service not reachable"))
 
     response = await client.get(
-        "/api/v1/tenants/",
+        "/api/v1/dependencias/",
         headers={"Authorization": "Bearer some-token"},
     )
 
@@ -319,6 +361,15 @@ async def test_route_to_upstream_domain_prefixes():
     for path, expected in cases.items():
         assert _route_to_upstream(path, state) == expected, path
 
+    # Hallazgo Crítico (auditoría 2026-07): /api/v1/tenants/ NUNCA se enruta.
+    # El registro de tenants vive en `public` sin scoping de tenant — antes de
+    # este cambio, cualquier usuario autenticado de la entidad A podía
+    # enumerar (GET) y ESCRIBIR (PATCH) el registro de la entidad B. No hay
+    # consumidor legítimo externo (frontend no lo llama; el alta de tenants
+    # es `scripts/init_tenant.py`, que escribe directo a la BD).
+    assert _route_to_upstream("/api/v1/tenants", state) is None
+    assert _route_to_upstream("/api/v1/tenants/", state) is None
+    assert _route_to_upstream("/api/v1/tenants/by-slug/icetex", state) is None
     assert _route_to_upstream("/api/v1/unknown", state) is None
     # El catálogo/protocolo MCP NO se expone por el gateway (solo /assistant/).
     assert _route_to_upstream("/api/v1/mcp/tools", state) is None

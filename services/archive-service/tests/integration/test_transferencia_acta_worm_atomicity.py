@@ -54,7 +54,7 @@ from app.schemas.transferencia import TransferenciaCreate
 from app.services.archive_service import ArchiveService
 from app.services.transferencia_service import TransferenciaService
 
-from .conftest import DSN
+from .conftest import DSN, convalidate_for_test
 
 
 async def _seed_acta_firmada(
@@ -85,6 +85,10 @@ async def _seed_acta_firmada(
         ),
         actor=None,
     )
+    # ADR-025 (Increment 1): la serie nace en 'borrador' -- no gobierna el
+    # cierre de más abajo (D5) sin pasar antes por una versión vigente.
+    # 'migrada' es el atajo de test correcto (D6).
+    await convalidate_for_test(conn, serie.id)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1, trd_serie_id=serie.id),
         opened_by=None,

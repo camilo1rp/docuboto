@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     # so 30 days is a very generous operational buffer.
     retention_dlq_days: int = Field(default=30, ge=1)
 
+    # SSRF de webhooks salientes (hallazgo Media, auditoría de seguridad — no
+    # bloqueante). `WebhookCreate.url` (app/schemas/webhook.py) validaba forma,
+    # no destino: cualquier admin podía suscribir un webhook a un servicio
+    # interno de la red Docker o a un rango no enrutable, dirigiendo 3
+    # reintentos × evento contra la propia red. Kill-switch INVERTIDO respecto
+    # a los demás flags de este archivo: por defecto (False) la validación es
+    # ESTRICTA (bloquea loopback/link-local/privado/nombres de servicio
+    # Docker, ver app/core/webhook_security.py). Ponerlo en True SOLO para
+    # desarrollo local (apuntar un webhook a un receptor en la máquina del
+    # desarrollador o a MailHog). Producción debe dejarlo en False — fail
+    # closed por defecto, no al revés.
+    webhook_allow_private_targets: bool = False
+
     # evento_dead_letter terminal-row retention (ADR-021 Fase 4 — MVP-3, Fase 5 Inc.2).
     # Grace period (days) after resolved_at before a resolved/discarded dead-letter
     # row is purged. 'pending' rows are NEVER purged regardless of age (they await

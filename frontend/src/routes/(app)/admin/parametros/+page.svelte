@@ -1,0 +1,707 @@
+<!--
+  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+  Contacto: aurigadl@gmail.com
+
+  Software libre: este archivo se distribuye bajo la Licencia Pública General
+  Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+  conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+  SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+-->
+
+<!--
+  /admin/parametros — Parámetros de tenant, calendario de festivos y
+  calculadora de días hábiles (E14, Fase 5 cierre de desfase API↔UI).
+
+  Tres secciones (pestañas):
+    - "Parámetros": pares clave→valor JSON arbitrario (sgd_param_admin).
+    - "Festivos": calendario de no-hábiles (weekday<5 se excluye aparte, es
+      cálculo, no dato); alta puntual + precarga por rango de años (Ley
+      51/1983, algoritmo de Pascua/Emiliani, sin llamada externa).
+    - "Calculadora de días hábiles": es la herramienta que justifica los
+      plazos de respuesta (RF-RAD-04) — por eso NO se limita a mostrar el
+      número de días, muestra el DESGLOSE de qué días se descontaron y por
+      qué (fin de semana / festivo con su descripción). El backend
+      (`BusinessDaysResult`) solo devuelve la fecha resultante; el desglose
+      se reconstruye aquí enumerando el rango con el mismo catálogo de
+      festivos ya cargado — dato real derivado, no inventado.
+
+  RBAC: ver el hallazgo de dominio en +page.server.js — ningún endpoint de
+  este router exige permiso hoy; USUA_PERM_ADMIN se aplica solo del lado del
+  cliente, como medida conservadora (nunca menos restrictivo que el backend).
+-->
+<script>
+  import { onMount } from "svelte";
+  import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { permissions } from "$lib/stores/auth.js";
+  import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+
+  import FormField from "$lib/components/ui/FormField.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import Loader from "$lib/components/ui/Loader.svelte";
+
+  /** @type {import('./$types').PageData} */
+  export let data;
+
+  $: canWrite = $permissions.includes("USUA_PERM_ADMIN");
+
+  const TABS = [
+    { id: "params", label: "Parámetros", icon: "fa-sliders" },
+    { id: "festivos", label: "Festivos", icon: "fa-calendar-days" },
+    { id: "calculadora", label: "Días hábiles", icon: "fa-calculator" },
+  ];
+  let activeTab = "params";
+
+  function handleTabKeydown(e, tabId) {
+    const idx = TABS.findIndex((t) => t.id === tabId);
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      activeTab = TABS[(idx + 1) % TABS.length].id;
+      document.getElementById(`tab-${activeTab}`)?.focus();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      activeTab = TABS[(idx - 1 + TABS.length) % TABS.length].id;
+      document.getElementById(`tab-${activeTab}`)?.focus();
+    }
+  }
+
+  let actionLoading = false;
+
+  // ---------------------------------------------------------------------------
+  // Parámetros
+  // ---------------------------------------------------------------------------
+  let paramEntries = Object.entries(data.params ?? {});
+  let editingKey = null;
+  let editValueRaw = "";
+  let editValueError = "";
+
+  let newKey = "";
+  let newValueRaw = "";
+  let newKeyError = "";
+  let newValueError = "";
+
+  function startEdit(key, value) {
+    editingKey = key;
+    editValueRaw = JSON.stringify(value, null, 2);
+    editValueError = "";
+  }
+
+  function parseValue(raw, setError) {
+    try {
+      return { ok: true, value: JSON.parse(raw) };
+    } catch (err) {
+      setError(`JSON inválido: ${err instanceof Error ? err.message : "error de sintaxis"}`);
+      return { ok: false };
+    }
+  }
+
+  async function guardarParam(key, raw, onDone) {
+    const parsed = parseValue(raw, (msg) => (editValueError = msg));
+    if (!parsed.ok) return;
+    actionLoading = true;
+    try {
+      const res = await fetch(`/admin/parametros/api/params/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: parsed.value }),
+      });
+      const resData = await res.json();
+      if (!res.ok) {
+        notifyError(resData.detail ?? "No se pudo guardar el parámetro.");
+        return;
+      }
+      paramEntries = paramEntries.some(([k]) => k === key)
+        ? paramEntries.map(([k, v]) => (k === key ? [k, resData.value] : [k, v]))
+        : [...paramEntries, [key, resData.value]];
+      onDone();
+      notifySuccess("Parámetro guardado.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  function guardarEdicion() {
+    guardarParam(editingKey, editValueRaw, () => {
+      editingKey = null;
+    });
+  }
+
+  function crearParam() {
+    newKeyError = "";
+    newValueError = "";
+    if (!newKey.trim()) {
+      newKeyError = "La clave es obligatoria.";
+      return;
+    }
+    if (paramEntries.some(([k]) => k === newKey.trim())) {
+      newKeyError = "Ya existe un parámetro con esa clave; edítalo en la tabla.";
+      return;
+    }
+    guardarParam(newKey.trim(), newValueRaw || "null", () => {
+      newKey = "";
+      newValueRaw = "";
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Festivos
+  // ---------------------------------------------------------------------------
+  let holidays = data.holidays ?? [];
+  let hFecha = "";
+  let hDescripcion = "";
+  let hFechaError = "";
+  let hDescripcionError = "";
+
+  async function crearFestivo() {
+    hFechaError = "";
+    hDescripcionError = "";
+    if (!hFecha) {
+      hFechaError = "La fecha es obligatoria.";
+      return;
+    }
+    if (!hDescripcion.trim()) {
+      hDescripcionError = "La descripción es obligatoria.";
+      return;
+    }
+    actionLoading = true;
+    try {
+      const res = await fetch("/admin/parametros/api/holidays", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fecha: hFecha, descripcion: hDescripcion.trim(), tipo: "festivo", is_national: true }),
+      });
+      const resData = await res.json();
+      if (!res.ok) {
+        notifyError(resData.detail ?? "No se pudo crear el festivo.");
+        return;
+      }
+      holidays = [...holidays, resData].sort((a, b) => a.fecha.localeCompare(b.fecha));
+      hFecha = "";
+      hDescripcion = "";
+      notifySuccess("Festivo creado.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  async function borrarFestivo(h) {
+    actionLoading = true;
+    try {
+      const res = await fetch(`/admin/parametros/api/holidays/${h.id}`, { method: "DELETE" });
+      if (res.status === 204 || res.ok) {
+        holidays = holidays.filter((x) => x.id !== h.id);
+        notifySuccess("Festivo eliminado.");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        notifyError(err.detail ?? "No se pudo eliminar el festivo.");
+      }
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  let seedFrom = String(new Date().getFullYear());
+  let seedTo = String(new Date().getFullYear() + 1);
+  let seedLoading = false;
+
+  async function precargarFestivos() {
+    seedLoading = true;
+    try {
+      const res = await fetch("/admin/parametros/api/holidays/seed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year_from: Number(seedFrom), year_to: Number(seedTo) }),
+      });
+      const resData = await res.json();
+      if (!res.ok) {
+        notifyError(resData.detail ?? "No se pudo precargar festivos.");
+        return;
+      }
+      notifySuccess(`${resData.created ?? 0} festivos precargados. Recarga la página para verlos en la tabla.`);
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      seedLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Calculadora de días hábiles
+  // ---------------------------------------------------------------------------
+  let calcFrom = new Date().toISOString().slice(0, 10);
+  let calcDays = "10";
+  let calcLoading = false;
+  let calcError = "";
+  let calcResult = null;
+  /** @type {Array<{fecha: string, motivo: string}>} */
+  let calcBreakdown = [];
+
+  function addDaysIso(iso, n) {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function isoWeekday(iso) {
+    // 0=domingo..6=sábado (UTC, evita desfases de zona horaria del navegador).
+    return new Date(`${iso}T00:00:00Z`).getUTCDay();
+  }
+
+  function computeBreakdown(fromIso, dueIso) {
+    const holidayByFecha = new Map(holidays.map((h) => [h.fecha.slice(0, 10), h.descripcion]));
+    const out = [];
+    let cursor = fromIso;
+    // Recorre (from, due] — from es el día de radicación, no cuenta.
+    while (cursor < dueIso) {
+      cursor = addDaysIso(cursor, 1);
+      const dow = isoWeekday(cursor);
+      if (dow === 0 || dow === 6) {
+        out.push({ fecha: cursor, motivo: dow === 0 ? "Domingo" : "Sábado" });
+      } else if (holidayByFecha.has(cursor)) {
+        out.push({ fecha: cursor, motivo: `Festivo — ${holidayByFecha.get(cursor)}` });
+      }
+    }
+    return out;
+  }
+
+  async function calcularDiasHabiles() {
+    calcError = "";
+    calcResult = null;
+    calcBreakdown = [];
+    if (!calcFrom) {
+      calcError = "La fecha de inicio es obligatoria.";
+      return;
+    }
+    const days = Number(calcDays);
+    if (!Number.isInteger(days) || days < 0) {
+      calcError = "El número de días hábiles debe ser un entero >= 0.";
+      return;
+    }
+    calcLoading = true;
+    try {
+      const params = new URLSearchParams({ from: calcFrom, days: String(days) });
+      const res = await fetch(`/admin/parametros/api/business-days?${params}`);
+      const resData = await res.json();
+      if (!res.ok) {
+        calcError = resData.detail ?? "No se pudo calcular la fecha de vencimiento.";
+        return;
+      }
+      calcResult = resData;
+      calcBreakdown = computeBreakdown(resData.from_date.slice(0, 10), resData.due_date.slice(0, 10));
+    } catch {
+      calcError = "No se pudo conectar al servidor.";
+    } finally {
+      calcLoading = false;
+    }
+  }
+
+  onMount(() => {
+    setBreadcrumbs([{ label: "Administración", href: "/admin" }, { label: "Parámetros" }]);
+  });
+</script>
+
+<svelte:head>
+  <title>Parámetros — OrpycaMCP</title>
+</svelte:head>
+
+<div class="param-page">
+  <header class="param-page__header">
+    <h1 class="param-page__title">Parámetros</h1>
+    <p class="param-page__subtitle">Configuración general del tenant, calendario de festivos y plazos (E14).</p>
+  </header>
+
+  <div class="param-tabs" role="tablist" aria-label="Secciones de parámetros">
+    {#each TABS as tab (tab.id)}
+      <button
+        id="tab-{tab.id}"
+        class="param-tabs__tab"
+        class:param-tabs__tab--active={activeTab === tab.id}
+        role="tab"
+        aria-selected={activeTab === tab.id}
+        aria-controls="panel-{tab.id}"
+        tabindex={activeTab === tab.id ? 0 : -1}
+        on:click={() => (activeTab = tab.id)}
+        on:keydown={(e) => handleTabKeydown(e, tab.id)}
+      >
+        <i class="fas {tab.icon}" aria-hidden="true"></i>
+        {tab.label}
+      </button>
+    {/each}
+  </div>
+
+  <!-- ===================================================================
+       Panel: Parámetros
+       =================================================================== -->
+  <div id="panel-params" role="tabpanel" aria-labelledby="tab-params" hidden={activeTab !== "params"} tabindex="0">
+    {#if data.paramsError}
+      <div class="param-page__error" role="alert">
+        <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+        {data.paramsError}
+      </div>
+    {:else if paramEntries.length === 0}
+      <EmptyState icon="fas fa-sliders" title="Sin parámetros definidos" description="Crea el primero con el formulario de abajo." />
+    {:else}
+      <div class="param-table-wrap" role="region" aria-label="Parámetros del tenant">
+        <table class="param-table" aria-label="Parámetros del tenant">
+          <thead>
+            <tr>
+              <th scope="col">Clave</th>
+              <th scope="col">Valor</th>
+              {#if canWrite}<th scope="col"><span class="sr-only">Acciones</span></th>{/if}
+            </tr>
+          </thead>
+          <tbody>
+            {#each paramEntries as [key, value] (key)}
+              <tr>
+                <td><code>{key}</code></td>
+                <td>
+                  {#if editingKey === key}
+                    <FormField
+                      id="param-edit-{key}"
+                      label=""
+                      type="textarea"
+                      rows={3}
+                      bind:value={editValueRaw}
+                      error={editValueError}
+                    />
+                  {:else}
+                    <code class="param-page__value">{JSON.stringify(value)}</code>
+                  {/if}
+                </td>
+                {#if canWrite}
+                  <td class="param-table__actions">
+                    {#if editingKey === key}
+                      <Button variant="ghost" size="sm" on:click={() => (editingKey = null)}>Cancelar</Button>
+                      <Button size="sm" icon="fas fa-save" loading={actionLoading} on:click={guardarEdicion}>Guardar</Button>
+                    {:else}
+                      <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => startEdit(key, value)}>Editar</Button>
+                    {/if}
+                  </td>
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
+    {#if canWrite}
+      <form class="param-form" on:submit|preventDefault={crearParam} novalidate>
+        <h2 class="param-page__section-title">Nuevo parámetro</h2>
+        <FormField id="new-param-key" label="Clave" required bind:value={newKey} error={newKeyError} />
+        <FormField
+          id="new-param-value"
+          label="Valor (JSON)"
+          type="textarea"
+          rows={3}
+          bind:value={newValueRaw}
+          error={newValueError}
+          placeholder={'"texto", 123, true, {"a": 1} …'}
+        />
+        <Button type="submit" icon="fas fa-plus" loading={actionLoading}>Crear parámetro</Button>
+      </form>
+    {/if}
+  </div>
+
+  <!-- ===================================================================
+       Panel: Festivos
+       =================================================================== -->
+  <div id="panel-festivos" role="tabpanel" aria-labelledby="tab-festivos" hidden={activeTab !== "festivos"} tabindex="0">
+    {#if data.holidaysError}
+      <div class="param-page__error" role="alert">
+        <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+        {data.holidaysError}
+      </div>
+    {:else if holidays.length === 0}
+      <EmptyState
+        icon="fas fa-calendar-days"
+        title="Sin festivos registrados"
+        description='Precarga el calendario colombiano con "Precargar festivos" o crea uno puntual.'
+      />
+    {:else}
+      <div class="param-table-wrap" role="region" aria-label="Calendario de festivos">
+        <table class="param-table" aria-label="Calendario de festivos">
+          <thead>
+            <tr>
+              <th scope="col">Fecha</th>
+              <th scope="col">Descripción</th>
+              <th scope="col">Nacional</th>
+              {#if canWrite}<th scope="col"><span class="sr-only">Acciones</span></th>{/if}
+            </tr>
+          </thead>
+          <tbody>
+            {#each holidays as h (h.id)}
+              <tr>
+                <td>{h.fecha}</td>
+                <td>{h.descripcion}</td>
+                <td>{h.is_national ? "Sí" : "No"}</td>
+                {#if canWrite}
+                  <td class="param-table__actions">
+                    <Button variant="ghost" size="sm" icon="fas fa-trash" loading={actionLoading} on:click={() => borrarFestivo(h)}>
+                      Eliminar
+                    </Button>
+                  </td>
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
+    {#if canWrite}
+      <form class="param-form" on:submit|preventDefault={crearFestivo} novalidate>
+        <h2 class="param-page__section-title">Nuevo festivo puntual</h2>
+        <div class="param-form__row">
+          <FormField id="holiday-fecha" label="Fecha" type="date" required bind:value={hFecha} error={hFechaError} />
+          <FormField id="holiday-descripcion" label="Descripción" required bind:value={hDescripcion} error={hDescripcionError} />
+        </div>
+        <Button type="submit" icon="fas fa-plus" loading={actionLoading}>Crear festivo</Button>
+      </form>
+
+      <form class="param-form" on:submit|preventDefault={precargarFestivos} novalidate>
+        <h2 class="param-page__section-title">Precargar festivos colombianos (Ley 51/1983)</h2>
+        <p class="param-page__hint">
+          Calcula y guarda los festivos nacionales (fijos + Emiliani + móviles de Pascua) del rango de años indicado.
+          No requiere conexión externa.
+        </p>
+        <div class="param-form__row">
+          <FormField id="seed-from" label="Desde el año" type="number" bind:value={seedFrom} />
+          <FormField id="seed-to" label="Hasta el año" type="number" bind:value={seedTo} />
+        </div>
+        <Button type="submit" variant="secondary" icon="fas fa-calendar-plus" loading={seedLoading}>Precargar festivos</Button>
+      </form>
+    {/if}
+  </div>
+
+  <!-- ===================================================================
+       Panel: Calculadora de días hábiles
+       =================================================================== -->
+  <div id="panel-calculadora" role="tabpanel" aria-labelledby="tab-calculadora" hidden={activeTab !== "calculadora"} tabindex="0">
+    <p class="param-page__hint">
+      Calcula la fecha de vencimiento de un plazo en días hábiles (RF-RAD-04) — descuenta fines de semana y los
+      festivos registrados en la pestaña anterior.
+    </p>
+    <form class="param-form param-form--calc" on:submit|preventDefault={calcularDiasHabiles} novalidate>
+      <div class="param-form__row">
+        <FormField id="calc-from" label="Fecha de radicación" type="date" required bind:value={calcFrom} />
+        <FormField id="calc-days" label="Días hábiles del plazo" type="number" required bind:value={calcDays} />
+      </div>
+      <Button type="submit" icon="fas fa-calculator" loading={calcLoading}>Calcular</Button>
+    </form>
+
+    {#if calcLoading}
+      <Loader size="sm" label="Calculando…" />
+    {:else if calcError}
+      <div class="param-page__error" role="alert">
+        <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+        {calcError}
+      </div>
+    {:else if calcResult}
+      <div class="calc-result" aria-live="polite">
+        <p class="calc-result__due">
+          Fecha de vencimiento: <strong>{calcResult.due_date}</strong>
+          <span class="calc-result__meta">({calcResult.business_days} días hábiles desde {calcResult.from_date})</span>
+        </p>
+        {#if calcBreakdown.length === 0}
+          <p class="param-page__hint">No hubo fines de semana ni festivos que descontar en este rango.</p>
+        {:else}
+          <p class="param-page__hint">Días descontados dentro del rango (no cuentan como hábiles):</p>
+          <ul class="calc-result__breakdown">
+            {#each calcBreakdown as d (d.fecha)}
+              <li><code>{d.fecha}</code> — {d.motivo}</li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
+  </div>
+</div>
+
+<style lang="scss">
+  .param-page {
+    padding: var(--op-space-5);
+    max-width: 900px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-4);
+
+    &__header {
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-1);
+    }
+
+    &__title {
+      font-size: var(--op-font-xl);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-text);
+      margin: 0;
+    }
+
+    &__subtitle {
+      color: var(--op-text-secondary);
+      margin: 0;
+    }
+
+    &__section-title {
+      font-size: var(--op-font-sm);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-text);
+      margin: var(--op-space-2) 0 0;
+    }
+
+    &__hint {
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+      margin: 0;
+    }
+
+    &__error {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      padding: var(--op-space-3) var(--op-space-4);
+      background: var(--op-error-bg);
+      color: var(--op-error-fg);
+      border-radius: var(--op-radius);
+      font-size: var(--op-font-sm);
+    }
+
+    &__value {
+      font-size: var(--op-font-xs);
+      word-break: break-word;
+    }
+  }
+
+  .param-tabs {
+    display: flex;
+    background: var(--op-surface);
+    border-bottom: 2px solid var(--op-border);
+    overflow-x: auto;
+
+    &__tab {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      padding: var(--op-space-3) var(--op-space-4);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      font-size: var(--op-font-sm);
+      font-weight: var(--op-weight-medium);
+      color: var(--op-text-secondary);
+      cursor: pointer;
+      white-space: nowrap;
+
+      &:hover {
+        color: var(--op-text);
+        background: var(--op-bg);
+      }
+
+      &:focus-visible {
+        outline: 2px solid var(--op-primary);
+        outline-offset: -2px;
+      }
+
+      &--active {
+        color: var(--op-primary-dark);
+        border-bottom-color: var(--op-primary);
+        font-weight: var(--op-weight-bold);
+      }
+    }
+  }
+
+  .param-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    margin-bottom: var(--op-space-4);
+  }
+
+  .param-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--op-font-sm);
+
+    th,
+    td {
+      padding: var(--op-space-3) var(--op-space-4);
+      text-align: left;
+      border-bottom: 1px solid var(--op-border);
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--op-bg);
+      font-weight: var(--op-weight-medium);
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    &__actions {
+      display: flex;
+      gap: var(--op-space-2);
+      white-space: nowrap;
+    }
+  }
+
+  .param-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-3);
+    padding: var(--op-space-4);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    background: var(--op-surface);
+    margin-bottom: var(--op-space-4);
+
+    &__row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--op-space-3);
+    }
+
+    &--calc {
+      margin-bottom: var(--op-space-4);
+    }
+  }
+
+  .calc-result {
+    padding: var(--op-space-4);
+    border: 1px solid var(--op-primary);
+    background: var(--op-primary-light);
+    border-radius: var(--op-radius);
+
+    &__due {
+      margin: 0 0 var(--op-space-2);
+      color: var(--op-text);
+    }
+
+    &__meta {
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-sm);
+    }
+
+    &__breakdown {
+      margin: 0;
+      padding-left: var(--op-space-5);
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+    }
+  }
+</style>

@@ -435,4 +435,56 @@
  * @property {string|null} semaforo      — 'verde'|'amarillo'|'rojo'|'vencido'
  */
 
+// ---------------------------------------------------------------------------
+// Respuesta rápida (document-service, respuesta.py) y RAG/antecedentes
+// (knowledge-service, E21 Inc.2/3, F6 frontend)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/v1/documents/{document_id}/respuestas — Salidas que responden a un radicado.
+ *
+ * @typedef {object} RespuestaItem
+ * @property {string} id
+ * @property {string} tracking_number
+ * @property {string} doc_type
+ * @property {string} subject
+ * @property {string} status
+ * @property {string} registered_at — ISO 8601 UTC
+ */
+
+/**
+ * Cita de un precedente dentro de una respuesta del RAG (knowledge-service).
+ *
+ * @typedef {object} RagCitation
+ * @property {string} cited_text
+ * @property {string} source_type
+ * @property {string} source_ref  — tracking_number del radicado fuente
+ * @property {number} score
+ */
+
+/**
+ * POST /api/v1/knowledge/rag — respuesta del RAG generativo con citas (E21 Inc.3).
+ * `answer`/`modelo`/`suggestion_id` son `null` cuando no hubo generación (Patrón A,
+ * fallback honesto): el llamante NUNCA debe ofrecer insertar en ese caso.
+ *
+ * @typedef {object} RagResponse
+ * @property {string|null}     answer
+ * @property {RagCitation[]}   citations
+ * @property {string}          proveedor
+ * @property {string|null}     modelo
+ * @property {number}          confianza
+ * @property {string|null}     suggestion_id
+ * @property {string}          advisory
+ */
+
+/**
+ * Precedente citado, sin generación (knowledge-service POST /antecedentes, Patrón A).
+ *
+ * @typedef {object} Antecedente
+ * @property {string} source_type
+ * @property {string} source_ref
+ * @property {string} snippet
+ * @property {number} score
+ */
+
 export {};
