@@ -77,8 +77,7 @@
 
   $: selectedCount = selectedIds.size;
   $: selectedShipments = shipments.filter((s) => selectedIds.has(s.id));
-  $: allPageSelected =
-    shipments.length > 0 && shipments.every((s) => selectedIds.has(s.id));
+  $: allPageSelected = shipments.length > 0 && shipments.every((s) => selectedIds.has(s.id));
   // Estado indeterminado del checkbox "seleccionar todos": algunos pero no todos.
   $: allIndeterminate = selectedCount > 0 && !allPageSelected;
 
@@ -144,9 +143,7 @@
     ]);
 
     const csv =
-      HEADERS.map(escapeCell).join(",") +
-      "\r\n" +
-      rows.map((r) => r.join(",")).join("\r\n");
+      HEADERS.map(escapeCell).join(",") + "\r\n" + rows.map((r) => r.join(",")).join("\r\n");
 
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -170,6 +167,8 @@
   async function openDetail(shipment) {
     selectedShipment = shipment;
     drawerOpen = true;
+    trackingResult = null;
+    trackingError = "";
     // Refrescar el detalle para obtener eventos actualizados
     detailLoading = true;
     try {
@@ -186,6 +185,37 @@
   function closeDrawer() {
     drawerOpen = false;
     selectedShipment = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rastreo contra el operador postal (F5, Fase 8) — consulta PULL bajo demanda
+  // ---------------------------------------------------------------------------
+  let trackingLoading = false;
+  /** @type {import('$lib/types/api.js').TrackingResponse|null} */
+  let trackingResult = null;
+  let trackingError = "";
+
+  async function actualizarRastreo() {
+    if (!selectedShipment) return;
+    trackingLoading = true;
+    trackingError = "";
+    try {
+      const res = await fetch(`/envios/api/${selectedShipment.id}/tracking`);
+      const result = await res.json();
+      if (!res.ok) {
+        // Distinguir "no se pudo consultar" de "sin novedades": nunca se
+        // pinta un resultado sintético cuando la consulta falló.
+        trackingError = result?.detail ?? "No se pudo consultar el rastreo.";
+        trackingResult = null;
+        return;
+      }
+      trackingResult = result;
+    } catch {
+      trackingError = "No se pudo conectar al servidor de rastreo.";
+      trackingResult = null;
+    } finally {
+      trackingLoading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -277,10 +307,9 @@
       return;
     }
 
-    const descripcion =
-      fDevNota.trim()
-        ? `Causal: ${fDevCausal} — ${fDevNota.trim()}`
-        : `Causal: ${fDevCausal}`;
+    const descripcion = fDevNota.trim()
+      ? `Causal: ${fDevCausal} — ${fDevNota.trim()}`
+      : `Causal: ${fDevCausal}`;
 
     actionLoading = true;
     try {
@@ -537,11 +566,7 @@
         {selectedCount}
         {selectedCount === 1 ? "envío seleccionado" : "envíos seleccionados"}
       </span>
-      <Button
-        variant="secondary"
-        icon="fas fa-file-csv"
-        on:click={exportarCSV}
-      >
+      <Button variant="secondary" icon="fas fa-file-csv" on:click={exportarCSV}>
         Exportar planilla CSV
       </Button>
     </div>
@@ -647,12 +672,7 @@
 <!-- =========================================================================
      Drawer: detalle del envío + historial de eventos
      ========================================================================= -->
-<Drawer
-  open={drawerOpen}
-  title="Detalle del envío"
-  width="520px"
-  on:close={closeDrawer}
->
+<Drawer open={drawerOpen} title="Detalle del envío" width="520px" on:close={closeDrawer}>
   {#if detailLoading}
     <div class="envio-detail__loader">
       <Loader />
@@ -718,11 +738,7 @@
                     status={ESTADO_CHIP[ev.estado] ?? "neutral"}
                     label={ESTADO_LABEL[ev.estado] ?? ev.estado}
                   />
-                  <time
-                    class="envio-timeline__ts"
-                    datetime={ev.ts}
-                    title={ev.ts}
-                  >
+                  <time class="envio-timeline__ts" datetime={ev.ts} title={ev.ts}>
                     {formatDateTime(ev.ts)}
                   </time>
                 </div>
@@ -736,6 +752,66 @@
       </section>
     {:else}
       <p class="envio-detail__no-eventos">Sin eventos registrados aún.</p>
+    {/if}
+
+    <!-- Rastreo contra el operador (consulta PULL bajo demanda, F5/Fase 8) -->
+    {#if hasPerm}
+      <section class="envio-tracking" aria-label="Rastreo contra el operador postal">
+        <hr class="envio-detail__divider" aria-hidden="true" />
+        <div class="envio-tracking__header">
+          <p class="envio-detail__actions-title">Rastreo con el operador</p>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="fas fa-satellite-dish"
+            loading={trackingLoading}
+            on:click={actualizarRastreo}
+          >
+            Actualizar rastreo
+          </Button>
+        </div>
+
+        {#if trackingError}
+          <!-- "No se pudo consultar" — nunca se confunde con "sin novedades". -->
+          <p class="envio-tracking__error" role="alert">
+            <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+            {trackingError}
+          </p>
+        {:else if trackingResult}
+          <dl class="envio-detail__data" aria-live="polite">
+            <div class="envio-detail__row">
+              <dt>Estado interno</dt>
+              <dd>
+                {ESTADO_LABEL[trackingResult.estado_interno_actual] ??
+                  trackingResult.estado_interno_actual}
+              </dd>
+            </div>
+            <div class="envio-detail__row">
+              <dt>Estado del operador</dt>
+              <dd>{trackingResult.estado_operador ?? "—"}</dd>
+            </div>
+            <div class="envio-detail__row">
+              <dt>Mapeo interno</dt>
+              <dd>{trackingResult.estado_interno_mapeado ?? "—"}</dd>
+            </div>
+            <div class="envio-detail__row">
+              <dt>Conexión con operador</dt>
+              <dd>
+                {#if trackingResult.operador_conectado}
+                  <StatusChip status="success" label="Consulta en vivo" dot />
+                {:else}
+                  <!-- Sin integración real con el operador: se comunica la limitación
+                       en vez de aparentar una consulta en vivo que no ocurrió. -->
+                  <StatusChip
+                    status="neutral"
+                    label="Último estado conocido (sin integración en vivo)"
+                  />
+                {/if}
+              </dd>
+            </div>
+          </dl>
+        {/if}
+      </section>
     {/if}
 
     <!-- Acciones (solo si tiene permiso) -->
@@ -798,9 +874,7 @@
   </div>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (modalEstado = false)}>Cancelar</Button>
-    <Button icon="fas fa-check" loading={actionLoading} on:click={cambiarEstado}>
-      Aplicar
-    </Button>
+    <Button icon="fas fa-check" loading={actionLoading} on:click={cambiarEstado}>Aplicar</Button>
   </svelte:fragment>
 </Modal>
 
@@ -848,12 +922,7 @@
 <!-- =========================================================================
      Modal: nuevo envío
      ========================================================================= -->
-<Modal
-  open={modalCrear}
-  title="Nuevo envío postal"
-  size="sm"
-  on:close={() => (modalCrear = false)}
->
+<Modal open={modalCrear} title="Nuevo envío postal" size="sm" on:close={() => (modalCrear = false)}>
   <div class="envio-modal-form">
     <!--
       UX: se acepta el ID (UUID) del radicado de salida.
@@ -1184,6 +1253,30 @@
       font-weight: var(--op-weight-medium);
       color: var(--op-text-secondary);
       margin: 0;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rastreo con el operador (Fase 8)
+  // ---------------------------------------------------------------------------
+  .envio-tracking {
+    margin-bottom: var(--op-space-2);
+
+    &__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--op-space-2);
+      margin-bottom: var(--op-space-2);
+    }
+
+    &__error {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      font-size: var(--op-font-sm);
+      color: var(--op-error);
+      margin: 0 0 var(--op-space-3);
     }
   }
 

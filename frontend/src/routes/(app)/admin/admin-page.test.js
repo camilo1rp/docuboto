@@ -129,6 +129,23 @@ describe("/admin — TVD (ADR-026), gateada por USUA_PERM_TRD, no por USUA_PERM_
   });
 });
 
+describe("/admin — Interoperabilidad (Fase 8), gateada por USUA_PERM_EXPEDIENTE, no por USUA_PERM_ADMIN", () => {
+  it("con solo USUA_PERM_ADMIN, la tarjeta Interoperabilidad NO aparece", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
+    render(AdminPage);
+    expect(screen.queryByText("Interoperabilidad")).toBeNull();
+  });
+
+  it("con USUA_PERM_EXPEDIENTE, la tarjeta es un enlace navegable a /admin/interoperabilidad", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_EXPEDIENTE"] }));
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /^Interoperabilidad/i });
+    expect(link.getAttribute("href")).toBe("/admin/interoperabilidad");
+  });
+});
+
 describe("/admin — con USUA_PERM_ADMIN + PERM_DLQ_ADMIN", () => {
   beforeEach(() => {
     clearSession();

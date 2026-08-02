@@ -18,7 +18,7 @@ Mock call sequence — POST /api/v1/batch/expedientes (happy path):
   fetchval — INSERT batch_jobs RETURNING id          → job_id
   fetchval — SELECT created_at FROM batch_jobs       → NOW
 
-Mock call sequence — GET /api/v1/batch/{job_id}/status (happy path):
+Mock call sequence — GET /api/v1/batch/expedientes/{job_id}/status (happy path):
   fetchval — require_permission gate                 → True
   fetchrow — SELECT batch_jobs                        → job row
   fetch    — SELECT batch_job_items                   → items
@@ -88,7 +88,7 @@ async def test_create_batch_expedientes_sin_tenant_403(client_with_conn) -> None
 async def test_get_batch_status_sin_permiso_403(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = None
-    resp = await client.get(f"/api/v1/batch/{JOB_ID}/status", headers=TENANT_HEADERS)
+    resp = await client.get(f"/api/v1/batch/expedientes/{JOB_ID}/status", headers=TENANT_HEADERS)
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
 
@@ -97,7 +97,7 @@ async def test_get_batch_status_sin_permiso_403(client_with_conn) -> None:
 async def test_get_batch_status_sin_tenant_403(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     headers = {k: v for k, v in TENANT_HEADERS.items() if k != "X-Tenant-Slug"}
-    resp = await client.get(f"/api/v1/batch/{JOB_ID}/status", headers=headers)
+    resp = await client.get(f"/api/v1/batch/expedientes/{JOB_ID}/status", headers=headers)
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
 
@@ -127,7 +127,7 @@ async def test_get_batch_status_200(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # require_permission gate
     mock_conn.fetchrow.return_value = _job_row()
     mock_conn.fetch.return_value = []
-    resp = await client.get(f"/api/v1/batch/{JOB_ID}/status", headers=TENANT_HEADERS)
+    resp = await client.get(f"/api/v1/batch/expedientes/{JOB_ID}/status", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     body = resp.json()
     assert body["job_id"] == str(JOB_ID)
@@ -139,7 +139,7 @@ async def test_get_batch_status_not_found_404(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # require_permission gate
     mock_conn.fetchrow.return_value = None  # job ausente
-    resp = await client.get(f"/api/v1/batch/{JOB_ID}/status", headers=TENANT_HEADERS)
+    resp = await client.get(f"/api/v1/batch/expedientes/{JOB_ID}/status", headers=TENANT_HEADERS)
     assert resp.status_code == 404
 
 

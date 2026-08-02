@@ -532,7 +532,7 @@ Marca un paso como completado.
 
 ### Expedientes
 
-> **Control de acceso:** **todos** los endpoints de expedientes (12: create/list/search/get/foliado/eventos/close/transfer/update/link/batch/unlink) y los de `batch.py` (`POST /api/v1/batch/expedientes`, `GET /api/v1/batch/{job_id}/status`) requieren `USUA_PERM_EXPEDIENTE` (fail-closed: `403` sin `X-Tenant-Slug`, sin `X-User-Id`, o sin el permiso). **Mínimo privilegio (RF-SEG-03, nivel `crud` 0-5):** las operaciones de **disposición** — `close`, `transfer`, `unlink`, y el `PATCH` que transiciona a `closed`/`transferred` — exigen `USUA_PERM_EXPEDIENTE` con **`crud≥3`** (Crear/Borrar); el resto (lecturas, create, link, PATCH de nombre/serie) basta con `crud≥1`. En `list`/`get`/`eventos`/`search` **y el `PATCH`** la **clearance (RF-SEG-08, no read-up)** filtra **además** lo visible por nivel de seguridad: cada usuario solo ve/edita expedientes de `nivel_seguridad ≤` su *clearance* (*fail-closed* a PUBLICA sin `X-User-Id`), un expediente por encima devuelve **404** (no revela su existencia), y en `list`/`search` el **`X-Total-Count` también queda filtrado** (no revela cuántos clasificados existen). Toda consulta de `list`/`search` deja una **traza agregada** en `audit_log` (RF-BUS-10: usuario, criterios, total; sin el texto crudo de `q`), separada de la pista por-expediente. En `link`/`batch`/`unlink`/`indice/rebuild` (M2, RF-SEG-08) la **mutación es legítima sin clearance de lectura** (componer/ordenar el expediente es gestión archivística, ortogonal a leer su contenido) y **siempre** ocurre y **siempre** audita; pero la **respuesta se acota** si el llamante no puede leer el expediente (`nivel_seguridad >` su *clearance*): counts/huella/`added_at` → `null`, y se **suprimen los oráculos** (409 `radicado_already_linked`, 404 `radicado_link_not_found`, 409 `expediente_not_open`) devolviendo un ack **uniforme e indistinguible** sea cual sea el estado — un no-lector no infiere pertenencia, volumen ni ciclo de vida de un expediente clasificado. El permiso se resuelve en la BD del tenant (el api-gateway no gatea por ruta).
+> **Control de acceso:** **todos** los endpoints de expedientes (12: create/list/search/get/foliado/eventos/close/transfer/update/link/batch/unlink) y los de `batch.py` (`POST /api/v1/batch/expedientes`, `GET /api/v1/batch/expedientes/{job_id}/status`) requieren `USUA_PERM_EXPEDIENTE` (fail-closed: `403` sin `X-Tenant-Slug`, sin `X-User-Id`, o sin el permiso). **Mínimo privilegio (RF-SEG-03, nivel `crud` 0-5):** las operaciones de **disposición** — `close`, `transfer`, `unlink`, y el `PATCH` que transiciona a `closed`/`transferred` — exigen `USUA_PERM_EXPEDIENTE` con **`crud≥3`** (Crear/Borrar); el resto (lecturas, create, link, PATCH de nombre/serie) basta con `crud≥1`. En `list`/`get`/`eventos`/`search` **y el `PATCH`** la **clearance (RF-SEG-08, no read-up)** filtra **además** lo visible por nivel de seguridad: cada usuario solo ve/edita expedientes de `nivel_seguridad ≤` su *clearance* (*fail-closed* a PUBLICA sin `X-User-Id`), un expediente por encima devuelve **404** (no revela su existencia), y en `list`/`search` el **`X-Total-Count` también queda filtrado** (no revela cuántos clasificados existen). Toda consulta de `list`/`search` deja una **traza agregada** en `audit_log` (RF-BUS-10: usuario, criterios, total; sin el texto crudo de `q`), separada de la pista por-expediente. En `link`/`batch`/`unlink`/`indice/rebuild` (M2, RF-SEG-08) la **mutación es legítima sin clearance de lectura** (componer/ordenar el expediente es gestión archivística, ortogonal a leer su contenido) y **siempre** ocurre y **siempre** audita; pero la **respuesta se acota** si el llamante no puede leer el expediente (`nivel_seguridad >` su *clearance*): counts/huella/`added_at` → `null`, y se **suprimen los oráculos** (409 `radicado_already_linked`, 404 `radicado_link_not_found`, 409 `expediente_not_open`) devolviendo un ack **uniforme e indistinguible** sea cual sea el estado — un no-lector no infiere pertenencia, volumen ni ciclo de vida de un expediente clasificado. El permiso se resuelve en la BD del tenant (el api-gateway no gatea por ruta).
 
 #### `POST /api/v1/expedientes`
 Crea expediente. Genera código automático `EXP-{AÑO}-{SEQ:04d}`.
@@ -824,9 +824,20 @@ Toda acción (`replay`/`discard`/`viewed`) se registra en el `audit_log` inmutab
 ## Batch API — document-service
 
 > Permite crear múltiples radicados o expedientes en una sola llamada. El procesamiento es asincrónico.
+>
+> **Contrato de ruteo (fix de desfase, 2026-08).** `document-service` y
+> `archive-service` comparten el prefijo raíz `/api/v1/batch`, pero cada uno
+> expone un tipo de trabajo disjunto. El estado del job queda **anidado bajo el
+> tipo** (`/batch/documents/{job_id}/status`, `/batch/expedientes/{job_id}/status`)
+> — antes ambos servicios exponían la misma forma `GET /api/v1/batch/{job_id}/status`,
+> lo que hacía **imposible** que el api-gateway decidiera a qué upstream reenviar
+> por prefijo (el `job_id` no basta). El `POST` ya distinguía por subruta
+> (`/documents` vs `/expedientes`); ahora el `GET` sigue el mismo criterio.
+> Requiere `PERM_RADI` (igual que `POST /api/v1/documents/`, la creación
+> individual) — antes esta ruta no exigía ningún permiso.
 
 ### `POST /api/v1/batch/documents`
-Crea un job para registrar 1-1000 radicados. Retorna `202 Accepted` inmediatamente.
+Crea un job para registrar 1-1000 radicados. Retorna `202 Accepted` inmediatamente. Requiere `PERM_RADI`.
 
 ```json
 // Request
@@ -841,8 +852,8 @@ Crea un job para registrar 1-1000 radicados. Retorna `202 Accepted` inmediatamen
 { "job_id": "uuid", "job_type": "documents", "status": "pending", "total_items": 2, "created_at": "..." }
 ```
 
-### `GET /api/v1/batch/{job_id}/status`
-Monitorea el progreso del job.
+### `GET /api/v1/batch/documents/{job_id}/status`
+Monitorea el progreso del job. Requiere `PERM_RADI`.
 
 ```json
 // Response 200
@@ -857,12 +868,22 @@ Monitorea el progreso del job.
 }
 ```
 
+> **Auditoría (cerrado 2026-08).** La creación masiva de radicados deja un
+> asiento `document.radicado_created` en `public.audit_log` **por cada
+> radicado creado con éxito** (no uno por lote) — espejo de
+> `POST /api/v1/documents/` (creación individual) y de `batch/expedientes`
+> en archive-service. `actor` es el `X-User-Id` que validó el router al
+> encolar el job, nunca un campo del body. Cada ítem se procesa en su propia
+> transacción (secuencia + `INSERT` + asiento, todo o nada): un lote
+> parcialmente exitoso deja tantos asientos como ítems realmente creados, y
+> los fallidos quedan marcados `failed` sin asiento.
+
 ---
 
 ## Batch API — archive-service
 
 ### `POST /api/v1/batch/expedientes`
-Crea 1-100 expedientes con radicados vinculados. Retorna `202 Accepted`.
+Crea 1-100 expedientes con radicados vinculados. Retorna `202 Accepted`. Requiere `USUA_PERM_EXPEDIENTE`.
 
 ```json
 // Request
@@ -879,7 +900,8 @@ Crea 1-100 expedientes con radicados vinculados. Retorna `202 Accepted`.
 // Response 202 — mismo formato que batch documents
 ```
 
-> El `GET /api/v1/batch/{job_id}/status` también aplica para expedientes.
+### `GET /api/v1/batch/expedientes/{job_id}/status`
+Monitorea el progreso del job. Requiere `USUA_PERM_EXPEDIENTE` (deja asiento en `audit_log` por expediente creado).
 
 ---
 

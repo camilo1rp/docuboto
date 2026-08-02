@@ -60,6 +60,16 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/envios/", app_state.document_service_url),
         ("/api/v1/plantillas/", app_state.document_service_url),
         ("/api/v1/borradores/", app_state.document_service_url),
+        # Batch API (carga masiva): document-service y archive-service comparten
+        # el mismo prefijo raíz "/api/v1/batch" pero cada uno posee un tipo de
+        # trabajo disjunto (documents vs expedientes) tanto en el POST de alta
+        # como en el GET de estado -- el contrato anida el estado bajo el tipo
+        # (`/batch/documents/{job_id}/status`, `/batch/expedientes/{job_id}/status`)
+        # precisamente para que el ruteo por-prefijo sea determinista: antes,
+        # ambos servicios definían `GET /api/v1/batch/{job_id}/status` con la
+        # misma forma y ningún prefijo podía distinguirlos.
+        ("/api/v1/batch/documents", app_state.document_service_url),
+        ("/api/v1/batch/expedientes", app_state.archive_service_url),
         # archive-service
         ("/api/v1/archive/", app_state.archive_service_url),
         ("/api/v1/expedientes/", app_state.archive_service_url),

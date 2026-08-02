@@ -14,6 +14,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.core.clearance import require_permission
 from app.core.database import get_tenant_conn as get_db
 from app.schemas.batch import (
     BatchDocumentsRequest,
@@ -29,6 +30,7 @@ router = APIRouter(prefix="/api/v1/batch", tags=["batch"])
     "/documents",
     response_model=BatchJobResponse,
     status_code=202,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def create_batch_documents(
     request: Request,
@@ -39,7 +41,7 @@ async def create_batch_documents(
     Create a batch job for multiple documents (radicados).
 
     Accepts 1-1000 documents. Processing is asynchronous.
-    Returns job_id for status tracking with GET /batch/{job_id}/status.
+    Returns job_id for status tracking with GET /batch/documents/{job_id}/status.
 
     **Response 202 Accepted** — job queued for processing.
     """
@@ -66,7 +68,11 @@ async def create_batch_documents(
     )
 
 
-@router.get("/{job_id}/status", response_model=BatchJobStatusResponse)
+@router.get(
+    "/documents/{job_id}/status",
+    response_model=BatchJobStatusResponse,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
 async def get_batch_status(
     job_id: UUID,
     request: Request,

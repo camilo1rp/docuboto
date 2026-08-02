@@ -200,6 +200,23 @@
  * @property {string|null} [descripcion]
  */
 
+/**
+ * Respuesta de la consulta PULL de rastreo contra el operador postal
+ * (GET /api/v1/envios/{id}/tracking, F5, Fase 8).
+ * `operador_conectado=false` = no hay integración en vivo (stub del conector
+ * postal, E11 roadmap): el estado mostrado es el último conocido
+ * internamente, no una consulta real al operador.
+ *
+ * @typedef {object} TrackingResponse
+ * @property {string}      shipment_id
+ * @property {string}      operador
+ * @property {string}      guia
+ * @property {string}      estado_interno_actual
+ * @property {string|null} estado_operador
+ * @property {string|null} estado_interno_mapeado
+ * @property {boolean}     operador_conectado
+ */
+
 // ---------------------------------------------------------------------------
 // Firmas electrónicas (signature-service, E06, T-12d, RF-UI-17)
 // ---------------------------------------------------------------------------
@@ -485,6 +502,55 @@
  * @property {string} source_ref
  * @property {string} snippet
  * @property {number} score
+ */
+
+// ---------------------------------------------------------------------------
+// Interoperabilidad: export/import ZIP + carga masiva (E11, Fase 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resumen de una importación de paquete interoperable (POST /api/v1/import,
+ * RF-INT-05). Éxito 200 = todo-o-nada: el paquete completo pasó fixity +
+ * esquema y se ingirió. `antecedentes_no_resueltos` lista los NÚMEROS de
+ * radicado (no un conteo) cuyo antecedente declarado no se encontró — se
+ * ingirieron igual, sin esa relación.
+ *
+ * @typedef {object} ImportResult
+ * @property {string}   import_uuid
+ * @property {number}   importados
+ * @property {number}   omitidos_existentes       — colisión de tracking (no se sobreescribe)
+ * @property {number}   omitidos_clearance        — no-write-up (RF-SEG-08)
+ * @property {number}   relaciones_reconstruidas
+ * @property {string[]} antecedentes_no_resueltos
+ */
+
+/**
+ * Un ítem dentro de un job de carga masiva (documentos o expedientes).
+ *
+ * @typedef {object} BatchItemResult
+ * @property {number}      item_index
+ * @property {'success'|'failed'} status
+ * @property {string|null} result_id       — UUID del radicado/expediente creado
+ * @property {string|null} expediente_code — solo presente en jobs de expedientes (undefined en jobs de documentos)
+ * @property {string|null} error_message
+ */
+
+/**
+ * Estado de un job de carga masiva (GET /api/v1/batch/{job_id}/status),
+ * compartido por document-service (documentos) y archive-service (expedientes).
+ *
+ * @typedef {object} BatchJobStatusResponse
+ * @property {string}            job_id
+ * @property {'documents'|'expedientes'} job_type
+ * @property {'pending'|'processing'|'completed'|'failed'} status
+ * @property {number}            total_items
+ * @property {number}            processed_items
+ * @property {number}            failed_items
+ * @property {string}            created_at
+ * @property {string|null}       started_at
+ * @property {string|null}       completed_at
+ * @property {BatchItemResult[]} items
+ * @property {string|null}       error_message
  */
 
 export {};

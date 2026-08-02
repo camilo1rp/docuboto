@@ -113,7 +113,8 @@
     },
     {
       label: "TVD",
-      description: "Tablas de Valoración Documental: fondo acumulado, con fechas extremas y justificación (ADR-026).",
+      description:
+        "Tablas de Valoración Documental: fondo acumulado, con fechas extremas y justificación (ADR-026).",
       icon: "fas fa-box-archive",
       href: "/admin/tvd",
       // ADR-026 reutiliza a propósito el permiso de TRD (misma potestad
@@ -163,7 +164,8 @@
     },
     {
       label: "PINAR",
-      description: "Plan Institucional de Archivos: ciclo de vida y tablero de avance (Ac. AGN 003/2015).",
+      description:
+        "Plan Institucional de Archivos: ciclo de vida y tablero de avance (Ac. AGN 003/2015).",
       icon: "fas fa-map",
       href: "/admin/pinar",
       permission: "USUA_PERM_ADMIN",
@@ -180,6 +182,17 @@
       // entrar solo se encontraría un 403 — la UI debe ser espejo del RBAC
       // real, no de un permiso vecino que suena parecido.
       permission: "PERM_DLQ_ADMIN",
+      implemented: true,
+    },
+    {
+      label: "Interoperabilidad",
+      description:
+        "Exportar/importar paquetes de radicados (E11) y carga masiva de documentos y expedientes.",
+      icon: "fas fa-file-zipper",
+      href: "/admin/interoperabilidad",
+      // Mismo gate real de los cinco endpoints que consume la pantalla
+      // (export.py, import_.py, batch.py×2, postal tracking).
+      permission: "USUA_PERM_EXPEDIENTE",
       implemented: true,
     },
   ];

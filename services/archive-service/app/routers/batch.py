@@ -117,7 +117,7 @@ async def create_batch_expedientes(
 
 
 @router.get(
-    "/{job_id}/status",
+    "/expedientes/{job_id}/status",
     response_model=BatchJobStatusResponse,
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )

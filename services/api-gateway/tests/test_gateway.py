@@ -327,6 +327,12 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/metadata/templates": "http://document:8003",
         "/api/v1/search": "http://document:8003",
         "/api/v1/expedientes/abc": "http://archive:8004",
+        # Batch API: mismo prefijo raíz "/api/v1/batch" en ambos servicios,
+        # desambiguado por el tipo de trabajo en la subruta.
+        "/api/v1/batch/documents": "http://document:8003",
+        "/api/v1/batch/documents/abc/status": "http://document:8003",
+        "/api/v1/batch/expedientes": "http://archive:8004",
+        "/api/v1/batch/expedientes/abc/status": "http://archive:8004",
         "/api/v1/tipos-documentales": "http://archive:8004",
         "/api/v1/trd/series": "http://archive:8004",
         # ADR-026 (Increment 1): TVD es el mismo instrumento que TRD.

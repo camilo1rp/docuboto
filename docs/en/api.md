@@ -571,9 +571,21 @@ The notification-service consumes this stream (consumer group `notification-serv
 ## Batch API — document-service
 
 > Allows creating multiple radicados or expedientes in a single call. Processing is asynchronous.
+>
+> **Routing contract (drift fix, 2026-08).** `document-service` and `archive-service`
+> share the same root prefix `/api/v1/batch`, but each one owns a disjoint job type.
+> Job status is therefore **nested under the job type**
+> (`/batch/documents/{job_id}/status`, `/batch/expedientes/{job_id}/status`) — both
+> services previously exposed the identical shape `GET /api/v1/batch/{job_id}/status`,
+> which made it **impossible** for the api-gateway to decide which upstream to forward
+> to by prefix (the `job_id` alone carries no service information). The `POST` already
+> discriminated by subpath (`/documents` vs `/expedientes`); the `GET` now follows the
+> same criterion. `POST /api/v1/batch/documents` and its status `GET` require
+> `PERM_RADI` (same as the single-document `POST /api/v1/documents/`) — previously
+> neither route required any permission.
 
 ### `POST /api/v1/batch/documents`
-Creates a job to register 1-1000 radicados. Returns `202 Accepted` immediately.
+Creates a job to register 1-1000 radicados. Returns `202 Accepted` immediately. Requires `PERM_RADI`.
 
 ```json
 // Request
@@ -588,8 +600,8 @@ Creates a job to register 1-1000 radicados. Returns `202 Accepted` immediately.
 { "job_id": "uuid", "job_type": "documents", "status": "pending", "total_items": 2, "created_at": "..." }
 ```
 
-### `GET /api/v1/batch/{job_id}/status`
-Monitors the progress of the job.
+### `GET /api/v1/batch/documents/{job_id}/status`
+Monitors the progress of the job. Requires `PERM_RADI`.
 
 ```json
 // Response 200
@@ -626,7 +638,9 @@ Creates 1-100 expedientes with linked radicados. Returns `202 Accepted`.
 // Response 202 — same format as batch documents
 ```
 
-> The `GET /api/v1/batch/{job_id}/status` also applies to expedientes.
+### `GET /api/v1/batch/expedientes/{job_id}/status`
+Monitors the progress of an expediente batch job. Same response shape as the document
+batch status. Requires `USUA_PERM_EXPEDIENTE`.
 
 ---
 

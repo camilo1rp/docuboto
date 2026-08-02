@@ -7,15 +7,52 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Batch operations service for bulk document creation."""
+"""
+Batch operations service for bulk document creation.
+
+Auditoría (ADR-008/010): lo que se crea aquí son radicados — documentos
+oficiales con número inmutable (Ley 594/2000, Acuerdo AGN 060/2001) — así que
+cada uno creado por el lote deja su propio asiento en ``public.audit_log``,
+espejo exacto de ``DocumentService.create`` (misma ``action``,
+``object_type``/``object_ref``/``payload``) y del gemelo
+``archive-service/app/services/batch_service.py::process_batch_expedientes``
+(mismo patrón de granularidad y atomicidad por-ítem).
+
+Granularidad — UN asiento por radicado creado, no uno por lote: un lote de
+500 produce hasta 500 asientos encadenados por hash. Se descarta "uno por
+lote" porque el índice electrónico y cualquier auditoría forense necesitan
+poder señalar el asiento de UN tracking_number concreto (RT-15/E15); un
+asiento agregado por lote perdería esa granularidad y sería inconsistente con
+el camino síncrono (`DocumentService.create`), que ya audita por radicado.
+
+Actor — ``created_by`` es el ``X-User-Id`` validado por el router al
+ENCOLAR el job (``create_batch_documents``), nunca un campo del body ni algo
+resuelto en el propio ``process_batch_documents`` (que corre en una tarea
+detached, sin request). Se recupera con
+``UPDATE batch_jobs ... RETURNING created_by`` al arrancar el procesamiento
+— mismo patrón que ``BatchArchiveService.process_batch_expedientes``. Un
+asiento con actor nulo registraría que algo pasó, pero no quién lo hizo.
+
+Fallos parciales — cada ítem está envuelto en su propio
+``async with self.conn.transaction():`` (secuencia + INSERT radicado +
+UPDATE item 'success' + contador + ``audit.append``, todo o nada por ítem).
+El manejo de fallo (`except`) queda FUERA de ese bloque: si algo del ítem
+falla, su transacción revierte completa (incluida la auditoría) y el
+`UPDATE ... status='failed'` corre en su propio statement autocommit — así
+el resultado final (N asientos, M fallidos) refleja lo que REALMENTE entró,
+no la intención del lote.
+"""
 
 import json
 from datetime import UTC, datetime
 from uuid import UUID
 
 import asyncpg
+from orpycamcp_common import audit
 
 from app.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
+
+_SERVICE = "document-service"
 
 
 class BatchService:
@@ -63,15 +100,20 @@ class BatchService:
 
     async def process_batch_documents(self, job_id: UUID) -> None:
         """Process pending documents in a batch job."""
-        # Update job status to processing
-        await self.conn.execute(
+        # Update job status to processing y recupera el actor que encoló el
+        # job (`create_batch_documents`, X-User-Id validado por el router) —
+        # es el único punto de esta tarea detached donde ese actor está
+        # disponible, así que se guarda para atribuir cada asiento de abajo.
+        created_by: UUID | None = await self.conn.fetchval(
             """
             UPDATE batch_jobs
             SET status = 'processing', started_at = now()
             WHERE id = $1
+            RETURNING created_by
             """,
             job_id,
         )
+        actor = str(created_by) if created_by else None
 
         # Fetch all pending items
         items = await self.conn.fetch(
@@ -84,54 +126,84 @@ class BatchService:
             job_id,
         )
 
-        # Process each item
+        # Process each item. Envuelto POR ÍTEM (nunca el bucle entero): así un
+        # ítem que revierte no retiene el advisory lock de auditoría del
+        # tenant (dentro de `audit.append`) durante el resto del job, y el
+        # consecutivo de un ítem fallido no deja huecos (el
+        # `INSERT ... tracking_sequences` también revierte).
         for item in items:
             try:
                 payload = json.loads(item["payload"])
                 doc_data = BatchDocumentCreate(**payload)
 
-                # Get tenant code and next sequence
-                tenant_code = await self.conn.fetchval(
-                    "SELECT code FROM tenants WHERE slug = $1",
-                    self.tenant_slug,
-                )
-                year = datetime.now(tz=UTC).year
-                sequence = await self._get_next_sequence(year, doc_data.doc_type)
+                async with self.conn.transaction():
+                    # Get tenant code and next sequence
+                    tenant_code = await self.conn.fetchval(
+                        "SELECT code FROM tenants WHERE slug = $1",
+                        self.tenant_slug,
+                    )
+                    year = datetime.now(tz=UTC).year
+                    sequence = await self._get_next_sequence(year, doc_data.doc_type)
 
-                # Create radicado
-                tracking_number = f"{year}-{tenant_code}-{doc_data.doc_type}-{sequence:06d}"
-                radicado_id = await self.conn.fetchval(
-                    """
-                    INSERT INTO radicados
-                    (tracking_number, doc_type, subject, doc_class, dest_dept,
-                     sender_name, sender_entity, pages, observations, status, year, sequence)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered', $10, $11)
-                    RETURNING id
-                    """,
-                    tracking_number,
-                    doc_data.doc_type,
-                    doc_data.subject,
-                    doc_data.doc_class,
-                    doc_data.dest_dept,
-                    doc_data.sender_name,
-                    doc_data.sender_entity,
-                    doc_data.pages,
-                    doc_data.observations,
-                    year,
-                    sequence,
-                )
+                    # Create radicado
+                    tracking_number = (
+                        f"{year}-{tenant_code}-{doc_data.doc_type}-{sequence:06d}"
+                    )
+                    radicado = await self.conn.fetchrow(
+                        """
+                        INSERT INTO radicados
+                        (tracking_number, doc_type, subject, doc_class, dest_dept,
+                         sender_name, sender_entity, pages, observations, status, year, sequence)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered', $10, $11)
+                        RETURNING id, nivel_seguridad
+                        """,
+                        tracking_number,
+                        doc_data.doc_type,
+                        doc_data.subject,
+                        doc_data.doc_class,
+                        doc_data.dest_dept,
+                        doc_data.sender_name,
+                        doc_data.sender_entity,
+                        doc_data.pages,
+                        doc_data.observations,
+                        year,
+                        sequence,
+                    )
+                    radicado_id = radicado["id"]
 
-                # Update item with success
-                await self.conn.execute(
-                    """
-                    UPDATE batch_job_items
-                    SET status = 'success', result_id = $1, processed_at = now()
-                    WHERE id = $2
-                    """,
-                    radicado_id,
-                    item["id"],
-                )
-                await self._increment_processed(job_id)
+                    # Update item with success
+                    await self.conn.execute(
+                        """
+                        UPDATE batch_job_items
+                        SET status = 'success', result_id = $1, processed_at = now()
+                        WHERE id = $2
+                        """,
+                        radicado_id,
+                        item["id"],
+                    )
+                    await self._increment_processed(job_id)
+
+                    # Asiento forense por radicado creado — espejo exacto de
+                    # `DocumentService.create` (misma action/object_type,
+                    # Ley 594/2000 arts. 21-24). Al final de la tx del ítem
+                    # (tras el UPDATE de éxito), como en
+                    # `BatchArchiveService.process_batch_expedientes`: si algo
+                    # del ítem falla, la tx revierte también este asiento —
+                    # no queda traza de un radicado que no existe.
+                    await audit.append(
+                        self.conn,
+                        tenant_slug=self.tenant_slug,
+                        service=_SERVICE,
+                        action="document.radicado_created",
+                        object_type="radicado",
+                        object_ref=tracking_number,
+                        actor=actor,
+                        payload={
+                            "doc_type": doc_data.doc_type,
+                            "id": str(radicado_id),
+                            "nivel_seguridad": radicado["nivel_seguridad"],
+                        },
+                    )
 
             except Exception as exc:
                 # Update item with error
