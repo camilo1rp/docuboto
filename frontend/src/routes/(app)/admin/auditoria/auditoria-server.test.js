@@ -19,9 +19,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { load } from "./+page.server.js";
 
-const parentWith = (tenant_slug = "icetex", sub = "admin-1") => async () => ({
-  user: { tenant_slug, sub },
-});
+const parentWith =
+  (tenant_slug = "icetex", sub = "admin-1") =>
+  async () => ({
+    user: { tenant_slug, sub },
+  });
 
 function fakeFetch({ auditOk = true, verifyImpl } = {}) {
   return vi.fn(async (input) => {
@@ -30,7 +32,8 @@ function fakeFetch({ auditOk = true, verifyImpl } = {}) {
       return verifyImpl();
     }
     if (url.includes("/audit")) {
-      if (!auditOk) return { ok: false, status: 500, json: async () => ({ detail: "falla auditoria" }) };
+      if (!auditOk)
+        return { ok: false, status: 500, json: async () => ({ detail: "falla auditoria" }) };
       return {
         ok: true,
         status: 200,
@@ -116,8 +119,14 @@ describe("load /admin/auditoria — estados de verificación de la cadena de has
 
 describe("load /admin/auditoria — listado principal", () => {
   it("propaga Authorization/X-Tenant-Slug/X-User-Id desde cookies/parent", async () => {
-    const fetch = fakeFetch({ verifyImpl: async () => ({ ok: true, status: 200, json: async () => ({ valid: true }) }) });
-    await load({ cookies: { get: () => "tok-xyz" }, parent: parentWith("icetex", "admin-9"), fetch });
+    const fetch = fakeFetch({
+      verifyImpl: async () => ({ ok: true, status: 200, json: async () => ({ valid: true }) }),
+    });
+    await load({
+      cookies: { get: () => "tok-xyz" },
+      parent: parentWith("icetex", "admin-9"),
+      fetch,
+    });
     const [, opts] = fetch.mock.calls[0];
     expect(opts.headers.Authorization).toBe("Bearer tok-xyz");
     expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");

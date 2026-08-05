@@ -78,9 +78,7 @@ export async function POST({ locals, request }) {
   const payload = {
     nombre: typeof nombre === "string" ? nombre.trim() : "",
     tipo_documental:
-      typeof tipo_documental === "string" && tipo_documental.trim()
-        ? tipo_documental.trim()
-        : null,
+      typeof tipo_documental === "string" && tipo_documental.trim() ? tipo_documental.trim() : null,
     cuerpo: cleanCuerpo,
     activo: typeof activo === "boolean" ? activo : true,
   };

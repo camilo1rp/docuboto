@@ -147,9 +147,7 @@
     selectedGroup = null;
   }
 
-  $: availableToAdd = pickableUsers.filter(
-    (u) => !sessionMembers.some((m) => m.id === u.id),
-  );
+  $: availableToAdd = pickableUsers.filter((u) => !sessionMembers.some((m) => m.id === u.id));
 
   async function agregarMiembro() {
     if (!selectedGroup || !fMemberToAdd) return;
@@ -218,11 +216,14 @@
     const crud = Number(crudDraft[permission.id] ?? "0");
     permissionLoading = { ...permissionLoading, [permission.id]: true };
     try {
-      const res = await fetch(`/admin/grupos/api/${selectedGroup.id}/permissions/${permission.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ crud }),
-      });
+      const res = await fetch(
+        `/admin/grupos/api/${selectedGroup.id}/permissions/${permission.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ crud }),
+        },
+      );
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         notifyError(resData.detail ?? "No se pudo actualizar el permiso.");
@@ -265,9 +266,10 @@
   }
 
   $: memberOptions = availableToAdd.map((u) => ({ value: u.id, label: u.username }));
-  $: levelOptions = securityLevels.length > 0
-    ? securityLevels.map((l) => ({ value: String(l.code), label: `${l.code} — ${l.nombre}` }))
-    : NIVEL_OPTIONS;
+  $: levelOptions =
+    securityLevels.length > 0
+      ? securityLevels.map((l) => ({ value: String(l.code), label: `${l.code} — ${l.nombre}` }))
+      : NIVEL_OPTIONS;
 
   onMount(() => {
     setBreadcrumbs([{ label: "Administración", href: "/admin" }, { label: "Grupos" }]);
@@ -282,7 +284,6 @@
   <CatalogCrudPanel
     title="Grupos"
     ariaLabel="Lista de grupos"
-    icon="fas fa-people-group"
     items={groups}
     rowKey={(g) => g.id}
     loadError={data.loadError}
@@ -290,7 +291,7 @@
     createLabel="Nuevo grupo"
     emptyIcon="fas fa-people-group"
     emptyTitle="Sin grupos"
-    emptyDescription='Crea el primero con "Nuevo grupo".'
+    emptyDescription="Crea el primero con «Nuevo grupo»."
     bind:createOpen
   >
     <svelte:fragment slot="thead">
@@ -311,7 +312,13 @@
 
     <svelte:fragment slot="create-form">
       <form class="grupos-form" on:submit|preventDefault={crearGrupo} novalidate>
-        <FormField id="grupo-nombre" label="Nombre" required bind:value={fName} error={fNameError} />
+        <FormField
+          id="grupo-nombre"
+          label="Nombre"
+          required
+          bind:value={fName}
+          error={fNameError}
+        />
         <FormField
           id="grupo-descripcion"
           label="Descripción (opcional)"
@@ -338,10 +345,9 @@
 >
   <div class="grupos-drawer__gap-notice" role="note">
     <i class="fas fa-circle-info" aria-hidden="true"></i>
-    El backend no expone lectura de miembros, permisos ni clearance ya asignados a
-    este grupo — solo altas/bajas. Las acciones de abajo se aplican de inmediato;
-    lo que ves en "agregados en esta sesión" es solo lo que hiciste aquí, no el
-    estado real guardado en el servidor.
+    El backend no expone lectura de miembros, permisos ni clearance ya asignados a este grupo — solo altas/bajas.
+    Las acciones de abajo se aplican de inmediato; lo que ves en "agregados en esta sesión" es solo lo
+    que hiciste aquí, no el estado real guardado en el servidor.
   </div>
 
   <!-- Miembros -->
@@ -353,7 +359,11 @@
     {:else if pickableError}
       <p class="grupos-drawer__error-inline" role="alert">{pickableError}</p>
     {:else}
-      <form class="grupos-form grupos-form--inline" on:submit|preventDefault={agregarMiembro} novalidate>
+      <form
+        class="grupos-form grupos-form--inline"
+        on:submit|preventDefault={agregarMiembro}
+        novalidate
+      >
         <FormField
           id="grupo-miembro"
           label="Agregar usuario"
@@ -445,7 +455,11 @@
   <!-- Clearance -->
   <section class="grupos-drawer__section" aria-labelledby="clearance-heading">
     <h3 id="clearance-heading" class="grupos-drawer__heading">Clearance del grupo</h3>
-    <form class="grupos-form grupos-form--inline" on:submit|preventDefault={guardarClearance} novalidate>
+    <form
+      class="grupos-form grupos-form--inline"
+      on:submit|preventDefault={guardarClearance}
+      novalidate
+    >
       <FormField
         id="grupo-clearance"
         label="Nivel máximo"

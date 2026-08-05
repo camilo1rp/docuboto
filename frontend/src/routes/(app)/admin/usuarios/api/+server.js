@@ -90,7 +90,8 @@ export async function POST({ locals, request }) {
   const payload = {
     username: username.trim(),
     email: typeof email === "string" && email.trim() ? email.trim() : null,
-    keycloak_sub: typeof keycloak_sub === "string" && keycloak_sub.trim() ? keycloak_sub.trim() : null,
+    keycloak_sub:
+      typeof keycloak_sub === "string" && keycloak_sub.trim() ? keycloak_sub.trim() : null,
     is_root: is_root === true,
   };
 

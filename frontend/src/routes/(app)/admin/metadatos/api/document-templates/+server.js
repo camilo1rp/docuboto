@@ -47,15 +47,21 @@ export async function GET({ locals, url }) {
   }
   const params = new URLSearchParams();
   const tipo = url.searchParams.get("tipo_documental");
-  if (typeof tipo === "string" && tipo.trim()) params.set("tipo_documental", tipo.trim().slice(0, 100));
+  if (typeof tipo === "string" && tipo.trim())
+    params.set("tipo_documental", tipo.trim().slice(0, 100));
 
   try {
-    const res = await fetch(`${API_V1}/metadata/templates?${params}`, { headers: headersFor(locals) });
+    const res = await fetch(`${API_V1}/metadata/templates?${params}`, {
+      headers: headersFor(locals),
+    });
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
     return json(
-      { error: "connection_error", detail: "No se pudo conectar al servidor de plantillas de documento." },
+      {
+        error: "connection_error",
+        detail: "No se pudo conectar al servidor de plantillas de documento.",
+      },
       { status: 503 },
     );
   }
@@ -77,7 +83,10 @@ export async function POST({ locals, request }) {
   const { tipo_documental, json_schema, version, activo } = body ?? {};
 
   if (typeof tipo_documental !== "string" || !tipo_documental.trim()) {
-    return json({ error: "validation_error", detail: "El tipo documental es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El tipo documental es obligatorio." },
+      { status: 400 },
+    );
   }
   if (json_schema === null || typeof json_schema !== "object" || Array.isArray(json_schema)) {
     return json(
@@ -102,6 +111,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear la plantilla de documento." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear la plantilla de documento." },
+      { status: 503 },
+    );
   }
 }

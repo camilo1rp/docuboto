@@ -120,7 +120,7 @@ describe("/admin/interoperabilidad — carga masiva de documentos: el panel de p
   it("tras crear el lote, el panel de progreso muestra el estado devuelto por el sondeo", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       const href = String(url);
-      if (href.includes("/lotes/documentos/") ) {
+      if (href.includes("/lotes/documentos/")) {
         return new Response(
           JSON.stringify({
             status: "processing",
@@ -133,9 +133,12 @@ describe("/admin/interoperabilidad — carga masiva de documentos: el panel de p
         );
       }
       if (href.endsWith("/lotes/documentos")) {
-        return new Response(JSON.stringify({ job_id: JOB_ID, job_type: "documents", status: "pending" }), {
-          status: 202,
-        });
+        return new Response(
+          JSON.stringify({ job_id: JOB_ID, job_type: "documents", status: "pending" }),
+          {
+            status: 202,
+          },
+        );
       }
       throw new Error(`fetch inesperado en el test: ${href}`);
     });
@@ -143,7 +146,9 @@ describe("/admin/interoperabilidad — carga masiva de documentos: el panel de p
     render(InteroperabilidadPage);
 
     await fireEvent.click(screen.getByRole("tab", { name: /Carga masiva de documentos/i }));
-    await fireEvent.input(screen.getByLabelText(/^Asunto/i), { target: { value: "Asunto de prueba" } });
+    await fireEvent.input(screen.getByLabelText(/^Asunto/i), {
+      target: { value: "Asunto de prueba" },
+    });
     await fireEvent.click(screen.getByRole("button", { name: /^Crear 1 documento$/i }));
     await fireEvent.click(screen.getByRole("button", { name: /Confirmar y crear/i }));
 

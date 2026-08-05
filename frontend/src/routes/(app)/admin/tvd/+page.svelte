@@ -133,7 +133,11 @@
   /** @param {string|null|undefined} iso */
   function formatDate(iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", { year: "numeric", month: "short", day: "numeric" });
+    return new Date(iso).toLocaleDateString("es-CO", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -340,9 +344,9 @@
   <header class="tvd-page__header">
     <h1 class="tvd-page__title">TVD — Tablas de Valoración Documental</h1>
     <p class="tvd-page__subtitle">
-      Valoración de fondo acumulado: documentación ya producida (dependencias suprimidas o
-      entidades liquidadas), sin fase de archivo de gestión. No sustituye la TRD de producción
-      corriente (ADR-026).
+      Valoración de fondo acumulado: documentación ya producida (dependencias suprimidas o entidades
+      liquidadas), sin fase de archivo de gestión. No sustituye la TRD de producción corriente
+      (ADR-026).
     </p>
   </header>
 
@@ -355,7 +359,7 @@
     createLabel="Nueva agrupación TVD"
     emptyIcon="fas fa-box-archive"
     emptyTitle="Sin agrupaciones TVD"
-    emptyDescription='Crea la primera con "Nueva agrupación TVD".'
+    emptyDescription="Crea la primera con «Nueva agrupación TVD»."
     bind:createOpen
     bind:editOpen
     {editTarget}
@@ -373,7 +377,8 @@
       <td><code>{item.code}</code> <span class="tvd-page__version">v{item.version}</span></td>
       <td>
         <span class="tvd-page__indent" style="--depth: {item.depth}">
-          {#if item.depth > 0}<i class="fas fa-turn-up tvd-page__branch" aria-hidden="true"></i>{/if}
+          {#if item.depth > 0}<i class="fas fa-turn-up tvd-page__branch" aria-hidden="true"
+            ></i>{/if}
           {item.name}
         </span>
       </td>
@@ -391,7 +396,9 @@
 
     <svelte:fragment slot="row-actions" let:item>
       {#if canWriteLevel3}
-        <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openEdit(item)}>Editar</Button>
+        <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openEdit(item)}
+          >Editar</Button
+        >
       {/if}
       <InstrumentLifecycleActions
         {item}
@@ -408,7 +415,12 @@
           <FormField id="tvd-code" label="Código" required bind:value={cCode} error={cCodeError} />
           <FormField id="tvd-name" label="Nombre" required bind:value={cName} error={cNameError} />
         </div>
-        <FormField id="tvd-description" label="Descripción" type="textarea" bind:value={cDescription} />
+        <FormField
+          id="tvd-description"
+          label="Descripción"
+          type="textarea"
+          bind:value={cDescription}
+        />
         <FormField
           id="tvd-parent"
           label="Agrupación padre (sección/subsección)"
@@ -423,7 +435,7 @@
           required
           bind:value={cFondoNombre}
           error={cFondoError}
-          hint='Entidad o dependencia productora, a menudo extinta (ej. "Instituto Departamental de X, liquidado 2003").'
+          hint="Entidad o dependencia productora, a menudo extinta (ej. «Instituto Departamental de X, liquidado 2003»)."
         />
         <div class="tvd-form__row">
           <FormField
@@ -434,7 +446,13 @@
             bind:value={cFechaInicial}
             error={cFechasError}
           />
-          <FormField id="tvd-fecha-final" label="Fecha extrema final" type="date" required bind:value={cFechaFinal} />
+          <FormField
+            id="tvd-fecha-final"
+            label="Fecha extrema final"
+            type="date"
+            required
+            bind:value={cFechaFinal}
+          />
         </div>
         <FormField
           id="tvd-justificacion"
@@ -453,9 +471,20 @@
             bind:value={cArchivoCentral}
             hint="Sin fase de archivo de gestión: la TVD ya está en central/histórico."
           />
-          <FormField id="tvd-total-retention" label="Retención total (años)" type="number" bind:value={cTotalRetention} />
+          <FormField
+            id="tvd-total-retention"
+            label="Retención total (años)"
+            type="number"
+            bind:value={cTotalRetention}
+          />
         </div>
-        <FormField id="tvd-disposition" label="Disposición final" type="select" bind:value={cDisposition} options={DISPOSICIONES} />
+        <FormField
+          id="tvd-disposition"
+          label="Disposición final"
+          type="select"
+          bind:value={cDisposition}
+          options={DISPOSICIONES}
+        />
         <FormField
           id="tvd-pdfa"
           label="Perfil PDF/A (opcional)"
@@ -468,7 +497,9 @@
     </svelte:fragment>
     <svelte:fragment slot="create-footer">
       <Button variant="ghost" on:click={() => (createOpen = false)}>Cancelar</Button>
-      <Button icon="fas fa-save" loading={actionLoading} on:click={crearAgrupacion}>Crear agrupación</Button>
+      <Button icon="fas fa-save" loading={actionLoading} on:click={crearAgrupacion}
+        >Crear agrupación</Button
+      >
     </svelte:fragment>
 
     <svelte:fragment slot="edit-form" let:item>
@@ -476,11 +507,18 @@
         <p class="tvd-form__hint">
           Código <code>{item.code}</code> v{item.version} — inmutable.
           {#if item.estado !== "borrador"}
-            <strong>Instrumento append-only</strong> en estado "{ESTADO_LABELS[item.estado] ?? item.estado}": solo
-            puede cambiarse el perfil PDF/A aquí. Para el resto del contenido, use "Nueva versión".
+            <strong>Instrumento append-only</strong> en estado "{ESTADO_LABELS[item.estado] ??
+              item.estado}": solo puede cambiarse el perfil PDF/A aquí. Para el resto del contenido,
+            use "Nueva versión".
           {/if}
         </p>
-        <FormField id="tvd-edit-name" label="Nombre" required bind:value={eName} disabled={item.estado !== "borrador"} />
+        <FormField
+          id="tvd-edit-name"
+          label="Nombre"
+          required
+          bind:value={eName}
+          disabled={item.estado !== "borrador"}
+        />
         <FormField
           id="tvd-edit-description"
           label="Descripción"
@@ -557,7 +595,9 @@
     </svelte:fragment>
     <svelte:fragment slot="edit-footer">
       <Button variant="ghost" on:click={() => (editOpen = false)}>Cancelar</Button>
-      <Button icon="fas fa-save" loading={actionLoading} on:click={guardarAgrupacion}>Guardar</Button>
+      <Button icon="fas fa-save" loading={actionLoading} on:click={guardarAgrupacion}
+        >Guardar</Button
+      >
     </svelte:fragment>
   </CatalogCrudPanel>
 </div>

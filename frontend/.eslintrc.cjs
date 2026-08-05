@@ -23,6 +23,16 @@ module.exports = {
     "no-console": ["warn", { allow: ["error", "warn"] }],
     "no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     "no-undef": "error",
+
+    // Divergencia REAL entre ESLint y el compilador, no una preferencia: los
+    // `<!-- svelte-ignore a11y-no-noninteractive-tabindex -->` de los
+    // envoltorios de tabla desplazables (técnica WCAG SCR29 — un `tabindex="0"`
+    // sobre una región con scroll horizontal, para que quien navega solo con
+    // teclado pueda desplazarla) SÍ los necesita `svelte-check`: al quitarlos
+    // aparecen 13 avisos. `eslint-plugin-svelte` no evalúa esa regla de a11y y
+    // por tanto los declara inútiles. Apagada aquí en vez de borrar los
+    // comentarios, porque borrarlos rompe la verificación que sí es autoritativa.
+    "svelte/no-unused-svelte-ignore": "off",
   },
   ignorePatterns: [
     "build/",

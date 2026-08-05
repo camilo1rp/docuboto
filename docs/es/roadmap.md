@@ -1,6 +1,6 @@
 # Roadmap
 
-> Actualizado al 2026-07-29.
+> Actualizado al 2026-08-05.
 
 OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
@@ -11,7 +11,7 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
 ## Plan specDrive — Conformidad SGDEA (vigente)
 
-**Estado global:** núcleo de las **21 épicas implementado, probado en Docker (~300 tests verdes en 11 microservicios) y con migraciones validadas contra PostgreSQL/pgvector real.** 23 ADRs registrados (ver [Decisiones de arquitectura](adrs.md)).
+**Estado global:** núcleo de las **21 épicas implementado, probado en Docker (~300 tests verdes en 11 microservicios) y con migraciones validadas contra PostgreSQL/pgvector real.** 25 ADRs registrados (ver [Decisiones de arquitectura](adrs.md)). El frontend suma **~1370 tests Vitest en 117 archivos**.
 
 | Fase | Épicas | Estado |
 |---|---|---|
@@ -136,5 +136,11 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 
 **Deuda de tooling y documentación**
 
-- [ ] **`npm run lint` no llega a ejecutar ESLint**: el script es `prettier --check . && eslint .`, y hay **17 archivos con diferencias de formato preexistentes** que cortan la cadena en el `&&`. ESLint por separado reporta 3 errores + 1 warning, **todos preexistentes e idénticos a los de `HEAD`**. Correr `prettier --write` sobre esos 17 archivos en un commit de formato aparte (o separar los dos scripts) para que CI vuelva a validar ESLint.
-- [ ] **`docs/en/` sin sincronizar**: la documentación en inglés es la traducción de `docs/es/` y **no** se actualizó con esta iteración (landing, búsqueda global, dashboard, sistema de diseño v1.0, ADR-020). Es un trabajo aparte y pendiente.
+- [x] **`npm run lint` no llegaba a ejecutar ESLint** (cerrado 2026-08-05): el script es `prettier --check . && eslint .`, y **676 archivos** sin formatear cortaban la cadena en el `&&`, así que ESLint llevaba tiempo sin correr en CI. Formateados todos, y con ESLint ya ejecutándose se cerraron sus 12 errores. Al hacerlo aparecieron **tres defectos que el formateo destapó, no causó**:
+  1. **Diez atributos Svelte con comillas dobles sin escapar** (`emptyDescription="Crea el primero con "Nuevo usuario"."` y nueve más). El parser corta el atributo en la segunda comilla, así que el texto visible quedaba truncado en *"Crea el primero con "* — defecto de interfaz real en diez pantallas de `/admin`, invisible hasta que Prettier no pudo parsear el archivo. Corregidos con las comillas angulares «» que el proyecto ya usa.
+  2. **`.svelte-kit.root-stale/` estaba versionado**: 737 archivos generados, 16 MB, commiteados en `32fc631`. Ni el patrón `.svelte-kit/` del `.gitignore` ni el hook `guard-bash` casaban con el nombre renombrado. Sacado del índice (sin borrar del disco) y los patrones pasados a `.svelte-kit*/`. Es la **segunda vez** en esta línea base que un patrón sin anclar/comodín deja entrar lo que debía excluir.
+  3. **Prop muerta `icon` en `CatalogCrudPanel`**: declarada, nunca renderizada (el `EmptyState` usa `emptyIcon`), y dos pantallas la pasaban creyendo que hacía algo. Eliminada de las tres.
+  Los `{@html}` y el regex de caracteres de control de `sanitizeHtml.js` se marcaron con `eslint-disable` **justificado** (son deliberados: el saneo server-side es la barrera y el `{@html}` su consumidor; los caracteres de control son justamente lo que un `java\x00script:` usa para esquivar la detección). `svelte/no-unused-svelte-ignore` se apagó en `.eslintrc.cjs` documentando la razón: es una **divergencia real** entre ESLint y el compilador — `svelte-check` sí necesita esos `svelte-ignore` (al quitarlos aparecen 13 avisos), y ESLint no evalúa esa regla de a11y.
+- [ ] **14 archivos de `frontend/src/` pertenecen a `root`** (residuo de un build en Docker que escribió como root en el volumen montado). No se pueden editar desde el host sin `sudo`, lo que deja **un error de ESLint sin corregir** (`no-useless-escape` en `expedientes/[id]/api/export/+server.js`) y bloquearía cualquier edición futura de esos proxies. Se resuelve con un `sudo chown -R $USER:$USER frontend/src`; no se hizo aquí por no escalar privilegios. Mismo origen que `build-root-owned-orphan/`, ya anotado en `.prettierignore`.
+- [ ] **`docs/en/` parcialmente saldado (2026-08-05)**. Puestos a paridad: `roadmap.md` (99→233 líneas — declaraba el corte del 2026-06-22 y daba por **pendientes** E18, E21, E10, E15, E20, además de describir el frontend como "SvelteKit scaffold"; todas esas afirmaciones eran **activamente falsas**, no incompletas), `pantallas.md` (47→128, con todas las filas de `/admin/*` y la sección de navegación global) y la sección `[Unreleased]` de `changelog.md`, que además no tenía la sección `Security` en absoluto. **Decisión explícita**: no se traduce el histórico completo del changelog (1004 líneas) — es registro histórico y el coste es desproporcionado. **Sigue pendiente** el resto de páginas: `api.md` (805 EN vs 1088 ES), `getting-started.md` (173 vs 232), `domain.md` (274 vs 320), `deployment.md` y `normativa.md`.
+- [ ] **`docs/es/pantallas.md` está incompleto**, destapado al saldar el inglés: nueve pantallas existen en `frontend/src/routes/(app)/` y no figuran en **ninguno** de los dos idiomas — `/anulaciones`, `/perfil`, `/admin` (índice de tarjetas), `/admin/auditoria`, `/admin/colas`, `/admin/notificaciones`, `/admin/usuarios`, `/admin/flujos/reglas` y `/admin/flujos/reasignacion`. El inventario de pantallas es la página que un evaluador usa para saber qué hace el sistema, así que un hueco ahí pesa más que en otras.

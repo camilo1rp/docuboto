@@ -15,8 +15,14 @@
  * del [id] en elements, y el guard de tipo_dato de MetadataElementCreate.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { GET as listExpTemplates, POST as createExpTemplate } from "./expediente-templates/+server.js";
-import { GET as listDocTemplates, POST as createDocTemplate } from "./document-templates/+server.js";
+import {
+  GET as listExpTemplates,
+  POST as createExpTemplate,
+} from "./expediente-templates/+server.js";
+import {
+  GET as listDocTemplates,
+  POST as createDocTemplate,
+} from "./document-templates/+server.js";
 import { GET as listElements, POST as createElement } from "./elements/+server.js";
 import { PATCH as updateElement, DELETE as deleteElement } from "./elements/[id]/+server.js";
 
@@ -137,7 +143,9 @@ describe("elements", () => {
     });
     const res = await createElement({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ clave: "asunto", etiqueta: "Asunto", tipo_dato: "DROP TABLE" }) },
+      request: {
+        json: async () => ({ clave: "asunto", etiqueta: "Asunto", tipo_dato: "DROP TABLE" }),
+      },
     });
     expect(res.status).toBe(400);
   });

@@ -52,7 +52,11 @@ describe("borradores/api/rag/suggest POST", () => {
     try {
       const res = await POST({
         locals: SESSION_LOCALS,
-        request: { json: async () => { throw new Error("bad json"); } },
+        request: {
+          json: async () => {
+            throw new Error("bad json");
+          },
+        },
       });
       expect(res.status).toBe(400);
     } finally {

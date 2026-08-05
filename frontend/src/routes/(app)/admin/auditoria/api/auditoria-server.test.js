@@ -73,7 +73,8 @@ describe("GET /admin/auditoria/api", () => {
 
   it("propaga X-Total-Count del gateway intacto", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify([]), { status: 200, headers: { "X-Total-Count": "37" } }),
+      async () =>
+        new Response(JSON.stringify([]), { status: 200, headers: { "X-Total-Count": "37" } }),
     );
     const res = await listAudit({ locals: SESSION_LOCALS, url: new URL("http://x/") });
     expect(res.headers.get("X-Total-Count")).toBe("37");
@@ -81,7 +82,8 @@ describe("GET /admin/auditoria/api", () => {
 
   it("propaga un 403 del gateway tal cual (no lo colapsa en 500)", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
+      async () =>
+        new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
     );
     const res = await listAudit({ locals: SESSION_LOCALS, url: new URL("http://x/") });
     expect(res.status).toBe(403);
@@ -127,7 +129,8 @@ describe("GET /admin/auditoria/api/verify", () => {
 
   it("un 5xx del gateway (verificación no ejecutable) se propaga tal cual, no se colapsa en 200", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "internal_error", status: 500 }), { status: 500 }),
+      async () =>
+        new Response(JSON.stringify({ error: "internal_error", status: 500 }), { status: 500 }),
     );
     const res = await verifyChain({ locals: SESSION_LOCALS });
     expect(res.status).toBe(500);

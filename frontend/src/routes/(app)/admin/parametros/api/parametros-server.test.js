@@ -109,7 +109,12 @@ describe("GET/POST /admin/parametros/api/holidays", () => {
       },
     });
     expect(res.status).toBe(201);
-    expect(capturedBody).toEqual({ fecha: "2026-01-01", descripcion: "Año Nuevo", tipo: "festivo", is_national: true });
+    expect(capturedBody).toEqual({
+      fecha: "2026-01-01",
+      descripcion: "Año Nuevo",
+      tipo: "festivo",
+      is_national: true,
+    });
   });
 });
 
@@ -147,7 +152,10 @@ describe("GET /admin/parametros/api/business-days", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const res = await calcBusinessDays({ locals: {}, url: new URL("http://x/?from=2026-01-01&days=10") });
+    const res = await calcBusinessDays({
+      locals: {},
+      url: new URL("http://x/?from=2026-01-01&days=10"),
+    });
     expect(res.status).toBe(401);
   });
 
@@ -176,15 +184,22 @@ describe("GET /admin/parametros/api/business-days", () => {
   it("propaga el resultado del gateway", async () => {
     globalThis.fetch = vi.fn(
       async () =>
-        new Response(JSON.stringify({ from_date: "2026-01-01", business_days: 10, due_date: "2026-01-16" }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({ from_date: "2026-01-01", business_days: 10, due_date: "2026-01-16" }),
+          {
+            status: 200,
+          },
+        ),
     );
     const res = await calcBusinessDays({
       locals: SESSION_LOCALS,
       url: new URL("http://x/?from=2026-01-01&days=10"),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ from_date: "2026-01-01", business_days: 10, due_date: "2026-01-16" });
+    expect(await res.json()).toEqual({
+      from_date: "2026-01-01",
+      business_days: 10,
+      due_date: "2026-01-16",
+    });
   });
 });

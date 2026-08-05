@@ -32,7 +32,10 @@ export async function POST({ locals, params }) {
 
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de plan inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de plan inválido." },
+      { status: 400 },
+    );
   }
 
   const tenant = locals.user?.tenant_slug ?? "";

@@ -15,8 +15,8 @@
 
 ```bash
 # 1. Clonar el repositorio
-git clone https://gitlab.com/orpyca/orpyca-mcp.git
-cd orpyca-mcp
+git clone https://gitlab.com/orpyca/orfeo_mcp.git
+cd orfeo_mcp
 
 # 2. Levantar la infraestructura completa
 docker compose --profile dev up -d

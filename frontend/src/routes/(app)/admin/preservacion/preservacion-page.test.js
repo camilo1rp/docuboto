@@ -67,9 +67,7 @@ describe("/admin/preservacion — 'Actualizar plan' exige min_crud=3 (A6, revisi
     );
     render(PreservacionPage, { props: { data: baseData() } });
     expect(screen.queryByText("Sin permiso")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /Guardar nueva versión/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Guardar nueva versión/ })).not.toBeInTheDocument();
   });
 
   it("con min_crud=3: el formulario 'Actualizar plan' sí se ve", () => {

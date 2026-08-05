@@ -38,12 +38,9 @@ describe("isAdminRevokeConfirmed", () => {
     expect(isAdminRevokeConfirmed(ADMIN_REVOKE_CONFIRM_PHRASE)).toBe(true);
   });
 
-  it.each([[undefined], [null], [""], ["revocar"], ["REVOCAR!"]])(
-    "rechaza %j",
-    (v) => {
-      expect(isAdminRevokeConfirmed(v)).toBe(false);
-    },
-  );
+  it.each([[undefined], [null], [""], ["revocar"], ["REVOCAR!"]])("rechaza %j", (v) => {
+    expect(isAdminRevokeConfirmed(v)).toBe(false);
+  });
 
   it("las dos frases son distintas (no se pueden confundir)", () => {
     expect(REENROLL_CONFIRM_PHRASE).not.toBe(ADMIN_REVOKE_CONFIRM_PHRASE);

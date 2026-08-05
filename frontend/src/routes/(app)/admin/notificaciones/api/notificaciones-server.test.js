@@ -86,7 +86,8 @@ describe("GET /admin/notificaciones/api/webhooks", () => {
 
   it("propaga X-Total-Count del gateway", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify([]), { status: 200, headers: { "X-Total-Count": "3" } }),
+      async () =>
+        new Response(JSON.stringify([]), { status: 200, headers: { "X-Total-Count": "3" } }),
     );
     const res = await listWebhooks({ locals: SESSION_LOCALS });
     expect(res.headers.get("X-Total-Count")).toBe("3");
@@ -109,7 +110,10 @@ describe("POST /admin/notificaciones/api/webhooks", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("fetch no debió invocarse sin url");
     });
-    const res = await createWebhook({ locals: SESSION_LOCALS, request: { json: async () => ({}) } });
+    const res = await createWebhook({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({}) },
+    });
     expect(res.status).toBe(422);
     expect((await res.json()).error).toBe("validation_error");
   });
@@ -156,7 +160,9 @@ describe("POST /admin/notificaciones/api/webhooks", () => {
     });
     await createWebhook({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ url: "https://example.com/hook", event_types: "not-an-array" }) },
+      request: {
+        json: async () => ({ url: "https://example.com/hook", event_types: "not-an-array" }),
+      },
     });
     expect(capturedBody.event_types).toEqual([]);
   });
@@ -216,7 +222,8 @@ describe("DELETE /admin/notificaciones/api/webhooks/[id]", () => {
 
   it("404 del gateway se propaga tal cual", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
+      async () =>
+        new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
     );
     const res = await deleteWebhook({ locals: SESSION_LOCALS, params: { id: "wh-1" } });
     expect(res.status).toBe(404);

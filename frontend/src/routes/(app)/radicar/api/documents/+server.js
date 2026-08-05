@@ -42,7 +42,11 @@ export async function POST({ locals, request }) {
   }
 
   // T-12b: el cuerpo rico (Salida/Interno) llega como HTML del editor → sanear.
-  if (body && (body.doc_type === "S" || body.doc_type === "I") && typeof body.observations === "string") {
+  if (
+    body &&
+    (body.doc_type === "S" || body.doc_type === "I") &&
+    typeof body.observations === "string"
+  ) {
     const clean = sanitizeHtml(body.observations);
     body.observations = clean || null;
   }

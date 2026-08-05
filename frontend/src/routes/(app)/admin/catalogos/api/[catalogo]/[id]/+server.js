@@ -45,7 +45,10 @@ export async function PATCH({ locals, params, request }) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
   }
   if (!validParams(params)) {
-    return json({ error: "validation_error", detail: "Catálogo o identificador inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Catálogo o identificador inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -64,15 +67,21 @@ export async function PATCH({ locals, params, request }) {
   if (typeof activo === "boolean") payload.activo = activo;
 
   try {
-    const res = await fetch(`${API_V1}/catalogos/${encodeURIComponent(params.catalogo)}/${encodeURIComponent(params.id)}`, {
-      method: "PATCH",
-      headers: headersFor(locals, true),
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch(
+      `${API_V1}/catalogos/${encodeURIComponent(params.catalogo)}/${encodeURIComponent(params.id)}`,
+      {
+        method: "PATCH",
+        headers: headersFor(locals, true),
+        body: JSON.stringify(payload),
+      },
+    );
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo actualizar el item del catálogo." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo actualizar el item del catálogo." },
+      { status: 503 },
+    );
   }
 }
 
@@ -82,18 +91,27 @@ export async function DELETE({ locals, params }) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
   }
   if (!validParams(params)) {
-    return json({ error: "validation_error", detail: "Catálogo o identificador inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Catálogo o identificador inválido." },
+      { status: 400 },
+    );
   }
 
   try {
-    const res = await fetch(`${API_V1}/catalogos/${encodeURIComponent(params.catalogo)}/${encodeURIComponent(params.id)}`, {
-      method: "DELETE",
-      headers: headersFor(locals),
-    });
+    const res = await fetch(
+      `${API_V1}/catalogos/${encodeURIComponent(params.catalogo)}/${encodeURIComponent(params.id)}`,
+      {
+        method: "DELETE",
+        headers: headersFor(locals),
+      },
+    );
     if (res.status === 204) return new Response(null, { status: 204 });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo eliminar el item del catálogo." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo eliminar el item del catálogo." },
+      { status: 503 },
+    );
   }
 }

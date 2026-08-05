@@ -98,8 +98,8 @@ La lógica de negocio (radicados, expedientes, TRD, flujos) se preserva fielment
 ## Inicio rápido / Quick Start
 
 ```bash
-git clone https://gitlab.com/orpyca/orpyca-mcp.git
-cd orpyca-mcp
+git clone https://gitlab.com/orpyca/orfeo_mcp.git
+cd orfeo_mcp
 docker compose up -d
 ```
 

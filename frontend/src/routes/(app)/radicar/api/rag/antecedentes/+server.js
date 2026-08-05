@@ -135,8 +135,5 @@ export async function POST({ locals, request }) {
     (a, b) => b.count - a.count || b.best_score - a.best_score,
   );
 
-  return json(
-    { suggestions, antecedentes, advisory: data.advisory ?? null },
-    { status: 200 },
-  );
+  return json({ suggestions, antecedentes, advisory: data.advisory ?? null }, { status: 200 });
 }

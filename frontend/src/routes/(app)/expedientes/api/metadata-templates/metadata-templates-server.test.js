@@ -29,7 +29,9 @@ describe("expedientes/api/metadata-templates GET — guard de sesión (D-05)", (
     try {
       const res = await GET({
         locals: {},
-        url: url("/expedientes/api/metadata-templates?trd_serie_id=11111111-1111-1111-1111-111111111111"),
+        url: url(
+          "/expedientes/api/metadata-templates?trd_serie_id=11111111-1111-1111-1111-111111111111",
+        ),
       });
       expect(res.status).toBe(401);
       expect((await res.json()).error).toBe("unauthenticated");

@@ -37,10 +37,16 @@ export async function GET({ locals, url }) {
   const days = Number(daysRaw);
 
   if (!from || !DATE_RE.test(from)) {
-    return json({ error: "validation_error", detail: "El parámetro 'from' debe tener formato YYYY-MM-DD." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El parámetro 'from' debe tener formato YYYY-MM-DD." },
+      { status: 400 },
+    );
   }
   if (!Number.isInteger(days) || days < 0 || days > 3650) {
-    return json({ error: "validation_error", detail: "El número de días hábiles debe estar entre 0 y 3650." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El número de días hábiles debe estar entre 0 y 3650." },
+      { status: 400 },
+    );
   }
 
   const tenant = locals.user?.tenant_slug ?? "";
@@ -55,6 +61,9 @@ export async function GET({ locals, url }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo calcular la fecha de vencimiento." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo calcular la fecha de vencimiento." },
+      { status: 503 },
+    );
   }
 }

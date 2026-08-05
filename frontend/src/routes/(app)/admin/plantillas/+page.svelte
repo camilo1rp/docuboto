@@ -202,12 +202,7 @@
     <!-- Tabla -->
     <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-    <div
-      class="plantillas-table-wrap"
-      role="region"
-      aria-label="Lista de plantillas"
-      tabindex="0"
-    >
+    <div class="plantillas-table-wrap" role="region" aria-label="Lista de plantillas" tabindex="0">
       <table class="plantillas-table" aria-label="Plantillas de contenido">
         <thead>
           <tr>

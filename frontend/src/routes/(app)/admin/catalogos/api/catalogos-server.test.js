@@ -40,7 +40,9 @@ describe("GET /admin/catalogos/api", () => {
   });
 
   it("propaga la lista del gateway", async () => {
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(["tipos-anexo"]), { status: 200 }));
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify(["tipos-anexo"]), { status: 200 }),
+    );
     const res = await listCatalogos({ locals: SESSION_LOCALS });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(["tipos-anexo"]);
@@ -52,7 +54,11 @@ describe("GET /admin/catalogos/api/[catalogo]", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const res = await listItems({ locals: {}, params: { catalogo: "tipos-anexo" }, url: new URL("http://x/") });
+    const res = await listItems({
+      locals: {},
+      params: { catalogo: "tipos-anexo" },
+      url: new URL("http://x/"),
+    });
     expect(res.status).toBe(401);
   });
 
@@ -70,7 +76,8 @@ describe("GET /admin/catalogos/api/[catalogo]", () => {
 
   it("propaga 404 del backend si el catálogo no existe en su whitelist", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "unknown_catalog", status: 404 }), { status: 404 }),
+      async () =>
+        new Response(JSON.stringify({ error: "unknown_catalog", status: 404 }), { status: 404 }),
     );
     const res = await listItems({
       locals: SESSION_LOCALS,
@@ -156,7 +163,10 @@ describe("DELETE /admin/catalogos/api/[catalogo]/[id]", () => {
 
   it("204 del gateway se propaga sin cuerpo", async () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 }));
-    const res = await deleteItem({ locals: SESSION_LOCALS, params: { catalogo: "tipos-anexo", id: ITEM_ID } });
+    const res = await deleteItem({
+      locals: SESSION_LOCALS,
+      params: { catalogo: "tipos-anexo", id: ITEM_ID },
+    });
     expect(res.status).toBe(204);
   });
 });

@@ -115,7 +115,10 @@ function makeActionHandler(segment, action, opts = {}) {
       try {
         body = await request.json();
       } catch {
-        return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
+        return json(
+          { error: "invalid_body", detail: "Cuerpo de petición inválido." },
+          { status: 400 },
+        );
       }
       const built = buildPayload(body ?? {});
       if (built.error) return built.error;
@@ -148,7 +151,9 @@ export function makeAprobarHandler(segment) {
         return { error: badRequest("El acta del Comité es obligatoria.") };
       }
       if (typeof fecha_aprobacion_comite !== "string" || !DATE_RE.test(fecha_aprobacion_comite)) {
-        return { error: badRequest("La fecha de aprobación del Comité es obligatoria (ISO date).") };
+        return {
+          error: badRequest("La fecha de aprobación del Comité es obligatoria (ISO date)."),
+        };
       }
       return { payload: { acta_comite: acta_comite.trim(), fecha_aprobacion_comite } };
     },
@@ -178,7 +183,11 @@ export function makeRegistrarRusdHandler(segment) {
       const hasRusd = typeof rusd_radicado === "string" && rusd_radicado.trim();
       const hasFecha = typeof fecha_publicacion === "string" && DATE_RE.test(fecha_publicacion);
       if (!hasRusd && !hasFecha) {
-        return { error: badRequest("Debe indicar el radicado RUSD o la fecha de publicación (al menos uno).") };
+        return {
+          error: badRequest(
+            "Debe indicar el radicado RUSD o la fecha de publicación (al menos uno).",
+          ),
+        };
       }
       /** @type {Record<string, unknown>} */
       const payload = {};
@@ -194,8 +203,13 @@ export function makeConvalidarHandler(segment) {
   return makeActionHandler(segment, "convalidar", {
     fallbackError: "No se pudo convalidar la versión.",
     buildPayload(body) {
-      const { acto_administrativo, fecha_convalidacion, instancia_convalidante, rusd_radicado, fecha_publicacion } =
-        body;
+      const {
+        acto_administrativo,
+        fecha_convalidacion,
+        instancia_convalidante,
+        rusd_radicado,
+        fecha_publicacion,
+      } = body;
       if (typeof acto_administrativo !== "string" || !acto_administrativo.trim()) {
         return { error: badRequest("El acto administrativo es obligatorio.") };
       }
@@ -211,7 +225,8 @@ export function makeConvalidarHandler(segment) {
         fecha_convalidacion,
         instancia_convalidante: instancia_convalidante.trim(),
       };
-      if (typeof rusd_radicado === "string" && rusd_radicado.trim()) payload.rusd_radicado = rusd_radicado.trim();
+      if (typeof rusd_radicado === "string" && rusd_radicado.trim())
+        payload.rusd_radicado = rusd_radicado.trim();
       if (typeof fecha_publicacion === "string" && DATE_RE.test(fecha_publicacion)) {
         payload.fecha_publicacion = fecha_publicacion;
       }

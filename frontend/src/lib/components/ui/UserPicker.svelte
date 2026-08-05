@@ -57,9 +57,7 @@
     .filter((u) => {
       if (!query.trim()) return true;
       const q = query.trim().toLowerCase();
-      return (
-        u.username.toLowerCase().includes(q) || (u.email ?? "").toLowerCase().includes(q)
-      );
+      return u.username.toLowerCase().includes(q) || (u.email ?? "").toLowerCase().includes(q);
     });
 
   // Cadena seleccionada resuelta a objetos (preserva el orden de `value`).
@@ -167,7 +165,10 @@
       {#if chain.length === 0}
         <p class="op-userpicker__empty">Agregue revisores en el orden de revisión.</p>
       {:else}
-        <ol class="op-userpicker__list op-userpicker__list--ordered" aria-labelledby="{id}-chain-title">
+        <ol
+          class="op-userpicker__list op-userpicker__list--ordered"
+          aria-labelledby="{id}-chain-title"
+        >
           {#each chain as u, i (u.id)}
             <li class="op-userpicker__item">
               <span class="op-userpicker__order" aria-hidden="true">{i + 1}</span>

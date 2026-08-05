@@ -16,21 +16,30 @@
 import { describe, it, expect, vi } from "vitest";
 import { load } from "./+page.server.js";
 
-const parentWith = (tenant_slug = "icetex", sub = "admin-1") => async () => ({
-  user: { tenant_slug, sub },
-});
+const parentWith =
+  (tenant_slug = "icetex", sub = "admin-1") =>
+  async () => ({
+    user: { tenant_slug, sub },
+  });
 
-function fakeFetch({ historyOk = true, webhooksOk = true, historyThrows = false, webhooksThrows = false } = {}) {
+function fakeFetch({
+  historyOk = true,
+  webhooksOk = true,
+  historyThrows = false,
+  webhooksThrows = false,
+} = {}) {
   return vi.fn(async (input) => {
     const url = String(input);
     if (url.includes("/notifications/history")) {
       if (historyThrows) throw new Error("network down");
-      if (!historyOk) return { ok: false, status: 500, json: async () => ({ detail: "falla historial" }) };
+      if (!historyOk)
+        return { ok: false, status: 500, json: async () => ({ detail: "falla historial" }) };
       return { ok: true, status: 200, json: async () => [{ id: "n1" }] };
     }
     if (url.includes("/webhooks")) {
       if (webhooksThrows) throw new Error("network down");
-      if (!webhooksOk) return { ok: false, status: 500, json: async () => ({ detail: "falla webhooks" }) };
+      if (!webhooksOk)
+        return { ok: false, status: 500, json: async () => ({ detail: "falla webhooks" }) };
       return { ok: true, status: 200, json: async () => [{ id: "wh1" }] };
     }
     throw new Error(`fetch no esperado: ${url}`);
@@ -51,7 +60,9 @@ describe("load /admin/notificaciones", () => {
     const fetch = fakeFetch();
     const result = await load({ cookies: { get: () => "tok" }, parent: parentWith(), fetch });
     expect(result.historyLimit).toBe(50);
-    const historyCall = fetch.mock.calls.find(([u]) => String(u).includes("/notifications/history"));
+    const historyCall = fetch.mock.calls.find(([u]) =>
+      String(u).includes("/notifications/history"),
+    );
     expect(String(historyCall[0])).toContain("limit=50");
   });
 
@@ -82,7 +93,11 @@ describe("load /admin/notificaciones", () => {
 
   it("propaga Authorization/X-Tenant-Slug/X-User-Id desde cookies/parent a ambas llamadas", async () => {
     const fetch = fakeFetch();
-    await load({ cookies: { get: () => "tok-xyz" }, parent: parentWith("icetex", "admin-9"), fetch });
+    await load({
+      cookies: { get: () => "tok-xyz" },
+      parent: parentWith("icetex", "admin-9"),
+      fetch,
+    });
     for (const [, opts] of fetch.mock.calls) {
       expect(opts.headers.Authorization).toBe("Bearer tok-xyz");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");

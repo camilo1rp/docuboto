@@ -919,8 +919,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 0 — Resumen
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-resumen"
       role="tabpanel"
@@ -1073,8 +1073,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 1 — Índice electrónico E15
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-indice"
       role="tabpanel"
@@ -1229,9 +1229,14 @@
                 en total.
               </p>
             {/if}
-            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-            <div class="exp-table-wrap" role="region" aria-label="Versiones del índice" tabindex="0">
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+            <div
+              class="exp-table-wrap"
+              role="region"
+              aria-label="Versiones del índice"
+              tabindex="0"
+            >
               <table class="exp-table" aria-label="Historial de versiones del índice">
                 <thead>
                   <tr>
@@ -1269,9 +1274,14 @@
               description="El índice existe pero no contiene documentos."
             />
           {:else}
-            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-            <div class="exp-table-wrap" role="region" aria-label="Documentos del índice" tabindex="0">
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+            <div
+              class="exp-table-wrap"
+              role="region"
+              aria-label="Documentos del índice"
+              tabindex="0"
+            >
               <table class="exp-table" aria-label="Ítems del índice electrónico">
                 <thead>
                   <tr>
@@ -1317,8 +1327,8 @@
     <!-- -----------------------------------------------------------------------
          Panel — Foliado (E02)
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-foliado"
       role="tabpanel"
@@ -1351,9 +1361,14 @@
               description="Este expediente no tiene documentos foliados todavía."
             />
           {:else}
-            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-            <div class="exp-table-wrap" role="region" aria-label="Foliación del expediente" tabindex="0">
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+            <div
+              class="exp-table-wrap"
+              role="region"
+              aria-label="Foliación del expediente"
+              tabindex="0"
+            >
               <table class="exp-table" aria-label="Foliación ordenada del expediente">
                 <thead>
                   <tr>
@@ -1401,8 +1416,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 2 — Anexos E07
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-anexos"
       role="tabpanel"
@@ -1471,8 +1486,8 @@
                         Este radicado no tiene anexos.
                       </p>
                     {:else if state?.status === "loaded"}
-                      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
                       <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+                      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
                       <div
                         class="exp-table-wrap"
                         role="region"
@@ -1540,8 +1555,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 3 — Flujo / Historial (eventos del expediente E02 §9)
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-flujo"
       role="tabpanel"
@@ -1618,8 +1633,8 @@
     <!-- -----------------------------------------------------------------------
          Panel — Preservación (E10: AIP + eventos PREMIS)
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-preservacion"
       role="tabpanel"
@@ -1744,8 +1759,8 @@
     <!-- -----------------------------------------------------------------------
          Panel — Acceso (E15 perfil v4 R3-b/R4-b: historial + roles autorizados)
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-acceso"
       role="tabpanel"
@@ -1784,9 +1799,14 @@
                 description="No hay grupos con acceso configurado para el nivel de este expediente."
               />
             {:else}
-              <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
               <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-              <div class="exp-table-wrap" role="region" aria-label="Grupos autorizados" tabindex="0">
+              <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+              <div
+                class="exp-table-wrap"
+                role="region"
+                aria-label="Grupos autorizados"
+                tabindex="0"
+              >
                 <table class="exp-table" aria-label="Grupos autorizados a leer el expediente">
                   <thead>
                     <tr>
@@ -1859,8 +1879,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 4 — Ubicación física E17
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-fisico"
       role="tabpanel"
@@ -1886,8 +1906,8 @@
       {:else}
         <Card>
           <h2 slot="header" class="op-card-title">Unidades de conservación</h2>
-          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <div class="exp-table-wrap" role="region" aria-label="Ubicaciones físicas" tabindex="0">
             <table class="exp-table" aria-label="Unidades de conservación del expediente">
               <thead>

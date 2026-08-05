@@ -31,7 +31,10 @@ export async function PUT({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de grupo inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de grupo inválido." },
+      { status: 400 },
+    );
   }
 
   let body;

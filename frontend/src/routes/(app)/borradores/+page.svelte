@@ -281,9 +281,7 @@
         radicado_id: data.id ?? editingBorrador.radicado_id,
         _tracking_number: data.tracking_number ?? null,
       };
-      borradores = borradores.map((b) =>
-        b.id === editingBorrador.id ? updatedBorrador : b,
-      );
+      borradores = borradores.map((b) => (b.id === editingBorrador.id ? updatedBorrador : b));
       editingBorrador = updatedBorrador;
       modalRadicadoOpen = true;
       drawerOpen = false;
@@ -395,12 +393,7 @@
     <!-- Tabla de borradores -->
     <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-    <div
-      class="borradores-table-wrap"
-      role="region"
-      aria-label="Lista de borradores"
-      tabindex="0"
-    >
+    <div class="borradores-table-wrap" role="region" aria-label="Lista de borradores" tabindex="0">
       <table class="borradores-table" aria-label="Borradores">
         <thead>
           <tr>

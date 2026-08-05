@@ -232,7 +232,10 @@
     }
   }
 
-  $: dependenciaOptions = dependencias.map((d) => ({ value: String(d.codigo), label: `${d.sigla} — ${d.nombre}` }));
+  $: dependenciaOptions = dependencias.map((d) => ({
+    value: String(d.codigo),
+    label: `${d.sigla} — ${d.nombre}`,
+  }));
   $: rolOptions = groups.map((g) => ({ value: g.id, label: g.name }));
 
   onMount(() => {
@@ -255,7 +258,7 @@
     createLabel="Nuevo usuario"
     emptyIcon="fas fa-users"
     emptyTitle="Sin usuarios"
-    emptyDescription='Crea el primero con "Nuevo usuario".'
+    emptyDescription="Crea el primero con «Nuevo usuario»."
     bind:createOpen
   >
     <svelte:fragment slot="thead">
@@ -269,7 +272,11 @@
       <td class="usuarios-page__username">{item.username}</td>
       <td>{item.email ?? "—"}</td>
       <td>
-        <StatusChip status={item.is_active ? "success" : "neutral"} label={item.is_active ? "Activo" : "Inactivo"} dot />
+        <StatusChip
+          status={item.is_active ? "success" : "neutral"}
+          label={item.is_active ? "Activo" : "Inactivo"}
+          dot
+        />
       </td>
       <td>
         {#if item.is_root}
@@ -310,7 +317,9 @@
     </svelte:fragment>
     <svelte:fragment slot="create-footer">
       <Button variant="ghost" on:click={() => (createOpen = false)}>Cancelar</Button>
-      <Button icon="fas fa-save" loading={actionLoading} on:click={crearUsuario}>Crear usuario</Button>
+      <Button icon="fas fa-save" loading={actionLoading} on:click={crearUsuario}
+        >Crear usuario</Button
+      >
     </svelte:fragment>
   </CatalogCrudPanel>
 </div>
@@ -318,7 +327,11 @@
 <!-- =========================================================================
      Drawer: detalle del usuario (permisos efectivos + URD)
      ========================================================================= -->
-<Drawer open={drawerOpen} title={selectedUser ? `Usuario: ${selectedUser.username}` : "Usuario"} on:close={closeDrawer}>
+<Drawer
+  open={drawerOpen}
+  title={selectedUser ? `Usuario: ${selectedUser.username}` : "Usuario"}
+  on:close={closeDrawer}
+>
   {#if detailLoading}
     <Loader type="skeleton" lines={4} label="Cargando detalle del usuario…" />
   {:else}
@@ -337,7 +350,9 @@
             Usuario ROOT: bypass total de RBAC, no aplica el listado de permisos por-grupo.
           </p>
         {:else if Object.keys(effectivePermissions.permissions ?? {}).length === 0}
-          <p class="usuarios-drawer__hint">Sin permisos asignados (no pertenece a ningún grupo con crud &gt; 0).</p>
+          <p class="usuarios-drawer__hint">
+            Sin permisos asignados (no pertenece a ningún grupo con crud &gt; 0).
+          </p>
         {:else}
           <ul class="usuarios-drawer__perm-list">
             {#each Object.entries(effectivePermissions.permissions) as [nombre, crud] (nombre)}
@@ -358,24 +373,37 @@
           {#each urdList as urd (urd.id)}
             <li class="usuarios-drawer__urd-item">
               <div>
-                <strong>{dependenciaByCodigo.get(urd.depe_id)?.nombre ?? `Dependencia ${urd.depe_id}`}</strong>
-                <span class="usuarios-drawer__muted"> — {groupNameById.get(urd.rol_id) ?? urd.rol_id}</span>
+                <strong
+                  >{dependenciaByCodigo.get(urd.depe_id)?.nombre ??
+                    `Dependencia ${urd.depe_id}`}</strong
+                >
+                <span class="usuarios-drawer__muted">
+                  — {groupNameById.get(urd.rol_id) ?? urd.rol_id}</span
+                >
                 {#if urd.es_principal}<StatusChip status="info" label="Principal" />{/if}
               </div>
               {#if pendingDeleteUrdId === urd.id}
                 <span class="usuarios-drawer__confirm">
                   ¿Confirmar?
-                  <Button size="sm" variant="danger" loading={urdActionLoading} on:click={() => confirmarBorrarUrd(urd)}>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    loading={urdActionLoading}
+                    on:click={() => confirmarBorrarUrd(urd)}
+                  >
                     Sí, eliminar
                   </Button>
-                  <Button size="sm" variant="ghost" on:click={() => (pendingDeleteUrdId = null)}>Cancelar</Button>
+                  <Button size="sm" variant="ghost" on:click={() => (pendingDeleteUrdId = null)}
+                    >Cancelar</Button
+                  >
                 </span>
               {:else}
                 <Button
                   size="sm"
                   variant="ghost"
                   icon="fas fa-trash"
-                  aria-label="Eliminar URD de {dependenciaByCodigo.get(urd.depe_id)?.nombre ?? urd.depe_id}"
+                  aria-label="Eliminar URD de {dependenciaByCodigo.get(urd.depe_id)?.nombre ??
+                    urd.depe_id}"
                   on:click={() => askDeleteUrd(urd.id)}
                 >
                   Quitar
@@ -386,7 +414,11 @@
         </ul>
       {/if}
 
-      <form class="usuarios-form usuarios-form--compact" on:submit|preventDefault={agregarUrd} novalidate>
+      <form
+        class="usuarios-form usuarios-form--compact"
+        on:submit|preventDefault={agregarUrd}
+        novalidate
+      >
         <FormField
           id="urd-depe"
           label="Dependencia"
@@ -395,7 +427,13 @@
           options={dependenciaOptions}
           hint={dependencias.length === 0 ? "No se pudo cargar el catálogo de dependencias." : ""}
         />
-        <FormField id="urd-rol" label="Rol (grupo)" type="select" bind:value={fRolId} options={rolOptions} />
+        <FormField
+          id="urd-rol"
+          label="Rol (grupo)"
+          type="select"
+          bind:value={fRolId}
+          options={rolOptions}
+        />
         <label class="usuarios-form__check">
           <input type="checkbox" bind:checked={fEsPrincipal} />
           Dependencia principal
@@ -403,7 +441,9 @@
         {#if urdFormError}
           <p class="usuarios-drawer__error-inline" role="alert">{urdFormError}</p>
         {/if}
-        <Button type="submit" icon="fas fa-plus" loading={urdActionLoading} fullWidth>Asignar URD</Button>
+        <Button type="submit" icon="fas fa-plus" loading={urdActionLoading} fullWidth
+          >Asignar URD</Button
+        >
       </form>
     </section>
   {/if}

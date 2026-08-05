@@ -90,7 +90,11 @@ describe("GET /admin/colas/api/[service]", () => {
           headers: { "X-Total-Count": "0", "X-Truncated": "false" },
         });
       });
-      await listDeadletters({ locals: SESSION_LOCALS, params: { service }, url: new URL("http://x/") });
+      await listDeadletters({
+        locals: SESSION_LOCALS,
+        params: { service },
+        url: new URL("http://x/"),
+      });
       expect(capturedUrl).toContain(`/${service}/admin/deadletter/`);
     },
   );
@@ -153,16 +157,23 @@ describe("GET /admin/colas/api/[service]/[eventId]", () => {
       capturedUrl = String(input);
       return new Response(JSON.stringify({}), { status: 200 });
     });
-    await getDeadletter({ locals: SESSION_LOCALS, params: { service: "workflow", eventId: EVENT_ID } });
+    await getDeadletter({
+      locals: SESSION_LOCALS,
+      params: { service: "workflow", eventId: EVENT_ID },
+    });
     expect(capturedUrl).toContain(encodeURIComponent(EVENT_ID));
     expect(capturedUrl).not.toContain("event id/with#chars");
   });
 
   it("404 (ambiguo: no existe o sin clearance) se propaga tal cual, sin distinguir los dos casos", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
+      async () =>
+        new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
     );
-    const res = await getDeadletter({ locals: SESSION_LOCALS, params: { service: "workflow", eventId: "e1" } });
+    const res = await getDeadletter({
+      locals: SESSION_LOCALS,
+      params: { service: "workflow", eventId: "e1" },
+    });
     expect(res.status).toBe(404);
   });
 });
@@ -172,7 +183,10 @@ describe("POST /admin/colas/api/[service]/[eventId]/replay", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("fetch no debió invocarse sin sesión");
     });
-    const res = await replayDeadletter({ locals: {}, params: { service: "workflow", eventId: "e1" } });
+    const res = await replayDeadletter({
+      locals: {},
+      params: { service: "workflow", eventId: "e1" },
+    });
     expect(res.status).toBe(401);
   });
 
@@ -210,15 +224,22 @@ describe("POST /admin/colas/api/[service]/[eventId]/replay", () => {
       async () =>
         new Response(JSON.stringify({ error: "already_resolved", status: 409 }), { status: 409 }),
     );
-    const res = await replayDeadletter({ locals: SESSION_LOCALS, params: { service: "workflow", eventId: "e1" } });
+    const res = await replayDeadletter({
+      locals: SESSION_LOCALS,
+      params: { service: "workflow", eventId: "e1" },
+    });
     expect(res.status).toBe(409);
   });
 
   it("502 replay_failed se propaga tal cual (no se colapsa en 500 genérico)", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "replay_failed", status: 502 }), { status: 502 }),
+      async () =>
+        new Response(JSON.stringify({ error: "replay_failed", status: 502 }), { status: 502 }),
     );
-    const res = await replayDeadletter({ locals: SESSION_LOCALS, params: { service: "workflow", eventId: "e1" } });
+    const res = await replayDeadletter({
+      locals: SESSION_LOCALS,
+      params: { service: "workflow", eventId: "e1" },
+    });
     expect(res.status).toBe(502);
   });
 });

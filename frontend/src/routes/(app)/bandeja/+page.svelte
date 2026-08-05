@@ -1149,8 +1149,8 @@
             {/if}
           </EmptyState>
         {:else}
-          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <div
             class="bandeja-table-scroll"
             tabindex="0"
@@ -1159,104 +1159,105 @@
           >
             <table class="bandeja-table" aria-label="Radicados">
               <thead>
-              <tr>
-                <th scope="col" class="bandeja-table__th bandeja-table__th--tracking">Radicado</th>
-                <th scope="col" class="bandeja-table__th">Tipo</th>
-                <th scope="col" class="bandeja-table__th">Asunto</th>
-                <th scope="col" class="bandeja-table__th bandeja-table__th--dep"
-                  >Dependencia destino</th
-                >
-                <th scope="col" class="bandeja-table__th">Fecha</th>
-                <th scope="col" class="bandeja-table__th">Estado</th>
-                <th scope="col" class="bandeja-table__th bandeja-table__th--actions">
-                  <span class="sr-only">Acciones</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each documents as doc (doc.id)}
-                <tr
-                  class="bandeja-table__row"
-                  class:bandeja-table__row--selected={selectedDoc?.id === doc.id}
-                >
-                  <td class="bandeja-table__td">
-                    <span class="tracking-number">{doc.tracking_number}</span>
-                  </td>
-                  <td class="bandeja-table__td">
-                    <span class="doc-type-badge doc-type-badge--{doc.doc_type.toLowerCase()}">
-                      {DOC_TYPE_LABELS[doc.doc_type] ?? doc.doc_type}
-                    </span>
-                  </td>
-                  <td class="bandeja-table__td bandeja-table__td--subject">
-                    <span class="subject-text" title={doc.subject}>{doc.subject}</span>
-                  </td>
-                  <td class="bandeja-table__td bandeja-table__td--dep">
-                    {doc.dest_dept ?? "—"}
-                  </td>
-                  <td class="bandeja-table__td bandeja-table__td--date">
-                    <time datetime={doc.registered_at}>{formatDate(doc.registered_at)}</time>
-                  </td>
-                  <td class="bandeja-table__td">
-                    <StatusChip
-                      status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
-                      label={STATUS_LABELS[doc.status] ?? doc.status}
-                      dot={true}
-                    />
-                  </td>
-                  <td class="bandeja-table__td bandeja-table__td--actions">
-                    <button
-                      class="action-btn action-btn--detail"
-                      type="button"
-                      aria-label="Ver detalle de radicado {doc.tracking_number}"
-                      on:click={() => openDrawer(doc)}
-                    >
-                      <i class="fas fa-eye" aria-hidden="true"></i>
-                      Detalle
-                    </button>
+                <tr>
+                  <th scope="col" class="bandeja-table__th bandeja-table__th--tracking">Radicado</th
+                  >
+                  <th scope="col" class="bandeja-table__th">Tipo</th>
+                  <th scope="col" class="bandeja-table__th">Asunto</th>
+                  <th scope="col" class="bandeja-table__th bandeja-table__th--dep"
+                    >Dependencia destino</th
+                  >
+                  <th scope="col" class="bandeja-table__th">Fecha</th>
+                  <th scope="col" class="bandeja-table__th">Estado</th>
+                  <th scope="col" class="bandeja-table__th bandeja-table__th--actions">
+                    <span class="sr-only">Acciones</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each documents as doc (doc.id)}
+                  <tr
+                    class="bandeja-table__row"
+                    class:bandeja-table__row--selected={selectedDoc?.id === doc.id}
+                  >
+                    <td class="bandeja-table__td">
+                      <span class="tracking-number">{doc.tracking_number}</span>
+                    </td>
+                    <td class="bandeja-table__td">
+                      <span class="doc-type-badge doc-type-badge--{doc.doc_type.toLowerCase()}">
+                        {DOC_TYPE_LABELS[doc.doc_type] ?? doc.doc_type}
+                      </span>
+                    </td>
+                    <td class="bandeja-table__td bandeja-table__td--subject">
+                      <span class="subject-text" title={doc.subject}>{doc.subject}</span>
+                    </td>
+                    <td class="bandeja-table__td bandeja-table__td--dep">
+                      {doc.dest_dept ?? "—"}
+                    </td>
+                    <td class="bandeja-table__td bandeja-table__td--date">
+                      <time datetime={doc.registered_at}>{formatDate(doc.registered_at)}</time>
+                    </td>
+                    <td class="bandeja-table__td">
+                      <StatusChip
+                        status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
+                        label={STATUS_LABELS[doc.status] ?? doc.status}
+                        dot={true}
+                      />
+                    </td>
+                    <td class="bandeja-table__td bandeja-table__td--actions">
+                      <button
+                        class="action-btn action-btn--detail"
+                        type="button"
+                        aria-label="Ver detalle de radicado {doc.tracking_number}"
+                        on:click={() => openDrawer(doc)}
+                      >
+                        <i class="fas fa-eye" aria-hidden="true"></i>
+                        Detalle
+                      </button>
 
-                    <!-- Acción inline: avanzar estado (T-08 básico) -->
-                    {#if canManage}
-                      {#if doc.status === "registered"}
+                      <!-- Acción inline: avanzar estado (T-08 básico) -->
+                      {#if canManage}
+                        {#if doc.status === "registered"}
+                          <button
+                            class="action-btn action-btn--advance"
+                            type="button"
+                            aria-label="Distribuir radicado {doc.tracking_number}"
+                            disabled={actionLoading}
+                            on:click={() => advanceStatus(doc.id, "distributed")}
+                          >
+                            <i class="fas fa-paper-plane" aria-hidden="true"></i>
+                            Distribuir
+                          </button>
+                        {:else if doc.status === "distributed"}
+                          <button
+                            class="action-btn action-btn--advance"
+                            type="button"
+                            aria-label="Iniciar trámite del radicado {doc.tracking_number}"
+                            disabled={actionLoading}
+                            on:click={() => advanceStatus(doc.id, "in_progress")}
+                          >
+                            <i class="fas fa-play" aria-hidden="true"></i>
+                            Iniciar trámite
+                          </button>
+                        {/if}
+                      {/if}
+                      <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
+                      {#if canAnular && doc.status !== "closed" && doc.status !== "cancelled"}
                         <button
-                          class="action-btn action-btn--advance"
+                          class="action-btn action-btn--danger"
                           type="button"
-                          aria-label="Distribuir radicado {doc.tracking_number}"
+                          aria-label="Solicitar anulación del radicado {doc.tracking_number}"
                           disabled={actionLoading}
-                          on:click={() => advanceStatus(doc.id, "distributed")}
+                          on:click={() => openAnulacionFromRow(doc)}
                         >
-                          <i class="fas fa-paper-plane" aria-hidden="true"></i>
-                          Distribuir
-                        </button>
-                      {:else if doc.status === "distributed"}
-                        <button
-                          class="action-btn action-btn--advance"
-                          type="button"
-                          aria-label="Iniciar trámite del radicado {doc.tracking_number}"
-                          disabled={actionLoading}
-                          on:click={() => advanceStatus(doc.id, "in_progress")}
-                        >
-                          <i class="fas fa-play" aria-hidden="true"></i>
-                          Iniciar trámite
+                          <i class="fas fa-ban" aria-hidden="true"></i>
+                          Anular
                         </button>
                       {/if}
-                    {/if}
-                    <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
-                    {#if canAnular && doc.status !== "closed" && doc.status !== "cancelled"}
-                      <button
-                        class="action-btn action-btn--danger"
-                        type="button"
-                        aria-label="Solicitar anulación del radicado {doc.tracking_number}"
-                        disabled={actionLoading}
-                        on:click={() => openAnulacionFromRow(doc)}
-                      >
-                        <i class="fas fa-ban" aria-hidden="true"></i>
-                        Anular
-                      </button>
-                    {/if}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
             </table>
           </div>
 
@@ -1390,6 +1391,9 @@
           {#if selectedDoc.doc_type === "S" || selectedDoc.doc_type === "I"}
             <!-- Cuerpo rico (T-12b): observations_html ya viene saneado del server (D-05). -->
             <div class="doc-detail__obs doc-detail__obs--rich">
+              <!-- `observations_html` lo produce el saneo server-side (attachSafeBody);
+                   el crudo `observations` nunca se renderiza como HTML. -->
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html selectedDoc.observations_html ?? ""}
             </div>
           {:else}

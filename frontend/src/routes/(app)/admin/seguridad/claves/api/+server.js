@@ -65,7 +65,7 @@ export async function POST({ locals, request }) {
     return json(
       {
         error: "confirmacion_requerida",
-        detail: 'Debe escribir la frase de confirmación exacta para revocar la credencial.',
+        detail: "Debe escribir la frase de confirmación exacta para revocar la credencial.",
       },
       { status: 422 },
     );

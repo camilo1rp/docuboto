@@ -34,7 +34,9 @@ describe("POST /admin/seguridad/claves/api", () => {
     });
     const res = await POST({
       locals: {},
-      request: { json: async () => ({ user_id: TARGET_USER, confirm: ADMIN_REVOKE_CONFIRM_PHRASE }) },
+      request: {
+        json: async () => ({ user_id: TARGET_USER, confirm: ADMIN_REVOKE_CONFIRM_PHRASE }),
+      },
     });
     expect(res.status).toBe(401);
   });
@@ -67,7 +69,9 @@ describe("POST /admin/seguridad/claves/api", () => {
   );
 
   it("confirm con espacios alrededor SÍ se acepta (trim)", async () => {
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ estado: "revocado" }), { status: 200 }));
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ estado: "revocado" }), { status: 200 }),
+    );
     const res = await POST({
       locals: SESSION_LOCALS,
       request: {
@@ -130,7 +134,11 @@ describe("POST /admin/seguridad/claves/api", () => {
     globalThis.fetch = vi.fn(
       async () =>
         new Response(
-          JSON.stringify({ error: "no_signing_key", detail: "No signing-key credential", status: 404 }),
+          JSON.stringify({
+            error: "no_signing_key",
+            detail: "No signing-key credential",
+            status: 404,
+          }),
           { status: 404 },
         ),
     );

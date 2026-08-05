@@ -130,7 +130,7 @@ async def openapi_spec(request: Request) -> JSONResponse:
             },
             "contact": {
                 "name": "OrpycaMCP Contributors",
-                "url": "https://gitlab.com/orpyca/orpyca-mcp",
+                "url": "https://gitlab.com/orpyca/orfeo_mcp",
                 "email": "aurigadl@gmail.com",
             },
         },

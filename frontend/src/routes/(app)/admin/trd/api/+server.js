@@ -60,7 +60,10 @@ export async function GET({ locals, url }) {
       headers: { "Content-Type": "application/json", "X-Total-Count": total },
     });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo conectar al servidor de TRD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de TRD." },
+      { status: 503 },
+    );
   }
 }
 
@@ -91,18 +94,32 @@ export async function POST({ locals, request }) {
   } = body ?? {};
 
   if (typeof code !== "string" || !code.trim()) {
-    return json({ error: "validation_error", detail: "El código de la serie es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El código de la serie es obligatorio." },
+      { status: 400 },
+    );
   }
   if (typeof name !== "string" || !name.trim()) {
-    return json({ error: "validation_error", detail: "El nombre de la serie es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El nombre de la serie es obligatorio." },
+      { status: 400 },
+    );
   }
   if (parent_id !== undefined && parent_id !== null && !UUID_RE.test(parent_id)) {
     return json({ error: "validation_error", detail: "Serie padre inválida." }, { status: 400 });
   }
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
-    return json({ error: "validation_error", detail: "Disposición final inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Disposición final inválida." },
+      { status: 400 },
+    );
   }
-  if (pdfa_profile !== undefined && pdfa_profile !== null && pdfa_profile !== "" && !PDFA_PROFILES.has(pdfa_profile)) {
+  if (
+    pdfa_profile !== undefined &&
+    pdfa_profile !== null &&
+    pdfa_profile !== "" &&
+    !PDFA_PROFILES.has(pdfa_profile)
+  ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
 
@@ -114,8 +131,12 @@ export async function POST({ locals, request }) {
     total_retention: Number.isFinite(Number(total_retention)) ? Number(total_retention) : 10,
     disposition: DISPOSITIONS.has(disposition) ? disposition : "E",
     parent_id: parent_id && UUID_RE.test(parent_id) ? parent_id : null,
-    archivo_gestion_years: Number.isFinite(Number(archivo_gestion_years)) ? Number(archivo_gestion_years) : null,
-    archivo_central_years: Number.isFinite(Number(archivo_central_years)) ? Number(archivo_central_years) : null,
+    archivo_gestion_years: Number.isFinite(Number(archivo_gestion_years))
+      ? Number(archivo_gestion_years)
+      : null,
+    archivo_central_years: Number.isFinite(Number(archivo_central_years))
+      ? Number(archivo_central_years)
+      : null,
     pdfa_profile: PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null,
   };
 
@@ -128,6 +149,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear la serie." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear la serie." },
+      { status: 503 },
+    );
   }
 }

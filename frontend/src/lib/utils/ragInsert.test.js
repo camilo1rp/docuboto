@@ -29,7 +29,12 @@ describe("escapeHtml", () => {
 
 describe("buildGeneratedHtml", () => {
   const citations = [
-    { cited_text: "el plazo es de 15 días", source_type: "radicado", source_ref: "2024-ICETEX-E-000123", score: 0.912 },
+    {
+      cited_text: "el plazo es de 15 días",
+      source_type: "radicado",
+      source_ref: "2024-ICETEX-E-000123",
+      score: 0.912,
+    },
   ];
 
   it("incluye la marca de generado por IA y las citas", () => {
@@ -41,7 +46,7 @@ describe("buildGeneratedHtml", () => {
   });
 
   it("escapa contenido hostil dentro de answer/citations (nunca inyecta marcado)", () => {
-    const html = buildGeneratedHtml('<img src=x onerror=alert(1)>', [
+    const html = buildGeneratedHtml("<img src=x onerror=alert(1)>", [
       { cited_text: "<b>x</b>", source_type: "radicado", source_ref: "<i>ref</i>", score: 0.5 },
     ]);
     expect(html).not.toContain("<img");
@@ -66,7 +71,9 @@ describe("appendGeneratedHtml", () => {
   });
 
   it("un editor vacío (<p></p> o cadena vacía) no dobla contenido vacío por delante", () => {
-    expect(appendGeneratedHtml("", "<blockquote>gen</blockquote>")).toBe("<blockquote>gen</blockquote>");
+    expect(appendGeneratedHtml("", "<blockquote>gen</blockquote>")).toBe(
+      "<blockquote>gen</blockquote>",
+    );
     expect(appendGeneratedHtml("<p></p>", "<blockquote>gen</blockquote>")).toBe(
       "<blockquote>gen</blockquote>",
     );

@@ -51,7 +51,8 @@ describe("GET /admin/trd/api", () => {
 
   it("propaga status de error del gateway", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
+      async () =>
+        new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
     );
     const res = await listSeries({ locals: SESSION_LOCALS, url: new URL("http://x/") });
     expect(res.status).toBe(403);
@@ -63,7 +64,10 @@ describe("POST /admin/trd/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const res = await createSerie({ locals: {}, request: { json: async () => ({ code: "A", name: "B" }) } });
+    const res = await createSerie({
+      locals: {},
+      request: { json: async () => ({ code: "A", name: "B" }) },
+    });
     expect(res.status).toBe(401);
   });
 
@@ -71,7 +75,10 @@ describe("POST /admin/trd/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const res = await createSerie({ locals: SESSION_LOCALS, request: { json: async () => ({ name: "B" }) } });
+    const res = await createSerie({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ name: "B" }) },
+    });
     expect(res.status).toBe(400);
   });
 
@@ -150,7 +157,11 @@ describe("PATCH /admin/trd/api/[id]", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const res = await updateSerie({ locals: {}, params: { id: SERIE_ID }, request: { json: async () => ({}) } });
+    const res = await updateSerie({
+      locals: {},
+      params: { id: SERIE_ID },
+      request: { json: async () => ({}) },
+    });
     expect(res.status).toBe(401);
   });
 

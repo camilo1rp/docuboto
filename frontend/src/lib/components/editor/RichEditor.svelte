@@ -90,10 +90,7 @@
 
   onMount(async () => {
     try {
-      const [core, sk] = await Promise.all([
-        import("@tiptap/core"),
-        import("@tiptap/starter-kit"),
-      ]);
+      const [core, sk] = await Promise.all([import("@tiptap/core"), import("@tiptap/starter-kit")]);
       // `any`: StarterKit arrastra su propia copia de @tiptap/core, cuyos tipos no
       // casan con los de este import aunque el runtime sea el mismo paquete.
       /** @type {any} */
@@ -215,22 +212,139 @@
     ></textarea>
   {:else}
     <div class="op-rich__toolbar" role="toolbar" aria-label="Formato de texto" aria-controls={id}>
-      <button type="button" class="op-rich__btn" class:is-active={active.bold} aria-pressed={active.bold} aria-label="Negrita" title="Negrita (Ctrl+B)" on:click={toggleBold} disabled={disabled || !ready}><i class="fas fa-bold" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" class:is-active={active.italic} aria-pressed={active.italic} aria-label="Cursiva" title="Cursiva (Ctrl+I)" on:click={toggleItalic} disabled={disabled || !ready}><i class="fas fa-italic" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" class:is-active={active.underline} aria-pressed={active.underline} aria-label="Subrayado" title="Subrayado (Ctrl+U)" on:click={toggleUnderline} disabled={disabled || !ready}><i class="fas fa-underline" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" class:is-active={active.strike} aria-pressed={active.strike} aria-label="Tachado" title="Tachado" on:click={toggleStrike} disabled={disabled || !ready}><i class="fas fa-strikethrough" aria-hidden="true"></i></button>
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.bold}
+        aria-pressed={active.bold}
+        aria-label="Negrita"
+        title="Negrita (Ctrl+B)"
+        on:click={toggleBold}
+        disabled={disabled || !ready}><i class="fas fa-bold" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.italic}
+        aria-pressed={active.italic}
+        aria-label="Cursiva"
+        title="Cursiva (Ctrl+I)"
+        on:click={toggleItalic}
+        disabled={disabled || !ready}><i class="fas fa-italic" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.underline}
+        aria-pressed={active.underline}
+        aria-label="Subrayado"
+        title="Subrayado (Ctrl+U)"
+        on:click={toggleUnderline}
+        disabled={disabled || !ready}><i class="fas fa-underline" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.strike}
+        aria-pressed={active.strike}
+        aria-label="Tachado"
+        title="Tachado"
+        on:click={toggleStrike}
+        disabled={disabled || !ready}
+        ><i class="fas fa-strikethrough" aria-hidden="true"></i></button
+      >
       <span class="op-rich__sep" aria-hidden="true"></span>
-      <button type="button" class="op-rich__btn" class:is-active={active.h2} aria-pressed={active.h2} aria-label="Título" title="Título" on:click={toggleH2} disabled={disabled || !ready}><i class="fas fa-heading" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn op-rich__btn--text" class:is-active={active.h3} aria-pressed={active.h3} aria-label="Subtítulo" title="Subtítulo" on:click={toggleH3} disabled={disabled || !ready}>H3</button>
-      <button type="button" class="op-rich__btn" class:is-active={active.bullet} aria-pressed={active.bullet} aria-label="Lista con viñetas" title="Lista con viñetas" on:click={toggleBullet} disabled={disabled || !ready}><i class="fas fa-list-ul" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" class:is-active={active.ordered} aria-pressed={active.ordered} aria-label="Lista numerada" title="Lista numerada" on:click={toggleOrdered} disabled={disabled || !ready}><i class="fas fa-list-ol" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" class:is-active={active.blockquote} aria-pressed={active.blockquote} aria-label="Cita" title="Cita" on:click={toggleQuote} disabled={disabled || !ready}><i class="fas fa-quote-right" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" class:is-active={active.code} aria-pressed={active.code} aria-label="Código" title="Código" on:click={toggleCode} disabled={disabled || !ready}><i class="fas fa-code" aria-hidden="true"></i></button>
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.h2}
+        aria-pressed={active.h2}
+        aria-label="Título"
+        title="Título"
+        on:click={toggleH2}
+        disabled={disabled || !ready}><i class="fas fa-heading" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn op-rich__btn--text"
+        class:is-active={active.h3}
+        aria-pressed={active.h3}
+        aria-label="Subtítulo"
+        title="Subtítulo"
+        on:click={toggleH3}
+        disabled={disabled || !ready}>H3</button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.bullet}
+        aria-pressed={active.bullet}
+        aria-label="Lista con viñetas"
+        title="Lista con viñetas"
+        on:click={toggleBullet}
+        disabled={disabled || !ready}><i class="fas fa-list-ul" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.ordered}
+        aria-pressed={active.ordered}
+        aria-label="Lista numerada"
+        title="Lista numerada"
+        on:click={toggleOrdered}
+        disabled={disabled || !ready}><i class="fas fa-list-ol" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.blockquote}
+        aria-pressed={active.blockquote}
+        aria-label="Cita"
+        title="Cita"
+        on:click={toggleQuote}
+        disabled={disabled || !ready}><i class="fas fa-quote-right" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.code}
+        aria-pressed={active.code}
+        aria-label="Código"
+        title="Código"
+        on:click={toggleCode}
+        disabled={disabled || !ready}><i class="fas fa-code" aria-hidden="true"></i></button
+      >
       <span class="op-rich__sep" aria-hidden="true"></span>
-      <button type="button" class="op-rich__btn" class:is-active={active.link} aria-pressed={active.link} aria-label="Enlace" title="Insertar enlace" aria-haspopup="dialog" aria-expanded={linkOpen} bind:this={linkBtn} on:click={openLink} disabled={disabled || !ready}><i class="fas fa-link" aria-hidden="true"></i></button>
+      <button
+        type="button"
+        class="op-rich__btn"
+        class:is-active={active.link}
+        aria-pressed={active.link}
+        aria-label="Enlace"
+        title="Insertar enlace"
+        aria-haspopup="dialog"
+        aria-expanded={linkOpen}
+        bind:this={linkBtn}
+        on:click={openLink}
+        disabled={disabled || !ready}><i class="fas fa-link" aria-hidden="true"></i></button
+      >
       <span class="op-rich__sep" aria-hidden="true"></span>
-      <button type="button" class="op-rich__btn" aria-label="Deshacer" title="Deshacer (Ctrl+Z)" on:click={undo} disabled={disabled || !ready}><i class="fas fa-undo" aria-hidden="true"></i></button>
-      <button type="button" class="op-rich__btn" aria-label="Rehacer" title="Rehacer (Ctrl+Y)" on:click={redo} disabled={disabled || !ready}><i class="fas fa-redo" aria-hidden="true"></i></button>
+      <button
+        type="button"
+        class="op-rich__btn"
+        aria-label="Deshacer"
+        title="Deshacer (Ctrl+Z)"
+        on:click={undo}
+        disabled={disabled || !ready}><i class="fas fa-undo" aria-hidden="true"></i></button
+      >
+      <button
+        type="button"
+        class="op-rich__btn"
+        aria-label="Rehacer"
+        title="Rehacer (Ctrl+Y)"
+        on:click={redo}
+        disabled={disabled || !ready}><i class="fas fa-redo" aria-hidden="true"></i></button
+      >
     </div>
 
     {#if linkOpen}
@@ -254,7 +368,11 @@
           }}
         />
         <button type="button" class="op-rich__link-btn" on:click={applyLink}>Aplicar</button>
-        <button type="button" class="op-rich__link-btn op-rich__link-btn--ghost" on:click={cancelLink}>Cancelar</button>
+        <button
+          type="button"
+          class="op-rich__link-btn op-rich__link-btn--ghost"
+          on:click={cancelLink}>Cancelar</button
+        >
       </div>
     {/if}
 

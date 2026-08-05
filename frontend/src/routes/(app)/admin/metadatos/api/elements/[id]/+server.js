@@ -40,7 +40,10 @@ export async function PATCH({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de elemento inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de elemento inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -50,25 +53,45 @@ export async function PATCH({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { etiqueta, tipo_dato, longitud, ocurrencia_min, ocurrencia_max, modificable, orden, searchable, mapeo_dublin_core, activo } =
-    body ?? {};
+  const {
+    etiqueta,
+    tipo_dato,
+    longitud,
+    ocurrencia_min,
+    ocurrencia_max,
+    modificable,
+    orden,
+    searchable,
+    mapeo_dublin_core,
+    activo,
+  } = body ?? {};
   if (tipo_dato !== undefined && !TIPOS_DATO.has(tipo_dato)) {
     return json({ error: "validation_error", detail: "Tipo de dato inválido." }, { status: 400 });
   }
 
   /** @type {Record<string, unknown>} */
   const payload = {};
-  if (typeof etiqueta === "string" && etiqueta.trim()) payload.etiqueta = etiqueta.trim().slice(0, 200);
+  if (typeof etiqueta === "string" && etiqueta.trim())
+    payload.etiqueta = etiqueta.trim().slice(0, 200);
   if (tipo_dato !== undefined && TIPOS_DATO.has(tipo_dato)) payload.tipo_dato = tipo_dato;
-  if (longitud !== undefined) payload.longitud = Number.isInteger(Number(longitud)) && Number(longitud) >= 1 ? Number(longitud) : null;
-  if (ocurrencia_min !== undefined && Number.isInteger(Number(ocurrencia_min))) payload.ocurrencia_min = Number(ocurrencia_min);
+  if (longitud !== undefined)
+    payload.longitud =
+      Number.isInteger(Number(longitud)) && Number(longitud) >= 1 ? Number(longitud) : null;
+  if (ocurrencia_min !== undefined && Number.isInteger(Number(ocurrencia_min)))
+    payload.ocurrencia_min = Number(ocurrencia_min);
   if (ocurrencia_max !== undefined)
-    payload.ocurrencia_max = Number.isInteger(Number(ocurrencia_max)) && Number(ocurrencia_max) >= 1 ? Number(ocurrencia_max) : null;
+    payload.ocurrencia_max =
+      Number.isInteger(Number(ocurrencia_max)) && Number(ocurrencia_max) >= 1
+        ? Number(ocurrencia_max)
+        : null;
   if (typeof modificable === "boolean") payload.modificable = modificable;
   if (orden !== undefined && Number.isInteger(Number(orden))) payload.orden = Number(orden);
   if (typeof searchable === "boolean") payload.searchable = searchable;
   if (mapeo_dublin_core !== undefined)
-    payload.mapeo_dublin_core = typeof mapeo_dublin_core === "string" && mapeo_dublin_core.trim() ? mapeo_dublin_core.trim().slice(0, 100) : null;
+    payload.mapeo_dublin_core =
+      typeof mapeo_dublin_core === "string" && mapeo_dublin_core.trim()
+        ? mapeo_dublin_core.trim().slice(0, 100)
+        : null;
   if (typeof activo === "boolean") payload.activo = activo;
 
   try {
@@ -80,7 +103,10 @@ export async function PATCH({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo actualizar el elemento de metadato." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo actualizar el elemento de metadato." },
+      { status: 503 },
+    );
   }
 }
 
@@ -91,7 +117,10 @@ export async function DELETE({ locals, params }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de elemento inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de elemento inválido." },
+      { status: 400 },
+    );
   }
 
   try {
@@ -103,6 +132,9 @@ export async function DELETE({ locals, params }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo eliminar el elemento de metadato." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo eliminar el elemento de metadato." },
+      { status: 503 },
+    );
   }
 }

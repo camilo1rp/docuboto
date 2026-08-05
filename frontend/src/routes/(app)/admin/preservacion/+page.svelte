@@ -283,8 +283,8 @@
     <!-- ===================================================================
          Panel — Plan de preservación
          =================================================================== -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="prsv-panel-plan"
       role="tabpanel"
@@ -436,8 +436,8 @@
     <!-- ===================================================================
          Panel — Índices pendientes de firma
          =================================================================== -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="prsv-panel-firma"
       role="tabpanel"
@@ -463,8 +463,8 @@
             description="No hay índices electrónicos visibles para usted pendientes de sellado."
           />
         {:else}
-          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <div
             class="prsv-table-wrap"
             role="region"
@@ -524,8 +524,8 @@
     <!-- ===================================================================
          Panel — Renovación WORM (solo lectura)
          =================================================================== -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="prsv-panel-worm"
       role="tabpanel"
@@ -556,8 +556,8 @@
             description="No hay artefactos WORM visibles para usted pendientes de renovación."
           />
         {:else}
-          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <div
             class="prsv-table-wrap"
             role="region"

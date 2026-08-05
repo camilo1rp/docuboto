@@ -75,7 +75,9 @@ describe("POST /admin/trd/api/[code]/versiones (nueva versión en borrador)", ()
     const res = await createVersion({
       locals: SESSION_LOCALS,
       params: { code: "OF" },
-      request: { json: async () => ({ total_retention: 15, id: "otro-id", estado: "convalidada" }) },
+      request: {
+        json: async () => ({ total_retention: 15, id: "otro-id", estado: "convalidada" }),
+      },
     });
     expect(res.status).toBe(201);
     expect(capturedUrl).toContain("/trd/OF/versiones");
@@ -172,7 +174,9 @@ for (const action of ACTIONS) {
         request: { json: async () => action.validBody ?? {} },
       });
       expect(res.status).toBe(200);
-      expect(capturedUrl).toContain(`/trd/${encodeURIComponent("OF/2026")}/versiones/1/${action.name}`);
+      expect(capturedUrl).toContain(
+        `/trd/${encodeURIComponent("OF/2026")}/versiones/1/${action.name}`,
+      );
     });
   });
 }

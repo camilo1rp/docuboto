@@ -200,7 +200,8 @@
   ];
 
   $: templateProperties =
-    activeTemplate?.json_schema?.properties && typeof activeTemplate.json_schema.properties === "object"
+    activeTemplate?.json_schema?.properties &&
+    typeof activeTemplate.json_schema.properties === "object"
       ? Object.entries(activeTemplate.json_schema.properties)
       : [];
   $: templateRequired = activeTemplate?.json_schema?.required ?? [];

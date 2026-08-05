@@ -219,7 +219,9 @@
         <div class="assistant-turn assistant-turn--{turn.role}">
           <span class="sr-only">{turn.role === "user" ? "Tú" : "Asistente"}:</span>
           {#if turn.html}
-            <!-- HTML saneado server-side ($lib/server/sanitizeHtml.js) en el proxy — nunca crudo (D-05). -->
+            <!-- HTML saneado server-side ($lib/server/sanitizeHtml.js) en el proxy — nunca crudo (D-05).
+                 El saneo es la barrera; el `{@html}` aqui es su consumidor, no un atajo. -->
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             <div class="assistant-turn__bubble">{@html turn.html}</div>
           {:else}
             <p class="assistant-turn__bubble assistant-turn__bubble--plain">{turn.texto}</p>

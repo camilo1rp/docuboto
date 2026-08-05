@@ -237,7 +237,8 @@
     },
     {
       label: "Claves de firma",
-      description: "Revocación administrativa de la credencial de firma personal PKI de un usuario (E17/F4).",
+      description:
+        "Revocación administrativa de la credencial de firma personal PKI de un usuario (E17/F4).",
       icon: "fas fa-key",
       href: "/admin/seguridad/claves",
       // USUA_PERM_ADMIN: gate real en

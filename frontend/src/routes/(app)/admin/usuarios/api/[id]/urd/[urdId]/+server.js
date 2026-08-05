@@ -46,6 +46,9 @@ export async function DELETE({ locals, params }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo eliminar la URD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo eliminar la URD." },
+      { status: 503 },
+    );
   }
 }

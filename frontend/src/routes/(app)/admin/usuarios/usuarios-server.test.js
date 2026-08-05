@@ -17,15 +17,18 @@
 import { describe, it, expect, vi } from "vitest";
 import { load } from "./+page.server.js";
 
-const parentWith = (tenant_slug = "icetex", sub = "admin-1") => async () => ({
-  user: { tenant_slug, sub },
-});
+const parentWith =
+  (tenant_slug = "icetex", sub = "admin-1") =>
+  async () => ({
+    user: { tenant_slug, sub },
+  });
 
 function fakeFetch({ usersOk = true, groupsOk = true, depsOk = true } = {}) {
   return vi.fn(async (input) => {
     const url = String(input);
     if (url.includes("/auth/users")) {
-      if (!usersOk) return { ok: false, status: 500, json: async () => ({ detail: "falla usuarios" }) };
+      if (!usersOk)
+        return { ok: false, status: 500, json: async () => ({ detail: "falla usuarios" }) };
       return {
         ok: true,
         status: 200,
@@ -189,7 +192,9 @@ describe("load — callerIsRoot (ADR-024)", () => {
       fetch,
       url: new URL("http://localhost/admin/usuarios"),
     });
-    const permsCall = fetch.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/permissions"));
+    const permsCall = fetch.mock.calls
+      .map((c) => String(c[0]))
+      .find((u) => u.includes("/permissions"));
     expect(permsCall).toContain("a%20b%2Fc");
   });
 });

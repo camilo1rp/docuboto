@@ -38,15 +38,23 @@ export async function GET({ locals, params }) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
   }
   if (!params.key) {
-    return json({ error: "validation_error", detail: "Clave de parámetro obligatoria." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Clave de parámetro obligatoria." },
+      { status: 400 },
+    );
   }
 
   try {
-    const res = await fetch(`${API_V1}/config/params/${encodeURIComponent(params.key)}`, { headers: headersFor(locals) });
+    const res = await fetch(`${API_V1}/config/params/${encodeURIComponent(params.key)}`, {
+      headers: headersFor(locals),
+    });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo conectar al servidor de parámetros." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de parámetros." },
+      { status: 503 },
+    );
   }
 }
 
@@ -56,7 +64,10 @@ export async function PUT({ locals, params, request }) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
   }
   if (!params.key) {
-    return json({ error: "validation_error", detail: "Clave de parámetro obligatoria." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Clave de parámetro obligatoria." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -67,7 +78,10 @@ export async function PUT({ locals, params, request }) {
   }
 
   if (!body || !("value" in body)) {
-    return json({ error: "validation_error", detail: "El campo 'value' es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El campo 'value' es obligatorio." },
+      { status: 400 },
+    );
   }
 
   try {
@@ -79,6 +93,9 @@ export async function PUT({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo actualizar el parámetro." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo actualizar el parámetro." },
+      { status: 503 },
+    );
   }
 }

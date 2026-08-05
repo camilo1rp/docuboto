@@ -29,7 +29,10 @@ export async function PATCH({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de serie inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de serie inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -39,23 +42,44 @@ export async function PATCH({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { name, description, retention_years, total_retention, disposition, is_active, pdfa_profile } = body ?? {};
+  const {
+    name,
+    description,
+    retention_years,
+    total_retention,
+    disposition,
+    is_active,
+    pdfa_profile,
+  } = body ?? {};
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
-    return json({ error: "validation_error", detail: "Disposición final inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Disposición final inválida." },
+      { status: 400 },
+    );
   }
-  if (pdfa_profile !== undefined && pdfa_profile !== null && pdfa_profile !== "" && !PDFA_PROFILES.has(pdfa_profile)) {
+  if (
+    pdfa_profile !== undefined &&
+    pdfa_profile !== null &&
+    pdfa_profile !== "" &&
+    !PDFA_PROFILES.has(pdfa_profile)
+  ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
 
   /** @type {Record<string, unknown>} */
   const payload = {};
   if (typeof name === "string" && name.trim()) payload.name = name.trim();
-  if (description !== undefined) payload.description = typeof description === "string" && description.trim() ? description.trim() : null;
-  if (retention_years !== undefined && Number.isFinite(Number(retention_years))) payload.retention_years = Number(retention_years);
-  if (total_retention !== undefined && Number.isFinite(Number(total_retention))) payload.total_retention = Number(total_retention);
+  if (description !== undefined)
+    payload.description =
+      typeof description === "string" && description.trim() ? description.trim() : null;
+  if (retention_years !== undefined && Number.isFinite(Number(retention_years)))
+    payload.retention_years = Number(retention_years);
+  if (total_retention !== undefined && Number.isFinite(Number(total_retention)))
+    payload.total_retention = Number(total_retention);
   if (disposition !== undefined && DISPOSITIONS.has(disposition)) payload.disposition = disposition;
   if (typeof is_active === "boolean") payload.is_active = is_active;
-  if (pdfa_profile !== undefined) payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
+  if (pdfa_profile !== undefined)
+    payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
 
   const tenant = locals.user?.tenant_slug ?? "";
   const userId = locals.user?.sub ?? "";
@@ -76,6 +100,9 @@ export async function PATCH({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo actualizar la serie." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo actualizar la serie." },
+      { status: 503 },
+    );
   }
 }

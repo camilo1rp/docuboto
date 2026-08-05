@@ -66,7 +66,7 @@ describe("TrdSuggestChips", () => {
 
   // Revisión UX lote 2, punto 5: los chips aparecen tras el debounce sin
   // anuncio a lector de pantalla — necesitan aria-live="polite".
-  it("el contenedor de chips es una región aria-live=\"polite\"", async () => {
+  it('el contenedor de chips es una región aria-live="polite"', async () => {
     globalThis.fetch = vi.fn(async () =>
       jsonResponse({
         suggestions: [

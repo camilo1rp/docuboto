@@ -92,7 +92,10 @@ describe("POST /admin/pinar/api/planes/[id]/aprobar", () => {
     globalThis.fetch = vi.fn(
       async () =>
         new Response(
-          JSON.stringify({ error: "transicion_invalida", detail: "Solo un plan en 'borrador' puede aprobarse." }),
+          JSON.stringify({
+            error: "transicion_invalida",
+            detail: "Solo un plan en 'borrador' puede aprobarse.",
+          }),
           { status: 409 },
         ),
     );

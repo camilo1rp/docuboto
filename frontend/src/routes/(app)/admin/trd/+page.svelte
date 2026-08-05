@@ -482,7 +482,13 @@
   <!-- ===================================================================
        Panel: Series TRD/CCD (árbol)
        =================================================================== -->
-  <div id="panel-series" role="tabpanel" aria-labelledby="tab-series" hidden={activeTab !== "series"} tabindex="0">
+  <div
+    id="panel-series"
+    role="tabpanel"
+    aria-labelledby="tab-series"
+    hidden={activeTab !== "series"}
+    tabindex="0"
+  >
     <CatalogCrudPanel
       ariaLabel="Árbol de series TRD/CCD"
       items={seriesTree}
@@ -492,7 +498,7 @@
       createLabel="Nueva serie"
       emptyIcon="fas fa-folder-tree"
       emptyTitle="Sin series TRD"
-      emptyDescription='Crea la primera serie con "Nueva serie".'
+      emptyDescription="Crea la primera serie con «Nueva serie»."
       bind:createOpen={serieCreateOpen}
       bind:editOpen={serieEditOpen}
       editTarget={serieEditTarget}
@@ -509,14 +515,19 @@
         <td><code>{item.code}</code> <span class="trd-page__version">v{item.version}</span></td>
         <td>
           <span class="trd-page__indent" style="--depth: {item.depth}">
-            {#if item.depth > 0}<i class="fas fa-turn-up trd-page__branch" aria-hidden="true"></i>{/if}
+            {#if item.depth > 0}<i class="fas fa-turn-up trd-page__branch" aria-hidden="true"
+              ></i>{/if}
             {item.name}
           </span>
         </td>
         <td>{item.disposition}</td>
         <td>{item.retention_years}a / {item.total_retention}a</td>
         <td>
-          <StatusChip status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"} label={ESTADO_LABELS[item.estado] ?? item.estado} dot />
+          <StatusChip
+            status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"}
+            label={ESTADO_LABELS[item.estado] ?? item.estado}
+            dot
+          />
         </td>
       </svelte:fragment>
 
@@ -526,7 +537,9 @@
            es preferible a duplicar el CatalogCrudPanel por permiso. -->
       <svelte:fragment slot="row-actions" let:item>
         {#if canWriteLevel3}
-          <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openSerieEdit(item)}>Editar</Button>
+          <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openSerieEdit(item)}
+            >Editar</Button
+          >
         {/if}
         <InstrumentLifecycleActions
           {item}
@@ -539,9 +552,26 @@
 
       <svelte:fragment slot="create-form">
         <form class="trd-form" on:submit|preventDefault={crearSerie} novalidate>
-          <FormField id="serie-code" label="Código" required bind:value={sCode} error={sCodeError} />
-          <FormField id="serie-name" label="Nombre" required bind:value={sName} error={sNameError} />
-          <FormField id="serie-description" label="Descripción" type="textarea" bind:value={sDescription} />
+          <FormField
+            id="serie-code"
+            label="Código"
+            required
+            bind:value={sCode}
+            error={sCodeError}
+          />
+          <FormField
+            id="serie-name"
+            label="Nombre"
+            required
+            bind:value={sName}
+            error={sNameError}
+          />
+          <FormField
+            id="serie-description"
+            label="Descripción"
+            type="textarea"
+            bind:value={sDescription}
+          />
           <FormField
             id="serie-parent"
             label="Serie padre (subserie)"
@@ -551,13 +581,39 @@
             placeholder="— ninguna (serie raíz) —"
           />
           <div class="trd-form__row">
-            <FormField id="serie-retention" label="Años archivo de gestión (retención)" type="number" bind:value={sRetentionYears} />
-            <FormField id="serie-total" label="Años retención total" type="number" bind:value={sTotalRetention} />
+            <FormField
+              id="serie-retention"
+              label="Años archivo de gestión (retención)"
+              type="number"
+              bind:value={sRetentionYears}
+            />
+            <FormField
+              id="serie-total"
+              label="Años retención total"
+              type="number"
+              bind:value={sTotalRetention}
+            />
           </div>
-          <FormField id="serie-disposition" label="Disposición final" type="select" bind:value={sDisposition} options={DISPOSICIONES} />
+          <FormField
+            id="serie-disposition"
+            label="Disposición final"
+            type="select"
+            bind:value={sDisposition}
+            options={DISPOSICIONES}
+          />
           <div class="trd-form__row">
-            <FormField id="serie-ag" label="Archivo de gestión (años, opcional)" type="number" bind:value={sArchivoGestion} />
-            <FormField id="serie-ac" label="Archivo central (años, opcional)" type="number" bind:value={sArchivoCentral} />
+            <FormField
+              id="serie-ag"
+              label="Archivo de gestión (años, opcional)"
+              type="number"
+              bind:value={sArchivoGestion}
+            />
+            <FormField
+              id="serie-ac"
+              label="Archivo central (años, opcional)"
+              type="number"
+              bind:value={sArchivoCentral}
+            />
           </div>
           <FormField
             id="serie-pdfa"
@@ -572,7 +628,8 @@
       </svelte:fragment>
       <svelte:fragment slot="create-footer">
         <Button variant="ghost" on:click={() => (serieCreateOpen = false)}>Cancelar</Button>
-        <Button icon="fas fa-save" loading={actionLoading} on:click={crearSerie}>Crear serie</Button>
+        <Button icon="fas fa-save" loading={actionLoading} on:click={crearSerie}>Crear serie</Button
+        >
       </svelte:fragment>
 
       <svelte:fragment slot="edit-form" let:item>
@@ -581,12 +638,33 @@
             Código <code>{item.code}</code> — inmutable, no se puede editar tras crear la serie.
           </p>
           <FormField id="serie-edit-name" label="Nombre" required bind:value={eName} />
-          <FormField id="serie-edit-description" label="Descripción" type="textarea" bind:value={eDescription} />
+          <FormField
+            id="serie-edit-description"
+            label="Descripción"
+            type="textarea"
+            bind:value={eDescription}
+          />
           <div class="trd-form__row">
-            <FormField id="serie-edit-retention" label="Años archivo de gestión" type="number" bind:value={eRetentionYears} />
-            <FormField id="serie-edit-total" label="Años retención total" type="number" bind:value={eTotalRetention} />
+            <FormField
+              id="serie-edit-retention"
+              label="Años archivo de gestión"
+              type="number"
+              bind:value={eRetentionYears}
+            />
+            <FormField
+              id="serie-edit-total"
+              label="Años retención total"
+              type="number"
+              bind:value={eTotalRetention}
+            />
           </div>
-          <FormField id="serie-edit-disposition" label="Disposición final" type="select" bind:value={eDisposition} options={DISPOSICIONES} />
+          <FormField
+            id="serie-edit-disposition"
+            label="Disposición final"
+            type="select"
+            bind:value={eDisposition}
+            options={DISPOSICIONES}
+          />
           <FormField
             id="serie-edit-pdfa"
             label="Perfil PDF/A"
@@ -611,7 +689,13 @@
   <!-- ===================================================================
        Panel: Tipos documentales
        =================================================================== -->
-  <div id="panel-tipos" role="tabpanel" aria-labelledby="tab-tipos" hidden={activeTab !== "tipos"} tabindex="0">
+  <div
+    id="panel-tipos"
+    role="tabpanel"
+    aria-labelledby="tab-tipos"
+    hidden={activeTab !== "tipos"}
+    tabindex="0"
+  >
     <CatalogCrudPanel
       ariaLabel="Tipos documentales"
       items={tiposFiltrados}
@@ -621,13 +705,14 @@
       createLabel="Nuevo tipo"
       emptyIcon="fas fa-file-lines"
       emptyTitle="Sin tipos documentales"
-      emptyDescription='Crea el primero con "Nuevo tipo".'
+      emptyDescription="Crea el primero con «Nuevo tipo»."
       bind:createOpen={tipoCreateOpen}
       bind:editOpen={tipoEditOpen}
       editTarget={tipoEditTarget}
       bind:deleteOpen={tipoDeleteOpen}
       deleteTarget={tipoDeleteTarget}
-      deleteConfirmText={(t) => `¿Eliminar el tipo documental "${t.nombre}"? Esta acción no puede deshacerse.`}
+      deleteConfirmText={(t) =>
+        `¿Eliminar el tipo documental "${t.nombre}"? Esta acción no puede deshacerse.`}
       deleteLoading={actionLoading}
       on:confirmDelete={confirmarBorrarTipo}
     >
@@ -656,13 +741,19 @@
         <td>{serieNombre(item.trd_serie_id) ?? "—"}</td>
         <td>{item.obligatorio ? "Sí" : "No"}</td>
         <td>
-          <StatusChip status={item.activo ? "success" : "neutral"} label={item.activo ? "Activo" : "Inactivo"} dot />
+          <StatusChip
+            status={item.activo ? "success" : "neutral"}
+            label={item.activo ? "Activo" : "Inactivo"}
+            dot
+          />
         </td>
       </svelte:fragment>
 
       <svelte:fragment slot="row-actions" let:item>
         {#if canWrite}
-          <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openTipoEdit(item)}>Editar</Button>
+          <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openTipoEdit(item)}
+            >Editar</Button
+          >
         {/if}
         {#if canWriteLevel3}
           <Button
@@ -682,7 +773,13 @@
       <svelte:fragment slot="create-form">
         <form class="trd-form" on:submit|preventDefault={crearTipo} novalidate>
           <FormField id="tipo-code" label="Código" required bind:value={tCode} error={tCodeError} />
-          <FormField id="tipo-nombre" label="Nombre" required bind:value={tNombre} error={tNombreError} />
+          <FormField
+            id="tipo-nombre"
+            label="Nombre"
+            required
+            bind:value={tNombre}
+            error={tNombreError}
+          />
           <FormField
             id="tipo-serie"
             label="Serie TRD (opcional)"
@@ -699,7 +796,7 @@
             id="tipo-metadata-template"
             label="Plantilla de metadatos asociada (opcional)"
             bind:value={tMetadataTemplate}
-            hint='Identificador libre (tipo_documental) usado en /admin/metadatos para la plantilla de documento.'
+            hint="Identificador libre (tipo_documental) usado en /admin/metadatos para la plantilla de documento."
           />
         </form>
       </svelte:fragment>
@@ -724,7 +821,11 @@
             <input type="checkbox" bind:checked={etObligatorio} />
             Obligatorio en el expediente
           </label>
-          <FormField id="tipo-edit-metadata-template" label="Plantilla de metadatos asociada" bind:value={etMetadataTemplate} />
+          <FormField
+            id="tipo-edit-metadata-template"
+            label="Plantilla de metadatos asociada"
+            bind:value={etMetadataTemplate}
+          />
           <label class="trd-form__check">
             <input type="checkbox" bind:checked={etActivo} />
             Activo

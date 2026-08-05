@@ -25,13 +25,7 @@
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
-const ESTADOS_VALIDOS = new Set([
-  "registrado",
-  "en_transito",
-  "entregado",
-  "devuelto",
-  "fallido",
-]);
+const ESTADOS_VALIDOS = new Set(["registrado", "en_transito", "entregado", "devuelto", "fallido"]);
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, params, request }) {
@@ -64,8 +58,7 @@ export async function POST({ locals, params, request }) {
 
   const payload = {
     estado,
-    descripcion:
-      typeof descripcion === "string" && descripcion.trim() ? descripcion.trim() : null,
+    descripcion: typeof descripcion === "string" && descripcion.trim() ? descripcion.trim() : null,
   };
 
   /** @type {Record<string, string>} */

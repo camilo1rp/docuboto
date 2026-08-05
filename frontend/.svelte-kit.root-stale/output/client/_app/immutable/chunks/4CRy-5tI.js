@@ -1,1 +1,0 @@
-import{d as t,w as e}from"./CrG8ZwFW.js";import{l as o}from"./CtVBvrjE.js";const n=e(null),l=t(n,s=>s?.roles??[]),i=t(n,s=>s?.permissions??[]),u=t(n,s=>s?.tenant_slug??null);t(n,s=>s!==null);function c(s){return o(i).includes(s)}function m(s){n.set(s)}export{c,m as i,i as p,l as r,n as s,u as t};

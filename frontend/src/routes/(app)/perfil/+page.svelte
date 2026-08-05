@@ -55,10 +55,7 @@
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
-  import {
-    isReenrollConfirmed,
-    REENROLL_CONFIRM_PHRASE,
-  } from "$lib/utils/signingKeyConfirm.js";
+  import { isReenrollConfirmed, REENROLL_CONFIRM_PHRASE } from "$lib/utils/signingKeyConfirm.js";
 
   import Stepper from "$lib/components/ui/Stepper.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -85,8 +82,7 @@
   $: totpLoadError = data.totpError;
 
   const TOTP_STEP_LABELS = ["Generar secreto", "Verificar código", "Activo"];
-  $: totpStepIndex =
-    totp.estado === "activo" ? 2 : totp.estado === "pendiente_activacion" ? 1 : 0;
+  $: totpStepIndex = totp.estado === "activo" ? 2 : totp.estado === "pendiente_activacion" ? 1 : 0;
   $: totpActive = totp.estado === "activo";
 
   // Revelado UNA SOLA VEZ al enrolar — nunca se vuelve a pedir al backend.
@@ -121,7 +117,8 @@
   async function enrollTotp() {
     totpReenrollError = "";
     if (totpActive && !/^\d{6}$/.test(totpStepUpForReenroll)) {
-      totpReenrollError = "Ingrese el código actual de 6 dígitos para reemplazar el segundo factor.";
+      totpReenrollError =
+        "Ingrese el código actual de 6 dígitos para reemplazar el segundo factor.";
       return;
     }
     totpEnrolling = true;
@@ -129,9 +126,7 @@
       const res = await fetch("/perfil/api/totp/enroll", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          totpActive ? { step_up_totp_code: totpStepUpForReenroll } : {},
-        ),
+        body: JSON.stringify(totpActive ? { step_up_totp_code: totpStepUpForReenroll } : {}),
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -146,7 +141,9 @@
       totp = { estado: "pendiente_activacion" };
       pendingOtpauthUri = resData.otpauth_uri ?? "";
       totpStepUpForReenroll = "";
-      notifySuccess("Nuevo secreto generado. Regístrelo en su app autenticadora y verifique el código.");
+      notifySuccess(
+        "Nuevo secreto generado. Regístrelo en su app autenticadora y verifique el código.",
+      );
     } catch {
       notifyError("No se pudo conectar al servidor.");
     } finally {
@@ -229,7 +226,8 @@
   $: signingStepIndex =
     signingKey.estado === "activo" ? 2 : signingKey.estado === "pendiente_emision" ? 1 : 0;
   $: signingActive = signingKey.estado === "activo";
-  $: signingHasCredential = signingKey.estado === "activo" || signingKey.estado === "pendiente_emision";
+  $: signingHasCredential =
+    signingKey.estado === "activo" || signingKey.estado === "pendiente_emision";
 
   // Revelado UNA SOLA VEZ al enrolar (no hay endpoint que lo devuelva de nuevo).
   let csrPem = "";
@@ -247,7 +245,9 @@
   let signingReenrollConfirmError = "";
   let signingRevokeStepUpError = "";
 
-  $: reenrollReady = !signingActive || (isReenrollConfirmed(signingReenrollConfirm) && /^\d{6}$/.test(signingReenrollStepUp));
+  $: reenrollReady =
+    !signingActive ||
+    (isReenrollConfirmed(signingReenrollConfirm) && /^\d{6}$/.test(signingReenrollStepUp));
 
   async function enrollSigningKey() {
     if (!totpActive) {
@@ -270,9 +270,7 @@
       const res = await fetch("/perfil/api/signing-key/enroll", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          signingActive ? { step_up_totp_code: signingReenrollStepUp } : {},
-        ),
+        body: JSON.stringify(signingActive ? { step_up_totp_code: signingReenrollStepUp } : {}),
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -288,7 +286,9 @@
       csrPem = resData.csr_pem ?? "";
       signingReenrollConfirm = "";
       signingReenrollStepUp = "";
-      notifySuccess("Solicitud de credencial (CSR) generada. Entréguela al administrador de la PKI para su emisión.");
+      notifySuccess(
+        "Solicitud de credencial (CSR) generada. Entréguela al administrador de la PKI para su emisión.",
+      );
     } catch {
       notifyError("No se pudo conectar al servidor.");
     } finally {
@@ -403,7 +403,8 @@
           {#if permissions.length === 0}
             <span class="perfil-identity__muted">Sin permisos asignados.</span>
           {:else}
-            {#each permissions as p (p)}<span class="perfil-chip perfil-chip--permission">{p}</span>{/each}
+            {#each permissions as p (p)}<span class="perfil-chip perfil-chip--permission">{p}</span
+              >{/each}
           {/if}
         </dd>
       </div>
@@ -443,13 +444,18 @@
       {#if pendingOtpauthUri}
         <div class="perfil-totp-secret">
           <p>
-            Registre esta clave en su app autenticadora (Google Authenticator, Authy, etc.) —
-            solo se muestra <strong>una vez</strong>. Si la pierde antes de activar, genere una
-            nueva con el botón de abajo.
+            Registre esta clave en su app autenticadora (Google Authenticator, Authy, etc.) — solo
+            se muestra <strong>una vez</strong>. Si la pierde antes de activar, genere una nueva con
+            el botón de abajo.
           </p>
           <div class="perfil-totp-secret__value">
             <code>{pendingSecret}</code>
-            <Button variant="ghost" size="sm" icon="fas fa-copy" on:click={() => copyText(pendingSecret)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="fas fa-copy"
+              on:click={() => copyText(pendingSecret)}
+            >
               Copiar
             </Button>
           </div>
@@ -503,8 +509,8 @@
       <details class="perfil-danger" bind:open={totpRevokeOpen}>
         <summary>Revocar el segundo factor</summary>
         <p class="perfil-danger__warning">
-          <strong>Sin 2FA no podrá revocar ni renovar su credencial de firma</strong> hasta
-          configurar uno nuevo — el backend exige siempre este código para esas acciones.
+          <strong>Sin 2FA no podrá revocar ni renovar su credencial de firma</strong> hasta configurar
+          uno nuevo — el backend exige siempre este código para esas acciones.
         </p>
         <form class="perfil-inline-form" on:submit|preventDefault={revokeTotp}>
           <FormField
@@ -532,16 +538,17 @@
 
     <div class="perfil-legal-note">
       <p>
-        Esta credencial permite firmar electrónicamente (XAdES) con una clave <strong>generada y
-        custodiada en el servidor</strong>, cifrada en reposo — nunca sale de auth-service, y esta
-        pantalla nunca la ve ni la transporta.
+        Esta credencial permite firmar electrónicamente (XAdES) con una clave <strong
+          >generada y custodiada en el servidor</strong
+        >, cifrada en reposo — nunca sale de auth-service, y esta pantalla nunca la ve ni la
+        transporta.
       </p>
       <p>
         Por tratarse de custodia en servidor, <strong>no hay control exclusivo del firmante</strong>
         en el sentido estricto de la ley, y la firma resultante <strong>no está acreditada</strong>
-        ante una entidad de certificación (Decreto 333/2014, Cap. 48). Tiene la equivalencia
-        funcional de una firma electrónica (Ley 527/1999, art. 7) — no el nivel de una firma
-        digital con certificado acreditado (art. 28).
+        ante una entidad de certificación (Decreto 333/2014, Cap. 48). Tiene la equivalencia funcional
+        de una firma electrónica (Ley 527/1999, art. 7) — no el nivel de una firma digital con certificado
+        acreditado (art. 28).
       </p>
     </div>
 
@@ -560,7 +567,9 @@
       </div>
       {#if signingHasCredential}
         <p class="perfil-section__status">
-          Estado actual: <strong>{signingKey.estado === "activo" ? "activa" : "pendiente de emisión"}</strong>
+          Estado actual: <strong
+            >{signingKey.estado === "activo" ? "activa" : "pendiente de emisión"}</strong
+          >
           — sin 2FA activo no puede revocarla ni renovarla desde aquí.
         </p>
       {/if}
@@ -569,7 +578,9 @@
 
       {#if signingKey.estado === "no_configurado" || signingKey.estado === "revocado"}
         <p class="perfil-section__status">
-          {signingKey.estado === "revocado" ? "Su credencial anterior fue revocada." : "No tiene una credencial de firma."}
+          {signingKey.estado === "revocado"
+            ? "Su credencial anterior fue revocada."
+            : "No tiene una credencial de firma."}
         </p>
         <Button variant="primary" loading={signingEnrolling} on:click={enrollSigningKey}>
           Solicitar credencial
@@ -577,23 +588,32 @@
       {:else if signingKey.estado === "pendiente_emision"}
         <p class="perfil-section__status">
           Solicitud generada. Un administrador de la PKI institucional debe emitir el certificado
-          <strong>fuera de línea</strong> a partir del CSR — esta credencial no sirve para firmar
-          hasta entonces.
+          <strong>fuera de línea</strong> a partir del CSR — esta credencial no sirve para firmar hasta
+          entonces.
         </p>
         {#if csrPem}
           <div class="perfil-csr">
-            <label for="perfil-csr-text">Solicitud de certificado (CSR) — entréguela al administrador</label>
-            <textarea id="perfil-csr-text" class="perfil-csr__text" readonly rows="8">{csrPem}</textarea>
+            <label for="perfil-csr-text"
+              >Solicitud de certificado (CSR) — entréguela al administrador</label
+            >
+            <textarea id="perfil-csr-text" class="perfil-csr__text" readonly rows="8"
+              >{csrPem}</textarea
+            >
             <div class="perfil-csr__actions">
-              <Button variant="ghost" size="sm" icon="fas fa-copy" on:click={() => copyText(csrPem)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="fas fa-copy"
+                on:click={() => copyText(csrPem)}
+              >
                 Copiar CSR
               </Button>
             </div>
           </div>
         {:else}
           <p class="perfil-section__status">
-            El CSR ya generado solo se mostró una vez. Si lo perdió, puede solicitar uno nuevo
-            (no requiere 2FA porque aún no tiene una credencial activa firmando nada).
+            El CSR ya generado solo se mostró una vez. Si lo perdió, puede solicitar uno nuevo (no
+            requiere 2FA porque aún no tiene una credencial activa firmando nada).
           </p>
           <Button variant="secondary" loading={signingEnrolling} on:click={enrollSigningKey}>
             Solicitar un CSR nuevo
@@ -606,10 +626,16 @@
         </p>
         <dl class="perfil-identity">
           {#if signingKey.subject_dn}
-            <div class="perfil-identity__row"><dt>Titular</dt><dd>{signingKey.subject_dn}</dd></div>
+            <div class="perfil-identity__row">
+              <dt>Titular</dt>
+              <dd>{signingKey.subject_dn}</dd>
+            </div>
           {/if}
           {#if signingKey.serial}
-            <div class="perfil-identity__row"><dt>Serial</dt><dd>{signingKey.serial}</dd></div>
+            <div class="perfil-identity__row">
+              <dt>Serial</dt>
+              <dd>{signingKey.serial}</dd>
+            </div>
           {/if}
           <div class="perfil-identity__row">
             <dt>Vigencia</dt>
@@ -623,11 +649,14 @@
             <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
             <strong>
               Al reemplazarla, su credencial activa se revoca DE INMEDIATO. Se queda sin poder
-              firmar hasta completar de nuevo el trámite de emisión FUERA DE LÍNEA con el CSR
-              nuevo. Esto no es reversible desde aquí.
+              firmar hasta completar de nuevo el trámite de emisión FUERA DE LÍNEA con el CSR nuevo.
+              Esto no es reversible desde aquí.
             </strong>
           </p>
-          <form class="perfil-inline-form perfil-inline-form--stacked" on:submit|preventDefault={enrollSigningKey}>
+          <form
+            class="perfil-inline-form perfil-inline-form--stacked"
+            on:submit|preventDefault={enrollSigningKey}
+          >
             <FormField
               id="signing-reenroll-stepup"
               label="Código actual de 6 dígitos (2FA)"
@@ -644,7 +673,12 @@
               placeholder={REENROLL_CONFIRM_PHRASE}
               error={signingReenrollConfirmError}
             />
-            <Button type="submit" variant="danger" disabled={!reenrollReady} loading={signingEnrolling}>
+            <Button
+              type="submit"
+              variant="danger"
+              disabled={!reenrollReady}
+              loading={signingEnrolling}
+            >
               Reemplazar credencial
             </Button>
           </form>
@@ -655,7 +689,10 @@
           <p class="perfil-danger__warning">
             Quedará sin poder firmar hasta enrolar una credencial nueva (trámite fuera de línea).
           </p>
-          <form class="perfil-inline-form perfil-inline-form--stacked" on:submit|preventDefault={revokeSigningKey}>
+          <form
+            class="perfil-inline-form perfil-inline-form--stacked"
+            on:submit|preventDefault={revokeSigningKey}
+          >
             <FormField
               id="signing-revoke-stepup"
               label="Código actual de 6 dígitos (2FA)"
@@ -672,7 +709,9 @@
               bind:value={signingRevokeMotivo}
               hint="Queda registrado en el asiento de auditoría."
             />
-            <Button type="submit" variant="danger" loading={signingRevoking}>Revocar credencial</Button>
+            <Button type="submit" variant="danger" loading={signingRevoking}
+              >Revocar credencial</Button
+            >
           </form>
         </details>
       {/if}
@@ -688,8 +727,8 @@
         <i class="fas fa-building" aria-hidden="true"></i> Dependencia activa
       </h2>
       <p class="perfil-section__desc">
-        La dependencia activa determina desde qué unidad organizacional radica y tramita. Cambiar
-        de dependencia no reemite su sesión, pero sí actualiza inmediatamente la navegación.
+        La dependencia activa determina desde qué unidad organizacional radica y tramita. Cambiar de
+        dependencia no reemite su sesión, pero sí actualiza inmediatamente la navegación.
       </p>
       <DependencySwitcher
         activeDepeId={user.context.active_depe_id}

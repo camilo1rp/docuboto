@@ -133,7 +133,6 @@
 <CatalogCrudPanel
   title="PINAR — Plan Institucional de Archivos"
   ariaLabel="Lista de planes PINAR"
-  icon="fas fa-map"
   items={planes}
   rowKey={(p) => p.id}
   loadError={loadError ? (loadError ?? "No se pudo cargar el listado de planes PINAR.") : null}
@@ -169,7 +168,10 @@
   <svelte:fragment slot="row" let:item>
     <td>v{item.version}</td>
     <td>
-      <StatusChip status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"} label={ESTADO_LABELS[item.estado] ?? item.estado} />
+      <StatusChip
+        status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"}
+        label={ESTADO_LABELS[item.estado] ?? item.estado}
+      />
     </td>
     <td>
       {#if item.vigencia_desde || item.vigencia_hasta}
@@ -194,11 +196,23 @@
       hint="Visión estratégica del plan (opcional; puede completarse después, mientras esté en borrador)."
       bind:value={fVision}
     />
-    <FormField id="pinar-vigencia-desde" label="Vigencia desde" type="date" bind:value={fVigenciaDesde} />
-    <FormField id="pinar-vigencia-hasta" label="Vigencia hasta" type="date" bind:value={fVigenciaHasta} />
+    <FormField
+      id="pinar-vigencia-desde"
+      label="Vigencia desde"
+      type="date"
+      bind:value={fVigenciaDesde}
+    />
+    <FormField
+      id="pinar-vigencia-hasta"
+      label="Vigencia hasta"
+      type="date"
+      bind:value={fVigenciaHasta}
+    />
   </svelte:fragment>
   <svelte:fragment slot="create-footer">
-    <Button variant="ghost" on:click={() => (createOpen = false)} disabled={actionLoading}>Cancelar</Button>
+    <Button variant="ghost" on:click={() => (createOpen = false)} disabled={actionLoading}
+      >Cancelar</Button
+    >
     <Button icon="fas fa-save" loading={actionLoading} on:click={crear}>Crear</Button>
   </svelte:fragment>
 </CatalogCrudPanel>

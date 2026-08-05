@@ -2,6 +2,6 @@ build/
 # Artefacto root-owned de un build previo en Docker; el host no puede
 # borrarlo sin sudo (ver nota en el resumen de PIEZA 1). No es código fuente.
 build-root-owned-orphan/
-.svelte-kit/
+.svelte-kit*/
 node_modules/
 package-lock.json

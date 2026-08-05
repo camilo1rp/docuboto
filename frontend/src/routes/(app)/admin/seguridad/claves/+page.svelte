@@ -93,14 +93,15 @@
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status === 404) {
-          notifyInfo(resData.detail ?? "Ese usuario no tiene una credencial de firma para revocar.");
+          notifyInfo(
+            resData.detail ?? "Ese usuario no tiene una credencial de firma para revocar.",
+          );
         } else {
           notifyError(resData.detail ?? "No se pudo revocar la credencial.");
         }
         return;
       }
-      const targetLabel =
-        users.find((u) => u.id === selectedUserId)?.username ?? selectedUserId;
+      const targetLabel = users.find((u) => u.id === selectedUserId)?.username ?? selectedUserId;
       resultMessage = `Se revocó la credencial de firma de "${targetLabel}".`;
       selectedUserId = "";
       motivo = "";
@@ -116,10 +117,7 @@
   }
 
   onMount(() => {
-    setBreadcrumbs([
-      { label: "Administración", href: "/admin" },
-      { label: "Claves de firma" },
-    ]);
+    setBreadcrumbs([{ label: "Administración", href: "/admin" }, { label: "Claves de firma" }]);
   });
 </script>
 
@@ -131,8 +129,8 @@
   <header class="claves-page__header">
     <h1 class="claves-page__title">Claves de firma</h1>
     <p class="claves-page__subtitle">
-      Revoca la credencial de firma electrónica personal (PKI) de otro usuario, por ejemplo tras
-      la salida de un funcionario o la sospecha de un compromiso de sesión.
+      Revoca la credencial de firma electrónica personal (PKI) de otro usuario, por ejemplo tras la
+      salida de un funcionario o la sospecha de un compromiso de sesión.
     </p>
   </header>
 
@@ -148,9 +146,9 @@
       <div>
         <strong>Acción irreversible y sin previo aviso al usuario.</strong> Tras revocar, el usuario
         no podrá firmar hasta enrolar (y re-emitir, un trámite fuera de línea) una credencial nueva.
-        Esta pantalla no puede saber de antemano si el usuario elegido tiene una credencial
-        activa: el sistema no ofrece un listado administrativo de ese estado — solo cada usuario
-        ve el suyo propio en <a href="/perfil">Mi perfil</a>.
+        Esta pantalla no puede saber de antemano si el usuario elegido tiene una credencial activa:
+        el sistema no ofrece un listado administrativo de ese estado — solo cada usuario ve el suyo
+        propio en <a href="/perfil">Mi perfil</a>.
       </div>
     </div>
 
@@ -181,7 +179,12 @@
             {#each filteredUsers as u (u.id)}
               <li>
                 <label class="claves-userlist__option">
-                  <input type="radio" name="claves-target" value={u.id} bind:group={selectedUserId} />
+                  <input
+                    type="radio"
+                    name="claves-target"
+                    value={u.id}
+                    bind:group={selectedUserId}
+                  />
                   <span class="claves-userlist__name">{u.username}</span>
                   {#if u.email}<span class="claves-userlist__email">{u.email}</span>{/if}
                   {#if !u.is_active}
@@ -218,12 +221,7 @@
       />
 
       <div class="claves-page__actions">
-        <Button
-          variant="danger"
-          disabled={!canSubmit}
-          loading={submitting}
-          on:click={submitRevoke}
-        >
+        <Button variant="danger" disabled={!canSubmit} loading={submitting} on:click={submitRevoke}>
           Revocar credencial
         </Button>
         {#if missingRequirements.length > 0}

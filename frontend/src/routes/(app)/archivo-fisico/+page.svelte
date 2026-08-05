@@ -635,8 +635,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 0 — Ubicaciones
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-ubicaciones"
       role="tabpanel"
@@ -663,8 +663,8 @@
             description="No se han registrado ubicaciones de archivo."
           />
         {:else}
-          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <div class="af-table-wrap" role="region" aria-label="Ubicaciones de archivo" tabindex="0">
             <table class="table is-fullwidth is-hoverable">
               <caption class="is-sr-only">Ubicaciones de archivo físico</caption>
@@ -728,8 +728,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 1 — Unidades
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-unidades"
       role="tabpanel"
@@ -799,8 +799,8 @@
               description="Aplica filtros y pulsa Buscar para ver unidades de conservación."
             />
           {:else}
-            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <div
               class="af-table-wrap"
               aria-busy={unidadesLoading}
@@ -861,8 +861,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 2 — Localizar expediente
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-localizar"
       role="tabpanel"
@@ -913,8 +913,8 @@
               description="El expediente no está vinculado a ninguna unidad de conservación."
             />
           {:else if localizarResultados.length > 0}
-            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <div
               class="af-table-wrap"
               role="region"
@@ -959,8 +959,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 3 — Préstamos
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-prestamos"
       role="tabpanel"
@@ -1008,8 +1008,8 @@
             description="No hay préstamos con el estado seleccionado."
           />
         {:else}
-          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
           <div
             class="af-table-wrap"
             aria-busy={prestamosLoading}
@@ -1079,8 +1079,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 4 — FUID
          ----------------------------------------------------------------------- -->
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       id="panel-fuid"
       role="tabpanel"
@@ -1152,8 +1152,8 @@
               description="No se encontraron registros FUID con los filtros indicados."
             />
           {:else if fuidRows.length > 0}
-            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
             <div
               class="af-table-wrap"
               aria-busy={fuidLoading}
@@ -1445,8 +1445,8 @@
       description="Esta unidad no tiene movimientos registrados."
     />
   {:else}
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div class="af-table-wrap" role="region" aria-label="Movimientos de la unidad" tabindex="0">
       <table class="table is-fullwidth">
         <caption class="is-sr-only">Historial de movimientos</caption>

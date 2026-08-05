@@ -49,9 +49,14 @@ describe("GET /admin/tvd/api/[code]/versiones", () => {
       capturedUrl = String(input);
       return new Response(JSON.stringify([]), { status: 200 });
     });
-    const res = await getVersiones({ locals: SESSION_LOCALS, params: { code: CODE_WITH_SLASH_LIKE_CHARS } });
+    const res = await getVersiones({
+      locals: SESSION_LOCALS,
+      params: { code: CODE_WITH_SLASH_LIKE_CHARS },
+    });
     expect(res.status).toBe(200);
-    expect(capturedUrl).toContain(`/tvd/${encodeURIComponent(CODE_WITH_SLASH_LIKE_CHARS)}/versiones`);
+    expect(capturedUrl).toContain(
+      `/tvd/${encodeURIComponent(CODE_WITH_SLASH_LIKE_CHARS)}/versiones`,
+    );
     expect(capturedUrl).not.toContain("/tvd/FA/01/versiones");
   });
 });
@@ -78,7 +83,13 @@ describe("POST /admin/tvd/api/[code]/versiones (nueva versión en borrador)", ()
     const res = await createVersion({
       locals: SESSION_LOCALS,
       params: { code: "FA-01" },
-      request: { json: async () => ({ justificacion_valoracion: "Nueva justificación", id: "otro-id", estado: "convalidada" }) },
+      request: {
+        json: async () => ({
+          justificacion_valoracion: "Nueva justificación",
+          id: "otro-id",
+          estado: "convalidada",
+        }),
+      },
     });
     expect(res.status).toBe(201);
     expect(capturedUrl).toContain("/tvd/FA-01/versiones");

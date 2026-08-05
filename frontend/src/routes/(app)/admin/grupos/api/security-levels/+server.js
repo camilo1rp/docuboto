@@ -38,7 +38,10 @@ export async function GET({ locals }) {
     return json(data, { status: res.status });
   } catch {
     return json(
-      { error: "connection_error", detail: "No se pudo cargar el catálogo de niveles de seguridad." },
+      {
+        error: "connection_error",
+        detail: "No se pudo cargar el catálogo de niveles de seguridad.",
+      },
       { status: 503 },
     );
   }

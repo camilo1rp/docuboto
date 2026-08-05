@@ -61,10 +61,9 @@ export async function GET({ locals, params }) {
   if (userId) headers["X-User-Id"] = userId;
 
   try {
-    const res = await fetch(
-      `${API_V1}/${servicePath}/${encodeURIComponent(params.eventId)}`,
-      { headers },
-    );
+    const res = await fetch(`${API_V1}/${servicePath}/${encodeURIComponent(params.eventId)}`, {
+      headers,
+    });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {

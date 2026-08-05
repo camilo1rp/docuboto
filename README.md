@@ -4,7 +4,7 @@
 > FastAPI microservices · PostgreSQL · MinIO · Keycloak · Redis
 > Published under **AGPL v3**
 
-[![CI/CD](https://img.shields.io/badge/CI%2FCD-GitLab%20CI-blue)](https://gitlab.com/orpyca/orpyca-mcp)
+[![CI/CD](https://img.shields.io/badge/CI%2FCD-GitLab%20CI-blue)](https://gitlab.com/orpyca/orfeo_mcp)
 [![License](https://img.shields.io/badge/License-AGPL%20v3-green)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-24.0%2B-blue)](https://www.docker.com/)
@@ -34,8 +34,8 @@ Public and private institutions in Latin America required by law (e.g., Colombia
 
 ```bash
 # Clone and start all services
-git clone https://gitlab.com/orpyca/orpyca-mcp.git
-cd orfeoMcp
+git clone https://gitlab.com/orpyca/orfeo_mcp.git
+cd orfeo_mcp
 docker compose up -d
 
 # View logs
@@ -185,8 +185,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guidelines.
 
 ## Community
 
-- **Issues**: [GitLab Issues](https://gitlab.com/orpyca/orpyca-mcp/issues)
-- **Discussions**: [GitLab Issues](https://gitlab.com/orpyca/orpyca-mcp/discussions)
+- **Issues**: [GitLab Issues](https://gitlab.com/orpyca/orfeo_mcp/issues)
+- **Discussions**: [GitLab Issues](https://gitlab.com/orpyca/orfeo_mcp/discussions)
 - **Contact**: aurigadl@gmail.com
 - **License**: **AGPL v3** — see [LICENSE](LICENSE). Commercial support and custom development available by request.
 
@@ -225,7 +225,7 @@ If you use OrpycaMCP in research or production, please cite:
   title  = {OrpycaMCP: Free Document Management System (SGDEA) for Latin America},
   author = {aurigadl},
   email  = {aurigadl@gmail.com},
-  url    = {https://gitlab.com/orpyca/orpyca-mcp},
+  url    = {https://gitlab.com/orpyca/orfeo_mcp},
   license = {AGPL-3.0}
 }
 ```

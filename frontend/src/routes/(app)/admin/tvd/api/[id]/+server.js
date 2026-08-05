@@ -33,7 +33,10 @@ export async function PATCH({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de agrupación inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de agrupación inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -57,16 +60,38 @@ export async function PATCH({ locals, params, request }) {
   } = body ?? {};
 
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
-    return json({ error: "validation_error", detail: "Disposición final inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Disposición final inválida." },
+      { status: 400 },
+    );
   }
-  if (pdfa_profile !== undefined && pdfa_profile !== null && pdfa_profile !== "" && !PDFA_PROFILES.has(pdfa_profile)) {
+  if (
+    pdfa_profile !== undefined &&
+    pdfa_profile !== null &&
+    pdfa_profile !== "" &&
+    !PDFA_PROFILES.has(pdfa_profile)
+  ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
-  if (fecha_extrema_inicial !== undefined && fecha_extrema_inicial !== null && !DATE_RE.test(fecha_extrema_inicial)) {
-    return json({ error: "validation_error", detail: "Fecha extrema inicial inválida (ISO date)." }, { status: 400 });
+  if (
+    fecha_extrema_inicial !== undefined &&
+    fecha_extrema_inicial !== null &&
+    !DATE_RE.test(fecha_extrema_inicial)
+  ) {
+    return json(
+      { error: "validation_error", detail: "Fecha extrema inicial inválida (ISO date)." },
+      { status: 400 },
+    );
   }
-  if (fecha_extrema_final !== undefined && fecha_extrema_final !== null && !DATE_RE.test(fecha_extrema_final)) {
-    return json({ error: "validation_error", detail: "Fecha extrema final inválida (ISO date)." }, { status: 400 });
+  if (
+    fecha_extrema_final !== undefined &&
+    fecha_extrema_final !== null &&
+    !DATE_RE.test(fecha_extrema_final)
+  ) {
+    return json(
+      { error: "validation_error", detail: "Fecha extrema final inválida (ISO date)." },
+      { status: 400 },
+    );
   }
   if (
     fecha_extrema_inicial &&
@@ -76,7 +101,10 @@ export async function PATCH({ locals, params, request }) {
     fecha_extrema_final < fecha_extrema_inicial
   ) {
     return json(
-      { error: "validation_error", detail: "La fecha extrema final no puede ser anterior a la inicial." },
+      {
+        error: "validation_error",
+        detail: "La fecha extrema final no puede ser anterior a la inicial.",
+      },
       { status: 400 },
     );
   }
@@ -85,9 +113,11 @@ export async function PATCH({ locals, params, request }) {
   const payload = {};
   if (typeof name === "string" && name.trim()) payload.name = name.trim();
   if (description !== undefined) {
-    payload.description = typeof description === "string" && description.trim() ? description.trim() : null;
+    payload.description =
+      typeof description === "string" && description.trim() ? description.trim() : null;
   }
-  if (typeof fondo_nombre === "string" && fondo_nombre.trim()) payload.fondo_nombre = fondo_nombre.trim();
+  if (typeof fondo_nombre === "string" && fondo_nombre.trim())
+    payload.fondo_nombre = fondo_nombre.trim();
   if (fecha_extrema_inicial !== undefined && DATE_RE.test(fecha_extrema_inicial)) {
     payload.fecha_extrema_inicial = fecha_extrema_inicial;
   }
@@ -104,7 +134,8 @@ export async function PATCH({ locals, params, request }) {
     payload.total_retention = Number(total_retention);
   }
   if (disposition !== undefined && DISPOSITIONS.has(disposition)) payload.disposition = disposition;
-  if (pdfa_profile !== undefined) payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
+  if (pdfa_profile !== undefined)
+    payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
 
   try {
     const res = await fetch(`${API_V1}/tvd/${encodeURIComponent(id)}`, {
@@ -115,6 +146,9 @@ export async function PATCH({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo actualizar la agrupación TVD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo actualizar la agrupación TVD." },
+      { status: 503 },
+    );
   }
 }

@@ -16,9 +16,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { load } from "./+page.server.js";
 
-const parentWith = (tenant_slug = "icetex", sub = "admin-1") => async () => ({
-  user: { tenant_slug, sub },
-});
+const parentWith =
+  (tenant_slug = "icetex", sub = "admin-1") =>
+  async () => ({
+    user: { tenant_slug, sub },
+  });
 
 describe("load /admin/colas", () => {
   it("consulta el servicio por defecto 'workflow' con status=pending y propaga Authorization/X-Tenant-Slug/X-User-Id", async () => {
@@ -30,7 +32,11 @@ describe("load /admin/colas", () => {
         headers: { "X-Total-Count": "1", "X-Truncated": "false" },
       });
     });
-    const result = await load({ cookies: { get: () => "tok-abc" }, parent: parentWith("icetex", "admin-1"), fetch });
+    const result = await load({
+      cookies: { get: () => "tok-abc" },
+      parent: parentWith("icetex", "admin-1"),
+      fetch,
+    });
     const [, opts] = fetch.mock.calls[0];
     expect(opts.headers.Authorization).toBe("Bearer tok-abc");
     expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");

@@ -46,10 +46,7 @@ export async function POST({ locals, request }) {
   const { depe_id } = body ?? {};
   const depeIdInt = Number(depe_id);
   if (!Number.isInteger(depeIdInt) || depeIdInt < 1 || depeIdInt > 999999) {
-    return json(
-      { error: "validation_error", detail: "depe_id inválido." },
-      { status: 422 },
-    );
+    return json({ error: "validation_error", detail: "depe_id inválido." }, { status: 422 });
   }
 
   try {

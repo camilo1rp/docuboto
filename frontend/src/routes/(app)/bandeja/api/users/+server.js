@@ -54,7 +54,10 @@ export async function GET({ locals, url }) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       return json(
-        { error: err.error ?? "upstream_error", detail: err.detail ?? "No se pudo cargar la lista de usuarios." },
+        {
+          error: err.error ?? "upstream_error",
+          detail: err.detail ?? "No se pudo cargar la lista de usuarios.",
+        },
         { status: res.status },
       );
     }

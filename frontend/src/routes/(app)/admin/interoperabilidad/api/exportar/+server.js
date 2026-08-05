@@ -25,7 +25,7 @@
 import { API_V1 } from "$lib/utils/config.server.js";
 import { json } from "@sveltejs/kit";
 
-const SAFE_FILENAME_RE = /^[\w.\-]+$/;
+const SAFE_FILENAME_RE = /^[\w.-]+$/;
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, request }) {

@@ -65,7 +65,9 @@ describe("/perfil — errores de validación asociados al campo", () => {
     const revokeSummary = screen.getByText(/revocar el segundo factor/i);
     await fireEvent.click(revokeSummary);
 
-    const input = screen.getByLabelText(/código actual de 6 dígitos/i, { selector: "#totp-revoke-code" });
+    const input = screen.getByLabelText(/código actual de 6 dígitos/i, {
+      selector: "#totp-revoke-code",
+    });
     await fireEvent.click(screen.getByRole("button", { name: /^revocar$/i }));
 
     expect(input).toHaveAttribute("aria-invalid", "true");

@@ -37,7 +37,10 @@ function headersFor(locals, withContentType = false) {
 }
 
 function badCatalogo() {
-  return json({ error: "validation_error", detail: "Nombre de catálogo inválido." }, { status: 400 });
+  return json(
+    { error: "validation_error", detail: "Nombre de catálogo inválido." },
+    { status: 400 },
+  );
 }
 
 /** @type {import('./$types').RequestHandler} */
@@ -52,13 +55,19 @@ export async function GET({ locals, params, url }) {
   if (activo === "true" || activo === "false") params2.set("activo", activo);
 
   try {
-    const res = await fetch(`${API_V1}/catalogos/${encodeURIComponent(params.catalogo)}?${params2}`, {
-      headers: headersFor(locals),
-    });
+    const res = await fetch(
+      `${API_V1}/catalogos/${encodeURIComponent(params.catalogo)}?${params2}`,
+      {
+        headers: headersFor(locals),
+      },
+    );
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo conectar al servidor de catálogos." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de catálogos." },
+      { status: 503 },
+    );
   }
 }
 
@@ -78,10 +87,16 @@ export async function POST({ locals, params, request }) {
 
   const { codigo, nombre, activo } = body ?? {};
   if (typeof codigo !== "string" || !codigo.trim()) {
-    return json({ error: "validation_error", detail: "El código es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El código es obligatorio." },
+      { status: 400 },
+    );
   }
   if (typeof nombre !== "string" || !nombre.trim()) {
-    return json({ error: "validation_error", detail: "El nombre es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El nombre es obligatorio." },
+      { status: 400 },
+    );
   }
 
   const payload = { codigo: codigo.trim(), nombre: nombre.trim(), activo: activo !== false };
@@ -95,6 +110,9 @@ export async function POST({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear el item del catálogo." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear el item del catálogo." },
+      { status: 503 },
+    );
   }
 }

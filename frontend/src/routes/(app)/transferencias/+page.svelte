@@ -374,8 +374,8 @@
           description="No hay transferencias que coincidan con los filtros aplicados."
         />
       {:else}
-        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
         <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
         <div
           class="tr-table-wrap"
           aria-busy={loading}
@@ -610,8 +610,8 @@
       description="Esta transferencia no tiene datos FUID disponibles."
     />
   {:else}
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
     <div
       class="tr-table-wrap"
       role="region"

@@ -48,7 +48,11 @@ async function gatewayGet(path, token, tenant, extraHeaders, fetchFn) {
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw { code: body.error ?? "upstream_error", detail: body.detail ?? `HTTP ${res.status}`, status: res.status };
+    throw {
+      code: body.error ?? "upstream_error",
+      detail: body.detail ?? `HTTP ${res.status}`,
+      status: res.status,
+    };
   }
   return body;
 }
@@ -69,13 +73,17 @@ export async function load({ cookies, parent, fetch }) {
 
   const totpStatus =
     totpResult.status === "fulfilled" ? totpResult.value : { estado: "no_configurado" };
-  const totpError = totpResult.status === "rejected" ? (totpResult.reason?.detail ?? "No se pudo consultar el estado del segundo factor.") : null;
+  const totpError =
+    totpResult.status === "rejected"
+      ? (totpResult.reason?.detail ?? "No se pudo consultar el estado del segundo factor.")
+      : null;
 
   const signingKeyStatus =
     signingKeyResult.status === "fulfilled" ? signingKeyResult.value : { estado: "no_configurado" };
   const signingKeyError =
     signingKeyResult.status === "rejected"
-      ? (signingKeyResult.reason?.detail ?? "No se pudo consultar el estado de la credencial de firma.")
+      ? (signingKeyResult.reason?.detail ??
+        "No se pudo consultar el estado de la credencial de firma.")
       : null;
 
   return { totpStatus, totpError, signingKeyStatus, signingKeyError };

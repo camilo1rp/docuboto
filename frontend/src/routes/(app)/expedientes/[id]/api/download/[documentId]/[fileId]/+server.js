@@ -91,10 +91,7 @@ export async function GET({ locals, params }) {
     // "sobre-clearance" y "file_id ajeno al radicado" — este proxy no debe
     // reconstruir ni filtrar esa distinción a partir de otras señales.
     if (res.status === 404) {
-      return json(
-        { error: "not_found", detail: "El anexo no está disponible." },
-        { status: 404 },
-      );
+      return json({ error: "not_found", detail: "El anexo no está disponible." }, { status: 404 });
     }
     const body = await res.json().catch(() => ({
       error: "upstream_error",

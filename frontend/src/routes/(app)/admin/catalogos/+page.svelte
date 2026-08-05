@@ -162,11 +162,14 @@
     if (!editTarget) return;
     actionLoading = true;
     try {
-      const res = await fetch(`/admin/catalogos/api/${encodeURIComponent(selected)}/${editTarget.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre: eNombre.trim(), activo: eActivo }),
-      });
+      const res = await fetch(
+        `/admin/catalogos/api/${encodeURIComponent(selected)}/${editTarget.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nombre: eNombre.trim(), activo: eActivo }),
+        },
+      );
       const resData = await res.json();
       if (!res.ok) {
         notifyError(resData.detail ?? "No se pudo actualizar el item.");
@@ -187,7 +190,9 @@
     const item = event.detail.item;
     actionLoading = true;
     try {
-      const res = await fetch(`/admin/catalogos/api/${encodeURIComponent(selected)}/${item.id}`, { method: "DELETE" });
+      const res = await fetch(`/admin/catalogos/api/${encodeURIComponent(selected)}/${item.id}`, {
+        method: "DELETE",
+      });
       if (res.status === 204 || res.ok) {
         items = items.filter((i) => i.id !== item.id);
         notifySuccess("Item de catálogo eliminado.");
@@ -249,7 +254,9 @@
       <!-- Detalle: items del catálogo seleccionado -->
       <section class="cat-detail" aria-label="Items del catálogo seleccionado">
         {#if selected === null}
-          <p class="cat-detail__placeholder">Selecciona un catálogo para ver y administrar sus items.</p>
+          <p class="cat-detail__placeholder">
+            Selecciona un catálogo para ver y administrar sus items.
+          </p>
         {:else}
           <button type="button" class="cat-detail__back" on:click={backToMaster}>
             <i class="fas fa-arrow-left" aria-hidden="true"></i>
@@ -262,20 +269,21 @@
             <CatalogCrudPanel
               title={labelFor(selected)}
               ariaLabel="Items de {labelFor(selected)}"
-              items={items}
+              {items}
               rowKey={(i) => i.id}
               loadError={itemsError}
               canCreate={canWrite}
               createLabel="Nuevo item"
               emptyIcon="fas fa-list"
               emptyTitle="Sin items"
-              emptyDescription='Crea el primero con "Nuevo item".'
+              emptyDescription="Crea el primero con «Nuevo item»."
               bind:createOpen
               bind:editOpen
-              editTarget={editTarget}
+              {editTarget}
               bind:deleteOpen
-              deleteTarget={deleteTarget}
-              deleteConfirmText={(i) => `¿Eliminar el item "${i.nombre}" (${i.codigo})? Esta acción no puede deshacerse.`}
+              {deleteTarget}
+              deleteConfirmText={(i) =>
+                `¿Eliminar el item "${i.nombre}" (${i.codigo})? Esta acción no puede deshacerse.`}
               deleteLoading={actionLoading}
               on:confirmDelete={confirmarBorrarItem}
             >
@@ -288,12 +296,23 @@
               <svelte:fragment slot="row" let:item>
                 <td><code>{item.codigo}</code></td>
                 <td>{item.nombre}</td>
-                <td><StatusChip status={item.activo ? "success" : "neutral"} label={item.activo ? "Activo" : "Inactivo"} dot /></td>
+                <td
+                  ><StatusChip
+                    status={item.activo ? "success" : "neutral"}
+                    label={item.activo ? "Activo" : "Inactivo"}
+                    dot
+                  /></td
+                >
               </svelte:fragment>
 
               <svelte:fragment slot="row-actions" let:item>
                 {#if canWrite}
-                  <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openEdit(item)}>Editar</Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="fas fa-pen"
+                    on:click={() => openEdit(item)}>Editar</Button
+                  >
                   <Button
                     variant="ghost"
                     size="sm"
@@ -310,13 +329,28 @@
 
               <svelte:fragment slot="create-form">
                 <form class="cat-form" on:submit|preventDefault={crearItem} novalidate>
-                  <FormField id="item-codigo" label="Código" required bind:value={fCodigo} error={fCodigoError} hint="Máximo 10 caracteres." />
-                  <FormField id="item-nombre" label="Nombre" required bind:value={fNombre} error={fNombreError} />
+                  <FormField
+                    id="item-codigo"
+                    label="Código"
+                    required
+                    bind:value={fCodigo}
+                    error={fCodigoError}
+                    hint="Máximo 10 caracteres."
+                  />
+                  <FormField
+                    id="item-nombre"
+                    label="Nombre"
+                    required
+                    bind:value={fNombre}
+                    error={fNombreError}
+                  />
                 </form>
               </svelte:fragment>
               <svelte:fragment slot="create-footer">
                 <Button variant="ghost" on:click={() => (createOpen = false)}>Cancelar</Button>
-                <Button icon="fas fa-save" loading={actionLoading} on:click={crearItem}>Crear item</Button>
+                <Button icon="fas fa-save" loading={actionLoading} on:click={crearItem}
+                  >Crear item</Button
+                >
               </svelte:fragment>
 
               <svelte:fragment slot="edit-form" let:item>
@@ -331,7 +365,9 @@
               </svelte:fragment>
               <svelte:fragment slot="edit-footer">
                 <Button variant="ghost" on:click={() => (editOpen = false)}>Cancelar</Button>
-                <Button icon="fas fa-save" loading={actionLoading} on:click={guardarItem}>Guardar</Button>
+                <Button icon="fas fa-save" loading={actionLoading} on:click={guardarItem}
+                  >Guardar</Button
+                >
               </svelte:fragment>
             </CatalogCrudPanel>
           {/if}

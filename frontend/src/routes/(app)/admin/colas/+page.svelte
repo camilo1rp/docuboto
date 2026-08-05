@@ -128,7 +128,9 @@
 
   $: tableRows = items.map((i) => ({
     ...i,
-    dead_lettered_at: i.dead_lettered_at ? new Date(i.dead_lettered_at).toLocaleString("es-CO") : "—",
+    dead_lettered_at: i.dead_lettered_at
+      ? new Date(i.dead_lettered_at).toLocaleString("es-CO")
+      : "—",
   }));
 
   // --- Detalle ---------------------------------------------------------------
@@ -143,7 +145,9 @@
     detailError = "";
     detail = null;
     try {
-      const res = await fetch(`/admin/colas/api/${selectedService}/${encodeURIComponent(row.event_id)}`);
+      const res = await fetch(
+        `/admin/colas/api/${selectedService}/${encodeURIComponent(row.event_id)}`,
+      );
       const body = await res.json().catch(() => ({}));
       if (res.ok) {
         detail = body;
@@ -255,8 +259,7 @@
     <h1 class="colas-page__title">Colas de errores</h1>
     <p class="colas-page__subtitle">
       Eventos que fallaron su procesamiento automático (dead-letter, ADR-021) en workflow,
-      notificaciones o firma. Reintentar reprocesa el evento; descartar lo cierra
-      permanentemente.
+      notificaciones o firma. Reintentar reprocesa el evento; descartar lo cierra permanentemente.
     </p>
   </header>
 
@@ -283,7 +286,13 @@
     </div>
 
     <form class="colas-filters" on:submit|preventDefault={applyFilters}>
-      <FormField id="colas-status" label="Estado" type="select" bind:value={selectedStatus} options={STATUSES} />
+      <FormField
+        id="colas-status"
+        label="Estado"
+        type="select"
+        bind:value={selectedStatus}
+        options={STATUSES}
+      />
       <FormField
         id="colas-origin"
         label="Stream de origen (opcional)"
@@ -298,8 +307,8 @@
     {#if truncated}
       <div class="colas-page__warning" role="alert">
         <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-        El conjunto de eventos candidatos alcanzó el límite de la consulta: puede haber eventos
-        pendientes más antiguos que NO aparecen en este listado ni en el total mostrado.
+        El conjunto de eventos candidatos alcanzó el límite de la consulta: puede haber eventos pendientes
+        más antiguos que NO aparecen en este listado ni en el total mostrado.
       </div>
     {/if}
 
@@ -338,10 +347,20 @@
               Detalle
             </Button>
             {#if row.status === "pending"}
-              <Button variant="secondary" size="sm" icon="fas fa-rotate" on:click={() => confirmReplay(row)}>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="fas fa-rotate"
+                on:click={() => confirmReplay(row)}
+              >
                 Reintentar
               </Button>
-              <Button variant="danger" size="sm" icon="fas fa-ban" on:click={() => confirmDiscard(row)}>
+              <Button
+                variant="danger"
+                size="sm"
+                icon="fas fa-ban"
+                on:click={() => confirmDiscard(row)}
+              >
                 Descartar
               </Button>
             {/if}
@@ -367,7 +386,9 @@
   {:else if detail}
     <dl class="detail-list">
       <dt>Estado</dt>
-      <dd><StatusChip status={STATUS_VARIANT[detail.status] ?? "neutral"} label={detail.status} dot /></dd>
+      <dd>
+        <StatusChip status={STATUS_VARIANT[detail.status] ?? "neutral"} label={detail.status} dot />
+      </dd>
       <dt>Tipo de evento</dt>
       <dd>{detail.event_type ?? "—"}</dd>
       <dt>Correlación</dt>
@@ -375,7 +396,9 @@
       <dt>Stream de origen</dt>
       <dd>{detail.origin_stream ?? "—"}</dd>
       <dt>Fecha de fallo</dt>
-      <dd>{detail.dead_lettered_at ? new Date(detail.dead_lettered_at).toLocaleString("es-CO") : "—"}</dd>
+      <dd>
+        {detail.dead_lettered_at ? new Date(detail.dead_lettered_at).toLocaleString("es-CO") : "—"}
+      </dd>
       <dt>Fecha de resolución</dt>
       <dd>{detail.resolved_at ? new Date(detail.resolved_at).toLocaleString("es-CO") : "—"}</dd>
       <dt>Motivo del fallo</dt>
@@ -400,12 +423,17 @@
   {/if}
 </Drawer>
 
-<Modal open={modalReplay} title="Reintentar evento" size="sm" on:close={() => (modalReplay = false)}>
+<Modal
+  open={modalReplay}
+  title="Reintentar evento"
+  size="sm"
+  on:close={() => (modalReplay = false)}
+>
   {#if replayTarget}
     <p>
       Vas a reprocesar el evento <strong>{replayTarget.event_id}</strong>. El sistema re-ejecutará
-      el efecto original (puede incluir un envío de correo o una distribución real). Si el
-      reproceso vuelve a fallar, el evento seguirá pendiente sin cambios adicionales.
+      el efecto original (puede incluir un envío de correo o una distribución real). Si el reproceso
+      vuelve a fallar, el evento seguirá pendiente sin cambios adicionales.
     </p>
   {/if}
   <svelte:fragment slot="footer">
@@ -414,7 +442,12 @@
   </svelte:fragment>
 </Modal>
 
-<Modal open={modalDiscard} title="Descartar evento" size="sm" on:close={() => (modalDiscard = false)}>
+<Modal
+  open={modalDiscard}
+  title="Descartar evento"
+  size="sm"
+  on:close={() => (modalDiscard = false)}
+>
   {#if discardTarget}
     <p class="colas-page__discard-warning">
       Vas a descartar permanentemente el evento <strong>{discardTarget.event_id}</strong>. Esta
@@ -434,7 +467,9 @@
   {/if}
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (modalDiscard = false)}>Cancelar</Button>
-    <Button variant="danger" loading={discarding} on:click={doDiscard}>Descartar definitivamente</Button>
+    <Button variant="danger" loading={discarding} on:click={doDiscard}
+      >Descartar definitivamente</Button
+    >
   </svelte:fragment>
 </Modal>
 

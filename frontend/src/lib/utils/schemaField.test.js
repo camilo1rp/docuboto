@@ -142,9 +142,7 @@ describe("coerceSchemaValue — coerción del valor crudo de FormData al tipo de
   });
 
   it("date -> string ISO tal cual", () => {
-    expect(coerceSchemaValue({ type: "string", format: "date" }, "2026-07-15")).toBe(
-      "2026-07-15",
-    );
+    expect(coerceSchemaValue({ type: "string", format: "date" }, "2026-07-15")).toBe("2026-07-15");
   });
 
   it("constructo no soportado (object) -> siempre undefined, aunque llegue un raw", () => {

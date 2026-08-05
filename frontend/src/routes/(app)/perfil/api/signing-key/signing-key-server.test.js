@@ -68,7 +68,10 @@ describe("POST /perfil/api/signing-key/enroll", () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       capturedBody = JSON.parse(init.body);
       return new Response(
-        JSON.stringify({ estado: "pendiente_emision", csr_pem: "-----BEGIN CERTIFICATE REQUEST-----" }),
+        JSON.stringify({
+          estado: "pendiente_emision",
+          csr_pem: "-----BEGIN CERTIFICATE REQUEST-----",
+        }),
         { status: 201 },
       );
     });
@@ -140,7 +143,10 @@ describe("DELETE /perfil/api/signing-key (auto-revocación)", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("fetch no debió invocarse sin sesión");
     });
-    const res = await revokeDelete({ locals: {}, request: { json: async () => ({ step_up_totp_code: "123456" }) } });
+    const res = await revokeDelete({
+      locals: {},
+      request: { json: async () => ({ step_up_totp_code: "123456" }) },
+    });
     expect(res.status).toBe(401);
   });
 

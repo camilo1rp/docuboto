@@ -64,7 +64,9 @@
     historyLoading = true;
     historyError = "";
     try {
-      const res = await fetch(`/admin/notificaciones/api/historial?limit=${data.historyLimit ?? 50}`);
+      const res = await fetch(
+        `/admin/notificaciones/api/historial?limit=${data.historyLimit ?? 50}`,
+      );
       const body = await res.json().catch(() => []);
       if (res.ok) {
         history = Array.isArray(body) ? body : [];
@@ -219,14 +221,20 @@
     <section class="notificaciones-section">
       <div class="notificaciones-section__header">
         <h2>Historial de envíos</h2>
-        <Button variant="ghost" size="sm" icon="fas fa-rotate" loading={historyLoading} on:click={refreshHistory}>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="fas fa-rotate"
+          loading={historyLoading}
+          on:click={refreshHistory}
+        >
           Actualizar
         </Button>
       </div>
       <p class="notificaciones-section__note">
-        Se muestran los últimos {data.historyLimit ?? 50} envíos del tenant. El backend no expone
-        un total ni paginación real para este listado — esta lista NO es "todas las
-        notificaciones", es una ventana reciente.
+        Se muestran los últimos {data.historyLimit ?? 50} envíos del tenant. El backend no expone un total
+        ni paginación real para este listado — esta lista NO es "todas las notificaciones", es una ventana
+        reciente.
       </p>
 
       {#if historyError}
@@ -235,7 +243,11 @@
           {historyError}
         </div>
       {:else if history.length === 0 && !historyLoading}
-        <EmptyState icon="fas fa-envelope" title="Sin envíos recientes" description="No hay notificaciones registradas todavía." />
+        <EmptyState
+          icon="fas fa-envelope"
+          title="Sin envíos recientes"
+          description="No hay notificaciones registradas todavía."
+        />
       {:else}
         <DataTable
           columns={historyColumns}
@@ -276,7 +288,11 @@
           {webhooksError}
         </div>
       {:else if webhooks.length === 0 && !webhooksLoading}
-        <EmptyState icon="fas fa-satellite-dish" title="Sin webhooks configurados" description="Crea el primero con «Nuevo webhook»." />
+        <EmptyState
+          icon="fas fa-satellite-dish"
+          title="Sin webhooks configurados"
+          description="Crea el primero con «Nuevo webhook»."
+        />
       {:else}
         <DataTable
           columns={webhookColumns}
@@ -291,11 +307,20 @@
             <td class="notificaciones-page__url">{row.url}</td>
             <td>{row.event_types}</td>
             <td>
-              <StatusChip status={row.active ? "success" : "neutral"} label={row.active ? "Activo" : "Inactivo"} dot />
+              <StatusChip
+                status={row.active ? "success" : "neutral"}
+                label={row.active ? "Activo" : "Inactivo"}
+                dot
+              />
             </td>
             <td>{row.created_at}</td>
             <td>
-              <Button variant="ghost" size="sm" icon="fas fa-trash" on:click={() => confirmDelete(row)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="fas fa-trash"
+                on:click={() => confirmDelete(row)}
+              >
                 Eliminar
               </Button>
             </td>

@@ -44,7 +44,8 @@ describe("GET /admin/usuarios/api", () => {
 
   it("propaga el status de error del gateway (no lo colapsa en 500)", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
+      async () =>
+        new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
     );
     const res = await listUsers({ locals: SESSION_LOCALS, url: new URL("http://x/") });
     expect(res.status).toBe(403);
@@ -56,7 +57,10 @@ describe("POST /admin/usuarios/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("fetch no debió invocarse sin sesión");
     });
-    const res = await createUser({ locals: {}, request: { json: async () => ({ username: "ana" }) } });
+    const res = await createUser({
+      locals: {},
+      request: { json: async () => ({ username: "ana" }) },
+    });
     expect(res.status).toBe(401);
   });
 
@@ -174,7 +178,8 @@ describe("GET /admin/usuarios/api/[id]/permissions", () => {
 
   it("propaga un 403 del gateway tal cual (no lo colapsa en 500)", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
+      async () =>
+        new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
     );
     const res = await getPermissions({ locals: SESSION_LOCALS, params: { id: USER_ID } });
     expect(res.status).toBe(403);
@@ -269,7 +274,6 @@ describe("POST /admin/usuarios/api/[id]/urd", () => {
     expect(capturedHeaders["X-Tenant-Slug"]).toBe("icetex");
     expect(capturedHeaders["X-User-Id"]).toBe(SESSION_LOCALS.user.sub);
   });
-
 });
 
 describe("DELETE /admin/usuarios/api/[id]/urd/[urdId]", () => {
@@ -305,7 +309,8 @@ describe("DELETE /admin/usuarios/api/[id]/urd/[urdId]", () => {
 
   it("404 del gateway se propaga tal cual", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
+      async () =>
+        new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
     );
     const res = await deleteUrd({ locals: SESSION_LOCALS, params: { id: USER_ID, urdId: URD_ID } });
     expect(res.status).toBe(404);

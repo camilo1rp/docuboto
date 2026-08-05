@@ -48,7 +48,10 @@ export async function GET({ locals, url }) {
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo conectar al servidor de festivos." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de festivos." },
+      { status: 503 },
+    );
   }
 }
 
@@ -67,10 +70,16 @@ export async function POST({ locals, request }) {
 
   const { fecha, descripcion, tipo, is_national } = body ?? {};
   if (typeof fecha !== "string" || !DATE_RE.test(fecha)) {
-    return json({ error: "validation_error", detail: "La fecha debe tener formato YYYY-MM-DD." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "La fecha debe tener formato YYYY-MM-DD." },
+      { status: 400 },
+    );
   }
   if (typeof descripcion !== "string" || !descripcion.trim()) {
-    return json({ error: "validation_error", detail: "La descripción es obligatoria." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "La descripción es obligatoria." },
+      { status: 400 },
+    );
   }
 
   const payload = {
@@ -89,6 +98,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear el festivo." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear el festivo." },
+      { status: 503 },
+    );
   }
 }

@@ -1,1 +1,0 @@
-export { default as component } from "../../../../src/routes/(app)/admin/flujos/reasignacion/+page.svelte";

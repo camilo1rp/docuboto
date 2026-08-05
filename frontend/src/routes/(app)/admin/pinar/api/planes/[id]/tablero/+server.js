@@ -34,7 +34,10 @@ export async function GET({ locals, params }) {
 
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de plan inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de plan inválido." },
+      { status: 400 },
+    );
   }
 
   const tenant = locals.user?.tenant_slug ?? "";
@@ -44,7 +47,9 @@ export async function GET({ locals, params }) {
   if (userId) headers["X-User-Id"] = userId;
 
   try {
-    const res = await fetch(`${API_V1}/pinar/planes/${encodeURIComponent(id)}/tablero`, { headers });
+    const res = await fetch(`${API_V1}/pinar/planes/${encodeURIComponent(id)}/tablero`, {
+      headers,
+    });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {

@@ -103,7 +103,6 @@
 
     title              string   — título de cabecera (h1)
     ariaLabel          string   — aria-label de la tabla (obligatorio, a11y)
-    icon               string   — clase FontAwesome del EmptyState (opcional)
     items              Array    — filas a listar
     rowKey             (item) => string|number — clave estable (default item.id)
     loading            boolean  — muestra Loader tipo skeleton en vez de tabla
@@ -151,7 +150,6 @@
 
   export let title = "";
   export let ariaLabel;
-  export let icon = "fas fa-list";
 
   /** @type {Array<Record<string, any>>} */
   export let items = [];
@@ -179,7 +177,8 @@
   /** @type {Record<string, any>|null} */
   export let deleteTarget = null;
   /** @type {(item: Record<string, any>) => string} */
-  export let deleteConfirmText = (item) => `¿Eliminar este registro? Esta acción no puede deshacerse.`;
+  export let deleteConfirmText = (item) =>
+    `¿Eliminar este registro? Esta acción no puede deshacerse.`;
   export let deleteLoading = false;
 
   // Si la página nunca usa el slot row-actions, la columna extra no se

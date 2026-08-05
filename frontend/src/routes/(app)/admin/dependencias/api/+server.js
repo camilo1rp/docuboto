@@ -81,7 +81,14 @@ export async function POST({ locals, request }) {
   }
 
   // Allowlist explícita — nunca reenviar el body íntegro (anti mass-assignment).
-  const { codigo, sigla, nombre, parent_id: parentId, depe_rad_tp2: depeRadTp2, activo } = body ?? {};
+  const {
+    codigo,
+    sigla,
+    nombre,
+    parent_id: parentId,
+    depe_rad_tp2: depeRadTp2,
+    activo,
+  } = body ?? {};
 
   const codigoNum = Number(codigo);
   if (!Number.isInteger(codigoNum) || codigoNum < 1 || codigoNum > 999999) {
@@ -94,7 +101,10 @@ export async function POST({ locals, request }) {
     return json({ error: "validation_error", detail: "La sigla es obligatoria." }, { status: 400 });
   }
   if (typeof nombre !== "string" || !nombre.trim()) {
-    return json({ error: "validation_error", detail: "El nombre es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El nombre es obligatorio." },
+      { status: 400 },
+    );
   }
   if (parentId !== null && parentId !== undefined && !UUID_RE.test(String(parentId))) {
     return json(

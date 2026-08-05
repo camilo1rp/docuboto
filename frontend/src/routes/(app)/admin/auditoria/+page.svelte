@@ -222,9 +222,9 @@
           <p class="integrity-panel__desc">
             El recálculo de la cadena de hash NO coincide{brokenId !== null
               ? ` a partir de la entrada con id ${brokenId}`
-              : ""}. Esto indica que uno o más registros de auditoría fueron alterados o
-            eliminados fuera del único punto de escritura permitido. Trátese como un incidente:
-            no continúe asumiendo que el resto del registro es confiable sin investigar.
+              : ""}. Esto indica que uno o más registros de auditoría fueron alterados o eliminados
+            fuera del único punto de escritura permitido. Trátese como un incidente: no continúe
+            asumiendo que el resto del registro es confiable sin investigar.
           </p>
         {:else}
           <p class="integrity-panel__title">No se pudo verificar la cadena</p>
@@ -250,14 +250,24 @@
 
     <!-- Filtros del listado (contra el servidor, no locales) -->
     <form class="auditoria-filters" on:submit|preventDefault={applyFilters}>
-      <FormField id="audit-action" label="Acción" bind:value={fAction} placeholder="p. ej. radicado.creado" />
+      <FormField
+        id="audit-action"
+        label="Acción"
+        bind:value={fAction}
+        placeholder="p. ej. radicado.creado"
+      />
       <FormField
         id="audit-object-type"
         label="Tipo de objeto"
         bind:value={fObjectType}
         placeholder="p. ej. radicado"
       />
-      <FormField id="audit-object-ref" label="Referencia" bind:value={fObjectRef} placeholder="ID del objeto" />
+      <FormField
+        id="audit-object-ref"
+        label="Referencia"
+        bind:value={fObjectRef}
+        placeholder="ID del objeto"
+      />
       <FormField id="audit-actor" label="Actor" bind:value={fActor} placeholder="ID de usuario" />
       <div class="auditoria-filters__actions">
         <Button type="submit" icon="fas fa-filter" loading={listLoading}>Filtrar</Button>

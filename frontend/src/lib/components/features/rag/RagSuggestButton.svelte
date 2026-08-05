@@ -103,7 +103,7 @@
     size="sm"
     icon="fas fa-lightbulb"
     disabled={disabled || !queryReady}
-    loading={loading}
+    {loading}
     on:click={suggest}
   >
     Sugerir con antecedentes
@@ -145,9 +145,9 @@
           </ul>
           <p class="rag-suggest__disclaimer">
             <i class="fas fa-info-circle" aria-hidden="true"></i>
-            Esta sugerencia puede excluir precedentes visibles en la búsqueda que no eran aptos
-            para salir a un proveedor de generación (barrera de residencia). Verifique cada cita
-            contra el radicado fuente antes de firmar sobre este texto.
+            Esta sugerencia puede excluir precedentes visibles en la búsqueda que no eran aptos para salir
+            a un proveedor de generación (barrera de residencia). Verifique cada cita contra el radicado
+            fuente antes de firmar sobre este texto.
           </p>
           {#if inserted}
             <p class="rag-suggest__inserted" role="status">
@@ -167,9 +167,9 @@
             <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
             No se pudo fundamentar una respuesta con citas para insertar en el documento.
             {#if result.citations?.length}
-              Se encontraron {result.citations.length} precedente(s) relacionado(s), pero sin una
-              síntesis citada no se ofrece insertarlos como texto: una afirmación sin fuente en un
-              documento oficial es peor que no tener sugerencia.
+              Se encontraron {result.citations.length} precedente(s) relacionado(s), pero sin una síntesis
+              citada no se ofrece insertarlos como texto: una afirmación sin fuente en un documento oficial
+              es peor que no tener sugerencia.
             {:else}
               No se encontraron precedentes indexados para esta consulta.
             {/if}

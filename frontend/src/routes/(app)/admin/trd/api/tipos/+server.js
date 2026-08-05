@@ -43,12 +43,17 @@ export async function GET({ locals, url }) {
   if (activo === "true" || activo === "false") params.set("activo", activo);
 
   try {
-    const res = await fetch(`${API_V1}/tipos-documentales?${params}`, { headers: headersFor(locals) });
+    const res = await fetch(`${API_V1}/tipos-documentales?${params}`, {
+      headers: headersFor(locals),
+    });
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
     return json(
-      { error: "connection_error", detail: "No se pudo conectar al servidor de tipos documentales." },
+      {
+        error: "connection_error",
+        detail: "No se pudo conectar al servidor de tipos documentales.",
+      },
       { status: 503 },
     );
   }
@@ -70,12 +75,23 @@ export async function POST({ locals, request }) {
   const { code, nombre, trd_serie_id, obligatorio, metadata_template, activo } = body ?? {};
 
   if (typeof code !== "string" || !code.trim()) {
-    return json({ error: "validation_error", detail: "El código del tipo es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El código del tipo es obligatorio." },
+      { status: 400 },
+    );
   }
   if (typeof nombre !== "string" || !nombre.trim()) {
-    return json({ error: "validation_error", detail: "El nombre del tipo es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El nombre del tipo es obligatorio." },
+      { status: 400 },
+    );
   }
-  if (trd_serie_id !== undefined && trd_serie_id !== null && trd_serie_id !== "" && !UUID_RE.test(trd_serie_id)) {
+  if (
+    trd_serie_id !== undefined &&
+    trd_serie_id !== null &&
+    trd_serie_id !== "" &&
+    !UUID_RE.test(trd_serie_id)
+  ) {
     return json({ error: "validation_error", detail: "Serie TRD inválida." }, { status: 400 });
   }
 
@@ -85,7 +101,9 @@ export async function POST({ locals, request }) {
     trd_serie_id: trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null,
     obligatorio: obligatorio === true,
     metadata_template:
-      typeof metadata_template === "string" && metadata_template.trim() ? metadata_template.trim() : null,
+      typeof metadata_template === "string" && metadata_template.trim()
+        ? metadata_template.trim()
+        : null,
     activo: activo !== false,
   };
 
@@ -98,6 +116,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear el tipo documental." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear el tipo documental." },
+      { status: 503 },
+    );
   }
 }

@@ -97,11 +97,7 @@
 
 {#if activeDepts.length > 0}
   <div class="dep-switcher" class:dep-switcher--compact={compact} aria-busy={switching}>
-    <label
-      for="dep-switcher-select"
-      class="dep-switcher__label"
-      class:sr-only={compact}
-    >
+    <label for="dep-switcher-select" class="dep-switcher__label" class:sr-only={compact}>
       Dependencia activa
     </label>
     <div class="dep-switcher__control">

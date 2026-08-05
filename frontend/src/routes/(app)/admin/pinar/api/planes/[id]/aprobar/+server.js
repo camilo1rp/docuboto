@@ -35,7 +35,10 @@ export async function POST({ locals, params, request }) {
 
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de plan inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de plan inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -46,9 +49,16 @@ export async function POST({ locals, params, request }) {
   }
 
   const { acto_administrativo } = body ?? {};
-  if (typeof acto_administrativo !== "string" || !acto_administrativo.trim() || acto_administrativo.length > 200) {
+  if (
+    typeof acto_administrativo !== "string" ||
+    !acto_administrativo.trim() ||
+    acto_administrativo.length > 200
+  ) {
     return json(
-      { error: "validation_error", detail: "El acto administrativo es obligatorio (máx. 200 caracteres)." },
+      {
+        error: "validation_error",
+        detail: "El acto administrativo es obligatorio (máx. 200 caracteres).",
+      },
       { status: 400 },
     );
   }
@@ -72,6 +82,9 @@ export async function POST({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo aprobar el plan PINAR." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo aprobar el plan PINAR." },
+      { status: 503 },
+    );
   }
 }

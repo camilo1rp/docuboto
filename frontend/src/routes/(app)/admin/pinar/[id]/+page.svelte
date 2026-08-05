@@ -1,32 +1,3 @@
-<!--
-  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
-  Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
-  Contacto: aurigadl@gmail.com
-
-  Software libre: este archivo se distribuye bajo la Licencia Pública General
-  Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
-  conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
-  SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
--->
-
-<!--
-  admin/pinar/[id] — Workspace de un plan PINAR (RF-ADM-08, Ac. AGN 003/2015,
-  Fase 7 cierre de desfase API↔UI).
-
-  Ciclo de vida (Stepper puramente informativo — NO navegable por clic, las
-  transiciones son actos administrativos con botones + confirmación propios):
-    borrador --aprobar--> aprobado --ejecutar--> en_ejecucion --cerrar--> cerrado
-
-  Honestidad de la interfaz: "aprobar" congela el contenido estructural del
-  plan (audit_log inmutable) y NO tiene vuelta atrás — el Modal de
-  confirmación lo dice ANTES de ejecutar, no después de un error 409. Lo
-  mismo para "ejecutar" (no hay transición de retorno) y "cerrar" (estado
-  terminal). Reformular = crear una versión nueva desde el listado.
-
-  Pestañas (tablist ARIA, mismo patrón que expedientes/[id]):
-    0 — Resumen   → metadatos del plan
-    1 — Tablero   → avance por objetivo / por eje (RF-ADM-08 §mapa de ruta)
--->
 <script>
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
@@ -178,7 +149,9 @@
       });
       const result = await res.json();
       if (!res.ok) throw result;
-      notifySuccess(`Plan PINAR v${plan.version} aprobado. El contenido estructural queda congelado.`);
+      notifySuccess(
+        `Plan PINAR v${plan.version} aprobado. El contenido estructural queda congelado.`,
+      );
       showAprobarModal = false;
       fActoAdministrativo = "";
       await invalidateAll();
@@ -228,6 +201,31 @@
   }
 </script>
 
+<!--
+  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+  Contacto: aurigadl@gmail.com
+
+  Software libre: este archivo se distribuye bajo la Licencia Pública General
+  Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+  conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+  SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+-->
+
+<!--
+  admin/pinar/[id] — Workspace de un plan PINAR (RF-ADM-08, Ac. AGN 003/2015,
+  Fase 7 cierre de desfase API↔UI).
+
+  Ciclo de vida (Stepper puramente informativo — NO navegable por clic, las
+  transiciones son actos administrativos con botones + confirmación propios):
+    borrador --aprobar-->
+aprobado --ejecutar--> en_ejecucion --cerrar--> cerrado Honestidad de la interfaz: "aprobar" congela el
+contenido estructural del plan (audit_log inmutable) y NO tiene vuelta atrás — el Modal de confirmación
+lo dice ANTES de ejecutar, no después de un error 409. Lo mismo para "ejecutar" (no hay transición de
+retorno) y "cerrar" (estado terminal). Reformular = crear una versión nueva desde el listado. Pestañas
+(tablist ARIA, mismo patrón que expedientes/[id]): 0 — Resumen → metadatos del plan 1 — Tablero → avance
+por objetivo / por eje (RF-ADM-08 §mapa de ruta) -->
+
 <svelte:head>
   <title>Plan PINAR v{plan?.version} — Administración — OrpycaMCP</title>
 </svelte:head>
@@ -238,7 +236,10 @@
       <h1 id="pinar-workspace-title" class="pinar-workspace__title" tabindex="-1">
         Plan PINAR — versión {plan.version}
       </h1>
-      <StatusChip status={ESTADO_CHIP_MAP[plan.estado] ?? "neutral"} label={ESTADO_LABELS[plan.estado] ?? plan.estado} />
+      <StatusChip
+        status={ESTADO_CHIP_MAP[plan.estado] ?? "neutral"}
+        label={ESTADO_LABELS[plan.estado] ?? plan.estado}
+      />
     </div>
     <div class="pinar-workspace__actions">
       {#if canAprobar}
@@ -285,7 +286,13 @@
 
   <div class="pinar-workspace__panels">
     <!-- Panel: Resumen -->
-    <div id="panel-resumen" role="tabpanel" aria-labelledby="tab-resumen" hidden={activeTab !== "resumen"} tabindex="0">
+    <div
+      id="panel-resumen"
+      role="tabpanel"
+      aria-labelledby="tab-resumen"
+      hidden={activeTab !== "resumen"}
+      tabindex="0"
+    >
       <Card>
         <h2 slot="header" class="op-card-title">Metadatos del plan</h2>
         <dl class="pinar-meta-list">
@@ -320,18 +327,30 @@
           <p class="pinar-workspace__hint">
             <i class="fas fa-circle-info" aria-hidden="true"></i>
             Mientras el plan esté en <strong>borrador</strong> puede completarse su contenido. Al
-            <strong>aprobarlo</strong>, el contenido estructural queda congelado de forma
-            permanente (el asiento se registra en la auditoría inmutable) — no podrá volver a
-            editarse; para cambios posteriores se crea una versión nueva desde el listado.
+            <strong>aprobarlo</strong>, el contenido estructural queda congelado de forma permanente
+            (el asiento se registra en la auditoría inmutable) — no podrá volver a editarse; para
+            cambios posteriores se crea una versión nueva desde el listado.
           </p>
         {/if}
       </Card>
     </div>
 
     <!-- Panel: Tablero -->
-    <div id="panel-tablero" role="tabpanel" aria-labelledby="tab-tablero" hidden={activeTab !== "tablero"} tabindex="0">
+    <div
+      id="panel-tablero"
+      role="tabpanel"
+      aria-labelledby="tab-tablero"
+      hidden={activeTab !== "tablero"}
+      tabindex="0"
+    >
       <div class="pinar-workspace__tablero-toolbar">
-        <Button variant="ghost" size="sm" icon="fas fa-rotate" loading={tableroRefreshing} on:click={refrescarTablero}>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="fas fa-rotate"
+          loading={tableroRefreshing}
+          on:click={refrescarTablero}
+        >
           Actualizar
         </Button>
       </div>
@@ -411,13 +430,18 @@
 </div>
 
 <!-- Modal: Confirmar aprobación (IRREVERSIBLE — congela el contenido) -->
-<Modal open={showAprobarModal} title="Aprobar plan PINAR" size="sm" on:close={() => (showAprobarModal = false)}>
+<Modal
+  open={showAprobarModal}
+  title="Aprobar plan PINAR"
+  size="sm"
+  on:close={() => (showAprobarModal = false)}
+>
   <p class="pinar-workspace__warning">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
     Esta acción es <strong>irreversible</strong>: al aprobar, el contenido estructural del plan
-    (visión, vigencia, aspectos, objetivos) queda <strong>congelado de forma permanente</strong> y
-    el acto queda registrado en la auditoría inmutable. No podrá deshacerse ni volver a
-    "borrador" — para cambios posteriores deberá crear una versión nueva.
+    (visión, vigencia, aspectos, objetivos) queda <strong>congelado de forma permanente</strong> y el
+    acto queda registrado en la auditoría inmutable. No podrá deshacerse ni volver a "borrador" — para
+    cambios posteriores deberá crear una versión nueva.
   </p>
   <FormField
     id="pinar-acto-administrativo"
@@ -427,7 +451,9 @@
     bind:value={fActoAdministrativo}
   />
   <svelte:fragment slot="footer">
-    <Button variant="ghost" on:click={() => (showAprobarModal = false)} disabled={actionLoading}>Cancelar</Button>
+    <Button variant="ghost" on:click={() => (showAprobarModal = false)} disabled={actionLoading}
+      >Cancelar</Button
+    >
     <Button
       variant="primary"
       icon="fas fa-stamp"
@@ -439,15 +465,22 @@
 </Modal>
 
 <!-- Modal: Confirmar ejecución -->
-<Modal open={showEjecutarModal} title="Pasar a ejecución" size="sm" on:close={() => (showEjecutarModal = false)}>
+<Modal
+  open={showEjecutarModal}
+  title="Pasar a ejecución"
+  size="sm"
+  on:close={() => (showEjecutarModal = false)}
+>
   <p class="pinar-workspace__warning">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
     Esta transición es <strong>irreversible</strong> (no existe un paso atrás a "aprobado"). Solo
-    puede haber un plan PINAR <strong>en ejecución</strong> por entidad — si ya existe otro, la
-    operación se rechazará.
+    puede haber un plan PINAR <strong>en ejecución</strong> por entidad — si ya existe otro, la operación
+    se rechazará.
   </p>
   <svelte:fragment slot="footer">
-    <Button variant="ghost" on:click={() => (showEjecutarModal = false)} disabled={actionLoading}>Cancelar</Button>
+    <Button variant="ghost" on:click={() => (showEjecutarModal = false)} disabled={actionLoading}
+      >Cancelar</Button
+    >
     <Button variant="primary" icon="fas fa-play" loading={actionLoading} on:click={handleEjecutar}
       >Confirmar</Button
     >
@@ -455,14 +488,21 @@
 </Modal>
 
 <!-- Modal: Confirmar cierre (TERMINAL) -->
-<Modal open={showCerrarModal} title="Cerrar plan PINAR" size="sm" on:close={() => (showCerrarModal = false)}>
+<Modal
+  open={showCerrarModal}
+  title="Cerrar plan PINAR"
+  size="sm"
+  on:close={() => (showCerrarModal = false)}
+>
   <p class="pinar-workspace__warning">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-    <strong>Cerrado es un estado terminal</strong>: no existe una transición para reabrir este
-    plan. Para continuar la gestión archivística deberá crear una versión nueva.
+    <strong>Cerrado es un estado terminal</strong>: no existe una transición para reabrir este plan.
+    Para continuar la gestión archivística deberá crear una versión nueva.
   </p>
   <svelte:fragment slot="footer">
-    <Button variant="ghost" on:click={() => (showCerrarModal = false)} disabled={actionLoading}>Cancelar</Button>
+    <Button variant="ghost" on:click={() => (showCerrarModal = false)} disabled={actionLoading}
+      >Cancelar</Button
+    >
     <Button variant="secondary" icon="fas fa-lock" loading={actionLoading} on:click={handleCerrar}
       >Confirmar cierre</Button
     >

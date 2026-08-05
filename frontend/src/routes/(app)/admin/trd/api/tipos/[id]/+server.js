@@ -35,7 +35,10 @@ export async function PATCH({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de tipo inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de tipo inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -46,18 +49,26 @@ export async function PATCH({ locals, params, request }) {
   }
 
   const { nombre, trd_serie_id, obligatorio, metadata_template, activo } = body ?? {};
-  if (trd_serie_id !== undefined && trd_serie_id !== null && trd_serie_id !== "" && !UUID_RE.test(trd_serie_id)) {
+  if (
+    trd_serie_id !== undefined &&
+    trd_serie_id !== null &&
+    trd_serie_id !== "" &&
+    !UUID_RE.test(trd_serie_id)
+  ) {
     return json({ error: "validation_error", detail: "Serie TRD inválida." }, { status: 400 });
   }
 
   /** @type {Record<string, unknown>} */
   const payload = {};
   if (typeof nombre === "string" && nombre.trim()) payload.nombre = nombre.trim();
-  if (trd_serie_id !== undefined) payload.trd_serie_id = trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null;
+  if (trd_serie_id !== undefined)
+    payload.trd_serie_id = trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null;
   if (typeof obligatorio === "boolean") payload.obligatorio = obligatorio;
   if (metadata_template !== undefined) {
     payload.metadata_template =
-      typeof metadata_template === "string" && metadata_template.trim() ? metadata_template.trim() : null;
+      typeof metadata_template === "string" && metadata_template.trim()
+        ? metadata_template.trim()
+        : null;
   }
   if (typeof activo === "boolean") payload.activo = activo;
 
@@ -70,7 +81,10 @@ export async function PATCH({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo actualizar el tipo documental." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo actualizar el tipo documental." },
+      { status: 503 },
+    );
   }
 }
 
@@ -81,7 +95,10 @@ export async function DELETE({ locals, params }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de tipo inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de tipo inválido." },
+      { status: 400 },
+    );
   }
 
   try {
@@ -93,6 +110,9 @@ export async function DELETE({ locals, params }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo eliminar el tipo documental." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo eliminar el tipo documental." },
+      { status: 503 },
+    );
   }
 }

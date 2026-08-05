@@ -759,7 +759,8 @@
                 <RagSuggestButton
                   endpoint="/radicar/api/rag/suggest"
                   query={subject}
-                  on:insert={(e) => (observations = appendGeneratedHtml(observations, e.detail.html))}
+                  on:insert={(e) =>
+                    (observations = appendGeneratedHtml(observations, e.detail.html))}
                 />
                 <RichEditor
                   id="observations"

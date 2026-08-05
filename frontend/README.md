@@ -27,19 +27,19 @@ directo al gateway — ver regla D-05 en `frontend/CLAUDE.md`.
 
 ## Stack (alineado con sgdINTI)
 
-| Área                       | Herramienta                                                            |
-| -------------------------- | ---------------------------------------------------------------------- |
-| Framework                  | **SvelteKit 2** + **Svelte 4**                                         |
-| Render                     | **SSR** con `@sveltejs/adapter-node` (servidor Node sirve HTML)        |
-| Bundler / dev              | **Vite 5** (HMR)                                                       |
-| Estilos                    | **Bulma** + **Sass (SCSS)**, tokens de diseño Orpyca `--op-*`          |
-| Iconos                     | FontAwesome Free                                                       |
-| Editor de texto rico       | **TipTap 3** (saneado server-side, ver `frontend/CLAUDE.md`)           |
-| Formularios dinámicos      | **SurveyJS** (_form builder_, plantillas administrables)               |
-| Drag & drop                | `svelte-dnd-action`                                                    |
-| Markdown                   | `marked`                                                               |
-| Tests                      | **Vitest** (unitarios) + **Playwright** (`frontend/e2e/`)              |
-| Calidad                    | **ESLint** + **Prettier**                                              |
+| Área                  | Herramienta                                                     |
+| --------------------- | --------------------------------------------------------------- |
+| Framework             | **SvelteKit 2** + **Svelte 4**                                  |
+| Render                | **SSR** con `@sveltejs/adapter-node` (servidor Node sirve HTML) |
+| Bundler / dev         | **Vite 5** (HMR)                                                |
+| Estilos               | **Bulma** + **Sass (SCSS)**, tokens de diseño Orpyca `--op-*`   |
+| Iconos                | FontAwesome Free                                                |
+| Editor de texto rico  | **TipTap 3** (saneado server-side, ver `frontend/CLAUDE.md`)    |
+| Formularios dinámicos | **SurveyJS** (_form builder_, plantillas administrables)        |
+| Drag & drop           | `svelte-dnd-action`                                             |
+| Markdown              | `marked`                                                        |
+| Tests                 | **Vitest** (unitarios) + **Playwright** (`frontend/e2e/`)       |
+| Calidad               | **ESLint** + **Prettier**                                       |
 
 ## Estructura real
 

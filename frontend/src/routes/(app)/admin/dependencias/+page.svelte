@@ -132,9 +132,9 @@
   let pendingTargetNode = null;
 
   const RIESGO_TEXTO_RENOMBRAR =
-    'Vas a cambiar el nombre de esta dependencia. Otras partes del sistema (las reglas de enrutamiento y los pasos de flujo ya en curso) guardan la dependencia asignada por su NOMBRE, no por un identificador estable — no hay una referencia que las actualice automáticamente. Los radicados que ahora mismo están asignados a esta dependencia pueden quedar sin bandeja visible, y las reglas de enrutamiento que la mencionan por nombre dejarán de encontrarla.';
+    "Vas a cambiar el nombre de esta dependencia. Otras partes del sistema (las reglas de enrutamiento y los pasos de flujo ya en curso) guardan la dependencia asignada por su NOMBRE, no por un identificador estable — no hay una referencia que las actualice automáticamente. Los radicados que ahora mismo están asignados a esta dependencia pueden quedar sin bandeja visible, y las reglas de enrutamiento que la mencionan por nombre dejarán de encontrarla.";
   const RIESGO_TEXTO_DESACTIVAR =
-    'Vas a desactivar esta dependencia. Otras partes del sistema (las reglas de enrutamiento y los pasos de flujo ya en curso) la referencian por NOMBRE, no por un identificador estable. Los radicados que ahora mismo están asignados a esta dependencia pueden quedar sin bandeja visible para nadie, aunque la dependencia siga existiendo (solo inactiva).';
+    "Vas a desactivar esta dependencia. Otras partes del sistema (las reglas de enrutamiento y los pasos de flujo ya en curso) la referencian por NOMBRE, no por un identificador estable. Los radicados que ahora mismo están asignados a esta dependencia pueden quedar sin bandeja visible para nadie, aunque la dependencia siga existiendo (solo inactiva).";
 
   $: riesgoTexto =
     pendingPatch?.__riesgo === "renombrar" ? RIESGO_TEXTO_RENOMBRAR : RIESGO_TEXTO_DESACTIVAR;
@@ -315,7 +315,7 @@
     <EmptyState
       icon="fas fa-sitemap"
       title="Sin dependencias"
-      description='Crea la primera con "Nueva dependencia".'
+      description="Crea la primera con «Nueva dependencia»."
     />
   {:else}
     <ul class="dependencias-tree" aria-label="Árbol de dependencias">
@@ -401,7 +401,9 @@
      ========================================================================= -->
 <Modal
   open={confirmarRiesgoOpen}
-  title={pendingPatch?.__riesgo === "renombrar" ? "Confirmar cambio de nombre" : "Confirmar desactivación"}
+  title={pendingPatch?.__riesgo === "renombrar"
+    ? "Confirmar cambio de nombre"
+    : "Confirmar desactivación"}
   size="sm"
   closeOnBackdrop={false}
   on:close={cancelarRiesgo}
@@ -409,7 +411,12 @@
   <p class="dependencia-risk__text">{riesgoTexto}</p>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={cancelarRiesgo}>Cancelar</Button>
-    <Button variant="danger" icon="fas fa-triangle-exclamation" loading={actionLoading} on:click={confirmarRiesgoYGuardar}>
+    <Button
+      variant="danger"
+      icon="fas fa-triangle-exclamation"
+      loading={actionLoading}
+      on:click={confirmarRiesgoYGuardar}
+    >
       Entiendo el riesgo, continuar
     </Button>
   </svelte:fragment>

@@ -27,7 +27,10 @@ export async function DELETE({ locals, params }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de festivo inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de festivo inválido." },
+      { status: 400 },
+    );
   }
 
   const tenant = locals.user?.tenant_slug ?? "";
@@ -37,11 +40,17 @@ export async function DELETE({ locals, params }) {
   if (userId) headers["X-User-Id"] = userId;
 
   try {
-    const res = await fetch(`${API_V1}/config/holidays/${encodeURIComponent(id)}`, { method: "DELETE", headers });
+    const res = await fetch(`${API_V1}/config/holidays/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers,
+    });
     if (res.status === 204) return new Response(null, { status: 204 });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo eliminar el festivo." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo eliminar el festivo." },
+      { status: 503 },
+    );
   }
 }

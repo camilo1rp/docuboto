@@ -87,9 +87,7 @@
       permKey: "expediente",
     },
   ];
-  $: TABS = ALL_TABS.filter((tab) =>
-    tab.permKey === "radi" ? hasRadiPerm : hasExpedientePerm,
-  );
+  $: TABS = ALL_TABS.filter((tab) => (tab.permKey === "radi" ? hasRadiPerm : hasExpedientePerm));
   let activeTab = "exportar";
   // Si la pestaña activa deja de estar visible (permisos aún no resueltos al
   // montar, o cambian en caliente), reencuadra a la primera pestaña visible.
@@ -286,7 +284,10 @@
       }
       return { pollError: "", status: data };
     } catch {
-      return { pollError: "No se pudo consultar el estado del job (sin conexión).", status: undefined };
+      return {
+        pollError: "No se pudo consultar el estado del job (sin conexión).",
+        status: undefined,
+      };
     }
   }
 

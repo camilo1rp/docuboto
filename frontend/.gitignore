@@ -1,6 +1,9 @@
 node_modules/
 /build
-.svelte-kit/
+# Con comodín a propósito: `.svelte-kit/` a secas NO casa con las variantes
+# renombradas (`.svelte-kit.root-stale/`), y una de ellas llegó a commitearse
+# —737 archivos, 16 MB— porque ni este patrón ni el hook `guard-bash` la veían.
+.svelte-kit*/
 /package
 .env
 .env.*

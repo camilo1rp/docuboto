@@ -39,7 +39,8 @@ describe("GET /admin/pinar/api/ejes", () => {
 
   it("propaga el catálogo de ejes", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify([{ code: 1, nombre: "Gestión documental" }]), { status: 200 }),
+      async () =>
+        new Response(JSON.stringify([{ code: 1, nombre: "Gestión documental" }]), { status: 200 }),
     );
     const res = await listEjes({ locals: SESSION_LOCALS });
     expect(res.status).toBe(200);
@@ -86,7 +87,8 @@ describe("GET /admin/pinar/api/planes", () => {
 
   it("propaga status de error del gateway", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
+      async () =>
+        new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
     );
     const res = await listPlanes({ locals: SESSION_LOCALS, url: new URL("http://x/") });
     expect(res.status).toBe(403);

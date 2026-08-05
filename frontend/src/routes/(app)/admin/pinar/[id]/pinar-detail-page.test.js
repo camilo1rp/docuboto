@@ -63,7 +63,11 @@ function plan(overrides = {}) {
 function baseData(planOverrides = {}, tableroOverrides = {}) {
   return {
     plan: plan(planOverrides),
-    tablero: { data: { plan_id: "p-1", por_objetivo: [], por_eje: [] }, error: null, ...tableroOverrides },
+    tablero: {
+      data: { plan_id: "p-1", por_objetivo: [], por_eje: [] },
+      error: null,
+      ...tableroOverrides,
+    },
   };
 }
 

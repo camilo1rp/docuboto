@@ -58,7 +58,10 @@ describe("radicar/api/rag/suggest POST", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = forbidFetch();
     try {
-      const res = await suggestPost({ locals: SESSION_LOCALS, request: jsonRequest({ query: "a" }) });
+      const res = await suggestPost({
+        locals: SESSION_LOCALS,
+        request: jsonRequest({ query: "a" }),
+      });
       expect(res.status).toBe(422);
       expect((await res.json()).error).toBe("validation_error");
     } finally {
@@ -68,19 +71,20 @@ describe("radicar/api/rag/suggest POST", () => {
 
   it("allowlist: descarta cualquier campo fuera de query/top_k y fija top_k por defecto", async () => {
     const originalFetch = globalThis.fetch;
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          answer: "texto",
-          citations: [],
-          proveedor: "disabled",
-          modelo: null,
-          confianza: 0,
-          suggestion_id: null,
-          advisory: "aviso",
-        }),
-        { status: 200 },
-      ),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            answer: "texto",
+            citations: [],
+            proveedor: "disabled",
+            modelo: null,
+            confianza: 0,
+            suggestion_id: null,
+            advisory: "aviso",
+          }),
+          { status: 200 },
+        ),
     );
     globalThis.fetch = fetchMock;
     try {
@@ -140,7 +144,11 @@ describe("radicar/api/rag/antecedentes POST", () => {
     const fetchMock = vi.fn(async (calledUrl) => {
       expect(calledUrl).toBe("http://api-gateway:8080/api/v1/knowledge/antecedentes");
       return new Response(
-        JSON.stringify({ error: "antecedente_source_not_found", detail: "no encontrado", status: 404 }),
+        JSON.stringify({
+          error: "antecedente_source_not_found",
+          detail: "no encontrado",
+          status: 404,
+        }),
         { status: 404 },
       );
     });
@@ -166,7 +174,12 @@ describe("radicar/api/rag/antecedentes POST", () => {
           JSON.stringify({
             antecedentes: [
               { source_type: "radicado", source_ref: trickyRef, snippet: "s1", score: 0.9 },
-              { source_type: "radicado", source_ref: "2024-ICETEX-E-000002", snippet: "s2", score: 0.8 },
+              {
+                source_type: "radicado",
+                source_ref: "2024-ICETEX-E-000002",
+                snippet: "s2",
+                score: 0.8,
+              },
             ],
             advisory: "aviso",
           }),
@@ -175,12 +188,14 @@ describe("radicar/api/rag/antecedentes POST", () => {
       }
       // Debe llegar SIEMPRE escapado — nunca la referencia cruda.
       expect(calledUrl).not.toContain(trickyRef);
-      if (calledUrl === `http://api-gateway:8080/api/v1/documents/by-tracking/${encodeURIComponent(trickyRef)}`) {
+      if (
+        calledUrl ===
+        `http://api-gateway:8080/api/v1/documents/by-tracking/${encodeURIComponent(trickyRef)}`
+      ) {
         return new Response(JSON.stringify({ doc_class: "CDP" }), { status: 200 });
       }
       if (
-        calledUrl ===
-        "http://api-gateway:8080/api/v1/documents/by-tracking/2024-ICETEX-E-000002"
+        calledUrl === "http://api-gateway:8080/api/v1/documents/by-tracking/2024-ICETEX-E-000002"
       ) {
         return new Response(JSON.stringify({ doc_class: "CDP" }), { status: 200 });
       }
@@ -209,7 +224,12 @@ describe("radicar/api/rag/antecedentes POST", () => {
         return new Response(
           JSON.stringify({
             antecedentes: [
-              { source_type: "radicado", source_ref: "2024-ICETEX-E-000009", snippet: "s", score: 0.5 },
+              {
+                source_type: "radicado",
+                source_ref: "2024-ICETEX-E-000009",
+                snippet: "s",
+                score: 0.5,
+              },
             ],
             advisory: "aviso",
           }),

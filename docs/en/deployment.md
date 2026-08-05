@@ -178,8 +178,8 @@ docker compose restart document-service tenant-service auth-service
 
 ```bash
 # 1. Clonar repositorio
-git clone https://gitlab.com/orpyca/orpyca-mcp.git
-cd orfeoMcp
+git clone https://gitlab.com/orpyca/orfeo_mcp.git
+cd orfeo_mcp
 
 # 2. Crear estructura de directorios
 mkdir -p infra/certs infra/logs

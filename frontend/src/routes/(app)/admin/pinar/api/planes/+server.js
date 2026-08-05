@@ -83,17 +83,26 @@ export async function POST({ locals, request }) {
   const { vision, vigencia_desde, vigencia_hasta, acto_administrativo } = body ?? {};
 
   if (vigencia_desde !== undefined && vigencia_desde !== null && !DATE_RE.test(vigencia_desde)) {
-    return json({ error: "validation_error", detail: "Fecha de inicio de vigencia inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Fecha de inicio de vigencia inválida." },
+      { status: 400 },
+    );
   }
   if (vigencia_hasta !== undefined && vigencia_hasta !== null && !DATE_RE.test(vigencia_hasta)) {
-    return json({ error: "validation_error", detail: "Fecha de fin de vigencia inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Fecha de fin de vigencia inválida." },
+      { status: 400 },
+    );
   }
   if (
     acto_administrativo !== undefined &&
     acto_administrativo !== null &&
     (typeof acto_administrativo !== "string" || acto_administrativo.length > 200)
   ) {
-    return json({ error: "validation_error", detail: "Acto administrativo inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Acto administrativo inválido." },
+      { status: 400 },
+    );
   }
 
   const payload = {
@@ -115,6 +124,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear el plan PINAR." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear el plan PINAR." },
+      { status: 503 },
+    );
   }
 }

@@ -367,9 +367,7 @@ describe("contrato de URL upstream — sondeo de lotes", () => {
       return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
     });
     await statusLoteDocs({ locals: SESSION_LOCALS, params: { jobId: JOB_ID } });
-    expect(capturedUrl).toMatch(
-      new RegExp(`/api/v1/batch/documents/${JOB_ID}/status$`),
-    );
+    expect(capturedUrl).toMatch(new RegExp(`/api/v1/batch/documents/${JOB_ID}/status$`));
   });
 
   it("expedientes: pide GET {API_V1}/batch/expedientes/{jobId}/status", async () => {
@@ -379,9 +377,7 @@ describe("contrato de URL upstream — sondeo de lotes", () => {
       return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
     });
     await statusLoteExps({ locals: SESSION_LOCALS, params: { jobId: JOB_ID } });
-    expect(capturedUrl).toMatch(
-      new RegExp(`/api/v1/batch/expedientes/${JOB_ID}/status$`),
-    );
+    expect(capturedUrl).toMatch(new RegExp(`/api/v1/batch/expedientes/${JOB_ID}/status$`));
   });
 
   it("crear lote documentos: POST a {API_V1}/batch/documents", async () => {

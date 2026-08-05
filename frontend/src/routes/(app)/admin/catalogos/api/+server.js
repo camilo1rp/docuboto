@@ -33,6 +33,9 @@ export async function GET({ locals }) {
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo conectar al servidor de catálogos." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de catálogos." },
+      { status: 503 },
+    );
   }
 }

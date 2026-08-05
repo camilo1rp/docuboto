@@ -41,7 +41,10 @@ export async function GET({ locals, params }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de usuario inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de usuario inválido." },
+      { status: 400 },
+    );
   }
 
   try {
@@ -51,7 +54,10 @@ export async function GET({ locals, params }) {
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo cargar la URD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo cargar la URD." },
+      { status: 503 },
+    );
   }
 }
 
@@ -63,7 +69,10 @@ export async function POST({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de usuario inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de usuario inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -78,7 +87,10 @@ export async function POST({ locals, params, request }) {
 
   const depeIdNum = Number(depeId);
   if (!Number.isInteger(depeIdNum) || depeIdNum < 1 || depeIdNum > 999999) {
-    return json({ error: "validation_error", detail: "Código de dependencia inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Código de dependencia inválido." },
+      { status: 400 },
+    );
   }
   if (typeof rolId !== "string" || !UUID_RE.test(rolId)) {
     return json({ error: "validation_error", detail: "Rol (grupo) inválido." }, { status: 400 });
@@ -95,6 +107,9 @@ export async function POST({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo asignar la URD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo asignar la URD." },
+      { status: 503 },
+    );
   }
 }

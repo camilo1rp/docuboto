@@ -171,7 +171,12 @@
       const res = await fetch("/admin/parametros/api/holidays", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fecha: hFecha, descripcion: hDescripcion.trim(), tipo: "festivo", is_national: true }),
+        body: JSON.stringify({
+          fecha: hFecha,
+          descripcion: hDescripcion.trim(),
+          tipo: "festivo",
+          is_national: true,
+        }),
       });
       const resData = await res.json();
       if (!res.ok) {
@@ -224,7 +229,9 @@
         notifyError(resData.detail ?? "No se pudo precargar festivos.");
         return;
       }
-      notifySuccess(`${resData.created ?? 0} festivos precargados. Recarga la página para verlos en la tabla.`);
+      notifySuccess(
+        `${resData.created ?? 0} festivos precargados. Recarga la página para verlos en la tabla.`,
+      );
     } catch {
       notifyError("No se pudo conectar al servidor.");
     } finally {
@@ -294,7 +301,10 @@
         return;
       }
       calcResult = resData;
-      calcBreakdown = computeBreakdown(resData.from_date.slice(0, 10), resData.due_date.slice(0, 10));
+      calcBreakdown = computeBreakdown(
+        resData.from_date.slice(0, 10),
+        resData.due_date.slice(0, 10),
+      );
     } catch {
       calcError = "No se pudo conectar al servidor.";
     } finally {
@@ -314,7 +324,9 @@
 <div class="param-page">
   <header class="param-page__header">
     <h1 class="param-page__title">Parámetros</h1>
-    <p class="param-page__subtitle">Configuración general del tenant, calendario de festivos y plazos (E14).</p>
+    <p class="param-page__subtitle">
+      Configuración general del tenant, calendario de festivos y plazos (E14).
+    </p>
   </header>
 
   <div class="param-tabs" role="tablist" aria-label="Secciones de parámetros">
@@ -339,19 +351,29 @@
   <!-- ===================================================================
        Panel: Parámetros
        =================================================================== -->
-  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-  <div id="panel-params" role="tabpanel" aria-labelledby="tab-params" hidden={activeTab !== "params"} tabindex="0">
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <div
+    id="panel-params"
+    role="tabpanel"
+    aria-labelledby="tab-params"
+    hidden={activeTab !== "params"}
+    tabindex="0"
+  >
     {#if data.paramsError}
       <div class="param-page__error" role="alert">
         <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
         {data.paramsError}
       </div>
     {:else if paramEntries.length === 0}
-      <EmptyState icon="fas fa-sliders" title="Sin parámetros definidos" description="Crea el primero con el formulario de abajo." />
+      <EmptyState
+        icon="fas fa-sliders"
+        title="Sin parámetros definidos"
+        description="Crea el primero con el formulario de abajo."
+      />
     {:else}
-      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
       <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
       <div class="param-table-wrap" role="region" aria-label="Parámetros del tenant" tabindex="0">
         <table class="param-table" aria-label="Parámetros del tenant">
           <thead>
@@ -382,10 +404,22 @@
                 {#if canWrite}
                   <td class="param-table__actions">
                     {#if editingKey === key}
-                      <Button variant="ghost" size="sm" on:click={() => (editingKey = null)}>Cancelar</Button>
-                      <Button size="sm" icon="fas fa-save" loading={actionLoading} on:click={guardarEdicion}>Guardar</Button>
+                      <Button variant="ghost" size="sm" on:click={() => (editingKey = null)}
+                        >Cancelar</Button
+                      >
+                      <Button
+                        size="sm"
+                        icon="fas fa-save"
+                        loading={actionLoading}
+                        on:click={guardarEdicion}>Guardar</Button
+                      >
                     {:else}
-                      <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => startEdit(key, value)}>Editar</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon="fas fa-pen"
+                        on:click={() => startEdit(key, value)}>Editar</Button
+                      >
                     {/if}
                   </td>
                 {/if}
@@ -399,7 +433,13 @@
     {#if canWrite}
       <form class="param-form" on:submit|preventDefault={crearParam} novalidate>
         <h2 class="param-page__section-title">Nuevo parámetro</h2>
-        <FormField id="new-param-key" label="Clave" required bind:value={newKey} error={newKeyError} />
+        <FormField
+          id="new-param-key"
+          label="Clave"
+          required
+          bind:value={newKey}
+          error={newKeyError}
+        />
         <FormField
           id="new-param-value"
           label="Valor (JSON)"
@@ -417,9 +457,15 @@
   <!-- ===================================================================
        Panel: Festivos
        =================================================================== -->
-  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-  <div id="panel-festivos" role="tabpanel" aria-labelledby="tab-festivos" hidden={activeTab !== "festivos"} tabindex="0">
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <div
+    id="panel-festivos"
+    role="tabpanel"
+    aria-labelledby="tab-festivos"
+    hidden={activeTab !== "festivos"}
+    tabindex="0"
+  >
     {#if data.holidaysError}
       <div class="param-page__error" role="alert">
         <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
@@ -429,11 +475,11 @@
       <EmptyState
         icon="fas fa-calendar-days"
         title="Sin festivos registrados"
-        description='Precarga el calendario colombiano con "Precargar festivos" o crea uno puntual.'
+        description="Precarga el calendario colombiano con «Precargar festivos» o crea uno puntual."
       />
     {:else}
-      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
       <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
       <div class="param-table-wrap" role="region" aria-label="Calendario de festivos" tabindex="0">
         <table class="param-table" aria-label="Calendario de festivos">
           <thead>
@@ -452,7 +498,13 @@
                 <td>{h.is_national ? "Sí" : "No"}</td>
                 {#if canWrite}
                   <td class="param-table__actions">
-                    <Button variant="ghost" size="sm" icon="fas fa-trash" loading={actionLoading} on:click={() => borrarFestivo(h)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="fas fa-trash"
+                      loading={actionLoading}
+                      on:click={() => borrarFestivo(h)}
+                    >
                       Eliminar
                     </Button>
                   </td>
@@ -468,8 +520,21 @@
       <form class="param-form" on:submit|preventDefault={crearFestivo} novalidate>
         <h2 class="param-page__section-title">Nuevo festivo puntual</h2>
         <div class="param-form__row">
-          <FormField id="holiday-fecha" label="Fecha" type="date" required bind:value={hFecha} error={hFechaError} />
-          <FormField id="holiday-descripcion" label="Descripción" required bind:value={hDescripcion} error={hDescripcionError} />
+          <FormField
+            id="holiday-fecha"
+            label="Fecha"
+            type="date"
+            required
+            bind:value={hFecha}
+            error={hFechaError}
+          />
+          <FormField
+            id="holiday-descripcion"
+            label="Descripción"
+            required
+            bind:value={hDescripcion}
+            error={hDescripcionError}
+          />
         </div>
         <Button type="submit" icon="fas fa-plus" loading={actionLoading}>Crear festivo</Button>
       </form>
@@ -477,14 +542,16 @@
       <form class="param-form" on:submit|preventDefault={precargarFestivos} novalidate>
         <h2 class="param-page__section-title">Precargar festivos colombianos (Ley 51/1983)</h2>
         <p class="param-page__hint">
-          Calcula y guarda los festivos nacionales (fijos + Emiliani + móviles de Pascua) del rango de años indicado.
-          No requiere conexión externa.
+          Calcula y guarda los festivos nacionales (fijos + Emiliani + móviles de Pascua) del rango
+          de años indicado. No requiere conexión externa.
         </p>
         <div class="param-form__row">
           <FormField id="seed-from" label="Desde el año" type="number" bind:value={seedFrom} />
           <FormField id="seed-to" label="Hasta el año" type="number" bind:value={seedTo} />
         </div>
-        <Button type="submit" variant="secondary" icon="fas fa-calendar-plus" loading={seedLoading}>Precargar festivos</Button>
+        <Button type="submit" variant="secondary" icon="fas fa-calendar-plus" loading={seedLoading}
+          >Precargar festivos</Button
+        >
       </form>
     {/if}
   </div>
@@ -492,17 +559,39 @@
   <!-- ===================================================================
        Panel: Calculadora de días hábiles
        =================================================================== -->
-  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-  <div id="panel-calculadora" role="tabpanel" aria-labelledby="tab-calculadora" hidden={activeTab !== "calculadora"} tabindex="0">
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <div
+    id="panel-calculadora"
+    role="tabpanel"
+    aria-labelledby="tab-calculadora"
+    hidden={activeTab !== "calculadora"}
+    tabindex="0"
+  >
     <p class="param-page__hint">
-      Calcula la fecha de vencimiento de un plazo en días hábiles (RF-RAD-04) — descuenta fines de semana y los
-      festivos registrados en la pestaña anterior.
+      Calcula la fecha de vencimiento de un plazo en días hábiles (RF-RAD-04) — descuenta fines de
+      semana y los festivos registrados en la pestaña anterior.
     </p>
-    <form class="param-form param-form--calc" on:submit|preventDefault={calcularDiasHabiles} novalidate>
+    <form
+      class="param-form param-form--calc"
+      on:submit|preventDefault={calcularDiasHabiles}
+      novalidate
+    >
       <div class="param-form__row">
-        <FormField id="calc-from" label="Fecha de radicación" type="date" required bind:value={calcFrom} />
-        <FormField id="calc-days" label="Días hábiles del plazo" type="number" required bind:value={calcDays} />
+        <FormField
+          id="calc-from"
+          label="Fecha de radicación"
+          type="date"
+          required
+          bind:value={calcFrom}
+        />
+        <FormField
+          id="calc-days"
+          label="Días hábiles del plazo"
+          type="number"
+          required
+          bind:value={calcDays}
+        />
       </div>
       <Button type="submit" icon="fas fa-calculator" loading={calcLoading}>Calcular</Button>
     </form>
@@ -518,12 +607,18 @@
       <div class="calc-result" aria-live="polite">
         <p class="calc-result__due">
           Fecha de vencimiento: <strong>{calcResult.due_date}</strong>
-          <span class="calc-result__meta">({calcResult.business_days} días hábiles desde {calcResult.from_date})</span>
+          <span class="calc-result__meta"
+            >({calcResult.business_days} días hábiles desde {calcResult.from_date})</span
+          >
         </p>
         {#if calcBreakdown.length === 0}
-          <p class="param-page__hint">No hubo fines de semana ni festivos que descontar en este rango.</p>
+          <p class="param-page__hint">
+            No hubo fines de semana ni festivos que descontar en este rango.
+          </p>
         {:else}
-          <p class="param-page__hint">Días descontados dentro del rango (no cuentan como hábiles):</p>
+          <p class="param-page__hint">
+            Días descontados dentro del rango (no cuentan como hábiles):
+          </p>
           <ul class="calc-result__breakdown">
             {#each calcBreakdown as d (d.fecha)}
               <li><code>{d.fecha}</code> — {d.motivo}</li>

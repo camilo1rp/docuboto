@@ -329,7 +329,9 @@ describe("/expedientes — Form Builder (T-12): campos dinámicos de la plantill
     expect(
       screen.getByRole("option", { name: "— sin serie / sin metadatos —" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "2000 — Procesos disciplinarios" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "2000 — Procesos disciplinarios" }),
+    ).toBeInTheDocument();
   });
 
   it("elegir una serie con plantilla activa renderiza sus campos dinámicos (SchemaField)", async () => {

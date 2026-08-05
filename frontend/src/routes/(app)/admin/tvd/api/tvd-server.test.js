@@ -54,7 +54,8 @@ describe("GET /admin/tvd/api", () => {
 
   it("propaga status de error del gateway", async () => {
     globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
+      async () =>
+        new Response(JSON.stringify({ error: "forbidden", status: 403 }), { status: 403 }),
     );
     const res = await listAgrupaciones({ locals: SESSION_LOCALS, url: new URL("http://x/") });
     expect(res.status).toBe(403);
@@ -84,7 +85,10 @@ describe("POST /admin/tvd/api", () => {
       throw new Error("no debió invocarse");
     });
     const { code, ...rest } = validBody();
-    const res = await createAgrupacion({ locals: SESSION_LOCALS, request: { json: async () => rest } });
+    const res = await createAgrupacion({
+      locals: SESSION_LOCALS,
+      request: { json: async () => rest },
+    });
     expect(res.status).toBe(400);
   });
 
@@ -93,7 +97,10 @@ describe("POST /admin/tvd/api", () => {
       throw new Error("no debió invocarse");
     });
     const { fondo_nombre, ...rest } = validBody();
-    const res = await createAgrupacion({ locals: SESSION_LOCALS, request: { json: async () => rest } });
+    const res = await createAgrupacion({
+      locals: SESSION_LOCALS,
+      request: { json: async () => rest },
+    });
     expect(res.status).toBe(400);
   });
 
@@ -102,7 +109,10 @@ describe("POST /admin/tvd/api", () => {
       throw new Error("no debió invocarse");
     });
     const { justificacion_valoracion, ...rest } = validBody();
-    const res = await createAgrupacion({ locals: SESSION_LOCALS, request: { json: async () => rest } });
+    const res = await createAgrupacion({
+      locals: SESSION_LOCALS,
+      request: { json: async () => rest },
+    });
     expect(res.status).toBe(400);
   });
 
@@ -111,7 +121,10 @@ describe("POST /admin/tvd/api", () => {
       throw new Error("no debió invocarse");
     });
     const { fecha_extrema_inicial, ...rest } = validBody();
-    const res = await createAgrupacion({ locals: SESSION_LOCALS, request: { json: async () => rest } });
+    const res = await createAgrupacion({
+      locals: SESSION_LOCALS,
+      request: { json: async () => rest },
+    });
     expect(res.status).toBe(400);
   });
 
@@ -121,7 +134,13 @@ describe("POST /admin/tvd/api", () => {
     });
     const res = await createAgrupacion({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ ...validBody(), fecha_extrema_inicial: "2000-01-01", fecha_extrema_final: "1999-01-01" }) },
+      request: {
+        json: async () => ({
+          ...validBody(),
+          fecha_extrema_inicial: "2000-01-01",
+          fecha_extrema_final: "1999-01-01",
+        }),
+      },
     });
     expect(res.status).toBe(400);
   });
@@ -237,7 +256,9 @@ describe("PATCH /admin/tvd/api/[id]", () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       capturedUrl = String(input);
       capturedBody = JSON.parse(init.body);
-      return new Response(JSON.stringify({ id: AGRUPACION_ID, pdfa_profile: "2a" }), { status: 200 });
+      return new Response(JSON.stringify({ id: AGRUPACION_ID, pdfa_profile: "2a" }), {
+        status: 200,
+      });
     });
 
     const res = await updateAgrupacion({
@@ -260,7 +281,10 @@ describe("PATCH /admin/tvd/api/[id]", () => {
       locals: SESSION_LOCALS,
       params: { id: AGRUPACION_ID },
       request: {
-        json: async () => ({ fecha_extrema_inicial: "2000-01-01", fecha_extrema_final: "1999-01-01" }),
+        json: async () => ({
+          fecha_extrema_inicial: "2000-01-01",
+          fecha_extrema_final: "1999-01-01",
+        }),
       },
     });
     expect(res.status).toBe(400);

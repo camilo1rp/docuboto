@@ -29,7 +29,10 @@ export async function GET({ locals, params }) {
 
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de usuario inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de usuario inválido." },
+      { status: 400 },
+    );
   }
 
   const tenant = locals.user?.tenant_slug ?? "";
@@ -39,7 +42,9 @@ export async function GET({ locals, params }) {
   if (userId) headers["X-User-Id"] = userId;
 
   try {
-    const res = await fetch(`${API_V1}/auth/users/${encodeURIComponent(id)}/permissions`, { headers });
+    const res = await fetch(`${API_V1}/auth/users/${encodeURIComponent(id)}/permissions`, {
+      headers,
+    });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {

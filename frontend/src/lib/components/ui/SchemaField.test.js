@@ -82,7 +82,11 @@ describe("SchemaField — render por tipo de schema", () => {
 
   it("required=false en un select: incluye el placeholder '— seleccionar —'", () => {
     render(SchemaField, {
-      props: { propKey: "prioridad", schema: { type: "string", enum: ["a", "b"] }, required: false },
+      props: {
+        propKey: "prioridad",
+        schema: { type: "string", enum: ["a", "b"] },
+        required: false,
+      },
     });
     expect(screen.getByRole("option", { name: "— seleccionar —" })).toBeInTheDocument();
   });

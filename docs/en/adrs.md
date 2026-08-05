@@ -30,6 +30,9 @@ The full files are in `docs/es/adr/`.
 | [ADR-021](adr/ADR-021-reclamacion-deadletter-eventos.md) | PEL reclamation and per-consumer-group dead-letter in Redis Streams (signature/workflow/notification-service) | Accepted |
 | [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md) | Electronic index v2 profile — RT-15 metadata per document (format, size, foliation) | Accepted |
 | [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md) | WORM / Object-Lock for preservation (MinIO) and the AIP/PREMIS roadmap | Accepted (Increment A) |
+| [ADR-024](adr/ADR-024-root-fuera-de-banda.md) | `USUA_PERM_ROOT` is never granted through the API — an entity administrator is not the ceiling of their own entity; ROOT is provisioned out of band only | Accepted |
+| [ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md) | The TRD is a convalidated instrument, not a configuration table: append-only versioning and pinning of the version that governs each expediente | Implemented (Increments 1+2) |
+| [ADR-026](adr/ADR-026-tvd-fondo-acumulado.md) | The TVD is the same instrument with different content: a `tipo_instrumento` discriminator on `trd_series`, not its own table (registration and convalidation circuit for an accumulated fonds) | Implemented (Increment 1) |
 
 ## How to propose a new ADR
 

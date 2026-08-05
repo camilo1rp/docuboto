@@ -47,12 +47,17 @@ export async function GET({ locals, url }) {
   if (serieId && UUID_RE.test(serieId)) params.set("trd_serie_id", serieId);
 
   try {
-    const res = await fetch(`${API_V1}/expediente-metadata/templates?${params}`, { headers: headersFor(locals) });
+    const res = await fetch(`${API_V1}/expediente-metadata/templates?${params}`, {
+      headers: headersFor(locals),
+    });
     const data = await res.json().catch(() => []);
     return json(data, { status: res.status });
   } catch {
     return json(
-      { error: "connection_error", detail: "No se pudo conectar al servidor de plantillas de expediente." },
+      {
+        error: "connection_error",
+        detail: "No se pudo conectar al servidor de plantillas de expediente.",
+      },
       { status: 503 },
     );
   }
@@ -74,7 +79,10 @@ export async function POST({ locals, request }) {
   const { trd_serie_id, json_schema, version, activo } = body ?? {};
 
   if (typeof trd_serie_id !== "string" || !UUID_RE.test(trd_serie_id)) {
-    return json({ error: "validation_error", detail: "Serie TRD inválida u obligatoria." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Serie TRD inválida u obligatoria." },
+      { status: 400 },
+    );
   }
   if (json_schema === null || typeof json_schema !== "object" || Array.isArray(json_schema)) {
     return json(

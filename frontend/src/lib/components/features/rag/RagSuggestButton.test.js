@@ -130,7 +130,7 @@ describe("RagSuggestButton", () => {
 
   // Revisión UX lote 2, punto 5: el panel aparece tras el click sin ningún
   // anuncio a lector de pantalla — necesita aria-live="polite".
-  it("el panel de la sugerencia es una región aria-live=\"polite\"", async () => {
+  it('el panel de la sugerencia es una región aria-live="polite"', async () => {
     globalThis.fetch = vi.fn(async () =>
       jsonResponse({
         answer: "texto",
@@ -153,7 +153,9 @@ describe("RagSuggestButton", () => {
       props: { endpoint: "/radicar/api/rag/suggest", query: "asunto suficientemente largo" },
     });
     await fireEvent.click(screen.getByRole("button", { name: /sugerir con antecedentes/i }));
-    const panel = await waitFor(() => screen.getByRole("region", { name: /sugerencia generada por ia/i }));
+    const panel = await waitFor(() =>
+      screen.getByRole("region", { name: /sugerencia generada por ia/i }),
+    );
     expect(panel).toHaveAttribute("aria-live", "polite");
   });
 

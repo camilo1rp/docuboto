@@ -38,7 +38,13 @@ export async function POST({ locals, request }) {
   const { year_from, year_to } = body ?? {};
   const yearFrom = Number(year_from);
   const yearTo = Number(year_to);
-  if (!Number.isInteger(yearFrom) || !Number.isInteger(yearTo) || yearFrom < 2000 || yearTo > 2100 || yearTo < yearFrom) {
+  if (
+    !Number.isInteger(yearFrom) ||
+    !Number.isInteger(yearTo) ||
+    yearFrom < 2000 ||
+    yearTo > 2100 ||
+    yearTo < yearFrom
+  ) {
     return json({ error: "validation_error", detail: "Rango de años inválido." }, { status: 400 });
   }
 
@@ -61,6 +67,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo precargar los festivos." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo precargar los festivos." },
+      { status: 503 },
+    );
   }
 }

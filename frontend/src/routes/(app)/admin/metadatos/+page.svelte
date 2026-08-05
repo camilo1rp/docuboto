@@ -116,7 +116,9 @@
     try {
       const parsed = JSON.parse(raw);
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        setError("El JSON Schema debe ser un objeto (por ejemplo: { \"type\": \"object\", \"properties\": {...} }).");
+        setError(
+          'El JSON Schema debe ser un objeto (por ejemplo: { "type": "object", "properties": {...} }).',
+        );
         return undefined;
       }
       return parsed;
@@ -399,8 +401,8 @@
   <header class="meta-page__header">
     <h1 class="meta-page__title">Metadatos</h1>
     <p class="meta-page__subtitle">
-      Campos de metadato de expedientes y documentos (E03/ADR-007). La clasificación (series/tipos) se
-      administra en <a href="/admin/trd">TRD / CCD</a>.
+      Campos de metadato de expedientes y documentos (E03/ADR-007). La clasificación (series/tipos)
+      se administra en <a href="/admin/trd">TRD / CCD</a>.
     </p>
   </header>
 
@@ -426,8 +428,8 @@
   <!-- ===================================================================
        Panel: Plantillas de expediente
        =================================================================== -->
-  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <div
     id="panel-exp-templates"
     role="tabpanel"
@@ -454,9 +456,14 @@
           : "No hay plantillas de expediente registradas. Se requiere USUA_PERM_TRD para crear una."}
       />
     {:else}
-      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
       <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-      <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de expediente" tabindex="0">
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <div
+        class="meta-table-wrap"
+        role="region"
+        aria-label="Plantillas de metadatos de expediente"
+        tabindex="0"
+      >
         <table class="meta-table" aria-label="Plantillas de metadatos de expediente">
           <thead>
             <tr>
@@ -473,7 +480,13 @@
                 <td>{serieNombre(t.trd_serie_id) ?? t.trd_serie_id}</td>
                 <td>v{t.version}</td>
                 <td>{Object.keys(t.json_schema?.properties ?? {}).length}</td>
-                <td><StatusChip status={t.activo ? "success" : "neutral"} label={t.activo ? "Activa" : "Inactiva"} dot /></td>
+                <td
+                  ><StatusChip
+                    status={t.activo ? "success" : "neutral"}
+                    label={t.activo ? "Activa" : "Inactiva"}
+                    dot
+                  /></td
+                >
                 <td>{new Date(t.created_at).toLocaleDateString("es-CO")}</td>
               </tr>
             {/each}
@@ -486,8 +499,8 @@
   <!-- ===================================================================
        Panel: Plantillas de documento
        =================================================================== -->
-  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <div
     id="panel-doc-templates"
     role="tabpanel"
@@ -509,12 +522,17 @@
       <EmptyState
         icon="fas fa-file-lines"
         title="Sin plantillas de documento"
-        description='Crea la primera con "Nueva plantilla de documento".'
+        description="Crea la primera con «Nueva plantilla de documento»."
       />
     {:else}
-      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
       <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-      <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de documento" tabindex="0">
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <div
+        class="meta-table-wrap"
+        role="region"
+        aria-label="Plantillas de metadatos de documento"
+        tabindex="0"
+      >
         <table class="meta-table" aria-label="Plantillas de metadatos de documento">
           <thead>
             <tr>
@@ -531,7 +549,13 @@
                 <td>{t.tipo_documental}</td>
                 <td>v{t.version}</td>
                 <td>{Object.keys(t.json_schema?.properties ?? {}).length}</td>
-                <td><StatusChip status={t.activo ? "success" : "neutral"} label={t.activo ? "Activa" : "Inactiva"} dot /></td>
+                <td
+                  ><StatusChip
+                    status={t.activo ? "success" : "neutral"}
+                    label={t.activo ? "Activa" : "Inactiva"}
+                    dot
+                  /></td
+                >
                 <td>{new Date(t.created_at).toLocaleDateString("es-CO")}</td>
               </tr>
             {/each}
@@ -544,9 +568,15 @@
   <!-- ===================================================================
        Panel: Elementos de metadato
        =================================================================== -->
-  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
   <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
-  <div id="panel-elementos" role="tabpanel" aria-labelledby="tab-elementos" hidden={activeTab !== "elementos"} tabindex="0">
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <div
+    id="panel-elementos"
+    role="tabpanel"
+    aria-labelledby="tab-elementos"
+    hidden={activeTab !== "elementos"}
+    tabindex="0"
+  >
     <CatalogCrudPanel
       ariaLabel="Elementos de metadato"
       items={elements}
@@ -556,13 +586,14 @@
       createLabel="Nuevo elemento"
       emptyIcon="fas fa-tags"
       emptyTitle="Sin elementos de metadato"
-      emptyDescription='Crea el primero con "Nuevo elemento".'
+      emptyDescription="Crea el primero con «Nuevo elemento»."
       bind:createOpen={elCreateOpen}
       bind:editOpen={elEditOpen}
       editTarget={elEditTarget}
       bind:deleteOpen={elDeleteOpen}
       deleteTarget={elDeleteTarget}
-      deleteConfirmText={(e) => `¿Eliminar el elemento "${e.etiqueta}" (${e.clave})? Esta acción no puede deshacerse.`}
+      deleteConfirmText={(e) =>
+        `¿Eliminar el elemento "${e.etiqueta}" (${e.clave})? Esta acción no puede deshacerse.`}
       deleteLoading={actionLoading}
       on:confirmDelete={confirmarBorrarElemento}
     >
@@ -579,12 +610,20 @@
         <td>{item.etiqueta}</td>
         <td>{TIPOS_DATO.find((t) => t.value === item.tipo_dato)?.label ?? item.tipo_dato}</td>
         <td>{item.searchable ? "Sí" : "No"}</td>
-        <td><StatusChip status={item.activo ? "success" : "neutral"} label={item.activo ? "Activo" : "Inactivo"} dot /></td>
+        <td
+          ><StatusChip
+            status={item.activo ? "success" : "neutral"}
+            label={item.activo ? "Activo" : "Inactivo"}
+            dot
+          /></td
+        >
       </svelte:fragment>
 
       <svelte:fragment slot="row-actions" let:item>
         {#if canWrite}
-          <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openElEdit(item)}>Editar</Button>
+          <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openElEdit(item)}
+            >Editar</Button
+          >
         {/if}
         {#if canDeleteElement}
           <Button
@@ -603,9 +642,28 @@
 
       <svelte:fragment slot="create-form">
         <form class="meta-form" on:submit|preventDefault={crearElemento} novalidate>
-          <FormField id="el-clave" label="Clave" required bind:value={elClave} error={elClaveError} hint="Identificador técnico (usado en json_schema.properties)." />
-          <FormField id="el-etiqueta" label="Etiqueta" required bind:value={elEtiqueta} error={elEtiquetaError} />
-          <FormField id="el-tipo" label="Tipo de dato" type="select" bind:value={elTipoDato} options={TIPOS_DATO} />
+          <FormField
+            id="el-clave"
+            label="Clave"
+            required
+            bind:value={elClave}
+            error={elClaveError}
+            hint="Identificador técnico (usado en json_schema.properties)."
+          />
+          <FormField
+            id="el-etiqueta"
+            label="Etiqueta"
+            required
+            bind:value={elEtiqueta}
+            error={elEtiquetaError}
+          />
+          <FormField
+            id="el-tipo"
+            label="Tipo de dato"
+            type="select"
+            bind:value={elTipoDato}
+            options={TIPOS_DATO}
+          />
           <label class="meta-form__check">
             <input type="checkbox" bind:checked={elSearchable} />
             Indexable en búsqueda
@@ -618,14 +676,22 @@
       </svelte:fragment>
       <svelte:fragment slot="create-footer">
         <Button variant="ghost" on:click={() => (elCreateOpen = false)}>Cancelar</Button>
-        <Button icon="fas fa-save" loading={actionLoading} on:click={crearElemento}>Crear elemento</Button>
+        <Button icon="fas fa-save" loading={actionLoading} on:click={crearElemento}
+          >Crear elemento</Button
+        >
       </svelte:fragment>
 
       <svelte:fragment slot="edit-form" let:item>
         <form class="meta-form" on:submit|preventDefault={guardarElemento} novalidate>
           <p class="meta-form__hint">Clave <code>{item.clave}</code> — inmutable.</p>
           <FormField id="el-edit-etiqueta" label="Etiqueta" required bind:value={eeEtiqueta} />
-          <FormField id="el-edit-tipo" label="Tipo de dato" type="select" bind:value={eeTipoDato} options={TIPOS_DATO} />
+          <FormField
+            id="el-edit-tipo"
+            label="Tipo de dato"
+            type="select"
+            bind:value={eeTipoDato}
+            options={TIPOS_DATO}
+          />
           <label class="meta-form__check">
             <input type="checkbox" bind:checked={eeSearchable} />
             Indexable en búsqueda
@@ -642,12 +708,13 @@
       </svelte:fragment>
       <svelte:fragment slot="edit-footer">
         <Button variant="ghost" on:click={() => (elEditOpen = false)}>Cancelar</Button>
-        <Button icon="fas fa-save" loading={actionLoading} on:click={guardarElemento}>Guardar</Button>
+        <Button icon="fas fa-save" loading={actionLoading} on:click={guardarElemento}
+          >Guardar</Button
+        >
       </svelte:fragment>
     </CatalogCrudPanel>
   </div>
 </div>
-
 
 <!-- =========================================================================
      Modal: nueva plantilla de expediente (por serie TRD)
@@ -655,7 +722,12 @@
      Fuera de CatalogCrudPanel: esta pestaña no tiene edición/borrado, solo
      alta (la plantilla es inmutable — nueva versión = nuevo registro).
      ========================================================================= -->
-<Modal open={expCreateOpen} title="Nueva plantilla de expediente" size="lg" on:close={() => (expCreateOpen = false)}>
+<Modal
+  open={expCreateOpen}
+  title="Nueva plantilla de expediente"
+  size="lg"
+  on:close={() => (expCreateOpen = false)}
+>
   <form class="meta-form" on:submit|preventDefault={crearExpTemplate} novalidate>
     <FormField
       id="exp-serie"
@@ -685,14 +757,21 @@
   </form>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (expCreateOpen = false)}>Cancelar</Button>
-    <Button icon="fas fa-save" loading={actionLoading} on:click={crearExpTemplate}>Crear plantilla</Button>
+    <Button icon="fas fa-save" loading={actionLoading} on:click={crearExpTemplate}
+      >Crear plantilla</Button
+    >
   </svelte:fragment>
 </Modal>
 
 <!-- =========================================================================
      Modal: nueva plantilla de documento (por tipo documental)
      ========================================================================= -->
-<Modal open={docCreateOpen} title="Nueva plantilla de documento" size="lg" on:close={() => (docCreateOpen = false)}>
+<Modal
+  open={docCreateOpen}
+  title="Nueva plantilla de documento"
+  size="lg"
+  on:close={() => (docCreateOpen = false)}
+>
   <form class="meta-form" on:submit|preventDefault={crearDocTemplate} novalidate>
     <FormField
       id="doc-tipo"
@@ -717,12 +796,14 @@
       required
       bind:value={docSchemaRaw}
       error={docSchemaError}
-      hint='Objeto JSON Schema (Draft 2020-12).'
+      hint="Objeto JSON Schema (Draft 2020-12)."
     />
   </form>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (docCreateOpen = false)}>Cancelar</Button>
-    <Button icon="fas fa-save" loading={actionLoading} on:click={crearDocTemplate}>Crear plantilla</Button>
+    <Button icon="fas fa-save" loading={actionLoading} on:click={crearDocTemplate}
+      >Crear plantilla</Button
+    >
   </svelte:fragment>
 </Modal>
 
@@ -870,5 +951,4 @@
       cursor: pointer;
     }
   }
-
 </style>

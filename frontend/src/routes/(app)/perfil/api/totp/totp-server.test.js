@@ -77,7 +77,10 @@ describe("POST /perfil/api/totp/enroll", () => {
       capturedUrl = String(input);
       capturedBody = JSON.parse(init.body);
       return new Response(
-        JSON.stringify({ otpauth_uri: "otpauth://totp/x?secret=ABC", estado: "pendiente_activacion" }),
+        JSON.stringify({
+          otpauth_uri: "otpauth://totp/x?secret=ABC",
+          estado: "pendiente_activacion",
+        }),
         { status: 201 },
       );
     });
@@ -112,7 +115,10 @@ describe("POST /perfil/api/totp/activate", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("fetch no debió invocarse sin sesión");
     });
-    const res = await activatePost({ locals: {}, request: { json: async () => ({ code: "123456" }) } });
+    const res = await activatePost({
+      locals: {},
+      request: { json: async () => ({ code: "123456" }) },
+    });
     expect(res.status).toBe(401);
   });
 
@@ -137,9 +143,12 @@ describe("POST /perfil/api/totp/activate", () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       capturedUrl = String(input);
       capturedBody = JSON.parse(init.body);
-      return new Response(JSON.stringify({ estado: "activo", activated_at: "2026-01-01T00:00:00Z" }), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify({ estado: "activo", activated_at: "2026-01-01T00:00:00Z" }),
+        {
+          status: 200,
+        },
+      );
     });
     const res = await activatePost({
       locals: SESSION_LOCALS,

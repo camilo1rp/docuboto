@@ -38,7 +38,10 @@ export async function POST({ locals, params, request }) {
   }
   const { code } = params ?? {};
   if (typeof code !== "string" || !code.trim()) {
-    return json({ error: "validation_error", detail: "Código de agrupación TVD inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Código de agrupación TVD inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -63,19 +66,37 @@ export async function POST({ locals, params, request }) {
   } = body ?? {};
 
   if (parent_id !== undefined && parent_id !== null && !UUID_RE.test(parent_id)) {
-    return json({ error: "validation_error", detail: "Agrupación padre inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Agrupación padre inválida." },
+      { status: 400 },
+    );
   }
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
-    return json({ error: "validation_error", detail: "Disposición final inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Disposición final inválida." },
+      { status: 400 },
+    );
   }
-  if (pdfa_profile !== undefined && pdfa_profile !== null && pdfa_profile !== "" && !PDFA_PROFILES.has(pdfa_profile)) {
+  if (
+    pdfa_profile !== undefined &&
+    pdfa_profile !== null &&
+    pdfa_profile !== "" &&
+    !PDFA_PROFILES.has(pdfa_profile)
+  ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
   if (
-    (fecha_extrema_inicial !== undefined && fecha_extrema_inicial !== null && !DATE_RE.test(fecha_extrema_inicial)) ||
-    (fecha_extrema_final !== undefined && fecha_extrema_final !== null && !DATE_RE.test(fecha_extrema_final))
+    (fecha_extrema_inicial !== undefined &&
+      fecha_extrema_inicial !== null &&
+      !DATE_RE.test(fecha_extrema_inicial)) ||
+    (fecha_extrema_final !== undefined &&
+      fecha_extrema_final !== null &&
+      !DATE_RE.test(fecha_extrema_final))
   ) {
-    return json({ error: "validation_error", detail: "Fechas extremas inválidas (ISO date)." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Fechas extremas inválidas (ISO date)." },
+      { status: 400 },
+    );
   }
   if (
     fecha_extrema_inicial &&
@@ -85,7 +106,10 @@ export async function POST({ locals, params, request }) {
     fecha_extrema_final < fecha_extrema_inicial
   ) {
     return json(
-      { error: "validation_error", detail: "La fecha extrema final no puede ser anterior a la inicial." },
+      {
+        error: "validation_error",
+        detail: "La fecha extrema final no puede ser anterior a la inicial.",
+      },
       { status: 400 },
     );
   }
@@ -94,12 +118,17 @@ export async function POST({ locals, params, request }) {
   const payload = {};
   if (typeof name === "string" && name.trim()) payload.name = name.trim();
   if (description !== undefined) {
-    payload.description = typeof description === "string" && description.trim() ? description.trim() : null;
+    payload.description =
+      typeof description === "string" && description.trim() ? description.trim() : null;
   }
-  if (parent_id !== undefined) payload.parent_id = parent_id && UUID_RE.test(parent_id) ? parent_id : null;
-  if (typeof fondo_nombre === "string" && fondo_nombre.trim()) payload.fondo_nombre = fondo_nombre.trim();
-  if (fecha_extrema_inicial && DATE_RE.test(fecha_extrema_inicial)) payload.fecha_extrema_inicial = fecha_extrema_inicial;
-  if (fecha_extrema_final && DATE_RE.test(fecha_extrema_final)) payload.fecha_extrema_final = fecha_extrema_final;
+  if (parent_id !== undefined)
+    payload.parent_id = parent_id && UUID_RE.test(parent_id) ? parent_id : null;
+  if (typeof fondo_nombre === "string" && fondo_nombre.trim())
+    payload.fondo_nombre = fondo_nombre.trim();
+  if (fecha_extrema_inicial && DATE_RE.test(fecha_extrema_inicial))
+    payload.fecha_extrema_inicial = fecha_extrema_inicial;
+  if (fecha_extrema_final && DATE_RE.test(fecha_extrema_final))
+    payload.fecha_extrema_final = fecha_extrema_final;
   if (typeof justificacion_valoracion === "string" && justificacion_valoracion.trim()) {
     payload.justificacion_valoracion = justificacion_valoracion.trim();
   }
@@ -110,7 +139,8 @@ export async function POST({ locals, params, request }) {
     payload.total_retention = Number(total_retention);
   }
   if (disposition !== undefined && DISPOSITIONS.has(disposition)) payload.disposition = disposition;
-  if (pdfa_profile !== undefined) payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
+  if (pdfa_profile !== undefined)
+    payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
 
   try {
     const res = await fetch(`${API_V1}/tvd/${encodeURIComponent(code.trim())}/versiones`, {
@@ -121,6 +151,9 @@ export async function POST({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear la nueva versión." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear la nueva versión." },
+      { status: 503 },
+    );
   }
 }

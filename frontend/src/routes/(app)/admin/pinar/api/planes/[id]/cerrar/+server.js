@@ -31,7 +31,10 @@ export async function POST({ locals, params }) {
 
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de plan inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Identificador de plan inválido." },
+      { status: 400 },
+    );
   }
 
   const tenant = locals.user?.tenant_slug ?? "";
@@ -48,6 +51,9 @@ export async function POST({ locals, params }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo cerrar el plan PINAR." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo cerrar el plan PINAR." },
+      { status: 503 },
+    );
   }
 }

@@ -38,7 +38,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions, permissionLevels, sessionUser } from "$lib/stores/auth.js";
+  import { permissionLevels, sessionUser } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   import Card from "$lib/components/ui/Card.svelte";
@@ -52,8 +52,6 @@
   /** @type {import('./$types').PageData} */
   export let data;
 
-  // Lectura (mostrar la faceta) — cualquier nivel del permiso alcanza.
-  $: canManage = $permissions.includes("USUA_PERM_EXPEDIENTE");
   // A6 (revisión UX): "Reintentar sellado" (POST .../acta/firmar) y "Firmar
   // como <rol>" (POST .../acta/firmar-personal) exigen
   // `require_permission("USUA_PERM_EXPEDIENTE", min_crud=3)` en el backend

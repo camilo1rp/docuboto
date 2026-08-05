@@ -63,7 +63,10 @@ export async function GET({ locals, url }) {
       headers: { "Content-Type": "application/json", "X-Total-Count": total },
     });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo conectar al servidor de TVD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo conectar al servidor de TVD." },
+      { status: 503 },
+    );
   }
 }
 
@@ -96,43 +99,82 @@ export async function POST({ locals, request }) {
   } = body ?? {};
 
   if (typeof code !== "string" || !code.trim()) {
-    return json({ error: "validation_error", detail: "El código de la agrupación es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El código de la agrupación es obligatorio." },
+      { status: 400 },
+    );
   }
   if (typeof name !== "string" || !name.trim()) {
-    return json({ error: "validation_error", detail: "El nombre de la agrupación es obligatorio." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El nombre de la agrupación es obligatorio." },
+      { status: 400 },
+    );
   }
   if (typeof fondo_nombre !== "string" || !fondo_nombre.trim()) {
-    return json({ error: "validation_error", detail: "El fondo/productora es obligatorio en una TVD." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "El fondo/productora es obligatorio en una TVD." },
+      { status: 400 },
+    );
   }
   if (typeof justificacion_valoracion !== "string" || !justificacion_valoracion.trim()) {
     return json(
-      { error: "validation_error", detail: "La justificación de la valoración es obligatoria en una TVD." },
+      {
+        error: "validation_error",
+        detail: "La justificación de la valoración es obligatoria en una TVD.",
+      },
       { status: 400 },
     );
   }
   if (typeof fecha_extrema_inicial !== "string" || !DATE_RE.test(fecha_extrema_inicial)) {
-    return json({ error: "validation_error", detail: "La fecha extrema inicial es obligatoria (ISO date)." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "La fecha extrema inicial es obligatoria (ISO date)." },
+      { status: 400 },
+    );
   }
   if (typeof fecha_extrema_final !== "string" || !DATE_RE.test(fecha_extrema_final)) {
-    return json({ error: "validation_error", detail: "La fecha extrema final es obligatoria (ISO date)." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "La fecha extrema final es obligatoria (ISO date)." },
+      { status: 400 },
+    );
   }
   if (fecha_extrema_final < fecha_extrema_inicial) {
     return json(
-      { error: "validation_error", detail: "La fecha extrema final no puede ser anterior a la inicial." },
+      {
+        error: "validation_error",
+        detail: "La fecha extrema final no puede ser anterior a la inicial.",
+      },
       { status: 400 },
     );
   }
   if (parent_id !== undefined && parent_id !== null && !UUID_RE.test(parent_id)) {
-    return json({ error: "validation_error", detail: "Agrupación padre inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Agrupación padre inválida." },
+      { status: 400 },
+    );
   }
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
-    return json({ error: "validation_error", detail: "Disposición final inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Disposición final inválida." },
+      { status: 400 },
+    );
   }
-  if (pdfa_profile !== undefined && pdfa_profile !== null && pdfa_profile !== "" && !PDFA_PROFILES.has(pdfa_profile)) {
+  if (
+    pdfa_profile !== undefined &&
+    pdfa_profile !== null &&
+    pdfa_profile !== "" &&
+    !PDFA_PROFILES.has(pdfa_profile)
+  ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
-  if (archivo_central_years !== undefined && archivo_central_years !== null && !Number.isFinite(Number(archivo_central_years))) {
-    return json({ error: "validation_error", detail: "Años de archivo central inválidos." }, { status: 400 });
+  if (
+    archivo_central_years !== undefined &&
+    archivo_central_years !== null &&
+    !Number.isFinite(Number(archivo_central_years))
+  ) {
+    return json(
+      { error: "validation_error", detail: "Años de archivo central inválidos." },
+      { status: 400 },
+    );
   }
 
   const payload = {
@@ -144,7 +186,9 @@ export async function POST({ locals, request }) {
     fecha_extrema_inicial,
     fecha_extrema_final,
     justificacion_valoracion: justificacion_valoracion.trim(),
-    archivo_central_years: Number.isFinite(Number(archivo_central_years)) ? Number(archivo_central_years) : null,
+    archivo_central_years: Number.isFinite(Number(archivo_central_years))
+      ? Number(archivo_central_years)
+      : null,
     total_retention: Number.isFinite(Number(total_retention)) ? Number(total_retention) : 10,
     disposition: DISPOSITIONS.has(disposition) ? disposition : "E",
     pdfa_profile: PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null,
@@ -159,6 +203,9 @@ export async function POST({ locals, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear la agrupación TVD." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear la agrupación TVD." },
+      { status: 503 },
+    );
   }
 }

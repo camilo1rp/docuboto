@@ -38,7 +38,10 @@ export async function POST({ locals, params, request }) {
   }
   const { code } = params ?? {};
   if (typeof code !== "string" || !code.trim()) {
-    return json({ error: "validation_error", detail: "Código de serie TRD inválido." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Código de serie TRD inválido." },
+      { status: 400 },
+    );
   }
 
   let body;
@@ -64,9 +67,17 @@ export async function POST({ locals, params, request }) {
     return json({ error: "validation_error", detail: "Serie padre inválida." }, { status: 400 });
   }
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
-    return json({ error: "validation_error", detail: "Disposición final inválida." }, { status: 400 });
+    return json(
+      { error: "validation_error", detail: "Disposición final inválida." },
+      { status: 400 },
+    );
   }
-  if (pdfa_profile !== undefined && pdfa_profile !== null && pdfa_profile !== "" && !PDFA_PROFILES.has(pdfa_profile)) {
+  if (
+    pdfa_profile !== undefined &&
+    pdfa_profile !== null &&
+    pdfa_profile !== "" &&
+    !PDFA_PROFILES.has(pdfa_profile)
+  ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
 
@@ -74,9 +85,11 @@ export async function POST({ locals, params, request }) {
   const payload = {};
   if (typeof name === "string" && name.trim()) payload.name = name.trim();
   if (description !== undefined) {
-    payload.description = typeof description === "string" && description.trim() ? description.trim() : null;
+    payload.description =
+      typeof description === "string" && description.trim() ? description.trim() : null;
   }
-  if (parent_id !== undefined) payload.parent_id = parent_id && UUID_RE.test(parent_id) ? parent_id : null;
+  if (parent_id !== undefined)
+    payload.parent_id = parent_id && UUID_RE.test(parent_id) ? parent_id : null;
   if (retention_years !== undefined && Number.isFinite(Number(retention_years))) {
     payload.retention_years = Number(retention_years);
   }
@@ -90,7 +103,8 @@ export async function POST({ locals, params, request }) {
   if (archivo_central_years !== undefined && Number.isFinite(Number(archivo_central_years))) {
     payload.archivo_central_years = Number(archivo_central_years);
   }
-  if (pdfa_profile !== undefined) payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
+  if (pdfa_profile !== undefined)
+    payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;
 
   try {
     const res = await fetch(`${API_V1}/trd/${encodeURIComponent(code.trim())}/versiones`, {
@@ -101,6 +115,9 @@ export async function POST({ locals, params, request }) {
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
   } catch {
-    return json({ error: "connection_error", detail: "No se pudo crear la nueva versión." }, { status: 503 });
+    return json(
+      { error: "connection_error", detail: "No se pudo crear la nueva versión." },
+      { status: 503 },
+    );
   }
 }

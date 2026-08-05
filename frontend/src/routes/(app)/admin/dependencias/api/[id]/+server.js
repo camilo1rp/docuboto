@@ -37,9 +37,12 @@ export async function PATCH({ locals, params, request }) {
   }
   const { id } = params;
   if (!id || !UUID_RE.test(id)) {
-    return json({ error: "validation_error", detail: "Identificador de dependencia inválido." }, {
-      status: 400,
-    });
+    return json(
+      { error: "validation_error", detail: "Identificador de dependencia inválido." },
+      {
+        status: 400,
+      },
+    );
   }
 
   let body;
@@ -68,13 +71,19 @@ export async function PATCH({ locals, params, request }) {
   }
   if ("sigla" in body) {
     if (typeof body.sigla !== "string" || !body.sigla.trim()) {
-      return json({ error: "validation_error", detail: "La sigla es obligatoria." }, { status: 400 });
+      return json(
+        { error: "validation_error", detail: "La sigla es obligatoria." },
+        { status: 400 },
+      );
     }
     payload.sigla = body.sigla.trim();
   }
   if ("nombre" in body) {
     if (typeof body.nombre !== "string" || !body.nombre.trim()) {
-      return json({ error: "validation_error", detail: "El nombre es obligatorio." }, { status: 400 });
+      return json(
+        { error: "validation_error", detail: "El nombre es obligatorio." },
+        { status: 400 },
+      );
     }
     payload.nombre = body.nombre.trim();
   }

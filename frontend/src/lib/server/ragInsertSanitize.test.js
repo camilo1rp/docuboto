@@ -52,7 +52,12 @@ describe("buildGeneratedHtml sobrevive sanitizeHtml", () => {
 
   it("un intento de inyección dentro de answer/citations no sobrevive ni el builder ni el saneo", () => {
     const html = buildGeneratedHtml("<img src=x onerror=alert(1)>", [
-      { cited_text: "<script>alert(1)</script>", source_type: "radicado", source_ref: "ref", score: 0.5 },
+      {
+        cited_text: "<script>alert(1)</script>",
+        source_type: "radicado",
+        source_ref: "ref",
+        score: 0.5,
+      },
     ]);
     const sane = sanitizeHtml(html);
     // El texto hostil sobrevive como TEXTO ESCAPADO (inerte) — lo que no debe
