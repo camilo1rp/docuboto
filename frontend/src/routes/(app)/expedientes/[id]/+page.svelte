@@ -44,7 +44,7 @@
   import EditarMetadatosModal from "$lib/components/features/expedientes/EditarMetadatosModal.svelte";
   import DisposicionExpedienteDrawer from "$lib/components/features/disposicion/DisposicionExpedienteDrawer.svelte";
 
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
   // Las acciones (cerrar/transferir, descargar XML/anexos) usan los endpoints locales
   // /expedientes/[id]/api/* que leen la cookie httpOnly en el servidor (D-05).
@@ -62,9 +62,14 @@
   // ---------------------------------------------------------------------------
   // Autorización (espejo del RBAC; backend re-valida siempre)
   // ---------------------------------------------------------------------------
-  /** @param {string} p */
-  function can(p) {
-    return $permissions.includes(p);
+  // Wrapper local (no el `can()` del store, que usa `get()` internamente y
+  // no dispararía las declaraciones `$:` de abajo): referencia $permissions
+  // / $permissionLevels directamente para que Svelte las trate como
+  // dependencia reactiva, igual que antes de A6.
+  /** @param {string} p @param {number} [minCrud] */
+  function can(p, minCrud) {
+    if (minCrud === undefined) return $permissions.includes(p);
+    return ($permissionLevels[p] ?? 0) >= minCrud;
   }
 
   // D-07: 'CERRAR_EXPEDIENTE' y 'TRANSFERIR_EXPEDIENTE' no existen en el catálogo
@@ -72,30 +77,35 @@
   // USUA_PERM_EXPEDIENTE ("Gestión de expedientes"). Ambas acciones requieren
   // ese permiso; el backend re-valida el estado y los permisos granulares en
   // cada endpoint.
-  $: canClose = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
-  $: canTransfer = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "closed";
-  // Vincular/excluir radicados (link/unlink, archive_service.py) exige el
-  // expediente en estado 'open' — cerrado/transferido responde 409
-  // expediente_not_open. La UI no ofrece lo que la API rechazaría.
-  $: canLinkUnlink = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
+  //
+  // A6 (revisión UX, CERRADO): close/transfer/unlink_radicado exigen
+  // `require_permission("USUA_PERM_EXPEDIENTE", min_crud=3)` en el backend
+  // (verificado en archive-service/app/routers/expedientes.py líneas
+  // 223/260/511) — antes la UI solo miraba presencia del permiso (cualquier
+  // nivel, incluido "leer"), ofreciendo botones que el backend rechazaba con
+  // 403. link_radicado / update_expediente / export / firmar_indice quedan
+  // en min_crud=1 (default de `require_permission`) — no se tocan.
+  $: canClose = can("USUA_PERM_EXPEDIENTE", 3) && expediente?.status === "open";
+  $: canTransfer = can("USUA_PERM_EXPEDIENTE", 3) && expediente?.status === "closed";
+  // Vincular (POST /radicados, min_crud=1) exige solo el expediente en
+  // estado 'open' — cerrado/transferido responde 409 expediente_not_open.
+  $: canLink = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
+  // Excluir (DELETE /radicados/{id}, min_crud=3) — ver nota A6 arriba.
+  $: canUnlink = can("USUA_PERM_EXPEDIENTE", 3) && expediente?.status === "open";
+  // Solo para el mensaje informativo "no admite vincular ni excluir" — no
+  // gatea ninguna acción de escritura por sí solo.
+  $: canLinkUnlink = canLink || canUnlink;
   $: canEditMetadata = can("USUA_PERM_EXPEDIENTE");
   $: canExport = can("USUA_PERM_EXPEDIENTE");
   // Disposición final (RF-MET-08/E04, Fase 4 cierre desfase API↔UI): de solo
   // lectura (se materializa al cerrar), visible con el mismo permiso que el
   // resto de la gestión del expediente.
   $: canVerDisposicion = can("USUA_PERM_EXPEDIENTE");
-  // POST /indice/firmar exige USUA_PERM_EXPEDIENTE Y PERM_FIRMA (routers/indice.py).
+  // POST /indice/firmar exige USUA_PERM_EXPEDIENTE Y PERM_FIRMA, ambos en
+  // min_crud=1 (default; routers/indice.py líneas 194-195) — no se tocan.
   $: canFirmarIndice = can("USUA_PERM_EXPEDIENTE") && can("PERM_FIRMA");
 
   // ---------------------------------------------------------------------------
-  // A6 (revisión UX): el backend exige nivel de escritura (min_crud=3) para
-  // cerrar/transferir/excluir, pero el store de sesión solo expone permisos
-  // como lista plana ("¿lo tiene o no?"), sin nivel CRUD — la UI no puede
-  // reflejar ese matiz todavía (DEUDA anotada, no resuelta aquí). Lo que SÍ se
-  // arregla: cuando el backend rechaza por eso, no se reenvía el `detail`
-  // crudo del backend ("Se requiere el permiso USUA_PERM_EXPEDIENTE" —
-  // confuso para un usuario que SÍ tiene ese permiso en modo lectura), sino un
-  // mensaje propio que explica que falta el NIVEL, no el permiso en sí.
   /** @param {any} err @param {string} fallback */
   function friendlyActionError(err, fallback) {
     if (err?.error === "forbidden") {
@@ -909,6 +919,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 0 — Resumen
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-resumen"
       role="tabpanel"
@@ -999,7 +1011,7 @@
           <h2 id="radicados-vinculados-heading" slot="header" class="op-card-title" tabindex="-1">
             Radicados vinculados
             <span class="exp-count-badge">{expediente?.radicados?.length ?? 0}</span>
-            {#if canLinkUnlink}
+            {#if canLink}
               <Button
                 variant="primary"
                 size="sm"
@@ -1022,7 +1034,7 @@
               title="Sin radicados"
               description="Este expediente no tiene radicados vinculados todavía."
             >
-              {#if canLinkUnlink}
+              {#if canLink}
                 <Button variant="primary" size="sm" on:click={() => (showVincularDrawer = true)}>
                   Vincular el primer radicado
                 </Button>
@@ -1040,7 +1052,7 @@
                     {rad.tracking_number}
                   </a>
                   <span class="exp-radicado-list__date">{fmtDate(rad.added_at)}</span>
-                  {#if canLinkUnlink}
+                  {#if canUnlink}
                     <button
                       type="button"
                       class="exp-action-link exp-action-link--danger"
@@ -1061,6 +1073,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 1 — Índice electrónico E15
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-indice"
       role="tabpanel"
@@ -1215,7 +1229,9 @@
                 en total.
               </p>
             {/if}
-            <div class="exp-table-wrap" role="region" aria-label="Versiones del índice">
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+            <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+            <div class="exp-table-wrap" role="region" aria-label="Versiones del índice" tabindex="0">
               <table class="exp-table" aria-label="Historial de versiones del índice">
                 <thead>
                   <tr>
@@ -1253,7 +1269,9 @@
               description="El índice existe pero no contiene documentos."
             />
           {:else}
-            <div class="exp-table-wrap" role="region" aria-label="Documentos del índice">
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+            <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+            <div class="exp-table-wrap" role="region" aria-label="Documentos del índice" tabindex="0">
               <table class="exp-table" aria-label="Ítems del índice electrónico">
                 <thead>
                   <tr>
@@ -1299,6 +1317,8 @@
     <!-- -----------------------------------------------------------------------
          Panel — Foliado (E02)
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-foliado"
       role="tabpanel"
@@ -1331,7 +1351,9 @@
               description="Este expediente no tiene documentos foliados todavía."
             />
           {:else}
-            <div class="exp-table-wrap" role="region" aria-label="Foliación del expediente">
+            <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+            <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+            <div class="exp-table-wrap" role="region" aria-label="Foliación del expediente" tabindex="0">
               <table class="exp-table" aria-label="Foliación ordenada del expediente">
                 <thead>
                   <tr>
@@ -1379,6 +1401,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 2 — Anexos E07
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-anexos"
       role="tabpanel"
@@ -1447,10 +1471,13 @@
                         Este radicado no tiene anexos.
                       </p>
                     {:else if state?.status === "loaded"}
+                      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+                      <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
                       <div
                         class="exp-table-wrap"
                         role="region"
                         aria-label="Anexos de {rad.tracking_number}"
+                        tabindex="0"
                       >
                         <table class="exp-table" aria-label="Anexos de {rad.tracking_number}">
                           <thead>
@@ -1513,6 +1540,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 3 — Flujo / Historial (eventos del expediente E02 §9)
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-flujo"
       role="tabpanel"
@@ -1589,6 +1618,8 @@
     <!-- -----------------------------------------------------------------------
          Panel — Preservación (E10: AIP + eventos PREMIS)
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-preservacion"
       role="tabpanel"
@@ -1713,6 +1744,8 @@
     <!-- -----------------------------------------------------------------------
          Panel — Acceso (E15 perfil v4 R3-b/R4-b: historial + roles autorizados)
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-acceso"
       role="tabpanel"
@@ -1751,7 +1784,9 @@
                 description="No hay grupos con acceso configurado para el nivel de este expediente."
               />
             {:else}
-              <div class="exp-table-wrap" role="region" aria-label="Grupos autorizados">
+              <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+              <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+              <div class="exp-table-wrap" role="region" aria-label="Grupos autorizados" tabindex="0">
                 <table class="exp-table" aria-label="Grupos autorizados a leer el expediente">
                   <thead>
                     <tr>
@@ -1824,6 +1859,8 @@
     <!-- -----------------------------------------------------------------------
          Panel 4 — Ubicación física E17
          ----------------------------------------------------------------------- -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="panel-fisico"
       role="tabpanel"
@@ -1849,7 +1886,9 @@
       {:else}
         <Card>
           <h2 slot="header" class="op-card-title">Unidades de conservación</h2>
-          <div class="exp-table-wrap" role="region" aria-label="Ubicaciones físicas">
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+          <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <div class="exp-table-wrap" role="region" aria-label="Ubicaciones físicas" tabindex="0">
             <table class="exp-table" aria-label="Unidades de conservación del expediente">
               <thead>
                 <tr>
@@ -2377,6 +2416,11 @@
     overflow-x: auto;
     border-radius: var(--op-radius-sm);
     border: 1px solid var(--op-border);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .exp-table {

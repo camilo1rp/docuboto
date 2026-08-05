@@ -30,7 +30,7 @@
 <script>
   import { goto } from "$app/navigation";
   import { dndzone } from "svelte-dnd-action";
-  import { can } from "$lib/stores/auth.js";
+  import { permissions } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
   import Stepper from "$lib/components/ui/Stepper.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -483,7 +483,15 @@
 
   // Permiso de radicación
   // D-07: RADICAR_* → PERM_RADI_* (nombres reales del catálogo RBAC, migración 004)
-  $: canRadicar = can("PERM_RADI_ENTRADA") || can("PERM_RADI_SALIDA") || can("PERM_RADI_INTERNO");
+  //
+  // Referencia $permissions directamente (no el `can()` del store, que usa
+  // `get()` internamente y no dispararía esta declaración `$:` si la sesión
+  // cambia sin desmontar el componente — mismo patrón que
+  // expedientes/[id]/+page.svelte, A6 revisión UX).
+  $: canRadicar =
+    $permissions.includes("PERM_RADI_ENTRADA") ||
+    $permissions.includes("PERM_RADI_SALIDA") ||
+    $permissions.includes("PERM_RADI_INTERNO");
 </script>
 
 <svelte:head>
@@ -1412,6 +1420,13 @@
       font-size: var(--op-font-sm);
       color: var(--op-text-secondary);
       margin-bottom: var(--op-space-2);
+
+      // Contraste AA (revisión UX lote 2): `--op-text-secondary` sobre el
+      // fondo `--op-primary-light` de `.drop-zone--over` mide ~4.0:1, bajo
+      // AA. `--op-text` sí cumple sobre ese mismo fondo.
+      .drop-zone--over & {
+        color: var(--op-text);
+      }
     }
 
     &__label {

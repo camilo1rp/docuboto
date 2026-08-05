@@ -225,7 +225,10 @@
   {:else if items.length === 0}
     <EmptyState icon={emptyIcon} title={emptyTitle} description={emptyDescription} />
   {:else}
-    <div class="catalog-crud__table-wrap" role="region" aria-label={ariaLabel}>
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con
+         teclado (WCAG 2.1.1) — el linter de Svelte no reconoce esta excepción. -->
+    <div class="catalog-crud__table-wrap" role="region" aria-label={ariaLabel} tabindex="0">
       <table class="catalog-crud__table" aria-label={ariaLabel}>
         <thead>
           <tr>
@@ -238,8 +241,10 @@
             <tr class="catalog-crud__row">
               <slot name="row" {item} />
               {#if hasRowActions}
-                <td class="catalog-crud__actions">
-                  <slot name="row-actions" {item} />
+                <td>
+                  <div class="catalog-crud__actions">
+                    <slot name="row-actions" {item} />
+                  </div>
                 </td>
               {/if}
             </tr>
@@ -330,6 +335,11 @@
     overflow-x: auto;
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .catalog-crud__table {

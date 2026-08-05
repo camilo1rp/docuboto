@@ -30,7 +30,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -54,7 +54,11 @@
   // ---------------------------------------------------------------------------
   // Autorización (espejo del RBAC; backend re-valida siempre)
   // ---------------------------------------------------------------------------
-  $: canManage = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  // A6 (revisión UX): las 4 acciones que gatea (Nueva/Enviar/Recibir/Rechazar)
+  // son todas mutaciones con `require_permission("USUA_PERM_EXPEDIENTE",
+  // min_crud=3)` en el backend (transferencias.py líneas 54/95/113/127) —
+  // antes solo miraba presencia del permiso (incluida lectura).
+  $: canManage = ($permissionLevels["USUA_PERM_EXPEDIENTE"] ?? 0) >= 3;
 
   // ---------------------------------------------------------------------------
   // Opciones de dominio (FormField options)
@@ -370,7 +374,15 @@
           description="No hay transferencias que coincidan con los filtros aplicados."
         />
       {:else}
-        <div class="tr-table-wrap" aria-busy={loading}>
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+        <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+        <div
+          class="tr-table-wrap"
+          aria-busy={loading}
+          role="region"
+          aria-label="Listado de transferencias documentales"
+          tabindex="0"
+        >
           <table class="table is-fullwidth is-hoverable">
             <caption class="is-sr-only">Listado de transferencias documentales</caption>
             <thead>
@@ -598,7 +610,14 @@
       description="Esta transferencia no tiene datos FUID disponibles."
     />
   {:else}
-    <div class="tr-table-wrap">
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <div
+      class="tr-table-wrap"
+      role="region"
+      aria-label="Formato Único de Inventario Documental de la transferencia"
+      tabindex="0"
+    >
       <table class="table is-fullwidth is-hoverable">
         <caption class="is-sr-only"
           >Formato Único de Inventario Documental de la transferencia</caption
@@ -682,6 +701,11 @@
   // Tabla
   .tr-table-wrap {
     overflow-x: auto;
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
 
     .table {
       border-collapse: collapse;

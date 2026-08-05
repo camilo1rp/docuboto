@@ -164,8 +164,11 @@
     // Estados
     &__step--done {
       .op-stepper__marker {
-        background: var(--op-primary);
-        border-color: var(--op-primary);
+        // Permanente (no solo :hover): blanco sobre op-primary da 4.28:1 y
+        // falla AA (WCAG 1.4.3). op-primary-dark (6.56:1) es el token
+        // AA-seguro para texto/iconos claros — ver nota en _tokens.scss.
+        background: var(--op-primary-dark);
+        border-color: var(--op-primary-dark);
         color: var(--op-surface);
       }
       .op-stepper__label {
@@ -173,7 +176,7 @@
         font-weight: var(--op-weight-medium);
       }
       .op-stepper__line {
-        background: var(--op-primary);
+        background: var(--op-primary-dark);
       }
     }
 
@@ -181,7 +184,9 @@
       .op-stepper__marker {
         background: var(--op-surface);
         border-color: var(--op-primary);
-        color: var(--op-primary);
+        // op-primary como texto sobre blanco no es AA-seguro (ver nota de
+        // _tokens.scss); op-primary-dark sí lo es.
+        color: var(--op-primary-dark);
         box-shadow: 0 0 0 4px var(--op-primary-light);
       }
       .op-stepper__label {

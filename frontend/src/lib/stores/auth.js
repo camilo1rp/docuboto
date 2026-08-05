@@ -49,6 +49,15 @@ export const roles = derived(sessionUser, ($u) => $u?.roles ?? []);
 /** Lista de permisos granulares del usuario actual */
 export const permissions = derived(sessionUser, ($u) => $u?.permissions ?? []);
 
+/**
+ * Niveles CRUD por permiso (`GET /auth/me` → `permission_levels`, aditivo a
+ * `permissions[]`). Escala de `auth_group_permissions.crud`: 0 ninguno ·
+ * 1 leer · 2 editar · 3 crear/borrar · 4 nivel_1 · 5 nivel_2 (ROOT resuelve
+ * `USUA_PERM_ROOT: 5`). Fail-closed por diseño del backend: sin contexto de
+ * tenant o usuario no aprovisionado, es `{}` — nunca `null`/ausente.
+ */
+export const permissionLevels = derived(sessionUser, ($u) => $u?.permission_levels ?? {});
+
 /** Slug del tenant activo (del claim del JWT) */
 export const tenantSlug = derived(sessionUser, ($u) => $u?.tenant_slug ?? null);
 
@@ -76,13 +85,34 @@ export function hasRole(...requiredRoles) {
 
 /**
  * Devuelve true si el usuario tiene el permiso granular indicado.
- * Los permisos se cargan de /auth/me tras el login.
+ * Los permisos (y sus niveles CRUD) se cargan de /auth/me tras el login.
+ *
+ * Sin `minCrud` (retrocompatible): solo mira presencia en `permissions[]` —
+ * equivale a "el usuario tiene AL MENOS nivel 1 (leer)". Úsese para
+ * condicionar navegación/visibilidad de secciones de solo lectura.
+ *
+ * Con `minCrud`: compara contra `permission_levels[permission]` (RF-SEG-03),
+ * el mismo umbral que `require_permission(perm, min_crud=N)` exige en el
+ * backend. Niveles: 0 ninguno · 1 leer · 2 editar · 3 crear/borrar ·
+ * 4 nivel_1 · 5 nivel_2. Úsese SIEMPRE para gatear botones que disparan una
+ * mutación (POST/PATCH/DELETE) — la UI debe ser espejo del RBAC real, no una
+ * aproximación por presencia (ver hallazgo de revisión UX que motivó esto).
+ *
+ * Fail-closed explícito: si `permission_levels` no trae la clave (sesión
+ * vieja emitida antes de este contrato, backend antiguo que aún no manda el
+ * campo, o el usuario simplemente no tiene el permiso), el nivel efectivo es
+ * `0` — nunca "no sé el nivel ⇒ lo permito".
  *
  * @param {string} permission — en SCREAMING_SNAKE_CASE (ej. 'PERM_RADI_ENTRADA')
+ * @param {number} [minCrud] - umbral CRUD mínimo requerido por el backend
  * @returns {boolean}
  */
-export function can(permission) {
-  return get(permissions).includes(permission);
+export function can(permission, minCrud) {
+  if (minCrud === undefined) {
+    return get(permissions).includes(permission);
+  }
+  const level = get(permissionLevels)[permission] ?? 0;
+  return level >= minCrud;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +130,16 @@ export function initSession(user) {
 }
 
 /**
- * Actualiza los permisos granulares tras cargar /auth/me.
+ * Actualiza los permisos granulares (y sus niveles CRUD) tras cargar /auth/me.
  * @param {string[]} perms
+ * @param {Record<string, number>} [levels] - `permission_levels` de /auth/me;
+ *   se omite solo por retrocompat de tests/llamadas antiguas — el layout
+ *   server SIEMPRE lo pasa (fail-closed: `{}` si /auth/me no lo trae).
  */
-export function setPermissions(perms) {
-  sessionUser.update((u) => (u ? { ...u, permissions: perms } : u));
+export function setPermissions(perms, levels) {
+  sessionUser.update((u) =>
+    u ? { ...u, permissions: perms, permission_levels: levels ?? {} } : u,
+  );
 }
 
 /**
@@ -127,6 +162,9 @@ export function clearSession() {
  * @property {string[]} roles
  * @property {string|null} tenant_slug
  * @property {string[]} permissions
+ * @property {Record<string, number>} [permission_levels]
+ *   Nivel CRUD por permiso (`GET /auth/me`, aditivo a `permissions[]`).
+ *   Fail-closed: `{}` si el backend no lo trae (sesión vieja, /auth/me caído).
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — cargado por
  *   `(app)/+layout.server.js`, consumido por `DependencySwitcher.svelte`.

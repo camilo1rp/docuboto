@@ -645,7 +645,15 @@
     </div>
   {/if}
 
-  <div class="op-datatable__wrapper">
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con
+       teclado (WCAG 2.1.1) — el linter de Svelte no reconoce esta excepción. -->
+  <div
+    class="op-datatable__wrapper"
+    tabindex="0"
+    role="region"
+    aria-label="{caption} — desplazable horizontalmente"
+  >
     <table class="op-datatable__table" aria-label={caption}>
       <caption class="sr-only">{caption}</caption>
       <thead>
@@ -1024,6 +1032,11 @@
     &__wrapper {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
+
+      &:focus-visible {
+        outline: 2px solid var(--op-primary);
+        outline-offset: -2px;
+      }
     }
 
     &__table {

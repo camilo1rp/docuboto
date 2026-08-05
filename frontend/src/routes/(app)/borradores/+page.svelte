@@ -393,7 +393,14 @@
     />
   {:else}
     <!-- Tabla de borradores -->
-    <div class="borradores-table-wrap" role="region" aria-label="Lista de borradores">
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <div
+      class="borradores-table-wrap"
+      role="region"
+      aria-label="Lista de borradores"
+      tabindex="0"
+    >
       <table class="borradores-table" aria-label="Borradores">
         <thead>
           <tr>
@@ -699,13 +706,13 @@
       }
 
       &--active {
-        background: var(--op-primary);
+        background: var(--op-primary-dark);
         color: var(--op-surface);
-        border-color: var(--op-primary);
+        border-color: var(--op-primary-dark);
 
         &:hover {
-          background: var(--op-primary-dark);
-          border-color: var(--op-primary-dark);
+          background: var(--op-brand-700);
+          border-color: var(--op-brand-700);
         }
       }
 
@@ -741,6 +748,11 @@
     overflow-x: auto;
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .borradores-table {
@@ -770,6 +782,14 @@
 
     &__row:hover td {
       background: var(--op-primary-light);
+
+      // Contraste AA (revisión UX lote 2): `--op-text-secondary` sobre
+      // `--op-primary-light` mide ~4.0:1, bajo AA — se sube a `--op-text`
+      // (que sí cumple) solo mientras el puntero está sobre la fila.
+      &.borradores-table__date,
+      .borradores-table__tracking-none {
+        color: var(--op-text);
+      }
     }
 
     &__subject {

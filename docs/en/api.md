@@ -81,7 +81,9 @@ Validates a Bearer token. Used internally by the api-gateway.
 ```
 
 ### `GET /api/v1/auth/me`
-Information about the authenticated user extracted from the token.
+Information about the authenticated user extracted from the token, including their effective permissions resolved from the tenant DB (D-07).
+
+Requires `Authorization: Bearer <token>`. If `X-Tenant-Slug` is supplied, permissions are resolved from the tenant DB. Without that header (superadmin / direct call), `permissions` returns `[]` and `permission_levels` returns `{}` (fail-closed).
 
 ```json
 // Response 200
@@ -90,9 +92,15 @@ Information about the authenticated user extracted from the token.
   "username": "operador",
   "email": "operador@demo.orpycamcp.local",
   "tenant_slug": "demo",
-  "roles": ["operator"]
+  "roles": ["operator"],
+  "permissions": ["PERM_RADI", "USUA_PERM_CONSULTA"],
+  "permission_levels": { "PERM_RADI": 3, "USUA_PERM_CONSULTA": 1 }
 }
 ```
+
+- `permissions`: names of the permissions with `crud > 0` assigned to the user through their groups. Users with `is_root=true` always include `USUA_PERM_ROOT`, consistent with `has_permission()` and `GET /users/{id}/permissions`.
+- `permission_levels`: **the same keys as `permissions`**, each carrying its **CRUD level** — `0` none · `1` read · `2` edit · `3` create/delete · `4` level_1 · `5` level_2 (`auth_group_permissions.crud`, see `migrations/tenant/001_rbac.sql`). ROOT resolves to `USUA_PERM_ROOT: 5`. This is the field a UI that mirrors the RBAC **must** consult: backend gates use `min_crud=3` (RF-SEG-03), so deciding on the mere presence of a permission offers write actions to users who hold it in read mode — actions the backend denies with `403`. `permissions` is kept for compatibility with existing consumers; the two fields are **additive to each other**, not alternatives.
+- If the user is not provisioned in the tenant, `permissions` is `[]` and `permission_levels` is `{}` (fail-closed). Neither field is ever omitted or returned as `null`: a consumer must never be able to read their absence as "no restriction".
 
 ### URD and dependencia context (E08)
 - `GET /api/v1/auth/users/{user_id}/urd` · `POST` · `DELETE /{urd_id}` — manages the User-Role-Dependencia assignments (one per (user, dependencia); a single primary one). Requires `USUA_PERM_ADMIN`.

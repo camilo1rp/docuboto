@@ -188,8 +188,10 @@ export function extractSessionUser(claims) {
     preferred_username: claims.preferred_username ?? null,
     roles,
     tenant_slug: tenantSlug,
-    // Permisos granulares: se cargan de /auth/me post-login (ver layout.server.js)
+    // Permisos granulares (+ niveles CRUD): se cargan de /auth/me post-login
+    // (ver layout.server.js). Fail-closed: `{}` hasta que /auth/me responda.
     permissions: [],
+    permission_levels: {},
   };
 }
 
@@ -297,6 +299,9 @@ export function clearPkceCookies(cookies) {
  * @property {string[]} roles
  * @property {string|null} tenant_slug
  * @property {string[]} permissions
+ * @property {Record<string, number>} [permission_levels]
+ *   Nivel CRUD por permiso (`GET /auth/me`, aditivo a `permissions[]`);
+ *   fail-closed `{}` si el backend no lo trae.
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — poblado por
  *   `(app)/+layout.server.js`, best-effort (puede quedar `null`).

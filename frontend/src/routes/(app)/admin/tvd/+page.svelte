@@ -43,7 +43,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
@@ -55,7 +55,15 @@
   /** @type {import('./$types').PageData} */
   export let data;
 
+  // Alta de la agrupación raíz: `create_tvd_agrupacion` (tvd.py línea 67,
+  // default `min_crud=1`) — presencia basta, no se toca (A6, revisión UX).
   $: canWrite = $permissions.includes("USUA_PERM_TRD");
+  // "Editar" (`update_tvd_agrupacion`, línea 116) y el circuito de
+  // convalidación completo que gestiona `InstrumentLifecycleActions`
+  // (nueva versión/aprobar/devolver/rusd/convalidar/derogar, líneas
+  // 134-253) exigen `require_permission("USUA_PERM_TRD", min_crud=3)` —
+  // antes solo miraban presencia del permiso (A6, revisión UX).
+  $: canWriteLevel3 = ($permissionLevels["USUA_PERM_TRD"] ?? 0) >= 3;
 
   let agrupaciones = data.agrupaciones ?? [];
 
@@ -382,12 +390,12 @@
     </svelte:fragment>
 
     <svelte:fragment slot="row-actions" let:item>
-      {#if canWrite}
+      {#if canWriteLevel3}
         <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openEdit(item)}>Editar</Button>
       {/if}
       <InstrumentLifecycleActions
         {item}
-        {canWrite}
+        canWrite={canWriteLevel3}
         basePath="/admin/tvd/api"
         instrumentLabel="TVD"
         on:changed={onLifecycleChanged}

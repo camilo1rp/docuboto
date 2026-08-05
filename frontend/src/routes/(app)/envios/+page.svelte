@@ -1031,13 +1031,13 @@
       }
 
       &--active {
-        background: var(--op-primary);
+        background: var(--op-primary-dark);
         color: var(--op-surface);
-        border-color: var(--op-primary);
+        border-color: var(--op-primary-dark);
 
         &:hover {
-          background: var(--op-primary-dark);
-          border-color: var(--op-primary-dark);
+          background: var(--op-brand-700);
+          border-color: var(--op-brand-700);
         }
       }
 

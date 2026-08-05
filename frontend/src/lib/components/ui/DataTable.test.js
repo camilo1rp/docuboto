@@ -42,6 +42,15 @@ describe("DataTable — filas, vacío y encabezados accesibles", () => {
     expect(screen.getByText("Sin resultados")).toBeInTheDocument();
   });
 
+  // Revisión UX lote 2, punto 2: el envoltorio que desplaza la tabla horizontalmente
+  // debe ser alcanzable con teclado (WCAG 2.1.1) y tener nombre accesible (no ser un
+  // tab-stop mudo). Se propaga a las 8+ pantallas que usan DataTable.
+  it("el envoltorio con scroll horizontal es un tab-stop con nombre accesible", () => {
+    render(DataTable, { props: { columns, rows, caption: "Radicados" } });
+    const region = screen.getByRole("region", { name: /Radicados/ });
+    expect(region).toHaveAttribute("tabindex", "0");
+  });
+
   it("loading=true muestra filas skeleton en vez del EmptyState o los datos", () => {
     const { container } = render(DataTable, { props: { columns, rows: [], loading: true } });
     expect(screen.queryByText("Sin resultados")).not.toBeInTheDocument();

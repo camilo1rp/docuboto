@@ -27,6 +27,9 @@
     hint       string   — texto de ayuda adicional debajo del campo
     rows       number   — solo para textarea (default 3)
     options    Array<{value:string; label:string}> — solo para select
+    inputmode  string   — atributo `inputmode` nativo (ej. 'numeric' para
+                          códigos OTP: teclado numérico en móvil)
+    autocomplete string — atributo `autocomplete` nativo (ej. 'one-time-code')
 
   Accesibilidad:
     - label explícito con for={id}
@@ -51,6 +54,11 @@
 
   /** @type {Array<{value: string; label: string}>} */
   export let options = [];
+
+  /** @type {'none'|'text'|'tel'|'url'|'email'|'numeric'|'decimal'|'search'|undefined} */
+  export let inputmode = undefined;
+  /** @type {string|undefined} */
+  export let autocomplete = undefined;
 
   $: fieldName = name || id;
   $: hintId = hint ? `${id}-hint` : undefined;
@@ -190,6 +198,8 @@
       {placeholder}
       {disabled}
       {required}
+      {inputmode}
+      {autocomplete}
       aria-required={required}
       aria-invalid={!!error}
       aria-describedby={describedBy}

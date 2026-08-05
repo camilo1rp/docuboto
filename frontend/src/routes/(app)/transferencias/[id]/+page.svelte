@@ -38,7 +38,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions, sessionUser } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels, sessionUser } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   import Card from "$lib/components/ui/Card.svelte";
@@ -52,7 +52,14 @@
   /** @type {import('./$types').PageData} */
   export let data;
 
+  // Lectura (mostrar la faceta) — cualquier nivel del permiso alcanza.
   $: canManage = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  // A6 (revisión UX): "Reintentar sellado" (POST .../acta/firmar) y "Firmar
+  // como <rol>" (POST .../acta/firmar-personal) exigen
+  // `require_permission("USUA_PERM_EXPEDIENTE", min_crud=3)` en el backend
+  // (transferencias.py líneas 186/203) — la docstring de este archivo ya lo
+  // documentaba, pero el gate seguía usando solo presencia del permiso.
+  $: canManageWrite = ($permissionLevels["USUA_PERM_EXPEDIENTE"] ?? 0) >= 3;
   $: userSub = $sessionUser?.sub ?? "";
 
   onMount(() => {
@@ -485,7 +492,7 @@
               />
             {:else}
               <StatusChip status="warning" label="Pendiente de sellado institucional" dot />
-              {#if canManage}
+              {#if canManageWrite}
                 <Button
                   variant="secondary"
                   size="sm"
@@ -548,7 +555,7 @@
                       {:else}
                         <StatusChip status="neutral" label="Sin firma personal" dot />
                       {/if}
-                      {#if !firma && esMiRol && canManage && transferencia.estado === "recibida"}
+                      {#if !firma && esMiRol && canManageWrite && transferencia.estado === "recibida"}
                         <Button variant="primary" size="sm" on:click={() => abrirFirmarModal(rol)}>
                           <i class="fas fa-signature" aria-hidden="true"></i>
                           Firmar como {ROL_LABELS[rol]}

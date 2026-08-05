@@ -200,7 +200,14 @@
     />
   {:else if plantillas.length > 0}
     <!-- Tabla -->
-    <div class="plantillas-table-wrap" role="region" aria-label="Lista de plantillas">
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+    <div
+      class="plantillas-table-wrap"
+      role="region"
+      aria-label="Lista de plantillas"
+      tabindex="0"
+    >
       <table class="plantillas-table" aria-label="Plantillas de contenido">
         <thead>
           <tr>
@@ -383,6 +390,11 @@
     overflow-x: auto;
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .plantillas-table {
@@ -412,6 +424,13 @@
 
     &__row:hover td {
       background: var(--op-primary-light);
+
+      // Contraste AA (revisión UX lote 2): `--op-text-secondary` sobre
+      // `--op-primary-light` mide ~4.0:1, bajo AA — se sube a `--op-text`
+      // (que sí cumple) solo mientras el puntero está sobre la fila.
+      &.plantillas-table__date {
+        color: var(--op-text);
+      }
     }
 
     &__nombre {

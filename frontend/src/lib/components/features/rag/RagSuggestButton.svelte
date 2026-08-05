@@ -113,7 +113,12 @@
   {/if}
 
   {#if panelOpen}
-    <div class="rag-suggest__panel" role="region" aria-label="Sugerencia generada por IA">
+    <div
+      class="rag-suggest__panel"
+      role="region"
+      aria-label="Sugerencia generada por IA"
+      aria-live="polite"
+    >
       {#if loading}
         <Loader type="skeleton" lines={3} label="Consultando antecedentes…" />
       {:else if errorMsg}

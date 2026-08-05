@@ -265,8 +265,9 @@ async def test_me_returns_user_info(client: AsyncClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["username"] == "operador"
-    # No tenant header → fail-closed: empty permissions
+    # No tenant header → fail-closed: empty permissions and levels
     assert body["permissions"] == []
+    assert body["permission_levels"] == {}
 
 
 @pytest.mark.asyncio
@@ -320,6 +321,67 @@ async def test_me_permissions_populated(client: AsyncClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert set(body["permissions"]) == {"PERM_RADI", "USUA_PERM_CONSULTA"}
+    # permission_levels carries the CRUD level lost by the flat `permissions`
+    # list (D-07 gap): distinguishes read (1) from create/delete (3).
+    assert body["permission_levels"] == {"PERM_RADI": 3, "USUA_PERM_CONSULTA": 1}
+
+
+@pytest.mark.asyncio
+async def test_me_permission_levels_distinguish_read_from_write(client: AsyncClient) -> None:
+    """Same permission name at different CRUD levels must not collapse to a bool.
+
+    This is the exact bug reported by the UX review: the frontend's `can()`
+    checked only presence in `permissions`, so a read-level grant (crud=1) was
+    indistinguishable from a write-level grant (crud=3), while backends gate
+    with `min_crud=3` (RF-SEG-03) — offering actions that then 403.
+    """
+    from app.schemas.auth import UserInfoResponse
+
+    sub = str(uuid.uuid4())
+    user_id = uuid.uuid4()
+
+    user_info = UserInfoResponse(
+        user_id=sub,
+        username="lector",
+        email="lector@demo.orpycamcp.local",
+        tenant_slug="demo",
+        roles=["operator"],
+    )
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {
+        "id": user_id,
+        "username": "LECTOR",
+        "email": "lector@demo.orpycamcp.local",
+        "keycloak_sub": sub,
+        "is_root": False,
+        "is_active": True,
+    }
+    # USUA_PERM_EXPEDIENTE granted only at read level (crud=1), NOT write (3).
+    conn.fetch.return_value = [{"nombre": "USUA_PERM_EXPEDIENTE", "crud": 1}]
+    conn.fetchval.return_value = False
+    _override_optional_conn(conn)
+
+    with patch(
+        "app.services.auth_service.AuthService.get_current_user",
+        new_callable=AsyncMock,
+        return_value=user_info,
+    ):
+        response = await client.get(
+            "/api/v1/auth/me",
+            headers={
+                "Authorization": "Bearer eyFAKE_ACCESS_TOKEN",
+                "X-Tenant-Slug": "demo",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    # `permissions` alone (legacy contract) still shows the permission as present.
+    assert "USUA_PERM_EXPEDIENTE" in body["permissions"]
+    # `permission_levels` reveals it's read-only — insufficient for min_crud=3 actions.
+    assert body["permission_levels"]["USUA_PERM_EXPEDIENTE"] == 1
+    assert body["permission_levels"]["USUA_PERM_EXPEDIENTE"] < 3
 
 
 @pytest.mark.asyncio
@@ -354,7 +416,9 @@ async def test_me_permissions_empty_when_not_provisioned(client: AsyncClient) ->
         )
 
     assert response.status_code == 200
-    assert response.json()["permissions"] == []
+    body = response.json()
+    assert body["permissions"] == []
+    assert body["permission_levels"] == {}
 
 
 @pytest.mark.asyncio
@@ -401,9 +465,13 @@ async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
         )
 
     assert response.status_code == 200
-    perms = response.json()["permissions"]
+    body = response.json()
+    perms = body["permissions"]
     assert "USUA_PERM_ROOT" in perms
     assert "PERM_RADI" in perms
+    # RBACService.resolve_effective_permissions embeds USUA_PERM_ROOT at crud=5.
+    assert body["permission_levels"]["USUA_PERM_ROOT"] == 5
+    assert body["permission_levels"]["PERM_RADI"] == 5
 
 
 # ---------------------------------------------------------------------------

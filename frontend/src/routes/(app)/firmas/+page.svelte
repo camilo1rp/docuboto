@@ -1144,7 +1144,7 @@
       flex-shrink: 0;
 
       .firma-chain__item--activo & {
-        background: var(--op-primary);
+        background: var(--op-primary-dark);
         color: var(--op-surface);
       }
     }
@@ -1177,6 +1177,13 @@
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
       margin-left: auto;
+
+      // Contraste AA (revisión UX lote 2): `--op-text-secondary` sobre el
+      // fondo `--op-primary-light` del turno activo mide ~4.0:1, bajo AA.
+      // `--op-text` sí cumple sobre ese mismo fondo.
+      .firma-chain__item--activo & {
+        color: var(--op-text);
+      }
     }
 
     &__comentario {
@@ -1184,6 +1191,10 @@
       color: var(--op-text-secondary);
       margin: 0;
       font-style: italic;
+
+      .firma-chain__item--activo & {
+        color: var(--op-text);
+      }
     }
   }
 

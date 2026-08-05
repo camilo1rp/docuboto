@@ -1149,8 +1149,16 @@
             {/if}
           </EmptyState>
         {:else}
-          <table class="bandeja-table" aria-label="Radicados">
-            <thead>
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+          <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <div
+            class="bandeja-table-scroll"
+            tabindex="0"
+            role="region"
+            aria-label="Radicados — desplazable horizontalmente"
+          >
+            <table class="bandeja-table" aria-label="Radicados">
+              <thead>
               <tr>
                 <th scope="col" class="bandeja-table__th bandeja-table__th--tracking">Radicado</th>
                 <th scope="col" class="bandeja-table__th">Tipo</th>
@@ -1249,7 +1257,8 @@
                 </tr>
               {/each}
             </tbody>
-          </table>
+            </table>
+          </div>
 
           <!-- ==============================================================
           Paginación
@@ -2102,6 +2111,20 @@
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius-lg);
     overflow: hidden;
+  }
+
+  // Contraste con el `overflow: hidden` del wrapper de arriba (que solo
+  // recorta esquinas): en móvil las columnas Estado/Acciones quedaban
+  // cortadas sin forma de alcanzarlas (WCAG 1.4.10). `tabindex="0"` permite
+  // desplazar el contenedor con teclado (WCAG 2.1.1).
+  .bandeja-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .bandeja-table {

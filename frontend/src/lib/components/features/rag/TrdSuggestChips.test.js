@@ -64,6 +64,27 @@ describe("TrdSuggestChips", () => {
     expect(applied).toEqual({ docClass: "CDP" });
   });
 
+  // Revisión UX lote 2, punto 5: los chips aparecen tras el debounce sin
+  // anuncio a lector de pantalla — necesitan aria-live="polite".
+  it("el contenedor de chips es una región aria-live=\"polite\"", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      jsonResponse({
+        suggestions: [
+          { doc_class: "CDP", count: 3, best_score: 0.9, example_ref: "2024-ICETEX-E-000001" },
+        ],
+        antecedentes: [],
+        advisory: "aviso",
+      }),
+    );
+    render(TrdSuggestChips, {
+      props: { endpoint: "/radicar/api/rag/antecedentes", query: "asunto de prueba largo" },
+    });
+    const group = await waitFor(() =>
+      screen.getByRole("group", { name: /tipo documental sugerido/i }),
+    );
+    expect(group).toHaveAttribute("aria-live", "polite");
+  });
+
   it("un fallo del proxy no muestra chips ni lanza (feature decorativa/opcional)", async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ error: "connection_error" }, 503));
     render(TrdSuggestChips, {

@@ -339,6 +339,8 @@
   <!-- ===================================================================
        Panel: Parámetros
        =================================================================== -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
   <div id="panel-params" role="tabpanel" aria-labelledby="tab-params" hidden={activeTab !== "params"} tabindex="0">
     {#if data.paramsError}
       <div class="param-page__error" role="alert">
@@ -348,7 +350,9 @@
     {:else if paramEntries.length === 0}
       <EmptyState icon="fas fa-sliders" title="Sin parámetros definidos" description="Crea el primero con el formulario de abajo." />
     {:else}
-      <div class="param-table-wrap" role="region" aria-label="Parámetros del tenant">
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+      <div class="param-table-wrap" role="region" aria-label="Parámetros del tenant" tabindex="0">
         <table class="param-table" aria-label="Parámetros del tenant">
           <thead>
             <tr>
@@ -413,6 +417,8 @@
   <!-- ===================================================================
        Panel: Festivos
        =================================================================== -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
   <div id="panel-festivos" role="tabpanel" aria-labelledby="tab-festivos" hidden={activeTab !== "festivos"} tabindex="0">
     {#if data.holidaysError}
       <div class="param-page__error" role="alert">
@@ -426,7 +432,9 @@
         description='Precarga el calendario colombiano con "Precargar festivos" o crea uno puntual.'
       />
     {:else}
-      <div class="param-table-wrap" role="region" aria-label="Calendario de festivos">
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+      <div class="param-table-wrap" role="region" aria-label="Calendario de festivos" tabindex="0">
         <table class="param-table" aria-label="Calendario de festivos">
           <thead>
             <tr>
@@ -484,6 +492,8 @@
   <!-- ===================================================================
        Panel: Calculadora de días hábiles
        =================================================================== -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
   <div id="panel-calculadora" role="tabpanel" aria-labelledby="tab-calculadora" hidden={activeTab !== "calculadora"} tabindex="0">
     <p class="param-page__hint">
       Calcula la fecha de vencimiento de un plazo en días hábiles (RF-RAD-04) — descuenta fines de semana y los
@@ -625,6 +635,11 @@
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius);
     margin-bottom: var(--op-space-4);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .param-table {
@@ -693,7 +708,10 @@
     }
 
     &__meta {
-      color: var(--op-text-secondary);
+      // Contraste AA (revisión UX lote 2): `--op-text-secondary` sobre el
+      // fondo `--op-primary-light` de `.calc-result` mide ~4.0:1, bajo AA.
+      // `--op-text` sí cumple sobre ese mismo fondo.
+      color: var(--op-text);
       font-size: var(--op-font-sm);
     }
 

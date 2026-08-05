@@ -83,7 +83,7 @@ Valida un Bearer token. Usado internamente por el api-gateway.
 ### `GET /api/v1/auth/me`
 Información del usuario autenticado extraída del token, incluyendo sus permisos efectivos resueltos desde la BD del tenant (D-07).
 
-Requiere `Authorization: Bearer <token>`. Si se proporciona `X-Tenant-Slug`, se resuelven los permisos desde la BD del tenant. Sin esa cabecera (superadmin / llamada directa), `permissions` devuelve `[]` (fail-closed).
+Requiere `Authorization: Bearer <token>`. Si se proporciona `X-Tenant-Slug`, se resuelven los permisos desde la BD del tenant. Sin esa cabecera (superadmin / llamada directa), `permissions` devuelve `[]` y `permission_levels` `{}` (fail-closed).
 
 ```json
 // Response 200
@@ -93,12 +93,14 @@ Requiere `Authorization: Bearer <token>`. Si se proporciona `X-Tenant-Slug`, se 
   "email": "operador@demo.orpycamcp.local",
   "tenant_slug": "demo",
   "roles": ["operator"],
-  "permissions": ["PERM_RADI", "USUA_PERM_CONSULTA"]
+  "permissions": ["PERM_RADI", "USUA_PERM_CONSULTA"],
+  "permission_levels": { "PERM_RADI": 3, "USUA_PERM_CONSULTA": 1 }
 }
 ```
 
 - `permissions`: lista de nombres de permisos con `crud > 0` asignados al usuario a través de sus grupos. Los usuarios `is_root=true` siempre incluyen `USUA_PERM_ROOT`, coherente con `has_permission()` y `GET /users/{id}/permissions`.
-- Si el usuario no está aprovisionado en el tenant, `permissions` es `[]` (fail-closed).
+- `permission_levels`: **mismas claves que `permissions`**, con el **nivel CRUD** de cada una — `0` ninguno · `1` leer · `2` editar · `3` crear/borrar · `4` nivel_1 · `5` nivel_2 (`auth_group_permissions.crud`, ver `migrations/tenant/001_rbac.sql`). ROOT resuelve `USUA_PERM_ROOT: 5`. Es el campo que un espejo RBAC de interfaz **debe** consultar: los gates del backend usan `min_crud=3` (RF-SEG-03), así que decidir solo por presencia del permiso ofrece acciones de escritura a quien lo tiene en modo lectura, que el backend niega con `403`. `permissions` se conserva por compatibilidad con los consumidores existentes; ambos campos son **aditivos entre sí**, no alternativos.
+- Si el usuario no está aprovisionado en el tenant, `permissions` es `[]` y `permission_levels` es `{}` (fail-closed). Ninguno de los dos se omite ni se devuelve `null`: un consumidor nunca debe poder leer su ausencia como "sin restricción".
 
 ### 2FA TOTP — credencial del usuario (E06 Inc.6, RF-FIR-13)
 El secreto TOTP (RFC 6238) es una **credencial de identidad durable** y vive en auth-service (tabla `auth_user_totp` por tenant, cifrada con **AESGCM**; AAD `tenant:{slug}:user:{id}:totp`). El secreto en claro se revela **una sola vez** en el `otpauth://` de `enroll` (`Cache-Control: no-store`); nunca vuelve a salir. Todos son auto-servicio (bearer del propio usuario).

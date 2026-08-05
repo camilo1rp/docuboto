@@ -56,7 +56,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   import Card from "$lib/components/ui/Card.svelte";
@@ -77,8 +77,16 @@
     ]);
   });
 
+  // GET plan/versiones (`get_plan`/`list_plan_versions`, preservacion.py
+  // líneas 80/116) son `min_crud=1` (default): presencia basta.
   $: canRead = $permissions.includes("USUA_PERM_EXPEDIENTE");
-  $: canWritePlan = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  // `set_plan` (PUT /plan, línea 99) exige
+  // `require_permission("USUA_PERM_EXPEDIENTE", min_crud=3)` — antes solo
+  // miraba presencia del permiso (A6, revisión UX).
+  $: canWritePlan = ($permissionLevels["USUA_PERM_EXPEDIENTE"] ?? 0) >= 3;
+  // Firmar índice va por archive-service `POST /indice/firmar`
+  // (USUA_PERM_EXPEDIENTE Y PERM_FIRMA, indice.py líneas 194-195), ambos
+  // `min_crud=1` (default) — no se toca.
   $: canFirmarIndice =
     $permissions.includes("USUA_PERM_EXPEDIENTE") && $permissions.includes("PERM_FIRMA");
 
@@ -275,6 +283,8 @@
     <!-- ===================================================================
          Panel — Plan de preservación
          =================================================================== -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="prsv-panel-plan"
       role="tabpanel"
@@ -426,6 +436,8 @@
     <!-- ===================================================================
          Panel — Índices pendientes de firma
          =================================================================== -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="prsv-panel-firma"
       role="tabpanel"
@@ -451,7 +463,14 @@
             description="No hay índices electrónicos visibles para usted pendientes de sellado."
           />
         {:else}
-          <div class="prsv-table-wrap">
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+          <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <div
+            class="prsv-table-wrap"
+            role="region"
+            aria-label="Índices pendientes de sellado XAdES"
+            tabindex="0"
+          >
             <table class="table is-fullwidth is-hoverable">
               <caption class="is-sr-only">Índices pendientes de sellado XAdES</caption>
               <thead>
@@ -505,6 +524,8 @@
     <!-- ===================================================================
          Panel — Renovación WORM (solo lectura)
          =================================================================== -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
     <div
       id="prsv-panel-worm"
       role="tabpanel"
@@ -535,7 +556,14 @@
             description="No hay artefactos WORM visibles para usted pendientes de renovación."
           />
         {:else}
-          <div class="prsv-table-wrap">
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+          <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+          <div
+            class="prsv-table-wrap"
+            role="region"
+            aria-label="Artefactos WORM pendientes de renovación de retención"
+            tabindex="0"
+          >
             <table class="table is-fullwidth is-hoverable">
               <caption class="is-sr-only"
                 >Artefactos WORM pendientes de renovación de retención</caption
@@ -749,6 +777,11 @@
 
   .prsv-table-wrap {
     overflow-x: auto;
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
 
     .table {
       border-collapse: collapse;

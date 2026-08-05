@@ -21,6 +21,7 @@ import {
   sessionUser,
   roles,
   permissions,
+  permissionLevels,
   tenantSlug,
   isAuthenticated,
   hasRole,
@@ -41,6 +42,7 @@ function makeUser(overrides = {}) {
     roles: [],
     tenant_slug: "icetex",
     permissions: [],
+    permission_levels: {},
     ...overrides,
   };
 }
@@ -126,6 +128,86 @@ describe("auth store — initSession con distintas formas de sesión", () => {
   });
 });
 
+describe("auth store — can(perm, minCrud): espejo del RBAC por nivel (D-A6)", () => {
+  beforeEach(() => {
+    clearSession();
+  });
+
+  it("can(perm) sin minCrud es retrocompatible: solo mira presencia en permissions[]", () => {
+    initSession(
+      makeUser({
+        permissions: ["USUA_PERM_EXPEDIENTE"],
+        permission_levels: { USUA_PERM_EXPEDIENTE: 1 },
+      }),
+    );
+    expect(can("USUA_PERM_EXPEDIENTE")).toBe(true);
+    expect(can("PERM_RADI")).toBe(false);
+  });
+
+  it("permission_levels expuesto en el store derivado permissionLevels", () => {
+    initSession(makeUser({ permission_levels: { USUA_PERM_EXPEDIENTE: 3 } }));
+    expect(get(permissionLevels)).toEqual({ USUA_PERM_EXPEDIENTE: 3 });
+  });
+
+  it("con minCrud=3: nivel 1 (solo lectura) NO alcanza — false", () => {
+    initSession(
+      makeUser({
+        permissions: ["USUA_PERM_EXPEDIENTE"],
+        permission_levels: { USUA_PERM_EXPEDIENTE: 1 },
+      }),
+    );
+    expect(can("USUA_PERM_EXPEDIENTE", 3)).toBe(false);
+  });
+
+  it("con minCrud=3: nivel 3 (crear/borrar) sí alcanza — true", () => {
+    initSession(
+      makeUser({
+        permissions: ["USUA_PERM_EXPEDIENTE"],
+        permission_levels: { USUA_PERM_EXPEDIENTE: 3 },
+      }),
+    );
+    expect(can("USUA_PERM_EXPEDIENTE", 3)).toBe(true);
+  });
+
+  it("fail-closed: permission_levels vacío ({}) con minCrud → false, nunca 'no sé el nivel => permito'", () => {
+    initSession(makeUser({ permissions: ["USUA_PERM_EXPEDIENTE"], permission_levels: {} }));
+    expect(can("USUA_PERM_EXPEDIENTE", 1)).toBe(false);
+  });
+
+  it("fail-closed: permission_levels sin la clave del permiso (sesión vieja / backend antiguo) → false", () => {
+    initSession(
+      makeUser({
+        permissions: ["USUA_PERM_EXPEDIENTE"],
+        permission_levels: { OTRO_PERM: 5 },
+      }),
+    );
+    expect(can("USUA_PERM_EXPEDIENTE", 1)).toBe(false);
+  });
+
+  it("fail-closed: permission_levels ausente en la sesión (undefined) → false con minCrud", () => {
+    const { permission_levels: _omit, ...userSinNiveles } = makeUser({
+      permissions: ["USUA_PERM_EXPEDIENTE"],
+    });
+    initSession(userSinNiveles);
+    expect(get(permissionLevels)).toEqual({});
+    expect(can("USUA_PERM_EXPEDIENTE", 1)).toBe(false);
+  });
+
+  it("setPermissions actualiza permission_levels junto con permissions", () => {
+    initSession(makeUser());
+    setPermissions(["USUA_PERM_EXPEDIENTE"], { USUA_PERM_EXPEDIENTE: 3 });
+    expect(can("USUA_PERM_EXPEDIENTE", 3)).toBe(true);
+    expect(can("USUA_PERM_EXPEDIENTE", 4)).toBe(false);
+  });
+
+  it("setPermissions sin levels deja permission_levels en {} (fail-closed, no en undefined)", () => {
+    initSession(makeUser({ permission_levels: { USUA_PERM_EXPEDIENTE: 3 } }));
+    setPermissions(["USUA_PERM_EXPEDIENTE"]);
+    expect(get(permissionLevels)).toEqual({});
+    expect(can("USUA_PERM_EXPEDIENTE", 1)).toBe(false);
+  });
+});
+
 describe("auth store — INVARIANTE: nunca expone tokens", () => {
   beforeEach(() => {
     clearSession();
@@ -180,7 +262,16 @@ describe("auth store — INVARIANTE: nunca expone tokens", () => {
       // 2) Solo la allowlist documentada de SessionUser sobrevive (ni iat/exp ni
       //    ningún otro claim JWT crudo).
       expect(Object.keys(sessionUserFromClaims).sort()).toEqual(
-        ["sub", "email", "name", "preferred_username", "roles", "tenant_slug", "permissions"].sort(),
+        [
+          "sub",
+          "email",
+          "name",
+          "preferred_username",
+          "roles",
+          "tenant_slug",
+          "permissions",
+          "permission_levels",
+        ].sort(),
       );
 
       // 3) Y el store, al recibir ese SessionUser real, tampoco expone tokens

@@ -149,4 +149,27 @@ describe("FormField — label asociado y accesibilidad básica", () => {
     });
     expect(screen.getByLabelText("Descripción")).toHaveAttribute("name", "description");
   });
+
+  // Revisión UX lote 2, punto 4: los campos de código OTP necesitan teclado
+  // numérico en móvil y el hint de autocompletado de códigos de un solo uso.
+  it("inputmode y autocomplete se pasan al <input> (campos de código OTP)", () => {
+    render(FormField, {
+      props: {
+        id: "totp-code",
+        label: "Código",
+        inputmode: "numeric",
+        autocomplete: "one-time-code",
+      },
+    });
+    const input = screen.getByLabelText("Código");
+    expect(input).toHaveAttribute("inputmode", "numeric");
+    expect(input).toHaveAttribute("autocomplete", "one-time-code");
+  });
+
+  it("sin inputmode/autocomplete no se agregan esos atributos", () => {
+    render(FormField, { props: { id: "asunto", label: "Asunto" } });
+    const input = screen.getByLabelText("Asunto");
+    expect(input).not.toHaveAttribute("inputmode");
+    expect(input).not.toHaveAttribute("autocomplete");
+  });
 });

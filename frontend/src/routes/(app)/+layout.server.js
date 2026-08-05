@@ -90,6 +90,12 @@ export async function load({ cookies, url, fetch }) {
     if (meData.ok) {
       const me = await meData.json();
       user.permissions = me.permissions ?? [];
+      // permission_levels (RF-SEG-03): nivel CRUD por permiso, aditivo a
+      // `permissions[]` — fail-closed `{}` si el backend no lo trae (nunca
+      // null). Es lo que permite a `can(perm, minCrud)` espejar los gates
+      // `require_permission(perm, min_crud=N)` del backend sin ofrecer
+      // acciones que la API rechazaría.
+      user.permission_levels = me.permission_levels ?? {};
       // Si el backend enriquece el nombre/email, actualizar
       if (me.name) user.name = me.name;
       if (me.email) user.email = me.email;
@@ -99,6 +105,7 @@ export async function load({ cookies, url, fetch }) {
   } catch {
     // Error de red hacia el gateway — se degrada sin permisos granulares
     user.permissions = [];
+    user.permission_levels = {};
   }
 
   // --- Contexto de dependencia activa + catálogo de dependencias ---

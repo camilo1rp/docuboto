@@ -52,7 +52,21 @@ class UserInfoResponse(BaseModel):
 
     Resolved from the tenant DB on each call; empty when the user has no
     tenant context (superadmin) or is not provisioned in the tenant (fail-closed).
-    Root users always include ``USUA_PERM_ROOT``.
+    Root users always include ``USUA_PERM_ROOT``. Kept as a flat name list for
+    backwards compatibility with existing consumers (frontend store, other
+    services) — see ``permission_levels`` for the CRUD level of each.
+    """
+    permission_levels: dict[str, int] = Field(default_factory=dict)
+    """CRUD level (0-5) per permission name — same keys as ``permissions``, added
+    so consumers can distinguish read from write access (RF-SEG-03) instead of
+    treating any listed permission as full access.
+
+    Values come straight from ``auth_group_permissions.crud``
+    (``migrations/tenant/001_rbac.sql``): 0=Ninguno 1=Leer 2=Editar
+    3=Crear/Borrar 4=Nivel_1 5=Nivel_2. Root users get ``USUA_PERM_ROOT: 5``.
+
+    Fail-closed like ``permissions``: empty dict (never omitted/null) when
+    there is no tenant context or the user is not provisioned.
     """
 
 

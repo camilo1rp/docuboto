@@ -88,7 +88,13 @@
 </script>
 
 {#if loading || suggestions.length > 0}
-  <div class="trd-chips" role="group" aria-label="Tipo documental sugerido por precedentes">
+  <div
+    class="trd-chips"
+    role="group"
+    aria-label="Tipo documental sugerido por precedentes"
+    aria-live="polite"
+    aria-atomic="true"
+  >
     <span class="trd-chips__label">
       <i class="fas fa-magic" aria-hidden="true"></i>
       Sugerido por precedentes (no se aplica solo):

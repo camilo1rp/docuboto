@@ -34,7 +34,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
@@ -63,7 +63,18 @@
   /** @type {import('./$types').PageData} */
   export let data;
 
+  // Alta de serie/tipo documental (`create_trd_serie` trd.py línea 83,
+  // `create_tipo` tipos_documentales.py línea 60) y "Editar" de tipo
+  // documental (`update_tipo`, línea 112) — todos `min_crud=1` (default):
+  // presencia basta, no se tocan (A6, revisión UX).
   $: canWrite = $permissions.includes("USUA_PERM_TRD");
+  // "Editar" de serie (`update_trd_serie`, línea 183), el circuito de
+  // convalidación de `InstrumentLifecycleActions` (nueva versión/aprobar/
+  // devolver/rusd/convalidar/derogar, líneas 202-330) y "Eliminar" tipo
+  // documental (`delete_tipo`, tipos_documentales.py línea 132) exigen
+  // `require_permission(..., min_crud=3)` — antes solo miraban presencia
+  // del permiso (A6, revisión UX).
+  $: canWriteLevel3 = ($permissionLevels["USUA_PERM_TRD"] ?? 0) >= 3;
 
   let series = data.series ?? [];
   let tipos = data.tipos ?? [];
@@ -511,15 +522,15 @@
 
       <!-- svelte:fragment no puede envolverse en {#if} (debe ser hijo directo
            del componente) -- el gate de permiso va DENTRO del fragmento. Con
-           canWrite=false la columna de acciones queda presente pero vacía;
+           canWriteLevel3=false la columna de acciones queda presente pero vacía;
            es preferible a duplicar el CatalogCrudPanel por permiso. -->
       <svelte:fragment slot="row-actions" let:item>
-        {#if canWrite}
+        {#if canWriteLevel3}
           <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openSerieEdit(item)}>Editar</Button>
         {/if}
         <InstrumentLifecycleActions
           {item}
-          {canWrite}
+          canWrite={canWriteLevel3}
           basePath="/admin/trd/api"
           instrumentLabel="TRD"
           on:changed={onLifecycleChanged}
@@ -652,6 +663,8 @@
       <svelte:fragment slot="row-actions" let:item>
         {#if canWrite}
           <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openTipoEdit(item)}>Editar</Button>
+        {/if}
+        {#if canWriteLevel3}
           <Button
             variant="ghost"
             size="sm"

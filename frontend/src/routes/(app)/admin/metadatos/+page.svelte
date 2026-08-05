@@ -46,7 +46,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
@@ -60,9 +60,16 @@
   export let data;
 
   // Gate REAL único para las tres pestañas: los tres routers backend exigen
-  // USUA_PERM_TRD en sus mutaciones — ver comentario de cabecera.
+  // USUA_PERM_TRD en sus mutaciones — ver comentario de cabecera. Crear
+  // plantillas (ambos routers metadata.py) y crear/editar elemento
+  // (metadata_elements.py create_element/update_element) son `min_crud=1`
+  // (default): presencia basta.
   $: canWrite = $permissions.includes("USUA_PERM_TRD");
   $: canWriteExpTemplates = canWrite;
+  // "Eliminar" elemento (`delete_element`, metadata_elements.py línea 154)
+  // exige `require_permission("USUA_PERM_TRD", min_crud=3)` — antes solo
+  // miraba presencia del permiso, igual que "Editar" (A6, revisión UX).
+  $: canDeleteElement = ($permissionLevels["USUA_PERM_TRD"] ?? 0) >= 3;
 
   let expedienteTemplates = data.expedienteTemplates ?? [];
   let documentTemplates = data.documentTemplates ?? [];
@@ -419,6 +426,8 @@
   <!-- ===================================================================
        Panel: Plantillas de expediente
        =================================================================== -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
   <div
     id="panel-exp-templates"
     role="tabpanel"
@@ -445,7 +454,9 @@
           : "No hay plantillas de expediente registradas. Se requiere USUA_PERM_TRD para crear una."}
       />
     {:else}
-      <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de expediente">
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+      <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de expediente" tabindex="0">
         <table class="meta-table" aria-label="Plantillas de metadatos de expediente">
           <thead>
             <tr>
@@ -475,6 +486,8 @@
   <!-- ===================================================================
        Panel: Plantillas de documento
        =================================================================== -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
   <div
     id="panel-doc-templates"
     role="tabpanel"
@@ -499,7 +512,9 @@
         description='Crea la primera con "Nueva plantilla de documento".'
       />
     {:else}
-      <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de documento">
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
+      <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de documento" tabindex="0">
         <table class="meta-table" aria-label="Plantillas de metadatos de documento">
           <thead>
             <tr>
@@ -529,6 +544,8 @@
   <!-- ===================================================================
        Panel: Elementos de metadato
        =================================================================== -->
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
   <div id="panel-elementos" role="tabpanel" aria-labelledby="tab-elementos" hidden={activeTab !== "elementos"} tabindex="0">
     <CatalogCrudPanel
       ariaLabel="Elementos de metadato"
@@ -568,6 +585,8 @@
       <svelte:fragment slot="row-actions" let:item>
         {#if canWrite}
           <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openElEdit(item)}>Editar</Button>
+        {/if}
+        {#if canDeleteElement}
           <Button
             variant="ghost"
             size="sm"
@@ -798,6 +817,11 @@
     overflow-x: auto;
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: -2px;
+    }
   }
 
   .meta-table {

@@ -110,9 +110,18 @@
   let totpRevoking = false;
   let totpRevokeOpen = false;
 
+  // Errores de validación asociados al campo (revisión UX lote 2, punto 4):
+  // antes solo salían como toast, sin `aria-invalid`/`aria-describedby` — quien
+  // usa lector de pantalla no sabía qué campo falló. `FormField` ya soporta
+  // `error`; aquí solo faltaba conectarlo.
+  let totpReenrollError = "";
+  let totpActivateError = "";
+  let totpRevokeError = "";
+
   async function enrollTotp() {
+    totpReenrollError = "";
     if (totpActive && !/^\d{6}$/.test(totpStepUpForReenroll)) {
-      notifyError("Ingrese el código actual de 6 dígitos para reemplazar el segundo factor.");
+      totpReenrollError = "Ingrese el código actual de 6 dígitos para reemplazar el segundo factor.";
       return;
     }
     totpEnrolling = true;
@@ -126,7 +135,12 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo generar el segundo factor.");
+        const detail = resData.detail ?? "No se pudo generar el segundo factor.";
+        if (totpActive) {
+          totpReenrollError = detail;
+        } else {
+          notifyError(detail);
+        }
         return;
       }
       totp = { estado: "pendiente_activacion" };
@@ -141,8 +155,9 @@
   }
 
   async function activateTotp() {
+    totpActivateError = "";
     if (!/^\d{6}$/.test(totpActivateCode)) {
-      notifyError("El código debe tener 6 dígitos.");
+      totpActivateError = "El código debe tener 6 dígitos.";
       return;
     }
     totpActivating = true;
@@ -154,7 +169,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "Código incorrecto o vencido.");
+        totpActivateError = resData.detail ?? "Código incorrecto o vencido.";
         return;
       }
       totp = { estado: "activo", activated_at: resData.activated_at };
@@ -169,8 +184,9 @@
   }
 
   async function revokeTotp() {
+    totpRevokeError = "";
     if (totpActive && !/^\d{6}$/.test(totpRevokeCode)) {
-      notifyError("Ingrese el código actual de 6 dígitos para revocar.");
+      totpRevokeError = "Ingrese el código actual de 6 dígitos para revocar.";
       return;
     }
     totpRevoking = true;
@@ -182,7 +198,12 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo revocar el segundo factor.");
+        const detail = resData.detail ?? "No se pudo revocar el segundo factor.";
+        if (totpActive) {
+          totpRevokeError = detail;
+        } else {
+          notifyError(detail);
+        }
         return;
       }
       totp = { estado: "no_configurado" };
@@ -221,6 +242,11 @@
   let signingRevokeMotivo = "";
   let signingRevoking = false;
 
+  // Errores de validación asociados al campo (revisión UX lote 2, punto 4).
+  let signingReenrollStepUpError = "";
+  let signingReenrollConfirmError = "";
+  let signingRevokeStepUpError = "";
+
   $: reenrollReady = !signingActive || (isReenrollConfirmed(signingReenrollConfirm) && /^\d{6}$/.test(signingReenrollStepUp));
 
   async function enrollSigningKey() {
@@ -228,7 +254,17 @@
       notifyError("Active primero el segundo factor (TOTP).");
       return;
     }
-    if (signingActive && !reenrollReady) return;
+    signingReenrollStepUpError = "";
+    signingReenrollConfirmError = "";
+    if (signingActive && !reenrollReady) {
+      if (!isReenrollConfirmed(signingReenrollConfirm)) {
+        signingReenrollConfirmError = `Escriba exactamente "${REENROLL_CONFIRM_PHRASE}" para confirmar.`;
+      }
+      if (!/^\d{6}$/.test(signingReenrollStepUp)) {
+        signingReenrollStepUpError = "Ingrese el código actual de 6 dígitos (2FA).";
+      }
+      return;
+    }
     signingEnrolling = true;
     try {
       const res = await fetch("/perfil/api/signing-key/enroll", {
@@ -240,7 +276,12 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo generar la solicitud de credencial.");
+        const detail = resData.detail ?? "No se pudo generar la solicitud de credencial.";
+        if (signingActive) {
+          signingReenrollStepUpError = detail;
+        } else {
+          notifyError(detail);
+        }
         return;
       }
       signingKey = { estado: "pendiente_emision" };
@@ -256,8 +297,9 @@
   }
 
   async function revokeSigningKey() {
+    signingRevokeStepUpError = "";
     if (!/^\d{6}$/.test(signingRevokeStepUp)) {
-      notifyError("Ingrese el código actual de 6 dígitos para revocar.");
+      signingRevokeStepUpError = "Ingrese el código actual de 6 dígitos para revocar.";
       return;
     }
     signingRevoking = true;
@@ -272,7 +314,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo revocar la credencial de firma.");
+        signingRevokeStepUpError = resData.detail ?? "No se pudo revocar la credencial de firma.";
         return;
       }
       signingKey = { estado: "revocado" };
@@ -427,6 +469,9 @@
           label="Código de 6 dígitos de su app autenticadora"
           bind:value={totpActivateCode}
           placeholder="000000"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          error={totpActivateError}
         />
         <Button type="submit" variant="primary" loading={totpActivating}>Activar</Button>
       </form>
@@ -447,6 +492,9 @@
             label="Código actual de 6 dígitos"
             bind:value={totpStepUpForReenroll}
             placeholder="000000"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            error={totpReenrollError}
           />
           <Button type="submit" variant="secondary" loading={totpEnrolling}>Reemplazar</Button>
         </form>
@@ -464,6 +512,9 @@
             label="Código actual de 6 dígitos"
             bind:value={totpRevokeCode}
             placeholder="000000"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            error={totpRevokeError}
           />
           <Button type="submit" variant="danger" loading={totpRevoking}>Revocar</Button>
         </form>
@@ -582,12 +633,16 @@
               label="Código actual de 6 dígitos (2FA)"
               bind:value={signingReenrollStepUp}
               placeholder="000000"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              error={signingReenrollStepUpError}
             />
             <FormField
               id="signing-reenroll-confirm"
               label={`Escriba "${REENROLL_CONFIRM_PHRASE}" para confirmar que entiende que quedará sin firma`}
               bind:value={signingReenrollConfirm}
               placeholder={REENROLL_CONFIRM_PHRASE}
+              error={signingReenrollConfirmError}
             />
             <Button type="submit" variant="danger" disabled={!reenrollReady} loading={signingEnrolling}>
               Reemplazar credencial
@@ -606,6 +661,9 @@
               label="Código actual de 6 dígitos (2FA)"
               bind:value={signingRevokeStepUp}
               placeholder="000000"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              error={signingRevokeStepUpError}
             />
             <FormField
               id="signing-revoke-motivo"
