@@ -27,6 +27,44 @@ class ExpedienteCreate(BaseModel):
     # Metadatos variables del expediente (E03, ADR-007). Si la serie TRD tiene
     # plantilla activa, se validan contra su JSON Schema al crear.
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # ADR-026 (Increment 2): amarre de fondo acumulado. `origen` decide bajo
+    # qué instrumento puede cerrarse este expediente (Capa 4, migración 041)
+    # -- fijado aquí, en la creación; no hay ruta de edición posterior
+    # (`ExpedienteUpdate` no lo incluye a propósito, ver esa clase). Un fondo
+    # acumulado exige `trd_serie_id` (de una TVD) y `fecha_extrema_final`
+    # DESDE la creación: es la fecha base del calendario (ADR-026 D4) y el
+    # trigger de la Capa 4 rechazaría igualmente un `trd_serie_id` de TRD.
+    origen: Literal["corriente", "fondo_acumulado"] = "corriente"
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
+
+    @model_validator(mode="after")
+    def _validate_fondo_acumulado(self) -> "ExpedienteCreate":
+        if self.origen == "fondo_acumulado":
+            if self.fecha_extrema_final is None:
+                raise ValueError(
+                    "fecha_extrema_final es obligatoria cuando origen='fondo_acumulado' "
+                    "(ADR-026 D4: es la fecha base del calendario de retención)."
+                )
+            if (
+                self.fecha_extrema_inicial is not None
+                and self.fecha_extrema_inicial > self.fecha_extrema_final
+            ):
+                raise ValueError("fecha_extrema_inicial no puede ser posterior a fecha_extrema_final.")
+            if self.trd_serie_id is None:
+                raise ValueError(
+                    "trd_serie_id es obligatorio cuando origen='fondo_acumulado' "
+                    "(debe apuntar a una TVD, ADR-026 D3)."
+                )
+        elif self.fecha_extrema_inicial is not None or self.fecha_extrema_final is not None:
+            # Negación declarada, espejo de `expedientes_corriente_forma_check`
+            # (migración 041): un expediente corriente no carga fechas de un
+            # fondo que no es.
+            raise ValueError(
+                "fecha_extrema_inicial/fecha_extrema_final solo aplican con "
+                "origen='fondo_acumulado'."
+            )
+        return self
 
 
 class ExpedienteUpdate(BaseModel):
@@ -148,6 +186,10 @@ class ExpedienteResponse(BaseModel):
     trd_serie_code: str | None = None
     trd_revision_requerida: bool = False
     trd_revision_motivo: str | None = None
+    # ADR-026 (Increment 2, aditivo).
+    origen: str = "corriente"
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
 
 
 class ExpedienteDisposicionResult(BaseModel):
@@ -422,6 +464,12 @@ class ExpedienteRevisionPendienteResponse(BaseModel):
     trd_serie_code: str | None
     trd_revision_motivo: str | None
     closed_at: datetime | None
+    # ADR-026 (Increment 2, aditivo): instrumento que gobierna -- 'TRD' salvo
+    # la fila fuera huérfana (`trd_serie_id` sin resolver, `None`). Ninguna
+    # TVD genera hoy esta marca (no hay `migrada` en TVD, ADR-026
+    # §"Máquina de estados"), pero el campo va igual para que el informe sea
+    # legible cuando eso cambie.
+    tipo_instrumento: str | None = None
 
 
 class TrdSerieResponse(BaseModel):
@@ -670,7 +718,14 @@ class IndicePendienteRenovacion(BaseModel):
 class RetentionSchedule(BaseModel):
     serie_id: uuid.UUID
     code: str
-    closed_at: date
+    # ADR-026 (Increment 2, D4): renombrado de `closed_at` -- este campo ya
+    # no presupone que la base del calendario sea la fecha de cierre. Para
+    # una TRD SÍ lo es (`base_date_origen="closed_at"`); para una TVD es
+    # `fecha_extrema_final` del expediente y NUNCA `closed_at` -- ver ese
+    # campo. Ningún consumidor leía la clave `closed_at` del snapshot
+    # (verificado: solo `expedientes.closed_at`, columna distinta), así que
+    # el renombre es seguro.
+    base_date: date
     archivo_gestion_years: int
     archivo_central_years: int
     fin_archivo_gestion: date
@@ -687,6 +742,19 @@ class RetentionSchedule(BaseModel):
     instancia_convalidante: str | None = None
     rusd_radicado: str | None = None
     snapshot_at: datetime | None = None
+    # ADR-026 (Increment 2, D4/D5): declaración explícita de la BASE del
+    # calendario -- "la declaración viaja con la prueba, igual que
+    # serie_estado". Se escribe SIEMPRE, para ambos instrumentos (nunca solo
+    # cuando es la rara): un snapshot que solo declara la base cuando es
+    # 'fecha_extrema_final' no permite distinguir "es la fecha de cierre" de
+    # "alguien olvidó escribirlo".
+    base_date_origen: Literal["closed_at", "fecha_extrema_final"] = "closed_at"
+    # Fundamento de la eliminación de un fondo acumulado (D5): NO es la
+    # retención cumplida sino la VALORACIÓN -- por eso viaja congelado, y es
+    # lo que se citaría en el acta de eliminación. `None` en TRD.
+    tipo_instrumento: str = "TRD"
+    fondo_nombre: str | None = None
+    justificacion_valoracion: str | None = None
 
 
 class TipoDocumentalCreate(BaseModel):

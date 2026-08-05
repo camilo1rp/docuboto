@@ -641,3 +641,53 @@ async def test_gateway_injects_server_derived_x_canal(test_client):
     assert forwarded.get("X-Canal") == "api", (
         "Gateway must inject server-derived X-Canal='api' for standard API paths"
     )
+
+
+@pytest.mark.asyncio
+async def test_pagination_and_truncation_headers_are_forwarded_back(test_client):
+    """`X-Total-Count` y `X-Truncated` deben llegar al cliente (test de contrato).
+
+    No es una preferencia de estilo: son cabeceras de las que dependen contratos
+    documentados del sistema, y su ausencia es SILENCIOSA en ambos casos —
+    ninguna pantalla falla, simplemente miente.
+
+    - `X-Total-Count` es la convención de paginación de `docs/es/api.md`; la
+      emiten 31 routers y el frontend la consume en ~115 puntos. Si el gateway
+      la descarta, el total colapsa al tamaño de la página y toda pantalla
+      paginada cree que hay una sola.
+    - `X-Truncated` es la garantía de honestidad de las tres DLQ (ADR-021): el
+      backend avisa de que existen eventos pendientes más antiguos que no caben
+      en la respuesta. Si se descarta, el banner que lo advierte nunca aparece y
+      la pantalla afirma en silencio que se ve todo.
+
+    Gemelo, del lado de respuesta, de los tests de FORWARDED_REQUEST_HEADERS.
+    """
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=200,
+            json=[{"id": "abc"}],
+            headers={
+                "content-type": "application/json",
+                "X-Total-Count": "437",
+                "X-Truncated": "true",
+            },
+        )
+    )
+
+    response = await client.get(
+        "/api/v1/documents/",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("x-total-count") == "437", (
+        "El gateway debe reenviar X-Total-Count; sin ella la paginacion colapsa "
+        "a una sola pagina en TODA pantalla paginada del sistema"
+    )
+    assert response.headers.get("x-truncated") == "true", (
+        "El gateway debe reenviar X-Truncated; sin ella el aviso de truncamiento "
+        "de las DLQ (ADR-021) es codigo muerto y la pantalla miente por omision"
+    )

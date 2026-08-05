@@ -185,12 +185,15 @@ async def test_create_expediente_valid_metadata(
         trd_serie_id=serie_id, metadata=metadata, metadata_template_id=template_id
     )
     # 0) resolve_caller_clearance (M3, RF-SEG-08) → None → PUBLICA(1), suficiente
-    #    porque el payload no fija nivel_seguridad (default 1); 1) plantilla
-    #    activa, 2) INSERT expediente, 3) lookup TRD serie (E15 v3, <contexto>
-    #    del índice v0 — el expediente tiene trd_serie_id), 4) INSERT índice v0
-    #    (E15)
+    #    porque el payload no fija nivel_seguridad (default 1); 1) ADR-026
+    #    (Increment 2): get_trd_serie_by_id -- valida origen<->tipo_instrumento
+    #    ANTES de tocar la plantilla/la base (mismo id que el resto de la
+    #    secuencia reutiliza); 2) plantilla activa, 3) INSERT expediente,
+    #    4) lookup TRD serie (E15 v3, <contexto> del índice v0 — el
+    #    expediente tiene trd_serie_id), 5) INSERT índice v0 (E15)
     mock_conn.fetchrow.side_effect = [
         None,
+        make_trd_serie_record(serie_id=serie_id),
         _template_row(template_id, serie_id),
         exp_record,
         make_trd_serie_record(serie_id=serie_id),
@@ -222,9 +225,15 @@ async def test_create_expediente_invalid_metadata_is_422(
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     # Falta 'contrato_num' (requerido) → falla la validación antes de crear.
     # 0) resolve_caller_clearance (M3) → None → PUBLICA(1); el payload no fija
-    #    nivel_seguridad (default 1), así que el gate no interfiere y se llega
-    #    a la validación de metadatos que este test ejercita.
-    mock_conn.fetchrow.side_effect = [None, _template_row(template_id, serie_id)]
+    #    nivel_seguridad (default 1), así que el gate no interfiere; 1) ADR-026
+    #    (Increment 2): get_trd_serie_by_id (origen<->tipo_instrumento, pasa);
+    #    2) plantilla activa -- y se llega a la validación de metadatos que
+    #    este test ejercita.
+    mock_conn.fetchrow.side_effect = [
+        None,
+        make_trd_serie_record(serie_id=serie_id),
+        _template_row(template_id, serie_id),
+    ]
 
     resp = await client.post(
         "/api/v1/expedientes",

@@ -375,10 +375,21 @@ async def test_v_trd_series_no_cuenta_tvd_sembradas(
 async def test_expediente_no_puede_amarrarse_a_tvd(
     two_bare_tenant_schemas: tuple[str, str, asyncpg.Connection],
 ) -> None:
-    """Capa 4 (D3, forma ESTRICTA del Increment 1): el trigger
-    `trg_expedientes_pin_tipo` rechaza CUALQUIER pin a una fila TVD -- riesgo
-    WORM cero garantizado por el motor, no por omisión. Se verifica tanto en
-    INSERT como en UPDATE."""
+    """Capa 4 (D3): el trigger `trg_expedientes_pin_tipo` rechaza el amarre
+    de un expediente `origen='corriente'` (DEFAULT de columna -- ninguno de
+    los INSERT/UPDATE de este test declara `origen`) a una fila TVD. Se
+    verifica tanto en INSERT como en UPDATE.
+
+    Este test corre contra la cadena COMPLETA de migraciones (fixture
+    `two_bare_tenant_schemas`), así que ejercita la regla VIGENTE -- desde la
+    migración 041 (ADR-026, Increment 2), la Capa 4 quedó RELAJADA a
+    `origen <-> tipo_instrumento` (ya no el bloqueo total de la 039, que
+    ahora vive solo en el registro histórico de esta migración). El
+    escenario que este test cubre (`origen='corriente'` intentando amarrarse
+    a una TVD) sigue rechazado bajo la regla relajada -- solo cambió el
+    mensaje del `RAISE EXCEPTION`, no el resultado. El amarre correcto de
+    fondo acumulado (`origen='fondo_acumulado'` -> TVD) lo prueba
+    `tests/integration/test_fondo_acumulado_amarre.py`."""
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
@@ -402,7 +413,7 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
         async with conn.transaction():
             await conn.execute(f'SET LOCAL search_path = "{schema}", public')
             with pytest.raises(
-                asyncpg.exceptions.PostgresError, match=r"no puede gobernar un expediente todavia"
+                asyncpg.exceptions.PostgresError, match=r"origen=corriente no puede amarrarse"
             ):
                 await conn.execute(
                     "INSERT INTO expedientes (code, name, trd_serie_id) VALUES ($1, 'itest exp', $2)",
@@ -422,7 +433,7 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
         async with conn.transaction():
             await conn.execute(f'SET LOCAL search_path = "{schema}", public')
             with pytest.raises(
-                asyncpg.exceptions.PostgresError, match=r"no puede gobernar un expediente todavia"
+                asyncpg.exceptions.PostgresError, match=r"origen=corriente no puede amarrarse"
             ):
                 await conn.execute(
                     "UPDATE expedientes SET trd_serie_id = $2 WHERE id = $1",

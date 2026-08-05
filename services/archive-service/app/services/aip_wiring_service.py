@@ -106,8 +106,16 @@ class AipWiringService:
         derivación que `IndexService._resolve_worm_retention` (TRD total,
         `fecha_inicio=closed_at`), replicada aquí (self-contained, no importa
         de `IndexService`) para no acoplar este servicio a los internos de
-        otro. Fail-closed (``None``) en cualquier caso dudoso."""
+        otro. Fail-closed (``None``) en cualquier caso dudoso.
+
+        ADR-026 (Increment 2, D4): fail-closed también para
+        `exp.origen == 'fondo_acumulado'` -- mismo criterio que su gemela de
+        `IndexService` (ver esa docstring): el AIP de un fondo acumulado NO
+        se cablea con WORM hasta Increment 3 (fecha base correcta +
+        clamp de calendario ya vencido, D4.4)."""
         if exp.closed_at is None or exp.trd_serie_id is None:
+            return None
+        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
@@ -381,11 +389,17 @@ class AipWiringService:
         la ventana rodante de renovación siempre usa `fecha_inicio=hoy` (no
         `closed_at`), así que este helper SOLO necesita el total y no exige
         `exp.closed_at` (aunque en la práctica siempre está poblado -- un AIP
-        solo llega a `estado='empaquetado'` tras el cierre)."""
+        solo llega a `estado='empaquetado'` tras el cierre).
+
+        ADR-026 (Increment 2, D4): guard defensivo -- inalcanzable en la
+        práctica hoy, mismo razonamiento que
+        `IndexService._resolve_ct_retencion_anios`."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
+            return None
+        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:

@@ -70,14 +70,18 @@ class ArchiveRepository:
         metadata: dict,
         metadata_template_id: uuid.UUID | None,
         nivel_seguridad: int = 1,
+        origen: str = "corriente",
+        fecha_extrema_inicial: date | None = None,
+        fecha_extrema_final: date | None = None,
     ) -> Expediente:
         await self._set_search_path()
         row = await self._conn.fetchrow(
             """
             INSERT INTO expedientes
                 (code, name, description, trd_serie_id, opened_by,
-                 metadata, metadata_template_id, nivel_seguridad)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+                 metadata, metadata_template_id, nivel_seguridad,
+                 origen, fecha_extrema_inicial, fecha_extrema_final)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             code,
@@ -88,6 +92,9 @@ class ArchiveRepository:
             json.dumps(metadata),
             metadata_template_id,
             nivel_seguridad,
+            origen,
+            fecha_extrema_inicial,
+            fecha_extrema_final,
         )
         return _row_to_expediente(row)
 
@@ -1398,9 +1405,10 @@ class ArchiveRepository:
         return int(result.split()[-1])
 
     async def list_expedientes_revision_pendiente(
-        self, *, offset: int, limit: int, max_clearance: int
+        self, *, offset: int, limit: int, max_clearance: int, tipo: str | None = None
     ) -> tuple[list[asyncpg.Record], int]:
-        """`GET /trd/revision-pendiente` (ADR-025, Increment 2): informe de
+        """`GET /trd/revision-pendiente` (ADR-025, Increment 2; `tipo_instrumento`
+        y filtro `tipo` -- ADR-026 D2/D5, Increment 2, aditivo): informe de
         expedientes marcados `trd_revision_requerida` -- cualquier motivo
         (D4/D6), no solo `cerrado_bajo_serie_migrada`.
 
@@ -1411,25 +1419,47 @@ class ArchiveRepository:
         tener nivel para leer los expedientes que gobierna) enumeraba
         RESERVADA/CLASIFICADA. Mismo criterio, MISMA condición como PRIMERA
         del `WHERE`, compartida por el `COUNT` y la página, que
-        `list_expedientes` (ver esa docstring)."""
+        `list_expedientes` (ver esa docstring) -- CONSERVADO íntegro, sin
+        tocarlo, al añadir el `LEFT JOIN`/`tipo` (ADR-026 lo exige
+        explícitamente).
+
+        `LEFT JOIN` (no `INNER`): un `trd_serie_id` huérfano (fila borrada o
+        nunca resuelta) no debe hacer desaparecer el expediente del informe
+        -- sigue siendo una revisión pendiente, solo que `tipo_instrumento`
+        sale `NULL`. Hoy, en la práctica, esta marca la genera únicamente
+        TRD (ninguna TVD llega nunca a `migrada`, ADR-026 §"Máquina de
+        estados"), pero el campo se expone igual para que el informe no
+        quede mudo si eso cambia."""
         await self._set_search_path()
+        conditions = ["e.nivel_seguridad <= $1", "e.trd_revision_requerida"]
+        params: list[object] = [max_clearance]
+        idx = 2
+        if tipo is not None:
+            conditions.append(f"t.tipo_instrumento = ${idx}")
+            params.append(tipo)
+            idx += 1
+        where = " AND ".join(conditions)
+
         total: int = await self._conn.fetchval(
-            """
-            SELECT COUNT(*) FROM expedientes
-             WHERE nivel_seguridad <= $1 AND trd_revision_requerida
+            f"""
+            SELECT COUNT(*)
+              FROM expedientes e
+              LEFT JOIN trd_series t ON t.id = e.trd_serie_id
+             WHERE {where}
             """,
-            max_clearance,
+            *params,
         )
         rows = await self._conn.fetch(
-            """
-            SELECT id, code, status, trd_serie_id, trd_serie_code,
-                   trd_revision_motivo, closed_at
-              FROM expedientes
-             WHERE nivel_seguridad <= $1 AND trd_revision_requerida
-             ORDER BY closed_at ASC NULLS LAST, code ASC
-             LIMIT $2 OFFSET $3
+            f"""
+            SELECT e.id, e.code, e.status, e.trd_serie_id, e.trd_serie_code,
+                   e.trd_revision_motivo, e.closed_at, t.tipo_instrumento
+              FROM expedientes e
+              LEFT JOIN trd_series t ON t.id = e.trd_serie_id
+             WHERE {where}
+             ORDER BY e.closed_at ASC NULLS LAST, e.code ASC
+             LIMIT ${idx} OFFSET ${idx + 1}
             """,
-            max_clearance,
+            *params,
             limit,
             offset,
         )
@@ -1612,6 +1642,16 @@ def _row_to_expediente(row: asyncpg.Record) -> Expediente:
         trd_serie_code=row["trd_serie_code"],
         trd_revision_requerida=row["trd_revision_requerida"],
         trd_revision_motivo=row["trd_revision_motivo"],
+        # ADR-026 (Increment 2, migración 041): `row.get`-style tolerancia
+        # para filas leídas antes de la 041 en algún path residual de test
+        # -- en producción la columna siempre existe tras la migración.
+        origen=row["origen"] if "origen" in row.keys() else "corriente",
+        fecha_extrema_inicial=(
+            row["fecha_extrema_inicial"] if "fecha_extrema_inicial" in row.keys() else None
+        ),
+        fecha_extrema_final=(
+            row["fecha_extrema_final"] if "fecha_extrema_final" in row.keys() else None
+        ),
     )
 
 

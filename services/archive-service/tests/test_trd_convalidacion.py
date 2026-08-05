@@ -872,6 +872,7 @@ async def test_list_revision_pendiente(client_with_conn) -> None:
             "trd_serie_code": "100",
             "trd_revision_motivo": "cerrado_bajo_serie_migrada",
             "closed_at": None,
+            "tipo_instrumento": "TRD",
         }
     ]
 

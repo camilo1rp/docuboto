@@ -33,6 +33,26 @@ FORWARDED_REQUEST_HEADERS = {
     "x-orpycamcp-signature",
 }
 
+# Whitelist of upstream response headers forwarded back to the client.
+# Headers NOT listed here are silently dropped — same trust boundary as the
+# request side, and with the same failure mode: what is missing is invisible.
+#
+# `x-total-count` y `x-truncated` NO son cabeceras opcionales de conveniencia,
+# son parte de contratos que el sistema documenta y que dependen de ellas:
+#
+#   - `X-Total-Count` es la convención de paginación declarada en
+#     `docs/es/api.md` ("respuesta incluye `X-Total-Count`"). La emiten 31
+#     routers y la consume el frontend en ~115 puntos. Sin reenviarla, el
+#     total colapsa al tamaño de la página: TODA pantalla paginada cree que
+#     hay una sola página y las siguientes quedan inalcanzables.
+#   - `X-Truncated` es la garantía de honestidad de las tres DLQ (ADR-021):
+#     el backend avisa con ella de que hay eventos pendientes más antiguos que
+#     NO caben en la respuesta. Sin reenviarla, el banner que lo advierte es
+#     código muerto y la pantalla afirma en silencio que se ve todo.
+#
+# Es el gemelo, del lado de respuesta, de la lección de FORWARDED_REQUEST_HEADERS
+# (E20: una cabecera propia que cruza el gateway necesita estar en la lista Y
+# tener test de contrato). El test vive en `tests/test_gateway.py`.
 FORWARDED_RESPONSE_HEADERS = {
     "content-type",
     "content-length",
@@ -40,6 +60,8 @@ FORWARDED_RESPONSE_HEADERS = {
     "etag",
     "last-modified",
     "location",
+    "x-total-count",
+    "x-truncated",
 }
 
 

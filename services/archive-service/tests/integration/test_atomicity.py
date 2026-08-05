@@ -1645,7 +1645,9 @@ async def test_update_expediente_reclasifica_trd_and_leaves_audit_trail(
     # que usa el SUT (`compute_retention`), no hardcodeada a mano: evita que
     # el test dependa de la tabla `_AGN_DISPOSITION` interna.
     hoy = date.today()
-    expected_after = await service.compute_retention(serie_after.id, hoy)
+    expected_after = await service.compute_retention(
+        serie_after.id, hoy, base_date_origen="closed_at"
+    )
 
     second_conn = await asyncpg.connect(dsn=DSN)
     try:

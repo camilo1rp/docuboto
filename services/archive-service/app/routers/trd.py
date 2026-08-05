@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -125,6 +126,10 @@ async def list_revision_pendiente(
     response: Response,
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
+    # ADR-026 (Increment 2, aditivo): filtro opcional por instrumento --
+    # sin él, el informe mezcla TRD/TVD (hoy solo TRD la genera en la
+    # práctica, ver ADR-026 §"Máquina de estados").
+    tipo: Literal["TRD", "TVD"] | None = Query(default=None),
     tenant_slug: str = Depends(_require_tenant),
     # Migración 038 (hallazgo de seguridad [Alta, BLOQUEANTE]): este informe
     # NO filtraba por clearance -- `USUA_PERM_TRD` (gate arriba) es
@@ -141,7 +146,7 @@ async def list_revision_pendiente(
     # reventaría con un 422 al no parsear como UUID.
     service = ArchiveService(conn, tenant_slug)
     items, total = await service.list_expedientes_revision_pendiente(
-        page=page, size=size, user_id=user_id, canal=canal
+        page=page, size=size, user_id=user_id, canal=canal, tipo=tipo
     )
     response.headers["X-Total-Count"] = str(total)
     return items
@@ -158,8 +163,15 @@ async def compute_retention(
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> RetentionSchedule:
+    # ADR-026 (Increment 2, D4): `closed_at` sigue siendo el nombre del
+    # parámetro y el `base_date_origen` de esta ruta -- es la semántica TRD.
+    # El gemelo para TVD es `GET /api/v1/tvd/{id}/retention?base_date=`
+    # (`app.routers.tvd`), con `base_date_origen="fecha_extrema_final"`
+    # fijado por el router, nunca aceptado del cliente.
     service = ArchiveService(conn, tenant_slug)
-    return await service.compute_retention(serie_id, closed_at)
+    return await service.compute_retention(
+        serie_id, closed_at, base_date_origen="closed_at"
+    )
 
 
 @router.get(

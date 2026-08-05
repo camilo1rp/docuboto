@@ -13,7 +13,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -183,6 +183,35 @@ class ArchiveService:
                 },
             )
 
+        # ADR-026 (Increment 2, D3): valida ANTES de tocar la base que el
+        # instrumento amarrado corresponda a `origen` -- la Capa 4
+        # (`trg_expedientes_pin_tipo`, migración 041) lo rechazaría igual,
+        # pero como error crudo de Postgres (500, sin `error`/`detail`
+        # estructurados). Este chequeo produce el mismo 409 legible que ya
+        # usa `create_tvd_agrupacion` para `instrumento_code_en_uso` --
+        # el trigger queda como última línea de defensa, no como la única.
+        if payload.trd_serie_id is not None:
+            pinned = await self._repo.get_trd_serie_by_id(payload.trd_serie_id)
+            if pinned is not None:
+                esperado = "TRD" if payload.origen == "corriente" else "TVD"
+                if pinned.tipo_instrumento != esperado:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "instrumento_origen_mismatch",
+                            "detail": (
+                                f"El expediente origen='{payload.origen}' no puede "
+                                f"amarrarse a '{pinned.code}', que es "
+                                f"{pinned.tipo_instrumento} -- espera "
+                                f"{esperado} (ADR-026 D3)."
+                            ),
+                            "status": 409,
+                        },
+                    )
+            # `pinned is None` (id inexistente) se deja pasar sin 409: el
+            # `INSERT` reventará con el 404/FK habitual, mismo comportamiento
+            # que antes de este ADR.
+
         # Metadatos (E03, ADR-007): si la serie TRD tiene plantilla activa, los
         # valores se validan contra su JSON Schema antes de abrir el expediente.
         metadata_template_id: uuid.UUID | None = None
@@ -216,6 +245,9 @@ class ArchiveService:
                 metadata=payload.metadata,
                 metadata_template_id=metadata_template_id,
                 nivel_seguridad=payload.nivel_seguridad,
+                origen=payload.origen,
+                fecha_extrema_inicial=payload.fecha_extrema_inicial,
+                fecha_extrema_final=payload.fecha_extrema_final,
             )
             # Índice electrónico disponible desde la creación (E15, versión 0).
             from app.services.index_service import IndexService
@@ -955,16 +987,38 @@ class ArchiveService:
                     )
                     audit_payload: dict[str, Any] = {"changed": changed}
                     if reclasifica:
-                        hoy = datetime.now(tz=UTC).date()
+                        # ADR-026 (Increment 2, D4): esta es una PROYECCIÓN
+                        # informativa (el expediente sigue `open`, M2 RF-SEG-08 --
+                        # la disposición real se recalcula, y esta vez sí se
+                        # congela, en `close_expediente`) -- pero el mismo
+                        # peligro de D4 aplica igual: para un expediente
+                        # `fondo_acumulado`, proyectar desde `hoy` en vez de
+                        # `fecha_extrema_final` mostraría un calendario que no
+                        # es el que `close_expediente` va a congelar. `origen`
+                        # no cambia entre el amarre viejo y el nuevo (no hay
+                        # ruta para editarlo), así que ambas proyecciones usan
+                        # la MISMA base.
+                        if updated.origen == "fondo_acumulado" and updated.fecha_extrema_final:
+                            base_date = updated.fecha_extrema_final
+                            base_date_origen: Literal["closed_at", "fecha_extrema_final"] = (
+                                "fecha_extrema_final"
+                            )
+                        else:
+                            base_date = datetime.now(tz=UTC).date()
+                            base_date_origen = "closed_at"
                         old_serie_id = old["trd_serie_id"]
                         new_serie_id = updated.trd_serie_id
                         serie_before = (
-                            await self.compute_retention(old_serie_id, hoy)
+                            await self.compute_retention(
+                                old_serie_id, base_date, base_date_origen=base_date_origen
+                            )
                             if old_serie_id is not None
                             else None
                         )
                         serie_after = (
-                            await self.compute_retention(new_serie_id, hoy)
+                            await self.compute_retention(
+                                new_serie_id, base_date, base_date_origen=base_date_origen
+                            )
                             if new_serie_id is not None
                             else None
                         )
@@ -1189,8 +1243,42 @@ class ArchiveService:
                             "status": 409,
                         },
                     )
+                # ADR-026 (Increment 2, D4) -- EL PUNTO PELIGROSO: la fecha
+                # base del calendario depende de `exp.origen`, NUNCA de si el
+                # llamador "se acuerda". `close_expediente` es el ÚNICO sitio
+                # donde un expediente real elige entre las dos bases -- se
+                # reutiliza este método íntegro (no una ruta de ingesta
+                # paralela, ADR-026 D3) precisamente para que esta decisión
+                # se tome una sola vez.
+                if exp.origen == "fondo_acumulado":
+                    if exp.fecha_extrema_final is None:
+                        # No debería ocurrir -- `expedientes_fondo_acumulado_
+                        # forma_check` (migración 041) lo exige NOT NULL en
+                        # todo expediente `fondo_acumulado`. Defensivo, no
+                        # teórico: mismo criterio que el 404/409 de arriba,
+                        # nunca se asume la integridad de una fila ajena a
+                        # este acto.
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={
+                                "error": "fondo_acumulado_sin_fecha_extrema",
+                                "detail": (
+                                    "El expediente de fondo acumulado no tiene "
+                                    "fecha_extrema_final: no hay base para calendarizar "
+                                    "su retención (ADR-026 D4)."
+                                ),
+                                "status": 409,
+                            },
+                        )
+                    base_date = exp.fecha_extrema_final
+                    base_date_origen: Literal["closed_at", "fecha_extrema_final"] = (
+                        "fecha_extrema_final"
+                    )
+                else:
+                    base_date = datetime.now(tz=UTC).date()
+                    base_date_origen = "closed_at"
                 schedule = await self.compute_retention(
-                    vigente.id, datetime.now(tz=UTC).date()
+                    vigente.id, base_date, base_date_origen=base_date_origen
                 )
                 disposition = schedule.model_dump(mode="json")
                 pin_trd = True
@@ -2034,9 +2122,53 @@ class ArchiveService:
             )
         return _to_trd_response(serie)
 
-    async def compute_retention(self, serie_id: uuid.UUID, closed_at: date) -> RetentionSchedule:
-        """Calendario de retención/disposición de un expediente cerrado, derivado de
-        su serie TRD (E04/ADR-015). Función pura sobre la fila de la serie."""
+    async def compute_retention(
+        self,
+        serie_id: uuid.UUID,
+        base_date: date,
+        *,
+        base_date_origen: Literal["closed_at", "fecha_extrema_final"],
+    ) -> RetentionSchedule:
+        """Calendario de retención/disposición, derivado de la serie TRD/TVD
+        (E04/ADR-015; ADR-026 D4). Función pura sobre la fila de la serie.
+
+        ADR-026 (Increment 2, D4) -- EL PUNTO PELIGROSO: `base_date` (antes
+        `closed_at`) es la fecha desde la que se cuenta el calendario, y
+        alimenta `retain_until` en Object-Lock COMPLIANCE (irreversible)
+        aguas abajo. Para una TRD la base correcta es la fecha de CIERRE del
+        expediente; para una TVD (fondo acumulado) es la `fecha_extrema_final`
+        del expediente y NUNCA `closed_at` -- un fondo de 1985 registrado hoy
+        no puede calendarizarse desde 2026, o su retención quedaría
+        imborrable dos décadas de más.
+
+        `base_date_origen` es un keyword-only SIN DEFAULT, a propósito: hace
+        imposible omitir la procedencia. Ningún llamador de este método
+        puede "olvidarse" de declarar de dónde sale `base_date` -- Python no
+        deja invocarlo sin decidir explícitamente uno de los dos valores del
+        `Literal`, y ese valor viaja después en el snapshot congelado
+        (`RetentionSchedule.base_date_origen`) como prueba oponible, igual
+        que `serie_estado`. La otra mitad de la defensa vive en los
+        *callers* (`close_expediente`), que son los que realmente pueden
+        confundir una fecha con otra -- este método no puede adivinarlo por
+        su cuenta porque no sabe si `base_date` vino de `exp.closed_at` o de
+        `exp.fecha_extrema_final`, solo lo que se le declara.
+
+        Defensa adicional, en el propio cálculo: cuando
+        `base_date_origen == 'fecha_extrema_final'`, la fase de archivo de
+        GESTIÓN se fuerza a 0 pase lo que pase en `serie.archivo_gestion_years`
+        (ADR-026 D4.2 -- "la fase de archivo de gestión es 0 para TVD"). El
+        CHECK `trd_series_tvd_forma_check` (migración 039) ya lo garantiza en
+        el motor para toda fila TVD real, pero forzarlo aquí también evita que
+        una fila TRD invocada por error con `base_date_origen='fecha_extrema_final'`
+        (p. ej. desde `GET /tvd/{id}/retention` sobre un id que no fuera TVD)
+        arrastre una fase de gestión que no le corresponde a ese cómputo.
+
+        Calendario ya vencido (`fin_archivo_central < hoy`) es el caso
+        NORMAL en fondo acumulado, no un error (D4.4): se devuelve tal cual,
+        sin redondear hacia adelante. El clamp de `retain_until`
+        (no fijar retención WORM si `retain_until <= now()`) es del
+        Increment 3 (ruta AIP/WORM), NO de este método -- aquí solo se
+        declara la fecha, no se cablea Object-Lock."""
         serie = await self._repo.get_trd_serie_by_id(serie_id)
         if serie is None:
             raise HTTPException(
@@ -2047,15 +2179,15 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        agest = serie.archivo_gestion_years or 0
+        agest = 0 if base_date_origen == "fecha_extrema_final" else (serie.archivo_gestion_years or 0)
         acentral = serie.archivo_central_years or 0
-        fin_gestion = _add_years(closed_at, agest)
+        fin_gestion = _add_years(base_date, agest)
         fin_central = _add_years(fin_gestion, acentral)
         code, label = _agn_disposition(serie.disposition)
         return RetentionSchedule(
             serie_id=serie.id,
             code=serie.code,
-            closed_at=closed_at,
+            base_date=base_date,
             archivo_gestion_years=agest,
             archivo_central_years=acentral,
             fin_archivo_gestion=fin_gestion,
@@ -2072,6 +2204,13 @@ class ArchiveService:
             instancia_convalidante=serie.instancia_convalidante,
             rusd_radicado=serie.rusd_radicado,
             snapshot_at=datetime.now(tz=UTC),
+            # ADR-026 (Increment 2, D4/D5): declaración explícita de la base
+            # y del fundamento de una eventual eliminación de fondo
+            # acumulado (D5) -- viaja SIEMPRE, para ambos instrumentos.
+            base_date_origen=base_date_origen,
+            tipo_instrumento=serie.tipo_instrumento,
+            fondo_nombre=serie.fondo_nombre,
+            justificacion_valoracion=serie.justificacion_valoracion,
         )
 
     async def list_trd_series(
@@ -3550,6 +3689,7 @@ class ArchiveService:
         size: int,
         user_id: uuid.UUID | None = None,
         canal: str = "system",
+        tipo: str | None = None,
     ) -> tuple[list[ExpedienteRevisionPendienteResponse], int]:
         """`GET /trd/revision-pendiente` (ADR-025, Increment 2): informe de
         expedientes marcados `trd_revision_requerida` (D4/D6) -- paginado,
@@ -3569,7 +3709,7 @@ class ArchiveService:
         offset = (page - 1) * size
         clearance = await self._repo.caller_clearance(user_id)
         rows, total = await self._repo.list_expedientes_revision_pendiente(
-            offset=offset, limit=size, max_clearance=clearance
+            offset=offset, limit=size, max_clearance=clearance, tipo=tipo
         )
         await self._audit_search_access(
             action="archive.expediente_revision_pendiente_listado",
@@ -3589,6 +3729,7 @@ class ArchiveService:
                 trd_serie_code=r["trd_serie_code"],
                 trd_revision_motivo=r["trd_revision_motivo"],
                 closed_at=r["closed_at"],
+                tipo_instrumento=r["tipo_instrumento"],
             )
             for r in rows
         ]
@@ -3623,6 +3764,9 @@ def _to_expediente_response(exp: Expediente) -> ExpedienteResponse:
         trd_serie_code=exp.trd_serie_code,
         trd_revision_requerida=exp.trd_revision_requerida,
         trd_revision_motivo=exp.trd_revision_motivo,
+        origen=exp.origen,
+        fecha_extrema_inicial=exp.fecha_extrema_inicial,
+        fecha_extrema_final=exp.fecha_extrema_final,
     )
 
 

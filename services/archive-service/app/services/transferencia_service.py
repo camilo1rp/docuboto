@@ -1746,6 +1746,14 @@ class TransferenciaService:
         total fuera del rango ``[1, 100]`` años que exige `RetentionMixin` del
         lado de storage-service -- misma defensa en profundidad que su gemela
         del índice.
+
+        ADR-026 (Increment 2, D4): fail-closed también para
+        `exp.origen == 'fondo_acumulado'` -- mismo criterio y misma razón que
+        `IndexService._resolve_worm_retention` (ver esa docstring): esta
+        función seguiría anclando la retención a `firmado_at` (hoy, en la
+        práctica) en vez de `fecha_extrema_final`, que es exactamente el
+        daño que D4 describe. El cableado correcto del acta para fondo
+        acumulado es Increment 3.
         """
         if firmado_at is None:
             return None
@@ -1753,6 +1761,8 @@ class TransferenciaService:
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
+            return None
+        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
@@ -1766,11 +1776,17 @@ class TransferenciaService:
         """Total TRD (ambas fases) del EXPEDIENTE de una transferencia --
         versión de RENOVACIÓN (E10 debt) de `_resolve_worm_retention_acta`:
         la ventana rodante de renovación SIEMPRE usa `fecha_inicio=hoy` (no
-        `firmado_at`), así que este helper no exige ese parámetro."""
+        `firmado_at`), así que este helper no exige ese parámetro.
+
+        ADR-026 (Increment 2, D4): guard defensivo -- inalcanzable en la
+        práctica hoy, mismo razonamiento que
+        `IndexService._resolve_ct_retencion_anios`."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
+            return None
+        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:

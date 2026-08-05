@@ -113,6 +113,32 @@ class BatchArchiveService:
 
                     trd_id = UUID(data["trd_serie_id"]) if data.get("trd_serie_id") else None
 
+                    # ADR-026 (Increment 2) -- NUEVO MODO DE FALLO, documentado
+                    # aquí a propósito (ADR-026 §"Impacto en lo existente" #5):
+                    # este INSERT no declara `origen`, así que TODO expediente
+                    # de este import cae al `DEFAULT 'corriente'` de la
+                    # migración 041. Si `trd_id` resuelve a una TVD, la Capa 4
+                    # (`trg_expedientes_pin_tipo`, relajada por esa misma
+                    # migración a `origen <-> tipo_instrumento`) lo RECHAZA --
+                    # ya no con el mensaje ESTRICTO de la 039 ("el amarre de
+                    # fondo acumulado llega en el Increment 2"), sino con el de
+                    # la 041 ("un expediente origen=corriente no puede
+                    # amarrarse a la TVD ..."), y el `except` de más abajo lo
+                    # captura como fallo de ese ítem (mismo tratamiento que
+                    # cualquier otra violación, `failed_items`/asiento
+                    # 'archive.batch_item_failed' -- no revienta el lote
+                    # entero). Es el comportamiento BUSCADO: un import masivo
+                    # de fondo acumulado necesita declarar `origen` y las
+                    # fechas extremas por ítem, que este método NO hace
+                    # todavía -- soportarlo queda fuera del alcance de este
+                    # incremento (ADR-026 no lo pide explícitamente para
+                    # `batch_service`, solo exige documentar el modo de
+                    # fallo). Antes de la 039/041, un `trd_id` de TVD ni
+                    # siquiera podía existir; antes de la 041 en concreto,
+                    # CUALQUIER TVD fallaba aquí (Capa 4 estricta) -- después
+                    # de la 041 solo fallan las TVD, no las TRD, que es la
+                    # combinación correcta para un import declarado
+                    # `corriente` por defecto.
                     exp_row = await self.conn.fetchrow(
                         """
                         INSERT INTO expedientes (code, name, description, trd_serie_id)

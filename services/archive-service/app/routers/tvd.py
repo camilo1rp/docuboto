@@ -24,6 +24,7 @@ RBAC en auth-service por una distinción que la norma no hace)."""
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -32,6 +33,7 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    RetentionSchedule,
     TrdSerieAprobar,
     TrdSerieConvalidar,
     TrdSerieDevolver,
@@ -107,6 +109,33 @@ async def get_tvd_agrupacion(
 ) -> TrdSerieResponse:
     service = ArchiveService(conn, tenant_slug)
     return await service.get_tvd_agrupacion(agrupacion_id)
+
+
+@router.get(
+    "/{agrupacion_id}/retention",
+    response_model=RetentionSchedule,
+    summary="Compute retention/disposition schedule for a fondo acumulado agrupacion (ADR-026, Increment 2)",
+)
+async def compute_retention(
+    agrupacion_id: uuid.UUID,
+    base_date: date = Query(
+        ...,
+        description=(
+            "Fecha extrema final del fondo acumulado (ISO date) -- NUNCA la "
+            "fecha de cierre del expediente (ADR-026 D4). Obligatoria y "
+            "explícita: sin default a hoy."
+        ),
+    ),
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> RetentionSchedule:
+    # `base_date_origen` fijado aquí, nunca aceptado del cliente -- mismo
+    # criterio que `tipo_instrumento` en el resto de este router (ADR-026
+    # §"Superficie de API").
+    service = ArchiveService(conn, tenant_slug)
+    return await service.compute_retention(
+        agrupacion_id, base_date, base_date_origen="fecha_extrema_final"
+    )
 
 
 @router.patch(

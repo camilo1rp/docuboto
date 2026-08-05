@@ -220,14 +220,25 @@ async def test_migration_037_backfill_leaves_preexisting_rows_migrada_without_ac
     datos de acto. Se ejercita en AMBOS schemas."""
     dsn = _require_dsn()
     conn = await asyncpg.connect(dsn=dsn)
-    files = [p for p in runner._sql_files(runner.TENANT_DIR) if p.name != "037_trd_versionado_convalidacion.sql"]
+
+    # Las migraciones se parten en ANTES y DESPUES de la 037, en vez de correr
+    # "todas menos la 037": las posteriores DEPENDEN de ella. La 040
+    # (`VALIDATE CONSTRAINT` de `expedientes_trd_serie_id_fkey`) aborta a
+    # proposito si esa constraint no existe -- guard correcto en produccion,
+    # donde el runner aplica en orden, pero incompatible con saltarse la 037 y
+    # dejar que corran las siguientes. Este orden reproduce el escenario real
+    # (una fila que ya existia cuando 037 llego) sin violar las dependencias.
+    _all_files = runner._sql_files(runner.TENANT_DIR)
+    _pivot = "037_trd_versionado_convalidacion.sql"
+    files_before = [p for p in _all_files if p.name < _pivot]
+    files_after = [p for p in _all_files if p.name > _pivot]
 
     schema_a = tenant_schema(f"itest-{uuid.uuid4().hex[:8]}")
     schema_b = tenant_schema(f"itest-{uuid.uuid4().hex[:8]}")
     try:
         for schema in (schema_a, schema_b):
             await conn.execute(f'CREATE SCHEMA "{schema}"')
-            for path in files:
+            for path in files_before:
                 async with conn.transaction():
                     await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                     await conn.execute(path.read_text())
@@ -244,6 +255,12 @@ async def test_migration_037_backfill_leaves_preexisting_rows_migrada_without_ac
             async with conn.transaction():
                 await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await conn.execute(_MIGRATION_037_PATH.read_text())
+
+            # Y el resto de la cadena, que ya puede apoyarse en lo que 037 creó.
+            for path in files_after:
+                async with conn.transaction():
+                    await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                    await conn.execute(path.read_text())
 
             row = await conn.fetchrow(
                 f'SELECT estado, acto_administrativo, fecha_convalidacion, '

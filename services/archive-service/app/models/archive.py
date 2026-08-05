@@ -45,6 +45,15 @@ class Expediente:
     # `migrada`, sin snapshot histórico, o `trd_serie_id` huérfano).
     trd_revision_requerida: bool = False
     trd_revision_motivo: str | None = None
+    # ADR-026 (Increment 2): `origen` decide qué instrumento puede gobernar
+    # el amarre (Capa 4, `trg_expedientes_pin_tipo` relajado -- migración
+    # 041): 'corriente' solo TRD, 'fondo_acumulado' solo TVD. Fijado en la
+    # creación, no editable después (sin ruta de PATCH). Las fechas extremas
+    # son la BASE del calendario de retención de un fondo acumulado (D4) --
+    # `fecha_extrema_final` es NOT NULL bajo CHECK cuando `origen='fondo_acumulado'`.
+    origen: str = "corriente"
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
 
 
 @dataclass

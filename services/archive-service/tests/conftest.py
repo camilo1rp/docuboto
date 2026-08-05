@@ -63,6 +63,11 @@ def make_expediente_record(
     trd_serie_code: str | None = None,
     trd_revision_requerida: bool = False,
     trd_revision_motivo: str | None = None,
+    # ADR-026 (Increment 2): amarre de fondo acumulado. 'corriente' por
+    # defecto -- espejo del comportamiento previo a la 041.
+    origen: str = "corriente",
+    fecha_extrema_inicial: date | None = None,
+    fecha_extrema_final: date | None = None,
 ) -> dict:
     return {
         "id": exp_id or EXPEDIENTE_ID,
@@ -84,6 +89,9 @@ def make_expediente_record(
         "trd_serie_code": trd_serie_code,
         "trd_revision_requerida": trd_revision_requerida,
         "trd_revision_motivo": trd_revision_motivo,
+        "origen": origen,
+        "fecha_extrema_inicial": fecha_extrema_inicial,
+        "fecha_extrema_final": fecha_extrema_final,
     }
 
 

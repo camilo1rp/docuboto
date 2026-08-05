@@ -1110,11 +1110,29 @@ class IndexService:
         total fuera del rango ``[1, 100]`` años que exige `RetentionMixin`
         del lado de storage-service (defensa en profundidad — doble
         validación en ambos extremos del cableado, igual que
-        `validate_retain_until` ya hace del lado de storage-service)."""
+        `validate_retain_until` ya hace del lado de storage-service).
+
+        ADR-026 (Increment 2, D4) — fail-closed TAMBIÉN para
+        `exp.origen == 'fondo_acumulado'`: esta función usa `fecha_inicio=
+        exp.closed_at` (hoy, en la práctica), que es EXACTAMENTE la base
+        incorrecta que D4 advierte que produce un `retain_until` COMPLIANCE
+        imborrable durante décadas de más. El Increment 2 relaja la Capa 4
+        (migración 041) y por primera vez permite que un expediente de fondo
+        acumulado se CIERRE -- pero cablear WORM con la fecha correcta
+        (`fecha_extrema_final`, más el clamp de calendario ya vencido, D4.4)
+        es explícitamente el Increment 3 de ese ADR. Hasta que ese incremento
+        exista, ningún fondo acumulado debe alimentar Object-Lock: el `None`
+        de aquí dispara el backoff habitual (`_bump_worm_backoff`,
+        `motivo='trd_sin_retencion'`) -- no revienta, no cablea, solo
+        pospone -- exactamente lo que D4 exige ("ningún test... exige
+        integración... antes de habilitar cualquier ruta WORM para fondo
+        acumulado")."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.closed_at is None or exp.trd_serie_id is None:
+            return None
+        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
@@ -1130,11 +1148,21 @@ class IndexService:
         renovación siempre usa `fecha_inicio=hoy` (no `closed_at`), así que
         este helper SOLO necesita el total y no exige `exp.closed_at`
         (aunque en la práctica siempre está poblado -- un índice solo llega a
-        `worm_protegido_at IS NOT NULL` tras el cierre)."""
+        `worm_protegido_at IS NOT NULL` tras el cierre).
+
+        ADR-026 (Increment 2, D4): inalcanzable en la práctica hoy --
+        `_resolve_worm_retention` ya nunca protege un fondo acumulado
+        (fail-closed, ver esa docstring), así que ningún índice de fondo
+        acumulado llega a `worm_protegido_at IS NOT NULL` y por tanto nunca
+        entra en la ventana de renovación. Guard igual, por defensa en
+        profundidad: no depender de esa invariante ajena para no cablear
+        WORM con la fecha equivocada."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
+            return None
+        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
