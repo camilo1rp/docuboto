@@ -89,6 +89,9 @@ plugins:
             ADR-021 Reclamación y dead-letter de eventos: ADR-021 Event reclaim and dead-letter
             ADR-022 Índice electrónico v2: ADR-022 Electronic index v2
             ADR-023 WORM/Object-Lock de preservación: ADR-023 Preservation WORM/Object-Lock
+            ADR-024 ROOT fuera de banda: ADR-024 Out-of-band ROOT
+            ADR-025 TRD como instrumento convalidado: ADR-025 TRD as a convalidated instrument
+            ADR-026 TVD de fondo acumulado: ADR-026 TVD for accumulated fonds
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -138,6 +141,9 @@ nav:
     - ADR-021 Reclamación y dead-letter de eventos: adr/ADR-021-reclamacion-deadletter-eventos.md
     - ADR-022 Índice electrónico v2: adr/ADR-022-indice-electronico-v2-metadatos.md
     - ADR-023 WORM/Object-Lock de preservación: adr/ADR-023-worm-object-lock-preservacion.md
+    - ADR-024 ROOT fuera de banda: adr/ADR-024-root-fuera-de-banda.md
+    - ADR-025 TRD como instrumento convalidado: adr/ADR-025-trd-instrumento-convalidado-versionado.md
+    - ADR-026 TVD de fondo acumulado: adr/ADR-026-tvd-fondo-acumulado.md
   - Pantallas del sistema: pantallas.md
   - Referencia API: api.md
   - Despliegue: deployment.md
