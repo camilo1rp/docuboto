@@ -164,6 +164,17 @@ export const NAV_ITEMS = [
     // de OTRO usuario (Fase 3, cierre de desfase API↔UI).
     permission: "USUA_PERM_ADMIN",
   },
+  {
+    label: "Preservación",
+    href: ROUTES.adminPreservacion,
+    icon: "fas fa-shield-halved",
+    // USUA_PERM_EXPEDIENTE: gate real de lectura del plan/pendientes de
+    // preservación (storage-service `preservacion.py` + archive-service
+    // `indice.py`); el reintento de sellado exige además PERM_FIRMA, pero la
+    // pantalla se abre solo con USUA_PERM_EXPEDIENTE (E10, revisión UX
+    // 2026-08-02, punto 3 del lote 1 — pantalla construida sin enlazar).
+    permission: "USUA_PERM_EXPEDIENTE",
+  },
 ];
 
 /**

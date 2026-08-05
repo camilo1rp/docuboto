@@ -16,11 +16,12 @@
  * POST                    → crea una plantilla. Body: { tipo_documental,
  *   json_schema, version?, activo? }.
  *
- * HALLAZGO DE DOMINIO (ver +page.server.js): este router NO tiene
- * `require_permission` en el backend — cualquier llamado autenticado del
- * tenant puede escribir. El proxy no inventa una autorización que el
- * backend no aplica; la UI gatea igualmente el botón con USUA_PERM_ADMIN
- * como medida conservadora (más restrictivo que el backend nunca es inseguro).
+ * Gate real (revisión UX 2026-08-02, punto 2 — corrige un hallazgo previo
+ * que afirmaba lo contrario): `POST /metadata/templates` exige
+ * `require_permission("USUA_PERM_TRD")` en el backend
+ * (`services/document-service/app/routers/metadata.py`). La UI gatea el
+ * botón con USUA_PERM_TRD (ver +page.server.js/+page.svelte), no con
+ * USUA_PERM_ADMIN.
  *
  * Sin PATCH/DELETE en el backend — igual que expediente-templates, una
  * nueva versión es un nuevo registro.

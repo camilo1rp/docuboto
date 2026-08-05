@@ -16,9 +16,10 @@
  * vincular en la creación (archive-service resuelve ambos). 202 con job_id;
  * progreso vía GET .../[jobId]/status.
  *
- * ADVERTENCIA DE ALCANCE (Fase 8): igual que .../lotes/documentos — el
- * gateway no tiene registrado `/api/v1/batch/` en su tabla de ruteo; ver el
- * comentario allí y el informe de cierre de fase.
+ * Gate real: `USUA_PERM_EXPEDIENTE`
+ * (`services/archive-service/app/routers/batch.py`). El gateway
+ * (`services/api-gateway/app/routers/proxy.py`) tiene registrado
+ * `/api/v1/batch/expedientes` hacia archive-service.
  */
 
 import { API_V1 } from "$lib/utils/config.server.js";

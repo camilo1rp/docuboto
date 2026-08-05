@@ -82,4 +82,9 @@ minio-data/
 config.txt
 
 # ─── Documentos locales (normativa SGD + planes de migración) — no se publican ──
-documentos/
+# Anclado a la raíz del repo (/documentos/): sin la barra inicial, el patrón
+# también ocultaba frontend/src/routes/(app)/admin/interoperabilidad/api/
+# lotes/documentos/ (colisión de nombre) — esa carpeta NUNCA llegó a
+# versionarse pese a estar documentada como entregada en Fase 8 (revisión UX
+# 2026-08-02, hallazgo de higiene de repo durante el lote 1).
+/documentos/

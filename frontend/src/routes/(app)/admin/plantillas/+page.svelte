@@ -14,9 +14,16 @@
 
   RBAC (espejo del backend, D-11):
     - Crear / borrar plantillas → USUA_PERM_ADMIN
-    - Ver la lista → USUA_PERM_ADMIN (esta vista es de administración)
-    Para consumir plantillas al crear un borrador, el proxy /admin/plantillas/api
-    admite GET con PERM_RADI (sin llegar a esta vista).
+      (`services/document-service/app/routers/borradores.py`, POST/DELETE
+      `/api/v1/plantillas`).
+    - Ver la lista → en realidad PERM_RADI a nivel de backend (mismo router,
+      GET `/api/v1/plantillas`) — NO USUA_PERM_ADMIN como afirmaba este
+      comentario (revisión UX 2026-08-02, hallazgo residual del punto 2,
+      NO corregido: un USUA_PERM_ADMIN sin PERM_RADI ve la tarjeta en /admin
+      pero la carga SSR de la lista falla con 403/loadError; un PERM_RADI sin
+      USUA_PERM_ADMIN nunca ve la tarjeta, así que tampoco llega aquí. Fuera
+      de alcance del lote 1 — requiere decidir el gate correcto en el
+      backend, no solo reflejarlo).
 
   D-05 — access_token NUNCA en cliente:
     Todas las escrituras van a /admin/plantillas/api[/id] que leen locals.accessToken.

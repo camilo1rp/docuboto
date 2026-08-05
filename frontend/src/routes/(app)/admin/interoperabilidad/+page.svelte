@@ -14,12 +14,22 @@
   (E11, RF-INT-01/RF-INT-05) y carga masiva de documentos/expedientes (Fase 8,
   cierre del desfase API↔UI).
 
-  Cuatro pestañas, un permiso real (USUA_PERM_EXPEDIENTE, espejo del gate de
-  los cinco endpoints que consume esta pantalla):
-    1. Exportar   — POST /api/v1/export → ZIP (descarga en cliente)
-    2. Importar   — POST /api/v1/import (Stepper: subir→validar→confirmar→resultado)
-    3. Carga masiva de documentos  — POST /api/v1/batch/documents (202 + sondeo)
-    4. Carga masiva de expedientes — POST /api/v1/batch/expedientes (202 + sondeo)
+  Cuatro pestañas, DOS permisos reales distintos (el gate real difiere por
+  pestaña — revisión UX 2026-08-02, punto 2 del lote 1 — un solo `permission`
+  de tarjeta no puede representar las cinco):
+    1. Exportar                    — POST /api/v1/export            → USUA_PERM_EXPEDIENTE
+       (`services/document-service/app/routers/export.py`)
+    2. Importar                    — POST /api/v1/import             → USUA_PERM_EXPEDIENTE
+       (`services/document-service/app/routers/import_.py`)
+    3. Carga masiva de documentos  — POST/GET /api/v1/batch/documents → PERM_RADI
+       (`services/document-service/app/routers/batch.py`)
+    4. Carga masiva de expedientes — POST/GET /api/v1/batch/expedientes → USUA_PERM_EXPEDIENTE
+       (`services/archive-service/app/routers/batch.py`)
+
+  La pantalla se abre con el permiso MENOS restrictivo que da acceso a alguna
+  pestaña (USUA_PERM_EXPEDIENTE || PERM_RADI); cada pestaña se filtra además
+  con su propio permiso — así un radicador (solo PERM_RADI) ve "Carga masiva
+  de documentos" sin ver las otras tres, y viceversa.
 
   Puntos críticos de esta pantalla (ver informe de cierre de Fase 8):
     - La importación es TODO-O-NADA: un 422 trae en `detail` el nombre exacto
@@ -33,9 +43,9 @@
       oficiales: se exige un modal de confirmación con el número exacto de
       ítems antes de ejecutar.
 
-  RBAC: toda la pantalla se filtra por USUA_PERM_EXPEDIENTE ($permissions);
-  el backend re-valida cada endpoint de forma independiente (defensa en
-  profundidad, D-05/D-14).
+  RBAC: cada pestaña se filtra por su permiso real ($permissions); el backend
+  re-valida cada endpoint de forma independiente (defensa en profundidad,
+  D-05/D-14).
 -->
 <script>
   import { onMount, onDestroy } from "svelte";
@@ -50,18 +60,42 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
 
-  $: hasPerm = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  // Gate real por pestaña — ver comentario de cabecera. "Carga masiva de
+  // documentos" exige PERM_RADI (document-service); las otras tres exigen
+  // USUA_PERM_EXPEDIENTE (export/import en document-service, batch de
+  // expedientes en archive-service).
+  $: hasExpedientePerm = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  $: hasRadiPerm = $permissions.includes("PERM_RADI");
+  $: hasPerm = hasExpedientePerm || hasRadiPerm;
 
   // ---------------------------------------------------------------------------
   // Pestañas
   // ---------------------------------------------------------------------------
-  const TABS = [
-    { id: "exportar", label: "Exportar", icon: "fas fa-file-export" },
-    { id: "importar", label: "Importar", icon: "fas fa-file-import" },
-    { id: "lote-documentos", label: "Carga masiva de documentos", icon: "fas fa-layer-group" },
-    { id: "lote-expedientes", label: "Carga masiva de expedientes", icon: "fas fa-folder-plus" },
+  const ALL_TABS = [
+    { id: "exportar", label: "Exportar", icon: "fas fa-file-export", permKey: "expediente" },
+    { id: "importar", label: "Importar", icon: "fas fa-file-import", permKey: "expediente" },
+    {
+      id: "lote-documentos",
+      label: "Carga masiva de documentos",
+      icon: "fas fa-layer-group",
+      permKey: "radi",
+    },
+    {
+      id: "lote-expedientes",
+      label: "Carga masiva de expedientes",
+      icon: "fas fa-folder-plus",
+      permKey: "expediente",
+    },
   ];
+  $: TABS = ALL_TABS.filter((tab) =>
+    tab.permKey === "radi" ? hasRadiPerm : hasExpedientePerm,
+  );
   let activeTab = "exportar";
+  // Si la pestaña activa deja de estar visible (permisos aún no resueltos al
+  // montar, o cambian en caliente), reencuadra a la primera pestaña visible.
+  $: if (TABS.length > 0 && !TABS.some((t) => t.id === activeTab)) {
+    activeTab = TABS[0].id;
+  }
 
   const DOC_TYPE_OPTIONS = [
     { value: "E", label: "Entrada" },
@@ -232,67 +266,106 @@
   // =============================================================================
 
   /**
-   * Crea un controlador de sondeo para un job de carga masiva. `kind` decide
-   * el proxy propio a usar; NUNCA se llama al gateway directamente desde el
-   * cliente (D-05) — siempre /admin/interoperabilidad/api/lotes/<kind>/<jobId>.
+   * Consulta una vez el proxy propio de sondeo. `kind` decide qué proxy usar;
+   * NUNCA se llama al gateway directamente desde el cliente (D-05) — siempre
+   * /admin/interoperabilidad/api/lotes/<kind>/<jobId>.
+   *
+   * Devuelve `{ pollError, status }`: si `pollError` no está vacío la
+   * consulta FALLÓ (se declara explícitamente, sin sintetizar un `status`) —
+   * distingue "no se pudo consultar" de "aún sin resultados".
    */
-  function createJobPoller(kind) {
-    const state = {
-      jobId: null,
-      /** @type {import('$lib/types/api.js').BatchJobStatusResponse|null} */
-      status: null,
-      /** Distingue "no se pudo consultar" (pollError) de "aún sin resultados"
-       * (status.processed_items === 0 con pollError === ""). */
-      pollError: "",
-      timer: null,
-    };
-
-    async function pollOnce() {
-      if (!state.jobId) return;
-      try {
-        const res = await fetch(`/admin/interoperabilidad/api/lotes/${kind}/${state.jobId}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          // La consulta de estado FALLÓ: se declara, sin tocar el último
-          // `status` conocido (para no fingir que sigue vigente sin avisar).
-          state.pollError = data.detail ?? `No se pudo consultar el estado (HTTP ${res.status}).`;
-          return;
-        }
-        state.pollError = "";
-        state.status = data;
-        if (data.status === "completed" || data.status === "failed") {
-          stop();
-        }
-      } catch {
-        state.pollError = "No se pudo consultar el estado del job (sin conexión).";
+  async function pollJobStatusOnce(kind, jobId) {
+    try {
+      const res = await fetch(`/admin/interoperabilidad/api/lotes/${kind}/${jobId}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return {
+          pollError: data.detail ?? `No se pudo consultar el estado (HTTP ${res.status}).`,
+          status: undefined,
+        };
       }
+      return { pollError: "", status: data };
+    } catch {
+      return { pollError: "No se pudo consultar el estado del job (sin conexión).", status: undefined };
     }
-
-    function start(jobId) {
-      stop();
-      state.jobId = jobId;
-      state.status = null;
-      state.pollError = "";
-      pollOnce();
-      state.timer = setInterval(pollOnce, 2000);
-    }
-
-    function stop() {
-      if (state.timer) {
-        clearInterval(state.timer);
-        state.timer = null;
-      }
-    }
-
-    return { state, start, stop, pollOnce };
   }
 
-  const docsJob = createJobPoller("documentos");
-  const expJob = createJobPoller("expedientes");
+  // Nota Svelte 4 (bug D-##, revisión UX 2026-08-02): mutar propiedades de un
+  // objeto plano nunca reasignado NO invalida la reactividad — el panel de
+  // progreso se congelaba y jamás mostraba el resultado. Por eso el estado de
+  // cada job vive en variables `let` de nivel de componente, reasignadas
+  // directamente (nunca mutadas en sitio).
+  let docsJobId = null;
+  /** @type {import('$lib/types/api.js').BatchJobStatusResponse|null} */
+  let docsJobStatus = null;
+  let docsJobPollError = "";
+  let docsJobTimer = null;
+
+  async function docsPollOnce() {
+    if (!docsJobId) return;
+    const result = await pollJobStatusOnce("documentos", docsJobId);
+    if (result.pollError) {
+      docsJobPollError = result.pollError;
+      return;
+    }
+    docsJobPollError = "";
+    docsJobStatus = result.status;
+    if (docsJobStatus?.status === "completed" || docsJobStatus?.status === "failed") {
+      docsJobStop();
+    }
+  }
+  function docsJobStart(jobId) {
+    docsJobStop();
+    docsJobId = jobId;
+    docsJobStatus = null;
+    docsJobPollError = "";
+    docsPollOnce();
+    docsJobTimer = setInterval(docsPollOnce, 2000);
+  }
+  function docsJobStop() {
+    if (docsJobTimer) {
+      clearInterval(docsJobTimer);
+      docsJobTimer = null;
+    }
+  }
+
+  let expJobId = null;
+  /** @type {import('$lib/types/api.js').BatchJobStatusResponse|null} */
+  let expJobStatus = null;
+  let expJobPollError = "";
+  let expJobTimer = null;
+
+  async function expPollOnce() {
+    if (!expJobId) return;
+    const result = await pollJobStatusOnce("expedientes", expJobId);
+    if (result.pollError) {
+      expJobPollError = result.pollError;
+      return;
+    }
+    expJobPollError = "";
+    expJobStatus = result.status;
+    if (expJobStatus?.status === "completed" || expJobStatus?.status === "failed") {
+      expJobStop();
+    }
+  }
+  function expJobStart(jobId) {
+    expJobStop();
+    expJobId = jobId;
+    expJobStatus = null;
+    expJobPollError = "";
+    expPollOnce();
+    expJobTimer = setInterval(expPollOnce, 2000);
+  }
+  function expJobStop() {
+    if (expJobTimer) {
+      clearInterval(expJobTimer);
+      expJobTimer = null;
+    }
+  }
 
   onDestroy(() => {
-    docsJob.stop();
-    expJob.stop();
+    docsJobStop();
+    expJobStop();
   });
 
   // =============================================================================
@@ -362,7 +435,7 @@
       notifySuccess(`Lote creado: ${documents.length} documento(s) en proceso.`);
       loteDocsConfirmOpen = false;
       loteDocs = [blankDocRow()];
-      docsJob.start(data.job_id);
+      docsJobStart(data.job_id);
     } catch {
       notifyError("No se pudo conectar al servidor de carga masiva.");
     } finally {
@@ -426,7 +499,7 @@
       notifySuccess(`Lote creado: ${expedientes.length} expediente(s) en proceso.`);
       loteExpsConfirmOpen = false;
       loteExps = [blankExpRow()];
-      expJob.start(data.job_id);
+      expJobStart(data.job_id);
     } catch {
       notifyError("No se pudo conectar al servidor de carga masiva.");
     } finally {
@@ -469,7 +542,7 @@
     <EmptyState
       icon="fas fa-lock"
       title="Sin permiso"
-      description="Se requiere el permiso USUA_PERM_EXPEDIENTE para usar interoperabilidad y carga masiva."
+      description="Se requiere el permiso USUA_PERM_EXPEDIENTE (exportar/importar/lotes de expedientes) o PERM_RADI (carga masiva de documentos) para usar esta pantalla."
     />
   {:else}
     <div class="interop-tabs" role="tablist" aria-label="Secciones de interoperabilidad">
@@ -815,20 +888,20 @@
           </Button>
         </div>
 
-        {#if docsJob.state.jobId}
+        {#if docsJobId}
           <div class="interop-job" aria-live="polite">
             <h3 class="interop-step__title">Progreso del lote</h3>
-            {#if docsJob.state.pollError}
+            {#if docsJobPollError}
               <p class="interop-alert interop-alert--error" role="alert">
                 <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-                No se pudo consultar el estado: {docsJob.state.pollError}
-                {#if docsJob.state.status}
+                No se pudo consultar el estado: {docsJobPollError}
+                {#if docsJobStatus}
                   (último estado conocido abajo, puede no estar vigente)
                 {/if}
               </p>
             {/if}
-            {#if docsJob.state.status}
-              {@const s = docsJob.state.status}
+            {#if docsJobStatus}
+              {@const s = docsJobStatus}
               <div class="interop-job__summary">
                 <StatusChip
                   status={JOB_STATUS_CHIP[s.status] ?? "neutral"}
@@ -856,10 +929,10 @@
                     </li>
                   {/each}
                 </ul>
-              {:else if !docsJob.state.pollError}
+              {:else if !docsJobPollError}
                 <p class="interop-panel__hint">Aún sin resultados de ítems (procesando).</p>
               {/if}
-            {:else if !docsJob.state.pollError}
+            {:else if !docsJobPollError}
               <p class="interop-panel__hint">Consultando estado…</p>
             {/if}
           </div>
@@ -953,20 +1026,20 @@
           </Button>
         </div>
 
-        {#if expJob.state.jobId}
+        {#if expJobId}
           <div class="interop-job" aria-live="polite">
             <h3 class="interop-step__title">Progreso del lote</h3>
-            {#if expJob.state.pollError}
+            {#if expJobPollError}
               <p class="interop-alert interop-alert--error" role="alert">
                 <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-                No se pudo consultar el estado: {expJob.state.pollError}
-                {#if expJob.state.status}
+                No se pudo consultar el estado: {expJobPollError}
+                {#if expJobStatus}
                   (último estado conocido abajo, puede no estar vigente)
                 {/if}
               </p>
             {/if}
-            {#if expJob.state.status}
-              {@const s = expJob.state.status}
+            {#if expJobStatus}
+              {@const s = expJobStatus}
               <div class="interop-job__summary">
                 <StatusChip
                   status={JOB_STATUS_CHIP[s.status] ?? "neutral"}
@@ -994,10 +1067,10 @@
                     </li>
                   {/each}
                 </ul>
-              {:else if !expJob.state.pollError}
+              {:else if !expJobPollError}
                 <p class="interop-panel__hint">Aún sin resultados de ítems (procesando).</p>
               {/if}
-            {:else if !expJob.state.pollError}
+            {:else if !expJobPollError}
               <p class="interop-panel__hint">Consultando estado…</p>
             {/if}
           </div>

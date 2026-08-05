@@ -15,8 +15,10 @@
  * GET  ?activo= → MetadataElementResponse[].
  * POST           → crea un elemento.
  *
- * HALLAZGO DE DOMINIO (ver +page.server.js): sin `require_permission` en el
- * backend; gate USUA_PERM_ADMIN aplicado solo del lado del cliente.
+ * Gate real (revisión UX 2026-08-02, punto 2 — corrige un hallazgo previo
+ * que afirmaba lo contrario): `POST /metadata/elements` exige
+ * `require_permission("USUA_PERM_TRD")` en el backend
+ * (`services/document-service/app/routers/metadata_elements.py`).
  */
 
 import { json } from "@sveltejs/kit";

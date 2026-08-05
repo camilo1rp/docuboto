@@ -11,9 +11,15 @@
  * admin/interoperabilidad/api/lotes/expedientes/[jobId] — Proxy SSR de sondeo
  * del job de carga masiva de expedientes (D-05, Fase 8).
  *
- * GET /api/v1/batch/{job_id}/status — mismo contrato y misma regla de sondeo
- * que .../lotes/documentos/[jobId] (nunca sintetizar contadores en 0 ante un
- * fallo de red; distinguir "no se pudo consultar" de "aún sin resultados").
+ * GET /api/v1/batch/expedientes/{job_id}/status — el estado anida bajo el
+ * tipo de job (`expedientes`) porque document-service y archive-service
+ * comparten el prefijo raíz `/api/v1/batch` con formas de `{job_id}/status`
+ * idénticas; el gateway (`services/api-gateway/app/routers/proxy.py`) rutea
+ * por ese prefijo anidado hacia archive-service. Gate real:
+ * `USUA_PERM_EXPEDIENTE` (`services/archive-service/app/routers/batch.py`).
+ * Mismo contrato y misma regla de sondeo que .../lotes/documentos/[jobId]
+ * (nunca sintetizar contadores en 0 ante un fallo de red; distinguir "no se
+ * pudo consultar" de "aún sin resultados").
  */
 
 import { API_V1 } from "$lib/utils/config.server.js";
@@ -37,7 +43,7 @@ export async function GET({ locals, params }) {
 
   let res;
   try {
-    res = await fetch(`${API_V1}/batch/${encodeURIComponent(params.jobId)}/status`, {
+    res = await fetch(`${API_V1}/batch/expedientes/${encodeURIComponent(params.jobId)}/status`, {
       headers: {
         Authorization: `Bearer ${token}`,
         "X-Tenant-Slug": tenant,

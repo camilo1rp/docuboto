@@ -33,9 +33,15 @@
   backend): "editar" es crear una nueva versión con `version` incremental
   para la misma serie/tipo — no hay botón "Editar" en esas dos pestañas.
 
-  RBAC: ver el hallazgo de dominio detallado en +page.server.js — los
-  backends de plantilla/elemento no gatean por permiso; esta pantalla gatea
-  con USUA_PERM_ADMIN como medida conservadora del lado del cliente.
+  RBAC: gate REAL confirmado (revisión UX 2026-08-02, punto 2, lote 1) —
+  los TRES routers backend (`expediente-metadata/templates` en
+  archive-service; `metadata/templates` y `metadata/elements` en
+  document-service) exigen `USUA_PERM_TRD` en sus mutaciones (POST/PATCH/
+  DELETE). El comentario previo aquí y en +page.server.js afirmaba que los
+  dos routers de document-service no gateaban por permiso — era falso a la
+  fecha de esta revisión (los tres YA declaran `require_permission
+  ("USUA_PERM_TRD")`); esta pantalla se alinea con USUA_PERM_TRD en las tres
+  pestañas en vez de USUA_PERM_ADMIN.
 -->
 <script>
   import { onMount } from "svelte";
@@ -53,7 +59,10 @@
   /** @type {import('./$types').PageData} */
   export let data;
 
-  $: canWrite = $permissions.includes("USUA_PERM_ADMIN");
+  // Gate REAL único para las tres pestañas: los tres routers backend exigen
+  // USUA_PERM_TRD en sus mutaciones — ver comentario de cabecera.
+  $: canWrite = $permissions.includes("USUA_PERM_TRD");
+  $: canWriteExpTemplates = canWrite;
 
   let expedienteTemplates = data.expedienteTemplates ?? [];
   let documentTemplates = data.documentTemplates ?? [];
@@ -418,7 +427,7 @@
     tabindex="0"
   >
     <div class="meta-page__panel-header">
-      {#if canWrite}
+      {#if canWriteExpTemplates}
         <Button icon="fas fa-plus" on:click={openExpCreate}>Nueva plantilla de expediente</Button>
       {/if}
     </div>
@@ -431,7 +440,9 @@
       <EmptyState
         icon="fas fa-folder-open"
         title="Sin plantillas de expediente"
-        description='Crea la primera con "Nueva plantilla de expediente".'
+        description={canWriteExpTemplates
+          ? 'Crea la primera con "Nueva plantilla de expediente".'
+          : "No hay plantillas de expediente registradas. Se requiere USUA_PERM_TRD para crear una."}
       />
     {:else}
       <div class="meta-table-wrap" role="region" aria-label="Plantillas de metadatos de expediente">

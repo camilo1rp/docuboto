@@ -349,3 +349,70 @@ describe("lotes/expedientes/[jobId] (sondeo)", () => {
     expect((await res.json()).error).toBe("connection_error");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Contrato de URL upstream (revisión UX 2026-08-02, C2): fija la forma EXACTA
+// de la ruta que cada proxy de sondeo pide al gateway. document-service y
+// archive-service comparten el prefijo raíz `/api/v1/batch` con el mismo
+// contrato `{job_id}/status`, distinguidos SOLO por el tipo de job anidado
+// (`documents` vs `expedientes` — ver `services/api-gateway/app/routers/
+// proxy.py`). Un renombrado silencioso de cualquiera de las dos rutas debe
+// romper este test, no producir un 404 permanente en el panel de progreso.
+// ---------------------------------------------------------------------------
+describe("contrato de URL upstream — sondeo de lotes", () => {
+  it("documentos: pide GET {API_V1}/batch/documents/{jobId}/status", async () => {
+    let capturedUrl;
+    globalThis.fetch = vi.fn(async (url) => {
+      capturedUrl = url;
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    });
+    await statusLoteDocs({ locals: SESSION_LOCALS, params: { jobId: JOB_ID } });
+    expect(capturedUrl).toMatch(
+      new RegExp(`/api/v1/batch/documents/${JOB_ID}/status$`),
+    );
+  });
+
+  it("expedientes: pide GET {API_V1}/batch/expedientes/{jobId}/status", async () => {
+    let capturedUrl;
+    globalThis.fetch = vi.fn(async (url) => {
+      capturedUrl = url;
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    });
+    await statusLoteExps({ locals: SESSION_LOCALS, params: { jobId: JOB_ID } });
+    expect(capturedUrl).toMatch(
+      new RegExp(`/api/v1/batch/expedientes/${JOB_ID}/status$`),
+    );
+  });
+
+  it("crear lote documentos: POST a {API_V1}/batch/documents", async () => {
+    let capturedUrl;
+    globalThis.fetch = vi.fn(async (url) => {
+      capturedUrl = url;
+      return new Response(
+        JSON.stringify({ job_id: JOB_ID, job_type: "documents", status: "pending" }),
+        { status: 202 },
+      );
+    });
+    await crearLoteDocs({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ documents: [{ doc_type: "E", subject: "Asunto" }] }) },
+    });
+    expect(capturedUrl).toMatch(/\/api\/v1\/batch\/documents$/);
+  });
+
+  it("crear lote expedientes: POST a {API_V1}/batch/expedientes", async () => {
+    let capturedUrl;
+    globalThis.fetch = vi.fn(async (url) => {
+      capturedUrl = url;
+      return new Response(
+        JSON.stringify({ job_id: JOB_ID, job_type: "expedientes", status: "pending" }),
+        { status: 202 },
+      );
+    });
+    await crearLoteExps({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ expedientes: [{ name: "Expediente 1" }] }) },
+    });
+    expect(capturedUrl).toMatch(/\/api\/v1\/batch\/expedientes$/);
+  });
+});

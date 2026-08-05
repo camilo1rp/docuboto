@@ -84,5 +84,6 @@ export const ROUTES = {
   adminFlujosReglas: "/admin/flujos/reglas",
   adminFlujosReasignacion: "/admin/flujos/reasignacion",
   adminSeguridadClaves: "/admin/seguridad/claves",
+  adminPreservacion: "/admin/preservacion",
   perfil: "/perfil",
 };

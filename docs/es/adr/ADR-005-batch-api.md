@@ -10,6 +10,13 @@
    - `POST /api/v1/batch/documents` — crear 1-1000 radicados
    - `POST /api/v1/batch/expedientes` — crear 1-100 expedientes con radicados vinculados
    - `GET /api/v1/batch/{job_id}/status` — monitorear progreso
+     > **Enmendado (2026-08-02)**: esta forma plana resultó **inenrutable**. Los dos endpoints
+     > de creación viven en servicios distintos (`document-service` y `archive-service`) y el
+     > `api-gateway` enruta por prefijo de URL: con la misma forma en ambos, no hay manera de
+     > deducir del `job_id` a cuál preguntar. La consulta de estado se anidó bajo el tipo de
+     > trabajo — `GET /api/v1/batch/documents/{job_id}/status` y
+     > `GET /api/v1/batch/expedientes/{job_id}/status` — igual que ya lo estaba la creación.
+     > Ver `docs/es/api.md` para el contrato vigente.
 
 2. **Diseño**:
    - **Respuesta inmediata (202 Accepted)** — job queued, no bloquea cliente

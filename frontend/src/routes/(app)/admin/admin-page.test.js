@@ -13,9 +13,10 @@
  *
  * Cubre:
  *  - Sin ningún permiso de administración: EmptyState, ninguna tarjeta.
- *  - Con USUA_PERM_ADMIN: la tarjeta "Plantillas" es un enlace navegable;
- *    el resto de áreas (Usuarios, TRD/CCD, ...) se muestran DESHABILITADAS
- *    ("Próximamente") — no como enlaces muertos.
+ *  - Con USUA_PERM_ADMIN: la tarjeta "Plantillas" y las demás áreas
+ *    gateadas por ese mismo permiso (Usuarios, Grupos, ...) son enlaces
+ *    navegables; TRD/CCD, TVD y Metadatos NO aparecen (exigen
+ *    USUA_PERM_TRD, no USUA_PERM_ADMIN — revisión UX 2026-08-02, punto 2).
  *  - La distinción habilitada/deshabilitada no depende solo del color: la
  *    tarjeta deshabilitada lleva el badge de texto "Próximamente".
  */
@@ -93,15 +94,13 @@ describe("/admin — con USUA_PERM_ADMIN", () => {
     expect(screen.queryByText("Colas de errores")).toBeNull();
   });
 
-  it("todas las áreas del catálogo aparecen (habilitadas o como mapa deshabilitado)", () => {
+  it("todas las áreas gateadas por USUA_PERM_ADMIN aparecen (habilitadas o como mapa deshabilitado)", () => {
     render(AdminPage);
     for (const label of [
       "Plantillas",
       "Usuarios",
       "Grupos",
       "Dependencias",
-      "TRD / CCD",
-      "Metadatos",
       "Catálogos",
       "Parámetros",
       "Auditoría",
@@ -109,6 +108,34 @@ describe("/admin — con USUA_PERM_ADMIN", () => {
     ]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
+  });
+
+  // TRD/CCD y Metadatos NO comparten USUA_PERM_ADMIN — su gate real es
+  // USUA_PERM_TRD (revisión UX 2026-08-02, punto 2: ambas ofrecían la
+  // tarjeta a un USUA_PERM_ADMIN sin USUA_PERM_TRD, que aterrizaba en 403).
+  it("TRD/CCD y Metadatos NO aparecen con solo USUA_PERM_ADMIN", () => {
+    render(AdminPage);
+    expect(screen.queryByText("TRD / CCD")).toBeNull();
+    expect(screen.queryByText("Metadatos")).toBeNull();
+  });
+});
+
+describe("/admin — TRD/CCD y Metadatos, gateadas por USUA_PERM_TRD, no por USUA_PERM_ADMIN", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_TRD"] }));
+  });
+
+  it("TRD/CCD es un enlace navegable a /admin/trd", () => {
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /^TRD \/ CCD/i });
+    expect(link.getAttribute("href")).toBe("/admin/trd");
+  });
+
+  it("Metadatos es un enlace navegable a /admin/metadatos", () => {
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /^Metadatos/i });
+    expect(link.getAttribute("href")).toBe("/admin/metadatos");
   });
 });
 
@@ -156,5 +183,61 @@ describe("/admin — con USUA_PERM_ADMIN + PERM_DLQ_ADMIN", () => {
     render(AdminPage);
     const colasLink = screen.getByRole("link", { name: /Colas de errores/i });
     expect(colasLink.getAttribute("href")).toBe("/admin/colas");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revisión UX 2026-08-02, lote 1, punto 2: Interoperabilidad tiene gate
+// HETEROGÉNEO por pestaña (export/import/lote-expedientes → USUA_PERM_EXPEDIENTE;
+// lote-documentos → PERM_RADI). La tarjeta debe visibilizarse con el permiso
+// MENOS restrictivo que da acceso a alguna pestaña.
+// ---------------------------------------------------------------------------
+describe("/admin — Interoperabilidad con SOLO PERM_RADI (radicador, sin USUA_PERM_EXPEDIENTE)", () => {
+  it("la tarjeta aparece igual: PERM_RADI da acceso a la pestaña de carga masiva de documentos", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /^Interoperabilidad/i });
+    expect(link.getAttribute("href")).toBe("/admin/interoperabilidad");
+  });
+});
+
+describe("/admin — Interoperabilidad sin USUA_PERM_EXPEDIENTE ni PERM_RADI", () => {
+  it("la tarjeta NO aparece", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
+    render(AdminPage);
+    expect(screen.queryByText("Interoperabilidad")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revisión UX 2026-08-02, lote 1, punto 3: dos pantallas construidas y no
+// enlazadas desde el índice de administración.
+// ---------------------------------------------------------------------------
+describe("/admin — Preservación (E10), gateada por USUA_PERM_EXPEDIENTE", () => {
+  it("con USUA_PERM_EXPEDIENTE, la tarjeta es un enlace navegable a /admin/preservacion", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_EXPEDIENTE"] }));
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /^Preservación/i });
+    expect(link.getAttribute("href")).toBe("/admin/preservacion");
+  });
+
+  it("con solo USUA_PERM_ADMIN, la tarjeta Preservación NO aparece", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
+    render(AdminPage);
+    expect(screen.queryByText("Preservación")).toBeNull();
+  });
+});
+
+describe("/admin — Claves de firma (E17/F4), gateada por USUA_PERM_ADMIN", () => {
+  it("con USUA_PERM_ADMIN, la tarjeta es un enlace navegable a /admin/seguridad/claves", () => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /^Claves de firma/i });
+    expect(link.getAttribute("href")).toBe("/admin/seguridad/claves");
   });
 });

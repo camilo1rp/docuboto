@@ -25,6 +25,13 @@
   todas las subrutas (`/admin/plantillas`, `/admin/flujos/reglas`,
   `/admin/flujos/reasignacion`).
 
+  Revisión UX 2026-08-02 (punto 2 del lote 1): "tarjeta que lleva a un 403" ya
+  había aparecido 4 veces — se cruzaron las 16 tarjetas contra el
+  `require_permission` REAL del router que consume cada subruta. Dos
+  declaraban mal su permiso: TRD/CCD y Metadatos exigen de verdad
+  USUA_PERM_TRD, no USUA_PERM_ADMIN (ver el `permission` de cada tarjeta más
+  abajo para la cita exacta al router). Las demás 14 sí coincidían.
+
   Tarjetas "Próximamente": las áreas que aún no tienen subruta implementada
   se muestran DESHABILITADAS (no navegables, sin href) en vez de omitirse —
   así el dashboard comunica el mapa completo de administración sin mentir
@@ -50,9 +57,15 @@
    * una fase posterior del plan de cierre del desfase API↔UI: la tarjeta se
    * muestra como mapa (no como enlace) hasta que exista.
    *
-   * Todas comparten hoy `USUA_PERM_ADMIN` (único permiso de administración
-   * general vigente en el catálogo RBAC, D-11). Cuando una subruta futura
-   * adopte un permiso más específico, actualizar aquí su `permission`.
+   * `permission`/`permissions` reflejan el gate REAL del router backend que
+   * consume cada subruta — verificado uno a uno (revisión UX 2026-08-02,
+   * punto 2): la mayoría comparte `USUA_PERM_ADMIN`, pero TRD/CCD, TVD y
+   * Metadatos exigen `USUA_PERM_TRD`; Colas de errores exige
+   * `PERM_DLQ_ADMIN`; Interoperabilidad exige uno de dos permisos distintos
+   * según la pestaña (`permissions`, gate menos restrictivo); Preservación
+   * exige `USUA_PERM_EXPEDIENTE`. Al añadir una tarjeta nueva, citar aquí el
+   * router/línea que prueba el permiso — no asumir que comparte el de sus
+   * vecinas.
    */
   const ADMIN_AREAS = [
     {
@@ -108,7 +121,10 @@
       description: "Tablas de Retención Documental y Cuadro de Clasificación (E04).",
       icon: "fas fa-folder-tree",
       href: "/admin/trd",
-      permission: "USUA_PERM_ADMIN",
+      // Gate real: USUA_PERM_TRD, NO USUA_PERM_ADMIN
+      // (`services/archive-service/app/routers/trd.py`, POST/PATCH exigen
+      // `require_permission("USUA_PERM_TRD")`) — revisión UX 2026-08-02, punto 2.
+      permission: "USUA_PERM_TRD",
       implemented: true,
     },
     {
@@ -127,7 +143,14 @@
       description: "Esquemas de metadatos variables por tipo documental (E03).",
       icon: "fas fa-tags",
       href: "/admin/metadatos",
-      permission: "USUA_PERM_ADMIN",
+      // Gate real: USUA_PERM_TRD, NO USUA_PERM_ADMIN — los tres routers que
+      // consume esta pantalla (`expediente-metadata/templates` en
+      // archive-service; `metadata/templates` y `metadata/elements` en
+      // document-service) exigen `require_permission("USUA_PERM_TRD")` en
+      // sus mutaciones (ver metadatos/+page.server.js y +page.svelte, un
+      // comentario previo aquí afirmaba lo contrario — era falso). Revisión
+      // UX 2026-08-02, punto 2.
+      permission: "USUA_PERM_TRD",
       implemented: true,
     },
     {
@@ -190,9 +213,38 @@
         "Exportar/importar paquetes de radicados (E11) y carga masiva de documentos y expedientes.",
       icon: "fas fa-file-zipper",
       href: "/admin/interoperabilidad",
-      // Mismo gate real de los cinco endpoints que consume la pantalla
-      // (export.py, import_.py, batch.py×2, postal tracking).
+      // Gate real HETEROGÉNEO por pestaña (revisión UX 2026-08-02, punto 2):
+      // exportar/importar/lote de expedientes exigen USUA_PERM_EXPEDIENTE;
+      // el lote de documentos exige PERM_RADI (document-service batch.py).
+      // La tarjeta se anuncia con el permiso MENOS restrictivo que da acceso
+      // a alguna pestaña — la pantalla filtra cada pestaña con su propio
+      // permiso (ver cabecera de interoperabilidad/+page.svelte).
+      permissions: ["USUA_PERM_EXPEDIENTE", "PERM_RADI"],
+      implemented: true,
+    },
+    {
+      label: "Preservación",
+      description:
+        "Plan de preservación digital, índices pendientes de sellado XAdES y artefactos WORM en riesgo de retención (E10, AGN 001/2024).",
+      icon: "fas fa-shield-halved",
+      href: "/admin/preservacion",
+      // Lectura con USUA_PERM_EXPEDIENTE (mismo gate que el backend); el
+      // reintento de sellado exige además PERM_FIRMA a nivel de acción, no
+      // de pantalla (ver cabecera de preservacion/+page.svelte). Pantalla
+      // construida y no enlazada (revisión UX 2026-08-02, punto 3).
       permission: "USUA_PERM_EXPEDIENTE",
+      implemented: true,
+    },
+    {
+      label: "Claves de firma",
+      description: "Revocación administrativa de la credencial de firma personal PKI de un usuario (E17/F4).",
+      icon: "fas fa-key",
+      href: "/admin/seguridad/claves",
+      // USUA_PERM_ADMIN: gate real en
+      // POST /auth/admin/users/{user_id}/signing-key/revoke
+      // (admin_router de services/auth-service/app/routers/signing_key.py).
+      // Pantalla construida y no enlazada (revisión UX 2026-08-02, punto 3).
+      permission: "USUA_PERM_ADMIN",
       implemented: true,
     },
   ];

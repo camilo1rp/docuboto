@@ -11,8 +11,10 @@
  * /admin/metadatos/api/elements/[id] — Proxy SSR: actualizar/borrar un
  * elemento de metadato reutilizable (D-05, E03/RF-MET-03).
  *
- * HALLAZGO DE DOMINIO (ver +page.server.js): sin `require_permission` en el
- * backend; gate USUA_PERM_ADMIN aplicado solo del lado del cliente.
+ * Gate real (revisión UX 2026-08-02, punto 2 — corrige un hallazgo previo
+ * que afirmaba lo contrario): PATCH exige `USUA_PERM_TRD`, DELETE exige
+ * `USUA_PERM_TRD` con `min_crud=3`
+ * (`services/document-service/app/routers/metadata_elements.py`).
  */
 
 import { json } from "@sveltejs/kit";

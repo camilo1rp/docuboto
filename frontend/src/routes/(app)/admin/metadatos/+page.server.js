@@ -29,16 +29,13 @@
  *   - GET /metadata/elements (document-service) — elementos de metadato
  *     reutilizables (clave/etiqueta/tipo_dato/...), CRUD completo.
  *
- * HALLAZGO DE DOMINIO (reportado, no corregido aquí): NINGUNO de estos tres
- * routers backend declara `require_permission` — a diferencia de
- * expediente-metadata/templates y trd (archive-service, USUA_PERM_TRD),
- * metadata/templates y metadata/elements (document-service) aceptan la
- * escritura de cualquier llamado autenticado del tenant, sin gate de
- * permiso. Esta pantalla NO inventa una autorización que el backend no
- * aplica (sería una falsa sensación de seguridad) — sí gatea sus propios
- * botones de escritura con USUA_PERM_ADMIN como medida conservadora
- * adicional (nunca ofrece MENOS de lo que el backend exige, aquí ofrece
- * más restricción de la que el backend exige, lo cual es seguro).
+ * Gate real (verificado en código, revisión UX 2026-08-02 punto 2, lote 1):
+ * los TRES routers exigen `USUA_PERM_TRD` en sus mutaciones — igual que
+ * expediente-metadata/templates y trd (archive-service). `metadata/templates`
+ * y `metadata/elements` (document-service) declaran
+ * `require_permission("USUA_PERM_TRD")` en create/update/delete. Esta
+ * pantalla gatea sus botones de escritura con USUA_PERM_TRD (ver
+ * +page.svelte), no con USUA_PERM_ADMIN.
  *
  * También se trae la lista de series TRD y tipos documentales (solo
  * lectura, sin permiso) para poblar los selects de la plantilla
