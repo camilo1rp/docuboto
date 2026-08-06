@@ -153,6 +153,17 @@ Todo el router exige `USUA_PERM_ADMIN`.
 ### `GET /api/v1/audit`
 Consulta la auditoría inmutable del tenant (ADR-008), más recientes primero. Exige `USUA_PERM_ADMIN`. Filtros: `?action=&object_type=&object_ref=&actor=&page=1&size=20`. Cabecera `X-Total-Count`.
 
+**Recortado por clearance (no-read-up, RF-SEG-08).** `USUA_PERM_ADMIN` es competencia administrativa, no habilitación de seguridad: administrar el tenant no autoriza a conocer los asuntos clasificados que en él se tramitan. Las entradas cuyo objeto es un radicado o un expediente por encima del clearance efectivo del llamante **no se listan ni se cuentan** (`X-Total-Count` refleja el mismo recorte; de lo contrario el total sería un oráculo de cuántos documentos clasificados existen). Detalles del recorte:
+
+- **Lista de admisión, no de denegación**: se listan los tipos que *no pueden* referirse a un documento ni a un expediente (identidad, RBAC, estructura orgánica, instrumentos y catálogos: `usuario`, `grupo`, `membresia`, `dependencia`, `trd_serie`, `parametro`, `auth_session`…) más los clasificables que resuelvan a un nivel alcanzable. **Todo lo demás queda fuera.** El motivo: `audit_log` la escriben once servicios y varios tipos que no denotan un radicado llevan su identidad en el `payload` — `evento` (dead-letter) serializa el sobre íntegro con `business.tracking_number`, `import` guarda la lista literal de números importados, `file` guarda el nombre del anexo. Con lista de denegación, cada tipo o servicio nuevo nace visible y el olvido es silencioso.
+- El nivel se resuelve **en vivo** contra `radicados` / `expedientes` del schema del tenant — nunca denormalizado, para que una reclasificación surta efecto de inmediato. El schema se ancla al `tenant_slug` del request, no al `search_path` de la conexión.
+- **Fail-closed**: una `object_ref` que no resuelve a ninguna fila (objeto eliminado, referencia de otro formato) queda fuera; lo que no se puede clasificar no se declara público. Igual si el tenant no tiene las tablas fuente.
+- Filtrar por la `object_ref` de un documento fuera de alcance devuelve cero entradas, indistinguible de que no exista.
+- Con clearance máximo (3 = CLASIFICADA, y ROOT) **no se aplica recorte alguno**: la auditoría se entrega íntegra, que es lo que su habilitación autoriza.
+- **Residuo declarado**: `id` es una secuencia monótona, así que los huecos entre ids visibles revelan *cuántas* entradas se ocultaron y, por los `ts` vecinos, *cuándo*. No se cierra porque `id` es el que casa con `broken_id` de `/audit/verify`; se documenta.
+
+`GET /api/v1/audit/verify` no se recorta (ver abajo).
+
 ```json
 [ { "id": 42, "ts": "2024-01-15T10:30:00Z", "service": "document-service", "actor": "uuid",
     "canal": "api", "action": "document.radicado_created", "object_type": "radicado",
@@ -160,7 +171,7 @@ Consulta la auditoría inmutable del tenant (ADR-008), más recientes primero. E
 ```
 
 ### `GET /api/v1/audit/verify`
-Recalcula la cadena de hash del tenant y reporta su integridad (ADR-008). Exige `USUA_PERM_ADMIN`.
+Recalcula la cadena de hash del tenant y reporta su integridad (ADR-008). Exige `USUA_PERM_ADMIN`. **No** se recorta por clearance: la cadena solo tiene valor probatorio si se recalcula entera, y sobre un subconjunto siempre daría «rota». La respuesta es content-free (un booleano y, si acaso, el id de la fila donde se rompe), así que no revela nada del objeto.
 
 ```json
 { "tenant_slug": "icetex", "ok": true, "broken_id": null }

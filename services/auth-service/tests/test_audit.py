@@ -32,6 +32,8 @@ class _FakeTx:
 
     async def __aexit__(self, *exc: object) -> bool:
         return False
+
+
 _ADMIN = Caller(
     user_id=uuid.uuid4(),
     keycloak_sub="kc-admin",
@@ -135,6 +137,53 @@ async def test_audit_gate_denies_without_admin(client: AsyncClient) -> None:
     )
     resp = await client.get("/api/v1/audit", headers=TENANT_HEADERS)
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_sin_clearance_recorta_por_no_read_up(client: AsyncClient) -> None:
+    """`USUA_PERM_ADMIN` no es habilitación de seguridad (E08, RF-SEG-08).
+
+    Aquí solo se comprueba el CABLEADO: que el nivel efectivo del llamante llega al
+    SQL. Que el SQL de verdad filtre se verifica por mutación contra Postgres real
+    en `tests/integration/test_audit_no_read_up.py` — un mock no puede probarlo.
+    """
+    conn = AsyncMock()
+    # fetchval: 1º el clearance del llamante (nivel 2), 2º el COUNT del listado.
+    conn.fetchval.side_effect = [2, 0]
+    # fetch: 1º las tablas fuente presentes en el schema, 2º las filas.
+    conn.fetch.side_effect = [[{"relname": "radicados"}, {"relname": "expedientes"}], []]
+    _override(
+        conn,
+        Caller(
+            user_id=uuid.uuid4(),
+            keycloak_sub="kc-admin-sin-clearance",
+            is_root=False,
+            permissions={"USUA_PERM_ADMIN": 5},
+        ),
+    )
+
+    resp = await client.get("/api/v1/audit", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    sql, *params = conn.fetch.call_args.args
+    assert "nivel_seguridad <=" in sql, "el listado tiene que llevar el recorte al SQL"
+    assert 2 in params, "el nivel efectivo del llamante debe viajar como parámetro"
+
+
+@pytest.mark.asyncio
+async def test_root_ve_la_auditoria_integra(client: AsyncClient) -> None:
+    """Quien alcanza el nivel máximo no sufre recorte: ni una consulta extra ni un
+    filtro que mutile el valor probatorio del registro."""
+    conn = AsyncMock()
+    conn.fetchval.return_value = 1
+    conn.fetch.return_value = [_audit_row()]
+    _override(conn)  # _ADMIN es is_root=True
+
+    resp = await client.get("/api/v1/audit", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    sql = conn.fetch.call_args.args[0]
+    assert "nivel_seguridad" not in sql
 
 
 @pytest.mark.asyncio

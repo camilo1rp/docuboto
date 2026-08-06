@@ -116,6 +116,15 @@ Requires `Authorization: Bearer <token>`. If `X-Tenant-Slug` is supplied, permis
 ### `GET /api/v1/audit`
 Queries the tenant's immutable audit log (ADR-008), most recent first. Requires `USUA_PERM_ADMIN`. Filters: `?action=&object_type=&object_ref=&actor=&page=1&size=20`. Header `X-Total-Count`.
 
+**Clearance-trimmed (no read-up, RF-SEG-08).** `USUA_PERM_ADMIN` is administrative competence, not a security clearance: administering the tenant does not authorise knowing the classified matters processed within it. Entries whose object is a document or file above the caller's effective clearance are **neither listed nor counted** (`X-Total-Count` reflects the same trimming; otherwise the total would be an oracle for how many classified documents exist). Details:
+
+- **Allow-list, not deny-list**: what gets listed is the types that *cannot* refer to a document or file (identity, RBAC, org structure, instruments and catalogues: `usuario`, `grupo`, `membresia`, `dependencia`, `trd_serie`, `parametro`, `auth_session`…) plus classifiable ones resolving to a reachable level. **Everything else is left out.** Why: `audit_log` is written by eleven services, and several types that do not denote a document carry its identity in the `payload` — `evento` (dead-letter) serialises the whole envelope including `business.tracking_number`, `import` stores the literal list of imported tracking numbers, `file` stores the attachment filename. With a deny-list, every new type or service is born visible and the omission is silent.
+- The level is resolved **live** against the tenant schema's `radicados` / `expedientes` — never denormalised, so a reclassification takes effect immediately. The schema is anchored to the request's `tenant_slug`, not to the connection's `search_path`.
+- **Fail-closed**: an `object_ref` that resolves to no row (deleted object, different reference format) is left out; what cannot be classified is not declared public. Likewise if the tenant lacks the source tables.
+- Filtering by the `object_ref` of an out-of-reach document returns zero entries, indistinguishable from it not existing.
+- At maximum clearance (3 = Classified, and ROOT) **no trimming is applied**: the audit log is served in full, which is what that clearance authorises.
+- **Declared residue**: `id` is a monotonic sequence, so gaps between visible ids reveal *how many* entries were hidden and, via neighbouring `ts`, *when*. Not closed because `id` is what matches `broken_id` from `/audit/verify`; documented instead.
+
 ```json
 [ { "id": 42, "ts": "2024-01-15T10:30:00Z", "service": "document-service", "actor": "uuid",
     "canal": "api", "action": "document.radicado_created", "object_type": "radicado",
@@ -123,7 +132,7 @@ Queries the tenant's immutable audit log (ADR-008), most recent first. Requires 
 ```
 
 ### `GET /api/v1/audit/verify`
-Recomputes the tenant's hash chain and reports its integrity (ADR-008). Requires `USUA_PERM_ADMIN`.
+Recomputes the tenant's hash chain and reports its integrity (ADR-008). Requires `USUA_PERM_ADMIN`. **Not** clearance-trimmed: the chain only has evidentiary value if recomputed whole, and over a subset it would always read as "broken". The response is content-free (a boolean and, at most, the id of the row where it breaks), so it reveals nothing about the object.
 
 ```json
 { "tenant_slug": "icetex", "ok": true, "broken_id": null }

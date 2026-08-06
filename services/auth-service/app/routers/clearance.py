@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_tenant_conn
-from app.repositories.clearance_repository import ClearanceRepository
+from app.repositories.clearance_repository import MAX_LEVEL, ClearanceRepository
 from app.schemas.security import (
     CallerClearance,
     ClearanceCheck,
@@ -36,7 +36,7 @@ from app.services.clearance_service import ClearanceService
 
 router = APIRouter(prefix="/api/v1/auth", tags=["security"])
 
-_MAX_LEVEL = 3  # CLASIFICADA
+_MAX_LEVEL = MAX_LEVEL  # CLASIFICADA — escala canónica en clearance_repository
 
 
 async def _effective_max_level(caller: Caller, repo: ClearanceRepository) -> int:

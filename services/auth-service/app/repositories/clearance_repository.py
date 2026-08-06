@@ -22,6 +22,10 @@ import uuid
 
 import asyncpg
 
+# Techo de la escala `security_levels` (1=Pública, 2=Reservada, 3=Clasificada).
+# Definido aquí, junto a la matriz que lo resuelve, para que no haya dos escalas.
+MAX_LEVEL = 3
+
 
 class ClearanceRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
