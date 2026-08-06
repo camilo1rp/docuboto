@@ -500,6 +500,7 @@
       emptyTitle="Sin series TRD"
       emptyDescription="Crea la primera serie con «Nueva serie»."
       bind:createOpen={serieCreateOpen}
+      on:create={openSerieCreate}
       bind:editOpen={serieEditOpen}
       editTarget={serieEditTarget}
     >
@@ -707,6 +708,7 @@
       emptyTitle="Sin tipos documentales"
       emptyDescription="Crea el primero con «Nuevo tipo»."
       bind:createOpen={tipoCreateOpen}
+      on:create={openTipoCreate}
       bind:editOpen={tipoEditOpen}
       editTarget={tipoEditTarget}
       bind:deleteOpen={tipoDeleteOpen}

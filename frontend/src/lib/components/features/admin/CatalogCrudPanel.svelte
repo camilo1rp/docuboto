@@ -69,6 +69,7 @@
     {deleteTarget}
     deleteConfirmText={(g) => `¿Eliminar el grupo "${g.name}"? Esta acción no puede deshacerse.`}
     deleteLoading={actionLoading}
+    on:create={openCreate}
     on:confirmDelete={confirmarBorrado}
   >
     <svelte:fragment slot="thead">
@@ -134,6 +135,16 @@
     edit-footer    let:item   — botones del pie del modal de edición (solo se
                    renderiza si editOpen=true Y editTarget no es null)
 
+  ## Eventos
+
+    on:create        — el usuario pulsó "Nuevo". La página DEBE escucharlo para
+                       limpiar su formulario (campos y errores de validación)
+                       de forma SÍNCRONA: se emite en el mismo tick en que se
+                       abre el modal. Abrir solo por `createOpen`, sin resetear,
+                       reabre el modal con lo escrito la vez anterior.
+    on:cancelDelete  — se cerró la confirmación de borrado sin confirmar
+    on:confirmDelete — {item} — la página ejecuta el borrado
+
   ## Qué NO hace (a propósito)
 
     - No llama a fetch ni conoce proxies/gateway — cada página trae `items`
@@ -188,6 +199,15 @@
 
   const dispatch = createEventDispatcher();
 
+  // La página escucha `create` para limpiar su formulario. Sin el evento, el
+  // modal reabre con lo escrito (y con el error de validación) de la vez
+  // anterior — incluidas casillas peligrosas como "ROOT" en /admin/usuarios.
+  // El reset del oyente debe ser SÍNCRONO: se despacha en el mismo tick que la
+  // apertura, así que un reset diferido pintaría el modal sucio.
+  function openCreate() {
+    dispatch("create");
+    createOpen = true;
+  }
   function closeCreate() {
     createOpen = false;
   }
@@ -209,7 +229,7 @@
     <div class="catalog-crud__toolbar">
       {#if hasToolbarExtra}<slot name="toolbar-extra" />{/if}
       {#if canCreate}
-        <Button icon="fas fa-plus" on:click={() => (createOpen = true)}>{createLabel}</Button>
+        <Button icon="fas fa-plus" on:click={openCreate}>{createLabel}</Button>
       {/if}
     </div>
   </div>

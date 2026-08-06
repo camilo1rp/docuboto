@@ -260,6 +260,7 @@
     emptyTitle="Sin usuarios"
     emptyDescription="Crea el primero con «Nuevo usuario»."
     bind:createOpen
+    on:create={openCreate}
   >
     <svelte:fragment slot="thead">
       <th scope="col">Usuario</th>

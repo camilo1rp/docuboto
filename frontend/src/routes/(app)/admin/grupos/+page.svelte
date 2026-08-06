@@ -293,6 +293,7 @@
     emptyTitle="Sin grupos"
     emptyDescription="Crea el primero con «Nuevo grupo»."
     bind:createOpen
+    on:create={openCreate}
   >
     <svelte:fragment slot="thead">
       <th scope="col">Nombre</th>

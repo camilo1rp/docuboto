@@ -33,7 +33,7 @@ import { json } from "@sveltejs/kit";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Solo caracteres seguros para un nombre de archivo de descarga; cualquier
 // otra cosa (comillas, CR/LF, rutas) se descarta antes de componer el header.
-const SAFE_FILENAME_RE = /^[\w.\-]+$/;
+const SAFE_FILENAME_RE = /^[\w.-]+$/;
 
 /** @type {import('./$types').RequestHandler} */
 export async function GET({ locals, params }) {

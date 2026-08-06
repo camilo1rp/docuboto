@@ -361,6 +361,7 @@
     emptyTitle="Sin agrupaciones TVD"
     emptyDescription="Crea la primera con «Nueva agrupación TVD»."
     bind:createOpen
+    on:create={openCreate}
     bind:editOpen
     {editTarget}
   >

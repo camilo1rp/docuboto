@@ -588,6 +588,7 @@
       emptyTitle="Sin elementos de metadato"
       emptyDescription="Crea el primero con «Nuevo elemento»."
       bind:createOpen={elCreateOpen}
+      on:create={openElCreate}
       bind:editOpen={elEditOpen}
       editTarget={elEditTarget}
       bind:deleteOpen={elDeleteOpen}

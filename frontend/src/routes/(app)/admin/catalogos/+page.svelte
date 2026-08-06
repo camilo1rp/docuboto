@@ -278,6 +278,7 @@
               emptyTitle="Sin items"
               emptyDescription="Crea el primero con «Nuevo item»."
               bind:createOpen
+              on:create={openCreate}
               bind:editOpen
               {editTarget}
               bind:deleteOpen

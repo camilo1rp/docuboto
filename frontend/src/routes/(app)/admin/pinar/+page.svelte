@@ -144,6 +144,7 @@
     ? 'Crea el primero con "Nuevo plan".'
     : "Aún no se ha creado ningún plan institucional de archivos."}
   bind:createOpen
+  on:create={resetForm}
 >
   <svelte:fragment slot="toolbar-extra">
     <FormField
