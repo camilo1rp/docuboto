@@ -39,6 +39,7 @@ from lxml import etree
 
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
+from app.core.constants import CADENA_NIVEL_AUTORITATIVO
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
     OtpEmailDeliveryError,
@@ -214,20 +215,41 @@ class CadenaFirmaService:
         409 if a pending chain already exists for the same object.
         Atomically inserts solicitud + turns + audit entry.
 
-        Security-level snapshot (RF-SEG-08, D-15): when objeto_tipo='radicado', the
-        nivel_seguridad is read from radicados.nivel_seguridad (authoritative source)
-        and persisted in firma_solicitud.nivel_seguridad.  For other object types the
-        caller may declare it via payload.nivel_seguridad (defaults to 1=PUBLICA).
-        This one-time snapshot avoids cross-service joins on every subsequent read.
+        Instantánea del nivel de seguridad (RF-SEG-08, D-15): si el `objeto_id`
+        resuelve contra `radicados`/`expedientes`, manda el nivel REAL de esa fila y
+        el `nivel_seguridad` del body se ignora. Solo cuando no resuelve —y el tipo
+        declarado no es de los que exigen un documento registrado— vale el nivel que
+        declara el autor. La instantánea evita un join cross-servicio en cada lectura
+        posterior, y el consumidor de reclasificación la mantiene al día.
+
+        Antes, la decisión de consultar la fuente autoritativa colgaba de
+        `payload.objeto_tipo == "radicado"`: texto libre del body. Con `"Radicado"`
+        —o declarando `"borrador"` sobre el UUID de un radicado CLASIFICADA— el nivel
+        lo elegía el cliente y el gate no-read-up de abajo se evaluaba contra él.
+        Ahora la resolución no mira el tipo, y `objeto_tipo` está además acotado por
+        `CADENA_OBJETO_TIPOS` en el schema.
         """
-        # Resolve nivel snapshot first (authoritative for radicado).
-        if payload.objeto_tipo == "radicado":
-            nivel: int = (
-                await self._repo.resolver_nivel_radicado(payload.objeto_id)
-                or payload.nivel_seguridad
-                or 1
+        # La resolución NO consulta `objeto_tipo`: si el `objeto_id` apunta a un
+        # radicado o a un expediente, manda su nivel real, se haya declarado el tipo
+        # que se haya declarado.
+        resuelto = await self._repo.resolver_nivel_por_objeto(payload.objeto_id)
+        if resuelto is not None:
+            nivel: int = resuelto
+        elif payload.objeto_tipo in CADENA_NIVEL_AUTORITATIVO:
+            # Dice ser un documento registrado y no existe ninguno: mismo 404 neutro
+            # que el no-read-up de abajo, para no distinguir "no existe" de "no lo
+            # alcanzas" (la creación de cadenas no puede ser un oráculo).
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "solicitud_not_found",
+                    "detail": "Signature request not found",
+                    "status": 404,
+                },
             )
         else:
+            # Borrador o documento sin registrar: no hay tabla que consultar, así
+            # que el nivel que declara su autor es la única verdad disponible.
             nivel = payload.nivel_seguridad or 1
 
         # No-read-up on the creation path (RF-SEG-08, D-15 #1): an actor below the

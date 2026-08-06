@@ -188,10 +188,13 @@ class PersonalSigningService:
         6. Persistencia + auditoría (``firma.creada``) atómicas.
         """
         # --- 1. Gate de clearance no-read-up ---
-        if payload.objeto_tipo == "radicado":
-            nivel = await self._cadena_repo.resolver_nivel_radicado(payload.objeto_id) or 1
-        else:
-            nivel = 1
+        # La resolución NO consulta `objeto_tipo` (texto libre del body): mientras lo
+        # hizo, declarar "Radicado" —o cualquier otro tipo— sobre el identificador de
+        # un radicado CLASIFICADA saltaba este gate evaluándolo contra nivel 1. Si el
+        # identificador resuelve contra un radicado o un expediente, manda su nivel
+        # real; si no resuelve, es un objeto sin nivel propio (acta, borrador) y
+        # queda en PUBLICA, igual que antes.
+        nivel = await self._cadena_repo.resolver_nivel_por_objeto(payload.objeto_id) or 1
         clearance = await resolve_caller_clearance(self._conn, actor)
         if nivel > clearance:
             raise HTTPException(

@@ -21,6 +21,8 @@ import uuid
 
 import asyncpg
 
+from app.core.constants import CADENA_NIVEL_AUTORITATIVO
+
 _SOL_COLS = (
     "id, objeto_tipo, objeto_id, titulo, payload_sha256, estado, creado_por, "
     "nivel_seguridad, created_at, updated_at"
@@ -53,23 +55,58 @@ class CadenaRepository:
         assert row is not None
         return row
 
-    async def resolver_nivel_radicado(self, objeto_id: str) -> int | None:
-        """Returns nivel_seguridad for a radicado matched by tracking_number or UUID text.
+    async def resolver_nivel_por_objeto(self, objeto_id: str) -> int | None:
+        """Nivel de seguridad REAL del objeto referenciado, o ``None`` si no resuelve.
 
-        Returns None when no radicado matches (the object_id may be a different type,
-        or the radicados table may be absent in test/isolated environments).
-        The OR condition tolerates callers passing either a tracking number
-        (e.g. '2024-DEMO-E-000001') or the radicado's UUID as text.
+        **No recibe `objeto_tipo` a propósito.** Ese campo lo elige el cliente en el
+        body, y usarlo para decidir *si* se consulta la fuente autoritativa convertía
+        una llave de autorización en algo que el llamante podía apagar: bastaba
+        escribir `"Radicado"`, o declarar `"borrador"` sobre el UUID de un radicado
+        CLASIFICADA, para que el gate no-read-up se evaluara contra un nivel inventado.
+        Aquí se busca el identificador en las tablas dueñas y se devuelve el nivel que
+        se encuentre — el tipo declarado no interviene.
+
+        Devuelve el **máximo** cuando el identificador coincide en más de una tabla
+        (improbable, pero si ocurre el lado seguro es el nivel más alto). ``None``
+        significa "no se pudo establecer" —no existe, o la tabla no está en este
+        schema—, nunca "es público": quien llama decide si eso es un rechazo
+        (`CADENA_NIVEL_AUTORITATIVO`) o un objeto sin nivel propio.
+
+        La comparación doble (identidad natural / UUID) tolera que el llamante pase el
+        número de radicado o el código del expediente en vez del UUID.
         """
+        # Nombres de tabla y columna salen de la constante del módulo, jamás del
+        # request. Una sola consulta en el caso normal (ambas tablas presentes).
+        selects = [
+            f"SELECT nivel_seguridad FROM {table} WHERE "
+            + " OR ".join(f"{col} = $1" for col in id_cols)
+            for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values()
+        ]
         try:
             return await self._conn.fetchval(
-                "SELECT nivel_seguridad FROM radicados "
-                "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+                f"SELECT MAX(nivel_seguridad) FROM ({' UNION ALL '.join(selects)}) AS n",
                 objeto_id,
             )
         except asyncpg.UndefinedTableError:
-            # radicados table absent in this tenant schema (test or isolated env).
-            return None
+            # Alguna tabla fuente falta en este schema (tenant sin document- o
+            # archive-service, o entorno de test aislado): se reintenta tabla a
+            # tabla para no perder las que SÍ están.
+            return await self._resolver_nivel_por_tabla(objeto_id)
+
+    async def _resolver_nivel_por_tabla(self, objeto_id: str) -> int | None:
+        niveles: list[int] = []
+        for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values():
+            where = " OR ".join(f"{col} = $1" for col in id_cols)
+            try:
+                nivel = await self._conn.fetchval(
+                    f"SELECT nivel_seguridad FROM {table} WHERE {where} LIMIT 1",
+                    objeto_id,
+                )
+            except asyncpg.UndefinedTableError:
+                continue
+            if nivel is not None:
+                niveles.append(int(nivel))
+        return max(niveles) if niveles else None
 
     async def get_solicitud(self, solicitud_id: uuid.UUID) -> asyncpg.Record | None:
         return await self._conn.fetchrow(

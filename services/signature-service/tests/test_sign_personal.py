@@ -298,7 +298,7 @@ async def test_sign_personal_clearance_gate_no_read_up(
     status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": "x"})
 
     client, conn = client_with_conn
-    conn.fetchval.side_effect = [True, 3]  # PERM_FIRMA ok, resolver_nivel_radicado -> 3
+    conn.fetchval.side_effect = [True, 3]  # PERM_FIRMA ok, resolver_nivel_por_objeto -> 3
     conn.fetchrow.return_value = None  # resolve_caller_clearance -> PUBLICA (1)
 
     resp = await client.post(
@@ -306,6 +306,38 @@ async def test_sign_personal_clearance_gate_no_read_up(
         json={
             "payload_xml": _PAYLOAD_XML,
             "objeto_tipo": "radicado",
+            "objeto_id": "2024-DEMO-E-000001",
+            "totp_code": "123456",
+        },
+        headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["error"] == "object_not_found"
+    status_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sign_personal_gate_no_depende_del_objeto_tipo_declarado(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El gate no-read-up de `/sign-personal` colgaba de `objeto_tipo == "radicado"`.
+
+    `SignPersonalRequest.objeto_tipo` es texto libre (tiene que serlo: por aquí pasan
+    las actas institucionales), así que declarar cualquier otro valor sobre el
+    identificador de un radicado CLASIFICADA evaluaba el gate contra nivel 1 y lo
+    saltaba. Ahora la resolución no mira el tipo: manda el nivel real del objeto.
+    """
+    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": "x"})
+
+    client, conn = client_with_conn
+    conn.fetchval.side_effect = [True, 3]  # PERM_FIRMA ok, nivel real del objeto = 3
+    conn.fetchrow.return_value = None  # resolve_caller_clearance -> PUBLICA (1)
+
+    resp = await client.post(
+        "/api/v1/signature/sign-personal",
+        json={
+            "payload_xml": _PAYLOAD_XML,
+            "objeto_tipo": "acta_transferencia_personal",  # tipo que NO es "radicado"
             "objeto_id": "2024-DEMO-E-000001",
             "totp_code": "123456",
         },

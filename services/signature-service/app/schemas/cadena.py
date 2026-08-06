@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import settings
+from app.core.constants import CADENA_OBJETO_TIPOS
 
 
 class SolicitudCreate(BaseModel):
@@ -27,6 +28,11 @@ class SolicitudCreate(BaseModel):
     objeto_tipo: str = Field(..., min_length=1, max_length=40)
     objeto_id: str = Field(..., min_length=1)
     titulo: str | None = None
+    # NOTA: `objeto_tipo` se valida contra `CADENA_OBJETO_TIPOS` más abajo. La
+    # comparación es EXACTA y sensible a mayúsculas a propósito: el servicio
+    # decide con ella si consulta la fuente autoritativa del nivel de seguridad,
+    # así que aceptar variantes ("Radicado") equivaldría a dejar que el llamante
+    # elija si le aplican el control.
     # SHA-256 hex digest of the document content (64 lowercase hex chars).
     # When present, each signing turn produces a firma bound to this digest.
     payload_sha256: str | None = None
@@ -36,6 +42,13 @@ class SolicitudCreate(BaseModel):
     # For objeto_tipo='radicado', the level is resolved from radicados.nivel_seguridad
     # and this field is ignored. For other types, defaults to 1 (PUBLICA) when omitted.
     nivel_seguridad: int | None = Field(default=None, ge=1, le=3)
+
+    @field_validator("objeto_tipo")
+    @classmethod
+    def validate_objeto_tipo(cls, v: str) -> str:
+        if v not in CADENA_OBJETO_TIPOS:
+            raise ValueError(f"objeto_tipo debe ser uno de {sorted(CADENA_OBJETO_TIPOS)}")
+        return v
 
     @field_validator("payload_sha256")
     @classmethod

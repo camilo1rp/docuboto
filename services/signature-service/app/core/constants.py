@@ -56,3 +56,34 @@ SYSTEM_RECONCILER_ID = uuid.UUID("00000000-0000-0000-0000-000000005ec1")
 # sellar un tipo de objeto fuera de este conjunto, aunque el body JSON lo
 # declare.
 XADES_ELIGIBLE_OBJETO_TIPOS = frozenset({"indice", "acta_transferencia"})
+
+# Allow-set de `objeto_tipo` de una CADENA de firma personal (`POST
+# /api/v1/signature/requests`, `SolicitudCreate`). Cerrarlo no es cosmética de
+# validación: el nivel de seguridad de la cadena se resolvía comparando este
+# campo —texto libre del body— contra el literal `"radicado"`, de modo que
+# `"Radicado"` bastaba para saltarse la fuente autoritativa y DECLARAR el nivel
+# desde el cliente (RF-SEG-08). Una llave de autorización que el llamante puede
+# elegir no es un control; con el conjunto cerrado, la variante de mayúsculas ni
+# siquiera se puede crear (422).
+#
+# El único cliente es la UI de firmas (`frontend/.../firmas`): ningún servicio
+# interno crea cadenas — el sello institucional del índice y del acta va por
+# `/sign-xml` e `/internal/sign-indice`, con su propio allow-set arriba.
+CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador", "documento"})
+
+# Tipos de cadena cuyo nivel de seguridad tiene FUENTE AUTORITATIVA en el schema
+# del tenant: `objeto_tipo -> (tabla, columnas de identidad)`. Para estos, el
+# `nivel_seguridad` del body se IGNORA y, si el objeto no resuelve, la creación
+# se rechaza (fail-closed) en vez de caer al valor declarado.
+#
+# `borrador`/`documento` no están aquí a propósito: no son documentos oficiales
+# registrados, no hay tabla que consultar, y el nivel que declara su autor ES la
+# única verdad disponible.
+#
+# Las columnas de identidad son dobles porque el llamante puede pasar el número
+# de radicado / el código del expediente o el UUID (mismo motivo que en la
+# consulta de auditoría de auth-service).
+CADENA_NIVEL_AUTORITATIVO: dict[str, tuple[str, tuple[str, ...]]] = {
+    "radicado": ("radicados", ("tracking_number", "id::text")),
+    "expediente": ("expedientes", ("code", "id::text")),
+}

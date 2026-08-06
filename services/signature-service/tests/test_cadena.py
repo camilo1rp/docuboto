@@ -142,9 +142,11 @@ async def test_create_request_happy_path() -> None:
     sol = _sol_row()
     turno = _turno_row()
 
-    # fetchval order: [check_permission(True), resolver_nivel_radicado(None→nivel=1),
+    # fetchval order: [check_permission(True), resolver_nivel_por_objeto(1=PUBLICA),
     #                  existe_abierta(None=False), audit.append→prev_hash(None)]
-    conn.fetchval.side_effect = [True, None, None, None]
+    # El nivel lo devuelve la tabla `radicados`, NO el body: si no resolviera, la
+    # creación sería 404 (fail-closed), no una cadena de nivel 1 por defecto.
+    conn.fetchval.side_effect = [True, 1, None, None]
     conn.fetchrow.side_effect = [
         {},    # resolve_caller_clearance → PUBLICA=1 (>= nivel 1), creation gate passes
         sol,   # crear_solicitud RETURNING
@@ -180,7 +182,7 @@ async def test_create_request_nivel3_clearance1_returns_404() -> None:
     """No-read-up on creation (D-15 #1): clearance-1 actor creating a chain on a
     nivel-3 radicado gets a neutral 404 (no existence/level leak), before existe_abierta."""
     conn = _make_conn()
-    # fetchval: [check_permission(True), resolver_nivel_radicado(3)]
+    # fetchval: [check_permission(True), resolver_nivel_por_objeto(3)]
     conn.fetchval.side_effect = [True, 3]
     conn.fetchrow.side_effect = [{}]  # resolve_caller_clearance → PUBLICA=1 < nivel 3
 
@@ -205,8 +207,8 @@ async def test_create_request_nivel3_clearance1_returns_404() -> None:
 @pytest.mark.asyncio
 async def test_create_request_conflict_when_open_chain_exists() -> None:
     conn = _make_conn()
-    # fetchval: [check_permission(True), resolver_nivel(None→1), existe_abierta(1=True)]
-    conn.fetchval.side_effect = [True, None, 1]
+    # fetchval: [check_permission(True), resolver_nivel_por_objeto(1=PUBLICA), existe_abierta(1=True)]
+    conn.fetchval.side_effect = [True, 1, 1]
     conn.fetchrow.side_effect = [{}]  # resolve_caller_clearance → PUBLICA=1 (gate passes)
 
     _override(conn)
@@ -483,8 +485,8 @@ async def test_create_request_multi_firmantes_ordered() -> None:
     turno1 = _turno_row(orden=1, firmante_id=USER)
     turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
 
-    # fetchval order: [check_permission, resolver_nivel(None→1), existe_abierta(None), audit_prev(None)]
-    conn.fetchval.side_effect = [True, None, None, None]
+    # fetchval order: [check_permission, resolver_nivel_por_objeto(1), existe_abierta(None), audit_prev(None)]
+    conn.fetchval.side_effect = [True, 1, None, None]
     conn.fetchrow.side_effect = [
         {},   # resolve_caller_clearance → PUBLICA=1 (gate passes)
         sol,  # crear_solicitud RETURNING
@@ -1218,5 +1220,137 @@ async def test_reject_nivel3_clearance1_returns_404() -> None:
         assert resp.json()["detail"]["error"] == "solicitud_not_found"
         # es_firmante fetchval must NOT have been reached.
         assert conn.fetchval.call_count == 1
+    finally:
+        _clear()
+
+
+# ===========================================================================
+# `objeto_tipo` no puede apagar el control de nivel de seguridad (RF-SEG-08)
+#
+# El nivel de la cadena se resolvía comparando `payload.objeto_tipo` —texto libre
+# del body— contra el literal "radicado". Quien creaba la cadena elegía así si le
+# aplicaban la fuente autoritativa. Tres puertas, un mismo defecto:
+#   1. variante de mayúsculas ("Radicado")
+#   2. tipo distinto sobre el identificador de un radicado ("borrador")
+#   3. identificador que no resuelve → se caía al nivel declarado en el body
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_objeto_tipo_fuera_del_allow_set_es_422() -> None:
+    """"Radicado" ya no llega al servicio: el schema lo rechaza (422).
+
+    Es la primera de las tres puertas y la más barata de cerrar — con el conjunto
+    cerrado, la variante de mayúsculas ni siquiera se puede crear.
+    """
+    conn = _make_conn()
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "Radicado",
+                    "objeto_id": "2024-DEMO-S-CLASIF",
+                    "nivel_seguridad": 1,
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 422
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_tipo_declarado_no_evita_la_resolucion_del_nivel_real() -> None:
+    """Declarar "borrador" sobre el identificador de un radicado CLASIFICADA no
+    rebaja nada: la resolución no consulta `objeto_tipo`, así que el nivel real (3)
+    manda sobre el `nivel_seguridad: 1` del body y el gate no-read-up dispara."""
+    conn = _make_conn()
+    # fetchval: [check_permission, resolver_nivel_por_objeto(3 — pese al tipo declarado)]
+    conn.fetchval.side_effect = [True, 3]
+    conn.fetchrow.side_effect = [{}]  # resolve_caller_clearance → PUBLICA=1 < 3
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "borrador",
+                    "objeto_id": "2024-DEMO-S-CLASIF",
+                    "nivel_seguridad": 1,  # declaración del cliente: se ignora
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_radicado_que_no_resuelve_es_404_no_nivel_declarado() -> None:
+    """Un `objeto_tipo` que exige documento registrado y no resuelve se rechaza.
+
+    Antes se caía al `nivel_seguridad` del body, con lo que bastaba un `objeto_id`
+    que no resolviera para volver a declarar el nivel desde el cliente. El 404 es el
+    mismo neutro del no-read-up: no distingue "no existe" de "no lo alcanzas".
+    """
+    conn = _make_conn()
+    conn.fetchval.side_effect = [True, None]  # resolver_nivel_por_objeto → None
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "radicado",
+                    "objeto_id": "no-existe",
+                    "nivel_seguridad": 1,
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado() -> None:
+    """Contrapeso del test anterior: un borrador NO es un documento registrado, no
+    hay tabla que consultar, y el nivel que declara su autor sigue siendo válido.
+
+    Sin este test, endurecer de más pasaría inadvertido — el otro defecto posible.
+    """
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=2)
+    conn.fetchval.side_effect = [True, None, None, None]
+    conn.fetchrow.side_effect = [
+        {"is_root": False, "max_level": 2},  # clearance 2 ≥ nivel declarado 2
+        sol,
+    ]
+    conn.fetch.return_value = []
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/signature/requests",
+                json={
+                    "objeto_tipo": "borrador",
+                    "objeto_id": "borrador-local-42",
+                    "nivel_seguridad": 2,
+                    "firmantes": [str(USER)],
+                },
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 201
+        assert resp.json()["nivel_seguridad"] == 2
     finally:
         _clear()
