@@ -41,10 +41,14 @@ for svc in "${SERVICES[@]}"; do
     echo "  Linting: $svc"
     echo "══════════════════════════════════════════"
 
-    # Monta el código fuente como rw (ruff/mypy necesitan escribir cachés temporales)
-    # pyproject.toml se monta read-only desde la raíz del proyecto
+    # El código fuente se monta READ-ONLY. El contenedor corre como root y un
+    # bind-mount no traduce UIDs, así que todo lo que escribiera aquí aparecería
+    # en el host como root:root — así se colaron 14 archivos de frontend/src y
+    # las cachés de la raíz. Ninguna de las dos herramientas necesita escribir
+    # en el árbol: ruff con --no-cache y mypy con --cache-dir dentro del
+    # contenedor. El :ro lo hace imposible, no solo improbable.
     if docker run --rm \
-        -v "$SVC_DIR:/app" \
+        -v "$SVC_DIR:/app:ro" \
         -v "$PROJECT_ROOT/pyproject.toml:/project/pyproject.toml:ro" \
         -w /app \
         python:3.11-slim \
@@ -53,7 +57,8 @@ for svc in "${SERVICES[@]}"; do
             echo '--- ruff check ---'
             ruff check . --config /project/pyproject.toml --no-cache
             echo '--- mypy ---'
-            mypy app/ --config-file /project/pyproject.toml --ignore-missing-imports --no-error-summary
+            mypy app/ --config-file /project/pyproject.toml --ignore-missing-imports \
+                --no-error-summary --cache-dir=/tmp/mypy-cache
         "; then
         echo "  ✓ $svc OK"
     else

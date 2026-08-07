@@ -60,9 +60,8 @@ docker compose exec document-service pytest tests/ -v
 All tests run in Docker to match the production environment:
 
 ```bash
-cd services/<service-name>
-docker run --rm -v "$PWD:/app" -w /app python:3.11-slim \
-  bash -c "pip install -q -r requirements.txt && pytest tests/ -v"
+docker compose build <service-name>
+docker compose run --rm --no-deps <service-name> pytest -q
 ```
 
 Or use the unified script:
@@ -70,6 +69,15 @@ Or use the unified script:
 ```bash
 ./scripts/lint.sh <service-name>  # Linting only
 ```
+
+> **Never bind-mount the repository read-write into a container.** Docker runs
+> as UID 0 and a bind-mount does not translate UIDs, so anything the container
+> writes — `__pycache__`, `.pytest_cache`, `.mypy_cache`, generated files —
+> lands on your host owned by `root:root` and can no longer be edited or
+> formatted without `sudo`. The commands above avoid it: the service image
+> already contains the source, and `docker-compose.yml` only mounts config
+> read-only. If you must mount the repo for a one-off, either mount it `:ro` or
+> pass `--user "$(id -u):$(id -g)"`.
 
 ### Test structure
 
