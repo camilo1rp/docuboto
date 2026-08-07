@@ -115,6 +115,14 @@ async def ingest_radicado_created(
     nivel, que sí puede reembeber material tras una desclasificación).
     """
     tracking_number = payload.get("tracking_number")
+    if not isinstance(tracking_number, str) or not tracking_number:
+        # Fail-closed: `payload.get` devuelve `None` si el evento llega sin
+        # numero de radicado, y ese `None` viajaba hasta el repositorio como
+        # `source_ref`. Sin identificador no hay fragmento al que aplicar esto
+        # —ni para embeber, ni para reclasificar, ni para anular— asi que se
+        # descarta el evento con traza en vez de tocar la tabla a ciegas.
+        logger.warning("document.radicado.created sin tracking_number en el payload — evento descartado")
+        return
     nivel = payload.get("nivel_seguridad")
     if nivel is None:
         logger.warning(
@@ -249,6 +257,14 @@ async def apply_reclassification(
     worker, que ya lo lee del sobre — igual que `ingest_radicado_created`).
     """
     tracking_number = payload.get("tracking_number")
+    if not isinstance(tracking_number, str) or not tracking_number:
+        # Fail-closed: `payload.get` devuelve `None` si el evento llega sin
+        # numero de radicado, y ese `None` viajaba hasta el repositorio como
+        # `source_ref`. Sin identificador no hay fragmento al que aplicar esto
+        # —ni para embeber, ni para reclasificar, ni para anular— asi que se
+        # descarta el evento con traza en vez de tocar la tabla a ciegas.
+        logger.warning("document.radicado.reclassified sin tracking_number en el payload — evento descartado")
+        return
     nuevo = payload.get("nivel_nuevo")
     if nuevo is None:
         logger.warning(
@@ -306,5 +322,13 @@ async def void_radicado(conn: asyncpg.Connection, *, tenant_slug: str, payload: 
     leer aquí; el fail-safe al nivel máximo vive en `void_by_source`.
     """
     tracking_number = payload.get("tracking_number")
+    if not isinstance(tracking_number, str) or not tracking_number:
+        # Fail-closed: `payload.get` devuelve `None` si el evento llega sin
+        # numero de radicado, y ese `None` viajaba hasta el repositorio como
+        # `source_ref`. Sin identificador no hay fragmento al que aplicar esto
+        # —ni para embeber, ni para reclasificar, ni para anular— asi que se
+        # descarta el evento con traza en vez de tocar la tabla a ciegas.
+        logger.warning("document.radicado.annulled sin tracking_number en el payload — evento descartado")
+        return
     repo = KnowledgeRepository(conn)
     await repo.void_by_source(_SOURCE_TYPE, tracking_number)

@@ -32,8 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from contextlib import asynccontextmanager
-from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -182,7 +180,7 @@ async def test_proteger_worm_indice_failure_after_audit_append_reverts_mark(
     original_append = audit.append
 
     async def _append_then_boom(*args: object, **kwargs: object) -> str:
-        row_hash = await original_append(*args, **kwargs)  # type: ignore[arg-type]
+        await original_append(*args, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("boom-post-audit (worm, b2 fault injection)")
 
     monkeypatch.setattr(audit, "append", _append_then_boom)

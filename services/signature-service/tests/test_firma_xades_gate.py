@@ -29,7 +29,6 @@ Cubre:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -41,15 +40,15 @@ from app.core.config import Settings, settings
 from app.core.http_clients import SigningKeyStatusUnavailableError
 from app.main import app
 from tests.conftest import TENANT_HEADERS, USER
-from tests.test_cadena import FIRMA_ID, SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
+from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.test_cadena_2fa import _patch_audit
 from tests.test_cadena_personal_signing import (
     _FIRMA_PERSONAL_ROW_TEMPLATE,
     _clear,
     _issue_user_cert,
     _override,
-    _patch_signing_key_status,
     _patch_sign_digest_remote,
+    _patch_signing_key_status,
 )
 
 # Actor with sufficient clearance for CLASIFICADA (nivel_seguridad up to 3).

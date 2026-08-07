@@ -40,7 +40,11 @@ from orpycamcp_common import audit
 from app.core.actor import Actor
 from app.core.database import tenant_schema
 from app.schemas.fisico import UbicacionCreate
-from app.schemas.transferencia import TransferenciaCreate, TransferenciaRechazo, TransferenciaResponse
+from app.schemas.transferencia import (
+    TransferenciaCreate,
+    TransferenciaRechazo,
+    TransferenciaResponse,
+)
 from app.services.fisico_service import FisicoService
 from app.services.transferencia_service import TransferenciaService
 

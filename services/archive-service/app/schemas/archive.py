@@ -39,7 +39,7 @@ class ExpedienteCreate(BaseModel):
     fecha_extrema_final: date | None = None
 
     @model_validator(mode="after")
-    def _validate_fondo_acumulado(self) -> "ExpedienteCreate":
+    def _validate_fondo_acumulado(self) -> ExpedienteCreate:
         if self.origen == "fondo_acumulado":
             if self.fecha_extrema_final is None:
                 raise ValueError(
@@ -109,7 +109,7 @@ class RadicadoLink(BaseModel):
     dependencia_productora_nombre: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
-    def _productora_codigo_y_nombre_van_juntos(self) -> "RadicadoLink":
+    def _productora_codigo_y_nombre_van_juntos(self) -> RadicadoLink:
         has_codigo = self.dependencia_productora_codigo is not None
         has_nombre = self.dependencia_productora_nombre is not None
         if has_codigo != has_nombre:
@@ -340,7 +340,7 @@ class TrdSerieRegistrarRusd(BaseModel):
     fecha_publicacion: date | None = None
 
     @model_validator(mode="after")
-    def _al_menos_un_campo(self) -> "TrdSerieRegistrarRusd":
+    def _al_menos_un_campo(self) -> TrdSerieRegistrarRusd:
         if self.rusd_radicado is None and self.fecha_publicacion is None:
             raise ValueError("registrar-rusd exige al menos rusd_radicado o fecha_publicacion")
         return self
@@ -395,7 +395,7 @@ class TvdAgrupacionCreate(BaseModel):
         return _validate_pdfa_profile(value)
 
     @model_validator(mode="after")
-    def _fechas_extremas_coherentes(self) -> "TvdAgrupacionCreate":
+    def _fechas_extremas_coherentes(self) -> TvdAgrupacionCreate:
         if self.fecha_extrema_final < self.fecha_extrema_inicial:
             raise ValueError(
                 "fecha_extrema_final debe ser >= fecha_extrema_inicial "

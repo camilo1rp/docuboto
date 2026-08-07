@@ -129,6 +129,22 @@ class WormProtectionOutcome:
     disabled: bool = False
     transient: bool = False
 
+    @property
+    def protected_object_id(self) -> uuid.UUID:
+        """El identificador del objeto WORM confirmado por storage-service.
+
+        El invariante que ya declara el docstring de la clase —``ok=True``
+        implica ``worm_object_id`` poblado— vive en la prosa y no en el tipo,
+        así que los dos llamantes (``IndexService.proteger_worm_indice`` y
+        ``TransferenciaService.proteger_worm_acta``) lo daban por supuesto
+        tras comprobar ``ok``. Este accesor lo declara una vez y falla
+        ruidosamente en vez de marcar la fila como protegida con ``NULL``,
+        que dejaría el espejo de protección WORM mintiendo.
+        """
+        if self.worm_object_id is None:
+            raise ValueError("WormProtectionOutcome(ok=True) sin worm_object_id")
+        return self.worm_object_id
+
 
 def _worm_outcome_from_response(resp: httpx.Response, *, contexto: str) -> WormProtectionOutcome:
     """Traduce una respuesta HTTP de storage-service a un

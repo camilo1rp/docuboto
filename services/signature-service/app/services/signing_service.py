@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -251,7 +251,7 @@ async def sign_payload(
                 },
             ) from exc
 
-    sello_tiempo_dt = datetime.now(timezone.utc)
+    sello_tiempo_dt = datetime.now(UTC)
 
     # Ata /verify a ESTA firma_id (migración 010): la huella del XML YA
     # FIRMADO (no la de payload_sha256, que es pre-firma — ver la nota de

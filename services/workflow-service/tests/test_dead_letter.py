@@ -36,7 +36,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from orpycamcp_common import events
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

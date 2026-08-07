@@ -97,7 +97,7 @@ async def test_reconciliar_indice_failure_after_audit_append_reverts_mark_signed
     original_append = audit.append
 
     async def _append_then_boom(*args: object, **kwargs: object) -> str:
-        row_hash = await original_append(*args, **kwargs)  # type: ignore[arg-type]
+        await original_append(*args, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("boom-post-audit (reconciliacion, b2 fault injection)")
 
     monkeypatch.setattr(audit, "append", _append_then_boom)
@@ -416,7 +416,7 @@ async def test_reconciliar_indice_agotado_failure_after_audit_append_reverts_bum
     original_append = audit.append
 
     async def _append_then_boom(*args: object, **kwargs: object) -> str:
-        row_hash = await original_append(*args, **kwargs)  # type: ignore[arg-type]
+        await original_append(*args, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("boom-post-audit (agotado, b2 fault injection)")
 
     monkeypatch.setattr(audit, "append", _append_then_boom)

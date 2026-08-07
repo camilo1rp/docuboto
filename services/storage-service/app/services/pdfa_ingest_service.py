@@ -61,7 +61,12 @@ from app.core.config import settings
 from app.core.minio_client import get_minio
 from app.repositories.file_repository import FileRepository, InvalidTenantSlugError
 from app.repositories.preservacion_repository import PreservacionRepository
-from app.services.pdfa import PDFA_RESULTADO_MAP, PdfaResult, get_pdfa_validator, run_pdfa_validation
+from app.services.pdfa import (
+    PDFA_RESULTADO_MAP,
+    PdfaResult,
+    get_pdfa_validator,
+    run_pdfa_validation,
+)
 
 logger = logging.getLogger(__name__)
 

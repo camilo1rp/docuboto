@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
+from typing import Any
 
 import asyncpg
 from cryptography import x509
@@ -322,7 +324,16 @@ class SigningKeyService:
                 },
             ) from None
 
-        if cert.public_key().public_numbers() != csr.public_key().public_numbers():
+        # Se compara el SubjectPublicKeyInfo en DER, no `public_numbers()`:
+        # ese método solo existe en RSA/EC/DSA, así que un CSR con clave
+        # Ed25519 o Ed448 reventaba aquí con un AttributeError en vez de
+        # comprobarse. `public_bytes` existe en TODOS los tipos de clave
+        # pública y compara exactamente la misma identidad de clave.
+        _DER = serialization.Encoding.DER
+        _SPKI = serialization.PublicFormat.SubjectPublicKeyInfo
+        if cert.public_key().public_bytes(_DER, _SPKI) != csr.public_key().public_bytes(
+            _DER, _SPKI
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
@@ -417,7 +428,7 @@ class SigningKeyService:
         tenant_slug: str,
         digest: bytes,
         totp_code: str,
-    ) -> tuple[bytes, str, str, str | None, object, str | None, str | None]:
+    ) -> tuple[bytes, str, str, str | None, datetime | None, str | None, str | None]:
         """Verifica-y-consume ``totp_code`` (TOTP, RFC 6238) y, si válido,
         descifra la clave privada EN MEMORIA y firma ``digest`` (ya
         calculado por el llamante — ``Prehashed``), TODO dentro de UNA
@@ -451,7 +462,7 @@ class SigningKeyService:
         que no tiene sentido consumir un código TOTP en ese caso.
         """
         sign_fail: HTTPException | None = None
-        result: tuple[bytes, str, str, str | None, object, str | None, str | None] | None = None
+        result: tuple[bytes, str, str, str | None, datetime | None, str | None, str | None] | None = None
 
         async with self._conn.transaction():
             row = await self._repo.get_by_user_for_update(user_id)
@@ -688,7 +699,7 @@ class SigningKeyService:
         return SigningKeyRevocationStatusResponse(status="desconocido")
 
 
-def _map_totp_failure(totp_result) -> HTTPException:  # type: ignore[no-untyped-def]
+def _map_totp_failure(totp_result: Any) -> HTTPException:
     """Traduce ``InternalTotpVerifyResponse`` (fallo) a HTTPException — mismo
     mapeo que ``CadenaFirmaService._gate_2fa_totp`` en signature-service, para
     que el error observado por signature-service (que reenvía este cuerpo)

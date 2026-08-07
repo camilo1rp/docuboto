@@ -67,8 +67,22 @@ docker compose run --rm --no-deps <service-name> pytest -q
 Or use the unified script:
 
 ```bash
-./scripts/lint.sh <service-name>  # Linting only
+./scripts/lint.sh                 # ruff + mypy on ALL services
+./scripts/lint.sh <service-name>  # a single service
 ```
+
+> **Always fix lint findings through `scripts/lint.sh`, never with a repo-wide
+> `ruff check services/`.** The gate runs ruff from *inside each service
+> directory*, and ruff resolves first-party imports relative to that directory —
+> so the two invocations disagree. A repo-root run can report "All checks
+> passed!" on files the gate still rejects.
+>
+> The service list is **derived from `services/*/`** (any directory with `app/`
+> and `requirements.txt`), not hand-written: a new service is linted from the
+> day it exists. The container also installs `shared/` so that
+> `orpycamcp_common` — the immutable audit library — is type-checked for real
+> instead of collapsing to `Any`. That install runs under `set -e` on purpose:
+> if it fails, the gate stops rather than passing with reduced coverage.
 
 > **Never bind-mount the repository read-write into a container.** Docker runs
 > as UID 0 and a bind-mount does not translate UIDs, so anything the container

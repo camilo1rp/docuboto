@@ -39,6 +39,7 @@ import asyncpg
 import pytest
 
 from app.clients.storage_client import WormRenewalOutcome
+from app.core.actor import Actor
 from app.core.database import tenant_schema
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.repositories.aip_repository import AipRepository
@@ -46,7 +47,6 @@ from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.schemas.archive import ExpedienteCreate, TrdSerieCreate
 from app.schemas.transferencia import TransferenciaCreate
-from app.core.actor import Actor
 from app.services.aip_wiring_service import AipWiringService
 from app.services.archive_service import ArchiveService
 from app.services.index_service import IndexService

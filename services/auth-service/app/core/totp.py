@@ -120,6 +120,22 @@ class TotpAttempt:
     outcome: str
     timestep: int | None
 
+    @property
+    def consumed_timestep(self) -> int:
+        """El timestep a consumir (anti-replay) tras un intento no-``invalid``.
+
+        ``timestep`` es ``None`` ÚNICAMENTE cuando ``outcome == "invalid"``:
+        ningún timestep de la ventana produce ese código, así que no hay nada
+        que consumir. Los llamantes solo avanzan el contador después de
+        comprobar ``outcome``, pero esa relación entre los dos campos no es
+        visible para el verificador de tipos y se repetía implícita en cuatro
+        sitios. Este accesor la declara una vez y falla ruidosamente —en vez de
+        avanzar el contador a ``None``— si alguien la rompe.
+        """
+        if self.timestep is None:
+            raise ValueError(f"TotpAttempt(outcome={self.outcome!r}) no tiene timestep")
+        return self.timestep
+
 
 def classify_totp_attempt(
     secret: bytes,

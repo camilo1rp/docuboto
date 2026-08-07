@@ -36,9 +36,9 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import redis.exceptions as redis_exc
-
 from orpycamcp_common import events
 
 from app.core.config import settings
@@ -267,7 +267,12 @@ async def run() -> None:
     for stream in _HANDLERS:
         await events.ensure_group(redis, stream, GROUP)
 
-    read_spec = {stream: ">" for stream in _HANDLERS}
+    # Anotado con el tipo ANCHO que declara redis-py: `dict` es invariante,
+    # asi que un `dict[str, str]` inferido no encaja en el parametro aunque
+    # `str` sea uno de los tipos admitidos.
+    read_spec: dict[bytes | str | memoryview, int | bytes | str | memoryview] = {
+        stream: ">" for stream in _HANDLERS
+    }
 
     # Track cadence for both the PEL reclaim sweep and the retention job.
     # A single time.monotonic() call initialises both: _last_reclaim = _last_retention = t0.
@@ -278,12 +283,17 @@ async def run() -> None:
     # is negligible compared to the 7-day TTL.
     _last_reclaim = _last_retention = time.monotonic()
 
+    # `Any` en el origen: redis-py declara la respuesta de `xreadgroup` como
+    # `ResponseT`, que en la practica es dinamica (su forma depende del modo
+    # decode del cliente). Declararlo UNA vez aqui evita ir acumulando
+    # supresiones sueltas en el desempaquetado del bucle de abajo.
+    messages: Any
     while True:
         try:
             messages = await redis.xreadgroup(GROUP, CONSUMER, read_spec, count=10, block=5000)
         except asyncio.CancelledError:
             raise
-        except (redis_exc.TimeoutError, asyncio.TimeoutError):
+        except (TimeoutError, redis_exc.TimeoutError):
             # Normal: block= expired with no new entries — not an error; resume immediately.
             messages = []
         except Exception:
@@ -291,10 +301,10 @@ async def run() -> None:
             await asyncio.sleep(5)
             messages = []
 
-        for stream, entries in messages or []:  # type: ignore[misc]
+        for stream, entries in messages or []:
             stream_name = _name(stream)
             handler = _HANDLERS.get(stream_name)
-            for msg_id, data in entries:  # type: ignore[union-attr]
+            for msg_id, data in entries:
                 try:
                     if handler is not None:
                         await handler(data)

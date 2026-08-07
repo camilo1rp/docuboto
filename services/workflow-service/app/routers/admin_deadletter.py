@@ -27,8 +27,6 @@ import json
 import logging
 import uuid
 
-logger = logging.getLogger(__name__)
-
 import asyncpg
 from fastapi import (
     APIRouter,
@@ -70,6 +68,8 @@ except ImportError:  # pragma: no cover
     _audit = None  # type: ignore[assignment]
     _AUDIT_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
 _SERVICE = "workflow-service"
 
 router = APIRouter(
@@ -94,6 +94,10 @@ def _as_dict(value: object) -> dict:
     if isinstance(value, dict):
         return value
     if value is None:
+        return {}
+    if not isinstance(value, (str, bytes, bytearray)):
+        # Ni dict, ni None, ni texto: `json.loads` lanzaría un TypeError opaco.
+        # Se devuelve vacío, que es lo que esta función ya promete tolerar.
         return {}
     return json.loads(value)
 

@@ -17,7 +17,6 @@ se sobreescribe: la identidad es inmutable)."""
 
 import json
 import uuid
-from datetime import datetime
 from typing import Any
 
 import asyncpg

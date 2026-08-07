@@ -9,7 +9,7 @@
 
 """Tests de orpycamcp_common.events (sobre canónico; sin Redis real)."""
 
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 from orpycamcp_common import events

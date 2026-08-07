@@ -29,11 +29,11 @@ from app.core.postal_webhook_auth import verify_signature
 from app.main import app
 from tests.conftest import (
     TENANT_HEADERS,
+    FakeTenantClient,  # type: ignore[attr-defined]
     _make_fake_redis,
     _make_mock_conn,
     _override_conn,
 )
-from tests.conftest import FakeTenantClient  # type: ignore[attr-defined]
 
 NOW = datetime.now(tz=UTC)
 SECRET = "operator-shared-secret"

@@ -34,7 +34,6 @@ import pytest
 from app.clients.storage_client import AipPackagingOutcome
 from app.models.archive import Expediente, TrdSerie
 from app.services.aip_wiring_service import AipWiringService
-
 from tests.test_aip_wiring_service import (
     NOW,
     _expediente,

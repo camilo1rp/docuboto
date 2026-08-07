@@ -318,7 +318,6 @@ async def test_list_expedientes_revision_pendiente_paginated_and_tenant_scoped(
     porque `ArchiveRepository` fija `search_path` al schema de ESTE tenant."""
     slug, conn = tenant_ctx
     archive = ArchiveService(conn, slug)
-    schema = tenant_schema(slug)
     code = f"PEND{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(

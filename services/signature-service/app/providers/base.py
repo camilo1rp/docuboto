@@ -24,11 +24,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Protocol
 
 
-class SignatureFormat(str, Enum):
+class SignatureFormat(StrEnum):
     """Nivel XAdES del formato de firma producido.
 
     :attr:`XADES_B` (Incremento 1, firma "baseline"), :attr:`XADES_T`

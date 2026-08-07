@@ -46,8 +46,8 @@ import pytest
 from app.clients.storage_client import AipPackagingOutcome
 from app.core.database import tenant_schema
 from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, TrdSerieUpdate
-from app.services.archive_service import ArchiveService
 from app.services.aip_wiring_service import AipWiringService
+from app.services.archive_service import ArchiveService
 
 from .conftest import DSN, convalidate_for_test
 

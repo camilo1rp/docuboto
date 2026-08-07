@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, date, datetime
+from typing import Any
 
 import asyncpg
 
@@ -270,7 +271,7 @@ class ArchiveRepository:
         name: str | None,
         description: str | None,
         trd_serie_id: uuid.UUID | None,
-    ) -> tuple[Expediente, dict[str, object]] | None:
+    ) -> tuple[Expediente, dict[str, Any]] | None:
         """Actualiza metadatos (name/description/trd_serie_id) — NUNCA `status`/
         `closed_at`: esas columnas las escribe EXCLUSIVAMENTE
         `transition_expediente` (con `expected_status`, H3). Este método era
@@ -1620,6 +1621,10 @@ def _json_obj(raw: object) -> dict:
         return {}
     if isinstance(raw, dict):
         return raw
+    if not isinstance(raw, (str, bytes, bytearray)):
+        # Ni dict, ni None, ni texto: `json.loads` lanzaria un TypeError
+        # opaco. Se devuelve vacio, que es lo que esta funcion ya tolera.
+        return {}
     return json.loads(raw)
 
 

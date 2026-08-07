@@ -14,3 +14,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["orpycamcp_common"]
+
+# PEP 561: sin este marcador, mypy trata el paquete como NO tipado aunque esté
+# instalado, y con `--ignore-missing-imports` lo colapsa entero a `Any`. Es decir:
+# `audit.append(...)` —el asiento inmutable del que depende la trazabilidad legal—
+# se verificaba en los once servicios contra una firma inexistente. Instalar la
+# librería en el linter no basta; hace falta declararla tipada.
+[tool.setuptools.package-data]
+orpycamcp_common = ["py.typed"]

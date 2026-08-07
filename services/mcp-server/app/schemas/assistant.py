@@ -18,7 +18,7 @@ HTML): el saneamiento/renderizado vive en el proxy del frontend, no aquí.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,7 +39,7 @@ class AssistantTurn(BaseModel):
     role: str = "assistant"
     texto: str
     formato: str = "markdown"  # el backend NUNCA envía HTML (RF-FIR/E18 §5)
-    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    ts: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class AssistantMessageResponse(BaseModel):

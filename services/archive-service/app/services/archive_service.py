@@ -21,6 +21,7 @@ from orpycamcp_common import audit
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.disposition import CT_DISPOSITION_CODES
+from app.core.http_errors import motivo_de
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.audit_read import AuditReadRepository
@@ -972,7 +973,10 @@ class ArchiveService:
                         "after": updated.description,
                     }
                 if payload.trd_serie_id is not None and payload.trd_serie_id != old["trd_serie_id"]:
-                    old_serie_id = old["trd_serie_id"]
+                    # Anotado: la fila viene sin tipar y `trd_serie_id`
+                    # sale como `object`, que ni siquiera tras comprobar
+                    # `None` sirve como UUID para `compute_retention`.
+                    old_serie_id: uuid.UUID | None = old["trd_serie_id"]
                     changed["trd_serie_id"] = {
                         "before": str(old_serie_id) if old_serie_id else None,
                         "after": str(updated.trd_serie_id),
@@ -1067,9 +1071,7 @@ class ArchiveService:
                     actor=actor,
                     payload={
                         "status_actual": existing.status,
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
@@ -1408,9 +1410,7 @@ class ArchiveService:
                         # revirtió, el expediente sigue en `exp.status` (el que se
                         # observó al empezar el intento) — no es una suposición.
                         "status_actual": exp.status,
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
@@ -1577,9 +1577,7 @@ class ArchiveService:
                     actor=actor,
                     payload={
                         "status_actual": exp.status,
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
@@ -2788,7 +2786,12 @@ class ArchiveService:
                         "expediente_metadata_templates_omitidos": n_templates_omitidos,
                     },
                 )
-                if derogada is not None:
+                # `vigente_previa is not None` es REDUNDANTE con
+                # `derogada is not None` (solo se deroga si había una vigente),
+                # pero la correlación entre las dos variables no es visible
+                # aquí y `vigente_previa.estado` va dentro. Explícito y con el
+                # mismo comportamiento.
+                if derogada is not None and vigente_previa is not None:
                     await audit.append(
                         self._conn,
                         tenant_slug=self._tenant_slug,
@@ -3240,6 +3243,49 @@ class ArchiveService:
                 },
             )
         vigente = base
+        # Los cuatro campos propios de la TVD (fondo, fechas extremas y
+        # justificación) son NOT NULL por `trd_series_tvd_forma_check`
+        # (migración 039), así que una versión vigente los tiene siempre. Pero
+        # el modelo los declara opcionales —correctamente: una TRD los lleva a
+        # NULL como negación declarada— y aquí se fusionan con el payload. Sin
+        # esta comprobación, el caso imposible llegaba a la base y salía como
+        # una violación de restricción opaca (500) en vez de un error legible.
+        fondo_nombre = (
+            payload.fondo_nombre if payload.fondo_nombre is not None else vigente.fondo_nombre
+        )
+        fecha_extrema_inicial = (
+            payload.fecha_extrema_inicial
+            if payload.fecha_extrema_inicial is not None
+            else vigente.fecha_extrema_inicial
+        )
+        fecha_extrema_final = (
+            payload.fecha_extrema_final
+            if payload.fecha_extrema_final is not None
+            else vigente.fecha_extrema_final
+        )
+        justificacion_valoracion = (
+            payload.justificacion_valoracion
+            if payload.justificacion_valoracion is not None
+            else vigente.justificacion_valoracion
+        )
+        if (
+            fondo_nombre is None
+            or fecha_extrema_inicial is None
+            or fecha_extrema_final is None
+            or justificacion_valoracion is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "tvd_forma_incompleta",
+                    "detail": (
+                        "Una version de TVD exige fondo_nombre, fecha_extrema_inicial, "
+                        "fecha_extrema_final y justificacion_valoracion (Ac. AGN 001/2024, "
+                        "ADR-026)."
+                    ),
+                    "status": 422,
+                },
+            )
         async with self._conn.transaction():
             try:
                 new_agrupacion = await self._repo.create_tvd_agrupacion_version(
@@ -3266,26 +3312,10 @@ class ArchiveService:
                     parent_id=(
                         payload.parent_id if payload.parent_id is not None else vigente.parent_id
                     ),
-                    fondo_nombre=(
-                        payload.fondo_nombre
-                        if payload.fondo_nombre is not None
-                        else vigente.fondo_nombre
-                    ),
-                    fecha_extrema_inicial=(
-                        payload.fecha_extrema_inicial
-                        if payload.fecha_extrema_inicial is not None
-                        else vigente.fecha_extrema_inicial
-                    ),
-                    fecha_extrema_final=(
-                        payload.fecha_extrema_final
-                        if payload.fecha_extrema_final is not None
-                        else vigente.fecha_extrema_final
-                    ),
-                    justificacion_valoracion=(
-                        payload.justificacion_valoracion
-                        if payload.justificacion_valoracion is not None
-                        else vigente.justificacion_valoracion
-                    ),
+                    fondo_nombre=fondo_nombre,
+                    fecha_extrema_inicial=fecha_extrema_inicial,
+                    fecha_extrema_final=fecha_extrema_final,
+                    justificacion_valoracion=justificacion_valoracion,
                     archivo_central_years=(
                         payload.archivo_central_years
                         if payload.archivo_central_years is not None
@@ -3531,7 +3561,12 @@ class ArchiveService:
                     "expediente_metadata_templates_omitidos": n_templates_omitidos,
                 },
             )
-            if derogada is not None:
+            # `vigente_previa is not None` es REDUNDANTE con
+            # `derogada is not None` (solo se deroga si había una vigente),
+            # pero la correlación entre las dos variables no es visible
+            # aquí y `vigente_previa.estado` va dentro. Explícito y con el
+            # mismo comportamiento.
+            if derogada is not None and vigente_previa is not None:
                 await audit.append(
                     self._conn,
                     tenant_slug=self._tenant_slug,

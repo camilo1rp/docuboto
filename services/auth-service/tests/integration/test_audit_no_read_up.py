@@ -28,10 +28,10 @@ import uuid
 
 import asyncpg
 import pytest
-from migrations import runner
 from orpycamcp_common import audit as audit_lib
 
 from app.repositories.audit_query_repository import AuditQueryRepository
+from migrations import runner
 from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = pytest.mark.skipif(

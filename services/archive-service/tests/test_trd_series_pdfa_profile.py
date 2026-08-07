@@ -28,7 +28,7 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.archive import TrdSerieCreate, TrdSerieUpdate, _PDFA_PROFILES
+from app.schemas.archive import _PDFA_PROFILES, TrdSerieCreate, TrdSerieUpdate
 from tests.conftest import TENANT_HEADERS, make_trd_serie_record
 
 # ---------------------------------------------------------------------------

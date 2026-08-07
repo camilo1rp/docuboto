@@ -718,6 +718,10 @@ def _json_obj(raw: object) -> dict:
         return {}
     if isinstance(raw, dict):
         return raw
+    if not isinstance(raw, (str, bytes, bytearray)):
+        # Ni dict, ni None, ni texto: `json.loads` lanzaría un TypeError opaco.
+        # Se devuelve vacío, que es lo que esta función ya promete tolerar.
+        return {}
     return json.loads(raw)
 
 

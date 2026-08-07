@@ -32,6 +32,7 @@ from app.core.actor import Actor
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
+from app.core.http_errors import motivo_de
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.fisico_repository import FisicoRepository
 from app.repositories.index_repository import IndexRepository
@@ -48,6 +49,7 @@ from app.schemas.transferencia import (
     TransferenciaResponse,
 )
 from app.services.backoff import next_backoff_seconds
+
 # `_fuid_to_xml` (E12 H-I): reusada TAL CUAL, sin duplicar la serialización
 # canónica (C14N) -- es el mismo cuerpo que congela el acta de entrega.
 from app.services.fisico_service import FisicoService, _fuid_to_xml
@@ -223,7 +225,11 @@ class TransferenciaService:
                         "status": 422,
                     },
                 )
-            if origen_id is not None:
+            # Ambos, no solo `origen_id`: las validaciones de arriba ya
+            # garantizan "las dos o ninguna" (`ubicaciones_par_incompleto`),
+            # pero ese invariante vive en otra rama y aquí `destino_id` se usa
+            # igualmente. Explícito, mismo comportamiento.
+            if origen_id is not None and destino_id is not None:
                 if origen_id == destino_id:
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -378,9 +384,7 @@ class TransferenciaService:
                     actor=actor.audit_actor,
                     payload={
                         "expediente_id": str(payload.expediente_id),
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
@@ -499,9 +503,7 @@ class TransferenciaService:
                     actor=actor.audit_actor,
                     payload={
                         "estado_actual": existing["estado"] if existing is not None else None,
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
@@ -798,9 +800,7 @@ class TransferenciaService:
                     actor=actor.audit_actor,
                     payload={
                         "estado_actual": existing["estado"] if existing is not None else None,
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                         # Traza forense completa de una fixity fallida (los UUIDs
                         # que NO se exponen en el 409) — solo en el registro
                         # indeleble, cuya lectura exige permiso de auditoría.
@@ -1050,9 +1050,7 @@ class TransferenciaService:
                     actor=actor.audit_actor,
                     payload={
                         "estado_actual": existing["estado"] if existing is not None else None,
-                        "motivo": exc.detail.get("error")
-                        if isinstance(exc.detail, dict)
-                        else str(exc.detail),
+                        "motivo": motivo_de(exc),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
@@ -1705,7 +1703,7 @@ class TransferenciaService:
         return TransferenciaActaVerificacionResponse(
             sello=sello_info,
             firmas_personales=firmas_personales,
-            completitud=completitud,  # type: ignore[arg-type]
+            completitud=completitud,
             valida=valida_total,
             acreditado=False,
             auto_traslado=auto_traslado,
@@ -1934,7 +1932,7 @@ class TransferenciaService:
                 async with self._conn.transaction():
                     affected = await self._repo.mark_acta_worm_protegido(
                         transferencia_id,
-                        outcome.worm_object_id,
+                        outcome.protected_object_id,
                         worm_retain_until=outcome.retain_until,
                     )
                     # Idempotencia real (mismo patrón S1 que `mark_acta_firmada`):

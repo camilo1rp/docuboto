@@ -22,7 +22,6 @@ import uuid
 from typing import Any
 
 import asyncpg
-
 from orpycamcp_common import audit
 
 from app.repositories.workflow_repository import WorkflowRepository

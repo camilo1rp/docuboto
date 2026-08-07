@@ -151,7 +151,7 @@ class PinarService:
                     "new": {k: str(v) for k, v in fields.items()},
                 },
             )
-            return updated  # type: ignore[return-value]
+            return updated
 
     async def aprobar(
         self, plan_id: uuid.UUID, acto_administrativo: str, actor: uuid.UUID | None
@@ -295,7 +295,7 @@ class PinarService:
                 old_value={k: str(aspecto[k]) for k in fields if k in aspecto},
                 new_value={k: str(v) for k, v in fields.items()},
             )
-            return row  # type: ignore[return-value]
+            return row
 
     async def delete_aspecto(self, aspecto_id: uuid.UUID, actor: uuid.UUID | None) -> None:
         aspecto, plan = await self._aspecto_plan(aspecto_id)
@@ -386,7 +386,7 @@ class PinarService:
                 old_value={k: str(objetivo[k]) for k in fields if k in objetivo},
                 new_value={k: str(v) for k, v in fields.items()},
             )
-            return row  # type: ignore[return-value]
+            return row
 
     async def delete_objetivo(self, objetivo_id: uuid.UUID, actor: uuid.UUID | None) -> None:
         objetivo = await self._repo.get_objetivo(objetivo_id)
@@ -447,7 +447,7 @@ class PinarService:
                 old_value={k: str(proyecto[k]) for k in fields if k in proyecto},
                 new_value={k: str(v) for k, v in fields.items()},
             )
-            return row  # type: ignore[return-value]
+            return row
 
     async def delete_proyecto(self, proyecto_id: uuid.UUID, actor: uuid.UUID | None) -> None:
         proyecto, plan = await self._proyecto_plan(proyecto_id)

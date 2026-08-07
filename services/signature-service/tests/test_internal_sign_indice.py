@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.internal_auth import require_internal_token
-from tests.conftest import TENANT_HEADERS, USER
+from tests.conftest import TENANT_HEADERS
 from tests.test_sign_xml_xades import (
     INDICE_XML,
     _generate_cert,

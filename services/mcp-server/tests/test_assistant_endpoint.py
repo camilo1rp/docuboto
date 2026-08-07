@@ -25,7 +25,13 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from tests._assistant_fakes import FakeAnthropic, RaisingAnthropic, Response, make_gateway, text_block
+from tests._assistant_fakes import (
+    FakeAnthropic,
+    RaisingAnthropic,
+    Response,
+    make_gateway,
+    text_block,
+)
 
 _AUTH = {"Authorization": "Bearer tok", "X-Tenant-Slug": "demo"}
 

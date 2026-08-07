@@ -11,6 +11,13 @@
 
 from __future__ import annotations
 
+# `builtins.list` en las anotaciones de este módulo NO es una manía de estilo:
+# la clase define un método `list`, que dentro del cuerpo de la clase sombrea al
+# `list` incorporado. Sin cualificar, `-> list[...]` resuelve al MÉTODO y la
+# anotación queda sin significado (mypy: "Function ... is not valid as a type").
+# Se cualifica en vez de renombrar el método porque `list` es su nombre correcto
+# y renombrarlo obligaría a tocar routers y servicios de otros módulos.
+import builtins
 import uuid
 
 import asyncpg
@@ -34,7 +41,7 @@ class WebhookRepository:
         assert row is not None
         return row
 
-    async def list(self) -> list[asyncpg.Record]:
+    async def list(self) -> builtins.list[asyncpg.Record]:
         return list(
             await self._conn.fetch(
                 "SELECT id, url, event_types, active, created_at "
@@ -48,7 +55,7 @@ class WebhookRepository:
         )
         return result.endswith("1")
 
-    async def active_for_event(self, event_type: str) -> list[asyncpg.Record]:
+    async def active_for_event(self, event_type: str) -> builtins.list[asyncpg.Record]:
         """Suscripciones activas que reciben este event_type (o todos si vacío)."""
         return list(
             await self._conn.fetch(

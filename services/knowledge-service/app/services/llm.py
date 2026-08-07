@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import html
 import json
+from typing import Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -208,7 +209,13 @@ def _parse_structured_answer(
         for item in raw_citations:
             if not isinstance(item, dict):
                 continue
-            chunk = by_source_id.get(item.get("source_id"))
+            source_id = item.get("source_id")
+            # La respuesta del modelo es JSON arbitrario: `source_id` puede
+            # faltar o no ser texto. Se comprueba antes de indexar en vez de
+            # buscar por `None`, que siempre fallaría en silencio.
+            if not isinstance(source_id, str):
+                continue
+            chunk = by_source_id.get(source_id)
             if chunk is None:
                 # source_id inexistente/fuera del top-k -> unverified, descartada.
                 continue
@@ -326,7 +333,10 @@ class AnthropicLLMProvider(LLMProvider):
         # Cada chunk -> un bloque `document` con `citations: {enabled: true}` y
         # `title` = source_ref (tracking del radicado) — el ORDEN de esta lista
         # es el que Claude referencia vía `document_index` en la respuesta.
-        documents = [
+        # `list[Any]`: los bloques se construyen dinámicamente y el SDK los
+        # tipa con TypedDicts estrictos que no se pueden satisfacer sin
+        # importarlos aquí; la forma en ejecución sí es la que espera.
+        documents: list[Any] = [
             {
                 "type": "document",
                 "source": {
@@ -338,7 +348,10 @@ class AnthropicLLMProvider(LLMProvider):
             }
             for c in chunks
         ]
-        user_content = [*documents, {"type": "text", "text": _anthropic_user_prompt(query)}]
+        user_content: list[Any] = [
+            *documents,
+            {"type": "text", "text": _anthropic_user_prompt(query)},
+        ]
 
         try:
             client = anthropic.Anthropic(api_key=self._api_key)

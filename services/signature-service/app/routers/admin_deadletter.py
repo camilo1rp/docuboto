@@ -22,8 +22,6 @@ import json
 import logging
 import uuid
 
-logger = logging.getLogger(__name__)
-
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
@@ -55,6 +53,8 @@ except ImportError:  # pragma: no cover
     _audit = None  # type: ignore[assignment]
     _AUDIT_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
 _SERVICE = "signature-service"
 
 router = APIRouter(
@@ -69,6 +69,11 @@ def _as_dict(value: object) -> dict:
     if isinstance(value, dict):
         return value
     if value is None:
+        return {}
+    if not isinstance(value, (str, bytes, bytearray)):
+        # Ni dict, ni None, ni texto: `json.loads` lanzaría un TypeError opaco
+        # a mitad de una respuesta de la DLQ. Se devuelve vacío, que es lo que
+        # esta función ya promete como "defensa robusta".
         return {}
     return json.loads(value)
 

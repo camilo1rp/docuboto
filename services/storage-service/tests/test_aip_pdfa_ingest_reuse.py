@@ -36,7 +36,13 @@ import pytest
 
 import app.core.config as config_module
 import app.services.aip_service as aip_service_module
-from tests.conftest import TENANT_HEADERS, TENANT_SLUG, make_file_record, make_worm_row, minio_get_object
+from tests.conftest import (
+    TENANT_HEADERS,
+    TENANT_SLUG,
+    make_file_record,
+    make_worm_row,
+    minio_get_object,
+)
 
 _PDF_CONTENT = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ncontenido pdf real (reuso ingesta)\n%%EOF"
 _PDF_SHA256 = hashlib.sha256(_PDF_CONTENT).hexdigest()

@@ -33,7 +33,13 @@ import pytest
 import app.core.config as config_module
 from app.services.aip_builder import validate_premis_xml
 from app.services.pdfa import PdfaResult, StubPdfaValidator, get_pdfa_validator, run_pdfa_validation
-from tests.conftest import TENANT_HEADERS, TENANT_SLUG, make_file_record, make_worm_row, minio_get_object
+from tests.conftest import (
+    TENANT_HEADERS,
+    TENANT_SLUG,
+    make_file_record,
+    make_worm_row,
+    minio_get_object,
+)
 
 _MIGRATION_008_PATH = (
     Path(__file__).resolve().parent.parent
@@ -157,10 +163,32 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     ]
     assert [c.args[2] for c in evento_inserts] == ["FIJACION", "WORM", "INGESTA"]
 
-    premis_xml = resp.json()["premis_xml"]
-    # El stub NUNCA corrió — el PREMIS real (no el mock `"<premis/>"` de la
-    # fila) tampoco debería llevar un evento `validation`; se verifica sobre
-    # el PREMIS realmente construido, no sobre el mock de la fila devuelta.
+    # El stub NUNCA corrió — el PREMIS real tampoco debe llevar un evento
+    # `validation`. Se verifica sobre el PREMIS realmente CONSTRUIDO, no sobre
+    # `resp.json()["premis_xml"]`, que es el mock `"<premis/>"` de la fila y
+    # por tanto no probaría nada. Espejo negativo del caso activado (abajo):
+    # sin `pdfa_results`, el evento no aparece.
+    from app.services.aip_builder import AipDocMaterial, build_bag
+
+    artifact = build_bag(
+        expediente_id="EXP-1",
+        tenant_slug=TENANT_SLUG,
+        docs=[
+            AipDocMaterial(
+                document_id="R-1",
+                nombre="oficio.pdf",
+                content=_PDF_CONTENT,
+                sha256=_PDF_SHA256,
+                mime_type="application/pdf",
+            )
+        ],
+        indice=None,
+        generado=datetime.now(tz=UTC),
+        actor=None,
+        pdfa_results=None,
+    )
+    assert "<eventType>validation</eventType>" not in artifact.premis_xml
+    validate_premis_xml(artifact.premis_xml)
 
 
 @pytest.mark.asyncio
@@ -217,7 +245,7 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     assert pdfa_call.args[3] == "no_evaluado"  # HONESTO: no implica conformidad
 
     # --- PREMIS: evento `validation` con eventOutcome "not evaluated" ---
-    from app.services.aip_builder import build_bag, AipDocMaterial
+    from app.services.aip_builder import AipDocMaterial, build_bag
     from app.services.pdfa import PdfaResult as _PdfaResult
 
     material = AipDocMaterial(

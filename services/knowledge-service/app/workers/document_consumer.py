@@ -324,7 +324,7 @@ async def run() -> None:
             )
         except asyncio.CancelledError:
             raise
-        except (redis_exc.TimeoutError, asyncio.TimeoutError):
+        except (TimeoutError, redis_exc.TimeoutError):
             # Normal: block= expired with no new entries — not an error; resume immediately.
             messages = []
         except Exception:

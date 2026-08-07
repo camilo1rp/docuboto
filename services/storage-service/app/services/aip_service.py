@@ -67,7 +67,12 @@ from app.repositories.preservacion_worm_repository import PreservacionWormReposi
 from app.schemas.preservacion import AipCreate, AipResponse
 from app.services.aip_builder import AipDocMaterial, aip_sha256, build_bag
 from app.services.aip_replica_service import ReplicaResult, replicate_aip
-from app.services.pdfa import PDFA_RESULTADO_MAP, PdfaResult, get_pdfa_validator, run_pdfa_validation
+from app.services.pdfa import (
+    PDFA_RESULTADO_MAP,
+    PdfaResult,
+    get_pdfa_validator,
+    run_pdfa_validation,
+)
 from app.services.pdfa.subprocess_verapdf import _VALID_FLAVOURS
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,

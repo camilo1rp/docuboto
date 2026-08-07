@@ -12,7 +12,6 @@
 se ejerce en SQL y se valida contra Postgres real en un smoke aparte; aquí se cubre
 el protocolo (verbos, errores, Dublin Core, resumptionToken indistinguible)."""
 
-import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock

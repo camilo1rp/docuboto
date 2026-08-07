@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -198,7 +199,7 @@ class TotpService:
             async with self._conn.transaction():
                 # Consume the step-up code (anti-replay) before revoking — a
                 # captured step-up code must not be reusable elsewhere either.
-                await self._repo.advance_timestep(user_id, new_timestep=attempt.timestep)
+                await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
                 await self._repo.revoke(existing["id"])
                 new_row, raw_secret = await self._create_pending(user_id, tenant_slug)
             action = "totp.reenrolado"
@@ -262,7 +263,7 @@ class TotpService:
             )
 
         async with self._conn.transaction():
-            await self._repo.advance_timestep(user_id, new_timestep=attempt.timestep)
+            await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
             await self._repo.activate(row["id"])
 
         await self._audit_event(user_id=user_id, tenant_slug=tenant_slug, action="totp.activado")
@@ -313,7 +314,7 @@ class TotpService:
             if attempt.outcome != "valid":
                 raise _step_up_invalido()
             async with self._conn.transaction():
-                await self._repo.advance_timestep(user_id, new_timestep=attempt.timestep)
+                await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
                 await self._repo.revoke(row["id"])
         else:
             await self._repo.revoke(row["id"])
@@ -366,7 +367,7 @@ class TotpService:
         )
 
         if attempt.outcome == "valid":
-            advanced = await self._repo.advance_timestep(user_id, new_timestep=attempt.timestep)
+            advanced = await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
             if not advanced:
                 # Lost the race to a concurrent verify — treat as replay, never as success.
                 attempt = TotpAttempt("replay", attempt.timestep)
@@ -385,7 +386,12 @@ class TotpService:
                 valido=True, timestep=attempt.timestep, factor_tipo="totp"
             )
 
-        motivo = "replay" if attempt.outcome == "replay" else "codigo_incorrecto"
+        # Anotado con el Literal del esquema y no inferido como `str`: sin
+        # esto, cualquier motivo nuevo mal escrito llegaría a
+        # `InternalTotpVerifyResponse` sin que nada lo cazara hasta ejecución.
+        motivo: Literal["replay", "codigo_incorrecto"] = (
+            "replay" if attempt.outcome == "replay" else "codigo_incorrecto"
+        )
         failure_row = await self._repo.record_failure(
             row["id"],
             max_attempts=settings.totp_max_failed_attempts,

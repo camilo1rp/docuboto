@@ -38,7 +38,7 @@ import hashlib
 import logging
 import uuid
 from base64 import b64decode
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -276,7 +276,7 @@ class PersonalSigningService:
             ) from exc
 
         signed_xml_sha256 = hashlib.sha256(signed.signed_xml).hexdigest()
-        sello_tiempo_dt = datetime.now(timezone.utc)
+        sello_tiempo_dt = datetime.now(UTC)
         tsa_timestamp_iso = signed.extra.get("tsa_timestamp")
 
         # --- 6. Persistencia + auditoría atómicas (RF-FIR-14) ---

@@ -25,6 +25,7 @@ from tests.conftest import (
     make_radicado_link_record,
 )
 
+
 # H-H (E06/F4): `recibir()` intenta el sellado SÍNCRONO ACOTADO del acta
 # POST-COMMIT (`TransferenciaService._sellar_acta_post_commit`, vía HTTP a
 # signature-service) — mismo criterio que los tests de `close_expediente`
@@ -838,7 +839,7 @@ async def test_recibir_congela_acta_de_entrega(client_with_conn) -> None:
         if isinstance(c.args[0], str) and c.args[0].startswith("INSERT INTO transferencia_acta (")
     )
     cols = acta_call.args[0].split("(", 2)[1].split(")", 1)[0].split(", ")
-    data = dict(zip(cols, acta_call.args[1:]))
+    data = dict(zip(cols, acta_call.args[1:], strict=True))
 
     assert data["transferencia_id"] == tid
     assert data["elaborado_por"] == "creador-uuid"

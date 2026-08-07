@@ -134,7 +134,7 @@ from datetime import UTC, datetime
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
 from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
@@ -537,7 +537,10 @@ class LocalSigner:
             signed_root = xades_signer.sign(
                 root,
                 key=ephemeral_pem,
-                cert=signer.cert_pem,
+                # `.decode()`: PEM es ASCII y `XAdESSigner.sign` declara
+                # `cert: str | list[str] | list[Certificate] | None`. Se pasaba
+                # `bytes`, fuera del contrato declarado de la librería.
+                cert=signer.cert_pem.decode("ascii"),
                 always_add_key_value=False,
             )
             del ephemeral_key, ephemeral_pem  # REGLA no-fuga: descartada apenas se usa
@@ -564,7 +567,7 @@ class LocalSigner:
                 root,
                 key=signer.key_pem,
                 passphrase=signer.key_password,
-                cert=signer.cert_pem,
+                cert=signer.cert_pem.decode("ascii"),  # ver nota arriba
             )
             sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
             signature_value_b64 = (sig_value_el.text or "") if sig_value_el is not None else ""
@@ -617,6 +620,10 @@ class LocalSigner:
                     # por sí solo, y su ausencia nunca bloquea LT/LTA salvo
                     # settings.signer_ocsp_require=True.
                     if settings.signer_ocsp_enabled:
+                        # `responder_key` queda a `None` cuando no hay material,
+                        # para que la comprobación de abajo sea UNA sola y no
+                        # dependa de qué variables quedaron definidas.
+                        responder_key = None
                         if signer.ocsp_cert_pem and signer.ocsp_key_pem:
                             embedded_seal_cert = x509.load_pem_x509_certificate(signer.cert_pem)
                             responder_cert = x509.load_pem_x509_certificate(signer.ocsp_cert_pem)
@@ -628,6 +635,16 @@ class LocalSigner:
                                     else None
                                 ),
                             )
+                        # `load_pem_private_key` devuelve la unión de TODOS los
+                        # tipos de clave que soporta `cryptography`, pero
+                        # `build_ocsp_response` firma con RSA. Una clave de
+                        # respondedor no-RSA es material INUTILIZABLE, no un
+                        # error de la firma en curso: se encauza por la misma
+                        # degradación observable que el caso "sin respondedor"
+                        # —el fail-closed de `signer_ocsp_require` se decide
+                        # después, unificado— en vez de reventar la firma con
+                        # un error del backend criptográfico.
+                        if isinstance(responder_key, rsa.RSAPrivateKey):
                             ocsp_resp = ocsp.build_ocsp_response(
                                 embedded_seal_cert, ca_cert, responder_cert, responder_key, crl=crl
                             )
@@ -1062,7 +1079,24 @@ def verify_xades(
     except Exception as exc:  # noqa: BLE001 — fail-closed
         return VerifyOutcome(False, False, f"crl_ilegible: {exc}")
 
-    if not crl.is_signature_valid(ca_cert.public_key()):
+    # `public_key()` incluye tipos de ACUERDO de claves (X25519, X448, DH,
+    # ML-KEM) que no firman nada y que `is_signature_valid` no acepta. Se
+    # excluyen aquí en vez de estrechar a RSA: la CA de este despliegue es RSA,
+    # pero una CA con clave EC o Ed25519 es perfectamente válida y restringir a
+    # RSA la rechazaría sin motivo. Fail-closed para lo que no puede firmar.
+    ca_public_key = ca_cert.public_key()
+    if not isinstance(
+        ca_public_key,
+        (
+            rsa.RSAPublicKey,
+            ec.EllipticCurvePublicKey,
+            ed25519.Ed25519PublicKey,
+            ed448.Ed448PublicKey,
+            dsa.DSAPublicKey,
+        ),
+    ):
+        return VerifyOutcome(False, False, "ca_clave_no_apta_para_firmar")
+    if not crl.is_signature_valid(ca_public_key):
         return VerifyOutcome(False, False, "crl_firma_invalida")
     if crl.issuer != ca_cert.subject:
         return VerifyOutcome(False, False, "crl_issuer_no_coincide_ca")

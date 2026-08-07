@@ -14,7 +14,6 @@ las CUATRO capas de blindaje del discriminador (índice único, vistas, CHECK,
 trigger) se verifican por MUTACIÓN contra Postgres real en
 `tests/integration/test_migration_039_dos_tenants.py`, no aquí."""
 
-import json
 import uuid
 from datetime import date
 

@@ -456,7 +456,7 @@ async def test_sign_without_active_cert_falls_back_to_native(
 ) -> None:
     """Sin cert activo (estado != 'activo'), el comportamiento es el HMAC
     nativo preexistente — retrocompat exacta, sin 2FA (nivel PUBLICA)."""
-    audit_mock = _patch_audit(monkeypatch)
+    _patch_audit(monkeypatch)
     _patch_signing_key_status(monkeypatch, body={"estado": "no_configurado", "cert_pem": None})
     sign_digest_mock = _patch_sign_digest_remote(
         monkeypatch, error=RuntimeError("no debe llamarse")

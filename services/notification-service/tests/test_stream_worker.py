@@ -25,7 +25,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 import redis.exceptions as redis_exc
 
 

@@ -691,3 +691,58 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
         "El gateway debe reenviar X-Truncated; sin ella el aviso de truncamiento "
         "de las DLQ (ADR-021) es codigo muerto y la pantalla miente por omision"
     )
+
+
+async def test_proxy_sin_override_deja_el_timeout_del_cliente(test_client):
+    """Sin override, `timeout` debe ser USE_CLIENT_DEFAULT — NUNCA None.
+
+    Para httpx los dos valores son distintos y opuestos: USE_CLIENT_DEFAULT es
+    "usa el que ya tiene el cliente"; None es "sin limite de tiempo". Pasar None
+    dejaria cada peticion al upstream colgada indefinidamente y el 503
+    `upstream_timeout` de este mismo router seria inalcanzable.
+    """
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"items": []},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    await client.get("/api/v1/documents/", headers={"Authorization": "Bearer valid-token"})
+
+    timeout_arg = http_client.request.call_args.kwargs["timeout"]
+    assert timeout_arg is httpx.USE_CLIENT_DEFAULT
+    assert timeout_arg is not None
+
+
+async def test_proxy_asistente_propaga_su_timeout_ampliado(test_client):
+    """E18: la ruta del asistente propaga `assistant_proxy_timeout` al upstream.
+
+    Su loop LLM excede el timeout global del cliente, asi que el override
+    por-peticion es lo unico que evita cortar la respuesta a media generacion.
+    """
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.request = AsyncMock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"reply": "ok"},
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    await client.post(
+        "/api/v1/assistant/message",
+        json={"message": "hola"},
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    from app.core.config import settings
+
+    assert http_client.request.call_args.kwargs["timeout"] == settings.assistant_proxy_timeout
+    assert http_client.request.call_args.kwargs["timeout"] is not httpx.USE_CLIENT_DEFAULT

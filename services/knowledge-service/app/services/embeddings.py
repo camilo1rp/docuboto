@@ -44,6 +44,7 @@ import hashlib
 import math
 import re
 from abc import ABC, abstractmethod
+from typing import Any
 
 from app.core.config import settings
 
@@ -127,7 +128,12 @@ class LocalSentenceTransformerProvider(EmbeddingProvider):
 
     def __init__(self, *, model_id: str) -> None:
         self.model_id = model_id
-        self._model = None  # type: ignore[var-annotated]  # lazy: sentence_transformers.SentenceTransformer
+        # `Any` y no `None`: el modelo se carga perezosamente en
+        # `_ensure_loaded`. Sin anotación, el atributo queda inferido como
+        # `None` y la asignación posterior del `SentenceTransformer` real solo
+        # pasa de refilón, porque la dependencia es opcional y mypy ya la ve
+        # como `Any`. Anotarlo lo dice explícitamente.
+        self._model: Any = None
 
     def _ensure_loaded(self):  # noqa: ANN202 — tipo del modelo es de una dep opcional
         if self._model is None:

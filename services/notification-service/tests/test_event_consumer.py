@@ -25,8 +25,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from orpycamcp_common import events
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -29,7 +29,6 @@ import uuid
 from collections.abc import AsyncGenerator
 
 import asyncpg
-import pytest
 import pytest_asyncio
 
 from app.core.database import tenant_schema

@@ -19,7 +19,8 @@ import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.core.clearance import require_permission
-from app.core.database import acquire_tenant, get_db_conn as get_db
+from app.core.database import acquire_tenant
+from app.core.database import get_db_conn as get_db
 from app.schemas.batch import (
     BatchExpedientesRequest,
     BatchJobResponse,

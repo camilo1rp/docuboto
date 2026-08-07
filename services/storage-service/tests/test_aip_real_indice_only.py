@@ -30,8 +30,13 @@ from datetime import UTC, datetime
 import pytest
 
 import app.core.config as config_module
-from app.services.aip_builder import _PREMIS_NS
-from tests.conftest import TENANT_HEADERS, TENANT_SLUG, make_file_record, make_worm_row, minio_get_object
+from tests.conftest import (
+    TENANT_HEADERS,
+    TENANT_SLUG,
+    make_file_record,
+    make_worm_row,
+    minio_get_object,
+)
 
 _INDICE_CONTENT = b"<indice xmlns='urn:orpycamcp:indice:v1'>expediente fisico, sin anexos</indice>"
 _INDICE_SHA256 = hashlib.sha256(_INDICE_CONTENT).hexdigest()

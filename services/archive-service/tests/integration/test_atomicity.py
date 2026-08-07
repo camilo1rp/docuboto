@@ -22,10 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from datetime import UTC, date, datetime
-
-import json
 
 import asyncpg
 import pytest
@@ -43,13 +42,16 @@ from app.schemas.archive import (
     TrdSerieCreate,
 )
 from app.schemas.batch import BatchExpedienteCreate, BatchExpedientesRequest
-from app.schemas.transferencia import TransferenciaCreate, TransferenciaRechazo, TransferenciaResponse
+from app.schemas.transferencia import (
+    TransferenciaCreate,
+    TransferenciaRechazo,
+    TransferenciaResponse,
+)
 from app.services.archive_service import ArchiveService
 from app.services.batch_service import BatchArchiveService
 from app.services.transferencia_service import TransferenciaService
 
 from .conftest import DSN
-
 
 # ---------------------------------------------------------------------------
 # (a) Camino feliz: commit real + cadena de auditoría íntegra.
@@ -247,7 +249,7 @@ async def test_create_expediente_failure_after_audit_append_reverts_audit_row(
         # Ejecuta la escritura REAL (misma `conn`, mismo tenant) — el asiento
         # queda insertado dentro del SAVEPOINT que abre `audit.append` — y
         # SOLO DESPUÉS revienta, dentro de la tx externa de `create_expediente`.
-        row_hash = await original_append(*args, **kwargs)  # type: ignore[arg-type]
+        await original_append(*args, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("boom-post-audit (b2 fault injection, testing-engineer)")
 
     # `app.services.archive_service` hace `from orpycamcp_common import audit` y

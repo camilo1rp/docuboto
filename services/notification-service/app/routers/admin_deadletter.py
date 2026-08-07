@@ -106,6 +106,10 @@ def _as_dict(value: object) -> dict:
         return value
     if value is None:
         return {}
+    if not isinstance(value, (str, bytes, bytearray)):
+        # Ni dict, ni None, ni texto: `json.loads` lanzaria un TypeError
+        # opaco. Se devuelve vacio, que es lo que esta funcion ya tolera.
+        return {}
     return json.loads(value)
 
 

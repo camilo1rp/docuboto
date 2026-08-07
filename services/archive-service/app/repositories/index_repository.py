@@ -402,7 +402,7 @@ class IndexRepository:
         """
         return list(
             await self._conn.fetch(
-                f"""
+                """
                 SELECT ei.id, ei.expediente_id, ei.minio_key_firmado,
                        ei.worm_reconcile_intentos, ei.worm_reconcile_agotado,
                        ei.worm_reconcile_ultimo_error, e.code AS expediente_code

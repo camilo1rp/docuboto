@@ -21,6 +21,7 @@ ignore = [
 known-first-party = ["app"]
 
 [tool.mypy]
+plugins = ["pydantic.mypy"]
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
@@ -30,4 +31,15 @@ warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = ["miniopy_async", "miniopy_async.*"]
+ignore_errors = true
+
+# mypy 1.11.0 sufre un INTERNAL ERROR analizando `mcp/server/elicitation.py`
+# (dependencia de mcp-server). No es código nuestro y el fallo abortaba el lint
+# del servicio entero, así que dejaba sin verificar TODO `mcp-server` sin que
+# se distinguiera de un servicio limpio. `follow_imports = "skip"` corta ahí:
+# la librería pasa a tratarse como no tipada —igual que antes de instalarla—
+# pero el código propio del servicio sí se analiza.
+[[tool.mypy.overrides]]
+module = ["mcp", "mcp.*"]
+follow_imports = "skip"
 ignore_errors = true

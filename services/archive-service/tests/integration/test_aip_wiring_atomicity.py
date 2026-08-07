@@ -43,8 +43,8 @@ from app.core.config import settings
 from app.core.database import tenant_schema
 from app.repositories.aip_repository import AipRepository
 from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
-from app.services.archive_service import ArchiveService
 from app.services.aip_wiring_service import AipWiringService
+from app.services.archive_service import ArchiveService
 
 from .conftest import DSN, convalidate_for_test
 
@@ -228,7 +228,7 @@ async def test_intentar_empaquetar_failure_after_audit_append_reverts_mark(
     original_append = audit.append
 
     async def _append_then_boom(*args: object, **kwargs: object) -> str:
-        row_hash = await original_append(*args, **kwargs)  # type: ignore[arg-type]
+        await original_append(*args, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("boom-post-audit (aip, b2 fault injection)")
 
     monkeypatch.setattr(audit, "append", _append_then_boom)

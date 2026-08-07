@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from datetime import timezone
+from datetime import UTC
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -349,7 +349,7 @@ async def verify(
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
     sello_tiempo_str = (
-        row["sello_tiempo"].astimezone(timezone.utc).isoformat()
+        row["sello_tiempo"].astimezone(UTC).isoformat()
         if row["sello_tiempo"]
         else ""
     )

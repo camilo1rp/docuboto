@@ -17,6 +17,13 @@ which is safe under concurrent requests within the same tenant schema.
 
 from __future__ import annotations
 
+# `builtins.list` en las anotaciones de este módulo NO es una manía de estilo:
+# la clase define un método `list`, que dentro del cuerpo de la clase sombrea al
+# `list` incorporado. Sin cualificar, `-> list[...]` resuelve al MÉTODO y la
+# anotación queda sin significado (mypy: "Function ... is not valid as a type").
+# Se cualifica en vez de renombrar el método porque `list` es su nombre correcto
+# y renombrarlo obligaría a tocar routers y servicios de otros módulos.
+import builtins
 import logging
 import uuid
 from datetime import UTC, date, datetime
@@ -426,7 +433,7 @@ class DocumentService:
 
     async def list_anexos(
         self, document_id: uuid.UUID, max_clearance: int
-    ) -> list[Anexo]:
+    ) -> builtins.list[Anexo]:
         """Lista los anexos de un radicado respetando no-read-up (RF-SEG-08).
 
         `DocumentNotFoundError` (→ 404 neutro) si el radicado no existe o supera
@@ -557,7 +564,7 @@ class DocumentService:
         max_clearance: int = 3,
         user_id: uuid.UUID | None = None,
         canal: str = "system",
-    ) -> list[RespuestaItem]:
+    ) -> builtins.list[RespuestaItem]:
         # No-read-up (RF-SEG-08): solo Salidas vinculadas a-nivel-o-por-debajo
         # del clearance del llamante. La lista devuelta es CONTENIDO de radicado.
         rows = await self._repo.list_respuestas(antecedente_id, max_clearance)
@@ -717,7 +724,7 @@ class DocumentService:
             3: ("clasificada", "Ley 1712/2014 art. 18 (información clasificada)"),
         }
         rows = await self._repo.indice_clasificados()
-        items: list[IndiceClasificadoItem] = []
+        items: builtins.list[IndiceClasificadoItem] = []
         for r in rows:
             etiqueta, excepcion = clasif.get(
                 r["nivel_seguridad"], ("reservada", "Ley 1712/2014 art. 19")

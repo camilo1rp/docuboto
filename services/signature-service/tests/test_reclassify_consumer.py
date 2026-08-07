@@ -29,15 +29,13 @@ Patrón de mock:
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
-from orpycamcp_common import events
-
 import redis.exceptions as redis_exc
+from orpycamcp_common import events
 
 from app.repositories.cadena_repository import CadenaRepository
 from app.workers.document_consumer import _handle

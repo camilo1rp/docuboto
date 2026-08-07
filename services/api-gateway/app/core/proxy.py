@@ -94,18 +94,18 @@ async def proxy_request(
     body = await request.body()
 
     # `timeout` override se pasa por-petición (p. ej. el asistente E18, cuyo loop
-    # LLM excede el timeout global del cliente). Sin override se usa el del cliente.
-    request_kwargs: dict[str, object] = {
-        "method": request.method,
-        "url": upstream_url,
-        "headers": headers,
-        "content": body,
-        "params": dict(request.query_params),
-    }
-    if timeout is not None:
-        request_kwargs["timeout"] = timeout
-
-    upstream_response = await http_client.request(**request_kwargs)
+    # LLM excede el timeout global del cliente). Sin override se usa el del cliente:
+    # USE_CLIENT_DEFAULT es el centinela de httpx para "no lo toques", y NO es
+    # intercambiable con None — None significa "sin límite de tiempo", que aquí
+    # dejaría cada petición al upstream colgada indefinidamente.
+    upstream_response = await http_client.request(
+        method=request.method,
+        url=upstream_url,
+        headers=headers,
+        content=body,
+        params=dict(request.query_params),
+        timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+    )
 
     response_headers: dict[str, str] = {}
     for key, value in upstream_response.headers.items():

@@ -25,16 +25,15 @@ import logging
 import time
 
 import redis.exceptions as redis_exc
-
 from orpycamcp_common import events
 
 from app.core.config import settings
 from app.core.constants import DLQ_GROUP
 from app.core.database import acquire_tenant
 from app.core.redis_client import get_redis
+from app.jobs import deadletter_retention
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.dead_letter_repository import DeadLetterRepository
-from app.jobs import deadletter_retention
 
 try:
     from orpycamcp_common import audit as _audit
@@ -295,7 +294,7 @@ async def run() -> None:
             )
         except asyncio.CancelledError:
             raise
-        except (redis_exc.TimeoutError, asyncio.TimeoutError):
+        except (TimeoutError, redis_exc.TimeoutError):
             # Normal: block= expired with no new entries — not an error; resume immediately.
             messages = []
         except Exception:

@@ -25,8 +25,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.repositories.postal_repository import PostalRepository
 from app.core.database import tenant_schema
+from app.repositories.postal_repository import PostalRepository
 
 pytestmark = pytest.mark.integration
 

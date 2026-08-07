@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.export_service import RADICADO_SCHEMA
-from app.services.import_service import PackageValidationError, ImportService
+from app.services.import_service import ImportService, PackageValidationError
 
 
 def _sha(b: bytes) -> str:

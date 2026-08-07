@@ -322,7 +322,6 @@ async def test_sellar_acta_transient_exhausted_degrades(monkeypatch) -> None:
 async def test_acta_firma_block_pendiente_when_no_firma_row() -> None:
     conn = _mock_conn()
     svc = _service(conn)
-    tid = uuid.uuid4()
 
     info = await svc._build_firma_info(None, verify=False)
 
@@ -402,8 +401,8 @@ async def test_get_acta_response_includes_firma_block(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True
     tid = uuid.uuid4()
     exp_id = uuid.uuid4()
-    from tests.test_transferencias import _acta_row, _transfer_row
     from tests.conftest import make_expediente_record
+    from tests.test_transferencias import _acta_row, _transfer_row
 
     mock_conn.fetchrow.side_effect = [
         _transfer_row(id=tid, expediente_id=exp_id, estado="recibida"),
@@ -478,8 +477,8 @@ async def test_firmar_acta_retry_success_returns_updated_acta() -> None:
     svc = _service(conn)
     tid = uuid.uuid4()
     exp_id = uuid.uuid4()
-    from tests.test_transferencias import _acta_row, _transfer_row
     from tests.conftest import make_expediente_record
+    from tests.test_transferencias import _acta_row, _transfer_row
 
     conn.fetchrow.side_effect = [
         {"id": tid, "estado": "recibida", "expediente_id": exp_id},  # repo.get

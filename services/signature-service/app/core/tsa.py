@@ -54,7 +54,7 @@ from asn1crypto import algos, cms, core, tsp
 from asn1crypto import x509 as asn1_x509
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from app.core.config import settings
@@ -141,6 +141,17 @@ def _build_local_timestamp_token(signature_value_c14n: bytes) -> TimestampToken:
     tsa_cert = x509.load_pem_x509_certificate(tsa_ref.cert_pem)
     _assert_timestamping_eku(tsa_cert)
     private_key = serialization.load_pem_private_key(tsa_ref.key_pem, password=tsa_ref.key_password)
+    # `load_pem_private_key` devuelve la unión de TODOS los tipos de clave que
+    # soporta `cryptography` (RSA, EC, Ed25519, DH, ML-DSA…), pero más abajo se
+    # firma con `padding.PKCS1v15()`, que solo existe para RSA. Sin esta
+    # comprobación, una clave de TSA no-RSA reventaba dentro de `sign()` con un
+    # error del backend criptográfico, no con un fallo atribuible a la
+    # configuración del sello. Se falla aquí, con motivo legible.
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise TsaUnavailableError(
+            "la clave del sello TSA local no es RSA; el token RFC 3161 se firma "
+            f"con PKCS#1 v1.5 y no admite {type(private_key).__name__}"
+        )
 
     gen_time = datetime.now(UTC)
     message_imprint = tsp.MessageImprint(
@@ -374,8 +385,18 @@ def _verify_timestamp_token_inner(
         return TimestampVerifyOutcome(False, motivo="signature_algorithm_no_soportado")
 
     to_verify = fresh_attrs.dump()
+    # El token DECLARA `rsassa_pkcs1v15` (comprobado arriba), pero eso es el
+    # algoritmo declarado, no el tipo real de la clave del certificado TSA.
+    # Se comprueba la clave antes de verificar: sin esto, un certificado con
+    # clave no-RSA caía en el `except` de abajo con un motivo del backend
+    # criptográfico en vez de uno atribuible.
+    tsa_public_key = tsa_cert.public_key()
+    if not isinstance(tsa_public_key, rsa.RSAPublicKey):
+        return TimestampVerifyOutcome(False, motivo="clave_tsa_no_rsa")
     try:
-        tsa_cert.public_key().verify(signer_info["signature"].native, to_verify, padding.PKCS1v15(), hashes.SHA256())
+        tsa_public_key.verify(
+            signer_info["signature"].native, to_verify, padding.PKCS1v15(), hashes.SHA256()
+        )
     except Exception as exc:  # noqa: BLE001 — cualquier fallo criptográfico == inválido
         return TimestampVerifyOutcome(False, motivo=f"firma_cms_invalida: {exc}")
 

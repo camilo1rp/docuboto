@@ -38,10 +38,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.providers.base import SignerProvider
 
-_REGISTRY: dict[str, "SignerProvider"] = {}
+_REGISTRY: dict[str, SignerProvider] = {}
 
 
-def get_provider(name: str) -> "SignerProvider":
+def get_provider(name: str) -> SignerProvider:
     """Resuelve un proveedor de firma por nombre (instancias cacheadas — sin estado).
 
     Los proveedores concretos se importan de forma DIFERIDA (dentro de la

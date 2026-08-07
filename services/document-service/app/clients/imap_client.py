@@ -52,12 +52,16 @@ def _extract_body(msg: Message) -> str:
         for part in msg.walk():
             if part.get_content_type() == "text/plain" and not part.get_filename():
                 payload = part.get_payload(decode=True)
-                if payload:
+                # `isinstance(..., bytes)` y no solo `if payload:` —
+                # `get_payload(decode=True)` devuelve bytes para una parte
+                # normal, pero `None` o el propio `Message` en casos límite
+                # (parte multipart anidada), y ahí `.decode()` no existe.
+                if isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
                     return payload.decode(charset, errors="replace").strip()
         return ""
     payload = msg.get_payload(decode=True)
-    if payload:
+    if isinstance(payload, bytes):
         charset = msg.get_content_charset() or "utf-8"
         return payload.decode(charset, errors="replace").strip()
     return ""
@@ -127,9 +131,14 @@ class ImaplibClient:
             for uid in uids:
                 # BODY.PEEK no marca como leído; el \Seen se aplica tras ingestar.
                 _, msg_data = conn.fetch(uid, "(BODY.PEEK[])")
-                if msg_data and msg_data[0]:
+                # `imaplib` tipa la respuesta de FETCH como una lista de
+                # `bytes | tuple`: una respuesta sin cuerpo (solo el flag) llega
+                # como bytes sueltos y no se puede indexar. Se comprueba la
+                # forma en vez de asumirla.
+                if msg_data and isinstance(msg_data[0], tuple):
                     raw = msg_data[0][1]
-                    messages.append(parse_email(uid.decode(), raw))
+                    if isinstance(raw, bytes):
+                        messages.append(parse_email(uid.decode(), raw))
             return messages
         finally:
             conn.logout()
@@ -137,7 +146,9 @@ class ImaplibClient:
     def _mark_seen_sync(self, uid: str) -> None:
         conn = self._connect()
         try:
-            conn.store(uid.encode(), "+FLAGS", "\\Seen")
+            # `uid` YA es `str` y es lo que `IMAP4.store` declara y espera;
+            # el `.encode()` previo lo pasaba como bytes fuera del contrato.
+            conn.store(uid, "+FLAGS", "\\Seen")
         finally:
             conn.logout()
 

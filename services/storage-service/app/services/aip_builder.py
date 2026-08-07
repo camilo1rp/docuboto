@@ -597,7 +597,15 @@ def build_bag(
     # `payload_docs` es la lista de `AipDocMaterial` que va a `data/` y que
     # cubre `manifest-sha256.txt`. En modo normal es `docs` tal cual (el
     # índice, si viene, sigue siendo tag file más abajo).
-    payload_docs: list[AipDocMaterial] = [indice] if indice_only else docs
+    # El `indice is not None` es redundante con `_is_indice_only_mode` (que se
+    # define como `docs == [] and indice is not None`), pero ese invariante vive
+    # en otra función y aquí no es visible. Sin él, si el helper cambiara, se
+    # metería `None` en `payload_docs` y el fallo saldría más abajo al leer
+    # `doc.nombre` — lejos de la causa. Así el caso imposible degrada al payload
+    # vacío, que YA tiene su error propio (`EmptyPayloadBagError`, RFC 8493).
+    payload_docs: list[AipDocMaterial] = (
+        [indice] if (indice_only and indice is not None) else docs
+    )
 
     files: dict[str, bytes] = {}
     for doc in payload_docs:

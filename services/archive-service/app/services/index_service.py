@@ -30,6 +30,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
+import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
@@ -42,8 +43,6 @@ from app.repositories.aip_repository import AipRepository
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
-from app.services.backoff import next_backoff_seconds
-from app.services.retention_math import total_trd_years
 from app.schemas.archive import (
     IndiceFixityResult,
     IndiceItemResponse,
@@ -56,6 +55,7 @@ from app.schemas.archive import (
     IndiceVersionSummary,
     RebuildResult,
 )
+from app.services.backoff import next_backoff_seconds
 from app.services.index_builder import (
     PISTA_ACCESO_INSTRUMENTACION_DATE,
     XSD_VERSION,
@@ -66,6 +66,7 @@ from app.services.index_builder import (
     count_vigentes,
     xml_sha256,
 )
+from app.services.retention_math import total_trd_years
 
 if TYPE_CHECKING:
     from app.clients.signature_client import SignedIndice
@@ -496,7 +497,7 @@ class IndexService:
 
     async def _current_signable_or_none(
         self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
-    ) -> object | None:
+    ) -> tuple[asyncpg.Record, str] | None:
         """Prelude común a `firmar_indice`/`firmar_indice_close`: resuelve la
         versión vigente del índice y aplica el gate de `actor_id`
         (RF-FIR-11/12). Devuelve `None` en dos casos que el llamante debe
@@ -521,7 +522,12 @@ class IndexService:
                 actor_id=actor_id, motivo="sin_actor_id",
             )
             return None
-        return current
+        # Devuelve TAMBIEN el `actor_id`, no solo la fila: la garantia "si hay
+        # algo que firmar, hay actor" la establece el `if not actor_id` de
+        # arriba, pero cruzaba la frontera de la funcion y los dos llamantes la
+        # daban por supuesta. Viajando junto al dato, el invariante es
+        # comprobable donde se usa.
+        return current, actor_id
 
     async def firmar_indice(
         self, expediente_id: uuid.UUID, *, tenant_slug: str, actor_id: str | None
@@ -563,14 +569,15 @@ class IndexService:
         """
         from app.clients import signature_client
 
-        current = await self._current_signable_or_none(
+        resolved = await self._current_signable_or_none(
             expediente_id, tenant_slug=tenant_slug, actor_id=actor_id
         )
-        if current is None:
+        if resolved is None:
             return None
+        current, signer_id = resolved
         signed = await signature_client.sign_xml(
             tenant_slug=tenant_slug,
-            actor_id=actor_id,
+            actor_id=signer_id,
             payload_xml=current["xml"],
             objeto_id=str(expediente_id),
             indice_id=str(current["id"]),
@@ -654,17 +661,18 @@ class IndexService:
         """
         from app.clients import signature_client
 
-        current = await self._current_signable_or_none(
+        resolved = await self._current_signable_or_none(
             expediente_id, tenant_slug=tenant_slug, actor_id=actor_id
         )
-        if current is None:
+        if resolved is None:
             return None
+        current, signer_id = resolved
 
         max_attempts = max(1, settings.close_sign_max_sync_attempts)
         for attempt in range(1, max_attempts + 1):
             outcome = await signature_client.sign_xml_outcome(
                 tenant_slug=tenant_slug,
-                actor_id=actor_id,
+                actor_id=signer_id,
                 payload_xml=current["xml"],
                 objeto_id=str(expediente_id),
                 indice_id=str(current["id"]),
@@ -1301,7 +1309,7 @@ class IndexService:
                 async with self._conn.transaction():
                     affected = await self._index.mark_worm_protegido(
                         indice_id,
-                        outcome.worm_object_id,
+                        outcome.protected_object_id,
                         worm_retain_until=outcome.retain_until,
                     )
                     # Idempotencia real (mismo patrón S1 que `mark_signed`):

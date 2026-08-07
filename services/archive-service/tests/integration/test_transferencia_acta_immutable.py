@@ -41,7 +41,6 @@ from app.core.actor import Actor
 from app.core.database import tenant_schema
 from app.services.transferencia_service import TransferenciaService
 
-from .conftest import DSN
 from .test_atomicity import _seed_transferencia_lista_para_recibir
 
 # Mensajes exactos que levantan `reject_transferencia_acta_mutation` /

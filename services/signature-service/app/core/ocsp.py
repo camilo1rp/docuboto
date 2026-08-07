@@ -289,8 +289,21 @@ def _verify_ocsp_response_inner(
     except x509.ExtensionNotFound:
         return OcspVerifyOutcome(False, motivo="ocsp_responder_sin_nocheck")
 
+    # `public_key()` devuelve la unión de todos los tipos de clave soportados;
+    # abajo se verifica con `padding.PKCS1v15()`, que solo existe para RSA. Se
+    # estrecha ANTES de verificar en vez de dejarlo caer en el `except`: aquí se
+    # decide si un certificado está revocado, y "no pude verificar la firma del
+    # respondedor" tiene que ser un motivo propio, no un error genérico del
+    # backend. Sigue siendo fail-closed — un respondedor no-RSA no se acepta.
+    responder_key = responder.public_key()
+    if not isinstance(responder_key, rsa.RSAPublicKey):
+        return OcspVerifyOutcome(False, motivo="ocsp_responder_clave_no_rsa")
+    # `signature_hash_algorithm` es opcional en el modelo de `cryptography`;
+    # sin él no hay nada que verificar y aceptar sería aceptar a ciegas.
+    if response.signature_hash_algorithm is None:
+        return OcspVerifyOutcome(False, motivo="ocsp_respuesta_sin_hash_algorithm")
     try:
-        responder.public_key().verify(
+        responder_key.verify(
             response.signature,
             response.tbs_response_bytes,
             padding.PKCS1v15(),

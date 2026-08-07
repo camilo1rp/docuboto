@@ -244,7 +244,6 @@ async def test_run_once_uses_configured_days() -> None:
 @pytest.mark.asyncio
 async def test_worker_calls_run_once_after_interval() -> None:
     """After DLQ_TRIM_INTERVAL seconds the worker calls deadletter_retention.run_once."""
-    import time
 
     from app.workers import document_consumer
 

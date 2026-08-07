@@ -28,7 +28,6 @@ Postgres de verdad, no contra un mock que ya "sabe" la respuesta.
 
 from __future__ import annotations
 
-import json
 import uuid
 
 import asyncpg

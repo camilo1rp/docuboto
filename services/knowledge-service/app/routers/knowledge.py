@@ -231,7 +231,7 @@ class AntecedentesRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
 
     @model_validator(mode="after")
-    def _check_query_xor_radicado_ref(self) -> "AntecedentesRequest":
+    def _check_query_xor_radicado_ref(self) -> AntecedentesRequest:
         if bool(self.query) == bool(self.radicado_ref):
             raise ValueError(
                 "Indique exactamente uno de 'query' o 'radicado_ref' (no ambos, no ninguno)"

@@ -11,6 +11,13 @@
 
 from __future__ import annotations
 
+# `builtins.list` en las anotaciones de este módulo NO es una manía de estilo:
+# la clase define un método `list`, que dentro del cuerpo de la clase sombrea al
+# `list` incorporado. Sin cualificar, `-> list[...]` resuelve al MÉTODO y la
+# anotación queda sin significado (mypy: "Function ... is not valid as a type").
+# Se cualifica en vez de renombrar el método porque `list` es su nombre correcto
+# y renombrarlo obligaría a tocar routers y servicios de otros módulos.
+import builtins
 import uuid
 from datetime import datetime
 
@@ -100,10 +107,10 @@ class TransferenciaRepository:
             f"SELECT {_COLS} FROM transferencias WHERE id = $1", transferencia_id
         )
 
-    async def list(self, *, estado: str | None, tipo: str | None) -> list[asyncpg.Record]:
+    async def list(self, *, estado: str | None, tipo: str | None) -> builtins.list[asyncpg.Record]:
         await self._sp()
-        conds: list[str] = []
-        params: list[object] = []
+        conds: builtins.list[str] = []
+        params: builtins.list[object] = []
         if estado is not None:
             params.append(estado)
             conds.append(f"estado = ${len(params)}")
@@ -163,7 +170,7 @@ class TransferenciaRepository:
         await self._sp()
         cols = list(assignments.keys())
         set_parts = ["estado = $1"]
-        params: list[object] = [estado]
+        params: builtins.list[object] = [estado]
         idx = 2
         for c in cols:
             set_parts.append(f"{c} = ${idx}")
@@ -340,7 +347,7 @@ class TransferenciaRepository:
             rol,
         )
 
-    async def list_acta_firma_personal(self, transferencia_id: uuid.UUID) -> list[asyncpg.Record]:
+    async def list_acta_firma_personal(self, transferencia_id: uuid.UUID) -> builtins.list[asyncpg.Record]:
         """Todas las firmas personales de una transferencia (hoy, a lo sumo
         una: 'recibe'; 'entrega' queda representable para el Inc.2 -- deuda)."""
         await self._sp()
@@ -371,7 +378,7 @@ class TransferenciaRepository:
             *data.values(),
         )
 
-    async def list_acta_firmas_pendientes(self, limit: int) -> list[asyncpg.Record]:
+    async def list_acta_firmas_pendientes(self, limit: int) -> builtins.list[asyncpg.Record]:
         """Actas `'pendiente_firma'` elegibles para el job de reconciliación
         (gemela de `IndexRepository.list_pending_signature`). A diferencia
         del índice (append-only, `DISTINCT ON` sobre versiones), el acta es
@@ -482,7 +489,7 @@ class TransferenciaRepository:
             agotado,
         )
 
-    async def list_worm_pending_actas(self, limit: int) -> list[asyncpg.Record]:
+    async def list_worm_pending_actas(self, limit: int) -> builtins.list[asyncpg.Record]:
         """Actas 'firmado' elegibles para `run_once_actas_worm` (4ª fase de
         reconciliación, E10 Inc.2 wiring): sin proteger todavía
         (`worm_protegido_at IS NULL`), no agotadas, y con el backoff cumplido
@@ -519,8 +526,8 @@ class TransferenciaRepository:
     # -----------------------------------------------------------------
 
     async def list_worm_renovacion_pending(
-        self, *, ventana_dias: int, ct_codes: list[str], limit: int
-    ) -> list[asyncpg.Record]:
+        self, *, ventana_dias: int, ct_codes: builtins.list[str], limit: int
+    ) -> builtins.list[asyncpg.Record]:
         """Actas CUYO EXPEDIENTE es de disposición Conservación Total (CT) y
         cuyo `worm_retain_until` vence dentro de `ventana_dias` (E10 debt,
         migración 032) -- 5ª fase de reconciliación, `run_once_worm_renovacion`.
@@ -551,8 +558,8 @@ class TransferenciaRepository:
         )
 
     async def list_worm_renovacion_visibilidad(
-        self, *, max_clearance: int, ct_codes: list[str], ventana_dias: int
-    ) -> list[asyncpg.Record]:
+        self, *, max_clearance: int, ct_codes: builtins.list[str], ventana_dias: int
+    ) -> builtins.list[asyncpg.Record]:
         """Actas YA protegidas bajo WORM, de expediente CT, cuya renovación
         está AGOTADA o EN RIESGO de vencer -- gemela EXACTA de
         `IndexRepository.list_worm_renovacion_visibilidad` (mismo criterio de

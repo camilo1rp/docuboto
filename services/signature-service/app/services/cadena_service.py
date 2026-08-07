@@ -31,7 +31,7 @@ import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -459,7 +459,7 @@ class CadenaFirmaService:
                 )
 
             challenge_repo = ChallengeRepository(self._conn)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             activo = await challenge_repo.get_activo(solicitud_id, actor, hash_documento)
             if activo is not None:
                 cooldown_hasta = activo["creado_at"] + timedelta(
@@ -753,7 +753,7 @@ class CadenaFirmaService:
                             "challenge_id": None,
                             "factor_tipo": "totp",
                             "hash_documento": sol["payload_sha256"],
-                            "consumido_at": datetime.now(timezone.utc),
+                            "consumido_at": datetime.now(UTC),
                         }
             elif gate_activo:
                 # DENEGACIÓN por gate — NO se llama a _firmar_personal ni a
@@ -837,7 +837,7 @@ class CadenaFirmaService:
 
             if otp_fail is None:
                 # Server-generated timestamp — never from the client (RF-FIR-12).
-                sello_dt = datetime.now(timezone.utc)
+                sello_dt = datetime.now(UTC)
                 sello_iso = sello_dt.isoformat()
 
                 if personal_signed is not None:
@@ -1214,7 +1214,7 @@ class CadenaFirmaService:
                 },
             ), None
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if now >= challenge["expira_at"]:
             await challenge_repo.marcar_estado(challenge["challenge_id"], "expirado")
             return HTTPException(
@@ -1319,7 +1319,7 @@ class CadenaFirmaService:
                 },
             ), None
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if result.get("valido"):
             consumed = {
@@ -1515,7 +1515,12 @@ class CadenaFirmaService:
                     ResultadoLoteItem(solicitud_id=item.solicitud_id, resultado="firmado")
                 )
             except HTTPException as exc:
-                detail = exc.detail
+                # `object` y no el `str` que declara Starlette: FastAPI permite
+                # que `detail` sea un dict (es lo que hacen los routers de este
+                # servicio), y la comprobación de abajo cuenta con ello. Sin
+                # ensanchar la anotación, `isinstance(detail, dict)` es código
+                # que el verificador de tipos considera imposible.
+                detail: object = exc.detail
                 detalle = (
                     detail.get("error", str(detail))
                     if isinstance(detail, dict)

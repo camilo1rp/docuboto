@@ -768,7 +768,8 @@ async def test_sign_digest_success(client: AsyncClient, monkeypatch: pytest.Monk
     active_key_row = _key_row(private_key=private_key, estado="activo", cert_pem=cert_pem)
 
     active_totp_secret = b"0123456789012345678901"
-    from app.core.totp import _hotp, build_aad as build_totp_aad, current_timestep, encrypt_secret
+    from app.core.totp import _hotp, current_timestep, encrypt_secret
+    from app.core.totp import build_aad as build_totp_aad
 
     code = _hotp(active_totp_secret, current_timestep())
     monkeypatch.setattr(settings, "totp_encryption_key", TEST_KEK)
@@ -865,7 +866,8 @@ async def test_sign_digest_wrong_totp_never_signs(
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     active_key_row = _key_row(private_key=private_key, estado="activo", cert_pem=cert_pem)
 
-    from app.core.totp import build_aad as build_totp_aad, encrypt_secret  # noqa: PLC0415
+    from app.core.totp import build_aad as build_totp_aad  # noqa: PLC0415
+    from app.core.totp import encrypt_secret
 
     totp_ciphertext, totp_nonce = encrypt_secret(
         b"0123456789012345678901",
