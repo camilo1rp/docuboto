@@ -135,6 +135,42 @@ Entity
 
 **Critical rule:** Without a TRD configured for a serie, the expediente that uses it cannot be closed.
 
+**The TRD is a validated instrument, not a configuration table ([ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md)).** Every version of a serie is an **append-only** row: a substantive change (retention, disposition, name…) is never applied in place except over a `borrador` version — it creates a new version (`version+1`). An expediente pins, **at closure**, the specific version that governs it (`trd_serie_id` is frozen forever at that moment); later versions of the same serie **never** retroactively alter the disposition calendar of an already closed expediente.
+
+The AGN Agreement 001/2024 circuit (which compiles 004/2019), modelled as the instrument's state:
+
+```
+[ new serie ] ──► borrador ──approve──► aprobada ──validate──► convalidada
+                     ▲                     │                        │
+                     └─────return──────────┘   (derogates the       │
+                       (reason mandatory,       previous current    │
+                        the Committee record     one, re-points     │
+                        becomes VOID)            orphans)           ▼
+ [ pre-existing series ] ──► migrada ──ratify (real act)──► convalidada
+                                 │                                  │
+                                 └────────── derogate ──────────────┴──► derogada
+```
+
+| State | Governs a **closure** | Governs **effective destruction** | Mutable content |
+|---|---|---|---|
+| `borrador` | No | No | Yes (the only state editable in place) |
+| `aprobada` | No (Committee approval, a necessary but insufficient condition) | No | No |
+| `convalidada` | Yes | Yes | No (except `pdfa_profile`; the act is immutable at engine level — migration 038) |
+| `migrada` | Yes, **declaring it** (`serie_estado: "migrada"` in the snapshot; expediente flagged `trd_revision_requerida`) | No | No (except `pdfa_profile`) |
+| `derogada` | No | Only if the frozen snapshot shows it **was validated** before being derogated (`acto_administrativo` present) — never if it derogated a `migrada` that never went through the circuit | No |
+
+`migrada` is the honest backfill state: "this serie existed before the validation model; the system does not know whether it was validated, nor under which act" — a validation nobody performed is never asserted (RF-FIR-15). **Ratification** (`migrada → convalidada`, with the real administrative act) creates no new version and clears the `trd_revision_requerida` flag from the expedientes closed under it. `aprobada` now has an honest exit besides `convalidar`: **`devolver`** (migration 038) returns it to `borrador` with a reason, for the ordinary case of "the validating body asks for adjustments" — previously the only door was to declare a validation that might not have taken place.
+
+Effective destruction (final disposition; today with no job to execute it) requires the **frozen snapshot** left in `expedientes.disposition` at closure to describe a validated instrument: `serie_estado == "convalidada"`, or `"derogada"` with `acto_administrativo` present (D5, gate corrected in migration 038 — the original criterion read the LIVE row and would have blocked legitimate destructions of expedientes whose instrument was validated and later derogated by a subsequent update).
+
+#### TVD — Documentary Appraisal Schedule for accumulated holdings ([ADR-026](adr/ADR-026-tvd-fondo-acumulado.md), Increment 1)
+
+**Why does it exist?** An institution with **accumulated holdings** (*fondo acumulado*) — documentation already produced, piled up without archival criteria, typically from suppressed units or wound-up entities — has no TRD to apply (a TRD orders **future** production; accumulated holdings are already produced). AGN Agreement 001/2024 (which compiles 004/2019) subjects the TVD to the **same circuit** as the TRD: drafting, Committee approval, Council validation, RUSD registration, publication.
+
+**It is the same instrument, with different content.** A TVD is **not** a table of its own: it is a `tipo_instrumento ∈ {TRD, TVD}` discriminator over the same `trd_series` (the reason: `expedientes.trd_serie_id` is the single seam from which nine points derive legal consequences, seven of them feeding WORM COMPLIANCE `retain_until` — irreversible; forking that seam is the design the ADR rejects). It shares with the TRD the full validation circuit, the states, the append-only rule and the final-disposition gate. It differs in that it has no **records-management phase** (the holdings are already in central/historical archive), its extreme dates (`fecha_extrema_inicial`/`fecha_extrema_final`) belong to the **holdings**, not to a closure, and its `justificacion_valoracion` **is the object** of the instrument — the reasoning that would be cited in a destruction record.
+
+**The property that defines Increment 1 (all that is implemented today): a TVD does not yet govern any expediente.** The engine guarantees this with a trigger that rejects **any** expediente bound to a TVD row — zero WORM risk by construction. An institution can register, approve, validate, register in the RUSD and publish its TVD right now; binding accumulated-holdings expedientes to it and computing their retention calendar (from the extreme date, **never** from `closed_at` — computing from today would make documentation whose retention has already lapsed undeletable for decades) is Increment 2, not yet built.
+
 ---
 
 ### Anexo
@@ -210,10 +246,16 @@ Person or entity that receives an outgoing radicado.
 ## Compliance and lifecycle entities (F3–F6)
 
 ### Electronic index — índice electrónico (E15)
-Functional equivalent of **page numbering (foliación) + control sheet (hoja de control)** (AGN Agreement 001/2024). An **append-only versioned XML** document per expediente, with the SHA-256 hash of each document (`valor_huella`), its immutable original order, and the hash of the index itself (`xml_sha256`). It is created at **version 0** when the expediente is opened and is regenerated automatically when radicados are linked/excluded. **Rule:** once the index is signed at closing, the expediente is immutable. (The XAdES signature at closing depends on the `signature-service`, pending.)
+Functional equivalent of **page numbering (foliación) + control sheet (hoja de control)** (AGN Agreement 001/2024). An **append-only versioned XML** document per expediente, with the SHA-256 hash of each document (`valor_huella`), its immutable original order, and the hash of the index itself (`xml_sha256`). It is created at **version 0** when the expediente is opened and is regenerated automatically when radicados are linked/excluded. **Rule:** once the index is signed at closing, the expediente is immutable. Verifying the index checks each `valor_huella` against the document's current hash, **re-hashes the stored XML against `xml_sha256`** (`huella_indice_ok`, detecting alteration of the index itself) **and** validates the index's signature against the `signature-service` (XAdES-B with the institutional seal, ADR-016 Inc.1). **XAdES-T/LT/LTA** (TSA, CRL/OCSP) is implemented for the index seal (E06 Inc.4/5/7); what remains outstanding is ONAC accreditation, not the format.
+
+**Index profile v4 — "fully conformant" (E15, [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md)):** new indexes are generated in `urn:orpycamcp:indice:v4`, which **closes the 4 residues of v3** at capability level. It adds, **per document**, the **producing dependencia** (supplied at link time — the signing build is deterministic and does not call document-service; it is omitted on legacy documents lacking the datum) and the **declaration date** (= the date of incorporation into the expediente, the Orfeo `SGD_EXP_FECH` equivalent); and, **in the header**, an **access policy** (`no-read-up` + permission + minimum clearance — stable and portable across transfers, unlike a dump of roles) alongside the security level, an **attestation of the audit trail** (a reference to `public.audit_log`, embedding no live entries) and a per-instance **conformance marker**. **Reads** of the expediente/index are now **recorded** in the access trail (`audit_log`), closing the access history Orfeo never had. The v4 **content_hash canonicalises the whole tree** (v3 covered only `<documentos>`). It is "fully conformant" at the level of the **profile/capability**; completeness is **per instance** (a legacy expediente may omit the producing dependencia and its trail starts at instrumentation) and every index **self-declares it** in `<conformidad>` — RF-FIR-15, do not over-declare. The **live** datum of which roles may access is queried separately (`GET /expedientes/{id}/roles-autorizados`), **outside** the signed artifact.
+
+**Index profile v3 — "extended conformance" (E15, [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md)):** v3 indexes carry, per document: RT-15 metadata (format/size/foliation/date of incorporation, captured at link time), a **STABLE documentary order** (assigned at link time with an atomic `MAX+1`, **immutable**, never renumbered — the principle of original order, AGN 001/2024 art. 4.3.2.3), an **access control list** (the expediente's security level) and, in the header, **context** (`fechaPrimerUso` + series/subseries by name). **Excluding** a radicado is a **soft delete** (`estado='excluido'`): the ordinal is not reused and the index emits the excluded document flagged (`excluido="true"` + date/reason) → a **traceable gap**. Indexes in **v1/v2/v3 that are already signed remain immutable**. It is **"extended conformance"**, **not** "fully conformant": it lacks a per-document **access history**, the **declaration date**, **role-based ACLs** (which live in auth-service) and the **producing dependencia** (no field) — full conformance is not claimed while those are missing (RF-FIR-15).
 
 ### Electronic signature — firma electrónica (E06)
-Verifiable record of who signed a radicado/anexo and when: identity (Keycloak) + **SHA-256 hash** of the content + timestamp + reason. A signature verifies if its hash matches the current content (tampering detection). It is an **electronic** signature (Decree 2364/2012); the **digital** PKI/X.509 signature (XAdES/PAdES/TSA) is planned in a dedicated `signature-service` (ADR-016).
+Verifiable record of who signed a radicado/anexo and when: identity (the signer's JWT, RF-FIR-11) + **SHA-256 hash** of the content + the server's timestamp + an HMAC `firma_blob` with a service secret (RF-FIR-12). A signature verifies if its recomputed HMAC matches (tampering detection). It is a **basic electronic** signature (Law 527/1999; DUR 1074/2015 Ch. 47); the **digital** PKI/X.509 signature (XAdES/PAdES/TSA) lives in the `signature-service` (ADR-016) — implemented for the institutional seal and for the per-user personal signature, **not ONAC-accredited**.
+
+**Signature chain** (`firma_solicitud` + `firma_cadena`): a request groups the ordered signing turns (`orden` 1..N) for a documentary object. The **active turn** is the lowest pending order; signer N+1 can only act after turn N has been signed (RF-FIR-04). Turn and request states: `pendiente → firmado` or `rechazado` (a rejection stops the whole chain). The "signer's inbox" lists, across documents, the requests whose active turn belongs to the user. Every act (create/sign/reject) is recorded in `audit_log` (RF-FIR-12).
 
 ### Physical archive: Location, Conservation unit, Signatura (E17)
 ArchivesSpace pattern (ADR-017): the **Location** (physical address, recursive hierarchy site→…→drawer) is separated from the **Conservation unit** (movable container: box/folder/file…). The **signatura topográfica** (topographic call number, `DEP01-E05-C0124`) locates the unit and is the intellectual↔physical bridge. A hybrid expediente is linked to its units with a folio range. Units are **lent** (`lent→returned→overdue`) with an append-only movement history.

@@ -113,42 +113,46 @@ class BatchArchiveService:
 
                     trd_id = UUID(data["trd_serie_id"]) if data.get("trd_serie_id") else None
 
-                    # ADR-026 (Increment 2) -- NUEVO MODO DE FALLO, documentado
-                    # aquí a propósito (ADR-026 §"Impacto en lo existente" #5):
-                    # este INSERT no declara `origen`, así que TODO expediente
-                    # de este import cae al `DEFAULT 'corriente'` de la
-                    # migración 041. Si `trd_id` resuelve a una TVD, la Capa 4
-                    # (`trg_expedientes_pin_tipo`, relajada por esa misma
-                    # migración a `origen <-> tipo_instrumento`) lo RECHAZA --
-                    # ya no con el mensaje ESTRICTO de la 039 ("el amarre de
-                    # fondo acumulado llega en el Increment 2"), sino con el de
-                    # la 041 ("un expediente origen=corriente no puede
-                    # amarrarse a la TVD ..."), y el `except` de más abajo lo
-                    # captura como fallo de ese ítem (mismo tratamiento que
-                    # cualquier otra violación, `failed_items`/asiento
-                    # 'archive.batch_item_failed' -- no revienta el lote
-                    # entero). Es el comportamiento BUSCADO: un import masivo
-                    # de fondo acumulado necesita declarar `origen` y las
-                    # fechas extremas por ítem, que este método NO hace
-                    # todavía -- soportarlo queda fuera del alcance de este
-                    # incremento (ADR-026 no lo pide explícitamente para
-                    # `batch_service`, solo exige documentar el modo de
-                    # fallo). Antes de la 039/041, un `trd_id` de TVD ni
-                    # siquiera podía existir; antes de la 041 en concreto,
-                    # CUALQUIER TVD fallaba aquí (Capa 4 estricta) -- después
-                    # de la 041 solo fallan las TVD, no las TRD, que es la
-                    # combinación correcta para un import declarado
-                    # `corriente` por defecto.
+                    # ADR-026 (Increment 3) -- el import masivo ya declara
+                    # `origen` y las fechas extremas por ítem. Hasta aquí no lo
+                    # hacía y TODO expediente caía al `DEFAULT 'corriente'` de
+                    # la migración 041, así que un `trd_id` de TVD lo rechazaba
+                    # el trigger de la Capa 4 (`trg_expedientes_pin_tipo`,
+                    # relajado por esa migración a `origen <-> tipo_instrumento`)
+                    # -- un modo de fallo que el ADR pedía documentar y que
+                    # este incremento cierra. Cerrarlo importa porque migrar un
+                    # fondo acumulado (documentación de una entidad liquidada,
+                    # miles de expedientes) ES una carga masiva: obligar a
+                    # crearlos de uno en uno por la ruta unitaria era la peor
+                    # de las dos opciones.
+                    #
+                    # La FORMA (`fecha_extrema_final` obligatoria, coherencia
+                    # de fechas, TVD exigida) ya la validó Pydantic con la
+                    # MISMA función que la ruta unitaria
+                    # (`validar_forma_fondo_acumulado`), así que un ítem mal
+                    # formado ni siquiera llega a esta transacción. Lo que
+                    # sigue gobernando la COHERENCIA `origen <-> instrumento`
+                    # es el trigger de la Capa 4, en el motor: declarar
+                    # `fondo_acumulado` sobre una TRD, o `corriente` sobre una
+                    # TVD, sigue fallando ahí y el `except` de abajo lo captura
+                    # como fallo DE ESE ÍTEM (`failed_items` + asiento
+                    # 'archive.batch_item_failed'), sin reventar el lote.
                     exp_row = await self.conn.fetchrow(
                         """
-                        INSERT INTO expedientes (code, name, description, trd_serie_id)
-                        VALUES ($1, $2, $3, $4)
+                        INSERT INTO expedientes (
+                            code, name, description, trd_serie_id,
+                            origen, fecha_extrema_inicial, fecha_extrema_final
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
                         RETURNING id, nivel_seguridad
                         """,
                         code,
                         exp.name,
                         exp.description,
                         trd_id,
+                        exp.origen,
+                        exp.fecha_extrema_inicial,
+                        exp.fecha_extrema_final,
                     )
                     exp_id: UUID = exp_row["id"]
 

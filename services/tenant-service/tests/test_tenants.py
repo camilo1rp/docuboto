@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import make_tenant_record
+from tests.conftest import INTERNAL_HEADERS, make_tenant_record
 
 # ---------------------------------------------------------------------------
 # POST /api/v1/tenants
@@ -43,6 +43,7 @@ async def test_create_tenant_success(client_with_conn: tuple[AsyncClient, AsyncM
     response = await client.post(
         "/api/v1/tenants",
         json={"slug": "icetex", "name": "Instituto ICETEX", "code": "ICETEX"},
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 201
@@ -66,6 +67,7 @@ async def test_create_tenant_duplicate_slug(
     response = await client.post(
         "/api/v1/tenants",
         json={"slug": "icetex", "name": "Instituto ICETEX", "code": "ICETEX2"},
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 409
@@ -86,6 +88,7 @@ async def test_create_tenant_duplicate_code(
     response = await client.post(
         "/api/v1/tenants",
         json={"slug": "new-inst", "name": "New Institution", "code": "ICETEX"},
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 409
@@ -99,6 +102,7 @@ async def test_create_tenant_invalid_slug(client: AsyncClient) -> None:
     response = await client.post(
         "/api/v1/tenants",
         json={"slug": "Mi Institución", "name": "Test", "code": "TEST"},
+        headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 422
 
@@ -109,6 +113,7 @@ async def test_create_tenant_invalid_code(client: AsyncClient) -> None:
     response = await client.post(
         "/api/v1/tenants",
         json={"slug": "demo", "name": "Test", "code": "te st!"},
+        headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 422
 
@@ -130,7 +135,7 @@ async def test_list_tenants(client_with_conn: tuple[AsyncClient, AsyncMock]) -> 
     mock_conn.fetch.return_value = records
     mock_conn.fetchval.return_value = 2
 
-    response = await client.get("/api/v1/tenants")
+    response = await client.get("/api/v1/tenants", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 200
     assert response.headers["x-total-count"] == "2"
@@ -148,7 +153,7 @@ async def test_list_tenants_with_status_filter(
     mock_conn.fetch.return_value = [make_tenant_record(status="inactive")]
     mock_conn.fetchval.return_value = 1
 
-    response = await client.get("/api/v1/tenants?status=inactive")
+    response = await client.get("/api/v1/tenants?status=inactive", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 200
     assert response.headers["x-total-count"] == "1"
@@ -169,7 +174,7 @@ async def test_get_tenant_by_id(client_with_conn: tuple[AsyncClient, AsyncMock])
     record = make_tenant_record(slug="icetex", code="ICETEX", tenant_id=tenant_id)
     mock_conn.fetchrow.return_value = record
 
-    response = await client.get(f"/api/v1/tenants/{tenant_id}")
+    response = await client.get(f"/api/v1/tenants/{tenant_id}", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 200
     body = response.json()
@@ -183,7 +188,7 @@ async def test_get_tenant_not_found(client_with_conn: tuple[AsyncClient, AsyncMo
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.get(f"/api/v1/tenants/{uuid.uuid4()}")
+    response = await client.get(f"/api/v1/tenants/{uuid.uuid4()}", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 404
     body = response.json()
@@ -202,7 +207,7 @@ async def test_get_tenant_by_slug(client_with_conn: tuple[AsyncClient, AsyncMock
     record = make_tenant_record(slug="icetex", code="ICETEX")
     mock_conn.fetchrow.return_value = record
 
-    response = await client.get("/api/v1/tenants/by-slug/icetex")
+    response = await client.get("/api/v1/tenants/by-slug/icetex", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 200
     body = response.json()
@@ -212,12 +217,13 @@ async def test_get_tenant_by_slug(client_with_conn: tuple[AsyncClient, AsyncMock
 @pytest.mark.asyncio
 async def test_get_tenant_by_slug_not_found(
     client_with_conn: tuple[AsyncClient, AsyncMock],
+    headers=INTERNAL_HEADERS,
 ) -> None:
     """GET by slug returns 404 when slug is unknown."""
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.get("/api/v1/tenants/by-slug/unknown-slug")
+    response = await client.get("/api/v1/tenants/by-slug/unknown-slug", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 404
     assert response.json()["detail"]["error"] == "tenant_not_found"
@@ -245,6 +251,7 @@ async def test_update_tenant(client_with_conn: tuple[AsyncClient, AsyncMock]) ->
     response = await client.patch(
         f"/api/v1/tenants/{tenant_id}",
         json={"name": "ICETEX Updated", "status": "inactive"},
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 200
@@ -267,6 +274,7 @@ async def test_update_tenant_slug_immutable(
         f"/api/v1/tenants/{tenant_id}",
         # TenantUpdate schema has no slug field; extra fields are ignored by Pydantic
         json={"slug": "hacked-slug", "name": "New Name"},
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 200
@@ -283,6 +291,7 @@ async def test_update_tenant_not_found(client_with_conn: tuple[AsyncClient, Asyn
     response = await client.patch(
         f"/api/v1/tenants/{uuid.uuid4()}",
         json={"name": "Does Not Matter"},
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 404
@@ -302,3 +311,90 @@ async def test_health_check(client: AsyncClient) -> None:
     body = response.json()
     assert body["database"] == "ok"
     assert body["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# D-02 — el registro de instituciones está sellado servicio-a-servicio
+#
+# `public.tenants` es el registro de TODAS las entidades y estas cinco rutas lo
+# leen y lo escriben con una conexión SIN `search_path` de tenant. Su único
+# control era no estar en la tabla de ruteo del gateway — una ausencia, no un
+# control, y un salto de ruta `..` la atravesaba (cerrado en paralelo en
+# `api-gateway/app/middleware/path_guard.py`; las dos capas son independientes
+# a propósito).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("metodo", "ruta"),
+    [
+        ("post", "/api/v1/tenants"),
+        ("get", "/api/v1/tenants"),
+        ("get", "/api/v1/tenants/by-slug/icetex"),
+        ("get", "/api/v1/tenants/11111111-1111-1111-1111-111111111111"),
+        ("patch", "/api/v1/tenants/11111111-1111-1111-1111-111111111111"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_todas_las_rutas_exigen_token_interno(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+    metodo: str,
+    ruta: str,
+) -> None:
+    """Las CINCO rutas, no una muestra: el gate está a nivel de router.
+
+    Se parametrizan todas a propósito. Un test sobre una sola ruta dejaría que
+    una futura excepción ruta-a-ruta pasara desapercibida, que es exactamente
+    la forma en que este servicio perdió la autorización la primera vez.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = make_tenant_record()
+
+    # `AsyncClient.get` no acepta `json=`; se manda solo donde el método lo lleva.
+    kwargs = {"json": {}} if metodo in {"post", "patch"} else {}
+    response = await getattr(client, metodo)(ruta, **kwargs)
+
+    # 401 y no 422: el gate del router corre ANTES de validar el cuerpo, así que
+    # un POST sin payload válido tampoco filtra información sobre el esquema.
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "missing_internal_token"
+
+
+@pytest.mark.asyncio
+async def test_token_incorrecto_es_403(client_with_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    """Token presente pero equivocado: 403, distinto del 401 de token ausente."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = make_tenant_record()
+
+    response = await client.get(
+        "/api/v1/tenants",
+        headers={"X-Internal-Token": "token-de-otro"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "invalid_internal_token"
+
+
+@pytest.mark.asyncio
+async def test_sin_token_configurado_rechaza_todo(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-closed: un despliegue que no configure el token deja el registro inalcanzable.
+
+    Es el estado por DEFECTO y es el correcto: hoy no existe ningún consumidor
+    legítimo por HTTP (el alta la hace `scripts/init_tenant.py` escribiendo
+    directo a la BD). Un default que abriera el registro sería fail-open.
+    """
+    from app.core import config as cfg_module
+
+    monkeypatch.setattr(cfg_module.settings, "internal_service_token", "")
+    client, _ = client_with_conn
+
+    response = await client.get(
+        "/api/v1/tenants",
+        headers={"X-Internal-Token": "cualquiera"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "internal_access_not_configured"

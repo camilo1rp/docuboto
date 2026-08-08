@@ -219,3 +219,18 @@ async def test_content_disposition_sanitized(cmis_ctx: tuple[AsyncClient, AsyncM
     assert 'filename="evil' in cd  # comillas y saltos removidos del segmento ascii
     # el mime malicioso se descartó al patrón seguro
     assert resp.headers["content-type"] == "application/octet-stream"
+
+
+# ---------------------------------------------------------------------------
+# La interoperabilidad pública anónima está APAGADA por defecto (E11): estos
+# tests ejercitan el protocolo, así que la encienden explícitamente. El
+# comportamiento del interruptor en sí se prueba aparte, en
+# `test_public_interop_switch.py`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _habilitar_interop(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core import config as cfg_module
+
+    monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)

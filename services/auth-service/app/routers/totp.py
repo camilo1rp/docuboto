@@ -48,6 +48,8 @@ from app.schemas.totp import (
     TotpActivateResponse,
     TotpEnrollRequest,
     TotpEnrollResponse,
+    TotpRecoveryRegenerateRequest,
+    TotpRecoveryRegenerateResponse,
     TotpRevokeRequest,
     TotpRevokeResponse,
     TotpStatusResponse,
@@ -110,7 +112,10 @@ async def enroll_totp(
 ) -> TotpEnrollResponse:
     tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
     result = await TotpService(conn).enroll(
-        caller.user_id, tenant_slug, payload.step_up_totp_code
+        caller.user_id,
+        tenant_slug,
+        payload.step_up_totp_code,
+        payload.step_up_recovery_code,
     )
     # The secret is embedded in otpauth_uri — never allow a cache/proxy to store it.
     response.headers["Cache-Control"] = "no-store"
@@ -125,12 +130,18 @@ async def enroll_totp(
 async def activate_totp(
     payload: TotpActivateRequest,
     request: Request,
+    response: Response,
     caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> TotpActivateResponse:
     tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
-    return await TotpService(conn).activate(caller.user_id, tenant_slug, payload.code)
+    result = await TotpService(conn).activate(caller.user_id, tenant_slug, payload.code)
+    # La respuesta lleva los códigos de recuperación en claro — la única vez
+    # que existen fuera de la memoria del usuario. Mismo `no-store` que el
+    # `otpauth://` de enroll: ninguna caché ni proxy debe conservarlos.
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @router.get(
@@ -158,8 +169,37 @@ async def revoke_totp(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> TotpRevokeResponse:
     tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
-    await TotpService(conn).revoke_self(caller.user_id, tenant_slug, payload.step_up_totp_code)
+    await TotpService(conn).revoke_self(
+        caller.user_id,
+        tenant_slug,
+        payload.step_up_totp_code,
+        payload.step_up_recovery_code,
+    )
     return TotpRevokeResponse(estado="revocado")
+
+
+@router.post(
+    "/recovery-codes",
+    response_model=TotpRecoveryRegenerateResponse,
+    summary="Regenerate the caller's recovery codes — reveals them exactly once",
+)
+async def regenerate_recovery_codes(
+    payload: TotpRecoveryRegenerateRequest,
+    request: Request,
+    response: Response,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> TotpRecoveryRegenerateResponse:
+    tenant_slug = await _resolve_tenant_slug_for_aad(request, credentials)
+    result = await TotpService(conn).regenerate_recovery_codes(
+        caller.user_id,
+        tenant_slug,
+        payload.step_up_totp_code,
+        payload.step_up_recovery_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 # ---------------------------------------------------------------------------

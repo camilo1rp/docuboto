@@ -32,6 +32,13 @@ import asyncpg
 from fastapi import HTTPException, status
 
 from app.core.config import settings
+from app.core.recovery_codes import (
+    RECOVERY_CODE_COUNT,
+    generate_recovery_codes,
+    hash_recovery_code,
+    new_salt,
+    verify_recovery_code,
+)
 from app.core.totp import (
     TotpAttempt,
     build_aad,
@@ -47,6 +54,7 @@ from app.schemas.totp import (
     InternalTotpVerifyResponse,
     TotpActivateResponse,
     TotpEnrollResponse,
+    TotpRecoveryRegenerateResponse,
     TotpStatusResponse,
 )
 
@@ -153,6 +161,46 @@ class TotpService:
                 },
             )
 
+    async def _consume_recovery_code(self, user_id: uuid.UUID, code: str | None) -> bool:
+        """Comprueba y CONSUME un código de recuperación. ``False`` si no hay
+        código, no casa con ninguno disponible, o pierde la carrera del
+        consumo.
+
+        El barrido es sobre los ~10 códigos no usados del usuario y compara
+        TODOS en tiempo constante: no corta en el primer acierto ni distingue
+        "no hay códigos" de "el código no casa" por tiempo. El consumo es un
+        UPDATE condicional (`WHERE used_at IS NULL`), de modo que dos
+        peticiones simultáneas con el mismo código no lo gastan dos veces.
+        """
+        if not code:
+            return False
+        candidatos = await self._repo.list_available_recovery_codes(user_id)
+        encontrado: uuid.UUID | None = None
+        for fila in candidatos:
+            if verify_recovery_code(
+                code, salt=fila["code_salt"], expected_hash=fila["code_hash"]
+            ):
+                encontrado = fila["id"]
+        if encontrado is None:
+            return False
+        return await self._repo.consume_recovery_code(encontrado)
+
+    async def _emit_recovery_codes(
+        self, *, totp_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[str]:
+        """Genera un lote nuevo, persiste solo sus hashes y devuelve los
+        códigos en claro — la ÚNICA vez que existen fuera de la memoria del
+        usuario. El llamante debe estar dentro de una transacción."""
+        codigos = generate_recovery_codes(RECOVERY_CODE_COUNT)
+        hashes = []
+        for codigo in codigos:
+            salt = new_salt()
+            hashes.append((hash_recovery_code(codigo, salt=salt), salt))
+        await self._repo.replace_recovery_codes(
+            totp_id=totp_id, user_id=user_id, hashes=hashes
+        )
+        return codigos
+
     async def _bump_failure(self, row: asyncpg.Record) -> None:
         """Persists a failed attempt (activate() path) via a single atomic
         UPDATE (see ``TotpRepository.record_failure``) — never resets the
@@ -172,11 +220,12 @@ class TotpService:
         user_id: uuid.UUID,
         tenant_slug: str,
         step_up_code: str | None,
+        step_up_recovery_code: str | None = None,
     ) -> TotpEnrollResponse:
         existing = await self._repo.get_by_user(user_id)
 
         if existing is not None and existing["estado"] == "activo":
-            if not step_up_code:
+            if not step_up_code and not step_up_recovery_code:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
@@ -185,28 +234,49 @@ class TotpService:
                         "status": 409,
                     },
                 )
-            secret = self._decrypt(existing, tenant_slug=tenant_slug, user_id=user_id)
-            attempt = classify_totp_attempt(
-                secret,
-                step_up_code,
-                last_timestep=existing["last_timestep"],
-                period=existing["periodo"],
-                digits=existing["digitos"],
-                skew=settings.totp_skew_steps,
-            )
-            if attempt.outcome != "valid":
-                raise _step_up_invalido()
-            async with self._conn.transaction():
-                # Consume the step-up code (anti-replay) before revoking — a
-                # captured step-up code must not be reusable elsewhere either.
-                await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
-                await self._repo.revoke(existing["id"])
-                new_row, raw_secret = await self._create_pending(user_id, tenant_slug)
-            action = "totp.reenrolado"
+            # El código de recuperación se evalúa PRIMERO porque es el camino
+            # de quien perdió el dispositivo: reenrolar con un teléfono nuevo
+            # es exactamente para lo que existe. Un TOTP presente prevalece
+            # sobre él solo si además es válido (rama de abajo).
+            if step_up_code:
+                secret = self._decrypt(existing, tenant_slug=tenant_slug, user_id=user_id)
+                attempt = classify_totp_attempt(
+                    secret,
+                    step_up_code,
+                    last_timestep=existing["last_timestep"],
+                    period=existing["periodo"],
+                    digits=existing["digitos"],
+                    skew=settings.totp_skew_steps,
+                )
+                if attempt.outcome != "valid":
+                    raise _step_up_invalido()
+                async with self._conn.transaction():
+                    # Consume the step-up code (anti-replay) before revoking — a
+                    # captured step-up code must not be reusable elsewhere either.
+                    await self._repo.advance_timestep(
+                        user_id, new_timestep=attempt.consumed_timestep
+                    )
+                    await self._repo.revoke(existing["id"])
+                    # Los códigos del lote anterior mueren con la credencial
+                    # anterior: `_create_pending` no los borra y la fila vieja
+                    # se marca 'revocado' en vez de borrarse, así que el
+                    # CASCADE de la 015 no se dispara.
+                    await self._repo.delete_recovery_codes(user_id)
+                    new_row, raw_secret = await self._create_pending(user_id, tenant_slug)
+                action = "totp.reenrolado"
+            else:
+                async with self._conn.transaction():
+                    if not await self._consume_recovery_code(user_id, step_up_recovery_code):
+                        raise _step_up_invalido()
+                    await self._repo.revoke(existing["id"])
+                    await self._repo.delete_recovery_codes(user_id)
+                    new_row, raw_secret = await self._create_pending(user_id, tenant_slug)
+                action = "totp.reenrolado_con_recuperacion"
         elif existing is not None:
             # pendiente_activacion — no credential to protect yet, no step-up needed.
             async with self._conn.transaction():
                 await self._repo.revoke(existing["id"])
+                await self._repo.delete_recovery_codes(user_id)
                 new_row, raw_secret = await self._create_pending(user_id, tenant_slug)
             action = "totp.reenrolado"
         else:
@@ -265,12 +335,23 @@ class TotpService:
         async with self._conn.transaction():
             await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
             await self._repo.activate(row["id"])
+            # Los códigos se emiten AL ACTIVAR, no al enrolar: hasta aquí la
+            # credencial no protege nada, y entregar la vía de recuperación de
+            # algo que aún puede quedarse en 'pendiente_activacion' es
+            # entregar un secreto de más. Van en la MISMA transacción que la
+            # activación: no existe un instante con TOTP activo y sin
+            # recuperación, que es justo el estado que encierra al usuario.
+            codigos = await self._emit_recovery_codes(totp_id=row["id"], user_id=user_id)
 
         await self._audit_event(user_id=user_id, tenant_slug=tenant_slug, action="totp.activado")
 
         activated = await self._repo.get_by_user(user_id)
         assert activated is not None
-        return TotpActivateResponse(estado="activo", activated_at=activated["activated_at"])
+        return TotpActivateResponse(
+            estado="activo",
+            activated_at=activated["activated_at"],
+            recovery_codes=codigos,
+        )
 
     # ------------------------------------------------------------------
     # Status
@@ -284,14 +365,79 @@ class TotpService:
             estado=row["estado"],
             activated_at=row["activated_at"],
             locked_until=row["locked_until"],
+            recovery_codes_restantes=await self._repo.count_available_recovery_codes(user_id),
         )
+
+    # ------------------------------------------------------------------
+    # Regenerar códigos de recuperación
+    # ------------------------------------------------------------------
+
+    async def regenerate_recovery_codes(
+        self,
+        user_id: uuid.UUID,
+        tenant_slug: str,
+        step_up_code: str | None,
+        step_up_recovery_code: str | None,
+    ) -> TotpRecoveryRegenerateResponse:
+        """Emite un lote nuevo, invalidando el anterior por completo.
+
+        Exige step-up por la misma razón que revocar: un lote nuevo deja sin
+        efecto el que el usuario tiene guardado, así que dispararlo desde una
+        sesión secuestrada dejaría al titular sin vía de recuperación. Vale
+        cualquiera de los dos factores — quien gastó su último código
+        legítimamente necesita poder rellenar la reserva sin tener aún el
+        teléfono nuevo enrolado.
+        """
+        row = await self._repo.get_by_user(user_id)
+        if row is None or row["estado"] != "activo":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "totp_no_activo",
+                    "detail": "No active TOTP credential",
+                    "status": 409,
+                },
+            )
+        self._assert_not_locked(row)
+
+        async with self._conn.transaction():
+            if step_up_code:
+                secret = self._decrypt(row, tenant_slug=tenant_slug, user_id=user_id)
+                attempt = classify_totp_attempt(
+                    secret,
+                    step_up_code,
+                    last_timestep=row["last_timestep"],
+                    period=row["periodo"],
+                    digits=row["digitos"],
+                    skew=settings.totp_skew_steps,
+                )
+                if attempt.outcome != "valid":
+                    raise _step_up_invalido()
+                await self._repo.advance_timestep(
+                    user_id, new_timestep=attempt.consumed_timestep
+                )
+            elif not await self._consume_recovery_code(user_id, step_up_recovery_code):
+                raise _step_up_invalido()
+            codigos = await self._emit_recovery_codes(totp_id=row["id"], user_id=user_id)
+
+        await self._audit_event(
+            user_id=user_id,
+            tenant_slug=tenant_slug,
+            action="totp.recovery_codes_regenerados",
+            payload={"emitidos": len(codigos)},
+        )
+        return TotpRecoveryRegenerateResponse(recovery_codes=codigos)
 
     # ------------------------------------------------------------------
     # Revoke (self-service disenroll)
     # ------------------------------------------------------------------
 
     async def revoke_self(
-        self, user_id: uuid.UUID, tenant_slug: str, step_up_code: str | None
+        self,
+        user_id: uuid.UUID,
+        tenant_slug: str,
+        step_up_code: str | None,
+        step_up_recovery_code: str | None = None,
     ) -> None:
         row = await self._repo.get_by_user(user_id)
         if row is None:
@@ -299,27 +445,41 @@ class TotpService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "no_totp", "detail": "No TOTP credential to revoke", "status": 404},
             )
+        action = "totp.desenrolado"
         if row["estado"] == "activo":
-            if not step_up_code:
+            if not step_up_code and not step_up_recovery_code:
                 raise _step_up_invalido()
-            secret = self._decrypt(row, tenant_slug=tenant_slug, user_id=user_id)
-            attempt = classify_totp_attempt(
-                secret,
-                step_up_code,
-                last_timestep=row["last_timestep"],
-                period=row["periodo"],
-                digits=row["digitos"],
-                skew=settings.totp_skew_steps,
-            )
-            if attempt.outcome != "valid":
-                raise _step_up_invalido()
-            async with self._conn.transaction():
-                await self._repo.advance_timestep(user_id, new_timestep=attempt.consumed_timestep)
-                await self._repo.revoke(row["id"])
+            if step_up_code:
+                secret = self._decrypt(row, tenant_slug=tenant_slug, user_id=user_id)
+                attempt = classify_totp_attempt(
+                    secret,
+                    step_up_code,
+                    last_timestep=row["last_timestep"],
+                    period=row["periodo"],
+                    digits=row["digitos"],
+                    skew=settings.totp_skew_steps,
+                )
+                if attempt.outcome != "valid":
+                    raise _step_up_invalido()
+                async with self._conn.transaction():
+                    await self._repo.advance_timestep(
+                        user_id, new_timestep=attempt.consumed_timestep
+                    )
+                    await self._repo.revoke(row["id"])
+                    await self._repo.delete_recovery_codes(user_id)
+            else:
+                async with self._conn.transaction():
+                    if not await self._consume_recovery_code(user_id, step_up_recovery_code):
+                        raise _step_up_invalido()
+                    await self._repo.revoke(row["id"])
+                    await self._repo.delete_recovery_codes(user_id)
+                action = "totp.desenrolado_con_recuperacion"
         else:
-            await self._repo.revoke(row["id"])
+            async with self._conn.transaction():
+                await self._repo.revoke(row["id"])
+                await self._repo.delete_recovery_codes(user_id)
 
-        await self._audit_event(user_id=user_id, tenant_slug=tenant_slug, action="totp.desenrolado")
+        await self._audit_event(user_id=user_id, tenant_slug=tenant_slug, action=action)
 
     # ------------------------------------------------------------------
     # Internal verify (called by signature-service, service-to-service)

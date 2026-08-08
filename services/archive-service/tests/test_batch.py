@@ -26,7 +26,7 @@ Mock call sequence — GET /api/v1/batch/expedientes/{job_id}/status (happy path
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -204,6 +204,103 @@ async def test_create_batch_expedientes_productora_longitud_inconsistente_422(
 
 
 # ---------------------------------------------------------------------------
+# BatchExpedienteCreate — fondo acumulado (ADR-026 Increment 3): el import
+# masivo ya declara `origen` y las fechas extremas. La forma la valida la MISMA
+# función que la ruta unitaria (`validar_forma_fondo_acumulado`), así que estos
+# tests son también el control de que las dos rutas no divergen.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_batch_expedientes_fondo_sin_fecha_extrema_final_422(
+    client_with_conn,
+) -> None:
+    """Un ítem `origen='fondo_acumulado'` SIN `fecha_extrema_final` es 422 antes
+    de tocar la BD. Es la regla que más importa de ADR-026 D4: esa fecha es la
+    base del calendario de retención, y sin ella el cálculo caería a `closed_at`
+    — que en fondo acumulado es hoy, y produciría un `retain_until` COMPLIANCE
+    imborrable durante décadas de más."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    payload = {
+        "expedientes": [
+            {
+                "name": "Fondo de la entidad liquidada",
+                "origen": "fondo_acumulado",
+                "trd_serie_id": str(uuid.uuid4()),
+            }
+        ]
+    }
+    resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
+    assert resp.status_code == 422
+    assert mock_conn.fetchval.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_batch_expedientes_fondo_sin_trd_serie_422(client_with_conn) -> None:
+    """Un fondo acumulado sin `trd_serie_id` es 422: debe apuntar a una TVD
+    (ADR-026 D3). Sin instrumento no hay bajo qué cerrarlo."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    payload = {
+        "expedientes": [
+            {
+                "name": "Fondo sin instrumento",
+                "origen": "fondo_acumulado",
+                "fecha_extrema_final": "1998-12-31",
+            }
+        ]
+    }
+    resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
+    assert resp.status_code == 422
+    assert mock_conn.fetchval.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_batch_expedientes_corriente_con_fechas_extremas_422(
+    client_with_conn,
+) -> None:
+    """La negación declarada: un expediente `corriente` NO carga fechas de un
+    fondo que no es (espejo de `expedientes_corriente_forma_check`, migración
+    041). Sin este lado, unas fechas residuales pasarían inadvertidas y el
+    expediente parecería un fondo acumulado a ojos de un informe."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    payload = {
+        "expedientes": [
+            {"name": "Corriente con fechas", "fecha_extrema_final": "1998-12-31"}
+        ]
+    }
+    resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
+    assert resp.status_code == 422
+    assert mock_conn.fetchval.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_batch_expedientes_fondo_bien_formado_202(client_with_conn) -> None:
+    """Control POSITIVO: un fondo acumulado completo se encola (202). Sin este
+    test los tres de arriba pasarían igual con un validador que rechazara
+    TODO."""
+    client, mock_conn = client_with_conn
+    # Camino feliz: gate + `RETURNING id` + `RETURNING created_at` del INSERT
+    # en `batch_jobs` (mismo triplete que `test_create_batch_expedientes_202`).
+    mock_conn.fetchval.side_effect = [True, JOB_ID, NOW]
+    payload = {
+        "expedientes": [
+            {
+                "name": "Fondo de la entidad liquidada",
+                "origen": "fondo_acumulado",
+                "trd_serie_id": str(uuid.uuid4()),
+                "fecha_extrema_inicial": "1985-01-01",
+                "fecha_extrema_final": "1998-12-31",
+            }
+        ]
+    }
+    resp = await client.post("/api/v1/batch/expedientes", json=payload, headers=TENANT_HEADERS)
+    assert resp.status_code == 202
+
+
+# ---------------------------------------------------------------------------
 # process_batch_expedientes (tarea detached) — auditoría forense por expediente
 # creado (E08 §9, Canal A). El router solo cubre el 202/403/422 de encolado;
 # este bloque ejercita el propio `BatchArchiveService.process_batch_expedientes`
@@ -328,6 +425,87 @@ async def test_process_batch_expedientes_emits_one_audit_entry_per_expediente() 
         payload = json.loads(payload_json)
         assert payload["id"] == str(exp_id)
         assert payload["nivel_seguridad"] == nivel
+
+
+@pytest.mark.asyncio
+async def test_process_batch_expedientes_persiste_origen_y_fechas_extremas() -> None:
+    """El `INSERT INTO expedientes` del lote lleva `origen` y las fechas
+    extremas del ítem (ADR-026 Increment 3). Es el test que discrimina de
+    verdad: mientras el INSERT no las declaraba, TODO expediente caía al
+    `DEFAULT 'corriente'` de la migración 041 y un fondo acumulado era
+    imposible de cargar en masa — el trigger de la Capa 4 lo rechazaba ítem a
+    ítem. Verifica los DOS ítems, corriente y fondo, para que un INSERT que
+    fijara `origen` a una constante no pase."""
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+
+    job_id = uuid.uuid4()
+    created_by = uuid.uuid4()
+    tvd_id = uuid.uuid4()
+
+    fondo_payload = json.dumps(
+        {
+            "name": "Fondo de la entidad liquidada",
+            "origen": "fondo_acumulado",
+            "trd_serie_id": str(tvd_id),
+            "fecha_extrema_inicial": "1985-01-01",
+            "fecha_extrema_final": "1998-12-31",
+        }
+    )
+    items = [
+        {"id": uuid.uuid4(), "item_index": 0, "payload": _item_payload("Expediente corriente")},
+        {"id": uuid.uuid4(), "item_index": 1, "payload": fondo_payload},
+    ]
+    conn.fetch.return_value = items
+
+    seq_counter = {"n": 0}
+
+    async def _fetchval(query, *args, **kwargs):
+        if "RETURNING created_by" in query:
+            return created_by
+        if "INSERT INTO expediente_sequences" in query:
+            seq_counter["n"] += 1
+            return seq_counter["n"]
+        if "SELECT hash" in query:
+            return None
+        raise AssertionError(f"fetchval inesperado en el test: {query}")
+
+    conn.fetchval.side_effect = _fetchval
+
+    exp_rows = iter([{"id": uuid.uuid4(), "nivel_seguridad": 1}, {"id": uuid.uuid4(), "nivel_seguridad": 1}])
+
+    async def _fetchrow(query, *args, **kwargs):
+        if "INSERT INTO expedientes" in query:
+            return next(exp_rows)
+        if "SELECT failed_items" in query:
+            return {"failed_items": 0}
+        raise AssertionError(f"fetchrow inesperado en el test: {query}")
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    service = BatchArchiveService(conn, "demo")
+    await service.process_batch_expedientes(job_id)
+
+    inserts = [
+        c.args
+        for c in conn.fetchrow.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO expedientes" in c.args[0]
+    ]
+    assert len(inserts) == 2
+
+    # Ítem 0 — corriente: origen por defecto y AMBAS fechas en NULL (la
+    # negación declarada de `expedientes_corriente_forma_check`).
+    _, _code, _name, _desc, trd_id_0, origen_0, fi_0, ff_0 = inserts[0]
+    assert origen_0 == "corriente"
+    assert trd_id_0 is None
+    assert fi_0 is None and ff_0 is None
+
+    # Ítem 1 — fondo acumulado: origen, TVD y fechas extremas REALES, como
+    # objetos `date` (no cadenas: asyncpg tipa la columna DATE).
+    _, _code, _name, _desc, trd_id_1, origen_1, fi_1, ff_1 = inserts[1]
+    assert origen_1 == "fondo_acumulado"
+    assert trd_id_1 == tvd_id
+    assert (fi_1, ff_1) == (date(1985, 1, 1), date(1998, 12, 31))
 
 
 # ---------------------------------------------------------------------------

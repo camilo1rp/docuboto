@@ -54,5 +54,24 @@ class Settings(BaseSettings):
     imap_use_ssl: bool = True
     imap_mailbox: str = "INBOX"
 
+    # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
+    # que el gateway declara público sin autenticación.
+    #
+    # **False por defecto, y no es una precaución genérica.** El único recorte que
+    # aplican esos endpoints es `nivel_seguridad = 1`, y el nivel 1 es el DEFAULT
+    # de la columna (migración 016) y del schema de entrada: la reserva depende de
+    # que un funcionario clasifique documento a documento, así que la polaridad
+    # efectiva es «público salvo que alguien se acuerde». Las PQRS ciudadanas
+    # entran por `routers/public.py` heredando ese nivel, con el asunto escrito por
+    # el propio ciudadano. Y `cmisselector=content` no sirve metadatos: sirve los
+    # BYTES del anexo.
+    #
+    # Publicar el registro de correspondencia de una entidad es una decisión de esa
+    # entidad —el esquema de publicación del art. 12 de la Ley 1712—, no un efecto
+    # secundario de desplegar el software. Este interruptor es el control provisional
+    # hasta que exista el opt-in por documento (columna `publicable` con acto
+    # explícito auditado); cuando exista, esto pasa a ser una segunda barrera.
+    public_interop_enabled: bool = False
+
 
 settings = Settings()

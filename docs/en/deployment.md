@@ -151,8 +151,49 @@ nano .env
 | `KEYCLOAK_HOSTNAME` | Keycloak FQDN domain | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password | `<secure password>` |
 | `KEYCLOAK_*_SECRET` | OAuth2 client secrets | `<32 char hex>` |
+| `FRONTEND_HOSTNAME` | Public FQDN of the SSR frontend (defines `ORIGIN` and the login `redirect_uri`) | `app.yourdomain.com` |
+| `API_PUBLIC_HOSTNAME` | Public FQDN of the api-gateway as the browser sees it | `api.yourdomain.com` |
+| `SIGNATURE_SECRET` | HMAC key for signature sealing (E06). Random, rotate it | `<openssl rand -base64 32>` |
+| `KNOWLEDGE_INTERNAL_TOKEN` | Internal ingestion token (E21). Empty ⇒ ingestion is fail-closed | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | SMTP host | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | SMTP password or application token | `app-specific-password` |
+
+### Issuer (`iss`) contract — critical
+
+The tokens' `iss` is **always the public URL** through which the browser logs in. Any
+service that validates JWTs (`auth-service`, `signature-service`) must expect exactly
+that `iss` or it will reject **every** token (fail-closed).
+
+- **Production (single host):** Keycloak runs with `--hostname-strict=true
+  --hostname=${KEYCLOAK_HOSTNAME}`, so the browser and the services use the same host.
+  `expected_issuer` is derived from `KEYCLOAK_URL` and **no override is needed**.
+- **Development (`docker-compose.yml`):** there is a split (browser `localhost:19180`
+  ↔ internal network `keycloak:8080`); that is why `KEYCLOAK_ISSUER` is set there with
+  the realm's public URL.
+
+On startup, `auth-service` and `signature-service` log the expected `iss` and emit a
+**fail-fast WARNING** if `KEYCLOAK_URL` points at an internal Docker host without
+`KEYCLOAK_ISSUER` defined (a configuration that would reject every token). Check this
+log after deployment:
+
+```bash
+docker compose -f docker-compose.prod.yml logs auth-service | grep "issuer esperado"
+```
+
+### SSR frontend
+
+The frontend (SvelteKit + adapter-node) runs in its **own container** behind the
+reverse proxy. It needs to resolve the `origin` correctly in order to build the PKCE
+login `redirect_uri`:
+
+- `ORIGIN=https://${FRONTEND_HOSTNAME}` (or `PROTOCOL_HEADER=x-forwarded-proto` +
+  `HOST_HEADER=x-forwarded-host` if the proxy injects them).
+- **Public** URLs (browser): `PUBLIC_API_URL`, `PUBLIC_KEYCLOAK_URL`.
+- **Internal** URLs (SSR → Docker network): `INTERNAL_API_URL`, `INTERNAL_KEYCLOAK_URL`.
+
+The resulting `redirect_uri` (`https://${FRONTEND_HOSTNAME}/login/callback`) must be
+listed in the `redirectUris`/`webOrigins` of the `orpycamcp-frontend` client in
+Keycloak.
 
 ### Secret rotation
 
@@ -196,11 +237,12 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose ps
 docker compose logs -f api-gateway
 
-# 6. Crear primer tenant (después de que Keycloak esté listo)
-docker compose exec document-service /scripts/init-tenant.sh \
-  --name "Mi Institución" \
-  --slug "mi-institucion" \
-  --code "MIST"
+# 6. Create the first tenant (once Keycloak is up)
+#    The script runs ON THE HOST, not inside a container, and takes its three
+#    arguments positionally: <slug> <name> <code>.
+cd ..
+COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
+  ./scripts/init-tenant.sh my-institution "My Institution" MYINST
 ```
 
 ### Post-deployment verification

@@ -139,6 +139,16 @@ class ReclassifyForbiddenError(Exception):
     """El llamante intenta asignar un nivel de seguridad superior a su propio clearance."""
 
 
+class DocumentAnuladoError(Exception):
+    """Se intenta modificar un radicado ya anulado.
+
+    La anulación pasa por un circuito de dos pasos con aprobación de supervisor;
+    revertirla con un PATCH la vaciaría de contenido. El desanulado, si alguna vez
+    hiciera falta, sería un acto propio con su causal y su aprobador, no un efecto
+    lateral de editar un campo.
+    """
+
+
 class DocumentService:
     def __init__(
         self,
@@ -758,20 +768,71 @@ class DocumentService:
             logger.warning("audit.append (indice_clasificados) failed", exc_info=True)
         return IndiceClasificadosResponse(total=len(items), items=items)
 
+    _CAMPOS_AUDITABLES = ("subject", "dest_dept", "observations", "status", "pages")
+
     async def update(
         self,
         document_id: uuid.UUID,
         payload: DocumentUpdate,
         max_clearance: int,
+        actor: uuid.UUID | None = None,
     ) -> DocumentResponse:
-        """Actualiza campos mutables respetando no-read-up (RF-SEG-08).
+        """Actualiza campos mutables respetando no-read-up (RF-SEG-08), con asiento.
 
         La respuesta es el `DocumentResponse` COMPLETO (asunto, remitente, anexos),
-        así que sin este gate un PATCH era además una lectura total del radicado.
+        así que sin el gate de clearance un PATCH era además una lectura total.
+
+        **La mutación y su asiento son un solo acto.** Hasta ahora este método eran
+        dos líneas sin ninguna traza: modificar el asunto, el destino, el estado o el
+        número de folios de un documento oficial con número inmutable era invisible
+        para la traza legal forense (Ley 594/2000, ADR-010). El contraste lo delataba:
+        **leer** un radicado sí se auditaba. Aquí el asiento va DENTRO de la
+        transacción —como en `AnulacionService`, no best-effort como las lecturas—:
+        si el asiento falla, la modificación revierte. Preferimos que un cambio falle
+        a que ocurra sin dejar rastro.
+
+        Se registra el **antes y el después de cada campo tocado**, no solo el después:
+        una traza que dice «se cambió el asunto» sin decir a qué no permite
+        reconstruir nada. El estado previo se lee con el MISMO gate de clearance, así
+        que el asiento nunca puede revelar un campo que el llamante no podía ver.
         """
-        radicado = await self._repo.update(document_id, payload, max_clearance)
-        if radicado is None:
-            raise DocumentNotFoundError(str(document_id))
+        async with self._conn.transaction():
+            previo = await self._repo.get_by_id(document_id, max_clearance)
+            if previo is None:
+                raise DocumentNotFoundError(str(document_id))
+            if previo.status == "anulado":
+                # 409, no 404: aquí el radicado SÍ es visible para este llamante (el
+                # `get_by_id` de arriba pasó su gate de clearance), así que decir
+                # «está anulado» no revela nada que no pudiera leer. Un radicado por
+                # encima de su clearance ya salió por el 404 neutro de arriba.
+                raise DocumentAnuladoError(previo.tracking_number)
+
+            radicado = await self._repo.update(document_id, payload, max_clearance)
+            if radicado is None:
+                # Carrera: alguien lo anuló o lo reclasificó entre la lectura y el
+                # UPDATE. El `WHERE` del UPDATE es el guard autoritativo.
+                raise DocumentNotFoundError(str(document_id))
+
+            cambios = {
+                campo: {
+                    "antes": getattr(previo, campo),
+                    "despues": getattr(radicado, campo),
+                }
+                for campo in self._CAMPOS_AUDITABLES
+                if getattr(payload, campo, None) is not None
+                and getattr(previo, campo) != getattr(radicado, campo)
+            }
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.radicado_actualizado",
+                object_type="radicado",
+                # El número resuelto server-side, nunca un campo del cuerpo.
+                object_ref=radicado.tracking_number,
+                actor=str(actor) if actor else None,
+                payload={"cambios": cambios},
+            )
         return _to_response(radicado)
 
 

@@ -19,6 +19,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -53,6 +54,27 @@ def make_tenant_record(
         "created_at": now,
         "updated_at": now,
     }
+
+
+# D-02: `/api/v1/tenants` (registro de instituciones, sobre `public.tenants`)
+# está sellado servicio-a-servicio. Vacío = fail-closed, así que los tests que
+# ejercitan el comportamiento del recurso deben configurar el token Y enviarlo;
+# los que ejercitan el GATE en sí lo omiten a propósito.
+TEST_INTERNAL_TOKEN = "test-tenant-internal-token-xxx"
+INTERNAL_HEADERS = {"X-Internal-Token": TEST_INTERNAL_TOKEN}
+
+
+@pytest.fixture(autouse=True)
+def _configure_internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configura el token interno para toda la suite.
+
+    Es autouse porque la alternativa —recordar añadirlo en cada test nuevo— es
+    la forma que se olvida. Solo lo consume el router de tenants; para los demás
+    (dependencias, catálogos, PINAR…) es inerte.
+    """
+    from app.core import config as cfg_module
+
+    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
 
 
 @pytest_asyncio.fixture(scope="function")

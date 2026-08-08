@@ -317,4 +317,3 @@ Suscripción por tenant a eventos de dominio: OrpycaMCP entrega el evento a sist
 | **PDF/A** | Perfil de PDF para archivo a largo plazo (validable con veraPDF) |
 | **Webhook** | Entrega HTTP firmada de eventos de dominio a sistemas externos |
 
-<!-- TODO: translate to English -->

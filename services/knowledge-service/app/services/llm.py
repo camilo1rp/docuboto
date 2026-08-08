@@ -48,9 +48,9 @@ from __future__ import annotations
 
 import html
 import json
-from typing import Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.core.config import settings
 

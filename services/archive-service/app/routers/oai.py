@@ -21,13 +21,18 @@ de reservados es indistinguible (Ley 1712/2014 arts. 18-19; RF-SEG-08).
 """
 
 import asyncpg
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.database import tenant_schema
+from app.core.public_audit import audit_public_access
+from app.core.public_interop import require_public_interop
 from app.repositories.oai_repository import OaiRepository
 from app.services.oai_service import OaiError, OaiService
 
-router = APIRouter(tags=["oai"])
+# Guard de interoperabilidad pública ANÓNIMA (E11): con el interruptor apagado —el
+# default— estas rutas responden 404, indistinguible de una ruta inexistente. Ver
+# `app/core/public_interop.py` para el razonamiento completo.
+router = APIRouter(tags=["oai"], dependencies=[Depends(require_public_interop)])
 
 _VERBS = {
     "Identify": (set(), set()),
@@ -96,6 +101,18 @@ async def oai_pmh(tenant: str, request: Request) -> Response:
             try:
                 _validate(verb, params)
                 body = await _dispatch(svc, verb, params)
+                # Traza de la cosecha ANÓNIMA (best-effort, ver core/public_audit.py).
+                # Se asienta el verbo y los argumentos, no el resultado: el payload de
+                # auditoría no debe ser una segunda copia de lo cosechado, y el `bytes`
+                # sí permite dimensionar cuánto se llevó.
+                await audit_public_access(
+                    conn,
+                    tenant_slug=tenant,
+                    action="archive.oai_cosecha",
+                    object_type="oai_request",
+                    object_ref=verb,
+                    payload={"verbo": verb, "argumentos": req_attrs, "bytes": len(body)},
+                )
                 return Response(body, media_type="application/xml")
             except OaiError as exc:
                 body = svc.error_xml(req_attrs, exc.code, exc.message)

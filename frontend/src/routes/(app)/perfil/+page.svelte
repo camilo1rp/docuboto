@@ -54,6 +54,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { can, sessionUser } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
   import { isReenrollConfirmed, REENROLL_CONFIRM_PHRASE } from "$lib/utils/signingKeyConfirm.js";
 
@@ -72,13 +73,69 @@
 
   $: user = data.user ?? {};
   $: permissions = user.permissions ?? [];
+  // `can(perm, 1)` y no `permissions.includes(...)`: el nivel CRUD es lo que
+  // separa "tiene el permiso en modo lectura" de "puede ejecutar la acción", y
+  // el helper es fail-closed (`?? 0`) si `permission_levels` no llega. El gate
+  // real de `enroll` es `require_permission("PERM_FIRMA")`, cuyo mínimo es 1 —
+  // exigir más aquí sería el mismo defecto al revés: negar de más, en silencio.
+  $: puedeFirmar = $sessionUser ? can("PERM_FIRMA", 1) : false;
   $: roles = user.roles ?? [];
 
   // ---------------------------------------------------------------------------
   // Sección 2 — TOTP
   // ---------------------------------------------------------------------------
-  /** @type {{estado: string, activated_at?: string|null, locked_until?: string|null}} */
+  /** @type {{estado: string, activated_at?: string|null, locked_until?: string|null, recovery_codes_restantes?: number}} */
   let totp = data.totpStatus ?? { estado: "no_configurado" };
+  // Códigos de recuperación (E06, migración 015). Solo tienen valor en el
+  // instante en que el backend los devuelve: en la base queda su hash, así que
+  // no hay forma de volver a consultarlos, solo de regenerarlos.
+  /** @type {string[]} */
+  let recoveryCodes = [];
+  let recoveryRegenerating = false;
+  let recoveryStepUp = "";
+  let recoveryStepUpError = "";
+  $: recoveryRestantes = totp?.recovery_codes_restantes ?? 0;
+  // Umbral de aviso: con 2 o menos, un par de reemplazos de teléfono dejan al
+  // usuario sin salida. Se avisa antes de que llegue a cero, no cuando ya no
+  // hay margen.
+  $: recoveryEscasos = totp?.estado === "activo" && recoveryRestantes <= 2;
+
+  async function regenerateRecoveryCodes() {
+    recoveryStepUpError = "";
+    const codigo = recoveryStepUp.trim();
+    if (!codigo) {
+      recoveryStepUpError = "Ingrese su código de 6 dígitos o uno de recuperación.";
+      return;
+    }
+    recoveryRegenerating = true;
+    try {
+      // Se distingue por FORMA, no por una casilla que el usuario tenga que
+      // marcar: 6 dígitos es un TOTP, cualquier otra cosa es un código de
+      // recuperación. Quien perdió el teléfono no debería tener que explicarle
+      // a la interfaz qué tipo de código está pegando.
+      const esTotp = /^\d{6}$/.test(codigo);
+      const res = await fetch("/perfil/api/totp/recovery-codes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          esTotp ? { step_up_totp_code: codigo } : { step_up_recovery_code: codigo },
+        ),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        recoveryStepUpError = resData.detail ?? "No se pudieron regenerar los códigos.";
+        return;
+      }
+      recoveryCodes = resData.recovery_codes ?? [];
+      totp = { ...totp, recovery_codes_restantes: recoveryCodes.length };
+      recoveryStepUp = "";
+      notifySuccess("Códigos de recuperación regenerados. Los anteriores ya no sirven.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      recoveryRegenerating = false;
+    }
+  }
   $: totpLoadError = data.totpError;
 
   const TOTP_STEP_LABELS = ["Generar secreto", "Verificar código", "Activo"];
@@ -169,9 +226,18 @@
         totpActivateError = resData.detail ?? "Código incorrecto o vencido.";
         return;
       }
-      totp = { estado: "activo", activated_at: resData.activated_at };
+      totp = {
+        estado: "activo",
+        activated_at: resData.activated_at,
+        recovery_codes_restantes: (resData.recovery_codes ?? []).length,
+      };
       pendingOtpauthUri = "";
       totpActivateCode = "";
+      // Los códigos llegan aquí y en ningún otro sitio: el backend solo guarda
+      // su hash, así que si el usuario cierra esta pantalla sin apuntarlos, la
+      // única salida es regenerarlos. Por eso se muestran de forma insistente
+      // y no como un aviso secundario.
+      recoveryCodes = resData.recovery_codes ?? [];
       notifySuccess("Segundo factor activado.");
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -487,6 +553,74 @@
         {#if totp.activated_at}desde {formatDate(totp.activated_at)}{/if}
       </p>
 
+      <!-- Códigos de recuperación (E06, migración 015) -->
+      <div class="perfil-recovery">
+        <h3 class="perfil-recovery__title">
+          <i class="fas fa-key" aria-hidden="true"></i> Códigos de recuperación
+        </h3>
+        <p class="perfil-recovery__desc">
+          Sirven para desactivar el segundo factor o pasarlo a un teléfono nuevo <strong
+            >si pierde el actual</strong
+          >. Cada uno se usa una sola vez.
+          <strong>No sirven para firmar</strong>: firmar sigue exigiendo el código de su
+          dispositivo.
+        </p>
+
+        {#if recoveryCodes.length > 0}
+          <div class="perfil-recovery__codes" role="group" aria-label="Códigos de recuperación">
+            <p class="perfil-recovery__once">
+              <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+              Guárdelos ahora en un lugar seguro. <strong>No se volverán a mostrar</strong> — si los pierde,
+              la única salida es generar un juego nuevo.
+            </p>
+            <ol class="perfil-recovery__list">
+              {#each recoveryCodes as codigo (codigo)}
+                <li><code>{codigo}</code></li>
+              {/each}
+            </ol>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="fas fa-copy"
+              on:click={() => copyText(recoveryCodes.join("\n"))}
+            >
+              Copiar todos
+            </Button>
+          </div>
+        {:else}
+          <p class="perfil-section__status" class:perfil-recovery__low={recoveryEscasos}>
+            {#if recoveryEscasos}
+              <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+            {/if}
+            Le quedan <strong>{recoveryRestantes}</strong>
+            {recoveryRestantes === 1 ? "código sin usar" : "códigos sin usar"}.
+            {#if recoveryEscasos}
+              Genere un juego nuevo antes de quedarse sin ninguno.
+            {/if}
+          </p>
+        {/if}
+
+        <details class="perfil-recovery__regen">
+          <summary>Generar un juego nuevo</summary>
+          <p class="perfil-danger__warning">
+            Los códigos anteriores dejan de servir en el momento en que se generan los nuevos.
+          </p>
+          <form class="perfil-inline-form" on:submit|preventDefault={regenerateRecoveryCodes}>
+            <FormField
+              id="totp-recovery-stepup"
+              label="Código de 6 dígitos, o uno de recuperación que aún tenga"
+              bind:value={recoveryStepUp}
+              placeholder="000000 · ABCDE-FGHJK-MNPQR-STUVW"
+              autocomplete="one-time-code"
+              error={recoveryStepUpError}
+            />
+            <Button type="submit" variant="secondary" loading={recoveryRegenerating}>
+              Generar códigos
+            </Button>
+          </form>
+        </details>
+      </div>
+
       <details class="perfil-danger">
         <summary>Reemplazar el segundo factor</summary>
         <p class="perfil-danger__warning">
@@ -556,7 +690,29 @@
       <div class="perfil-page__error" role="alert">{signingKeyLoadError}</div>
     {/if}
 
-    {#if !totpActive}
+    {#if !puedeFirmar}
+      <!--
+        Espejo del gate real: `POST /auth/me/signing-key/enroll` exige
+        `PERM_FIRMA` (`require_permission("PERM_FIRMA")`, min_crud por defecto
+        = 1). Sin este bloque la pantalla ofrecía enrolar a cualquier usuario y
+        el backend respondía 403 al pulsar — se le dice ANTES, y con el motivo,
+        en vez de dejarle descubrirlo. El backend sigue revalidando: esto es la
+        capa de honestidad de la interfaz, no la de autorización.
+      -->
+      <div class="perfil-prereq">
+        <i class="fas fa-ban" aria-hidden="true"></i>
+        <div>
+          <strong>Su cuenta no tiene autorización para firmar.</strong> La credencial de firma solo se
+          emite a usuarios con el permiso de firma; solicítelo al administrador de su entidad.
+        </div>
+      </div>
+      {#if signingHasCredential}
+        <p class="perfil-section__status">
+          Estado actual: <strong>{signingKey?.estado}</strong>. Puede consultarlo, pero no emitir ni
+          renovar la credencial sin el permiso de firma.
+        </p>
+      {/if}
+    {:else if !totpActive}
       <div class="perfil-prereq">
         <i class="fas fa-lock" aria-hidden="true"></i>
         <div>
@@ -980,6 +1136,99 @@
     &__actions {
       display: flex;
       gap: var(--op-space-2);
+    }
+  }
+
+  .perfil-recovery {
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    padding: var(--op-space-4);
+    margin: var(--op-space-4) 0;
+
+    &__title {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      margin: 0 0 var(--op-space-2);
+      font-family: var(--op-font-display);
+      font-size: var(--op-font-md);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-text);
+    }
+
+    &__desc {
+      margin: 0 0 var(--op-space-3);
+      font-size: var(--op-font-sm);
+      line-height: var(--op-line-height);
+      color: var(--op-text-secondary);
+    }
+
+    &__codes {
+      background: var(--op-bg);
+      border: 1px dashed var(--op-border);
+      border-radius: var(--op-radius);
+      padding: var(--op-space-3);
+      margin-bottom: var(--op-space-3);
+    }
+
+    &__once {
+      display: flex;
+      gap: var(--op-space-2);
+      align-items: flex-start;
+      margin: 0 0 var(--op-space-3);
+      font-size: var(--op-font-sm);
+      line-height: var(--op-line-height);
+      color: var(--op-warning-fg);
+
+      i {
+        margin-top: 2px;
+        flex-shrink: 0;
+      }
+    }
+
+    &__list {
+      // Dos columnas en cuanto hay sitio: diez códigos en una sola tira
+      // obligan a desplazarse justo cuando hay que copiarlos.
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--op-space-1) var(--op-space-4);
+      margin: 0 0 var(--op-space-3);
+      padding-left: var(--op-space-5);
+
+      @media (min-width: 480px) {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      code {
+        font-family: var(--op-font-mono, monospace);
+        font-size: var(--op-font-sm);
+        letter-spacing: 0.04em;
+      }
+    }
+
+    &__low {
+      color: var(--op-warning-fg);
+
+      i {
+        margin-right: var(--op-space-1);
+      }
+    }
+
+    &__regen {
+      summary {
+        cursor: pointer;
+        font-size: var(--op-font-sm);
+        font-weight: var(--op-weight-medium);
+        color: var(--op-text);
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+
+        &:focus-visible {
+          outline: 2px solid var(--op-primary);
+          outline-offset: 2px;
+        }
+      }
     }
   }
 

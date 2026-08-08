@@ -23,7 +23,7 @@
 
 <div class="callback-container" role="main">
   <div class="callback-card" role="status" aria-live="polite">
-    <img src="/orpyca-logo.png" alt="" class="callback-icon" aria-hidden="true" />
+    <img src="/brand/orpyca-mark.png" alt="" class="callback-icon" aria-hidden="true" />
     <span class="callback-spinner" aria-hidden="true"></span>
     <h1 class="callback-title">Verificando sesión</h1>
     <p class="callback-text">Confirmando tu identidad con el proveedor institucional&hellip;</p>

@@ -68,6 +68,28 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
 # token. `/upload` queda fuera: el frontend sube directo.
 
 
+def _reject_if_too_large(file: UploadFile) -> None:
+    """413 ANTES de `file.read()`, que es lo que copia el fichero a memoria.
+
+    Starlette ya ha escrito el fichero a un `SpooledTemporaryFile` (en disco si
+    supera su umbral) y conoce su tamaño, así que este chequeo es gratis. Hacerlo
+    después de leer sería rechazar la subida una vez pagado su coste completo — el
+    orden es la mitad de la defensa.
+    """
+    if file.size is not None and file.size > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error": "file_too_large",
+                "detail": (
+                    f"El archivo ({file.size} bytes) supera el máximo admitido "
+                    f"({settings.max_upload_bytes} bytes)."
+                ),
+                "status": 413,
+            },
+        )
+
+
 def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
     if x_user_id is None:
         return None
@@ -91,6 +113,7 @@ async def upload_file(
     uploaded_by: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> JSONResponse:
+    _reject_if_too_large(file)
     content = await file.read()
     service = StorageService(conn, tenant_slug)
     try:
@@ -144,6 +167,13 @@ async def upload_file(
 @router.get(
     "/files/{file_id}/verify",
     response_model=IntegrityResponse,
+    # D-02: sellado servicio-a-servicio, igual que sus vecinos /download,
+    # /content y la metadata. Ninguno de estos cuatro tiene llamante externo
+    # (el gateway solo enruta /api/v1/storage/upload) y su unico control era
+    # esa ausencia de ruta — que un salto `..` atravesaba. Sin gate se podia
+    # SUSTITUIR el contenido de un anexo o BORRARLO con `deleted_by = None`:
+    # corrupcion de evidencia sin actor en la traza.
+    dependencies=[Depends(_require_internal_token)],
     summary="Re-verify the SHA-256 of the stored object (RF-DIG-02)",
 )
 async def verify_file_integrity(
@@ -177,6 +207,13 @@ async def verify_file_integrity(
 @router.post(
     "/files/{file_id}/replace",
     response_model=FileResponse,
+    # D-02: sellado servicio-a-servicio, igual que sus vecinos /download,
+    # /content y la metadata. Ninguno de estos cuatro tiene llamante externo
+    # (el gateway solo enruta /api/v1/storage/upload) y su unico control era
+    # esa ausencia de ruta — que un salto `..` atravesaba. Sin gate se podia
+    # SUSTITUIR el contenido de un anexo o BORRARLO con `deleted_by = None`:
+    # corrupcion de evidencia sin actor en la traza.
+    dependencies=[Depends(_require_internal_token)],
     summary="Replace a file — creates a new immutable version (RF-DIG-01)",
 )
 async def replace_file(
@@ -186,6 +223,7 @@ async def replace_file(
     uploaded_by: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> JSONResponse:
+    _reject_if_too_large(file)
     content = await file.read()
     service = StorageService(conn, tenant_slug)
     try:
@@ -223,6 +261,13 @@ async def replace_file(
 @router.get(
     "/files/{file_id}/versions",
     response_model=list[FileResponse],
+    # D-02: sellado servicio-a-servicio, igual que sus vecinos /download,
+    # /content y la metadata. Ninguno de estos cuatro tiene llamante externo
+    # (el gateway solo enruta /api/v1/storage/upload) y su unico control era
+    # esa ausencia de ruta — que un salto `..` atravesaba. Sin gate se podia
+    # SUSTITUIR el contenido de un anexo o BORRARLO con `deleted_by = None`:
+    # corrupcion de evidencia sin actor en la traza.
+    dependencies=[Depends(_require_internal_token)],
     summary="List the version chain of a file (RF-DIG-01)",
 )
 async def list_file_versions(
@@ -351,6 +396,11 @@ async def get_file_content(
     "/files/{file_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a file",
+    # D-02: sellado servicio-a-servicio, igual que sus vecinos /download,
+    # /content y la metadata. Sin gate, el borrado ocurría con
+    # `deleted_by = None`: la traza registraba la baja de un anexo sin decir
+    # quién la ordenó, que es peor que no registrarla.
+    dependencies=[Depends(_require_internal_token)],
 )
 async def delete_file(
     file_id: uuid.UUID,

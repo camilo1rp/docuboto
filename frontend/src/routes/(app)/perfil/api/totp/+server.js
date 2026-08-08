@@ -67,12 +67,17 @@ export async function DELETE({ locals, request }) {
     body = {};
   }
 
-  // Allowlist: un solo campo del contrato.
-  const { step_up_totp_code } = body ?? {};
+  // Allowlist: los dos factores del contrato, campo a campo. El código de
+  // recuperación existe precisamente para este endpoint — revocar el segundo
+  // factor cuando se perdió el dispositivo que lo genera.
+  const { step_up_totp_code, step_up_recovery_code } = body ?? {};
   /** @type {Record<string, unknown>} */
   const payload = {};
   if (typeof step_up_totp_code === "string" && step_up_totp_code.trim()) {
     payload.step_up_totp_code = step_up_totp_code.trim();
+  }
+  if (typeof step_up_recovery_code === "string" && step_up_recovery_code.trim()) {
+    payload.step_up_recovery_code = step_up_recovery_code.trim();
   }
 
   try {

@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from app.core import config as cfg_module
 from tests.conftest import (
     FILE_ID,
     INTERNAL_HEADERS,
@@ -272,7 +273,7 @@ async def test_delete_file_soft_deletes_not_purges(
 
     response = await client.delete(
         f"/api/v1/storage/files/{FILE_ID}",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 204
@@ -294,7 +295,7 @@ async def test_delete_file(
 
     response = await client.delete(
         f"/api/v1/storage/files/{FILE_ID}",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 204
@@ -342,7 +343,7 @@ async def test_delete_file_not_found(
 
     response = await client.delete(
         f"/api/v1/storage/files/{uuid.uuid4()}",
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 404
@@ -392,7 +393,7 @@ async def test_verify_integrity_ok(
     obj.close = MagicMock()
     mock_minio.get_object = AsyncMock(return_value=obj)
 
-    response = await client.get(f"/api/v1/storage/files/{FILE_ID}/verify", headers=TENANT_HEADERS)
+    response = await client.get(f"/api/v1/storage/files/{FILE_ID}/verify", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 200
     body = response.json()
@@ -414,7 +415,7 @@ async def test_verify_integrity_mismatch_is_409(
     obj.close = MagicMock()
     mock_minio.get_object = AsyncMock(return_value=obj)
 
-    response = await client.get(f"/api/v1/storage/files/{FILE_ID}/verify", headers=TENANT_HEADERS)
+    response = await client.get(f"/api/v1/storage/files/{FILE_ID}/verify", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "integrity_check_failed"
@@ -428,7 +429,7 @@ async def test_verify_integrity_not_found(
     mock_conn.fetchrow.return_value = None
 
     response = await client.get(
-        f"/api/v1/storage/files/{uuid.uuid4()}/verify", headers=TENANT_HEADERS
+        f"/api/v1/storage/files/{uuid.uuid4()}/verify", headers=INTERNAL_HEADERS
     )
 
     assert response.status_code == 404
@@ -453,7 +454,7 @@ async def test_replace_creates_new_version(
     response = await client.post(
         f"/api/v1/storage/files/{FILE_ID}/replace",
         files={"file": ("carta_v2.pdf", b"nuevo contenido distinto", "application/pdf")},
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 201
@@ -475,7 +476,7 @@ async def test_replace_same_content_no_new_version(
     response = await client.post(
         f"/api/v1/storage/files/{FILE_ID}/replace",
         files={"file": ("carta.pdf", content, "application/pdf")},
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 200  # sin versión nueva
@@ -492,7 +493,7 @@ async def test_replace_not_current_is_409(
     response = await client.post(
         f"/api/v1/storage/files/{FILE_ID}/replace",
         files={"file": ("c.pdf", b"x", "application/pdf")},
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert response.status_code == 409
@@ -509,7 +510,7 @@ async def test_replace_not_found_is_404(
     response = await client.post(
         f"/api/v1/storage/files/{uuid.uuid4()}/replace",
         files={"file": ("c.pdf", b"x", "application/pdf")},
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 404
 
@@ -525,7 +526,7 @@ async def test_list_versions(
     mock_conn.fetchrow.return_value = v2  # get_by_id
     mock_conn.fetch.return_value = [v1, v2]  # list_versions
 
-    response = await client.get(f"/api/v1/storage/files/{root}/versions", headers=TENANT_HEADERS)
+    response = await client.get(f"/api/v1/storage/files/{root}/versions", headers=INTERNAL_HEADERS)
 
     assert response.status_code == 200
     body = response.json()
@@ -545,3 +546,53 @@ async def test_health_check(client: AsyncClient) -> None:
     assert body["status"] == "ok"
     assert body["database"] == "ok"
     assert body["storage"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Tope de tamaño (413) — no existía ninguno
+#
+# `await file.read()` copiaba el fichero entero a memoria: la SEGUNDA copia,
+# después de la que hacía el gateway, con `memory: 1G` por réplica. El chequeo va
+# ANTES de esa lectura; hacerlo después sería rechazar la subida una vez pagado
+# su coste completo.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upload_por_encima_del_tope_es_413(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, mock_minio = client_with_conn
+    monkeypatch.setattr(cfg_module.settings, "max_upload_bytes", 1024)
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": ("grande.pdf", b"x" * 4096, "application/pdf")},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["error"] == "file_too_large"
+    # Ni un byte llegó al almacén: el rechazo ocurre antes de leer y de subir.
+    mock_minio.put_object.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upload_dentro_del_tope_sigue_funcionando(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control positivo: sin esto, un 413 constante pasaría el test de arriba."""
+    client, mock_conn, _ = client_with_conn
+    monkeypatch.setattr(cfg_module.settings, "max_upload_bytes", 1024)
+    # find_by_sha256 → None (sin duplicado), luego create devuelve el registro.
+    mock_conn.fetchrow.side_effect = [None, make_file_record(file_id=FILE_ID)]
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": ("pequeno.pdf", b"x" * 512, "application/pdf")},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201

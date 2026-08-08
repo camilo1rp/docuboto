@@ -191,6 +191,19 @@
       <i class="fas fa-bars" aria-hidden="true"></i>
     </button>
 
+    <!--
+      Marca en móvil: en escritorio el isotipo ya preside el panel lateral, pero
+      en móvil ese panel es un cajón cerrado y la aplicación se quedaba sin
+      ninguna señal de marca. Se oculta al desplegar la búsqueda, igual que las
+      acciones de la derecha, para no ahogar el topbar.
+    -->
+    <img
+      src="/brand/orpyca-mark.png"
+      alt=""
+      class="app-layout__topbar-mark is-hidden-tablet"
+      class:is-hidden-mobile={searchExpandedMobile}
+    />
+
     <!-- Botón colapsar sidebar (solo en desktop) -->
     <button
       class="app-layout__collapse-btn is-hidden-mobile"
@@ -359,6 +372,14 @@
       border-bottom: 1px solid var(--op-border);
       box-shadow: var(--op-shadow-sm);
       gap: var(--op-space-2);
+    }
+
+    &__topbar-mark {
+      display: block;
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      flex-shrink: 0;
     }
 
     &__menu-btn,

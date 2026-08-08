@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from tests.conftest import make_validate_response
+from tests.conftest import make_validate_response, wire_upstream
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,7 +32,7 @@ async def test_proxy_auth_token_public_route(test_client):
         },
         headers={"content-type": "application/json"},
     )
-    http_client.request = AsyncMock(return_value=upstream_response)
+    wire_upstream(http_client, upstream_response)
 
     response = await client.post(
         "/api/v1/auth/token",
@@ -41,8 +41,8 @@ async def test_proxy_auth_token_public_route(test_client):
 
     assert response.status_code == 200
     assert response.json()["access_token"] == "tok"
-    http_client.request.assert_called_once()
-    call_kwargs = http_client.request.call_args
+    http_client.build_request.assert_called_once()
+    call_kwargs = http_client.build_request.call_args
     assert "auth-service:8001" in call_kwargs.kwargs["url"]
 
 
@@ -87,8 +87,7 @@ async def test_proxy_valid_token_forwards_request(test_client):
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
 
     upstream_body = {"items": [{"id": "abc", "codigo": 100}], "total": 1}
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json=upstream_body,
             headers={"content-type": "application/json"},
@@ -104,7 +103,7 @@ async def test_proxy_valid_token_forwards_request(test_client):
     assert response.json() == upstream_body
 
     # Verify auth headers were injected into the upstream request
-    request_call = http_client.request.call_args
+    request_call = http_client.build_request.call_args
     forwarded_headers = request_call.kwargs["headers"]
     assert "X-User-Id" in forwarded_headers
     assert "X-Tenant-Slug" in forwarded_headers
@@ -124,8 +123,7 @@ async def test_tenants_endpoint_not_routed_even_with_valid_token(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(200, json={"leak": "should never be called"})
+    wire_upstream(http_client, httpx.Response(200, json={"leak": "should never be called"})
     )
 
     response = await client.get(
@@ -135,7 +133,7 @@ async def test_tenants_endpoint_not_routed_even_with_valid_token(test_client):
 
     assert response.status_code == 404
     assert response.json()["error"] == "route_not_found"
-    http_client.request.assert_not_called()
+    http_client.send.assert_not_called()
 
     response_patch = await client.patch(
         "/api/v1/tenants/00000000-0000-0000-0000-000000000000",
@@ -143,7 +141,7 @@ async def test_tenants_endpoint_not_routed_even_with_valid_token(test_client):
         headers={"Authorization": "Bearer valid-token"},
     )
     assert response_patch.status_code == 404
-    http_client.request.assert_not_called()
+    http_client.send.assert_not_called()
 
 
 async def test_proxy_service_unavailable(test_client):
@@ -151,7 +149,7 @@ async def test_proxy_service_unavailable(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+    wire_upstream(http_client, error=httpx.ConnectError("Connection refused"))
 
     response = await client.get(
         "/api/v1/documents/",
@@ -459,8 +457,7 @@ async def test_client_x_canal_header_is_not_forwarded(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json={"ok": True},
             headers={"content-type": "application/json"},
@@ -472,7 +469,7 @@ async def test_client_x_canal_header_is_not_forwarded(test_client):
         headers={"Authorization": "Bearer valid-token", "X-Canal": "mcp"},
     )
 
-    forwarded = http_client.request.call_args.kwargs["headers"]
+    forwarded = http_client.build_request.call_args.kwargs["headers"]
     # Client-supplied X-Canal must not reach the upstream.
     assert forwarded.get("X-Canal") != "mcp", (
         "Client-supplied X-Canal must be discarded at the gateway"
@@ -491,8 +488,7 @@ async def test_client_x_internal_token_header_is_not_forwarded(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=401,
             json={"detail": {"error": "missing_internal_token"}},
             headers={"content-type": "application/json"},
@@ -504,7 +500,7 @@ async def test_client_x_internal_token_header_is_not_forwarded(test_client):
         headers={"Authorization": "Bearer valid-token", "X-Internal-Token": "forged"},
     )
 
-    forwarded = http_client.request.call_args.kwargs["headers"]
+    forwarded = http_client.build_request.call_args.kwargs["headers"]
     assert "X-Internal-Token" not in forwarded, (
         "Client-supplied X-Internal-Token must never reach an upstream service"
     )
@@ -520,8 +516,7 @@ async def test_client_x_internal_token_header_is_not_forwarded_for_eventos(test_
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=401,
             json={"detail": {"error": "missing_internal_token"}},
             headers={"content-type": "application/json"},
@@ -534,7 +529,7 @@ async def test_client_x_internal_token_header_is_not_forwarded_for_eventos(test_
     )
 
     assert response.status_code == 401
-    forwarded = http_client.request.call_args.kwargs["headers"]
+    forwarded = http_client.build_request.call_args.kwargs["headers"]
     assert "X-Internal-Token" not in forwarded, (
         "Client-supplied X-Internal-Token must never reach an upstream service"
     )
@@ -552,7 +547,7 @@ async def test_internal_anexos_path_is_not_routed_externally(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock()  # no debería llamarse jamás
+    http_client.send = AsyncMock()  # no debería llamarse jamás
 
     response = await client.post(
         "/api/v1/internal/documentos/anexos",
@@ -565,7 +560,7 @@ async def test_internal_anexos_path_is_not_routed_externally(test_client):
 
     assert response.status_code == 404
     assert response.json()["error"] == "route_not_found"
-    http_client.request.assert_not_called()
+    http_client.send.assert_not_called()
 
 
 async def test_x_internal_token_header_never_in_forwarded_request_headers():
@@ -596,8 +591,7 @@ async def test_postal_callback_forwards_signature_header(test_client):
     HMAC nunca llega a document-service y el callback siempre daría 401."""
     client, http_client, _ = test_client
 
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json={"status": "applied"},
             headers={"content-type": "application/json"},
@@ -612,7 +606,7 @@ async def test_postal_callback_forwards_signature_header(test_client):
 
     # Starlette entrega las claves de header en minúscula; el gateway las
     # reenvía tal cual → la clave reenviada es 'x-orpycamcp-signature'.
-    forwarded = {k.lower(): v for k, v in http_client.request.call_args.kwargs["headers"].items()}
+    forwarded = {k.lower(): v for k, v in http_client.build_request.call_args.kwargs["headers"].items()}
     assert forwarded.get("x-orpycamcp-signature") == "sha256=deadbeef", (
         "Gateway must forward the operator's HMAC signature to document-service"
     )
@@ -623,8 +617,7 @@ async def test_gateway_injects_server_derived_x_canal(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json={"ok": True},
             headers={"content-type": "application/json"},
@@ -637,7 +630,7 @@ async def test_gateway_injects_server_derived_x_canal(test_client):
         headers={"Authorization": "Bearer valid-token"},
     )
 
-    forwarded = http_client.request.call_args.kwargs["headers"]
+    forwarded = http_client.build_request.call_args.kwargs["headers"]
     assert forwarded.get("X-Canal") == "api", (
         "Gateway must inject server-derived X-Canal='api' for standard API paths"
     )
@@ -665,8 +658,7 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json=[{"id": "abc"}],
             headers={
@@ -704,8 +696,7 @@ async def test_proxy_sin_override_deja_el_timeout_del_cliente(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json={"items": []},
             headers={"content-type": "application/json"},
@@ -714,7 +705,7 @@ async def test_proxy_sin_override_deja_el_timeout_del_cliente(test_client):
 
     await client.get("/api/v1/documents/", headers={"Authorization": "Bearer valid-token"})
 
-    timeout_arg = http_client.request.call_args.kwargs["timeout"]
+    timeout_arg = http_client.build_request.call_args.kwargs["timeout"]
     assert timeout_arg is httpx.USE_CLIENT_DEFAULT
     assert timeout_arg is not None
 
@@ -728,8 +719,7 @@ async def test_proxy_asistente_propaga_su_timeout_ampliado(test_client):
     client, http_client, _ = test_client
 
     http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    http_client.request = AsyncMock(
-        return_value=httpx.Response(
+    wire_upstream(http_client, httpx.Response(
             status_code=200,
             json={"reply": "ok"},
             headers={"content-type": "application/json"},
@@ -744,5 +734,5 @@ async def test_proxy_asistente_propaga_su_timeout_ampliado(test_client):
 
     from app.core.config import settings
 
-    assert http_client.request.call_args.kwargs["timeout"] == settings.assistant_proxy_timeout
-    assert http_client.request.call_args.kwargs["timeout"] is not httpx.USE_CLIENT_DEFAULT
+    assert http_client.build_request.call_args.kwargs["timeout"] == settings.assistant_proxy_timeout
+    assert http_client.build_request.call_args.kwargs["timeout"] is not httpx.USE_CLIENT_DEFAULT

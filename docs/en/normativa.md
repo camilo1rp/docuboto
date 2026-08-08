@@ -20,6 +20,19 @@ The fundamental standard. It requires all Colombian public entities to:
 
 ---
 
+## Ley 527 of 1999 and Decreto Único 1074 of 2015 — Electronic and digital signature
+
+These grant **functional equivalence** and evidentiary value to electronic documents and their signatures. **Law 527/1999** defines the electronic signature (methods: keys, biometrics, passwords) and the digital signature (cryptography with a certificate from an accredited authority), plus the **functional equivalence** of the signature (art. 7) and of writing. Its current implementing regulation is **Single Decree 1074/2015, Ch. 47** (arts. 2.2.2.47.1–47.10, which **compile and extend** Decree 2364/2012: reliability 47.4, legal effects 47.5, signer obligations 47.6, security level 47.8) and **Ch. 48** + **Decree 333/2014** (certification entities / **ONAC** accreditation). **Decree 526/2021** enables the electronic signature of employment contracts.
+
+> ⚠️ Cite **DUR 1074/2015**, not Decree 2364/2012 on its own. The full framework is extracted in `documentos/normativa-firma/`.
+
+**What OrpycaMCP implements (or specifies) from this framework** (epic E06):
+- Signing of the **electronic index at the closure** of the expediente (AGN Agreement 001/2024 art. 4.3.2.4) — XAdES-B/T/LT/LTA with the institutional seal is implemented; ONAC accreditation is not.
+- **Verified attribution** of the signer (JWT identity), **2FA on the personal signing act** and an **electronic seal of the legal person** for self-signing of system-generated documents.
+- Preservation of the evidence (signature + certificate + timestamp + countersignature) without altering the signed content.
+
+---
+
 ## Acuerdo AGN 060 of 2001 (AGN Agreement 060/2001) — Official Communications
 
 Establishes the guidelines for the **radicación (official registration), distribution and control of communications** in public entities.

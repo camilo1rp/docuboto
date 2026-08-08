@@ -108,8 +108,11 @@ app.include_router(public_router)
 app.include_router(ingest_router)
 app.include_router(signatures_router)
 app.include_router(postal_router)
+# Interoperabilidad pública ANÓNIMA: el router se monta siempre, pero sus rutas
+# responden 404 mientras la entidad no la habilite — ver core/public_interop.py.
 app.include_router(oai_router)
 app.include_router(cmis_router)
+
 app.include_router(export_router)
 app.include_router(import_router)
 app.include_router(anulacion_router)

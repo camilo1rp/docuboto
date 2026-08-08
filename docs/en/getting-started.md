@@ -169,5 +169,67 @@ curl -X POST 'http://localhost:19080/api/v1/assistant/chat' \
 # Response: natural-language text with citations to the radicados consulted (RAG, read-only)
 ```
 
+## The web UI: first steps
+
+With the platform up, the frontend sits at <http://localhost:19300>.
+
+### 1. The public landing page (`/`)
+
+The site root is a **public page** that needs no session: it describes what OrpycaMCP
+is, the regulatory framework it implements (Law 594/2000, AGN Agreement 060/2001), its
+capabilities and its lineage from Orfeo, and it closes with the AGPL v3 licence. It is
+the product's front door and one of the two places on the site where the full logotype
+is used (the other being the sign-in card).
+
+If the browser already holds an active session, `/` **redirects automatically (302) to
+`/dashboard`**: an authenticated user never sees the landing page. To see it again, sign
+out from the user menu.
+
+From the landing page, "Iniciar sesión" leads to `/login`, which starts the OAuth2
+Authorization Code + PKCE flow against Keycloak (the code exchange and token custody
+happen **server-side**; the JWT lives in an `httpOnly` cookie and is never visible to
+the browser's JavaScript).
+
+### 2. The personal dashboard (`/dashboard`)
+
+After signing in, the dashboard opens with **four personal modules** — what *this* user
+has to do, not the tenant's figures:
+
+| Module | What it shows |
+|---|---|
+| 01 Pending radicados | Radicados distributed or in progress awaiting action |
+| 02 Recent activity | The latest radicados that saw movement |
+| 03 Alerts | Open radicados whose due date (`due_date`, RF-RAD-04) is near or past |
+| 04 Favourites | The navigation destinations the user has pinned in the sidebar |
+
+The **tenant-wide aggregate metrics** (radicados by status, top dependencias, monthly
+activity) are still available, but in a secondary collapsible section, closed by
+default, and **only if the user holds the `SGD_PERM_ESTADISTICA` permission** — the same
+one that enables the `/reportes` view.
+
+### 3. Global search from any screen
+
+The top bar carries a **global search** field available on every authenticated screen.
+It can be focused with the <kbd>/</kbd> keyboard shortcut (the shortcut is inhibited if
+focus is already inside a text field, so it does not interfere with typing). On narrow
+screens the field unfolds from a magnifier icon.
+
+On submit, the search navigates to `/busqueda?q=<term>`, which is the same full-text
+search view (PostgreSQL FTS, `GET /api/v1/search` through the gateway) with its advanced
+filters. Because the term travels in the URL, any search is **linkable and shareable**,
+and the browser's back button behaves as expected.
+
+### 4. Favourites in the sidebar
+
+Every sidebar entry has a **pin/unpin** control. Pinned items rise to a "Favourites"
+section at the top of the menu and also appear in module 04 of the dashboard.
+Favourites are stored in the browser, partitioned by institution and user, so two users
+on the same team do not share a list.
+
+Favourites **do not bypass RBAC**: if a permission is withdrawn from a user, the
+corresponding entry disappears from both the menu and their favourites, with no need to
+clean it up by hand. As everywhere in the frontend, this is defence in depth: the
+backend revalidates permission and clearance on every request.
+
 See also: [System screens](pantallas.md) for the web-UI counterpart of each of
 these examples.

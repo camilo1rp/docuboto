@@ -169,6 +169,16 @@ class Settings(BaseSettings):
     # knowledge-service. NUNCA loguear el valor real.
     internal_service_token: str = ""
 
+    # Tope de tamaño de un anexo subido (`POST /upload`, `POST /files/{id}/replace`).
+    #
+    # No existía ninguno: `await file.read()` copiaba el fichero entero a memoria
+    # —la SEGUNDA copia, después de la del gateway— con `memory: 1G` por réplica.
+    # 100 MiB cubre con holgura un expediente escaneado completo y deja el ataque
+    # acotado. La importación interoperable, que sí maneja paquetes de cientos de
+    # megas, no pasa por aquí: va a `document-service/routers/import_.py`, con su
+    # propio tope.
+    max_upload_bytes: int = 100 * 1024 * 1024
+
     # Formatos admitidos en la subida (RF-DIG-04). CSV de MIME types; "*" = todos.
     allowed_mime_types: str = (
         "application/pdf,"

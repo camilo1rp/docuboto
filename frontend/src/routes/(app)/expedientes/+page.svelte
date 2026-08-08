@@ -179,7 +179,16 @@
   let createName = "";
   let createDescription = "";
   let createTrdSerieId = "";
+  // ADR-026: `origen` decide bajo qué instrumento se clasifica y, en fondo
+  // acumulado, desde qué fecha se cuenta la retención. No es un filtro de
+  // presentación: cambia qué catálogo alimenta el selector y qué campos son
+  // obligatorios.
+  let createOrigen = "corriente";
+  let createFechaExtremaInicial = "";
+  let createFechaExtremaFinal = "";
   let creating = false;
+
+  $: esFondoAcumulado = createOrigen === "fondo_acumulado";
 
   // ---------------------------------------------------------------------------
   // Form Builder (T-12): campos dinámicos de la plantilla de metadatos de la
@@ -194,10 +203,43 @@
   /** @type {Record<string, string>} valores de los campos dinámicos, por clave del schema */
   let metadataValues = {};
 
-  $: serieOptions = [
-    { value: "", label: "— sin serie / sin metadatos —" },
-    ...(data.trdSeries ?? []).map((s) => ({ value: s.id, label: `${s.code} — ${s.name}` })),
-  ];
+  // El selector de instrumento cambia de CATÁLOGO, no de etiqueta: una TRD
+  // ordena producción futura y una TVD valora un fondo ya producido, y el
+  // backend rechaza en el motor cruzarlos (trigger de la Capa 4, ADR-026). Un
+  // expediente corriente nunca ve agrupaciones de TVD ni al revés, así que la
+  // interfaz no puede ofrecer una combinación que va a fallar.
+  $: serieOptions = esFondoAcumulado
+    ? [
+        { value: "", label: "— elegir agrupación de TVD —" },
+        ...(data.tvdAgrupaciones ?? []).map((s) => ({
+          value: s.id,
+          label: `${s.code} — ${s.name}`,
+        })),
+      ]
+    : [
+        { value: "", label: "— sin serie / sin metadatos —" },
+        ...(data.trdSeries ?? []).map((s) => ({ value: s.id, label: `${s.code} — ${s.name}` })),
+      ];
+
+  /** El catálogo de TVD puede venir vacío porque el tenant no tiene ninguna
+   * registrada, o porque la petición falló en el `load`. La interfaz no puede
+   * distinguirlos, así que lo dice sin afirmar la causa — nunca cae al
+   * catálogo de TRD, que sería ofrecer justo lo que el backend rechaza. */
+  $: sinAgrupacionesTvd = esFondoAcumulado && (data.tvdAgrupaciones ?? []).length === 0;
+
+  /** Cambiar de origen invalida el instrumento ya elegido (pertenece al otro
+   * catálogo) y, con él, la plantilla de metadatos que se hubiera cargado.
+   * Sin esto quedaría un `trd_serie_id` del catálogo anterior y el backend
+   * respondería con una violación de trigger difícil de leer. */
+  function onOrigenChange() {
+    createTrdSerieId = "";
+    activeTemplate = null;
+    metadataValues = {};
+    if (!esFondoAcumulado) {
+      createFechaExtremaInicial = "";
+      createFechaExtremaFinal = "";
+    }
+  }
 
   $: templateProperties =
     activeTemplate?.json_schema?.properties &&
@@ -255,6 +297,9 @@
     createName = "";
     createDescription = "";
     createTrdSerieId = "";
+    createOrigen = "corriente";
+    createFechaExtremaInicial = "";
+    createFechaExtremaFinal = "";
     activeTemplate = null;
     metadataValues = {};
     showCreateModal = true;
@@ -270,6 +315,9 @@
       createName = form.values.name ?? "";
       createDescription = form.values.description ?? "";
       createTrdSerieId = form.values.trdSerieId ?? "";
+      createOrigen = form.values.origen ?? "corriente";
+      createFechaExtremaInicial = form.values.fechaExtremaInicial ?? "";
+      createFechaExtremaFinal = form.values.fechaExtremaFinal ?? "";
       // Si la plantilla ya estaba cargada (caso normal con JS: use:enhance no
       // remonta el componente, metadataValues nunca se perdió), solo se
       // fusionan los valores crudos por si acaso. Si NO hay plantilla en
@@ -500,15 +548,60 @@
           rows={3}
         />
         <FormField
+          id="create-origen"
+          name="origen"
+          label="Origen del expediente"
+          type="select"
+          bind:value={createOrigen}
+          options={[
+            { value: "corriente", label: "Corriente — documentación en producción" },
+            { value: "fondo_acumulado", label: "Fondo acumulado — documentación ya producida" },
+          ]}
+          hint="Un fondo acumulado se clasifica bajo una TVD y su retención se cuenta desde su fecha extrema final, no desde el cierre."
+          on:change={() => onOrigenChange()}
+        />
+
+        <FormField
           id="create-trd"
           name="trd_serie_id"
-          label="Serie TRD (opcional)"
+          label={esFondoAcumulado ? "Agrupación de TVD" : "Serie TRD (opcional)"}
           type="select"
+          required={esFondoAcumulado}
           bind:value={createTrdSerieId}
           options={serieOptions}
-          hint="Elegir una serie con plantilla de metadatos activa habilita campos adicionales."
+          hint={esFondoAcumulado
+            ? "Obligatoria: un fondo acumulado solo puede clasificarse bajo una tabla de valoración."
+            : "Elegir una serie con plantilla de metadatos activa habilita campos adicionales."}
           on:change={() => onSerieChange()}
         />
+
+        {#if sinAgrupacionesTvd}
+          <p class="modal-form__warning" role="status">
+            <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+            No hay agrupaciones de TVD disponibles. Regístralas en
+            <a href="/admin/tvd">Administración → TVD</a> antes de crear un expediente de fondo acumulado.
+          </p>
+        {/if}
+
+        {#if esFondoAcumulado}
+          <FormField
+            id="create-fecha-extrema-inicial"
+            name="fecha_extrema_inicial"
+            label="Fecha extrema inicial (opcional)"
+            type="date"
+            bind:value={createFechaExtremaInicial}
+            hint="Documento más antiguo del fondo."
+          />
+          <FormField
+            id="create-fecha-extrema-final"
+            name="fecha_extrema_final"
+            label="Fecha extrema final"
+            type="date"
+            required={true}
+            bind:value={createFechaExtremaFinal}
+            hint="Documento más reciente del fondo. Es la fecha desde la que se cuenta la retención, así que el calendario puede resultar ya vencido — eso es lo normal en un fondo acumulado."
+          />
+        {/if}
 
         <!-- Campos dinámicos de la plantilla de metadatos de la serie (T-12 Form Builder) -->
         {#if createTrdSerieId}
@@ -746,6 +839,35 @@
     margin: 0;
     font-size: var(--op-font-xs);
     color: var(--op-warning-fg);
+  }
+
+  .modal-form__warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    margin: 0;
+    padding: var(--op-space-3) var(--op-space-4);
+    border-radius: var(--op-radius);
+    background: var(--op-warning-bg);
+    color: var(--op-warning-fg);
+    font-size: var(--op-font-sm);
+    line-height: var(--op-line-height);
+
+    i {
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: underline;
+
+      &:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+        border-radius: var(--op-radius-sm);
+      }
+    }
   }
 
   .modal-error {

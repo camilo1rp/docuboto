@@ -25,7 +25,7 @@
 
 <main class="forbidden">
   <div class="forbidden__card">
-    <img src="/orpyca-logo.png" alt="" class="forbidden__icon" aria-hidden="true" />
+    <img src="/brand/orpyca-mark.png" alt="" class="forbidden__icon" aria-hidden="true" />
 
     <p class="forbidden__code" aria-hidden="true">403</p>
 

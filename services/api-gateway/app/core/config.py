@@ -40,5 +40,20 @@ class Settings(BaseSettings):
     service_port: int = 8080
     log_level: str = "info"
 
+    # Tope del cuerpo de una petición que el gateway acepta reenviar.
+    #
+    # Antes NO existía ninguno, y el gateway además **bufferizaba el cuerpo entero
+    # en memoria** (`await request.body()`) antes de mandarlo, con storage haciendo
+    # una segunda copia. Con `memory: 1G` por réplica, eso convertía cualquier
+    # subida grande —o una deliberada— en un OOM del contenedor, no en un error.
+    # Ahora el cuerpo se transmite por trozos y este tope es lo que lo acota.
+    #
+    # 512 MiB no es un número redondo elegido al azar: es el máximo que ya declara
+    # `document-service/app/routers/import_.py` para el ZIP de importación
+    # interoperable, la carga legítima más grande del sistema. Bajarlo aquí rompería
+    # esa función en silencio; subirlo no habilita nada que el servicio de destino
+    # no vaya a rechazar igualmente.
+    max_request_body_bytes: int = 512 * 1024 * 1024
+
 
 settings = Settings()

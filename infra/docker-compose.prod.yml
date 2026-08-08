@@ -37,9 +37,12 @@ services:
   # ─── Infrastructure ───────────────────────────────────────────────────────────
 
   postgres:
-    image: postgres:15-alpine
+    # pgvector, no postgres a secas: knowledge-service (E21) crea la extensión
+    # `vector` en el init. Con la imagen base la extensión no existe y la
+    # migración falla a mitad de la provisión del primer tenant.
+    image: pgvector/pgvector:pg15
     container_name: orpycamcp-postgres-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:?Database user required}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?Database password required}
@@ -50,7 +53,11 @@ services:
       - orpycamcp-net
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      # OJO con la ruta: este compose vive en infra/, el script en la raíz. Con
+      # `./scripts/...` Docker no falla — crea un DIRECTORIO vacío y lo monta, así
+      # que el init no corre y no existen ni el schema `keycloak` ni la extensión
+      # `vector` ni public._migrations. El fallo aparece después, en Keycloak.
+      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       # Optional: database backup script
       # - ./infra/postgres/backup.sh:/usr/local/bin/backup.sh:ro
     healthcheck:
@@ -75,7 +82,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: orpycamcp-redis-prod
-    restart: "no"
+    restart: unless-stopped
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?Redis password required}
     networks:
       - orpycamcp-net
@@ -103,7 +110,7 @@ services:
   minio:
     image: minio/minio:latest
     container_name: orpycamcp-minio-prod
-    restart: "no"
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MinIO root user required}
@@ -141,7 +148,7 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
     container_name: orpycamcp-keycloak-prod
-    restart: "no"
+    restart: unless-stopped
     command: start --db=postgres --hostname-strict=true --hostname=${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
     environment:
       KC_DB: postgres
@@ -152,15 +159,24 @@ services:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
 
-      # SECURITY: Enable HTTPS in production
-      KC_HTTPS_ENABLED: "true"
-      KC_HTTPS_PORT: "8443"
-      KC_HTTP_ENABLED: "false"
-      KC_PROXY: edge
+      # TLS TERMINADO EN EL REVERSE PROXY (es el despliegue que documenta la guía
+      # y el que asume el resto de este fichero: todos los servicios usan `expose:`,
+      # ninguno publica puerto). Keycloak habla HTTP plano DENTRO de la red Docker
+      # y confía en las cabeceras X-Forwarded-* del proxy.
+      #
+      # La configuración anterior (HTTPS_ENABLED=true + HTTP_ENABLED=false) con el
+      # bloque de certificados comentado abajo hacía que el contenedor muriera al
+      # arrancar con «Key material not provided» — y sin identidad no hay sistema.
+      # Si terminas TLS AQUÍ en vez de en el proxy: invierte estas dos variables,
+      # descomenta el montaje de certificados y añade KC_HTTPS_PORT: "8443".
+      KC_HTTP_ENABLED: "true"
+      KC_HTTPS_ENABLED: "false"
+      KC_PROXY_HEADERS: xforwarded
 
       # Performance tuning
-      KC_CACHE: default
-      KC_CACHE_STACK: kubernetes  # or tcp for external cache
+      # KC_CACHE_STACK solo aplica a clúster; `kubernetes` sobre Compose plano hace
+      # que el descubrimiento JGroups falle. Con una sola instancia, `default` basta.
+      KC_CACHE: local
     networks:
       - orpycamcp-net
     # Montajes opcionales (descomenta y añade `volumes:` como lista cuando los uses):
@@ -197,7 +213,7 @@ services:
       dockerfile: Dockerfile
     # Sin container_name fijo: este servicio escala (deploy.replicas), los nombres
     # deben ser únicos por réplica (Compose los genera como proyecto-servicio-N).
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -238,10 +254,12 @@ services:
 
   auth-service:
     build:
-      context: ../services/auth-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/auth-service/.
+      context: ..
+      dockerfile: services/auth-service/Dockerfile
     container_name: orpycamcp-auth-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -249,7 +267,26 @@ services:
       KEYCLOAK_REALM: orpycamcp
       KEYCLOAK_CLIENT_ID: auth-service
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
+      # ── Claves de cifrado en reposo (KEK) ────────────────────────────────────
+      # Ambas son base64 de 32 bytes y son SECRETOS DISTINTOS con propósitos
+      # distintos: TOTP_ENCRYPTION_KEY cifra el secreto TOTP del segundo factor,
+      # SIGNING_KEY_ENCRYPTION_KEY envuelve la clave privada de firma personal.
+      # Sin ellas los endpoints correspondientes fallan CERRADOS (500), que es lo
+      # correcto — pero en producción eso significa «nadie enrola 2FA ni firma»,
+      # así que se exigen con `:?` en vez de dejarlas vacías por defecto.
+      # Generar: openssl rand -base64 32
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?TOTP encryption key required (openssl rand -base64 32)}
+      SIGNING_KEY_ENCRYPTION_KEY: ${SIGNING_KEY_ENCRYPTION_KEY:?Signing key encryption key required (openssl rand -base64 32)}
+      # Token servicio-a-servicio que protege POST /internal/signing-key/* — el
+      # llamante es signature-service, que debe traer EXACTAMENTE este valor.
+      SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
+      # Certificado PÚBLICO de la sub-CA que emite las credenciales de usuario.
+      # La clave privada (ca-users.key) NUNCA se monta aquí.
+      SIGNING_KEY_CA_USERS_CERT_PATH: /run/secrets/ca-users-public/ca-users.crt
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # Solo material público, solo lectura.
+      - ../secrets/ca-users-public:/run/secrets/ca-users-public:ro
     networks:
       - orpycamcp-net
     expose:
@@ -280,10 +317,12 @@ services:
 
   tenant-service:
     build:
-      context: ../services/tenant-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/tenant-service/.
+      context: ..
+      dockerfile: services/tenant-service/Dockerfile
     container_name: orpycamcp-tenant-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -318,13 +357,23 @@ services:
 
   document-service:
     build:
-      context: ../services/document-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/document-service/.
+      context: ..
+      dockerfile: services/document-service/Dockerfile
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # D-02: secreto compartido con storage-service.INTERNAL_SERVICE_TOKEN.
+      # document-service MEDIA la descarga de anexos (gate por clearance vigente)
+      # y necesita este token para hablar con storage. Sin él, storage responde
+      # 401 a TODA descarga — fail-closed correcto, sistema inservible.
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
+      # Token que protege los endpoints /internal de ESTE servicio (los consume
+      # archive-service al ensamblar el AIP y el export del expediente).
+      INTERNAL_SERVICE_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -369,14 +418,28 @@ services:
       dockerfile: services/storage-service/Dockerfile
       target: production
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      MINIO_SECURE: "true"
+      # El campo real es `minio_use_ssl` (core/config.py:24). `MINIO_SECURE` no
+      # existe y `extra="ignore"` lo descartaba en silencio: la variable prometía
+      # TLS sobre tráfico que iba en claro. Se deja en false porque el MinIO de
+      # este compose no tiene certificados y el tráfico no sale de la red Docker;
+      # ponerlo en true exige montarlos y configurar MinIO en modo TLS.
+      MINIO_USE_SSL: "false"
+      # Token que protege los endpoints internos de storage. Es el MISMO valor
+      # que STORAGE_INTERNAL_TOKEN en document/archive/signature-service.
+      INTERNAL_SERVICE_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
+      # WORM/Object-Lock (E10). Sin APP_ENV=production el resolutor exige modo
+      # COMPLIANCE explícito; sin PRESERVATION_ENABLED el índice electrónico y el
+      # acta de transferencia se cierran SIN protección y el trabajo de reintento
+      # acumula backlog en silencio.
+      APP_ENV: production
+      PRESERVATION_ENABLED: "true"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # VERAPDF_BINARY/PDFA_VALIDATOR/PRESERVATION_PDFA_VALIDATION_ENABLED ya
       # vienen como ENV del stage "production" del Dockerfile (valores por
@@ -417,10 +480,12 @@ services:
 
   workflow-service:
     build:
-      context: ../services/workflow-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/workflow-service/.
+      context: ..
+      dockerfile: services/workflow-service/Dockerfile
     container_name: orpycamcp-workflow-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -455,13 +520,22 @@ services:
 
   archive-service:
     build:
-      context: ../services/archive-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/archive-service/.
+      context: ..
+      dockerfile: services/archive-service/Dockerfile
     container_name: orpycamcp-archive-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # D-02, los tres pares emisor/receptor de este servicio:
+      #  - storage:   AIP, protección WORM del índice y del acta
+      #  - signature: POST /internal/sign-indice (reconciliación del sellado)
+      #  - document:  export del expediente por-radicado con recorte de clearance
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
+      SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
+      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -493,10 +567,12 @@ services:
 
   notification-service:
     build:
-      context: ../services/notification-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/notification-service/.
+      context: ..
+      dockerfile: services/notification-service/Dockerfile
     container_name: orpycamcp-notification-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -506,6 +582,9 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP password required}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?From email required}
       SMTP_TLS: "true"
+      # D-02: POST /notifications/send está SELLADO servicio-a-servicio. Por ahí
+      # sale el OTP del segundo factor; sin este token nadie con 2FA puede entrar.
+      INTERNAL_SERVICE_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -541,7 +620,7 @@ services:
       context: ..
       dockerfile: services/signature-service/Dockerfile
     container_name: orpycamcp-signature-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       # En prod el navegador y los servicios usan el MISMO hostname público de
@@ -551,13 +630,44 @@ services:
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
       SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
+      # Faltaba: este servicio consume orpycamcp.document.events. Sin REDIS_URL,
+      # `from_url` no falla al construir (es perezoso) y el bucle del consumer se
+      # traga la excepción, así que /health sigue en verde para siempre mientras
+      # `firma_solicitud.nivel_seguridad` queda desfasado respecto a las
+      # reclasificaciones — y el gate de 2FA para nivel>=2 nunca se dispara.
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # ── Sello institucional XAdES (E06) ─────────────────────────────────────
+      # SIGNER_ALLOW_DEV_SEAL y TSA_ALLOW_DEV_SEAL NO se ponen a propósito: en
+      # producción un tenant sin sello propio debe fallar cerrado (503), no
+      # firmar con el par compartido de desarrollo.
+      SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
+      SIGNER_CERT_DIR: /run/secrets/signing
+      SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
+      TSA_URL: ${TSA_URL:-}
+      TSA_CERT_DIR: /run/secrets/tsa
+      SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
+      SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
+      SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
+      SIGNER_OCSP_REQUIRE: ${SIGNER_OCSP_REQUIRE:-false}
+      # ── D-02: los cuatro pares emisor/receptor de este servicio ─────────────
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
+      SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
+      SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
+      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # Solo lectura y solo material que este servicio necesita. La clave privada
+      # de la CA (secrets/ca-authority*) NUNCA se monta aquí.
+      - ../secrets/signing:/run/secrets/signing:ro
+      - ../secrets/tsa:/run/secrets/tsa:ro
     networks:
       - orpycamcp-net
     expose:
       - "8008"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
@@ -582,13 +692,19 @@ services:
     # Capa de conocimiento (E21, pgvector). INTERNAL_SERVICE_TOKEN obligatorio:
     # sin él la ingesta queda fail-closed (D-02 / RF-SEG-08) y rechaza todo /ingest.
     build:
-      context: ../services/knowledge-service
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/knowledge-service/.
+      context: ..
+      dockerfile: services/knowledge-service/Dockerfile
     container_name: orpycamcp-knowledge-service-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       INTERNAL_SERVICE_TOKEN: ${KNOWLEDGE_INTERNAL_TOKEN:?Knowledge internal token required}
+      # Faltaba, igual que en signature: la ingesta event-driven (E21) consume
+      # orpycamcp.document.events. Sin esto el índice semántico nunca se puebla y
+      # el fallo es silencioso.
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -596,6 +712,8 @@ services:
       - "8011"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health')"]
@@ -605,11 +723,15 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1'
-          memory: 1G
+          # 4G, no 1G como el resto: este servicio construye con WITH_ML=1 (default
+          # del Dockerfile) y carga el modelo de embeddings soberano en memoria —
+          # torch CPU solo ya pesa ~1,5 GB. Con 1G el contenedor muere por OOM al
+          # primer embedding, no al arrancar, que es el modo de fallo más confuso.
+          cpus: '2'
+          memory: 4G
         reservations:
           cpus: '0.5'
-          memory: 512M
+          memory: 1G
     logging:
       driver: "json-file"
       options:
@@ -622,7 +744,7 @@ services:
       context: ../services/mcp-server
       dockerfile: Dockerfile
     container_name: orpycamcp-mcp-server-prod
-    restart: "no"
+    restart: unless-stopped
     environment:
       GATEWAY_URL: http://api-gateway:8080
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -656,9 +778,14 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
-    restart: "no"
+    restart: unless-stopped
     environment:
       PORT: "3000"
+      # adapter-node limita el cuerpo a 512 KB por defecto y las subidas de anexos
+      # pasan por el SSR: sin esto, todo PDF escaneado real muere en 413. Coincide
+      # con el tope del gateway (MAX_REQUEST_BODY_BYTES) — subirlo aquí sin el
+      # flujo por trozos del gateway cambiaría el 413 por un OOM.
+      BODY_SIZE_LIMIT: "536870912"
       ORIGIN: https://${FRONTEND_HOSTNAME:?Frontend hostname required}
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: x-forwarded-host

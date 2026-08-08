@@ -43,6 +43,7 @@ from app.schemas.document import (
     ReclassifyResponse,
 )
 from app.services.document_service import (
+    DocumentAnuladoError,
     DocumentNotFoundError,
     DocumentService,
     InvalidDependenciaError,
@@ -505,9 +506,22 @@ async def update_document(
     El gate es imprescindible porque la respuesta devuelve el radicado COMPLETO.
     """
     service = _build_service(conn, _tenant_slug(request))
-    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
+    actor = _get_registered_by(request)
+    clearance = await resolve_caller_clearance(conn, actor)
     try:
-        return await service.update(document_id, payload, clearance)
+        return await service.update(document_id, payload, clearance, actor=actor)
+    except DocumentAnuladoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "radicado_anulado",
+                "detail": (
+                    f"El radicado '{exc}' está anulado y no admite modificaciones. "
+                    "La anulación se decide por el circuito de anulación, no por PATCH."
+                ),
+                "status": 409,
+            },
+        )
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -16,6 +16,50 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+def validar_forma_fondo_acumulado(
+    *,
+    origen: str,
+    trd_serie_id: uuid.UUID | None,
+    fecha_extrema_inicial: date | None,
+    fecha_extrema_final: date | None,
+) -> None:
+    """Regla de forma de ADR-026 D4, compartida por la creación unitaria
+    (`ExpedienteCreate`) y la carga masiva (`BatchExpedienteCreate`).
+
+    Vive aquí como función y no duplicada en cada schema porque gobierna la
+    **fecha base** de un calendario de retención que termina en un
+    `retain_until` COMPLIANCE **irreversible**: dos copias de esta regla se
+    separan en cuanto una de las dos rutas cambie, y la que se quede atrás
+    dejaría entrar un fondo acumulado sin `fecha_extrema_final` — el
+    escenario exacto contra el que D4 previene. Es espejo del par de CHECK de
+    la migración 041 (`expedientes_fondo_forma_check` /
+    `expedientes_corriente_forma_check`); se ejecuta antes de tocar la base
+    para dar un 422 legible en vez de una violación de restricción opaca.
+
+    Lanza ``ValueError`` (Pydantic lo convierte en `422`); no devuelve nada.
+    """
+    if origen == "fondo_acumulado":
+        if fecha_extrema_final is None:
+            raise ValueError(
+                "fecha_extrema_final es obligatoria cuando origen='fondo_acumulado' "
+                "(ADR-026 D4: es la fecha base del calendario de retención)."
+            )
+        if fecha_extrema_inicial is not None and fecha_extrema_inicial > fecha_extrema_final:
+            raise ValueError("fecha_extrema_inicial no puede ser posterior a fecha_extrema_final.")
+        if trd_serie_id is None:
+            raise ValueError(
+                "trd_serie_id es obligatorio cuando origen='fondo_acumulado' "
+                "(debe apuntar a una TVD, ADR-026 D3)."
+            )
+    elif fecha_extrema_inicial is not None or fecha_extrema_final is not None:
+        # Negación declarada, espejo de `expedientes_corriente_forma_check`
+        # (migración 041): un expediente corriente no carga fechas de un
+        # fondo que no es.
+        raise ValueError(
+            "fecha_extrema_inicial/fecha_extrema_final solo aplican con origen='fondo_acumulado'."
+        )
+
+
 class ExpedienteCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=500)
     description: str | None = None
@@ -40,30 +84,12 @@ class ExpedienteCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_fondo_acumulado(self) -> ExpedienteCreate:
-        if self.origen == "fondo_acumulado":
-            if self.fecha_extrema_final is None:
-                raise ValueError(
-                    "fecha_extrema_final es obligatoria cuando origen='fondo_acumulado' "
-                    "(ADR-026 D4: es la fecha base del calendario de retención)."
-                )
-            if (
-                self.fecha_extrema_inicial is not None
-                and self.fecha_extrema_inicial > self.fecha_extrema_final
-            ):
-                raise ValueError("fecha_extrema_inicial no puede ser posterior a fecha_extrema_final.")
-            if self.trd_serie_id is None:
-                raise ValueError(
-                    "trd_serie_id es obligatorio cuando origen='fondo_acumulado' "
-                    "(debe apuntar a una TVD, ADR-026 D3)."
-                )
-        elif self.fecha_extrema_inicial is not None or self.fecha_extrema_final is not None:
-            # Negación declarada, espejo de `expedientes_corriente_forma_check`
-            # (migración 041): un expediente corriente no carga fechas de un
-            # fondo que no es.
-            raise ValueError(
-                "fecha_extrema_inicial/fecha_extrema_final solo aplican con "
-                "origen='fondo_acumulado'."
-            )
+        validar_forma_fondo_acumulado(
+            origen=self.origen,
+            trd_serie_id=self.trd_serie_id,
+            fecha_extrema_inicial=self.fecha_extrema_inicial,
+            fecha_extrema_final=self.fecha_extrema_final,
+        )
         return self
 
 

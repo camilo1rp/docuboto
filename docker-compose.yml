@@ -566,6 +566,9 @@ services:
       - "19300:3000"
     environment:
       - PORT=3000
+      # adapter-node limita el cuerpo a 512 KB por defecto y las subidas de anexos
+      # pasan por el SSR: sin esto, todo PDF escaneado real muere en 413.
+      - BODY_SIZE_LIMIT=536870912
       # Origen público por el que el navegador alcanza el frontend. adapter-node
       # lo usa para derivar `url.origin` (p. ej. el redirect_uri del login PKCE).
       # Sin esto, SSR infiere el esquema/host del request y arma un redirect_uri

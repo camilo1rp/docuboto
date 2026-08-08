@@ -159,6 +159,7 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             request=request,
             extra_headers=extra_headers,
             timeout=timeout,
+            max_body_bytes=request.app.state.max_request_body_bytes,
         )
     except httpx.TimeoutException:
         return JSONResponse(

@@ -20,16 +20,21 @@ import re
 from urllib.parse import quote
 
 import asyncpg
-from fastapi import APIRouter, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.clients import storage_client
 from app.core.database import tenant_schema
+from app.core.public_audit import audit_public_access
+from app.core.public_interop import require_public_interop
 from app.repositories.oai_repository import OaiRepository
 from app.services.cmis_service import CmisNotFound, CmisService
 
-router = APIRouter(tags=["cmis"])
+# Guard de interoperabilidad pública ANÓNIMA (E11): con el interruptor apagado —el
+# default— estas rutas responden 404, indistinguible de una ruta inexistente. Ver
+# `app/core/public_interop.py` para el razonamiento completo.
+router = APIRouter(tags=["cmis"], dependencies=[Depends(require_public_interop)])
 
 _MIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*$")
 
@@ -145,6 +150,28 @@ async def cmis_root(
         else:
             # CMIS: notSupported -> 405 (invalidArgument seria 400). Conf #5.
             result = ("err", _err(405, "notSupported", f"cmisselector '{cmisselector}' no soportado"))
+
+        # Traza del acceso ANÓNIMO (best-effort, ver core/public_audit.py). Va DENTRO
+        # del try, antes de liberar la conexión: es la única que tiene el search_path
+        # del tenant. Se asienta también el 404/405 — un barrido de objectId que no
+        # existen es exactamente lo que una entidad querría poder ver después.
+        kind_previo = result[0]
+        await audit_public_access(
+            conn,
+            tenant_slug=tenant,
+            action=(
+                "document.cmis_descarga_anexo"
+                if selector == "content" and kind_previo == "content"
+                else "document.cmis_consulta"
+            ),
+            object_type="cmis_request",
+            object_ref=objectId,
+            payload={
+                "selector": selector,
+                "resultado": kind_previo,
+                **({"max_items": maxItems, "skip_count": skipCount} if selector == "children" else {}),
+            },
+        )
     finally:
         await _release(pool, conn)
 

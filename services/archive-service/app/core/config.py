@@ -77,6 +77,16 @@ class Settings(BaseSettings):
     # (fail-closed, mal-configurado) — NUNCA commitear el valor real.
     signature_internal_token: str = ""
 
+    # Interoperabilidad pública ANÓNIMA (E11 INT-06): OAI-PMH multinivel de
+    # expedientes bajo /api/v1/public/archive/, sin autenticación.
+    #
+    # False por defecto, mismo criterio y mismo nombre que en document-service —
+    # deliberadamente el MISMO nombre de variable, para que una entidad que decide
+    # publicar lo active en los dos servicios con el mismo valor y no se quede a
+    # medias sin darse cuenta. Aquí el recorte también es `nivel_seguridad = 1`,
+    # que es el default de la columna.
+    public_interop_enabled: bool = False
+
     # --- Firma XAdES del acta de transferencia (H-H, E06/F4) ---
     # Kill-switch del loop de reconciliación DEDICADO del acta (segunda fase
     # de app/jobs/indice_reconciliation.py) -- independiente de

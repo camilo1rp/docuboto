@@ -107,6 +107,7 @@ export async function load({ cookies, parent, url, fetch }) {
       loadError: "Sesión no válida. Vuelve a iniciar sesión.",
       initialFilters,
       trdSeries: [],
+      tvdAgrupaciones: [],
     };
   }
 
@@ -130,14 +131,27 @@ export async function load({ cookies, parent, url, fetch }) {
   // mocks de test lo hacen), Promise.allSettled solo atrapa rechazos — un
   // throw síncrono al evaluar los argumentos del array se propagaría sin
   // pasar por allSettled.
-  const [searchRes, trdRes] = await Promise.allSettled([
+  // TVD (ADR-026): catálogo SEPARADO del de TRD, no un filtro sobre él. El
+  // backend las sirve por rutas distintas y desde vistas distintas
+  // (`v_trd_series` / `v_tvd_agrupaciones`), así que aquí también viajan
+  // separadas: mezclarlas en una lista y filtrarla en el cliente sería
+  // reintroducir en el front la consulta de la clase "filtro olvidado" que el
+  // ADR sacó de la base. Si la petición falla, el selector de fondo acumulado
+  // queda vacío y el formulario lo dice — no cae al catálogo de TRD.
+  const [searchRes, trdRes, tvdRes] = await Promise.allSettled([
     (async () => fetch(`${API_V1}/expedientes/search?${params.toString()}`, { headers }))(),
     (async () => fetch(`${API_V1}/trd?is_active=true&size=100`, { headers }))(),
+    (async () => fetch(`${API_V1}/tvd?is_active=true&size=100`, { headers }))(),
   ]);
 
   let trdSeries = [];
   if (trdRes.status === "fulfilled" && trdRes.value.ok) {
     trdSeries = await trdRes.value.json().catch(() => []);
+  }
+
+  let tvdAgrupaciones = [];
+  if (tvdRes.status === "fulfilled" && tvdRes.value.ok) {
+    tvdAgrupaciones = await tvdRes.value.json().catch(() => []);
   }
 
   let expedientes = [];
@@ -177,6 +191,7 @@ export async function load({ cookies, parent, url, fetch }) {
     loadError,
     initialFilters,
     trdSeries,
+    tvdAgrupaciones,
     // token y tenant NO se exponen (D-05) — no hace falta: la única llamada
     // client-side de esta vista es GET /expedientes/api/metadata-templates
     // (D-05, lee la cookie httpOnly en el servidor), más la navegación
@@ -260,19 +275,74 @@ export const actions = {
     const name = String(formData.get("name") ?? "").trim();
     const description = String(formData.get("description") ?? "").trim();
     const trdSerieId = String(formData.get("trd_serie_id") ?? "").trim();
+    // ADR-026: `origen` decide bajo qué INSTRUMENTO puede cerrarse este
+    // expediente y, en fondo acumulado, desde qué FECHA se cuenta su
+    // retención. Se normaliza contra un conjunto cerrado: cualquier otro
+    // valor cae a "corriente", que es la opción conservadora — nunca se
+    // deduce "fondo acumulado" de un campo inesperado.
+    const origenRaw = String(formData.get("origen") ?? "").trim();
+    const origen = origenRaw === "fondo_acumulado" ? "fondo_acumulado" : "corriente";
+    const fechaExtremaInicial = String(formData.get("fecha_extrema_inicial") ?? "").trim();
+    const fechaExtremaFinal = String(formData.get("fecha_extrema_final") ?? "").trim();
+
+    /** Valores para repoblar el formulario si algo falla. */
+    const formValues = {
+      name,
+      description,
+      trdSerieId,
+      origen,
+      fechaExtremaInicial,
+      fechaExtremaFinal,
+    };
 
     if (!name) {
       return fail(400, {
         error: "validation_error",
         detail: "El nombre del expediente es obligatorio.",
-        values: { name, description, trdSerieId },
+        values: formValues,
       });
     }
     if (name.length > 500) {
       return fail(400, {
         error: "validation_error",
         detail: "El nombre no puede superar los 500 caracteres.",
-        values: { name, description, trdSerieId },
+        values: formValues,
+      });
+    }
+
+    // Espejo de `validar_forma_fondo_acumulado` (archive-service): el backend
+    // vuelve a validarlo y la base lo blinda con dos CHECK — esto solo evita
+    // el viaje y da un mensaje en el idioma del formulario. El mensaje NO se
+    // inventa: dice por qué la fecha importa, porque es la base de un
+    // calendario de retención que después es irreversible.
+    if (origen === "fondo_acumulado") {
+      if (!fechaExtremaFinal) {
+        return fail(400, {
+          error: "validation_error",
+          detail:
+            "La fecha extrema final es obligatoria en un fondo acumulado: es la fecha desde la que se cuenta su retención.",
+          values: formValues,
+        });
+      }
+      if (fechaExtremaInicial && fechaExtremaInicial > fechaExtremaFinal) {
+        return fail(400, {
+          error: "validation_error",
+          detail: "La fecha extrema inicial no puede ser posterior a la final.",
+          values: formValues,
+        });
+      }
+      if (!trdSerieId) {
+        return fail(400, {
+          error: "validation_error",
+          detail: "Un fondo acumulado debe clasificarse bajo una agrupación de TVD.",
+          values: formValues,
+        });
+      }
+    } else if (fechaExtremaInicial || fechaExtremaFinal) {
+      return fail(400, {
+        error: "validation_error",
+        detail: "Las fechas extremas solo aplican a un expediente de fondo acumulado.",
+        values: formValues,
       });
     }
 
@@ -299,7 +369,7 @@ export const actions = {
         return fail(503, {
           error: "connection_error",
           detail: "No se pudo conectar al servidor de plantillas de metadatos.",
-          values: { name, description, trdSerieId },
+          values: formValues,
         });
       }
 
@@ -321,7 +391,7 @@ export const actions = {
         return fail(503, {
           error: "connection_error",
           detail: "No se pudo cargar la plantilla de metadatos de la serie TRD.",
-          values: { name, description, trdSerieId, meta: metaRawValues },
+          values: { ...formValues, meta: metaRawValues },
         });
       }
       // 4xx no-500 (serie sin plantilla activa, por ejemplo): metadata
@@ -337,6 +407,11 @@ export const actions = {
     };
     if (description) payload.description = description;
     if (trdSerieId) payload.trd_serie_id = trdSerieId;
+    if (origen === "fondo_acumulado") {
+      payload.origen = origen;
+      payload.fecha_extrema_final = fechaExtremaFinal;
+      if (fechaExtremaInicial) payload.fecha_extrema_inicial = fechaExtremaInicial;
+    }
 
     let res;
     try {
@@ -353,7 +428,7 @@ export const actions = {
       return fail(503, {
         error: "connection_error",
         detail: "No se pudo conectar al servidor de expedientes.",
-        values: { name, description, trdSerieId, meta: metaRawValues },
+        values: { ...formValues, meta: metaRawValues },
       });
     }
 
@@ -366,7 +441,7 @@ export const actions = {
       return fail(res.status, {
         error,
         detail,
-        values: { name, description, trdSerieId, meta: metaRawValues },
+        values: { ...formValues, meta: metaRawValues },
       });
     }
 
@@ -377,7 +452,7 @@ export const actions = {
       return fail(502, {
         error: "invalid_upstream_response",
         detail: "El expediente se creó pero el servidor no devolvió su identificador.",
-        values: { name, description, trdSerieId, meta: metaRawValues },
+        values: { ...formValues, meta: metaRawValues },
       });
     }
 

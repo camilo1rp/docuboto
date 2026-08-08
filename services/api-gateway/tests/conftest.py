@@ -72,6 +72,7 @@ async def test_client(mock_redis, mock_http_client):
         app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
         app.state.rate_limit_per_ip = 100
         app.state.rate_limit_global = 1000
+        app.state.max_request_body_bytes = settings.max_request_body_bytes
         yield client, mock_http_client, mock_redis
 
 
@@ -83,3 +84,59 @@ def make_validate_response(
     roles: list[str] | None = None,
 ) -> httpx.Response:
     return _make_validate_response(valid, user_id, username, tenant_slug, roles)
+
+
+def wire_upstream(
+    http_client: AsyncMock,
+    response: httpx.Response | None = None,
+    *,
+    error: Exception | None = None,
+    raw: bytes | None = None,
+) -> None:
+    """Cablea el doble del cliente HTTP para el proxy en STREAMING.
+
+    El gateway ya no hace `http_client.request(...)`: construye la petición con
+    `build_request` (síncrono) y la envía con `send(..., stream=True)`, para que ni
+    el cuerpo de subida ni el de bajada se materialicen en memoria. Los dobles
+    tienen que reflejar esa forma o los tests estarían comprobando una API que el
+    código ya no usa.
+
+    Las aserciones sobre cabeceras/timeout siguen mirando
+    `http_client.build_request.call_args`, que es donde viajan ahora.
+    """
+    http_client.build_request = MagicMock(side_effect=lambda **kwargs: kwargs)
+
+    if error is not None:
+        http_client.send = AsyncMock(side_effect=error)
+        return
+
+    assert response is not None
+
+    stream_stub = MagicMock()
+    stream_stub.status_code = response.status_code
+    stream_stub.headers = response.headers
+
+    # `response.content` DECODIFICA si la respuesta trae `content-encoding`; el
+    # gateway reenvía crudo, así que el doble tiene que poder devolver los bytes
+    # sin decodificar (`raw`) para los tests que ejercitan esa cabecera.
+    cuerpo_crudo = raw if raw is not None else response.content
+
+    async def _aiter_raw():
+        yield cuerpo_crudo
+
+    stream_stub.aiter_raw = _aiter_raw
+    stream_stub.aclose = AsyncMock()
+
+    async def _send(peticion, stream=False):
+        # El httpx real CONSUME el cuerpo al escribirlo en el socket. Si el doble
+        # no lo consume, el guard de tamaño (`_limited_stream`, que solo puede
+        # dispararse al iterar) nunca se ejecuta y un test del tope pasaría en
+        # verde contra un gateway sin tope. El doble tiene que ser fiel en esto.
+        cuerpo = peticion.get("content") if isinstance(peticion, dict) else None
+        if cuerpo is not None and hasattr(cuerpo, "__aiter__"):
+            async for _ in cuerpo:
+                pass
+        return stream_stub
+
+    http_client.send = AsyncMock(side_effect=_send)
+    http_client.send.return_value = stream_stub

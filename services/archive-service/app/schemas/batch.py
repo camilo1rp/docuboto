@@ -9,16 +9,34 @@
 
 """Schemas for batch expediente operations."""
 
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+from app.schemas.archive import validar_forma_fondo_acumulado
 
 
 class BatchExpedienteCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=500)
     description: str | None = None
     trd_serie_id: UUID | None = None
+    # ADR-026 (Increment 3): amarre de fondo acumulado en la carga masiva.
+    # Hasta este incremento el import NO declaraba `origen`, así que todo
+    # expediente caía al `DEFAULT 'corriente'` de la migración 041 y un
+    # `trd_serie_id` de TVD lo rechazaba el trigger de la Capa 4 — modo de
+    # fallo que el ADR pedía documentar y que aquí se cierra. Migrar un fondo
+    # acumulado es justamente una carga masiva: exigir que se cree expediente
+    # a expediente por la ruta unitaria era la peor de las dos opciones.
+    #
+    # Los tres campos son el ESPEJO EXACTO de `ExpedienteCreate`
+    # (schemas/archive.py) y su validador se comparte, no se reimplementa:
+    # dos copias de la misma regla divergen, y esta gobierna la fecha base de
+    # un calendario de retención COMPLIANCE irreversible (ADR-026 D4).
+    origen: Literal["corriente", "fondo_acumulado"] = "corriente"
+    fecha_extrema_inicial: date | None = None
+    fecha_extrema_final: date | None = None
     radicado_ids: list[UUID] = Field(default_factory=list)
     tracking_numbers: list[str] = Field(default_factory=list)
     # E15 perfil v4 (R1): dependencia productora por-radicado, alineada por
@@ -27,6 +45,19 @@ class BatchExpedienteCreate(BaseModel):
     # significa "no declarada" para ese radicado (ver `batch_service.py`).
     dependencia_productora_codigos: list[int | None] = Field(default_factory=list)
     dependencia_productora_nombres: list[str | None] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_fondo_acumulado(self) -> "BatchExpedienteCreate":
+        """Misma regla, misma función que la creación unitaria — ver
+        `validar_forma_fondo_acumulado` (schemas/archive.py) para por qué se
+        comparte en vez de duplicarse."""
+        validar_forma_fondo_acumulado(
+            origen=self.origen,
+            trd_serie_id=self.trd_serie_id,
+            fecha_extrema_inicial=self.fecha_extrema_inicial,
+            fecha_extrema_final=self.fecha_extrema_final,
+        )
+        return self
 
     @model_validator(mode="after")
     def _productora_codigo_y_nombre_van_juntos(self) -> "BatchExpedienteCreate":

@@ -104,4 +104,3 @@ Aunque el marco de referencia principal es colombiano, los conceptos son aplicab
 
 OrpycaMCP puede adaptarse a cualquier normativa ajustando la configuración de TRD y los campos de radicación.
 
-<!-- TODO: translate to English -->

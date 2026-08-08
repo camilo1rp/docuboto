@@ -84,12 +84,19 @@ for svc in "${SERVICES[@]}"; do
             # decirlo es peor que uno rojo.
             cp -r /shared /tmp/shared-build
             pip install -q /tmp/shared-build
+            # `set +e` para que mypy corra aunque ruff falle: se quiere ver TODO
+            # lo que hay que arreglar, no solo lo primero. Pero entonces el estado
+            # de salida del `sh -c` pasa a ser el del ULTIMO comando (mypy), y un
+            # fallo de ruff se perdia en silencio — el gate imprimia '✓ OK' con
+            # errores de ruff sin corregir. Se acumulan ambos y se sale con el OR.
             set +e
+            rc=0
             echo '--- ruff check ---'
-            ruff check . --config /project/pyproject.toml --no-cache
+            ruff check . --config /project/pyproject.toml --no-cache || rc=1
             echo '--- mypy ---'
             mypy app/ --config-file /project/pyproject.toml --ignore-missing-imports \
-                --no-error-summary --cache-dir=/tmp/mypy-cache
+                --no-error-summary --cache-dir=/tmp/mypy-cache || rc=1
+            exit \$rc
         "; then
         echo "  ✓ $svc OK"
     else

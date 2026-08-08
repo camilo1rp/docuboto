@@ -35,7 +35,16 @@
 <div class="login-container" role="main">
   <div class="login-brand-panel" aria-hidden="true">
     <div class="login-brand-panel__content">
-      <img src="/orpyca-logo.png" alt="" class="login-brand-panel__logo" />
+      <!--
+        Sobre el fondo profundo el nombre va como TEXTO, no como imagen: el
+        logotipo institucional lleva la palabra "Orpyca" en un degradado negro
+        que sobre oscuro desaparece. El isotipo (anillo verde) sí funciona en
+        ambos fondos, así que la marca se recompone aquí con el isotipo y
+        tipografía viva.
+      -->
+      <img src="/brand/orpyca-mark.png" alt="" class="login-brand-panel__logo" />
+      <p class="login-brand-panel__wordmark">Orpyca</p>
+      <p class="login-brand-panel__claim">orfeo pyme calidad</p>
       <p class="login-brand-panel__tagline">
         La interfaz desaparece para que trabajes con tus documentos.
       </p>
@@ -44,7 +53,8 @@
 
   <div class="login-form-panel">
     <div class="login-card" aria-labelledby="login-heading">
-      <img src="/orpyca-logo.png" alt="OrpycaMCP" class="login-logo" />
+      <!-- Sobre fondo claro sí entra el logotipo completo, con su marca denominativa. -->
+      <img src="/brand/orpyca-lockup.png" alt="Orpyca — orfeo pyme calidad" class="login-logo" />
 
       <h1 id="login-heading" class="login-title">OrpycaMCP</h1>
       <p class="login-subtitle">Sistema de Gestión Documental</p>
@@ -113,11 +123,15 @@
     box-shadow: var(--op-shadow);
   }
 
+  // El logotipo completo es apaisado (≈2,4:1). Se dimensiona por ANCHO y no por
+  // alto: a 56px de alto la línea "orfeo pyme calidad" bajaba de 9px y dejaba de
+  // leerse. A 240px de ancho el nombre queda holgado dentro de la tarjeta (380px).
   .login-logo {
-    height: 56px;
-    width: auto;
+    width: 240px;
     max-width: 100%;
-    margin-bottom: var(--op-space-4);
+    height: auto;
+    margin: 0 auto var(--op-space-4);
+    display: block;
   }
 
   .login-title {
@@ -231,7 +245,10 @@
       align-items: center;
       justify-content: center;
       padding: var(--op-space-8);
-      background: linear-gradient(160deg, var(--op-primary-dark), var(--op-primary));
+      // Fondo profundo, no el verde medio de la paleta: el isotipo es un anillo
+      // verde oscuro y sobre `--op-primary` se empastaba con el fondo. Sobre el
+      // verde casi negro de marca recupera el contraste con que fue diseñado.
+      background: linear-gradient(160deg, var(--op-brand-900), var(--op-brand-700));
     }
 
     .login-brand-panel__content {
@@ -240,11 +257,32 @@
     }
 
     .login-brand-panel__logo {
-      height: 64px;
+      height: 132px;
       width: auto;
-      margin-bottom: var(--op-space-6);
+      margin-bottom: var(--op-space-4);
       // El activo ya trae fondo transparente; se apoya tal cual sobre el degradado.
-      filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.15));
+      filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.45));
+    }
+
+    .login-brand-panel__wordmark {
+      font-family: var(--op-font-display);
+      font-size: var(--op-font-2xl);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-surface);
+      letter-spacing: 0.01em;
+      line-height: 1.1;
+      margin: 0;
+    }
+
+    .login-brand-panel__claim {
+      font-family: var(--op-font-display);
+      font-size: var(--op-font-md);
+      // `--op-brand-400` sobre el fondo profundo se queda en 4,31:1 — por debajo
+      // del 4,5:1 que pide AA a este tamaño. El tinte pálido llega a 10,6:1 y
+      // sigue leyéndose como verde de marca.
+      color: var(--op-primary-light);
+      letter-spacing: 0.06em;
+      margin: 0 0 var(--op-space-6);
     }
 
     .login-brand-panel__tagline {
@@ -254,6 +292,7 @@
       color: var(--op-surface);
       line-height: var(--op-line-height);
       margin: 0;
+      opacity: 0.86;
     }
 
     .login-form-panel {

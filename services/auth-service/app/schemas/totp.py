@@ -39,6 +39,11 @@ class TotpEnrollRequest(BaseModel):
     """
 
     step_up_totp_code: str | None = Field(default=None)
+    # Código de recuperación (E06, migración 015): alternativa al TOTP para
+    # quien perdió el dispositivo. NO comparte validador con el TOTP — su
+    # formato es otro (20 caracteres alfanuméricos, guiones opcionales), y
+    # reusar `_validate_totp_code` rechazaría todos los códigos válidos.
+    step_up_recovery_code: str | None = Field(default=None, max_length=64)
 
     @field_validator("step_up_totp_code")
     @classmethod
@@ -63,6 +68,12 @@ class TotpActivateRequest(BaseModel):
 class TotpActivateResponse(BaseModel):
     estado: Literal["activo"] = "activo"
     activated_at: datetime
+    # Códigos de recuperación (E06, migración 015). Se muestran EXACTAMENTE
+    # una vez, aquí: en la base solo queda su hash scrypt, así que no hay
+    # ninguna ruta para volver a leerlos — solo para regenerarlos, lo que
+    # invalida el lote anterior. `GET /me/totp` devuelve el CONTEO, nunca los
+    # códigos.
+    recovery_codes: list[str] = Field(default_factory=list)
 
 
 class TotpStatusResponse(BaseModel):
@@ -71,12 +82,22 @@ class TotpStatusResponse(BaseModel):
     estado: Literal["no_configurado", "pendiente_activacion", "activo"]
     activated_at: datetime | None = None
     locked_until: datetime | None = None
+    # Cuántos códigos de recuperación quedan SIN usar. Es un conteo, nunca los
+    # códigos: la interfaz necesita poder avisar de que se están agotando (es
+    # lo que separa a un usuario de quedarse encerrado si pierde el teléfono),
+    # y para eso el número basta.
+    recovery_codes_restantes: int = 0
 
 
 class TotpRevokeRequest(BaseModel):
-    """``step_up_totp_code`` required only when the current credential is 'activo'."""
+    """``step_up_totp_code`` required only when the current credential is 'activo'.
+
+    ``step_up_recovery_code`` es la alternativa para quien perdió el
+    dispositivo: exactamente el caso para el que revocar el TOTP existe.
+    """
 
     step_up_totp_code: str | None = Field(default=None)
+    step_up_recovery_code: str | None = Field(default=None, max_length=64)
 
     @field_validator("step_up_totp_code")
     @classmethod
@@ -86,6 +107,29 @@ class TotpRevokeRequest(BaseModel):
 
 class TotpRevokeResponse(BaseModel):
     estado: Literal["revocado"] = "revocado"
+
+
+class TotpRecoveryRegenerateRequest(BaseModel):
+    """Body de ``POST /me/totp/recovery-codes``: regenera el lote.
+
+    Exige step-up igual que revocar — un lote nuevo invalida el anterior, así
+    que quien lo dispara desde una sesión secuestrada dejaría al titular sin
+    su vía de recuperación. Vale cualquiera de los dos factores.
+    """
+
+    step_up_totp_code: str | None = Field(default=None)
+    step_up_recovery_code: str | None = Field(default=None, max_length=64)
+
+    @field_validator("step_up_totp_code")
+    @classmethod
+    def _validate_step_up(cls, v: str | None) -> str | None:
+        return _validate_totp_code(v) if v is not None else v
+
+
+class TotpRecoveryRegenerateResponse(BaseModel):
+    """Los códigos, otra vez, UNA sola vez."""
+
+    recovery_codes: list[str]
 
 
 class InternalTotpVerifyRequest(BaseModel):

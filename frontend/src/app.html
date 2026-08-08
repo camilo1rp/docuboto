@@ -11,6 +11,20 @@
       name="description"
       content="OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA)"
     />
+    <!--
+      Verde de marca 600: es el que tiñe la barra del navegador en Android y la
+      barra de estado en iOS. Se escribe literal a propósito — la etiqueta la lee
+      el navegador antes de que exista hoja de estilo alguna, así que no puede
+      resolver `var(--op-primary-dark)`. Si cambia el token, cambia aquí.
+    -->
+    <meta name="theme-color" content="#1c6b33" />
+    <meta property="og:title" content="OrpycaMCP — Sistema de Gestión Documental" />
+    <meta
+      property="og:description"
+      content="Sistema de Gestión Documental Electrónico de Archivo (SGDEA) libre, conforme a la Ley 594 de 2000."
+    />
+    <meta property="og:image" content="%sveltekit.assets%/brand/orpyca-lockup.png" />
+    <meta property="og:type" content="website" />
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

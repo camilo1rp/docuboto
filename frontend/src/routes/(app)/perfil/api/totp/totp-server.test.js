@@ -18,6 +18,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { GET as statusGet, DELETE as revokeDelete } from "./+server.js";
 import { POST as enrollPost } from "./enroll/+server.js";
 import { POST as activatePost } from "./activate/+server.js";
+import { POST as recoveryPost } from "./recovery-codes/+server.js";
 
 const SESSION_LOCALS = {
   accessToken: "tok-abc",
@@ -193,5 +194,86 @@ describe("DELETE /perfil/api/totp", () => {
     });
     await revokeDelete({ locals: SESSION_LOCALS, request: { json: async () => ({}) } });
     expect(capturedBody).toEqual({});
+  });
+});
+
+describe("POST /perfil/api/totp/recovery-codes", () => {
+  it("401 sin sesión, sin llamar al gateway", async () => {
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("fetch no debió invocarse sin sesión");
+    });
+    const res = await recoveryPost({ locals: {}, request: { json: async () => ({}) } });
+    expect(res.status).toBe(401);
+  });
+
+  it("allowlist: solo los dos factores viajan al gateway", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ recovery_codes: ["A", "B"] }),
+    }));
+    globalThis.fetch = fetchMock;
+
+    await recoveryPost({
+      locals: SESSION_LOCALS,
+      request: {
+        json: async () => ({
+          step_up_totp_code: "123456",
+          step_up_recovery_code: "ABCDE-FGHJK-MNPQR-STUVW",
+          // Campos que un cliente manipulado podría intentar colar: el
+          // `user_id` es el vector clásico (firmar/regenerar como otro).
+          user_id: "44444444-4444-4444-4444-444444444444",
+          is_root: true,
+        }),
+      },
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(Object.keys(body).sort()).toEqual(["step_up_recovery_code", "step_up_totp_code"]);
+  });
+
+  it("la respuesta con los códigos NO se puede cachear", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ recovery_codes: ["A"] }),
+    }));
+    const res = await recoveryPost({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ step_up_totp_code: "123456" }) },
+    });
+    // Los códigos solo existen en esta respuesta; el `no-store` del backend no
+    // viaja solo, SvelteKit construye una respuesta nueva.
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("un fallo de conexión da 503, no un 200 con lista vacía", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    const res = await recoveryPost({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ step_up_totp_code: "123456" }) },
+    });
+    expect(res.status).toBe(503);
+  });
+});
+
+describe("DELETE /perfil/api/totp — código de recuperación", () => {
+  it("reenvía step_up_recovery_code (la salida de quien perdió el teléfono)", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ estado: "revocado" }),
+    }));
+    globalThis.fetch = fetchMock;
+
+    await revokeDelete({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ step_up_recovery_code: "ABCDE-FGHJK-MNPQR-STUVW" }) },
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.step_up_recovery_code).toBe("ABCDE-FGHJK-MNPQR-STUVW");
   });
 });

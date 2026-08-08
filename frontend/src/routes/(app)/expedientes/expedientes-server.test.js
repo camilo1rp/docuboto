@@ -340,6 +340,89 @@ describe("expedientes/+page.server.js#actions.create — validación", () => {
   });
 });
 
+describe("expedientes/+page.server.js#actions.create — fondo acumulado (ADR-026)", () => {
+  const ctx = () => ({
+    cookies: { get: () => "tok" },
+    locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+  });
+
+  it("fondo acumulado sin fecha extrema final: 400 antes de llamar al gateway", async () => {
+    const fd = new FormData();
+    fd.set("name", "Fondo de la entidad liquidada");
+    fd.set("origen", "fondo_acumulado");
+    fd.set("trd_serie_id", "11111111-1111-1111-1111-111111111111");
+
+    const result = await actions.create({ request: { formData: async () => fd }, ...ctx() });
+
+    expect(result.status).toBe(400);
+    expect(result.data.error).toBe("validation_error");
+    // Repoblación completa: sin esto el usuario pierde el origen y las fechas
+    // que ya había escrito (mismo defecto que las 7 pantallas de /admin).
+    expect(result.data.values.origen).toBe("fondo_acumulado");
+  });
+
+  it("fondo acumulado sin instrumento: 400 (debe apuntar a una TVD)", async () => {
+    const fd = new FormData();
+    fd.set("name", "Fondo sin instrumento");
+    fd.set("origen", "fondo_acumulado");
+    fd.set("fecha_extrema_final", "1998-12-31");
+
+    const result = await actions.create({ request: { formData: async () => fd }, ...ctx() });
+    expect(result.status).toBe(400);
+  });
+
+  it("fecha inicial posterior a la final: 400", async () => {
+    const fd = new FormData();
+    fd.set("name", "Fondo con fechas invertidas");
+    fd.set("origen", "fondo_acumulado");
+    fd.set("trd_serie_id", "11111111-1111-1111-1111-111111111111");
+    fd.set("fecha_extrema_inicial", "1999-01-01");
+    fd.set("fecha_extrema_final", "1998-12-31");
+
+    const result = await actions.create({ request: { formData: async () => fd }, ...ctx() });
+    expect(result.status).toBe(400);
+  });
+
+  it("expediente corriente con fechas extremas: 400 (la negación declarada)", async () => {
+    const fd = new FormData();
+    fd.set("name", "Corriente con fechas");
+    fd.set("fecha_extrema_final", "1998-12-31");
+
+    const result = await actions.create({ request: { formData: async () => fd }, ...ctx() });
+    expect(result.status).toBe(400);
+  });
+
+  it("un `origen` inesperado NO se interpreta como fondo acumulado", async () => {
+    // La normalización cae al valor conservador: un campo manipulado no puede
+    // convertir un expediente corriente en un fondo acumulado (que cambia el
+    // instrumento y la fecha base del calendario de retención).
+    const fd = new FormData();
+    fd.set("name", "Origen inesperado");
+    fd.set("origen", "FONDO_ACUMULADO");
+
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: "exp-1" }),
+      headers: { get: () => null },
+    }));
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock;
+    try {
+      // La creación con éxito termina en `redirect(303)`, que SvelteKit lanza:
+      // se absorbe aquí porque lo que se prueba es el cuerpo enviado, no el
+      // desenlace de la navegación.
+      await actions.create({ request: { formData: async () => fd }, ...ctx() }).catch(() => {});
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.origen).toBeUndefined();
+    expect(body.fecha_extrema_final).toBeUndefined();
+  });
+});
+
 describe("expedientes/+page.server.js#actions.create — allowlist anti mass-assignment", () => {
   // El handler llama al `fetch` global (mismo patrón que los demás proxies de
   // escritura del proyecto, p. ej. radicar/api/documents/+server.js) — se

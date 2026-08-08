@@ -13,6 +13,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.core.database import get_db_conn
+from app.core.internal_auth import require_internal_token
 from app.schemas.tenant import TenantCreate, TenantResponse, TenantUpdate
 from app.services.tenant_service import (
     DuplicateCodeError,
@@ -21,7 +22,20 @@ from app.services.tenant_service import (
     TenantService,
 )
 
-router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"])
+# El gate va a NIVEL DE ROUTER, no ruta a ruta: las cinco operan sobre
+# `public.tenants` —el registro de todas las instituciones— y cualquier ruta
+# nueva que se añada aquí nace protegida. Una lista de excepciones ruta a ruta
+# es justo la forma que se olvida en silencio.
+#
+# Hasta ahora el único control era que este prefijo NO estuviera en la tabla de
+# ruteo del gateway; un salto de ruta `..` lo atravesaba (cerrado en paralelo en
+# `api-gateway/app/middleware/path_guard.py`). Las dos capas son independientes
+# a propósito.
+router = APIRouter(
+    prefix="/api/v1/tenants",
+    tags=["tenants"],
+    dependencies=[Depends(require_internal_token)],
+)
 
 
 @router.post(
@@ -79,7 +93,11 @@ async def list_tenants(
 @router.get(
     "/by-slug/{slug}",
     response_model=TenantResponse,
-    summary="Get tenant by slug — used by other services to validate JWT tenant_slug",
+    # El summary anterior afirmaba «used by other services to validate JWT
+    # tenant_slug». No es cierto: no hay un solo llamante en todo el repositorio
+    # (verificado por grep sobre services/, frontend/src y scripts/). Se corrige
+    # porque esa frase es exactamente lo que justificaba dejar la ruta abierta.
+    summary="Get tenant by slug (platform operation — internal token required)",
 )
 async def get_tenant_by_slug(
     slug: str,

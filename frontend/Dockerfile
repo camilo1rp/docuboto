@@ -23,6 +23,22 @@ COPY --from=builder /app/build ./build
 ENV NODE_ENV=production
 ENV PORT=3000
 
+# Tamaño máximo del cuerpo que acepta el servidor SSR (adapter-node).
+#
+# El default de adapter-node es 524288 — **512 KB**— y se aplica a TODA petición
+# antes de llegar al handler. Como las subidas de anexos pasan por el SSR
+# (`radicar/api/storage`, y la importación interoperable en
+# `admin/interoperabilidad/api/importar`), ese default rechazaba con 413
+# cualquier PDF escaneado real: el usuario veía «Error al subir el archivo» sin
+# más pista, y E11 INT-05 era inservible. La variable no aparecía en ningún sitio
+# del repositorio, así que el límite estaba activo en todos los entornos.
+#
+# 512 MiB coincide con el tope del gateway (`max_request_body_bytes`) y con el
+# del ZIP de importación. Subir esto exige el flujo por trozos del gateway y su
+# tope explícito, que van en el mismo cambio: sin ellos, esto solo cambia un 413
+# por un OOM.
+ENV BODY_SIZE_LIMIT=536870912
+
 # --- URLs públicas (navegador del usuario) ---
 # Sobreescribir en despliegue con la URL real accesible por los usuarios.
 ENV PUBLIC_API_URL=http://localhost:19080

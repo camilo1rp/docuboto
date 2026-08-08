@@ -96,9 +96,14 @@
 >
   <!-- Logo / marca -->
   <div class="sidebar-nav__brand" aria-hidden="true">
-    <span class="sidebar-nav__logo-icon">
-      <i class="fas fa-archive"></i>
-    </span>
+    <!--
+      El isotipo institucional va como imagen; el nombre va como TEXTO y no como
+      parte del mapa de bits. Así la marca hereda la tipografía y el color de los
+      tokens (`--op-*`), se mantiene nítida en cualquier densidad de pantalla y
+      sigue siendo legible cuando el usuario amplía el navegador — cosas que un
+      logotipo rasterizado con el nombre incrustado no puede dar.
+    -->
+    <img src="/brand/orpyca-mark.png" alt="" class="sidebar-nav__logo-icon" />
     {#if !$sidebarCollapsed}
       <span class="sidebar-nav__logo-text">OrpycaMCP</span>
     {/if}
@@ -220,15 +225,12 @@
     }
 
     &__logo-icon {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 28px;
-      height: 28px;
-      background: var(--op-primary);
-      color: var(--op-surface);
-      border-radius: var(--op-radius-sm);
-      font-size: var(--op-font-sm);
+      display: block;
+      width: 30px;
+      height: 30px;
+      // El activo ya viene cuadrado y con transparencia: no lleva fondo ni
+      // recorte propios, se apoya sobre la superficie del panel.
+      object-fit: contain;
       flex-shrink: 0;
     }
 

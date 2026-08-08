@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.middleware.auth import JWTValidationMiddleware
+from app.middleware.path_guard import PathNormalizationMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import health, openapi, proxy
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
     app.state.rate_limit_per_ip = settings.rate_limit_per_ip
     app.state.rate_limit_global = settings.rate_limit_global
+    app.state.max_request_body_bytes = settings.max_request_body_bytes
 
     try:
         redis_client = await aioredis.from_url(settings.redis_url)
@@ -79,10 +81,13 @@ app.add_middleware(
 )
 
 # Starlette inserts at index 0 then reverses to build the stack.
-# To get RateLimit → JWT on the request path, JWT must be added first
-# (ends up at a higher index, wrapped inside RateLimit).
+# To get PathNormalization → RateLimit → JWT on the request path, se añaden en el
+# orden INVERSO al que corren. El guard de ruta va el ÚLTIMO (= el más externo) a
+# propósito: valida antes que la autenticación y que el ruteo, que son las dos
+# decisiones que un salto `..` engaña (ver middleware/path_guard.py).
 app.add_middleware(JWTValidationMiddleware)
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(PathNormalizationMiddleware)
 
 app.include_router(health.router)
 app.include_router(openapi.router)

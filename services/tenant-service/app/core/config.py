@@ -27,5 +27,13 @@ class Settings(BaseSettings):
     service_port: int = 8002
     log_level: str = "info"
 
+    # Token de servicio interno (D-02) que sella el registro de instituciones
+    # (`routers/tenants.py`, sobre `public.tenants`). Fail-closed: vacío —el
+    # default— rechaza TODAS las llamadas a esas rutas. Es el estado correcto
+    # por omisión: hoy no hay ningún consumidor legítimo por HTTP, el alta la
+    # hace `scripts/init_tenant.py` escribiendo directo a la BD. Ver
+    # `app/core/internal_auth.py` para el razonamiento completo.
+    internal_service_token: str = ""
+
 
 settings = Settings()

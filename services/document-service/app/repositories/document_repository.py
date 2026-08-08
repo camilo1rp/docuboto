@@ -361,6 +361,13 @@ class DocumentRepository:
         escritura sean el MISMO acto: sin ventana TOCTOU entre comprobar y mutar.
         Un radicado por encima del clearance devuelve `None`, indistinguible de uno
         inexistente — el router traduce ambos al mismo 404 neutro.
+
+        `AND status <> 'anulado'` va en el MISMO `WHERE`, por el mismo motivo.
+        `DocumentUpdate.status` admite `registered`, así que sin esta condición un
+        PATCH gateado solo por `PERM_RADI` **deshacía una anulación** aprobada por el
+        circuito de dos pasos con visto bueno de supervisor — sin causal, sin
+        aprobador y (hasta este cambio) sin traza. Es la misma ruta lateral que ya se
+        cerró en el PATCH de expedientes.
         """
         fields: list[str] = []
         params: list[object] = []
@@ -408,6 +415,7 @@ class DocumentRepository:
             UPDATE radicados
             SET {set_clause}
             WHERE id = ${idx} AND nivel_seguridad <= ${idx + 1}
+              AND status <> 'anulado'
             RETURNING
                 id, tracking_number, doc_type, year, sequence,
                 subject, doc_class, origin_dept, dest_dept,

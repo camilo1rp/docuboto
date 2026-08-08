@@ -36,6 +36,12 @@ $op-accent: #8dbf3c; // marca lime 300 — acentos puntuales, NUNCA como texto s
 // y fondos de marca profundos; ver v1.0 "marca 700/deep" y "marca 400").
 $op-brand-700: #173a22; // marca 700/deep
 $op-brand-400: #4fa84b; // marca 400
+// marca 900 — verde casi negro. Es el fondo sobre el que el logotipo
+// institucional fue diseñado (véanse los originales de marca): el isotipo es un
+// anillo verde OSCURO, así que sobre `--op-primary` se empasta con el fondo y
+// pierde la silueta. Reservado a superficies de marca (panel de acceso), nunca
+// a superficies de trabajo.
+$op-brand-900: #0c1710;
 
 $op-text: #232624; // ink
 $op-text-secondary: #6e7370; // muted
@@ -172,6 +178,7 @@ $op-breadcrumb-height: 36px;
   --op-accent: #{$op-accent};
   --op-brand-700: #{$op-brand-700};
   --op-brand-400: #{$op-brand-400};
+  --op-brand-900: #{$op-brand-900};
 
   // Texto
   --op-text: #{$op-text};

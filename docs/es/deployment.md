@@ -237,10 +237,11 @@ docker compose ps
 docker compose logs -f api-gateway
 
 # 6. Crear primer tenant (después de que Keycloak esté listo)
-docker compose exec document-service /scripts/init-tenant.sh \
-  --name "Mi Institución" \
-  --slug "mi-institucion" \
-  --code "MIST"
+#    El script corre DESDE EL HOST, no dentro de un contenedor, y toma los tres
+#    argumentos por posición: <slug> <nombre> <código>.
+cd ..
+COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
+  ./scripts/init-tenant.sh mi-institucion "Mi Institución" MIST
 ```
 
 ### Verificación post-despliegue

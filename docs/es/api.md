@@ -107,7 +107,14 @@ El secreto TOTP (RFC 6238) es una **credencial de identidad durable** y vive en 
 - `POST /api/v1/auth/me/totp/enroll` — genera el secreto (20 bytes, base32) en estado `pendiente_activacion` y devuelve `{otpauth_uri, estado}` (para QR en un autenticador). Re-enrolar sobre un TOTP **activo** exige step-up (un código actual válido): `409 totp_ya_activo` / `401 step_up_invalido`.
 - `POST /api/v1/auth/me/totp/activate` `{code}` — activa la credencial con un primer código válido → `{estado:"activo", activated_at}`. `409 totp_no_pendiente`; `401 codigo_invalido` (suma a `failed_attempts`); `423 totp_bloqueado`.
 - `GET /api/v1/auth/me/totp` — `{estado, activated_at, locked_until}`. **Nunca** devuelve el secreto.
-- `DELETE /api/v1/auth/me/totp` `{step_up_totp_code}` — revoca la credencial **activa** exigiendo step-up (código actual) → `{estado:"revocado"}`. `401 step_up_invalido`; `404 no_totp`.
+- `DELETE /api/v1/auth/me/totp` `{step_up_totp_code | step_up_recovery_code}` — revoca la credencial **activa** exigiendo step-up → `{estado:"revocado"}`. `401 step_up_invalido`; `404 no_totp`.
+- `POST /api/v1/auth/me/totp/recovery-codes` `{step_up_totp_code | step_up_recovery_code}` — **regenera** el lote de códigos de recuperación, invalidando el anterior por completo. `200 {recovery_codes:[…]}` con `Cache-Control: no-store`. `409 totp_no_activo`; `401 step_up_invalido`; `423 totp_bloqueado`.
+
+**Códigos de recuperación (E06, migración 015).** El TOTP es un factor de **posesión**, y hasta esta migración **todas** sus salidas —revocarlo, reenrolarlo, y revocar la clave personal de firma— exigían un código TOTP vigente, es decir, exigían el mismo teléfono que se había perdido: quien lo perdía quedaba **encerrado**, sin más salida que una intervención manual sobre la base. Ahora `activate` devuelve **10 códigos de un solo uso** (`recovery_codes`, `Cache-Control: no-store`) y cualquiera de ellos vale como `step_up_recovery_code` en `enroll` (reenrolar) y en `DELETE /me/totp` (revocar).
+- Se guardan **hasheados** (scrypt con sal por código), no cifrados: a diferencia del secreto TOTP, el servidor no necesita recuperarlos en claro, solo comprobarlos — así una copia de la tabla no permite autenticarse. Se muestran **exactamente una vez**; `GET /me/totp` devuelve `recovery_codes_restantes` (un conteo), nunca los códigos.
+- **Un solo uso**, garantizado por un `UPDATE ... WHERE used_at IS NULL`: dos peticiones simultáneas con el mismo código compiten por la fila y solo una la gana.
+- Se emiten **al activar**, no al enrolar (hasta entonces la credencial no protege nada) y en la **misma transacción** que la activación — no existe un instante con TOTP activo y sin vía de recuperación. Revocar o reenrolar **borra** el lote en la misma transacción.
+- **Frontera deliberada: no sirven para FIRMAR.** `POST /internal/totp/verify`, que signature-service invoca al firmar, **no** los acepta (su `code` está validado como TOTP de 6 dígitos). Un código de recuperación está escrito en papel o en un gestor de contraseñas: no es posesión de un dispositivo, y admitirlo como segundo factor de un acto de firma debilitaría la atribución que RF-FIR-13 persigue. Recuperar el acceso y firmar son actos distintos y se exigen pruebas distintas.
 - *(Interno, servicio-a-servicio en la red Docker, **no** enrutado por el gateway)* `POST /internal/totp/verify` `{code, contexto?}` — lo llama signature-service al firmar; deriva la identidad del **bearer reenviado** (no de un `user_id` de cuerpo → sin IDOR), honra `locked_until` antes de comparar, y avanza el anti-replay `last_timestep` en un único `UPDATE` atómico. Lockout tras `TOTP_MAX_FAILED_ATTEMPTS` (default 5) durante `TOTP_LOCKOUT_SECONDS` (default 900). Ventana de skew ±`TOTP_SKEW_STEPS` (default 1).
 
 **Clave de firma PERSONAL PKI (E06/E17 F4, Inc.1 — custodia servidor, `acreditado=false`).** La clave privada de firma de cada usuario vive **solo en auth-service** cifrada AESGCM (KEK `SIGNING_KEY_ENCRYPTION_KEY` **separada** de la del TOTP), y NUNCA sale del servicio.
@@ -363,6 +370,8 @@ Obtener por número de radicado (ej: `2024-ICETEX-E-000001`). Misma acotación p
 Actualizar `subject`, `dest_dept`, `observations`, `status`, `pages`.
 `tracking_number`, `doc_type`, `year`, `sequence` son inmutables.
 **Control de acceso (RF-SEG-08):** `404` si el radicado no existe **o** supera el *clearance* del llamante. El gate es imprescindible porque la respuesta devuelve el radicado completo (asunto, remitente, anexos): sin él, la escritura sería también una lectura.
+**`409 radicado_anulado`:** un radicado anulado no admite modificaciones. `status` acepta `registered`, así que sin este guard un PATCH deshacía una anulación aprobada por el circuito de dos pasos, sin causal ni aprobador. El desanulado, si procediera, es un acto propio — no el efecto lateral de editar un campo. Es un `409` y no un `404` porque en ese punto el radicado ya pasó el gate de *clearance*: decir que está anulado no revela nada que el llamante no pudiera leer.
+**Auditoría:** deja asiento `document.radicado_actualizado` con el **antes y el después** de cada campo tocado, en la MISMA transacción que la mutación — si el asiento falla, la modificación revierte.
 
 ### `PATCH /api/v1/documents/{id}/security-level`
 **Reclasificación del nivel de seguridad** de un radicado ya radicado (E08, paridad con el *Cambio Nivel de Seguridad* de Orfeo). Cambia `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) sin alterar contenido ni `tracking_number` (inmutabilidad intacta). Requiere permiso **`PERM_RECLASIFICAR`**.
@@ -748,6 +757,8 @@ Ciclo de vida del despacho físico de un radicado de salida. Máquina de estados
 
 ### Interoperabilidad — OAI-PMH (E11, RF-INT-02/INT-06) — document-service
 
+> **APAGADO POR DEFECTO desde la auditoría de producción.** Estos endpoints publican de forma **anónima** el registro de correspondencia (número, asunto, dependencia, fecha) y, vía CMIS `cmisselector=content`, los **bytes de los anexos**. Su único recorte es `nivel_seguridad = 1`, que es el **valor por defecto** de la columna: la polaridad efectiva era «público salvo que alguien se acuerde de clasificar». Se habilitan con `PUBLIC_INTEROP_ENABLED=true` en **document-service Y archive-service** (mismo nombre de variable en ambos a propósito, para no quedarse a medias). Apagados responden **404**, indistinguible de una ruta inexistente. Encendidos, cada cosecha y cada descarga dejan asiento (`document.oai_cosecha`, `document.cmis_consulta`, `document.cmis_descarga_anexo`, `archive.oai_cosecha`) con el verbo, los argumentos y el tamaño entregado. Publicar el registro es el esquema de publicación de la entidad (Ley 1712, art. 12), no un efecto de desplegar el software.
+
 - `GET /api/v1/public/oai/{tenant}?verb=...` — **cosecha de metadatos OAI-PMH 2.0** de los radicados **públicos** del tenant. **Sin JWT** (bajo `/api/v1/public/`, como el webhook postal); el `tenant` del path fija el `search_path`. Respuesta `application/xml`. Verbos: `Identify`, `ListMetadataFormats`, `ListIdentifiers`, `ListRecords`, `GetRecord` (args `identifier`+`metadataPrefix`), `ListSets`. Cosecha selectiva `from`/`until` (fecha OAI) y `set` (= `doc_type` E/S/I). Identificador OAI `oai:{tenant}:{tracking_number}`. Paginación por `resumptionToken` (100/página; el token preserva el `metadataPrefix`). Errores OAI estándar (`badVerb`, `badArgument`, `cannotDisseminateFormat`, `idDoesNotExist`, `noRecordsMatch`, `badResumptionToken`).
   - **Dos formatos de diseminación (RF-INT-06):**
     - `metadataPrefix=oai_dc` — **Dublin Core** simple (title=asunto, identifier=número de radicado, type, date, publisher, language).
@@ -1078,9 +1089,22 @@ Evalúa varios radicados (1-500) contra el mismo conjunto de reglas en una sola 
 { "results": [ { "matched": true, "radicado_id": "uuid", "assign_to_dept": "...", ... }, ... ] }
 ```
 
-## Asistente conversacional — mcp-server (E18/E22, ADR-020) — **contrato definido, backend PENDIENTE**
+## Asistente conversacional — contrato front↔gateway (E18/E22, ADR-020)
 
-> El **frontend** del asistente está implementado (E22: store, service, proxy BFF, UI de chat en `AssistantDock`); el **backend** (`mcp-server`, LLM/knowledge reales) es scaffold pendiente de roadmap. El proxy SvelteKit apunta a este contrato y, mientras el gateway no lo exponga, traduce la ausencia (404/501/5xx/conexión rehusada) a un `503 assistant_unavailable` — la UI muestra "asistente no disponible", nunca una respuesta simulada.
+> **Corrección de una afirmación caducada (2026-08-07):** este apartado se titulaba
+> "contrato definido, backend PENDIENTE" y declaraba el `mcp-server` como *scaffold*.
+> Es **falso desde E18**: el backend está implementado y documentado más arriba
+> (véase [Asistente conversacional (E18, ADR-019/ADR-020) — vía gateway](#asistente-conversacional-e18-adr-019adr-020--vía-gateway)),
+> con un loop LLM real que ejecuta las tools de solo lectura *as-the-user*. Se
+> conserva esta sección porque documenta la otra mitad del contrato —**lo que el
+> proxy SSR del frontend hace con la respuesta**—, que no está en la del backend.
+>
+> El `503 assistant_unavailable` sigue existiendo, pero ya no significa "el backend
+> no está construido": lo devuelve el propio mcp-server cuando le falta
+> `ANTHROPIC_API_KEY` o el SDK falla (degradación honesta, RF-FIR-15). El proxy
+> SvelteKit traduce además a ese mismo código cualquier ausencia de ruta
+> (404/501/5xx/conexión rehusada) — la UI muestra "asistente no disponible", nunca
+> una respuesta simulada.
 
 ### `POST /api/v1/assistant/message`
 

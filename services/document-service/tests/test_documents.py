@@ -736,9 +736,13 @@ async def test_update_document_no_read_up_404(
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "document_not_found"
 
+    # El clearance se aplica ya en la lectura previa (la que alimenta el diff del
+    # asiento), así que aquí ni se llega al UPDATE: el radicado por encima del
+    # clearance sale por el mismo 404 neutro. Que el gate viaje ADEMÁS en el WHERE
+    # del propio UPDATE —que es lo que cierra la ventana TOCTOU— se comprueba en
+    # `test_update_document_gate_y_guard_van_en_el_where`, donde el UPDATE sí corre.
     sql = mock_conn.fetchrow.call_args[0][0]
-    assert "UPDATE radicados" in sql
-    assert "nivel_seguridad <=" in sql, "el gate debe ir en el WHERE del propio UPDATE"
+    assert "nivel_seguridad <=" in sql, "la lectura previa debe llevar el mismo gate"
 
 
 # ---------------------------------------------------------------------------

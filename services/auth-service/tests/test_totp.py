@@ -544,6 +544,11 @@ async def test_status_no_configurado(client: AsyncClient) -> None:
             "estado": "no_configurado",
             "activated_at": None,
             "locked_until": None,
+            # Sin credencial no hay códigos que contar. El 0 se declara igual,
+            # nunca se omite: un consumidor no debe poder leer su ausencia
+            # como "no aplica" (mismo criterio fail-closed que `permissions`
+            # en /auth/me).
+            "recovery_codes_restantes": 0,
         }
     finally:
         _clear()
@@ -561,7 +566,14 @@ async def test_status_never_includes_secret(client: AsyncClient) -> None:
         assert resp.status_code == 200
         body = resp.json()
         assert body["estado"] == "activo"
-        assert set(body.keys()) == {"estado", "activated_at", "locked_until"}
+        assert set(body.keys()) == {
+            "estado",
+            "activated_at",
+            "locked_until",
+            "recovery_codes_restantes",
+        }
+        # El conteo es un número, jamás los códigos.
+        assert isinstance(body["recovery_codes_restantes"], int)
         assert "secret_cifrado" not in body and "secret_nonce" not in body
     finally:
         _clear()

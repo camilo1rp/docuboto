@@ -133,22 +133,46 @@ async def test_upload_is_not_gated_by_internal_token(
 
 
 @pytest.mark.asyncio
-async def test_delete_is_not_gated_by_internal_token(
+@pytest.mark.parametrize(
+    ("metodo", "ruta"),
+    [
+        ("delete", f"/api/v1/storage/files/{FILE_ID}"),
+        ("get", f"/api/v1/storage/files/{FILE_ID}/verify"),
+        ("post", f"/api/v1/storage/files/{FILE_ID}/replace"),
+        ("get", f"/api/v1/storage/files/{FILE_ID}/versions"),
+    ],
+)
+async def test_mutaciones_y_verificacion_exigen_token_interno(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+    metodo: str,
+    ruta: str,
 ) -> None:
-    """DELETE tampoco está en el alcance de este incremento (fuera de lo
-    pedido por D-02: solo bytes/URL/metadata de LECTURA)."""
-    client, mock_conn, mock_minio = client_with_conn
-    record = make_file_record(file_id=FILE_ID)
-    mock_conn.fetchrow.return_value = record
-    mock_conn.execute.side_effect = [None, None, "UPDATE 1", None, None]
+    """Las cuatro rutas que quedaban abiertas ahora exigen `X-Internal-Token`.
 
-    response = await client.delete(
-        f"/api/v1/storage/files/{FILE_ID}",
+    Este test SUSTITUYE a uno que afirmaba lo contrario
+    (`test_delete_is_not_gated_by_internal_token`). Aquel no documentaba una
+    decisión de diseño sino el ALCANCE del incremento que lo escribió («solo
+    bytes/URL/metadata de LECTURA»), y ese alcance dejó fuera precisamente las
+    operaciones que MUTAN la evidencia: `replace` sustituye el contenido de un
+    anexo y `delete` lo da de baja con `deleted_by = None`, es decir sin actor
+    en la traza.
+
+    El único control que tenían era no estar en la tabla de ruteo del gateway
+    —una ausencia, no un control— y un salto de ruta `..` la atravesaba (ver
+    `api-gateway/app/middleware/path_guard.py`, cerrado en paralelo).
+
+    `POST /upload` sigue SIN gate a propósito: el frontend sube directo y esa
+    ruta sí está enrutada por el gateway (ver el test de abajo).
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
+
+    response = await getattr(client, metodo)(
+        ruta,
         headers=TENANT_HEADERS,  # sin X-Internal-Token
     )
 
-    assert response.status_code == 204
+    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------

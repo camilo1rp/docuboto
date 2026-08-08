@@ -62,6 +62,79 @@ class TotpRepository:
             totp_id,
         )
 
+    # ------------------------------------------------------------------
+    # Códigos de recuperación (migración 015)
+    # ------------------------------------------------------------------
+
+    async def replace_recovery_codes(
+        self, *, totp_id: uuid.UUID, user_id: uuid.UUID, hashes: list[tuple[bytes, bytes]]
+    ) -> None:
+        """Sustituye TODO el lote de códigos del usuario por ``hashes``
+        (pares ``(code_hash, code_salt)``).
+
+        Borra primero **todos** los del usuario, no solo los de este `totp_id`:
+        un reenrolamiento crea una fila TOTP nueva, y los códigos de la anterior
+        deben morir con ella aunque su fila quede marcada 'revocado' en vez de
+        borrarse (el `ON DELETE CASCADE` de la 015 no se dispara en ese caso).
+        Un código que sobreviviera al reenrolamiento abriría una credencial que
+        el usuario ya dio por retirada.
+
+        El llamante lo envuelve en la MISMA transacción que la mutación del
+        TOTP — no se expone una ventana en la que el usuario tenga códigos que
+        no abren nada, ni al revés.
+        """
+        await self._conn.execute(
+            "DELETE FROM auth_user_totp_recovery WHERE user_id = $1", user_id
+        )
+        for code_hash, code_salt in hashes:
+            await self._conn.execute(
+                """INSERT INTO auth_user_totp_recovery
+                       (totp_id, user_id, code_hash, code_salt)
+                   VALUES ($1, $2, $3, $4)""",
+                totp_id,
+                user_id,
+                code_hash,
+                code_salt,
+            )
+
+    async def delete_recovery_codes(self, user_id: uuid.UUID) -> None:
+        await self._conn.execute(
+            "DELETE FROM auth_user_totp_recovery WHERE user_id = $1", user_id
+        )
+
+    async def list_available_recovery_codes(self, user_id: uuid.UUID) -> list[asyncpg.Record]:
+        return list(
+            await self._conn.fetch(
+                "SELECT id, code_hash, code_salt FROM auth_user_totp_recovery "
+                "WHERE user_id = $1 AND used_at IS NULL",
+                user_id,
+            )
+        )
+
+    async def count_available_recovery_codes(self, user_id: uuid.UUID) -> int:
+        n = await self._conn.fetchval(
+            "SELECT count(*) FROM auth_user_totp_recovery "
+            "WHERE user_id = $1 AND used_at IS NULL",
+            user_id,
+        )
+        return int(n or 0)
+
+    async def consume_recovery_code(self, recovery_id: uuid.UUID) -> bool:
+        """Marca un código como usado. Devuelve ``False`` si ya lo estaba.
+
+        El `WHERE used_at IS NULL` es la parte que importa: dos peticiones
+        concurrentes con el mismo código compiten por esta fila y solo una ve
+        el `RETURNING`; la otra recibe `False` y trata el código como
+        inválido. Sin esa condición, un código de un solo uso se gastaría dos
+        veces bajo carrera.
+        """
+        row = await self._conn.fetchrow(
+            "UPDATE auth_user_totp_recovery SET used_at = now() "
+            "WHERE id = $1 AND used_at IS NULL RETURNING id",
+            recovery_id,
+        )
+        return row is not None
+
     async def activate(self, totp_id: uuid.UUID) -> None:
         await self._conn.execute(
             "UPDATE auth_user_totp SET estado = 'activo', activated_at = now(), "

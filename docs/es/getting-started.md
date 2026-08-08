@@ -229,4 +229,4 @@ revalida permiso y clearance en cada petición.
 Ver también: [Pantallas del sistema](pantallas.md) para la contraparte de cada uno de
 estos ejemplos en la interfaz web.
 
-<!-- TODO: translate to English -->
+

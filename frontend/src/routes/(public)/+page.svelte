@@ -89,7 +89,14 @@
   <header class="landing-nav">
     <div class="landing-nav__inner">
       <a href="/" class="landing-nav__brand">
-        <img src="/orpyca-logo.png" alt="ORPYCA" class="landing-nav__logo" />
+        <!--
+          A la altura de una barra de navegación (32-36px) la línea "orfeo pyme
+          calidad" del logotipo completo baja de 6px y deja de leerse. Aquí entra
+          solo el isotipo, con el nombre en texto: se lee a cualquier tamaño y no
+          obliga a servir un mapa de bits enorme para una franja de 36px.
+        -->
+        <img src="/brand/orpyca-mark.png" alt="" class="landing-nav__logo" />
+        <span class="landing-nav__wordmark">Orpyca</span>
       </a>
 
       <nav class="landing-nav__links" aria-label="Navegación principal">
@@ -246,7 +253,10 @@
   <!-- ============================== FOOTER ============================== -->
   <footer class="landing-footer">
     <div class="landing-footer__inner">
-      <span class="landing-footer__brand">ORPYCA</span>
+      <span class="landing-footer__brand">
+        <img src="/brand/orpyca-mark.png" alt="" class="landing-footer__mark" />
+        ORPYCA
+      </span>
       <p class="landing-footer__note">
         Software libre bajo licencia AGPL v3. Hereda las reglas de negocio de
         <a href="https://github.com/orfeosgd/orfeo" target="_blank" rel="noopener noreferrer"
@@ -315,12 +325,23 @@
     &__brand {
       display: inline-flex;
       align-items: center;
+      gap: var(--op-space-2);
       flex-shrink: 0;
+      text-decoration: none;
     }
 
     &__logo {
-      height: 32px;
-      width: auto;
+      height: 36px;
+      width: 36px;
+      object-fit: contain;
+    }
+
+    &__wordmark {
+      font-family: var(--op-font-display);
+      font-size: var(--op-font-lg);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-primary-dark);
+      letter-spacing: 0.01em;
     }
 
     &__links {
@@ -683,9 +704,18 @@
     }
 
     &__brand {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--op-space-2);
       font-family: var(--op-font-display);
       font-weight: var(--op-weight-bold);
       color: var(--op-surface);
+    }
+
+    &__mark {
+      width: 26px;
+      height: 26px;
+      object-fit: contain;
     }
 
     &__note {
