@@ -74,7 +74,22 @@ except Exception:  # noqa: BLE001
     _AUDIT_AVAILABLE = False
 
 _SERVICE = "auth-service"
-_DSN = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+# Perezoso, no `os.environ[...]` a nivel de módulo: importar este script no debe
+# exigir `DATABASE_URL`. Los tests de integración lo importan para ejercitar su
+# lógica, y en el carril UNITARIO esa variable no existe — la colección entera
+# moría con un `KeyError: 'DATABASE_URL'` pelado. Al USARLO sí se exige, con un
+# mensaje que dice qué falta.
+_RAW_DSN = os.environ.get("DATABASE_URL", "")
+_DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
+
+
+def _require_dsn() -> str:
+    if not _DSN:
+        raise RuntimeError(
+            "DATABASE_URL no está definida: este script de operaciones necesita la "
+            "cadena de conexión a PostgreSQL."
+        )
+    return _DSN
 
 # Mismo patrón que el slug validado por tenant-service (core/database._SLUG_RE) —
 # este script es un canal de confianza (acceso directo a la BD, no HTTP), pero
@@ -141,7 +156,7 @@ async def run(argv: list[str] | None = None) -> int:
             "de ROOT para no escalar el privilegio más alto del sistema sin traza"
         )
 
-    conn = await asyncpg.connect(dsn=_DSN)
+    conn = await asyncpg.connect(dsn=_require_dsn())
     try:
         return await _grant(conn, tenant=args.tenant, username=args.user, dry_run=args.dry_run)
     finally:

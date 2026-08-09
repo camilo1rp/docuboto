@@ -30,7 +30,24 @@ import asyncpg
 MIGRATIONS_DIR = Path(__file__).parent
 GLOBAL_DIR = MIGRATIONS_DIR / "global"
 TENANT_DIR = MIGRATIONS_DIR / "tenant"
-DSN = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+# Se lee PEREZOSAMENTE, no con `os.environ[...]` a nivel de módulo. Importar este
+# runner no debe exigir que `DATABASE_URL` exista: el conftest del carril de
+# integración lo importa para reutilizar `_sql_files`/`run`, y en el carril
+# UNITARIO (mockeado, `--no-deps`) esa variable no está definida — la colección
+# entera de tests moría con un `KeyError: 'DATABASE_URL'` pelado, sin decir de
+# dónde venía. Al usarlo sí se exige, y con un mensaje que explica qué falta.
+_RAW_DSN = os.environ.get("DATABASE_URL", "")
+DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
+
+
+def _require_dsn() -> str:
+    if not DSN:
+        raise RuntimeError(
+            "DATABASE_URL no está definida: el runner de migraciones necesita la "
+            "cadena de conexión a PostgreSQL. Ej.: "
+            "DATABASE_URL=postgresql+asyncpg://usuario:clave@postgres:5432/base"
+        )
+    return DSN
 
 
 def _sql_files(directory: Path) -> list[Path]:
@@ -137,7 +154,7 @@ def _warn_stray_root_files() -> None:
 
 
 async def run() -> None:
-    conn = await asyncpg.connect(dsn=DSN)
+    conn = await asyncpg.connect(dsn=_require_dsn())
     try:
         await _ensure_tracking(conn)
         _warn_stray_root_files()

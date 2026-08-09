@@ -10,6 +10,22 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `fix(gateway,auth,frontend)`: **La dirección de red que quedaba registrada la elegía el propio visitante**
+  El sistema confiaba en una cabecera que cualquiera puede escribir para saber desde qué dirección llegaba cada petición. Dos consecuencias: el límite de peticiones se esquivaba cambiándola en cada intento, y —más grave— **la dirección que quedaba grabada en el registro de auditoría**, que es inmutable y tiene valor probatorio, era la que el visitante decidía poner. Un dato de la cadena de custodia que se puede falsificar es peor que uno vacío, porque el vacío no engaña a nadie.
+  Ahora esa dirección se calcula en el servidor siguiendo la cadena de intermediarios **declarados como de confianza**, y se transmite internamente por una vía que el visitante no puede alterar. Si la institución no ha declarado sus intermediarios, la cabecera se ignora por completo — se prefiere un dato inútil a uno falso.
+  Se corrige además un problema que afectaba al uso diario: **todas las peticiones de todos los usuarios se contaban como si vinieran de la misma dirección**, porque la interfaz no transmitía la del navegador. Con varias consultas por pantalla, eso producía bloqueos por «demasiadas peticiones» en una mañana normal de ventanilla. Y el alta ciudadana de PQRS estrena un límite propio y más estricto: crea radicados sin autenticación y **consume números que no se reutilizan**.
+  Por último, el registro de auditoría deja de anotar una entrada **por cada petición** para decir que el token era válido. Eso sepultaba los hechos que de verdad importan —accesos, firmas, reclasificaciones— bajo un ruido enorme, y volvía el registro ilegible justo para quien viene a investigar. Los intentos con token inválido sí se siguen registrando.
+  *Por qué*: un registro con valor probatorio en el que casi todas las filas son ruido no sirve para probar nada, y una dirección que elige el visitante tampoco.
+  *Impacto*: la institución debe declarar sus intermediarios de red al desplegar (`TRUSTED_PROXIES`); sin ello el límite por dirección no distingue usuarios.
+
+- `fix(ci)`: **Las pruebas automáticas nunca se habían ejecutado en el sistema de integración continua**
+  El pipeline que debía verificar cada cambio moría en su **primera línea**, por una diferencia de configuración entre la forma en que lo invocaba y la que usa el proyecto. Como la herramienta se detiene en el primer fallo, **la ejecución de las pruebas nunca llegaba a ocurrir** — y el pipeline llevaba tiempo dando la impresión contraria.
+  Ahora el sistema de integración continua usa **exactamente la misma comprobación** que ejecuta un desarrollador en su máquina, en vez de una copia que podía divergir; ejecuta las pruebas de los once servicios en paralelo; y estrena dos carriles que no existían: pruebas **contra una base de datos real** —256 pruebas que estaban escritas pero jamás se habían ejecutado— y pruebas del **frontend**, que no tenía ninguna.
+  Se añade también la publicación de imágenes etiquetadas por versión, que es lo que hace posible volver atrás tras una actualización fallida.
+  Al ejecutarlo de verdad aparecieron tres problemas que la lectura no revelaba, incluidos dos en el propio arreglo. Se corrigieron antes de darlo por bueno.
+  *Por qué*: un pipeline que no ejecuta las pruebas no es una verificación, es una decoración — y da una confianza que no corresponde.
+  *Impacto*: solo integración continua. Ningún cambio en el comportamiento del sistema.
+
 - `feat(infra)`: **El respaldo y la restauración existen de verdad, y se han probado de punta a punta**
   El procedimiento de respaldo vivía únicamente como un ejemplo dentro de la guía, y ese ejemplo **no funcionaba**: se conectaba con un usuario de pruebas, copiaba los archivos a una carpeta que no existe, y —lo más grave— si el volcado fallaba generaba igualmente un fichero vacío **y borraba los respaldos anteriores**. Ejecutado de madrugada por una tarea programada, eso significa acumular meses de copias vacías con apariencia de normalidad. El procedimiento de recuperación, por su parte, apagaba la base de datos y acto seguido intentaba restaurar sobre ella.
   Ahora hay dos programas reales. El de **respaldo** copia la base de datos y los documentos, **comprueba que la copia se puede leer** antes de darla por buena, y solo entonces borra las antiguas; si algo se interrumpe, la copia queda marcada como incompleta y el programa de restauración se niega a usarla.

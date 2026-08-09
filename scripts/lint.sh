@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# lint.sh — Corre ruff check + mypy en todos los servicios dentro de Docker.
+# lint.sh — Corre ruff check + mypy en todos los servicios.
 #
 # Uso:
-#   ./scripts/lint.sh              # lint de todos los servicios
+#   ./scripts/lint.sh                 # lint de todos los servicios (en Docker)
 #   ./scripts/lint.sh tenant-service  # solo un servicio
+#   LINT_IN_PROCESS=1 ./scripts/lint.sh   # sin Docker (para CI)
 #
-# Requiere: Docker disponible.
+# Por defecto cada servicio se lintea en un contenedor desechable, que es lo que
+# hace reproducible el resultado en cualquier máquina. `LINT_IN_PROCESS=1` corre
+# las mismas herramientas con los MISMOS argumentos en el proceso actual: es para
+# CI, donde el job ya vive dentro de un contenedor y no hay Docker disponible.
+#
+# El modo importa porque el gate y CI tienen que ser LA MISMA COSA. Reimplementar
+# el gate en el .gitlab-ci.yml es cómo se llega a que CI apruebe lo que el gate
+# local rechaza — que es exactamente lo que pasaba: el pipeline invocaba
+# `ruff check services/` desde la RAÍZ, y ruff resuelve la primera-parte de los
+# imports según el directorio de trabajo, así que las dos formas discrepan.
 
 set -euo pipefail
 
@@ -48,6 +58,31 @@ for svc in "${SERVICES[@]}"; do
     echo "══════════════════════════════════════════"
     echo "  Linting: $svc"
     echo "══════════════════════════════════════════"
+
+    if [ "${LINT_IN_PROCESS:-0}" = "1" ]; then
+        # Mismas herramientas, mismos argumentos, misma configuración y el mismo
+        # directorio de trabajo (el del SERVICIO, no la raíz) que el modo Docker.
+        # `shared/` se instala igual, por el mismo motivo: sin ella
+        # `orpycamcp_common` colapsa a `Any` y la librería de auditoría inmutable
+        # queda sin verificar.
+        rc=0
+        ( cd "$SVC_DIR" || exit 1
+          echo '--- ruff check ---'
+          ruff check . --config "$PROJECT_ROOT/pyproject.toml" --no-cache || exit 1
+        ) || rc=1
+        ( cd "$SVC_DIR" || exit 1
+          echo '--- mypy ---'
+          mypy app/ --config-file "$PROJECT_ROOT/pyproject.toml" --ignore-missing-imports \
+              --no-error-summary --cache-dir=/tmp/mypy-cache-$svc || exit 1
+        ) || rc=1
+        if [ "$rc" -eq 0 ]; then
+            echo "  ✓ $svc OK"
+        else
+            echo "  ✗ $svc FAILED"
+            FAILURES+=("$svc")
+        fi
+        continue
+    fi
 
     # El código fuente se monta READ-ONLY. El contenedor corre como root y un
     # bind-mount no traduce UIDs, así que todo lo que escribiera aquí aparecería

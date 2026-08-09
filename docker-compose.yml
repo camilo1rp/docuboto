@@ -114,6 +114,9 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - AUTH_SERVICE_URL=http://auth-service:8001
+      # Dev: la red por defecto de Compose está en 172.16/12. Sin esto el gateway
+      # ignora X-Forwarded-For (fail-closed) y todo el SSR comparte un cubo.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
       - TENANT_SERVICE_URL=http://tenant-service:8002
       - DOCUMENT_SERVICE_URL=http://document-service:8003
       - ARCHIVE_SERVICE_URL=http://archive-service:8004
@@ -569,6 +572,9 @@ services:
       # adapter-node limita el cuerpo a 512 KB por defecto y las subidas de anexos
       # pasan por el SSR: sin esto, todo PDF escaneado real muere en 413.
       - BODY_SIZE_LIMIT=536870912
+      # Sin esto el SSR ve la IP del proxy, no la del navegador (ver Dockerfile).
+      - ADDRESS_HEADER=x-forwarded-for
+      - XFF_DEPTH=1
       # Origen público por el que el navegador alcanza el frontend. adapter-node
       # lo usa para derivar `url.origin` (p. ej. el redirect_uri del login PKCE).
       # Sin esto, SSR infiere el esquema/host del request y arma un redirect_uri

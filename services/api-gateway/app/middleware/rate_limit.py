@@ -7,13 +7,21 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+import re
 from datetime import UTC, datetime
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from app.core.client_ip import resolve_client_ip
+
 GLOBAL_RATE_KEY = "ratelimit:global"
+
+# Alta ciudadana de PQRS: crea radicados SIN autenticar y consume números que no
+# se reutilizan. Lleva cubo propio, mucho más estrecho que el general, y por eso
+# se identifica por RUTA y no por permiso — no hay usuario a quien atribuirla.
+_PQRS_RE = re.compile(r"^/api/v1/public/[^/]+/pqrs/?$")
 
 
 def _current_minute_window() -> str:
@@ -22,12 +30,14 @@ def _current_minute_window() -> str:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """IP del cliente por saltos de CONFIANZA (ver `app/core/client_ip.py`).
+
+    La versión anterior tomaba el primer valor de `X-Forwarded-For` sin más, así
+    que el limitador se evadía rotando la cabecera: cada petición parecía venir de
+    una IP distinta y solo quedaba en pie el tope global — que el mismo atacante
+    podía agotar para tirar el servicio para todos.
+    """
+    return resolve_client_ip(request, getattr(request.app.state, "trusted_proxies", ""))
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -45,6 +55,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         per_ip_limit: int = request.app.state.rate_limit_per_ip
         global_limit: int = request.app.state.rate_limit_global
+
+        # Cubo dedicado y estrecho para el alta anónima de PQRS. Va en la MISMA
+        # clave por-IP (no en una aparte) para que el tope estricto sustituya al
+        # general en esa ruta en vez de sumarse a él.
+        es_pqrs = request.method == "POST" and bool(_PQRS_RE.match(request.url.path))
+        if es_pqrs:
+            per_ip_limit = request.app.state.rate_limit_pqrs_per_ip
+            ip_key = f"ratelimit:pqrs:{ip}:{minute}"
 
         try:
             pipe = redis.pipeline()

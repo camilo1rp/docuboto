@@ -31,6 +31,32 @@ class Settings(BaseSettings):
 
     rate_limit_per_ip: int = 100
     rate_limit_global: int = 1000
+
+    # Redes de los intermediarios de CONFIANZA (CSV de CIDR o direcciones), en
+    # orden indiferente. Solo se cree lo que estas redes escriben en
+    # `X-Forwarded-For`; ver `app/core/client_ip.py` para la regla completa.
+    #
+    # Vacío por defecto **a propósito**: sin declarar los proxies, la cabecera se
+    # ignora entera y se usa la IP del socket. Un default permisivo aquí es dejar
+    # que el cliente elija su propia identidad de red — y esa identidad acaba
+    # sellada en el `audit_log`.
+    #
+    # En un despliegue típico son la red Docker (donde vive el SSR, que reenvía
+    # la IP del navegador) y el reverse proxy que termina TLS. Ejemplo:
+    #   TRUSTED_PROXIES=172.20.0.0/16,10.0.0.5
+    trusted_proxies: str = ""
+
+    # Tope propio para el alta ciudadana de PQRS (`POST /public/{tenant}/pqrs`),
+    # muy por debajo del general: ese endpoint crea radicados SIN autenticar y
+    # consume números de radicado que **no se reutilizan**, así que un bucle
+    # trivial agujerea la numeración oficial de la entidad de forma permanente.
+    rate_limit_pqrs_per_ip: int = 5
+
+    # TTL (segundos) de la caché de `GET /auth/validate` en el gateway. Corto a
+    # propósito: no hay invalidación por revocación, así que este número ES la
+    # ventana durante la cual un token revocado seguiría siendo aceptado. Se acota
+    # además al `expires_in` del propio token, para no resucitar uno caducado.
+    auth_cache_ttl: int = 15
     proxy_timeout: float = 30.0
     # Timeout largo SOLO para el asistente conversacional (E18): el loop LLM
     # (varias iteraciones Claude + llamadas a tools vía gateway) supera con

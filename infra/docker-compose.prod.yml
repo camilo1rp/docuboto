@@ -222,6 +222,13 @@ services:
       KEYCLOAK_CLIENT_ID: api-gateway
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_API_GATEWAY_SECRET:?API Gateway Keycloak secret required}
       TENANT_HEADER: X-Tenant-Slug
+      # Intermediarios de CONFIANZA: solo se cree el `X-Forwarded-For` que
+      # escriben ellos (ver services/api-gateway/app/core/client_ip.py). Sin
+      # declararlos, la cabecera se ignora entera y todo el tráfico comparte la
+      # IP del contenedor del SSR — que es el estado fail-closed, correcto pero
+      # inservible para limitar por IP. Por defecto: la subred de esta red Docker,
+      # donde viven el frontend SSR y el reverse proxy si corre en el mismo host.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.0.0/16}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -786,6 +793,10 @@ services:
       # con el tope del gateway (MAX_REQUEST_BODY_BYTES) — subirlo aquí sin el
       # flujo por trozos del gateway cambiaría el 413 por un OOM.
       BODY_SIZE_LIMIT: "536870912"
+      # Sin esto el SSR ve la IP del proxy, no la del navegador, y todo el tráfico
+      # comparte un único cubo de limitación de tasa (ver Dockerfile del frontend).
+      ADDRESS_HEADER: x-forwarded-for
+      XFF_DEPTH: "1"
       ORIGIN: https://${FRONTEND_HOSTNAME:?Frontend hostname required}
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: x-forwarded-host

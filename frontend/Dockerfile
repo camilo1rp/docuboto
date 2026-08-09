@@ -39,6 +39,15 @@ ENV PORT=3000
 # por un OOM.
 ENV BODY_SIZE_LIMIT=536870912
 
+# Resolución de la IP real del navegador (adapter-node). Sin esto,
+# `getClientAddress()` devuelve la dirección del reverse proxy, y como el SSR la
+# propaga al gateway para la limitación de tasa, TODO el tráfico seguiría
+# compartiendo un único cubo. XFF_DEPTH=1 = hay UN proxy de confianza delante
+# (nginx); súbelo si hay más saltos, porque cada salto adicional deja al usuario
+# poder inyectar un valor que este índice no descarta.
+ENV ADDRESS_HEADER=x-forwarded-for
+ENV XFF_DEPTH=1
+
 # --- URLs públicas (navegador del usuario) ---
 # Sobreescribir en despliegue con la URL real accesible por los usuarios.
 ENV PUBLIC_API_URL=http://localhost:19080

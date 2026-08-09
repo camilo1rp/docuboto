@@ -22,6 +22,8 @@
  *  - Registra errores inesperados; evita filtrar stack traces al cliente.
  */
 
+import { API_V1 } from "$lib/utils/config.server.js";
+import { conIpDelCliente, instalarPropagacionDeIp } from "$lib/server/clientIp.js";
 import {
   COOKIE_ACCESS_TOKEN,
   COOKIE_REFRESH_TOKEN,
@@ -37,6 +39,13 @@ import {
  */
 export async function handle({ event, resolve }) {
   const { cookies } = event;
+
+  // Propagación de la IP del navegador hacia el api-gateway (ver
+  // $lib/server/clientIp.js). Sin esto, TODAS las llamadas del SSR llegan al
+  // gateway con la dirección del contenedor del frontend y comparten un único
+  // cubo de limitación de tasa — 429 generalizados en una mañana normal — y la
+  // IP que acaba en el `audit_log` no es la de nadie.
+  instalarPropagacionDeIp(API_V1);
 
   let accessToken = cookies.get(COOKIE_ACCESS_TOKEN);
   const refreshToken = cookies.get(COOKIE_REFRESH_TOKEN);
@@ -60,7 +69,21 @@ export async function handle({ event, resolve }) {
     }
   }
 
-  return resolve(event);
+  // Todo lo que corra dentro de `resolve` —incluidos los ~40 proxies `+server.js`,
+  // que usan el `fetch` global y por eso `handleFetch` no los alcanza— ve la IP
+  // del cliente en el almacén asíncrono. Envolver aquí, y no en cada proxy, es lo
+  // que evita que el próximo proxy que alguien escriba nazca sin la cabecera.
+  let ip = "";
+  try {
+    ip = event.getClientAddress();
+  } catch {
+    // adapter-node lanza si `ADDRESS_HEADER` está configurado y la cabecera no
+    // llegó. No es motivo para tumbar la petición: se sigue sin propagar IP,
+    // que es el comportamiento anterior.
+    ip = "";
+  }
+
+  return conIpDelCliente(ip, () => resolve(event));
 }
 
 /**

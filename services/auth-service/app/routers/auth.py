@@ -49,9 +49,25 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _client_ip(request: Request) -> str | None:
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+    """IP que se sella en el `audit_log`, derivada SERVER-SIDE por el gateway.
+
+    Antes se tomaba el primer valor de `X-Forwarded-For`, una cabecera que
+    escribe el propio cliente y que el gateway reenvía tal cual: la IP de los
+    asientos de login/logout —parte de la cadena de custodia, inmutable— la
+    elegía quien se estaba autenticando. Un campo probatorio falsificable con una
+    cabecera es peor que uno vacío, porque el vacío no engaña a nadie.
+
+    `X-Real-Ip` la calcula el gateway por saltos de confianza y NO está en su
+    lista de cabeceras reenviadas desde el cliente (mismo patrón que `X-Canal`),
+    así que no se puede forjar desde fuera.
+
+    Sin esa cabecera —llamada directa al servicio, sin pasar por el gateway— se
+    usa la dirección del socket. El `X-Forwarded-For` crudo NO se consulta: si el
+    gateway no la derivó, esa cabecera no es más fiable aquí que allí.
+    """
+    real_ip = request.headers.get("X-Real-Ip")
+    if real_ip:
+        return real_ip.strip()
     if request.client:
         return request.client.host
     return None
@@ -171,13 +187,27 @@ async def validate(
     # lazy provisioning (uses the conn's search_path after switching to tenant schema).
     result = await service.validate(credentials.credentials, conn)
 
-    event = "token_valid" if result.valid else "token_invalid"
-    await audit.log(
-        event,
-        username=result.username or None,
-        tenant_slug=result.tenant_slug,
-        ip_address=_client_ip(request),
-    )
+    # Solo se asienta el RECHAZO, no la validación exitosa.
+    #
+    # El gateway llama a este endpoint en TODA petición no pública, así que
+    # `token_valid` producía **una fila por request** en `public.audit_log` —
+    # un registro con valor probatorio, encadenado por hash y con
+    # `pg_advisory_xact_lock` por tenant en cada escritura. Dos daños distintos:
+    # sepultaba los eventos que de verdad importan (login, firma, reclasificación,
+    # disposición) bajo ruido de varios órdenes de magnitud, haciendo la traza
+    # ilegible justo para quien viene a investigar; y serializaba todas las
+    # peticiones del tenant sobre ese lock.
+    #
+    # Un token válido presentado por su portador no es un acto auditable: el acto
+    # es lo que hace DESPUÉS con él, y eso ya lo audita cada servicio. Un token
+    # inválido sí lo es —es un intento de acceso fallido— y se conserva.
+    if not result.valid:
+        await audit.log(
+            "token_invalid",
+            username=result.username or None,
+            tenant_slug=result.tenant_slug,
+            ip_address=_client_ip(request),
+        )
 
     return result
 

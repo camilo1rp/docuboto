@@ -1,5 +1,6 @@
 stages:
   - validate
+  - test
   - review
   - docs
   - build
@@ -9,31 +10,172 @@ variables:
   PYTHON_VERSION: "3.11"
   MKDOCS_IMAGE: "python:3.11-slim"
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  POR QUÉ ESTE FICHERO CAMBIÓ POR COMPLETO
+#
+#  El job `validate` anterior empezaba con `ruff check services/` **desde la
+#  raíz**. Esa invocación NO es equivalente a la del gate del proyecto: ruff
+#  resuelve la primera-parte de los imports según el directorio de trabajo, y el
+#  gate corre desde el directorio de CADA servicio. Reproducido: 12 errores desde
+#  la raíz, «All checks passed!» desde el servicio.
+#
+#  Como GitLab aborta el job en el primer comando que falla, el bucle de pytest
+#  que venía después **nunca se alcanzaba**: los tests de los once servicios no se
+#  han ejecutado ni una vez en CI. Y aunque se hubieran alcanzado, instalaban
+#  `requirements.txt` en vez del `.lock` y nunca `shared/`, con lo que los nueve
+#  servicios que importan `orpycamcp_common` se habrían probado con la auditoría
+#  inmutable colapsada a `_AUDIT_AVAILABLE=False` — es decir, probando un programa
+#  distinto del que se despliega.
+#
+#  Tres decisiones de este pipeline:
+#
+#  1. **CI usa el MISMO gate que la máquina de desarrollo**, no una reimplementación:
+#     `LINT_IN_PROCESS=1 ./scripts/lint.sh`. Un gate reimplementado en el YAML es
+#     cómo se llega a que CI apruebe lo que el gate local rechaza.
+#  2. **Se instala desde `.lock` y se instala `shared/`**, igual que el Dockerfile.
+#     Probar con dependencias distintas de las que se despliegan es probar otra cosa.
+#  3. **Los tres carriles existen y son visibles**: unitario (mockeado), integración
+#     (Postgres real, `RUN_INTEGRATION=1`) y frontend. Los 51 archivos de
+#     integración estaban gateados por una variable que no aparecía en ningún sitio
+#     del repositorio, así que salían `skipped` en silencio.
+# ═════════════════════════════════════════════════════════════════════════════
+
 # ─── Stage: Validate ───────────────────────────────────────────────────────────
-validate:
+lint:
   stage: validate
   image: python:3.11-slim
+  interruptible: true
   before_script:
-    - pip install --quiet pytest pytest-asyncio httpx ruff mypy
-  script:
-    - ruff check services/
-    - mypy services/ --ignore-missing-imports || true
+    - pip install --quiet 'ruff>=0.4.0' 'mypy==1.11.0'
+    # `shared/` se instala igual que en cada Dockerfile (ADR-010). Sin ella
+    # `orpycamcp_common` es un import ausente que `--ignore-missing-imports`
+    # convierte en `Any`, y la librería de auditoría inmutable —la que sostiene
+    # la trazabilidad legal— queda sin verificar en los once servicios.
+    - pip install --quiet ./shared
     - |
       for service in services/*/; do
-        if [ -f "$service/requirements.txt" ] && [ -d "$service/tests" ]; then
-          echo "Testing $service"
-          cd "$service"
-          pip install --quiet -r requirements.txt
-          pytest tests/ -v --asyncio-mode=auto --tb=short || exit 1
-          cd -
-        fi
+        [ -f "$service/requirements.lock" ] && pip install --quiet -r "$service/requirements.lock"
       done
+  script:
+    # El MISMO script que corre un desarrollador, con la MISMA invocación por
+    # servicio. `LINT_IN_PROCESS=1` solo evita el Docker-in-Docker: las
+    # herramientas, los argumentos y el directorio de trabajo son idénticos.
+    - LINT_IN_PROCESS=1 ./scripts/lint.sh
   cache:
     key: "pip-$CI_COMMIT_REF_SLUG"
     paths:
       - .cache/pip/
 
-# ─── Stage: Validate — subprocess veraPDF REAL (E10 Increment C2b) ────────────
+# ─── Stage: Test — carril UNITARIO (mockeado, sin infraestructura) ────────────
+# Un job por servicio: un fallo señala QUÉ servicio, y los once corren en
+# paralelo en vez de en un bucle secuencial que aborta en el primero.
+test-unit:
+  stage: test
+  image: python:3.11-slim
+  interruptible: true
+  parallel:
+    matrix:
+      - SERVICE:
+          - api-gateway
+          - auth-service
+          - tenant-service
+          - document-service
+          - archive-service
+          - storage-service
+          - workflow-service
+          - notification-service
+          - signature-service
+          - knowledge-service
+          - mcp-server
+  before_script:
+    - pip install --quiet ./shared
+    # Desde el `.lock`, no desde `requirements.txt`: es lo que instala el
+    # Dockerfile, y probar con otras versiones es probar otro programa.
+    - pip install --quiet -r "services/$SERVICE/requirements.lock"
+  script:
+    - cd "services/$SERVICE"
+    - pytest tests/ -q --tb=short
+  cache:
+    key: "pip-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip/
+
+# ─── Stage: Test — carril de INTEGRACIÓN (PostgreSQL real) ────────────────────
+# Los 51 archivos de `tests/integration/` estaban gateados por `RUN_INTEGRATION=1`,
+# variable que NO aparecía en ningún `.sh` ni `.yml` del repositorio: salían
+# `skipped` y nadie lo notaba. Ahí viven las garantías que un mock no puede
+# probar — atomicidad de las transacciones, guards de la BD, idempotencia de las
+# migraciones —, es decir, justo lo que más caro sale descubrir en producción.
+#
+# El host `postgres` está en la allowlist por defecto del conftest de integración
+# (`_DEFAULT_INTEGRATION_DB_HOSTS`), que existe para que este tier no pueda
+# apuntar por accidente a una base que no sea desechable.
+test-integration:
+  stage: test
+  image: python:3.11-slim
+  interruptible: true
+  services:
+    - name: pgvector/pgvector:pg15
+      alias: postgres
+  variables:
+    POSTGRES_USER: orpycamcp
+    POSTGRES_PASSWORD: orpycamcp
+    POSTGRES_DB: orpycamcp_db
+    DATABASE_URL: "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
+    RUN_INTEGRATION: "1"
+  parallel:
+    matrix:
+      - SERVICE:
+          - auth-service
+          - document-service
+          - archive-service
+          - storage-service
+          - knowledge-service
+  before_script:
+    - pip install --quiet ./shared
+    - pip install --quiet -r "services/$SERVICE/requirements.lock"
+  script:
+    - cd "services/$SERVICE"
+    # Las migraciones GLOBALES primero. El conftest de integración provisiona
+    # schemas de tenant desechables, pero da por hechas las de `public` — que en
+    # una máquina de desarrollo ya corrieron alguna vez y en un Postgres recién
+    # creado no. Sin esto, la provisión muere con
+    # «operator class "gin_trgm_ops" does not exist»: la extensión `pg_trgm` la
+    # crea `migrations/global/001_extensions.sql` de document-service.
+    - python migrations/runner.py
+    # SIN `-m integration`: la convención de marcado NO es uniforme entre
+    # servicios. archive-service marca `pytest.mark.integration`; auth-service
+    # gatea con `skipif(not RUN_INTEGRATION)` y no lleva esa marca, así que
+    # `-m integration` deseleccionaba sus 17 tests y el job pasaba en verde sin
+    # ejecutar ninguno — exactamente el modo de fallo que este bloque corrige.
+    # El directorio es el criterio; `RUN_INTEGRATION=1` es el gate.
+    - pytest -q tests/integration --tb=short
+  cache:
+    key: "pip-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip/
+
+# ─── Stage: Test — frontend ───────────────────────────────────────────────────
+# No tenía NI UN job. `svelte-check` y el build son los que atrapan los errores
+# que el navegador solo enseña en la pantalla concreta que nadie abrió.
+test-frontend:
+  stage: test
+  image: node:22-alpine
+  interruptible: true
+  before_script:
+    - cd frontend
+    - npm ci
+  script:
+    - npm run lint
+    - npm run check
+    - npm run test:unit
+    - npm run build
+  cache:
+    key: "npm-$CI_COMMIT_REF_SLUG"
+    paths:
+      - frontend/node_modules/
+
+# ─── Stage: Test — subprocess veraPDF REAL (E10 Increment C2b) ────────────────
 # `SubprocessVeraPdfValidator` (services/storage-service/app/services/pdfa/
 # subprocess_verapdf.py) ejecuta un binario Java externo sobre PDFs subidos
 # por cualquier tenant -- input NO confiable. No hay veraPDF real disponible
@@ -44,8 +186,9 @@ validate:
 # proceso EXTERNO de verdad -- sin esto, el subprocess quedaría sin ejercitar
 # en CI pese a operar sobre input adversarial.
 storage-verapdf-subprocess:
-  stage: validate
+  stage: test
   image: python:3.11-slim
+  interruptible: true
   before_script:
     - chmod +x services/storage-service/tests/fakes/fake_verapdf.py
     # orpycamcp_common (shared/) NO está en requirements.txt (se instala
@@ -53,20 +196,25 @@ storage-verapdf-subprocess:
     # transitivamente vía app.main (cargado por tests/conftest.py), así que
     # sin esto la sola colección de tests fallaría.
     - pip install --quiet ./shared
-    - pip install --quiet -r services/storage-service/requirements.txt
+    - pip install --quiet -r services/storage-service/requirements.lock
   variables:
     VERAPDF_BINARY: "$CI_PROJECT_DIR/services/storage-service/tests/fakes/fake_verapdf.py"
     PDFA_VALIDATOR: "verapdf"
     PRESERVATION_PDFA_VALIDATION_ENABLED: "true"
   script:
     - cd services/storage-service
-    - pytest tests/test_subprocess_verapdf_ci_smoke.py -v --asyncio-mode=auto --tb=short
+    - pytest tests/test_subprocess_verapdf_ci_smoke.py -q --tb=short
   cache:
     key: "pip-$CI_COMMIT_REF_SLUG"
     paths:
       - .cache/pip/
 
 # ─── Stage: Review (solo en Merge Requests) ───────────────────────────────────
+# `Bash` NO está en --allowedTools a propósito. Este job recibe como entrada el
+# DIFF de un merge request, es decir texto que escribe cualquiera que abra un MR,
+# y corre con las credenciales del pipeline. Un revisor que además pueda ejecutar
+# órdenes convierte «revisar código no confiable» en «ejecutar código no
+# confiable»: leer y buscar basta para revisar.
 claude-review:
   stage: review
   image: node:20-slim
@@ -98,7 +246,7 @@ claude-review:
         }
       " \
       --output-format json \
-      --allowedTools "Read,Bash,Glob,Grep" > review.json
+      --allowedTools "Read,Glob,Grep" > review.json
     - cat review.json
   artifacts:
     paths:
@@ -180,6 +328,53 @@ claude-update-docs:
         -o merge_request.remove_source_branch
   only:
     - main
+
+# ─── Stage: Build — imágenes con tag INMUTABLE ────────────────────────────────
+# Requisito previo de la vuelta atrás (ver «Actualización y vuelta atrás» en
+# docs/es/deployment.md): mientras el despliegue construya desde el árbol de
+# fuentes en el propio servidor, «la versión anterior» no existe en ningún sitio
+# y revertir es imposible. Con esto, cada commit de `main` deja imágenes
+# etiquetadas por SHA a las que se puede volver.
+#
+# `infra/DOCKER_REGISTRY.md` documenta un pipeline de GitHub Actions que NO
+# existe en este repositorio (no hay `.github/`). Este job lo sustituye.
+#
+# Los servicios se construyen con contexto en la RAÍZ salvo api-gateway y
+# mcp-server, que hacen `COPY . .` sobre su propio directorio — misma distinción
+# que en infra/docker-compose.prod.yml, y por el mismo motivo: los demás instalan
+# `shared/orpycamcp_common` (ADR-010).
+build-images:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  interruptible: true
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - |
+      set -e
+      for dir in services/*/; do
+        svc=$(basename "$dir")
+        [ -f "$dir/Dockerfile" ] || continue
+        case "$svc" in
+          api-gateway|mcp-server) ctx="$dir"; df="$dir/Dockerfile" ;;
+          *)                      ctx="."   ; df="$dir/Dockerfile" ;;
+        esac
+        echo "── construyendo $svc"
+        docker build -f "$df" -t "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHA" \
+                              -t "$CI_REGISTRY_IMAGE/$svc:latest" "$ctx"
+        docker push "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHA"
+        docker push "$CI_REGISTRY_IMAGE/$svc:latest"
+      done
+      docker build -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA" \
+                                          -t "$CI_REGISTRY_IMAGE/frontend:latest" frontend
+      docker push "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/frontend:latest"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ─── Stage: Build ─────────────────────────────────────────────────────────────
 build-site:
@@ -264,7 +459,32 @@ dependency-audit:
     - git config user.email "claude-bot@$CI_SERVER_HOST"
     - git config user.name "Claude Bot [CI]"
   script:
-    - pip-audit --format json > audit.json || true
+    # `pip-audit` sin `-r` audita el entorno del propio job — es decir, las
+    # dependencias de pip-audit y de claude-code, no las del proyecto. El informe
+    # salía limpio siempre, y esa limpieza era el problema: parecía una auditoría.
+    # Se auditan los `.lock`, que es exactamente lo que instalan los Dockerfile.
+    - |
+      : > audit.json
+      for lock in services/*/requirements.lock; do
+        svc=$(basename "$(dirname "$lock")")
+        echo "── auditando $svc"
+        pip-audit -r "$lock" --format json --output "audit-$svc.json" || true
+      done
+      python3 - <<'EOF'
+      import glob, json
+      todo = []
+      for f in sorted(glob.glob("audit-*.json")):
+          servicio = f[len("audit-"):-len(".json")]
+          try:
+              datos = json.load(open(f))
+          except Exception:
+              continue
+          for dep in datos.get("dependencies", datos if isinstance(datos, list) else []):
+              if dep.get("vulns"):
+                  todo.append({"servicio": servicio, **dep})
+      json.dump({"hallazgos": todo}, open("audit.json", "w"), indent=2)
+      print(f"{len(todo)} paquetes con vulnerabilidades conocidas")
+      EOF
     - |
       BRANCH="security/dependency-audit-${CI_PIPELINE_ID}"
       git checkout -b "$BRANCH"
@@ -293,5 +513,6 @@ dependency-audit:
   artifacts:
     paths:
       - audit.json
+      - audit-*.json
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"

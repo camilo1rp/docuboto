@@ -68,7 +68,22 @@ except Exception:  # noqa: BLE001
     _AUDIT_AVAILABLE = False
 
 _SERVICE = "auth-service"
-_DSN = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+# Perezoso, no `os.environ[...]` a nivel de módulo: importar este script no debe
+# exigir `DATABASE_URL`. Los tests de integración lo importan para ejercitar su
+# lógica, y en el carril UNITARIO esa variable no existe — la colección entera
+# moría con un `KeyError: 'DATABASE_URL'` pelado. Al USARLO sí se exige, con un
+# mensaje que dice qué falta.
+_RAW_DSN = os.environ.get("DATABASE_URL", "")
+_DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
+
+
+def _require_dsn() -> str:
+    if not _DSN:
+        raise RuntimeError(
+            "DATABASE_URL no está definida: este script de operaciones necesita la "
+            "cadena de conexión a PostgreSQL."
+        )
+    return _DSN
 
 
 async def _tenant_schemas(conn: asyncpg.Connection) -> list[str]:
@@ -247,7 +262,7 @@ async def run(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    conn = await asyncpg.connect(dsn=_DSN)
+    conn = await asyncpg.connect(dsn=_require_dsn())
     try:
         if args.verify:
             return await _verify(conn)
