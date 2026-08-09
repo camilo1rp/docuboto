@@ -10,6 +10,7 @@
 - [Despliegue con Docker Compose](#despliegue-con-docker-compose)
 - [Clustering y escalabilidad](#clustering-y-escalabilidad)
 - [Respaldos y recuperación](#respaldos-y-recuperacion)
+- [Actualización y vuelta atrás](#actualizacion-y-vuelta-atras)
 - [Monitoreo y logs](#monitoreo-y-logs)
 - [Seguridad](#seguridad)
 - [Troubleshooting](#troubleshooting)
@@ -314,55 +315,151 @@ document-service:
 
 ## Respaldos y recuperación
 
-### Respaldo automático de PostgreSQL
+> **Los scripts existen y están probados.** `infra/backup.sh` y `infra/restore.sh`
+> son ficheros ejecutables del repositorio, no fragmentos para copiar y pegar. La
+> versión anterior de esta sección era un bloque de bash que **nunca se había
+> ejecutado**: usaba el usuario de desarrollo, volcaba MinIO a una ruta que ningún
+> contenedor monta con un cliente que esa imagen no trae, no llevaba
+> `set -euo pipefail` —así que un volcado fallido producía un `.gz` vacío pero
+> válido— y purgaba los respaldos de más de 30 días **pase lo que pase**. En cron,
+> a las 2 de la mañana, eso es una rotación de respaldos vacíos con apariencia de
+> normalidad. Y el procedimiento de recuperación hacía `docker compose down` y acto
+> seguido `docker compose exec postgres`, sobre un contenedor que ya no existía.
+
+### Respaldo
 
 ```bash
-#!/bin/bash
-# infra/backup.sh
-
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/srv/orpyca/backups"
-
-mkdir -p $BACKUP_DIR
-
-# Respaldar base de datos
-docker compose exec -T postgres pg_dump -U orpycamcp orpycamcp_db | \
-  gzip > $BACKUP_DIR/orpycamcp_$DATE.sql.gz
-
-# Respaldar datos MinIO
-docker compose exec -T minio mc mirror \
-  minio/ /backup/minio-$DATE/
-
-# Limpiar respaldos antiguos (> 30 días)
-find $BACKUP_DIR -name "*.gz" -mtime +30 -delete
-
-echo "Backup completado: $BACKUP_DIR/orpycamcp_$DATE.sql.gz"
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 ```
 
-Programar con cron:
+Vuelca PostgreSQL (todos los schemas: `public` con el registro de tenants y el
+`audit_log`, más un `tenant_*` por institución) y espeja MinIO. Tres garantías que
+conviene conocer porque cambian cómo se opera:
+
+1. **El volcado se verifica antes de darse por bueno** (`pg_restore --list` parsea
+   la cabecera y el índice completo). Un fichero truncado falla aquí, no seis meses
+   después.
+2. **La purga de respaldos antiguos solo ocurre si esa verificación pasó.** Un
+   respaldo que no se puede leer no autoriza a borrar el anterior.
+3. Un respaldo interrumpido se renombra a `*.PARCIAL` y **no** lleva el fichero
+   sello `OK`. `restore.sh` se niega a usar un directorio sin ese sello.
+
+Formato `custom` (`-Fc`): ya viene comprimido, permite restauración selectiva y
+paralela, y —lo que hace posible el punto 1— puede inspeccionarse sin restaurarlo.
+
+En cron, redirigiendo a un log **que alguien mire**:
 
 ```bash
-# Ejecutar diariamente a las 2:00 AM
-0 2 * * * /srv/orpyca/backup.sh
+0 2 * * * ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/backup.sh \
+            >> /var/log/orpyca-backup.log 2>&1
 ```
 
-### Recuperación desde respaldo
+### Restauración
 
 ```bash
-# 1. Detener servicios
-docker compose down
-
-# 2. Restaurar PostgreSQL
-gunzip < /srv/orpyca/backups/orpycamcp_20260601_020000.sql.gz | \
-  docker compose exec -T postgres psql -U orpycamcp orpycamcp_db
-
-# 3. Restaurar MinIO
-docker compose exec -T minio mc mirror \
-  /backup/minio-20260601/ minio/
-
-# 4. Reiniciar servicios
-docker compose up -d
+ENV_FILE=infra/.env ./infra/restore.sh /srv/orpyca/backups/20260808_020000
 ```
+
+Para las aplicaciones y Keycloak pero **deja en pie Postgres y MinIO**, que son el
+destino del trabajo. Exige confirmación escrita: restaurar destruye el estado
+actual y es irreversible.
+
+**El paso que convierte esto en una restauración probada** es el último: recalcula
+la **cadena de hash del `audit_log`** por tenant y compara cada asiento con su
+enlace anterior. Una base que arranca no prueba nada sobre la integridad de la
+traza legal, que es justo lo que un archivo tiene que poder demostrar. Si la cadena
+está rota, el script lo dice con el `id` del primer asiento afectado.
+
+Dos cosas que no son evidentes:
+
+- Los objetos bajo **Object-Lock en modo COMPLIANCE no se borran** aunque el
+  respaldo no los contenga, ni por root, hasta que venza su retención. Es lo
+  correcto: la inmutabilidad WORM está por encima de esta restauración.
+- Tras restaurar, comprueba **un radicado con anexo: consúltalo y descárgalo**. Es
+  la única prueba que ejercita la base y el almacén de objetos a la vez; con una
+  sola de las dos, una restauración a medias parece completa.
+
+### Ensayo de restauración
+
+Un respaldo cuya restauración no se ha probado no es un respaldo: es un fichero.
+El ciclo completo —volcar, destruir, restaurar, verificar la cadena— se ha
+ejercitado contra contenedores reales, y la verificación se comprobó **por
+mutación**: manipulando un asiento con el trigger de append-only desactivado, la
+cadena se reporta rota y el script sale con código distinto de cero.
+
+Repítelo en tu instalación al menos una vez, y después de cada actualización mayor.
+
+---
+
+## Actualización y vuelta atrás
+
+> **No existía procedimiento.** Ni sección de actualización, ni comando para migrar
+> tenants ya dados de alta —el único ejecutor es `scripts/init_tenant.py`, pensado
+> para el ALTA y con el árbol de fuentes montado—, ni tag inmutable al que volver:
+> el manifiesto construye desde el fuente en el propio servidor, así que «la versión
+> anterior» no era una cosa que existiera en ningún sitio.
+
+### Antes de nada: la versión tiene que ser una cosa
+
+Mientras el despliegue use `build:` contra el árbol de fuentes, **no hay vuelta
+atrás posible**: volver significa `git checkout` y reconstruir, con el resultado
+sujeto a lo que haya en el registro de paquetes ese día. El requisito previo es
+publicar imágenes con un tag inmutable (el SHA del commit) y que el manifiesto use
+`image:` en vez de `build:`.
+
+`infra/DOCKER_REGISTRY.md` documenta un pipeline de GitHub Actions que **no
+existe** en este repositorio (`.github/` no está). El trabajo de publicar imágenes
+por servicio con `$CI_COMMIT_SHA` pertenece al pipeline de GitLab.
+
+### Procedimiento
+
+```bash
+# 1. RESPALDO VERIFICADO. No "un respaldo": uno que terminó con el sello OK.
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
+
+# 2. Anotar la versión actual — es a lo que se vuelve si algo sale mal.
+docker compose -f infra/docker-compose.prod.yml images | tee /srv/orpyca/version-anterior.txt
+
+# 3. Traer la nueva versión (sin arrancarla todavía).
+export ORPYCA_TAG=<sha-del-commit>
+docker compose -f infra/docker-compose.prod.yml pull
+
+# 4. Migraciones. Cada servicio aplica las suyas y el runner recorre TODOS los
+#    schemas tenant_* que encuentre, así que un tenant nuevo no se queda atrás.
+#    Son idempotentes por convención (ADR-012): re-ejecutarlas es seguro.
+#    OJO: es `python migrations/runner.py`, un script — NO `python -m
+#    app.migrations.runner`, que es un módulo que no existe.
+for svc in auth tenant document archive storage workflow notification signature knowledge; do
+  docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+    "${svc}-service" python migrations/runner.py
+done
+
+# 5. Desplegar.
+docker compose -f infra/docker-compose.prod.yml up -d
+
+# 6. Comprobar. Los tres que cubren base, almacén e identidad a la vez:
+#    - login de un usuario real
+#    - un radicado con anexo: consultarlo y DESCARGARLO
+#    - GET /api/v1/audit/verify de un tenant
+```
+
+### Criterio de vuelta atrás
+
+Vuelve atrás si tras el paso 6 falla el login, la descarga de un anexo o la
+verificación de la cadena de auditoría. No esperes a "ver si se estabiliza": el
+coste de volver crece con cada radicado que entra.
+
+```bash
+export ORPYCA_TAG=<sha-anterior>
+docker compose -f infra/docker-compose.prod.yml up -d
+```
+
+**Volver el CÓDIGO no vuelve el ESQUEMA.** Las migraciones no tienen `down`, y es
+deliberado: una bajada automática sobre datos de archivo es más peligrosa que el
+fallo que intenta reparar. Si la versión nueva cambió el esquema de forma
+incompatible, la vuelta atrás real es **restaurar el respaldo del paso 1** con
+`infra/restore.sh`, asumiendo la pérdida de lo ocurrido desde entonces. Por eso el
+paso 1 no es opcional y por eso conviene actualizar en ventana de baja actividad.
 
 ---
 

@@ -10,6 +10,7 @@
 - [Deployment with Docker Compose](#despliegue-con-docker-compose)
 - [Clustering and scalability](#clustering-y-escalabilidad)
 - [Backups and recovery](#respaldos-y-recuperacion)
+- [Upgrades and rollback](#upgrades-and-rollback)
 - [Monitoring and logs](#monitoreo-y-logs)
 - [Security](#seguridad)
 - [Troubleshooting](#troubleshooting)
@@ -315,55 +316,150 @@ document-service:
 
 ## Backups and recovery
 
-### Automatic PostgreSQL backup
+> **The scripts exist and have been exercised.** `infra/backup.sh` and
+> `infra/restore.sh` are executable files in the repository, not snippets to copy
+> and paste. The previous version of this section was a bash block that had **never
+> been run**: it used the development database user, mirrored MinIO to a path no
+> container mounts using a client that image does not ship, lacked
+> `set -euo pipefail` —so a failed dump produced an empty but valid `.gz`— and
+> pruned backups older than 30 days **regardless**. In cron, at 2 a.m., that is a
+> rotation of empty backups that looks perfectly normal. And the recovery procedure
+> ran `docker compose down` and then `docker compose exec postgres`, against a
+> container that no longer existed.
+
+### Backup
 
 ```bash
-#!/bin/bash
-# infra/backup.sh
-
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/srv/orpyca/backups"
-
-mkdir -p $BACKUP_DIR
-
-# Respaldar base de datos
-docker compose exec -T postgres pg_dump -U orpycamcp orpycamcp_db | \
-  gzip > $BACKUP_DIR/orpycamcp_$DATE.sql.gz
-
-# Respaldar datos MinIO
-docker compose exec -T minio mc mirror \
-  minio/ /backup/minio-$DATE/
-
-# Limpiar respaldos antiguos (> 30 días)
-find $BACKUP_DIR -name "*.gz" -mtime +30 -delete
-
-echo "Backup completado: $BACKUP_DIR/orpycamcp_$DATE.sql.gz"
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 ```
 
-Schedule with cron:
+Dumps PostgreSQL (every schema: `public`, holding the tenant registry and the
+`audit_log`, plus one `tenant_*` per institution) and mirrors MinIO. Three
+guarantees worth knowing because they change how you operate it:
+
+1. **The dump is verified before it is accepted** (`pg_restore --list` parses the
+   header and the full index). A truncated file fails here, not six months later.
+2. **Old backups are pruned only if that verification passed.** A backup that
+   cannot be read does not authorise deleting the previous one.
+3. An interrupted backup is renamed to `*.PARCIAL` and carries no `OK` seal file.
+   `restore.sh` refuses any directory without that seal.
+
+`custom` format (`-Fc`): already compressed, allows selective and parallel restore,
+and —what makes point 1 possible— can be inspected without restoring it.
+
+In cron, redirected to a log **someone actually reads**:
 
 ```bash
-# Ejecutar diariamente a las 2:00 AM
-0 2 * * * /srv/orpyca/backup.sh
+0 2 * * * ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/backup.sh \
+            >> /var/log/orpyca-backup.log 2>&1
 ```
 
-### Recovery from backup
+### Restore
 
 ```bash
-# 1. Detener servicios
-docker compose down
-
-# 2. Restaurar PostgreSQL
-gunzip < /srv/orpyca/backups/orpycamcp_20260601_020000.sql.gz | \
-  docker compose exec -T postgres psql -U orpycamcp orpycamcp_db
-
-# 3. Restaurar MinIO
-docker compose exec -T minio mc mirror \
-  /backup/minio-20260601/ minio/
-
-# 4. Reiniciar servicios
-docker compose up -d
+ENV_FILE=infra/.env ./infra/restore.sh /srv/orpyca/backups/20260808_020000
 ```
+
+Stops the application services and Keycloak but **leaves Postgres and MinIO
+running**, since they are the target of the work. It requires a typed
+confirmation: restoring destroys the current state and is irreversible.
+
+**The step that makes this a tested restore** is the last one: it recomputes the
+`audit_log` **hash chain** per tenant and checks each entry against its predecessor.
+A database that starts proves nothing about the integrity of the legal trail, which
+is exactly what an archive must be able to demonstrate. If the chain is broken, the
+script reports the `id` of the first affected entry.
+
+Two things that are not obvious:
+
+- Objects under **Object-Lock in COMPLIANCE mode cannot be deleted** even if the
+  backup does not contain them, not even by root, until their retention expires.
+  That is correct: WORM immutability outranks this restore.
+- After restoring, check **a radicado with an attachment: open it and download it**.
+  That is the only check that exercises the database and the object store at once;
+  with only one of the two, a half-restore looks complete.
+
+### Restore drill
+
+A backup whose restore has never been tested is not a backup: it is a file. The
+full cycle —dump, destroy, restore, verify the chain— has been exercised against
+real containers, and the verification itself was checked **by mutation**: tampering
+with one entry with the append-only trigger disabled makes the chain report as
+broken and the script exit non-zero.
+
+Repeat it on your own installation at least once, and after every major upgrade.
+
+---
+
+## Upgrades and rollback
+
+> **There was no procedure.** No upgrade section, no command to migrate tenants
+> that already exist —the only runner is `scripts/init_tenant.py`, designed for
+> PROVISIONING and with the source tree mounted—, and no immutable tag to return
+> to: the manifest builds from source on the server itself, so "the previous
+> version" was not a thing that existed anywhere.
+
+### First things first: the version has to be a thing
+
+While the deployment uses `build:` against the source tree, **rollback is not
+possible**: going back means `git checkout` and rebuild, with the result subject to
+whatever the package registry holds that day. The prerequisite is publishing images
+with an immutable tag (the commit SHA) and switching the manifest from `build:` to
+`image:`.
+
+`infra/DOCKER_REGISTRY.md` documents a GitHub Actions pipeline that **does not
+exist** in this repository (there is no `.github/`). Publishing per-service images
+tagged with `$CI_COMMIT_SHA` belongs to the GitLab pipeline.
+
+### Procedure
+
+```bash
+# 1. VERIFIED backup. Not "a backup": one that finished with the OK seal.
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
+
+# 2. Record the current version — this is what you go back to.
+docker compose -f infra/docker-compose.prod.yml images | tee /srv/orpyca/previous-version.txt
+
+# 3. Fetch the new version (without starting it yet).
+export ORPYCA_TAG=<commit-sha>
+docker compose -f infra/docker-compose.prod.yml pull
+
+# 4. Migrations. Each service applies its own, and the runner walks EVERY
+#    tenant_* schema it finds, so a newly provisioned tenant is not left behind.
+#    They are idempotent by convention (ADR-012): re-running them is safe.
+#    NOTE: it is `python migrations/runner.py`, a script — NOT
+#    `python -m app.migrations.runner`, which is a module that does not exist.
+for svc in auth tenant document archive storage workflow notification signature knowledge; do
+  docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+    "${svc}-service" python migrations/runner.py
+done
+
+# 5. Deploy.
+docker compose -f infra/docker-compose.prod.yml up -d
+
+# 6. Verify. The three checks that cover database, object store and identity:
+#    - a real user logging in
+#    - a radicado with an attachment: open it and DOWNLOAD it
+#    - GET /api/v1/audit/verify for one tenant
+```
+
+### Rollback criteria
+
+Roll back if, after step 6, login fails, an attachment will not download, or the
+audit chain does not verify. Do not wait to "see if it settles": the cost of going
+back grows with every radicado that comes in.
+
+```bash
+export ORPYCA_TAG=<previous-sha>
+docker compose -f infra/docker-compose.prod.yml up -d
+```
+
+**Rolling back the CODE does not roll back the SCHEMA.** Migrations have no `down`,
+and that is deliberate: an automatic downgrade over archival data is more dangerous
+than the failure it tries to repair. If the new version changed the schema
+incompatibly, the real rollback is to **restore the step-1 backup** with
+`infra/restore.sh`, accepting the loss of everything since. That is why step 1 is
+not optional, and why upgrades belong in a low-activity window.
 
 ---
 

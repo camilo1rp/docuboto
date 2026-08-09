@@ -10,6 +10,15 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `feat(infra)`: **El respaldo y la restauración existen de verdad, y se han probado de punta a punta**
+  El procedimiento de respaldo vivía únicamente como un ejemplo dentro de la guía, y ese ejemplo **no funcionaba**: se conectaba con un usuario de pruebas, copiaba los archivos a una carpeta que no existe, y —lo más grave— si el volcado fallaba generaba igualmente un fichero vacío **y borraba los respaldos anteriores**. Ejecutado de madrugada por una tarea programada, eso significa acumular meses de copias vacías con apariencia de normalidad. El procedimiento de recuperación, por su parte, apagaba la base de datos y acto seguido intentaba restaurar sobre ella.
+  Ahora hay dos programas reales. El de **respaldo** copia la base de datos y los documentos, **comprueba que la copia se puede leer** antes de darla por buena, y solo entonces borra las antiguas; si algo se interrumpe, la copia queda marcada como incompleta y el programa de restauración se niega a usarla.
+  El de **restauración** pide confirmación escrita, y al terminar **verifica la cadena de integridad del registro de auditoría**: que la base arranque no demuestra que la traza documental esté intacta, y es precisamente eso lo que una entidad tiene que poder acreditar. Si algo se manipuló, lo dice y señala el asiento.
+  El ciclo completo —copiar, destruir, restaurar, verificar— se ha ejecutado sobre un entorno real, y la verificación se puso a prueba alterando deliberadamente un asiento: la detecta.
+  Se añade además el procedimiento de **actualización y vuelta atrás**, que no existía, incluyendo la advertencia de que revertir el programa no revierte los cambios de estructura de la base: para eso hace falta el respaldo.
+  *Por qué*: un respaldo cuya restauración nunca se ha probado no es un respaldo, es un archivo. Y ninguna institución debería poner documentos oficiales en un sistema sin esa garantía.
+  *Impacto*: solo despliegue y operación.
+
 - `fix(gateway,storage,frontend)`: **Ya se pueden adjuntar documentos escaneados: antes fallaba todo lo que pasara de 512 KB**
   El servidor de la interfaz traía un límite de tamaño de **512 KB** por petición que nunca se había configurado, y como los adjuntos pasan por él, **cualquier PDF escaneado real era rechazado** con un escueto «Error al subir el archivo». La importación masiva de expedientes era directamente inservible.
   Subir el límite a secas habría sido peor: el sistema copiaba cada archivo **entero en memoria** dos veces —una en la puerta de entrada y otra en el servicio de almacenamiento— y no existía ningún tope de tamaño, así que un archivo grande no habría dado un error sino que habría tumbado el servicio. Por eso el cambio hace las tres cosas a la vez: los archivos ahora se transmiten **por trozos** sin acumularse en memoria, hay un tope explícito que devuelve un mensaje claro cuando se supera, y el límite de la interfaz sube a 512 MB.
