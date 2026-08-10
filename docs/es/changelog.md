@@ -10,6 +10,13 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `chore(deps,docker)`: **Dependencias al día y los servicios dejan de ejecutarse con privilegios de administrador**
+  Se actualizaron las bibliotecas de los once servicios, incluidas las de criptografía, las del servidor web y **la que firma el índice electrónico**. Por eso el cambio no se dio por bueno leyendo la lista: se ejecutaron las más de 2.500 pruebas y las de base de datos real antes de aceptarlo.
+  La interfaz pasa a Node 22 —la versión anterior dejó de recibir soporte en abril de 2025 y era la que se desplegaba— y a la última versión de su marco de trabajo, que incluye el arreglo del límite de tamaño de archivos corregido en el bloque anterior.
+  Diez de los once servicios se ejecutaban **como administrador dentro de su contenedor**. Todos procesan información que no controlan —documentos, correos, formularios—, así que un fallo en cualquier biblioteca daba el control completo del contenedor en vez de solo el del proceso. Ahora corren con un usuario sin privilegios. Y la imagen del almacén de documentos deja de seguir la etiqueta «última versión»: ahí vive la protección de retención irreversible, y que cambie sola en una actualización rutinaria no es aceptable.
+  *Por qué*: ejecutar como administrador anula el aislamiento del contenedor precisamente donde se procesa información no confiable, y una versión sin soporte no recibe correcciones de seguridad.
+  *Impacto*: ningún cambio visible en el uso. Las imágenes deben reconstruirse al desplegar.
+
 - `fix(gateway,auth,frontend)`: **La dirección de red que quedaba registrada la elegía el propio visitante**
   El sistema confiaba en una cabecera que cualquiera puede escribir para saber desde qué dirección llegaba cada petición. Dos consecuencias: el límite de peticiones se esquivaba cambiándola en cada intento, y —más grave— **la dirección que quedaba grabada en el registro de auditoría**, que es inmutable y tiene valor probatorio, era la que el visitante decidía poner. Un dato de la cadena de custodia que se puede falsificar es peor que uno vacío, porque el vacío no engaña a nadie.
   Ahora esa dirección se calcula en el servidor siguiendo la cadena de intermediarios **declarados como de confianza**, y se transmite internamente por una vía que el visitante no puede alterar. Si la institución no ha declarado sus intermediarios, la cabecera se ignora por completo — se prefiere un dato inútil a uno falso.

@@ -2,7 +2,10 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 pydantic-settings>=2.2.0
 httpx>=0.27.0
-mcp>=1.12.0
+# Suelo por el arreglo de la 1.28.1 y TECHO en la 2.x: el salto de major cambia
+# la API del SDK de MCP y este servicio es la fachada del protocolo (E18/ADR-019).
+# Recompilar el lock sin el techo lo habría subido a 2.0.0 sin que nadie lo pidiera.
+mcp>=1.28.1,<2
 anthropic>=0.69.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

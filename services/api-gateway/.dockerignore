@@ -1,0 +1,25 @@
+# Este servicio construye con el contexto en SU PROPIO directorio y hace
+# `COPY . .`, así que el `.dockerignore` de la raíz NO aplica: Docker solo lee el
+# que está en la raíz del contexto. Sin este fichero, todo lo que hubiera aquí
+# —incluido un `.env` local siguiendo la convención del repositorio— se horneaba
+# en una capa de la imagen, donde queda para siempre aunque después se borre.
+.env
+.env.*
+!.env.example
+*.log
+
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+
+# `tests/` se queda DENTRO de la imagen a propósito. El comando canónico del
+# proyecto es `docker compose run --rm --no-deps <svc> pytest -q`, que ejecuta
+# pytest dentro del contenedor; al excluirlos, ese comando respondía
+# «no tests ran» — en verde y sin error, que es el modo de fallo peor de todos.
+# Los otros nueve servicios tampoco los excluyen (su contexto es la raíz y el
+# .dockerignore de arriba no los filtra), así que excluirlos aquí habría creado
+# además una asimetría invisible entre servicios.

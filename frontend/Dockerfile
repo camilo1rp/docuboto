@@ -3,7 +3,7 @@
 # (regla Docker-only del proyecto); no se instalan dependencias en el host.
 
 # --- Build stage ---
-FROM node:18-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
@@ -13,7 +13,7 @@ COPY . .
 RUN npm run build
 
 # --- Production stage ---
-FROM node:18-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 
 COPY --from=builder /app/package.json ./

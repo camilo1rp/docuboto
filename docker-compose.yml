@@ -55,7 +55,10 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    # Mismo tag fijo que producción: probar contra una versión distinta de la
+    # que se despliega es probar otra cosa, y aquí lo que se prueba es el
+    # Object-Lock (E10).
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: orpycamcp-minio
     command: server /data --console-address ":9001"
     environment:

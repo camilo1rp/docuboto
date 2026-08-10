@@ -26,4 +26,18 @@ RUN pip install --no-cache-dir -r requirements.lock
 # 3) Código del servicio.
 COPY services/notification-service/ .
 
+# Usuario NO-root. Cada uno de estos servicios procesa entrada que no controla
+# —cuerpos HTTP, XML, PDF, correo, eventos de Redis—, así que un fallo de memoria
+# o una deserialización insegura en cualquier dependencia escalaría a root DEL
+# CONTENEDOR y no solo del proceso. En auth-service pesa además que las claves de
+# cifrado (KEK del 2FA y de la firma personal) viven en su memoria.
+#
+# `/app` queda de solo lectura para este usuario: el servicio no escribe en su
+# propio árbol, y lo temporal va a `/tmp`. Mismo patrón que storage-service, que
+# ya lo hacía por el subproceso de veraPDF.
+RUN groupadd --system orpycamcp \
+    && useradd --system --gid orpycamcp --home-dir /app --shell /usr/sbin/nologin orpycamcp \
+    && chown -R orpycamcp:orpycamcp /app
+USER orpycamcp
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8007"]

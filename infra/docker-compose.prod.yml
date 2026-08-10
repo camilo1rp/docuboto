@@ -108,7 +108,14 @@ services:
         max-file: "3"
 
   minio:
-    image: minio/minio:latest
+    # Tag FIJO, no `latest`. Aquí vive el Object-Lock en modo COMPLIANCE, donde
+    # una retención mal aplicada es IRREVERSIBLE durante décadas: que la imagen
+    # cambie sola en el siguiente `pull` —con el comportamiento de retención que
+    # traiga esa versión— no es un riesgo aceptable para el almacén de
+    # preservación. Actualizarla pasa a ser un acto deliberado, con su ensayo.
+    # Digest de esta versión (verificable con `docker image inspect`):
+    #   sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: orpycamcp-minio-prod
     restart: unless-stopped
     command: server /data --console-address ":9001"
