@@ -305,6 +305,11 @@ export function clearPkceCookies(cookies) {
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — poblado por
  *   `(app)/+layout.server.js`, best-effort (puede quedar `null`).
+ * @property {boolean} [permisosDegradados]
+ *   `true` cuando `GET /auth/me` no respondió: la sesión sigue viva pero sin
+ *   permisos granulares. Sin este campo, el menú vacío que resulta es
+ *   indistinguible de «me revocaron los permisos» — `AppLayout.svelte` lo usa
+ *   para decirlo en pantalla.
  * @property {Array<{codigo: number, nombre: string, sigla: string}>} [dependencias]
  *   Catálogo mínimo de dependencias activas del tenant, para resolver la
  *   etiqueta legible de `context.active_depe_id` en `DependencySwitcher.svelte`.

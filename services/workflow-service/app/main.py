@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from orpycamcp_common import events
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -48,7 +49,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     await init_redis(settings.redis_url)
     # Distribución automática (RF-FLU-04): consume orpycamcp.document.events.
-    consumer_task = asyncio.create_task(document_consumer.run())
+    consumer_task = events.spawn_supervised(
+        document_consumer.run, name="workflow", logger=logger
+    )
     yield
     logger.info("workflow-service shutting down")
     consumer_task.cancel()

@@ -15,6 +15,20 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
+
+    # ── Presupuesto de conexiones a Postgres ──────────────────────────────
+    # Configurables porque el reparto NO es una constante del código: depende
+    # de cuántos servicios y réplicas haya en el despliegue. La aritmética
+    # completa está escrita en `infra/docker-compose.prod.yml`, junto al
+    # `max_connections` del servidor, que es donde tiene sentido cuadrarla.
+    db_pool_min_size: int = 2
+    db_pool_max_size: int = 10
+    # Tope por CONSULTA. Sin él, una consulta atascada retiene su conexión
+    # indefinidamente y el pool se agota sin que nada lo delate. 120 s es muy
+    # superior a cualquier consulta sana de este sistema; lo que legítimamente
+    # tarde más debe pasar su propio `timeout=` en la llamada (es lo que hace
+    # `orpycamcp_common.audit.verify_chain`, que recorre el registro entero).
+    db_command_timeout: float = 120.0
     redis_url: str = "redis://redis:6379/0"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"

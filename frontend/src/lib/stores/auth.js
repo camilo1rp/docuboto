@@ -168,6 +168,10 @@ export function clearSession() {
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — cargado por
  *   `(app)/+layout.server.js`, consumido por `DependencySwitcher.svelte`.
+ * @property {boolean} [permisosDegradados]
+ *   `true` cuando `GET /auth/me` no respondió y la sesión sigue viva pero sin
+ *   permisos granulares. Sin este campo, el menú vacío es indistinguible de
+ *   «me revocaron los permisos» — ver `(app)/+layout.server.js`.
  * @property {Array<{codigo: number, nombre: string, sigla: string}>} [dependencias]
  *   Catálogo mínimo de dependencias activas del tenant, para resolver la
  *   etiqueta legible de `context.active_depe_id`.

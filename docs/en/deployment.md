@@ -264,6 +264,39 @@ docker compose exec minio mc ls minio
 docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 ```
 
+#### The two probes: `/health` and `/health/ready`
+
+Every service exposes **two** routes, and they are not interchangeable:
+
+| Route | Question | Checks | Consumed by |
+|---|---|---|---|
+| `/health` | Is the process answering? | Nothing | The container `healthcheck` |
+| `/health/ready` | Can it serve traffic **right now**? | Database, Redis, SMTP, event consumer | The load balancer / reverse proxy |
+
+`/health` **depends on nothing, deliberately**. Restarting a service because
+Postgres is down does not fix Postgres: it discards in-flight work and adds a
+restart storm to an ongoing incident. `/health/ready` returns **503** when the
+service cannot work, which is the signal for the balancer to stop sending it
+requests **without restarting it**.
+
+Configure the reverse proxy to drop a service whose `/health/ready` answers 503;
+leave restarts to `/health`.
+
+```bash
+# Aggregate diagnosis (gateway + its ten services)
+curl -s https://yourdomain.gov.co/health/ready | jq
+```
+
+In `checks.consumer`, the value `reiniciando` means the event consumer died and
+is retrying: the service answers requests, but what that consumer does —routing
+incoming mail, sending email, sealing signatures, feeding the search index— **is
+not happening**. Worth investigating even while the service shows as available.
+
+Probes report state as a single word (`ok`, `error`, `unreachable`) and never the
+failure detail: they are reachable without authentication and the text of a
+network exception carries internal hostnames and ports. The real reason is in the
+service log.
+
 ---
 
 ## Clustering and scalability

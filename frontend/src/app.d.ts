@@ -29,6 +29,12 @@ declare global {
     interface Error {
       message: string;
       code?: string;
+      /**
+       * Identificador de correlación con el log del servidor. El mensaje que ve
+       * el usuario es fijo; el detalle real solo existe en el log, bajo esta
+       * misma referencia.
+       */
+      referencia?: string;
     }
 
     // PageData, PageState, Platform: sin personalización por ahora.

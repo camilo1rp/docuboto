@@ -43,6 +43,40 @@ services:
     image: pgvector/pgvector:pg15
     container_name: orpycamcp-postgres-prod
     restart: unless-stopped
+    # ── Presupuesto de conexiones ──────────────────────────────────────────
+    #
+    # Postgres trae `max_connections=100` por defecto, y ese número **no
+    # alcanzaba**. La cuenta de este despliegue, con `db_pool_max_size=10` por
+    # servicio (`app/core/config.py`):
+    #
+    #   auth 10 · tenant 10 · document 10×2 réplicas · storage 10×2 réplicas
+    #   workflow 10 · archive 10 · notification 10 · signature 10 · knowledge 10
+    #   ────────────────────────────────────────────────────────────────────
+    #   = 110 conexiones solo de las aplicaciones
+    #
+    # (api-gateway y mcp-server no abren pool: no tocan la base de datos.)
+    #
+    # Y encima Postgres hospeda **también a Keycloak**, cuyo pool por defecto es
+    # de 100 más. Sumado, el sistema pedía sobre 210 conexiones a un servidor que
+    # concede 100, menos 3 reservadas al superusuario.
+    #
+    # Lo peor es CÓMO se manifiesta: el pool que llega tarde no falla con un
+    # mensaje sobre conexiones — se queda esperando. Y como Keycloak compite por
+    # el mismo cupo, el síntoma que ve la institución son **fallos de inicio de
+    # sesión** intermitentes, sin relación aparente con la carga documental que
+    # los provocó. Nadie mira el número de conexiones buscando eso.
+    #
+    # Se sube a 300 (110 aplicaciones + 30 Keycloak + margen para migraciones,
+    # respaldos, `psql` de operación y una segunda réplica de cualquier
+    # servicio). Si se añaden réplicas, esta cuenta se rehace: está escrita aquí
+    # para que se pueda rehacer.
+    #
+    # `shared_buffers` acompaña porque cada conexión reserva memoria de trabajo;
+    # triplicar el cupo sin tocarlo cambia un límite por otro.
+    command: >
+      postgres
+      -c max_connections=300
+      -c shared_buffers=512MB
     environment:
       POSTGRES_USER: ${DB_USER:?Database user required}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?Database password required}
@@ -163,6 +197,12 @@ services:
       KC_DB_USERNAME: ${DB_USER}
       KC_DB_PASSWORD: ${DB_PASSWORD}
       KC_DB_SCHEMA: keycloak
+      # Keycloak abre por defecto hasta 100 conexiones contra el MISMO Postgres
+      # que usan los nueve servicios. Acotarlo es la otra mitad del presupuesto
+      # de conexiones documentado en el bloque `postgres` de este fichero: sin
+      # este tope, un pico de carga documental y el inicio de sesión compiten por
+      # el mismo cupo y lo que falla es el login.
+      KC_DB_POOL_MAX_SIZE: "30"
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
 
@@ -247,7 +287,13 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # `curl` NO existe en `python:3.11-slim`, que es la base de esta imagen: el
+      # healthcheck fallaba SIEMPRE con «executable file not found». Docker lo
+      # cuenta como fallo del contenedor, así que el gateway quedaba `unhealthy`
+      # de forma permanente y todo `depends_on: service_healthy` que apunte a él
+      # se bloquea. Se usa el mismo intérprete que ya corre dentro, igual que en
+      # los demás servicios de este fichero.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -768,6 +814,14 @@ services:
       - "8009"
     depends_on:
       - api-gateway
+    # Era el único servicio de aplicación SIN healthcheck: si el proceso moría,
+    # el contenedor seguía "arriba" y el asistente conversacional simplemente no
+    # respondía, sin que el orquestador lo reiniciara.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits:

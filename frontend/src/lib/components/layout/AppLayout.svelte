@@ -296,15 +296,31 @@
         </div>
       {/if}
 
-      <!-- Logout -->
-      <a
-        href="/logout"
-        class="app-layout__action-btn"
-        aria-label="Cerrar sesión"
-        title="Cerrar sesión"
-      >
-        <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
-      </a>
+      <!--
+        Logout — formulario POST, NO un enlace.
+
+        Era `<a href="/logout">` y el `+page.server.js` de esa ruta hacía el
+        cierre de sesión dentro del `load`. Con `data-sveltekit-preload-data="hover"`
+        activo en `app.html`, SvelteKit precarga el `load` de un enlace **al pasar
+        el ratón por encima**: rozar este icono cerraba la sesión sin un solo
+        clic. Y como el efecto vivía en un GET, cualquier cosa que "visite" la
+        URL —un prefetch del navegador, un escáner, una imagen remota apuntando
+        ahí— la dispara igual.
+
+        Un GET no debe tener efectos. El cierre de sesión vive ahora en la
+        `action` POST, que además pasa por la comprobación de origen (CSRF) de
+        SvelteKit. El formulario funciona sin JavaScript.
+      -->
+      <form method="POST" action="/logout" class="app-layout__logout-form">
+        <button
+          type="submit"
+          class="app-layout__action-btn"
+          aria-label="Cerrar sesión"
+          title="Cerrar sesión"
+        >
+          <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
+        </button>
+      </form>
     </div>
   </header>
 
@@ -339,6 +355,29 @@
     <!-- Área principal: breadcrumb + slot -->
     <div class="app-layout__main-wrapper">
       <BreadcrumbBar />
+
+      <!--
+        Aviso de permisos degradados.
+
+        Cuando `GET /auth/me` no responde, la sesión sigue viva pero sin
+        permisos granulares: el menú se queda vacío y las acciones desaparecen
+        de todas las pantallas, porque la UI por rol se calcula con
+        `permissions`. Sin este aviso es indistinguible de una revocación de
+        permisos, y el funcionario acaba llamando al administrador — que ve sus
+        permisos intactos y no encuentra nada que arreglar.
+
+        No es una alerta de seguridad: nada se ha franqueado, el RBAC real vive
+        en el backend. Es una explicación.
+      -->
+      {#if $sessionUser?.permisosDegradados}
+        <div class="app-layout__degradado" role="status">
+          <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+          <span>
+            No pudimos cargar tus permisos: el menú y las acciones aparecen incompletos. No es un
+            cambio en tu cuenta — recarga la página en unos minutos o avisa a soporte si sigue así.
+          </span>
+        </div>
+      {/if}
 
       <main id="main-content" class="app-layout__content" tabindex="-1">
         <slot />
@@ -380,6 +419,13 @@
       height: 28px;
       object-fit: contain;
       flex-shrink: 0;
+    }
+
+    // El logout es un `<form>` para que su efecto viva en un POST; el
+    // contenedor no debe alterar la alineación del topbar.
+    &__logout-form {
+      display: flex;
+      margin: 0;
     }
 
     &__menu-btn,
@@ -542,6 +588,26 @@
       display: flex;
       flex-direction: column;
       min-width: 0;
+    }
+
+    &__degradado {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--op-space-2);
+      margin: var(--op-space-3) var(--op-space-5) 0;
+      padding: var(--op-space-3);
+      border: 1px solid var(--op-warning);
+      border-radius: var(--op-radius);
+      background: var(--op-surface);
+      color: var(--op-text);
+      font-size: var(--op-font-sm);
+      line-height: var(--op-line-height);
+
+      i {
+        color: var(--op-warning);
+        margin-top: 2px;
+        flex-shrink: 0;
+      }
     }
 
     &__content {

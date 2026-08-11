@@ -252,6 +252,17 @@ async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool
 
     Devuelve ``(ok, id_de_la_primera_fila_rota)``. ``ok=True`` y ``None`` si la
     cadena es íntegra. Pensado para un job de verificación periódico (ADR-008).
+
+    **`timeout` explícito.** Los pools de los servicios fijan ahora un
+    `command_timeout` (120 s) para que una consulta atascada no retenga su
+    conexión indefinidamente. Esta consulta es la excepción conocida: recorre el
+    registro **entero** del tenant, que en una entidad con años de operación son
+    millones de filas, así que el tope general la mataría justo cuando más falta
+    hace — comprobar la integridad de la cadena de custodia. Se le concede una
+    hora.
+
+    (Traer el registro completo a memoria es un problema de escala distinto y
+    anterior a este tope; queda declarado, no resuelto aquí.)
     """
     rows = await conn.fetch(
         """
@@ -262,6 +273,7 @@ async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool
         ORDER BY id ASC
         """,
         tenant_slug,
+        timeout=3600.0,
     )
     prev_hash: str | None = None
     for row in rows:

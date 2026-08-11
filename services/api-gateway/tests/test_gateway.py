@@ -181,36 +181,79 @@ async def test_rate_limit_exceeded(test_client):
     assert response.headers.get("retry-after") == "60"
 
 
-async def test_health_check(test_client):
-    """GET /health agrega estado de Redis y todos los servicios downstream."""
-    client, http_client, _ = test_client
+async def test_health_es_vivacidad_pura(test_client):
+    """`/health` gobierna los reinicios del contenedor: no puede depender de nadie.
 
-    # Todos los servicios downstream responden OK
-    http_client.get = AsyncMock(return_value=httpx.Response(200, json={"status": "ok"}))
+    Antes consultaba a los diez servicios y devolvía 503 si alguno fallaba, así
+    que notification caído hacía que el orquestador declarara enfermo al
+    **gateway** — lo único capaz de seguir sirviendo el resto del sistema.
+    """
+    client, http_client, _ = test_client
+    http_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
 
     response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "api-gateway"}
+    assert http_client.get.await_count == 0, "no debe llamar a nadie"
+
+
+async def test_ready_agrega_redis_y_los_diez_servicios(test_client):
+    """La lista tenía SIETE entradas; el sistema tiene diez servicios detrás."""
+    client, http_client, _ = test_client
+    http_client.get = AsyncMock(return_value=httpx.Response(200, json={"status": "ok"}))
+
+    response = await client.get("/health/ready")
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
     assert body["checks"]["redis"] == "ok"
-    assert body["checks"]["auth-service"] == "ok"
-    assert body["checks"]["tenant-service"] == "ok"
-    assert body["checks"]["document-service"] == "ok"
+    for servicio in (
+        "auth-service",
+        "tenant-service",
+        "document-service",
+        "archive-service",
+        "storage-service",
+        "workflow-service",
+        "notification-service",
+        # Los tres que faltaban — y el diagnóstico se lee justo cuando algo va mal.
+        "signature-service",
+        "knowledge-service",
+        "mcp-server",
+    ):
+        assert body["checks"][servicio] == "ok", servicio
 
 
-async def test_health_check_degraded(test_client):
-    """GET /health devuelve 503 si un servicio downstream falla."""
+async def test_ready_degradado_devuelve_503(test_client):
     client, http_client, _ = test_client
-
     http_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
 
-    response = await client.get("/health")
+    response = await client.get("/health/ready")
 
     assert response.status_code == 503
-    body = response.json()
-    assert body["status"] == "degraded"
-    assert "unreachable" in body["checks"]["auth-service"]
+    assert response.json()["status"] == "degraded"
+    assert response.json()["checks"]["auth-service"] == "unreachable"
+
+
+async def test_ready_no_publica_la_topologia_interna(test_client):
+    """El texto de la excepción traía la URL interna del servicio.
+
+    `f"unreachable: {exc}"` sobre un `ConnectError` de httpx incluye
+    `http://document-service:8003/health`. La ruta no exige autenticación, así
+    que el mapa de nombres y puertos internos quedaba a la vista de cualquiera
+    que la consultara con un servicio caído.
+    """
+    client, http_client, _ = test_client
+    http_client.get = AsyncMock(
+        side_effect=httpx.ConnectError("[Errno -2] Name or service not known: document-service:8003")
+    )
+
+    cuerpo = (await client.get("/health/ready")).text
+
+    assert "document-service:8003" not in cuerpo
+    assert "Errno" not in cuerpo
+    assert "8003" not in cuerpo
 
 
 async def test_request_id_header(test_client):

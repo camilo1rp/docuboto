@@ -22,8 +22,10 @@
  *  - Registra errores inesperados; evita filtrar stack traces al cliente.
  */
 
-import { API_V1 } from "$lib/utils/config.server.js";
+import { API_V1, KEYCLOAK_INTERNAL_BASE } from "$lib/utils/config.server.js";
 import { conIpDelCliente, instalarPropagacionDeIp } from "$lib/server/clientIp.js";
+import { instalarTiempoLimite } from "$lib/server/fetchTimeout.js";
+import { aplicarCabecerasDeSeguridad } from "$lib/server/securityHeaders.js";
 import {
   COOKIE_ACCESS_TOKEN,
   COOKIE_REFRESH_TOKEN,
@@ -46,6 +48,13 @@ export async function handle({ event, resolve }) {
   // cubo de limitación de tasa — 429 generalizados en una mañana normal — y la
   // IP que acaba en el `audit_log` no es la de nadie.
   instalarPropagacionDeIp(API_V1);
+
+  // Tiempo límite de RESPUESTA para gateway y Keycloak (ver
+  // $lib/server/fetchTimeout.js). Sin él, un upstream que acepta la conexión y
+  // no contesta cuelga la petición del SSR para siempre, y el layout privado
+  // hace tres llamadas por navegación: el frontend entero deja de responder por
+  // una degradación que el backend ya sabe acotar.
+  instalarTiempoLimite([API_V1, KEYCLOAK_INTERNAL_BASE]);
 
   let accessToken = cookies.get(COOKIE_ACCESS_TOKEN);
   const refreshToken = cookies.get(COOKIE_REFRESH_TOKEN);
@@ -83,19 +92,40 @@ export async function handle({ event, resolve }) {
     ip = "";
   }
 
-  return conIpDelCliente(ip, () => resolve(event));
+  const response = await conIpDelCliente(ip, () => resolve(event));
+
+  return aplicarCabecerasDeSeguridad(response);
 }
 
 /**
  * Manejo de errores inesperados del servidor.
+ *
+ * El comentario anterior decía «no filtrar stack traces al cliente» y acto
+ * seguido devolvía `error.message` tal cual. El stack no viajaba, cierto, pero
+ * el mensaje sí — y el mensaje de un fallo de red de Node es
+ * `connect ECONNREFUSED 172.18.0.7:8080`. Eso es topología interna: nombres de
+ * servicio, direcciones de la red Docker y puertos, servidos a cualquiera que
+ * provoque un error. Con `undici` los mensajes llegan a incluir la URL completa
+ * de la petición fallida, cabeceras incluidas en algunos casos.
+ *
+ * Ahora el cliente recibe un texto fijo más un identificador de correlación; el
+ * detalle real queda solo en el log del servidor, junto a ese mismo
+ * identificador. Quien atiende el incidente lo pide al usuario y lo busca en el
+ * log — sin que el mensaje de error sea el canal.
+ *
  * @type {import('@sveltejs/kit').HandleServerError}
  */
 export function handleError({ error, event }) {
-  // No filtrar stack traces al cliente en producción
-  const message = error instanceof Error ? error.message : "Error inesperado del servidor";
+  // Identificador corto: suficiente para localizar la línea en el log y sin
+  // valor para quien no tenga acceso a él.
+  const referencia = crypto.randomUUID().slice(0, 8);
 
-  console.error(`[hooks.server] Error en ${event.url.pathname}:`, error);
+  console.error(`[hooks.server] [${referencia}] Error en ${event.url.pathname}:`, error);
 
   // App.Error está declarado en src/app.d.ts con { message, code? }
-  return { message, code: "INTERNAL_ERROR" };
+  return {
+    message: "Ocurrió un error inesperado. El equipo técnico ya tiene el registro.",
+    code: "INTERNAL_ERROR",
+    referencia,
+  };
 }

@@ -8,16 +8,27 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * /logout — Cierre de sesión.
+ * /logout — Cierre de sesión. **Solo por POST.**
  *
  * Pasos:
  *  1. Lee el refresh_token de la cookie httpOnly.
  *  2. Notifica a Keycloak para invalidar la sesión SSO (end_session_endpoint).
  *  3. Elimina las cookies de sesión locales.
- *  4. Redirige a /login.
+ *  4. Redirige al end_session_endpoint de Keycloak, que devuelve a /login.
  *
- * El usuario puede llegar aquí por GET (link en la topbar) o POST
- * (form action) — ambos soportados.
+ * **Por qué ya no hay `load`.** Antes el cierre de sesión se ejecutaba también
+ * en el `load` de la ruta, es decir, en un GET. El enlace del topbar era un
+ * `<a href="/logout">` y `app.html` declara `data-sveltekit-preload-data="hover"`:
+ * SvelteKit precarga el `load` de un enlace cuando el puntero pasa por encima,
+ * así que **rozar el icono cerraba la sesión** sin llegar a hacer clic. Con el
+ * efecto en un GET el problema es más ancho que ese icono: lo dispara cualquier
+ * cosa que "visite" la URL —un prefetch del navegador, un escáner de enlaces,
+ * un `<img src>` remoto apuntando aquí—, que es la forma clásica del CSRF de
+ * cierre de sesión.
+ *
+ * Ahora el efecto vive solo en la `action` POST, que pasa por la comprobación
+ * de origen de SvelteKit. Un GET a esta ruta renderiza `+page.svelte`, que es
+ * un botón de confirmación: no cierra nada por sí mismo.
  */
 
 import { redirect } from "@sveltejs/kit";
@@ -28,12 +39,7 @@ import {
 } from "$lib/services/auth.server.js";
 import { KEYCLOAK_LOGOUT_URL, KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
 
-/** @param {import('@sveltejs/kit').RequestEvent} event */
-export async function load({ cookies, url }) {
-  await performLogout(cookies, url);
-}
-
-/** Form action para POST desde un formulario */
+/** Form action para POST desde un formulario — el ÚNICO camino que cierra sesión */
 export const actions = {
   default: async ({ cookies, url }) => {
     await performLogout(cookies, url);

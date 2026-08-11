@@ -7,33 +7,55 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-import asyncpg
-from fastapi import APIRouter, Depends
+"""Sondas de salud de auth-service.
 
-from app.core.database import get_db_conn
+`/health` comprobaba la base de datos y era, a la vez, el `healthcheck` del
+contenedor: tomaba una conexión del pool **en cada sondeo** (cada 15 segundos)
+para preguntar `SELECT 1`, y metía una dependencia externa en la sonda que
+gobierna los reinicios. Se reparte en dos, como en el resto del sistema — ver
+`orpycamcp_common.health` para el criterio completo.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from orpycamcp_common import health as health_common
+
+from app.core.database import get_pool
 from app.routers.auth import get_auth_service
-from app.schemas.auth import HealthResponse
-from app.services.auth_service import AuthService
 
 router = APIRouter(tags=["health"])
 
+_SERVICE = "auth-service"
 
-@router.get(
-    "/health",
-    response_model=HealthResponse,
-    summary="Service health check",
-)
-async def health(
-    service: AuthService = Depends(get_auth_service),
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> HealthResponse:
-    db_status = "ok"
-    try:
+
+@router.get("/health", summary="Vivacidad — ¿responde el proceso?")
+async def health() -> dict[str, str]:
+    """Sin dependencias, a propósito: gobierna los reinicios del contenedor."""
+    return health_common.liveness(_SERVICE)
+
+
+async def _ping_db() -> None:
+    async with get_pool().acquire() as conn:
         await conn.fetchval("SELECT 1")
-    except Exception:
-        db_status = "error"
 
-    kc_status = "ok" if await service.keycloak_healthy() else "error"
-    overall = "ok" if db_status == "ok" and kc_status == "ok" else "degraded"
 
-    return HealthResponse(status=overall, keycloak=kc_status, database=db_status)
+async def _ping_keycloak() -> None:
+    """Keycloak SÍ es bloqueante aquí: sin él este servicio no puede autenticar."""
+    if not await get_auth_service().keycloak_healthy():
+        raise RuntimeError("keycloak no responde")
+
+
+@router.get("/health/ready", summary="Disponibilidad — ¿puede atender tráfico ahora?")
+async def ready() -> JSONResponse:
+    checks = {
+        "database": await health_common.check("database", _ping_db),
+        "keycloak": await health_common.check("keycloak", _ping_keycloak),
+    }
+
+    listo = checks["database"] == "ok" and checks["keycloak"] == "ok"
+    return JSONResponse(
+        status_code=200 if listo else 503,
+        content={"status": "ready" if listo else "not_ready", "checks": checks},
+    )

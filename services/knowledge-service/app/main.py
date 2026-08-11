@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from orpycamcp_common import events
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -116,7 +117,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_redis(settings.redis_url)
     # Ingesta event-driven (E21): auto-puebla el índice pgvector consumiendo
     # orpycamcp.document.events (patrón exacto de workflow-service main.py).
-    consumer_task = asyncio.create_task(document_consumer.run())
+    consumer_task = events.spawn_supervised(
+        document_consumer.run, name="knowledge", logger=logger
+    )
     yield
     logger.info("knowledge-service shutting down")
     consumer_task.cancel()

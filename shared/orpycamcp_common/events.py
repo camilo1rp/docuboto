@@ -30,9 +30,11 @@ servicio, porque la idempotencia persistente vive en su propio schema.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -146,6 +148,113 @@ async def ensure_group(redis: Redis, stream: str, group: str) -> None:
     except Exception as exc:  # redis.exceptions.ResponseError (BUSYGROUP)
         if "BUSYGROUP" not in str(exc):
             raise
+
+
+# ---------------------------------------------------------------------------
+# Supervisión del consumidor
+# ---------------------------------------------------------------------------
+
+#: Espera inicial y tope del reintento supervisado, en segundos.
+SUPERVISOR_BACKOFF_INICIAL = 1.0
+SUPERVISOR_BACKOFF_MAXIMO = 60.0
+
+#: Estado de los consumidores supervisados de este proceso, por nombre.
+#:
+#: Existe para que la sonda de disponibilidad (`/health/ready`) pueda decir algo
+#: verdadero sobre el consumidor. Sin esto, un servicio con el consumidor muerto
+#: y reintentando responde exactamente igual que uno sano — que es justo el modo
+#: de fallo que este bloque corrige.
+_estado_consumidores: dict[str, dict[str, Any]] = {}
+
+
+def consumer_status() -> dict[str, dict[str, Any]]:
+    """Instantánea del estado de los consumidores supervisados.
+
+    Por consumidor: ``corriendo`` (bool), ``reinicios`` (int) y ``ultimo_error``
+    (texto o ``None``). ``reinicios`` creciendo con ``corriendo`` en ``True`` es
+    un consumidor que rebota — sano en apariencia, inútil en la práctica.
+    """
+    return {nombre: dict(datos) for nombre, datos in _estado_consumidores.items()}
+
+
+async def _supervisar(
+    fabrica: Callable[[], Awaitable[None]],
+    nombre: str,
+    log: logging.Logger,
+    backoff_inicial: float,
+    backoff_maximo: float,
+) -> None:
+    """Reejecuta ``fabrica()`` indefinidamente con espera exponencial."""
+    espera = backoff_inicial
+    estado = _estado_consumidores.setdefault(
+        nombre, {"corriendo": False, "reinicios": 0, "ultimo_error": None}
+    )
+    while True:
+        try:
+            estado["corriendo"] = True
+            await fabrica()
+            # Un consumidor no debe terminar por su cuenta: si vuelve, es un
+            # defecto. Se reinicia igualmente y se dice en voz alta.
+            estado["ultimo_error"] = "terminó por su cuenta"
+            log.error("El consumidor %s terminó por su cuenta; se reinicia", nombre)
+        except asyncio.CancelledError:
+            estado["corriendo"] = False
+            log.info("Consumidor %s cancelado; cierre limpio", nombre)
+            raise
+        except Exception as exc:
+            estado["ultimo_error"] = f"{type(exc).__name__}: {exc}"
+            log.exception("El consumidor %s murió; reintento en %.0fs", nombre, espera)
+        estado["corriendo"] = False
+        estado["reinicios"] += 1
+        await asyncio.sleep(espera)
+        espera = min(espera * 2, backoff_maximo)
+
+
+def spawn_supervised(
+    fabrica: Callable[[], Awaitable[None]],
+    *,
+    name: str,
+    logger: logging.Logger | None = None,
+    backoff_inicial: float = SUPERVISOR_BACKOFF_INICIAL,
+    backoff_maximo: float = SUPERVISOR_BACKOFF_MAXIMO,
+) -> asyncio.Task:
+    """Lanza un consumidor bajo supervisión, en vez de con `create_task` a pelo.
+
+    **El problema.** Los cuatro consumidores del sistema se lanzaban así::
+
+        consumer_task = asyncio.create_task(document_consumer.run())
+
+    Ningún `done_callback`, ningún supervisor. Y `run()` llama a `ensure_group`
+    **antes** de entrar en su bucle, fuera de todo `try`: si Redis no está
+    disponible en ese instante —el arranque en frío del despliegue, donde el
+    contenedor de Redis puede tardar más que el del servicio, o un reinicio
+    posterior— la excepción sale de `run()` y **mata la tarea**. El proceso sigue
+    vivo, la API sigue respondiendo, el `/health` sigue en 200 y **nadie consume
+    nada**. asyncio solo emite «Task exception was never retrieved» cuando el
+    recolector de basura llega a la tarea, que puede ser mucho después o nunca.
+
+    Lo que se pierde en cada caso no es genérico: en workflow, la distribución
+    automática de la correspondencia entrante —los radicados se quedan en la
+    bandeja de quien radicó, sin repartir—; en notification, los correos que
+    nunca salen; en signature, el sellado; en knowledge, la ingesta que deja el
+    índice semántico congelado en el pasado. Todo en silencio y sin que ningún
+    reintento lo recupere, porque el consumidor ya no existe.
+
+    **La corrección.** El supervisor reejecuta la corrutina completa —no el
+    cuerpo del bucle—, de modo que `ensure_group` se vuelve a ejecutar en cada
+    reinicio: tras un parpadeo de Redis el grupo se restablece solo. La espera
+    crece exponencialmente hasta un minuto para no martillear un Redis caído, y
+    cada muerte se registra con `logger.exception`, que es lo que convierte un
+    fallo mudo en uno visible.
+
+    La cancelación (apagado del `lifespan`) se propaga sin reintentar: es la
+    única salida legítima del bucle.
+    """
+    log = logger or logging.getLogger(__name__)
+    return asyncio.create_task(
+        _supervisar(fabrica, name, log, backoff_inicial, backoff_maximo),
+        name=f"supervisor:{name}",
+    )
 
 
 # ---------------------------------------------------------------------------

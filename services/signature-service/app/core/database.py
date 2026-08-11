@@ -16,6 +16,8 @@ from contextlib import asynccontextmanager
 import asyncpg
 from fastapi import HTTPException, Request, status
 
+from app.core.config import settings
+
 _pool: asyncpg.Pool | None = None
 
 # Slug length bound: "tenant_" (7) + slug (≤ 55) = 62 ≤ 63 bytes (PG identifier limit).
@@ -24,9 +26,23 @@ _pool: asyncpg.Pool | None = None
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
 
 
-async def create_pool(dsn: str) -> asyncpg.Pool:
+async def create_pool(
+    dsn: str, min_size: int | None = None, max_size: int | None = None
+) -> asyncpg.Pool:
+    """Crea el pool del servicio.
+
+    Los tamaños y el tope por consulta vienen de la configuración (ver
+    `db_pool_max_size` en `app/core/config.py` y la aritmética del
+    presupuesto en `infra/docker-compose.prod.yml`). Los argumentos siguen
+    aceptándose para que los tests fijen un tamaño propio.
+    """
     global _pool
-    _pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
+    _pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=min_size if min_size is not None else settings.db_pool_min_size,
+        max_size=max_size if max_size is not None else settings.db_pool_max_size,
+        command_timeout=settings.db_command_timeout,
+    )
     return _pool
 
 

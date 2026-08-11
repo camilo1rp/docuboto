@@ -7,28 +7,62 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-import asyncpg
-from fastapi import APIRouter, Depends
+"""Sondas de salud de workflow-service.
 
-from app.core.database import get_db_conn
-from app.schemas.workflow import HealthResponse
+`/health` comprobaba la base de datos y era, a la vez, el `healthcheck` del
+contenedor: tomaba una conexión del pool **en cada sondeo** (cada 15 segundos)
+para preguntar `SELECT 1`, y metía una dependencia externa en la sonda que
+gobierna los reinicios. Se reparte en dos, como en el resto del sistema — ver
+`orpycamcp_common.health` para el criterio completo.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from orpycamcp_common import events
+from orpycamcp_common import health as health_common
+
+from app.core.database import get_pool
+from app.core.redis_client import get_redis
 
 router = APIRouter(tags=["health"])
 
+_SERVICE = "workflow-service"
+_CONSUMIDOR = "workflow"
 
-@router.get(
-    "/health",
-    response_model=HealthResponse,
-    summary="Service health check",
-)
-async def health(
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> HealthResponse:
-    db_status = "ok"
-    try:
+
+@router.get("/health", summary="Vivacidad — ¿responde el proceso?")
+async def health() -> dict[str, str]:
+    """Sin dependencias, a propósito: gobierna los reinicios del contenedor."""
+    return health_common.liveness(_SERVICE)
+
+
+async def _ping_db() -> None:
+    async with get_pool().acquire() as conn:
         await conn.fetchval("SELECT 1")
-    except Exception:
-        db_status = "error"
 
-    overall = "ok" if db_status == "ok" else "degraded"
-    return HealthResponse(status=overall, database=db_status)
+
+async def _ping_redis() -> None:
+    await get_redis().ping()
+
+
+@router.get("/health/ready", summary="Disponibilidad — ¿puede atender tráfico ahora?")
+async def ready() -> JSONResponse:
+    checks = {
+        "database": await health_common.check("database", _ping_db),
+        "redis": await health_common.check("redis", _ping_redis),
+    }
+
+    # El consumidor de distribución automática se informa pero NO decide el 503:
+    # el servicio atiende peticiones mientras reintenta. Que APAREZCA aquí es lo
+    # que hace visible un consumidor muerto — el fallo mudo que este bloque cierra.
+    estado = events.consumer_status().get(_CONSUMIDOR)
+    if estado is not None:
+        checks["consumer"] = "ok" if estado["corriendo"] else "reiniciando"
+
+    listo = checks["database"] == "ok" and checks["redis"] == "ok"
+    return JSONResponse(
+        status_code=200 if listo else 503,
+        content={"status": "ready" if listo else "not_ready", "checks": checks},
+    )

@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from orpycamcp_common import events
 
 from app.core.config import settings
 from app.core.database import close_pool, init_pool
@@ -21,12 +23,16 @@ from app.core.redis_client import close_redis, init_redis
 from app.routers import admin_deadletter, health, notifications, webhooks
 from app.workers import stream_worker
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_pool(settings.database_url_asyncpg)
     await init_redis(settings.redis_url)
-    worker_task = asyncio.create_task(stream_worker.run())
+    worker_task = events.spawn_supervised(
+        stream_worker.run, name="notification", logger=logger
+    )
     yield
     worker_task.cancel()
     try:

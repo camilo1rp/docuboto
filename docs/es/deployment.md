@@ -263,6 +263,44 @@ docker compose exec minio mc ls minio
 docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 ```
 
+#### Las dos sondas: `/health` y `/health/ready`
+
+Cada servicio expone **dos** rutas, y no son intercambiables:
+
+| Ruta | Pregunta | Comprueba | Quién la consulta |
+|---|---|---|---|
+| `/health` | ¿Responde el proceso? | Nada | El `healthcheck` del contenedor |
+| `/health/ready` | ¿Puede atender tráfico **ahora**? | Base de datos, Redis, SMTP, consumidor de eventos | El balanceador / proxy reverso |
+
+`/health` **no depende de nada a propósito**. Reiniciar un servicio porque
+Postgres está caído no arregla Postgres: tira el trabajo en vuelo y suma una
+tormenta de reinicios a un incidente en curso. `/health/ready` devuelve **503**
+cuando el servicio no puede trabajar, que es la señal para que el balanceador
+deje de mandarle peticiones **sin reiniciarlo**.
+
+Configure el proxy reverso para sacar del reparto a un servicio cuyo
+`/health/ready` responda 503; deje los reinicios a `/health`.
+
+```bash
+# Diagnóstico agregado del sistema (gateway + sus diez servicios)
+curl -s https://sudominio.gov.co/health/ready | jq
+
+# Estado del consumidor de eventos de un servicio concreto
+docker compose exec workflow-service \
+  python -c "import urllib.request,json; print(json.load(urllib.request.urlopen('http://localhost:8006/health/ready')))"
+```
+
+En `checks.consumer`, el valor `reiniciando` significa que el consumidor de
+eventos murió y está reintentando: el servicio atiende peticiones, pero lo que
+ese consumidor hace —repartir la correspondencia, enviar correos, sellar firmas,
+alimentar el buscador— **no está ocurriendo**. Es motivo de revisión aunque el
+servicio figure disponible.
+
+Las sondas informan el estado con una palabra (`ok`, `error`, `unreachable`) y
+nunca el detalle del fallo: son alcanzables sin autenticar y el texto de una
+excepción de red incluye nombres y puertos internos. El motivo real está en el
+log del servicio.
+
 ---
 
 ## Clustering y escalabilidad

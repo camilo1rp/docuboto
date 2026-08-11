@@ -14,13 +14,15 @@ Fuente única de verdad para lógica transversal delicada (ADR-010):
 - ``audit``  — escritura en ``public.audit_log`` con cadena de hash por tenant
                (ADR-008). Único punto de escritura de auditoría.
 - ``events`` — sobre canónico de eventos Redis Streams + publicación/consumo
-               idempotente (00-contrato-eventos.md).
+               idempotente (00-contrato-eventos.md), y la supervisión de los
+               consumidores (``spawn_supervised``).
+- ``health`` — separación entre sonda de vivacidad y sonda de disponibilidad.
 
 Se instala en cada imagen Docker vía ``pip install /shared`` (no se publica a
 ningún registry; se versiona con el monorepo).
 """
 
-from orpycamcp_common import audit, events
+from orpycamcp_common import audit, events, health
 
 __version__ = "0.1.0"
-__all__ = ["audit", "events", "__version__"]
+__all__ = ["audit", "events", "health", "__version__"]

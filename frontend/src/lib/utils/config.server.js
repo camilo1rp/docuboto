@@ -51,6 +51,14 @@ const INTERNAL_KC_BASE = env.INTERNAL_KEYCLOAK_URL ?? "http://keycloak:8080";
 const KC_OIDC = `${INTERNAL_KC_BASE}/realms/${REALM}/protocol/openid-connect`;
 
 /**
+ * Base interna de Keycloak, expuesta para que `hooks.server.js` sepa a qué URL
+ * aplicar el tiempo límite de respuesta (ver `$lib/server/fetchTimeout.js`). Un
+ * Keycloak que acepta la conexión y no contesta cuelga el login y el refresh
+ * igual que un gateway mudo cuelga el resto.
+ */
+export const KEYCLOAK_INTERNAL_BASE = INTERNAL_KC_BASE;
+
+/**
  * URL del Token Endpoint de Keycloak para intercambio de código y refresh
  * (server-side only — back-channel, nunca expuesta al navegador).
  */

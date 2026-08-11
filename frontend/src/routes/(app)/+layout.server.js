@@ -79,6 +79,18 @@ export async function load({ cookies, url, fetch }) {
 
   // --- Cargar permisos granulares desde /auth/me ---
   // Se hace con el access_token de la cookie; SvelteKit pasa el fetch del servidor.
+  //
+  // Si esta llamada falla, la sesión sigue en pie pero SIN permisos: el menú
+  // queda vacío y las acciones desaparecen de las pantallas, porque toda la UI
+  // por rol se calcula a partir de `permissions`. Antes eso ocurría en
+  // silencio, y desde el otro lado de la pantalla es indistinguible de «me
+  // quitaron los permisos»: el funcionario llama al administrador, que ve sus
+  // permisos intactos en `/admin/usuarios` y no encuentra nada que arreglar.
+  //
+  // Degradar es correcto —el RBAC de verdad está en el backend y nada se
+  // franquea—, pero hay que DECIRLO. `permisosDegradados` es lo que permite al
+  // layout mostrar el aviso.
+  user.permisosDegradados = false;
   try {
     const meData = await fetch(`${API_V1}/auth/me`, {
       headers: {
@@ -99,13 +111,17 @@ export async function load({ cookies, url, fetch }) {
       // Si el backend enriquece el nombre/email, actualizar
       if (me.name) user.name = me.name;
       if (me.email) user.email = me.email;
+    } else {
+      // 401/403/503 del gateway: se degrada, pero se declara.
+      user.permissions = [];
+      user.permission_levels = {};
+      user.permisosDegradados = true;
     }
-    // Si /auth/me falla (503, etc.), continuamos con permisos vacíos
-    // y el RBAC del backend protegerá igualmente las acciones.
   } catch {
     // Error de red hacia el gateway — se degrada sin permisos granulares
     user.permissions = [];
     user.permission_levels = {};
+    user.permisosDegradados = true;
   }
 
   // --- Contexto de dependencia activa + catálogo de dependencias ---

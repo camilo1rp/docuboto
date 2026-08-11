@@ -56,6 +56,10 @@ PUBLIC_PATHS = {
     "/api/v1/docs",
     "/api/v1/redoc",
     "/health",
+    # Disponibilidad: la consulta el balanceador, que no tiene credenciales.
+    # No publica detalle interno — el estado de cada servicio es una palabra y
+    # el motivo del fallo solo va al log (ver `routers/health.py`).
+    "/health/ready",
     "/docs",
     "/redoc",
     "/openapi.json",

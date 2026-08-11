@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -433,15 +433,78 @@ async def test_process_document_event_ignores_other_types() -> None:
 
 # --- health -----------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_health_check(client: AsyncClient) -> None:
+async def test_health_es_vivacidad_y_no_abre_conexiones(client: AsyncClient) -> None:
+    """`/health` es el `healthcheck` del contenedor y no debe tocar nada.
+
+    Abría una conexión SMTP **completa en cada sondeo** —cada 15 segundos contra
+    el servidor de correo de la institución— y devolvía 503 si Redis fallaba,
+    con lo que el orquestador reiniciaba el servicio: no arregla Redis y sí
+    pierde el trabajo en vuelo.
+    """
+    with patch("app.routers.health.aiosmtplib.SMTP") as smtp:
+        response = await client.get("/health")
+        assert smtp.call_count == 0, "la vivacidad no abre SMTP"
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "notification-service"}
+
+
+
+def _pool_falso():
+    """Pool cuyo `acquire()` entrega una conexión que responde al `SELECT 1`."""
+    conn = AsyncMock()
+    conn.fetchval.return_value = 1
+    pool = MagicMock()
+    pool.acquire.return_value = AsyncMock(
+        __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)
+    )
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_ready_comprueba_las_dependencias(client: AsyncClient) -> None:
     smtp_instance = AsyncMock()
     smtp_instance.connect = AsyncMock()
     smtp_instance.quit = AsyncMock()
 
-    with patch("app.routers.health.aiosmtplib.SMTP", return_value=smtp_instance):
-        response = await client.get("/health")
+    with (
+        patch("app.routers.health.aiosmtplib.SMTP", return_value=smtp_instance),
+        patch("app.routers.health.get_pool", return_value=_pool_falso()),
+    ):
+        response = await client.get("/health/ready")
 
     assert response.status_code == 200
     data = response.json()
     assert data["checks"]["redis"] == "ok"
     assert data["checks"]["smtp"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_ready_con_smtp_caido_sigue_disponible(client: AsyncClient) -> None:
+    """SMTP se informa pero NO decide el 503.
+
+    Un servidor de correo caído no impide encolar notificaciones; sacar el
+    servicio del balanceador por eso apagaría también el histórico y los
+    webhooks, que sí funcionan.
+    """
+    with (
+        patch("app.routers.health.aiosmtplib.SMTP", side_effect=OSError("sin ruta")),
+        patch("app.routers.health.get_pool", return_value=_pool_falso()),
+    ):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["smtp"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_ready_no_publica_el_servidor_de_correo(client: AsyncClient) -> None:
+    """Se reportaba `f"error: {exc}"`, con el nombre y el puerto dentro."""
+    with patch(
+        "app.routers.health.aiosmtplib.SMTP",
+        side_effect=OSError("connect failed: smtp.entidad.gov.co:587"),
+    ):
+        cuerpo = (await client.get("/health/ready")).text
+
+    assert "smtp.entidad.gov.co" not in cuerpo
+    assert "587" not in cuerpo

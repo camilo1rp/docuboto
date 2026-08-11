@@ -127,3 +127,71 @@ describe("AppLayout — búsqueda global del topbar", () => {
     );
   });
 });
+
+describe("AppLayout — cierre de sesión", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetFavorites();
+    initSession(sessionWith());
+  });
+
+  afterEach(() => {
+    clearSession();
+  });
+
+  it("el control de cerrar sesión es un botón de un formulario POST, no un enlace", () => {
+    // Era `<a href="/logout">` y el efecto vivía en el `load` de esa ruta. Con
+    // `data-sveltekit-preload-data="hover"` en app.html, SvelteKit precarga el
+    // `load` al pasar el ratón por encima: rozar el icono cerraba la sesión.
+    render(AppLayout);
+
+    const boton = screen.getByRole("button", { name: "Cerrar sesión" });
+    const form = boton.closest("form");
+
+    expect(form).not.toBeNull();
+    expect(form.getAttribute("method").toUpperCase()).toBe("POST");
+    expect(form.getAttribute("action")).toBe("/logout");
+  });
+
+  it("no queda ningún enlace apuntando a /logout", () => {
+    // Aserción de AUSENCIA: es la que se rompe si alguien reintroduce el `<a>`.
+    const { container } = render(AppLayout);
+
+    expect(container.querySelector('a[href="/logout"]')).toBeNull();
+  });
+});
+
+describe("AppLayout — aviso de permisos degradados", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetFavorites();
+  });
+
+  afterEach(() => {
+    clearSession();
+  });
+
+  it("no muestra nada cuando los permisos cargaron bien", () => {
+    initSession(sessionWith());
+    render(AppLayout);
+
+    expect(screen.queryByText(/No pudimos cargar tus permisos/)).toBeNull();
+  });
+
+  it("avisa cuando /auth/me no respondió, en vez de dejar el menú vacío en silencio", () => {
+    // Sin el aviso, el menú vacío es indistinguible de «me revocaron los
+    // permisos»: el funcionario llama al administrador, que ve sus permisos
+    // intactos y no encuentra nada que arreglar.
+    initSession({ ...sessionWith(), permisosDegradados: true });
+    render(AppLayout);
+
+    expect(screen.getByText(/No pudimos cargar tus permisos/)).toBeInTheDocument();
+  });
+
+  it("el aviso es un role=status: los lectores de pantalla lo anuncian sin robar el foco", () => {
+    initSession({ ...sessionWith(), permisosDegradados: true });
+    render(AppLayout);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/No pudimos cargar tus permisos/);
+  });
+});

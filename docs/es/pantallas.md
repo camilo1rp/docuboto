@@ -26,8 +26,9 @@ clearance (RF-SEG-08) por request.
 |---|---|
 | `(public)/login` | Inicia el flujo OAuth2 Authorization Code + PKCE contra Keycloak. Composición **split**: en móvil solo la tarjeta de ingreso; desde 960px aparece el panel de marca. Si Keycloak devuelve `?error=`, muestra un mensaje mapeado desde una tabla cerrada en español (nunca el string crudo del IdP) con enlace «Reintentar» — evita el bucle de redirección |
 | `(public)/login/callback` | Recibe el código de autorización, lo intercambia por tokens (server-side) y establece la sesión |
-| `(public)/logout` | Cierra sesión local y en Keycloak |
+| `(public)/logout` | Cierra sesión local y en Keycloak. **Solo por POST**: la ruta no exporta `load`. Antes el cierre ocurría en el `load` —es decir, en un GET— y el topbar lo enlazaba con un `<a>`; con `data-sveltekit-preload-data="hover"` activo, SvelteKit ejecuta el `load` al pasar el ratón por encima, así que **rozar el icono cerraba la sesión**. Un GET con efectos lo dispara además cualquier prefetch, escáner o `<img src>` remoto. La página que ve un GET es una **confirmación** con un `<form method="POST">` que funciona sin JavaScript; el POST cruza la comprobación de origen de SvelteKit (403 sin `Origin`) |
 | `/403` | Página de acceso denegado cuando el usuario no tiene el permiso requerido |
+| `+error.svelte` (raíz) | Página de error de toda la aplicación — no existía: un 404 o un fallo del SSR caían en la pantalla por defecto de SvelteKit, sin marca ni salida. Texto propio para 404, 403 y 503; para el resto usa el mensaje que fijó `handleError`, que **ya no incluye el mensaje crudo del error** (devolvía cosas como `connect ECONNREFUSED 172.18.0.7:8080`). Publica una **referencia de correlación** de 8 caracteres que también queda en el log del servidor: es el único dato técnico que se muestra, y no describe el fallo. Deliberadamente autónoma (no usa `AppLayout`): si el error es que el layout no cargó, un error que dependa del layout no se puede renderizar |
 
 ## Pantallas operativas (`(app)/`)
 
