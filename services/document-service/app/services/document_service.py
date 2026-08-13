@@ -947,6 +947,8 @@ def _to_response(radicado: Radicado) -> DocumentResponse:
         updated_at=radicado.updated_at,
         due_date=radicado.due_date,
         metadata=radicado.metadata,
+        publicable=radicado.publicable,
+        publicado_at=radicado.publicado_at,
         anexos=[
             AnexoResponse(
                 id=a.id,

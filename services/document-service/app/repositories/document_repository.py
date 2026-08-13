@@ -22,6 +22,7 @@ import json
 import re
 import uuid
 from datetime import UTC, date, datetime
+from typing import Any
 
 import asyncpg
 
@@ -115,7 +116,8 @@ class DocumentRepository:
                 origin_dept_code, dest_dept_code,
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
-                metadata, metadata_template_id
+                metadata, metadata_template_id,
+                publicable, publicado_at
             """,
             tracking_number,
             payload.doc_type,
@@ -185,7 +187,8 @@ class DocumentRepository:
                 origin_dept_code, dest_dept_code,
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
-                metadata, metadata_template_id
+                metadata, metadata_template_id,
+                publicable, publicado_at
             FROM radicados
             WHERE id = $1 AND nivel_seguridad <= $2
             """,
@@ -267,7 +270,8 @@ class DocumentRepository:
                 origin_dept_code, dest_dept_code,
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
-                metadata, metadata_template_id
+                metadata, metadata_template_id,
+                publicable, publicado_at
             FROM radicados
             WHERE tracking_number = $1 AND nivel_seguridad <= $2
             """,
@@ -335,7 +339,8 @@ class DocumentRepository:
                 origin_dept_code, dest_dept_code,
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
-                metadata, metadata_template_id
+                metadata, metadata_template_id,
+                publicable, publicado_at
             FROM radicados
             {where_clause}
             ORDER BY registered_at DESC
@@ -422,7 +427,8 @@ class DocumentRepository:
                 origin_dept_code, dest_dept_code,
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
-                metadata, metadata_template_id
+                metadata, metadata_template_id,
+                publicable, publicado_at
             """,
             *params,
         )
@@ -752,7 +758,24 @@ def _row_to_radicado(row: asyncpg.Record) -> Radicado:
         due_date=row["due_date"],
         metadata=_json_obj(row["metadata"]),
         metadata_template_id=row["metadata_template_id"],
+        # Acceso tolerante a propósito, y el default es el seguro. La marca de
+        # publicación se podía ESCRIBIR (`set_publicable`) pero no leer: nadie
+        # —ni la interfaz ni un auditor por API— podía responder «¿qué hemos
+        # publicado?», que es justo lo que un esquema de publicación (Ley 1712
+        # art. 12) tiene que poder acreditar. Si una consulta futura olvidara
+        # las columnas, se ve «no publicado», nunca lo contrario; y la cosecha
+        # real no depende de este mapeo: el chokepoint `_PUBLIC` de
+        # `oai_repository` lee la columna en su propio SQL.
+        publicable=bool(_col(row, "publicable", False)),
+        publicado_at=_col(row, "publicado_at", None),
     )
+
+
+def _col(row: asyncpg.Record, name: str, default: Any) -> Any:
+    try:
+        return row[name]
+    except (KeyError, IndexError):
+        return default
 
 
 def _json_obj(raw: object) -> dict:

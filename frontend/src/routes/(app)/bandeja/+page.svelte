@@ -34,7 +34,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
   // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
@@ -50,6 +50,7 @@
   import WorkflowBoard from "$lib/components/workflow/WorkflowBoard.svelte";
   import AsignarModal from "$lib/components/workflow/AsignarModal.svelte";
   import DisposicionRadicadoDrawer from "$lib/components/features/disposicion/DisposicionRadicadoDrawer.svelte";
+  import PublicacionRadicadoDrawer from "$lib/components/features/publicacion/PublicacionRadicadoDrawer.svelte";
   import { NIVEL_OPTIONS, getNivelChip } from "$lib/utils/nivelSeguridad.js";
   import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
 
@@ -824,6 +825,27 @@
     tick().then(() => tituloEl?.focus());
   }
 
+  let publicacionOpen = false;
+  /** @type {{id: string; tracking_number: string} | null} */
+  let publicacionRadicado = null;
+
+  /**
+   * Abre el drawer del acto de publicación (Ley 1712 art. 12) para el radicado
+   * del drawer de detalle. Mismo patrón que openDisposicion: cierra el drawer
+   * de detalle ANTES para no apilar focus traps (A11y).
+   */
+  function openPublicacion() {
+    if (!selectedDoc) return;
+    publicacionRadicado = { id: selectedDoc.id, tracking_number: selectedDoc.tracking_number };
+    drawerOpen = false;
+    publicacionOpen = true;
+  }
+
+  function cerrarPublicacion() {
+    publicacionOpen = false;
+    tick().then(() => tituloEl?.focus());
+  }
+
   /**
    * Envía la reclasificación al proxy SSR.
    * POST /bandeja/api/[id]/security-level → PATCH /api/v1/documents/{id}/security-level.
@@ -954,6 +976,12 @@
   $: canDevolverInDrawer =
     canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
   $: canReclasificar = $permissions.includes("PERM_RECLASIFICAR");
+  // Acto de publicación (Ley 1712 art. 12): el backend exige PERM_RECLASIFICAR
+  // con nivel de ESCRITURA (min_crud=3) — publicar y clasificar son las dos
+  // caras de la misma competencia sobre el régimen de acceso. Se refleja el
+  // umbral real: ofrecer el botón con permiso de lectura produciría un 403 al
+  // pulsarlo, y pedir de más lo escondería a quien sí puede.
+  $: canPublicar = ($permissionLevels["PERM_RECLASIFICAR"] ?? 0) >= 3;
   // Disposición final (RF-MET-08, Fase 4 cierre desfase API↔UI): mismo permiso
   // que gatea GET/PATCH /documents/{id}/disposition en el backend.
   $: canDisposicion = $permissions.includes("USUA_PERM_EXPEDIENTE");
@@ -1581,6 +1609,12 @@
         Disposición final
       </Button>
     {/if}
+    {#if selectedDoc && canPublicar}
+      <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openPublicacion}>
+        <i class="fas fa-bullhorn" aria-hidden="true"></i>
+        Publicación
+      </Button>
+    {/if}
     <Button variant="ghost" size="sm" on:click={closeDrawer}>Cerrar</Button>
   </svelte:fragment>
 </Drawer>
@@ -1592,6 +1626,15 @@
   open={disposicionOpen}
   radicado={disposicionRadicado}
   on:close={cerrarDisposicion}
+/>
+
+<!-- =========================================================================
+  Drawer del acto de publicación de oficio (Ley 1712/2014 art. 12)
+========================================================================= -->
+<PublicacionRadicadoDrawer
+  open={publicacionOpen}
+  radicado={publicacionRadicado}
+  on:close={cerrarPublicacion}
 />
 
 <!-- =========================================================================

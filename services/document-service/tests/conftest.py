@@ -111,6 +111,8 @@ def make_radicado_record(
     due_date: date | None = None,
     metadata: dict | None = None,
     metadata_template_id: uuid.UUID | None = None,
+    publicable: bool = False,
+    publicado_at: datetime | None = None,
 ) -> dict:
     now = datetime.now(tz=UTC)
     return {
@@ -138,6 +140,10 @@ def make_radicado_record(
         "due_date": due_date,
         "metadata": metadata if metadata is not None else {},
         "metadata_template_id": metadata_template_id,
+        # Esquema de publicación (Ley 1712 art. 12). El default es el real: un
+        # radicado nace NO publicado, publicar es un acto aparte.
+        "publicable": publicable,
+        "publicado_at": publicado_at,
     }
 
 

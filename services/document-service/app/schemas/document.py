@@ -119,6 +119,12 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
     due_date: date | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Estado del acto de publicación (Ley 1712/2014 art. 12). Aditivo: el acto
+    # se podía ejecutar (`POST /{id}/publicacion`) pero su resultado no era
+    # legible por ninguna vía, así que la entidad no podía acreditar qué había
+    # publicado ni la interfaz ofrecer el acto sobre un estado conocido.
+    publicable: bool = False
+    publicado_at: datetime | None = None
     anexos: list[AnexoResponse] = []
 
 

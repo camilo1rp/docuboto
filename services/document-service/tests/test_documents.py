@@ -1186,3 +1186,97 @@ async def test_publicar_exige_la_competencia_sobre_el_regimen_de_acceso(
     rbac = [c for c in mock_conn.fetchval.call_args_list if "auth_users" in str(c[0][0])]
     assert rbac[0][0][2] == "PERM_RECLASIFICAR"
     assert rbac[0][0][3] == 3
+
+
+# ---------------------------------------------------------------------------
+# Lectura del estado de publicación (Ley 1712/2014 art. 12)
+#
+# El acto de publicación se podía EJECUTAR pero su resultado no era legible por
+# ninguna vía: `DocumentResponse` no exponía `publicable`, así que ni la
+# interfaz podía ofrecer el acto sobre un estado conocido ni la entidad
+# acreditar qué había publicado. Un esquema de publicación que no se puede
+# consultar no es un esquema, es una escritura ciega.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_el_detalle_expone_el_estado_de_publicacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    publicado = datetime(2026, 8, 12, 10, 30, tzinfo=UTC)
+    mock_conn.fetchrow.return_value = make_radicado_record(
+        doc_id=doc_id, publicable=True, publicado_at=publicado
+    )
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(f"/api/v1/documents/{doc_id}", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["publicable"] is True
+    assert body["publicado_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_el_detalle_pide_las_columnas_de_publicacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Contrato del SQL: con mocks, el `SELECT` es lo único observable.
+
+    Sin esta comprobación el test anterior seguiría verde tras quitar las
+    columnas de la consulta — el valor lo pondría el mock, no la base.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = make_radicado_record()
+    mock_conn.fetch.return_value = []
+
+    await client.get(f"/api/v1/documents/{uuid.uuid4()}", headers=TENANT_HEADERS)
+
+    consulta = next(
+        str(c[0][0]) for c in mock_conn.fetchrow.call_args_list if "FROM radicados" in str(c[0][0])
+    )
+    assert "publicable" in consulta
+    assert "publicado_at" in consulta
+
+
+@pytest.mark.asyncio
+async def test_el_listado_expone_el_estado_de_publicacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetch.return_value = [make_radicado_record(publicable=True)]
+
+    resp = await client.get("/api/v1/documents?page=1&size=20", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()[0]["publicable"] is True
+    consulta = next(
+        str(c[0][0]) for c in mock_conn.fetch.call_args_list if "FROM radicados" in str(c[0][0])
+    )
+    assert "publicable" in consulta
+
+
+@pytest.mark.asyncio
+async def test_una_fila_sin_la_columna_se_lee_como_no_publicada(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """La polaridad del default importa, y por eso se fija en un test.
+
+    El mapeo tolera que una consulta futura no traiga las columnas. El único
+    default admisible es «no publicado»: al revés, una consulta incompleta
+    haría *parecer* publicado material que la entidad nunca decidió difundir.
+    """
+    client, mock_conn = client_with_conn
+    fila = make_radicado_record()
+    del fila["publicable"]
+    del fila["publicado_at"]
+    mock_conn.fetchrow.return_value = fila
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(f"/api/v1/documents/{uuid.uuid4()}", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["publicable"] is False

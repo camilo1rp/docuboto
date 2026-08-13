@@ -377,6 +377,10 @@ El recorte público exige las **tres** condiciones a la vez (`publicable AND niv
 
 > **Compatibilidad**: los radicados existentes quedan **no publicables** tras la migración `019_radicado_publicable.sql`. Una institución que use los canales de cosecha debe publicar expresamente lo que quiera difundir.
 
+**Lectura del estado.** `publicable` y `publicado_at` viajan en `DocumentResponse` — es decir, en `GET /documents/{id}` y en el listado. Añadirlos no fue cosmético: el acto se podía **ejecutar pero no consultar**, así que ni la interfaz podía ofrecerlo sobre un estado conocido ni la entidad acreditar qué había publicado. Un esquema de publicación que no se puede leer no es un esquema, es una escritura ciega.
+
+**Pantalla**: el acto se ejecuta desde el drawer «Publicación» de `/bandeja` (ver `docs/es/pantallas.md`), que ofrece siempre el acto contrario al estado vigente y no ofrece formulario alguno sobre un radicado reservado o anulado — el `404` neutro del backend es correcto, pero dejar que alguien redacte un fundamento para recibir después «no existe» sería una pantalla que engaña.
+
 ### `GET /api/v1/documents/{id}`
 Obtener por UUID. Incluye lista de anexos. **Control de acceso (RF-SEG-08):** si el radicado supera el *clearance* del llamante, responde `404` (no revela su existencia).
 

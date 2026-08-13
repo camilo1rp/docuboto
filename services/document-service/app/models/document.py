@@ -53,4 +53,9 @@ class Radicado:
     due_date: date | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     metadata_template_id: uuid.UUID | None = None
+    # Esquema de publicación (Ley 1712/2014 art. 12). `publicable` NO se deduce
+    # de `nivel_seguridad`: un radicado de nivel público que nadie ha decidido
+    # publicar sigue sin publicarse.
+    publicable: bool = False
+    publicado_at: datetime | None = None
     anexos: list[Anexo] = field(default_factory=list)

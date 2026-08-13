@@ -372,6 +372,10 @@ The public cut requires **all three** conditions at once (`publicable AND nivel_
 
 > **Compatibility**: existing radicados become **non-publishable** after migration `019_radicado_publicable.sql`. An institution using the harvesting channels must explicitly publish whatever it wants to disseminate.
 
+**Reading the state.** `publicable` and `publicado_at` are carried in `DocumentResponse` — that is, in `GET /documents/{id}` and in the listing. Adding them was not cosmetic: the act could be **executed but not consulted**, so neither could the UI offer it over a known state nor could the entity attest to what it had published. A publication scheme that cannot be read is not a scheme, it is a blind write.
+
+**Screen**: the act is performed from the "Publicación" drawer in `/bandeja`, which always offers the act opposite to the current state and offers no form at all over a reserved or annulled radicado — the backend's neutral `404` is correct, but letting someone draft a justification only to receive "does not exist" afterwards would be a screen that deceives.
+
 ### `GET /api/v1/documents/{id}`
 Get by UUID. Includes the list of anexos (attachments). **Access control (RF-SEG-08):** if the radicado exceeds the caller's clearance, it answers `404` (it does not reveal its existence).
 
