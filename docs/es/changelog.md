@@ -4,11 +4,25 @@ Todos los cambios notables se documentan aquí.
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
+> **Este es el registro completo**, entrada a entrada, en la lengua de trabajo del
+> proyecto. La versión en inglés (`docs/en/changelog.md`) **no es una traducción**:
+> encabeza con un resumen de qué es la línea base v0.01 —lo que necesita un
+> evaluador externo— y recoge después una selección de cambios. La decisión es
+> deliberada: mantener 300+ entradas de proceso interno duplicadas en dos idiomas
+> fue lo que produjo el desfase que arrastrábamos, y perseguirlo cada bloque
+> costaba más de lo que aportaba.
+
 ---
 
 ## [Unreleased]
 
 ### Añadido
+
+- `docs(en)`: **La documentación en inglés deja de ir por detrás: ahora dice qué es la versión 0.01**
+  El registro de cambios en inglés iba **135 entradas** por detrás del español, todas correspondientes a una misma versión que todavía no se ha publicado. Al medirlo quedó claro que el problema no era de traducción sino de propósito: quien llega al proyecto desde fuera y lee en inglés no necesita ciento treinta y cinco anotaciones internas de «se corrigió tal hallazgo», necesita saber qué hace el sistema y qué no hace.
+  La versión inglesa empieza ahora por un resumen de la línea base organizado por áreas —radicación y expedientes, retención, índice electrónico y firma, preservación, seguridad, flujos, interoperabilidad, inteligencia artificial, interfaz y operación— y declara los límites donde corresponde: la firma **no está acreditada**, el repositorio de preservación **tampoco**, y el conector con el operador postal es todavía un simulacro. Cada fichero dice en su cabecera qué es, para que nadie vuelva a medir un desfase contra una equivalencia que ya no se persigue.
+  *Por qué*: mantener más de trescientas anotaciones internas duplicadas en dos idiomas era la causa del desfase, no su consecuencia.
+  *Impacto*: solo documentación.
 
 - `fix(document,frontend)`: **Se podía dejar de publicar un documento, pero no publicarlo**
   En el cambio anterior se corrigió algo importante: hasta entonces, un radicado se difundía por los canales de consulta pública **solo por no estar clasificado como reservado** — es decir, no haber decidido nada equivalía a haber decidido publicar. La ley pide lo contrario: publicar es un acto de la entidad. Se corrigió, y todos los radicados pasaron a nacer sin publicar.

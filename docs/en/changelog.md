@@ -10,6 +10,88 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Baseline v0.01 — what the system does
+
+> **How to read this file.** OrpycaMCP has not cut a release yet: everything below
+> is one unpublished baseline. The Spanish changelog keeps the entry-by-entry
+> record of how it was built — every audit finding, remediation and increment,
+> in the project's working language. This section states what v0.01 **is**, which
+> is what an evaluator coming from outside needs; the individual entries that
+> follow it cover selected changes and are not a complete log.
+
+**Records management core (E01/E02/E03/E07)** — Registration of incoming, outgoing
+and internal documents with an immutable tracking number, assigned atomically per
+year + type + tenant. Expedientes (case files) with a full lifecycle
+(`open → closed → transferred`), foliation, ZIP export and metadata templates
+validated against a JSON Schema per documentary type. Attachments are SHA-256
+checksummed on upload, deduplicated per tenant, streamed in chunks (never buffered
+whole), and served through document-service so every download passes the clearance
+gate.
+
+**Retention and disposition (E04)** — TRD (retention schedule) and TVD (valuation
+schedule for accumulated fonds) as a single instrument with two discriminators,
+sharing one convalidation circuit: Comité approval, Consejo convalidation, RUSD
+registration, publication and repeal — each with its administrative act recorded,
+immutable once convalidated (enforced by a database trigger, not only by the
+application). Final disposition per radicado and per expediente, with a mandatory
+justification on the destructive path.
+
+**Electronic index and signature (E15/E06/E17)** — Append-only versioned XML index
+(RT-15 profile v4) with a per-document fingerprint and independent verification.
+The index is signed at closure with an institutional XAdES-B/T/LT/LTA signature
+(local CA, timestamp, long-term validation material), and transfer actas carry
+per-user personal signatures whose role is derived from identity, never chosen by
+the client. Personal PKI credentials are enrolled, renewed and revoked in-system,
+with a versioned key-encryption keyring and purge of revoked material.
+**Not accredited**: this is art. 7 electronic signature, not art. 28 — no ONAC
+certificate, no HSM under sole signer control, no accredited TSA.
+
+**Preservation (E10/E12)** — Preservation plan, PREMIS events, AIP packaging
+(BagIt/PREMIS) and real PDF/A validation through veraPDF. WORM protection via
+MinIO Object-Lock in `COMPLIANCE` mode over the signed index and the transfer
+acta, with retention derived from the retention schedule. Primary and secondary
+transfers with fixity re-verification on receipt. **Not accredited**: the
+repository itself is not an accredited preservation repository.
+
+**Security (E08)** — Multi-tenant isolation by PostgreSQL schema, with the
+`search_path` switched per request from JWT claims and MinIO buckets scoped per
+tenant. RBAC plus security clearance (no-read-up) applied in the `WHERE` of every
+query and inside every write — never as a prior check, so authorization and
+mutation are one act. Hash-chained immutable `audit_log`, partitioned monthly and
+hardened per partition. Publication is an explicit, justified and audited act
+(Ley 1712/2014 art. 12): absence of a reservation decision no longer means
+"public".
+
+**Workflow, notifications and search (E05/E16/E09/E19)** — Routing between
+dependencias with assignment, transfer, step completion, transaction execution and
+rollback, plus automatic routing rules. Email and in-app notifications with a
+dead-letter queue and replay. Full-text search embedded in PostgreSQL (no separate
+search service), reports, public lookup by verification code, and IMAP mail
+ingestion.
+
+**Interoperability (E11/E20)** — OAI-PMH harvesting (Dublin Core and EAD 2002 /
+ISAD(G)), CMIS browsing and content retrieval, interoperable export and import of
+radicados preserving the original tracking number with mandatory fixity, signed
+outbound webhooks and an inbound postal-operator callback with per-tenant HMAC.
+Every public channel ships **off** and trims at the source through a single
+chokepoint. **Stub**: the concrete connector for a given postal operator.
+
+**AI (E18/E21)** — An MCP server exposing the gateway's capabilities as tools, a
+conversational assistant, and a knowledge-service doing retrieval-augmented
+generation over pgvector with sovereign embeddings, ACL pre-filtering that fails
+closed, and answers that always carry their citations.
+
+**Frontend (E22)** — SvelteKit application with OAuth2 PKCE login, around 40 screens
+covering the tray, expedientes, signatures, transfers, physical archive, search,
+reports and the entity's own administration. The access token never reaches
+client-side JavaScript: every gateway call goes through SSR.
+
+**Operations** — Production Docker Compose manifest verified against real
+containers, nginx template, backup and restore programs exercised end to end
+(including audit-chain verification after restore), upgrade and rollback
+procedure, CI running lint, unit, real-database and frontend tests across all
+eleven services, and per-request tracing propagated from the edge.
+
 ### Changed
 
 - `refactor(rebrand)`: full rename `orfeomcp` → **`OrpycaMCP`** / **`orpycamcp`** before v0.01 — *Why*: the project is the evolution of Orfeo under the **Orpyca** concept ("Orfeo Pyme Calidad") with AI connectivity via **MCP** (Model Context Protocol) — *Impact*: by-surface convention — **brand** `OrpycaMCP`; **data/infra token** `orpycamcp` (DB `orpycamcp_db`, Keycloak realm `orpycamcp`, buckets `orpycamcp-{slug}-*`, Redis streams `orpycamcp.*`, Python package `orpycamcp_common`, network `orpycamcp-net`, containers `orpycamcp-*`); **repo/images/Compose project** `orpyca-mcp`; **company/web/org** `Orpyca`/`orpyca.com`/GitLab `orpyca`. **Requires recreating volumes**; the repo folder is renamed to `orpyca-mcp` (manual step)
