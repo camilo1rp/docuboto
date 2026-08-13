@@ -71,5 +71,22 @@ export async function load({ cookies, parent, fetch }) {
     tiposError = "No se pudo conectar al servidor de tipos documentales.";
   }
 
-  return { series, seriesError, tipos, tiposError };
+  // Cola de revisión (ADR-025 D4/D6). Se carga aquí, no bajo demanda, porque
+  // su razón de ser es que ALGUIEN la vea: son expedientes ya cerrados que el
+  // backfill marcó y que sin pantalla quedaban marcados para siempre.
+  let revision = [];
+  let revisionError = null;
+  try {
+    const res = await fetch(`${API_V1}/trd/revision-pendiente?size=200`, { headers });
+    if (res.ok) {
+      revision = await res.json().catch(() => []);
+    } else {
+      const body = await res.json().catch(() => ({}));
+      revisionError = body.detail ?? `Error ${res.status}`;
+    }
+  } catch {
+    revisionError = "No se pudo conectar al servidor para consultar la cola de revisión.";
+  }
+
+  return { series, seriesError, tipos, tiposError, revision, revisionError };
 }

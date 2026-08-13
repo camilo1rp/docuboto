@@ -42,6 +42,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
 
   // Circuito de convalidación (ADR-025/ADR-026): mismos estados/chips que
   // /admin/tvd -- componente compartido `InstrumentLifecycleActions`.
@@ -141,7 +142,47 @@
   const TABS = [
     { id: "series", label: "Series TRD/CCD", icon: "fa-folder-tree" },
     { id: "tipos", label: "Tipos documentales", icon: "fa-file-lines" },
+    { id: "revision", label: "Revisión pendiente", icon: "fa-triangle-exclamation" },
   ];
+
+  // Cola de revisión (ADR-025 D4/D6). Expedientes ya cerrados que el backfill
+  // marcó porque el sistema no pudo declarar bajo qué instrumento se cerraron.
+  // Solo UNO de los tres motivos se resuelve desde el sistema (ratificando la
+  // serie migrada); los otros dos no tienen hoy vía automática, y eso se dice
+  // en pantalla en vez de ofrecer un botón que no resolvería nada.
+  $: revision = data.revision ?? [];
+  const MOTIVOS = {
+    cerrado_bajo_serie_migrada: {
+      etiqueta: "Cerrado bajo serie migrada",
+      chip: "pending",
+      queHacer:
+        "Se limpia solo al convalidar (ratificar) esa serie desde la pestaña «Series TRD/CCD».",
+    },
+    cierre_sin_snapshot_de_retencion: {
+      etiqueta: "Cerrado sin copia de la regla de retención",
+      chip: "error",
+      queHacer:
+        "No hay vía automática: no existe regla congelada que recuperar y el sistema no la inventa. " +
+        "Exige decisión archivística sobre el expediente.",
+    },
+    serie_no_resoluble: {
+      etiqueta: "Serie documental no resoluble",
+      chip: "error",
+      queHacer:
+        "No hay vía automática: el expediente apunta a una serie que no existe. " +
+        "Exige decisión archivística sobre el expediente.",
+    },
+  };
+  function motivoInfo(m) {
+    return (
+      MOTIVOS[m] ?? {
+        etiqueta: m ?? "Sin motivo registrado",
+        chip: "neutral",
+        queHacer: "Motivo no reconocido por esta versión de la interfaz.",
+      }
+    );
+  }
+  $: motivosPresentes = [...new Set(revision.map((r) => r.trd_revision_motivo))];
   let activeTab = "series";
 
   function handleTabKeydown(e, tabId) {
@@ -840,9 +881,156 @@
       </svelte:fragment>
     </CatalogCrudPanel>
   </div>
+
+  <!-- ===================================================================
+       Panel: Revisión pendiente (ADR-025 D4/D6)
+       =================================================================== -->
+  <div
+    id="panel-revision"
+    role="tabpanel"
+    aria-labelledby="tab-revision"
+    hidden={activeTab !== "revision"}
+    tabindex="0"
+  >
+    <div class="trd-revision__intro" role="note">
+      <i class="fas fa-circle-info" aria-hidden="true"></i>
+      <p>
+        Expedientes <strong>ya cerrados</strong> sobre los que el sistema no pudo declarar bajo qué instrumento
+        se cerraron. No bloquean nada, pero tampoco se resuelven solos: sin esta lista quedarían marcados
+        indefinidamente sin que nadie lo supiera.
+      </p>
+    </div>
+
+    {#if data.revisionError}
+      <p class="trd-revision__error" role="alert">
+        <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+        {data.revisionError}
+      </p>
+    {:else if revision.length === 0}
+      <EmptyState
+        icon="fas fa-circle-check"
+        title="Ningún expediente pendiente de revisión"
+        description="Nada que revisar en la cola de la TRD."
+      />
+    {:else}
+      <div class="trd-revision__leyenda">
+        {#each motivosPresentes as m (m)}
+          <p class="trd-revision__motivo">
+            <StatusChip status={motivoInfo(m).chip} label={motivoInfo(m).etiqueta} />
+            <span>{motivoInfo(m).queHacer}</span>
+          </p>
+        {/each}
+      </div>
+
+      <div class="trd-revision__tabla">
+        <table>
+          <caption class="is-sr-only">Expedientes pendientes de revisión de TRD</caption>
+          <thead>
+            <tr>
+              <th scope="col">Expediente</th>
+              <th scope="col">Estado</th>
+              <th scope="col">Serie</th>
+              <th scope="col">Instrumento</th>
+              <th scope="col">Motivo</th>
+              <th scope="col">Cerrado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each revision as r (r.id)}
+              <tr>
+                <td>{r.code}</td>
+                <td>{r.status}</td>
+                <td>{r.trd_serie_code ?? "— sin resolver —"}</td>
+                <td>{r.tipo_instrumento ?? "—"}</td>
+                <td>
+                  <StatusChip
+                    status={motivoInfo(r.trd_revision_motivo).chip}
+                    label={motivoInfo(r.trd_revision_motivo).etiqueta}
+                  />
+                </td>
+                <td>{r.closed_at ? new Date(r.closed_at).toLocaleDateString("es-CO") : "—"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style lang="scss">
+  .trd-revision__intro {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    background: var(--op-bg);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    padding: var(--op-space-3);
+    margin-bottom: var(--op-space-4);
+
+    i {
+      color: var(--op-info);
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+
+    p {
+      margin: 0;
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+      line-height: 1.5;
+    }
+  }
+
+  .trd-revision__error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    color: var(--op-error);
+    font-size: var(--op-font-sm);
+  }
+
+  .trd-revision__leyenda {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-2);
+    margin-bottom: var(--op-space-4);
+  }
+
+  .trd-revision__motivo {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--op-space-2);
+    margin: 0;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+  }
+
+  .trd-revision__tabla {
+    overflow-x: auto;
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--op-font-sm);
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: var(--op-space-2) var(--op-space-3);
+      border-bottom: 1px solid var(--op-border);
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--op-text-secondary);
+      font-weight: 600;
+    }
+  }
+
   .trd-page {
     padding: var(--op-space-5);
     max-width: 1200px;

@@ -125,3 +125,79 @@ describe("/admin/trd — Tipos documentales: 'Editar' en presencia, 'Eliminar' e
     expect(screen.getByRole("button", { name: "Eliminar" })).toBeInTheDocument();
   });
 });
+
+describe("/admin/trd — Revisión pendiente (ADR-025 D4/D6)", () => {
+  beforeEach(() => clearSession());
+  afterEach(() => clearSession());
+
+  const REV_RATIFICABLE = {
+    id: "e-1",
+    code: "EXP-2024-001",
+    status: "closed",
+    trd_serie_id: "s-1",
+    trd_serie_code: "10",
+    trd_revision_motivo: "cerrado_bajo_serie_migrada",
+    closed_at: "2024-05-10T00:00:00Z",
+    tipo_instrumento: "TRD",
+  };
+  const REV_SIN_VIA = {
+    id: "e-2",
+    code: "EXP-2023-042",
+    status: "transferred",
+    trd_serie_id: null,
+    trd_serie_code: null,
+    trd_revision_motivo: "serie_no_resoluble",
+    closed_at: null,
+    tipo_instrumento: null,
+  };
+
+  async function abrirPestana() {
+    await fireEvent.click(screen.getByRole("tab", { name: "Revisión pendiente" }));
+  }
+
+  function sesion() {
+    initSession(
+      sessionWith({ permissions: ["USUA_PERM_TRD"], permission_levels: { USUA_PERM_TRD: 3 } }),
+    );
+  }
+
+  it("lista los expedientes marcados, con su motivo", async () => {
+    sesion();
+    render(TrdPage, {
+      props: { data: baseData({ revision: [REV_RATIFICABLE], revisionError: null }) },
+    });
+    await abrirPestana();
+    expect(screen.getByText("EXP-2024-001")).toBeInTheDocument();
+    expect(screen.getAllByText("Cerrado bajo serie migrada").length).toBeGreaterThan(0);
+  });
+
+  it("distingue el motivo que el sistema resuelve del que no tiene vía automática", async () => {
+    sesion();
+    render(TrdPage, {
+      props: { data: baseData({ revision: [REV_RATIFICABLE, REV_SIN_VIA], revisionError: null }) },
+    });
+    await abrirPestana();
+    // El ratificable dice cómo se limpia; el otro declara que NO hay vía.
+    expect(screen.getByText(/Se limpia solo al convalidar/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/No hay vía automática/i).length).toBeGreaterThan(0);
+  });
+
+  it("un fallo al cargar la cola no se muestra como 'nada pendiente'", async () => {
+    sesion();
+    render(TrdPage, {
+      props: {
+        data: baseData({ revision: [], revisionError: "No se pudo conectar al servidor." }),
+      },
+    });
+    await abrirPestana();
+    expect(screen.getByRole("alert")).toHaveTextContent("No se pudo conectar al servidor.");
+    expect(screen.queryByText("Ningún expediente pendiente de revisión")).not.toBeInTheDocument();
+  });
+
+  it("cola vacía de verdad: se dice que no hay nada que revisar", async () => {
+    sesion();
+    render(TrdPage, { props: { data: baseData({ revision: [], revisionError: null }) } });
+    await abrirPestana();
+    expect(screen.getByText("Ningún expediente pendiente de revisión")).toBeInTheDocument();
+  });
+});

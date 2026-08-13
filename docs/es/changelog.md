@@ -18,6 +18,12 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `feat(frontend)`: **Los expedientes que quedaron pendientes de revisar ya se pueden ver**
+  Cuando se implantó el control de instrumentos de retención, el sistema marcó los expedientes **ya cerrados** sobre los que no podía afirmar bajo qué tabla de retención se habían cerrado. La marca era correcta —es más honesto señalarlo que inventar el dato—, pero no había ninguna pantalla que la mostrara: quedaban marcados indefinidamente sin que nadie llegara a saberlo.
+  Ahora hay una pestaña en la administración de la TRD que los lista y, sobre todo, **distingue los casos por lo que se puede hacer con ellos**: unos se resuelven solos en cuanto se convalide la serie correspondiente —y se dice dónde hacerlo—, y otros **no tienen hoy ninguna forma automática de resolverse** y necesitan una decisión del área de archivo. La pantalla lo dice tal cual, en vez de ofrecer un botón que no arreglaría nada.
+  *Por qué*: un aviso que nadie puede ver no avisa de nada.
+  *Impacto*: solo interfaz. Reconstruir la imagen al desplegar.
+
 - `docs(en)`: **La documentación en inglés deja de ir por detrás: ahora dice qué es la versión 0.01**
   El registro de cambios en inglés iba **135 entradas** por detrás del español, todas correspondientes a una misma versión que todavía no se ha publicado. Al medirlo quedó claro que el problema no era de traducción sino de propósito: quien llega al proyecto desde fuera y lee en inglés no necesita ciento treinta y cinco anotaciones internas de «se corrigió tal hallazgo», necesita saber qué hace el sistema y qué no hace.
   La versión inglesa empieza ahora por un resumen de la línea base organizado por áreas —radicación y expedientes, retención, índice electrónico y firma, preservación, seguridad, flujos, interoperabilidad, inteligencia artificial, interfaz y operación— y declara los límites donde corresponde: la firma **no está acreditada**, el repositorio de preservación **tampoco**, y el conector con el operador postal es todavía un simulacro. Cada fichero dice en su cabecera qué es, para que nadie vuelva a medir un desfase contra una equivalencia que ya no se persigue.
