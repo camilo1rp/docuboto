@@ -154,10 +154,76 @@ nano .env
 | `KEYCLOAK_*_SECRET` | OAuth2 client secrets | `<32 char hex>` |
 | `FRONTEND_HOSTNAME` | Public FQDN of the SSR frontend (defines `ORIGIN` and the login `redirect_uri`) | `app.yourdomain.com` |
 | `API_PUBLIC_HOSTNAME` | Public FQDN of the api-gateway as the browser sees it | `api.yourdomain.com` |
-| `SIGNATURE_SECRET` | HMAC key for signature sealing (E06). Random, rotate it | `<openssl rand -base64 32>` |
+| `SIGNATURE_SECRET` | HMAC key for signature sealing (E06). Random, rotate it. **The service refuses to start without it** | `<openssl rand -base64 32>` |
+| `MINIO_ROOT_USER` | Object store user. **storage-service refuses to start without it** | `orpyca_prod` |
 | `KNOWLEDGE_INTERNAL_TOKEN` | Internal ingestion token (E21). Empty ⇒ ingestion is fail-closed | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | SMTP host | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | SMTP password or application token | `app-specific-password` |
+
+### Variables that block startup when missing
+
+Three secrets used to ship with a **working default** published in an AGPL
+repository: `SIGNATURE_SECRET` was `change-me-in-production`, and the MinIO
+credentials were the development ones printed in `CLAUDE.md` itself. A deployment
+that forgot to set them **did not fail** — it started up and signed (or stored
+official attachments) with a key anyone can read on GitHub.
+
+The defaults are now empty strings **and** startup checks them: `signature-service`
+and `storage-service` refuse to serve without `SIGNATURE_SECRET`,
+`MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY`. Example placeholders
+(`change-me-in-production` and friends) are rejected too, in case someone copies
+`.env.example` untouched. The error message names the variable, never the value
+received.
+
+If you use email ingestion (E19), `IMAP_TENANT_SLUG` is also required: it declares
+**which institution owns the mailbox**. Without it, `POST /ingest/email/poll`
+returns `503` even when IMAP is configured.
+
+### CORS
+
+`CORS_ALLOW_ORIGINS` is **empty by default and the middleware is not installed at
+all**. This is not a regression: the frontend talks to the gateway **from the
+server** (SSR), not from the browser, so a typical deployment needs no CORS. Only
+declare it for a third-party integration or an SPA on another domain:
+
+```bash
+CORS_ALLOW_ORIGINS=https://sgd.entidad.gov.co,https://portal.entidad.gov.co
+```
+
+> The `*` wildcard is accepted but **disables credentials**. The previous setting
+> was `allow_origins=["*"]` **together with** `allow_credentials=True`, hardcoded:
+> with credentials Starlette cannot answer `*`, so it reflects whatever `Origin`
+> arrives — any page on the internet could call the gateway with the visitor's
+> credentials.
+
+### Audit log partitions
+
+`public.audit_log` has been declared month-partitioned since its first migration,
+but the job that creates the partitions never existed: everything piled up in
+`audit_log_default`. Beyond the performance cost, the trap tightens over time —
+PostgreSQL **refuses** to create a partition whose range overlaps rows already
+sitting in the default one.
+
+Migration `005_audit_partition_job.sql` installs `ensure_audit_partitions(n)` and
+runs it once. Schedule it monthly:
+
+```bash
+# Creates (and hardens) the next 3 months of partitions. Idempotent.
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+    -v "$PWD/scripts:/scripts:ro" auth-service \
+    python /scripts/audit_partitions.py --meses 3
+
+# For monitoring: exit 0 if up to date, 1 if next month's partition is missing.
+... python /scripts/audit_partitions.py --verificar
+```
+
+It runs several months ahead on purpose: if the cron fails silently, there is
+slack before entries start landing in the default partition again.
+
+> History already in `audit_log_default` is **not moved**. Rewriting rows of an
+> append-only, hash-chained record means touching the evidentiary basis of the
+> whole archive, and tidying up old data does not justify it. The function starts
+> at the first non-overlapping month: the default freezes and stops growing.
 
 ### Issuer (`iss`) contract — critical
 
@@ -565,14 +631,22 @@ Configure alerts for:
 
 ### Security headers in Nginx
 
-```nginx
-# infra/nginx.conf
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-add_header X-Content-Type-Options "nosniff" always;
-add_header X-Frame-Options "SAMEORIGIN" always;
-add_header X-XSS-Protection "1; mode=block" always;
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-```
+They live in `infra/nginx.conf.example` — the file this guide has been telling you
+to copy while it did not exist. The important part of that template is not the
+headers: it is the three things that depend on `X-Forwarded-*` and fail silently
+without them — the PKCE login `redirect_uri`, the real client IP sealed into
+`audit_log` (an evidentiary record), and per-IP rate limiting. It also sets
+`proxy_buffering off`, without which nginx re-buffers to disk every download the
+system streams in chunks (attachments, expediente ZIP, AIP).
+
+**HSTS belongs in the proxy, not in the application.** It is a promise about the
+whole domain, and the party that can make it is the one terminating TLS; that is
+exactly why the SSR frontend does not emit it — emitted by a deployment served
+over `http`, it would make the domain unreachable for a year. Every other header
+(CSP, `nosniff`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy`) **is
+emitted by the SSR itself**: do not duplicate them here, because `add_header` does
+not replace the backend's, and two different values of the same header behave
+differently per browser.
 
 ### Security audit
 

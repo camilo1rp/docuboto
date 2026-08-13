@@ -24,7 +24,16 @@ from typing import Any
 from urllib.parse import quote
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -39,6 +48,8 @@ from app.schemas.document import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
+    PublicacionRequest,
+    PublicacionResponse,
     ReclassifyRequest,
     ReclassifyResponse,
 )
@@ -61,6 +72,17 @@ _USER_HEADER = "X-User-Id"
 def _tenant_slug(request: Request) -> str:
     # get_tenant_conn ya garantiza que el header está presente y es válido.
     return request.headers.get(_TENANT_HEADER, "")
+
+
+def _actor_str(request: Request) -> str | None:
+    """El actor como texto para `audit.append`, o `None` si no hay uno válido.
+
+    `None` y no `""`: `audit.append` trataría la cadena vacía como un actor
+    presente y archivaría el asiento sin poder atribuirlo a nadie, que es peor
+    que decir explícitamente que no lo hay.
+    """
+    actor = _get_registered_by(request)
+    return str(actor) if actor is not None else None
 
 
 def _get_registered_by(request: Request) -> uuid.UUID | None:
@@ -399,11 +421,66 @@ async def get_disposition(
     return DispositionResponse(radicado_id=document_id, disposition=disp)
 
 
+@router.post(
+    "/{document_id}/publicacion",
+    response_model=PublicacionResponse,
+    summary="Acto de publicación de oficio (Ley 1712/2014 art. 12)",
+    # Mismo permiso que decide la RESERVA (`PERM_RECLASIFICAR`), con nivel de
+    # escritura: publicar y clasificar son las dos caras de la misma competencia
+    # sobre el régimen de acceso del documento. Repartirlas entre permisos
+    # distintos permitiría que quien no puede desclasificar un documento lo
+    # publicara igualmente.
+    dependencies=[Depends(require_permission("PERM_RECLASIFICAR", min_crud=3))],
+)
+async def set_publicacion(
+    document_id: uuid.UUID,
+    payload: PublicacionRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> PublicacionResponse:
+    """Publica el radicado de oficio, o retira su publicación (11.1).
+
+    Antes, «público» se DEDUCÍA de la ausencia de reserva: un radicado sin
+    clasificar se cosechaba solo por OAI-PMH y se servía por CMIS. El art. 12 de
+    la Ley 1712 pide lo contrario — un esquema de publicación, es decir, un acto
+    por el que la entidad decide qué difunde. `publicable` arranca en FALSE y
+    solo este endpoint lo cambia, dejando asiento.
+
+    404 neutro para «no existe», «te supera el clearance», «no es de nivel
+    público» y «está anulado»: distinguirlos convertiría este endpoint en un
+    oráculo sobre radicados reservados.
+    """
+    service = _build_service(conn, _tenant_slug(request))
+    clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
+    try:
+        resultado = await service.set_publicacion(
+            document_id,
+            payload.publicar,
+            payload.fundamento,
+            clearance,
+            actor=_actor_str(request),
+            canal=request.headers.get("X-Canal") or "system",
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
+        )
+    return PublicacionResponse(**resultado)
+
+
 @router.patch(
     "/{document_id}/disposition",
     response_model=DispositionResponse,
     summary="Set/update document disposition metadata (RF-MET-08)",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # min_crud=3 (escritura), no el default 1 (lectura). Fijar la disposición
+    # decide si un documento oficial se conserva o se DESTRUYE (Ley 594/2000
+    # art. 24) y se exigía el mismo nivel que para leerla: cualquiera que
+    # pudiera consultar la disposición podía marcar el radicado para
+    # eliminación. Mismo umbral que las disposiciones de storage-service
+    # (`routers/preservacion.py`), que ya trataban estos actos como de alto
+    # privilegio e irreversibles.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def set_disposition(
     document_id: uuid.UUID,
@@ -416,11 +493,21 @@ async def set_disposition(
     No-read-up (RF-SEG-08) con el mismo 404 neutro que el GET: la disposición
     decide conservación total frente a eliminación (Ley 594/2000 art. 24), así que
     un actor por debajo del nivel del documento no puede leerla NI fijarla.
+
+    El acto queda asentado en `audit_log` con el estado anterior y el nuevo: la
+    decisión de eliminar es irreversible, y hasta ahora no dejaba rastro de
+    quién la había tomado (11.10).
     """
     service = _build_service(conn, _tenant_slug(request))
     clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
     try:
-        disp = await service.set_disposition(document_id, payload, clearance)
+        disp = await service.set_disposition(
+            document_id,
+            payload,
+            clearance,
+            actor=_actor_str(request),
+            canal=request.headers.get("X-Canal") or "system",
+        )
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

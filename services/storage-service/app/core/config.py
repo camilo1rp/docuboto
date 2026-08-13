@@ -33,8 +33,14 @@ class Settings(BaseSettings):
     # `orpycamcp_common.audit.verify_chain`, que recorre el registro entero).
     db_command_timeout: float = 120.0
     minio_endpoint: str = "minio:9000"
-    minio_access_key: str = "orpycamcp"
-    minio_secret_key: str = "orpycamcp_dev"
+    # Credenciales de MinIO. Default VACÍO a propósito: las anteriores
+    # (`orpycamcp` / `orpycamcp_dev`) son las de desarrollo publicadas en este
+    # repositorio AGPL y en el propio CLAUDE.md, y un despliegue que no las
+    # redefiniera arrancaba con ellas. El arranque las exige — ver `main.py` y
+    # `orpycamcp_common.secrets`. `docker-compose.yml` de desarrollo las define
+    # explícitamente, así que el flujo local no cambia.
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
     minio_use_ssl: bool = False
     presigned_url_expiry: int = 3600  # seconds
     keycloak_url: str = "http://keycloak:8080"

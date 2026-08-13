@@ -1,0 +1,123 @@
+{
+  "_comentario": [
+    "PLANTILLA de realm de PRODUCCIÓN. Cópiala a realm-prod.json, sustituye TODO",
+    "lo que aparece entre <>, y móntala en Keycloak (ver infra/docker-compose.prod.yml,",
+    "servicio keycloak, sección `volumes` comentada).",
+    "",
+    "Por qué existe este archivo. Hasta ahora solo había `realm-export.json`, y su",
+    "nombre no decía para qué entorno servía: trae dos usuarios con contraseña",
+    "publicada en el repositorio (`orpycamcp_dev`), secretos de cliente",
+    "`change-me-in-production`, `sslRequired: none` y redirectUris a localhost. Un",
+    "despliegue que lo importara tal cual quedaba con una cuenta `superadmin` de",
+    "contraseña conocida. El fichero de desarrollo pasa a llamarse `realm-dev.json`",
+    "—que dice lo que es— y producción parte de esta plantilla, que a propósito NO",
+    "es importable sin editarla.",
+    "",
+    "Los campos <...> no tienen valor por defecto: si se importa sin sustituirlos,",
+    "Keycloak falla. Es deliberado — un default funcional aquí es una puerta abierta.",
+    "",
+    "Este archivo no crea usuarios. Las cuentas de producción se dan de alta desde",
+    "la consola de administración o se federan contra el directorio de la entidad;",
+    "no se versionan en el repositorio."
+  ],
+
+  "realm": "orpycamcp",
+  "displayName": "<Nombre visible de la entidad>",
+  "enabled": true,
+
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "failureFactor": 5,
+
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername and passwordHistory(5)",
+
+  "clients": [
+    {
+      "clientId": "api-gateway",
+      "name": "API Gateway",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "secret": "<SECRETO_API_GATEWAY: 32+ bytes aleatorios, el mismo que KEYCLOAK_CLIENT_SECRET>",
+      "protocolMappers": [
+        {
+          "name": "tenant_slug",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant_slug",
+            "claim.name": "tenant_slug",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "auth-service",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "serviceAccountsEnabled": true,
+      "secret": "<SECRETO_AUTH_SERVICE: 32+ bytes aleatorios, distinto del anterior>"
+    },
+    {
+      "clientId": "orpycamcp-frontend",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "redirectUris": ["https://<dominio-de-la-entidad>/*"],
+      "webOrigins": ["https://<dominio-de-la-entidad>"],
+      "protocolMappers": [
+        {
+          "name": "tenant_slug",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant_slug",
+            "claim.name": "tenant_slug",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+
+  "roles": {
+    "realm": [
+      {"name": "superadmin", "description": "Administrador de la plataforma OrpycaMCP"},
+      {"name": "tenant_admin", "description": "Administrador de la entidad"},
+      {"name": "manager", "description": "Jefe de dependencia"},
+      {"name": "operator", "description": "Operador documental (radica, distribuye)"},
+      {"name": "viewer", "description": "Solo lectura"}
+    ]
+  },
+
+  "users": []
+}

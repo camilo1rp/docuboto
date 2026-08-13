@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.clients.imap_client import EmailMessage, parse_email
+from app.core.config import settings
 from app.main import app
 from app.routers.ingest import get_imap_client
 from app.services.document_service import DocumentService
@@ -80,8 +81,21 @@ async def test_poll_not_configured(client_with_conn) -> None:
         app.dependency_overrides.pop(get_imap_client, None)
 
 
+@pytest.fixture
+def buzon_de_esta_entidad():
+    """El buzón declara pertenecer al tenant de las cabeceras de test.
+
+    Desde 11.9 el poll exige que el dueño del buzón coincida con la entidad que
+    lo dispara; sin declararlo, responde 503 aunque IMAP esté configurado.
+    """
+    anterior = settings.imap_tenant_slug
+    settings.imap_tenant_slug = TENANT_HEADERS["X-Tenant-Slug"]
+    yield
+    settings.imap_tenant_slug = anterior
+
+
 @pytest.mark.asyncio
-async def test_poll_ingests_messages(client_with_conn) -> None:
+async def test_poll_ingests_messages(client_with_conn, buzon_de_esta_entidad) -> None:
     client, _ = client_with_conn
     messages = [
         EmailMessage(uid="1", from_addr="a@b.co", from_name="Ana", subject="Uno", body="x"),
@@ -106,5 +120,105 @@ async def test_poll_ingests_messages(client_with_conn) -> None:
         assert body["ingested"] == 2
         assert body["tracking_numbers"] == ["2024-DEMO-E-000001", "2024-DEMO-E-000002"]
         assert fake_imap.mark_seen.await_count == 2
+    finally:
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+# ── 11.9: el poll solo exigía un JWT válido ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_poll_exige_permiso_administrativo(client_with_conn) -> None:
+    """Radicar en masa es un acto administrativo, no algo que pueda hacer
+    cualquier usuario con sesión abierta."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # sin USUA_PERM_ADMIN
+
+    app.dependency_overrides[get_imap_client] = lambda: SimpleNamespace(
+        fetch_unseen=AsyncMock(return_value=[]), mark_seen=AsyncMock()
+    )
+    try:
+        resp = await client.post(
+            "/api/v1/ingest/email/poll",
+            headers={**TENANT_HEADERS, "X-User-Id": "11111111-1111-1111-1111-111111111111"},
+        )
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+@pytest.mark.asyncio
+async def test_poll_desde_otra_entidad_no_se_lleva_el_buzon(client_with_conn) -> None:
+    """El defecto de fondo: el proceso tiene UN buzón y el tenant venía de la
+    cabecera.
+
+    Un usuario de la entidad A disparaba la ingesta y los correos —que pueden ir
+    dirigidos a la B— acababan radicados en A. Y como el poll los marca como
+    leídos, no vuelven a aparecer: no es una lectura indebida, es una
+    apropiación irreversible.
+    """
+    client, _ = client_with_conn
+    fake_imap = SimpleNamespace(fetch_unseen=AsyncMock(return_value=[]), mark_seen=AsyncMock())
+    app.dependency_overrides[get_imap_client] = lambda: fake_imap
+    anterior = settings.imap_tenant_slug
+    settings.imap_tenant_slug = "otra-entidad"
+    try:
+        resp = await client.post("/api/v1/ingest/email/poll", headers=TENANT_HEADERS)
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "imap_tenant_mismatch"
+        # El mensaje no dice de quién ES el buzón: el nombre de las demás
+        # instituciones del despliegue no es asunto de esta entidad.
+        assert "otra-entidad" not in resp.text
+        # Y sobre todo: no se tocó el buzón.
+        assert fake_imap.fetch_unseen.await_count == 0
+    finally:
+        settings.imap_tenant_slug = anterior
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+@pytest.mark.asyncio
+async def test_poll_sin_dueno_declarado_es_fail_closed(client_with_conn) -> None:
+    """Un buzón sin dueño no tiene forma de saber en qué entidad radicar, y
+    adivinarlo por la cabecera es exactamente el defecto."""
+    client, _ = client_with_conn
+    fake_imap = SimpleNamespace(fetch_unseen=AsyncMock(return_value=[]), mark_seen=AsyncMock())
+    app.dependency_overrides[get_imap_client] = lambda: fake_imap
+    anterior = settings.imap_tenant_slug
+    settings.imap_tenant_slug = ""
+    try:
+        resp = await client.post("/api/v1/ingest/email/poll", headers=TENANT_HEADERS)
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "imap_tenant_not_configured"
+        assert fake_imap.fetch_unseen.await_count == 0
+    finally:
+        settings.imap_tenant_slug = anterior
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+@pytest.mark.asyncio
+async def test_poll_deja_asiento_del_acto(client_with_conn, buzon_de_esta_entidad) -> None:
+    """La ingesta CREA radicados oficiales y no quedaba registro de quién la
+    disparó. Un asiento por poll — los radicados ya dejan el suyo."""
+    client, mock_conn = client_with_conn
+    fake_imap = SimpleNamespace(
+        fetch_unseen=AsyncMock(
+            return_value=[
+                EmailMessage(uid="1", from_addr="a@b.co", from_name="Ana", subject="Uno", body="x")
+            ]
+        ),
+        mark_seen=AsyncMock(),
+    )
+    app.dependency_overrides[get_imap_client] = lambda: fake_imap
+    fake_create = AsyncMock(return_value=SimpleNamespace(tracking_number="2024-DEMO-E-000001"))
+    try:
+        with patch.object(DocumentService, "create", fake_create):
+            resp = await client.post(
+                "/api/v1/ingest/email/poll",
+                headers={**TENANT_HEADERS, "X-User-Id": "11111111-1111-1111-1111-111111111111"},
+            )
+        assert resp.status_code == 200
+        ejecutadas = " ".join(str(c) for c in mock_conn.execute.call_args_list)
+        assert "audit_log" in ejecutadas, "el acto de ingesta no dejó asiento"
+        assert "ingest.email.poll" in ejecutadas
     finally:
         app.dependency_overrides.pop(get_imap_client, None)

@@ -295,6 +295,22 @@ class FisicoRepository:
 
     # -- FUID (inventario documental, RF-ARF-10) -----------------------
 
+    async def entidad_productora(self) -> str:
+        """Nombre oficial de la entidad, para la cabecera del FUID (11.11).
+
+        Se resuelve aquí y no se acepta del cliente: encabeza un documento
+        archivístico oficial, y un campo libre convertiría el inventario de una
+        entidad en el de cualquier otra con solo cambiar un parámetro.
+        """
+        nombre = await self._conn.fetchval(
+            "SELECT name FROM public.tenants WHERE slug = $1", self._tenant_slug
+        )
+        # Se exige que sea texto no vacío, no solo verdadero: esto encabeza un
+        # documento archivístico oficial, y un registro de tenant incompleto
+        # debe degradar al slug —que al menos identifica a la entidad— y no
+        # colar en la cabecera lo que sea que haya devuelto la consulta.
+        return nombre if isinstance(nombre, str) and nombre.strip() else self._tenant_slug
+
     async def fuid_inventory(
         self,
         *,
@@ -325,6 +341,8 @@ class FisicoRepository:
             params.append(expediente_id)
             conds.append(f"e.id = ${len(params)}")
         where = f"WHERE {' AND '.join(conds)}"
+        params.append(self._tenant_slug)
+        tenant_pos = len(params)
         return list(
             await self._conn.fetch(
                 f"""
@@ -333,14 +351,38 @@ class FisicoRepository:
                        e.closed_at AS fecha_final,
                        s.code AS serie_code, s.name AS serie_name,
                        u.signatura, u.tipo AS unidad_tipo, u.soporte, u.num_folios,
-                       eu.folio_inicio, eu.folio_fin
+                       eu.folio_inicio, eu.folio_fin,
+                       CASE
+                           WHEN COALESCE(c.consultas, 0) >= 12 THEN 'alta'
+                           WHEN COALESCE(c.consultas, 0) >= 3  THEN 'media'
+                           ELSE 'baja'
+                       END AS frecuencia_consulta
                   FROM expediente_unidad eu
                   JOIN expedientes e ON e.id = eu.expediente_id
                   JOIN unidad_conservacion u ON u.id = eu.unidad_id
                   LEFT JOIN trd_series s ON s.id = e.trd_serie_id
+                  -- Columna 9 del FUID (Ac. AGN 042/2002): frecuencia de
+                  -- consulta REAL, no estimada. Sale de la pista de acceso que
+                  -- el servicio ya escribe (`archive.expediente_consultado`).
+                  --
+                  -- El filtro por `tenant_slug` NO sobra aunque el resto de la
+                  -- consulta viva en el schema del tenant: `audit_log` está en
+                  -- `public` y es la ÚNICA tabla compartida entre entidades.
+                  -- Sin él, dos entidades con códigos de expediente que
+                  -- coincidan —y `code` es un consecutivo, así que coinciden—
+                  -- se contarían las consultas la una a la otra.
+                  LEFT JOIN LATERAL (
+                      SELECT count(*) AS consultas
+                        FROM public.audit_log al
+                       WHERE al.tenant_slug = $%(tenant)d
+                         AND al.object_type = 'expediente'
+                         AND al.object_ref = e.code
+                         AND al.action LIKE 'archive.expediente_consultado%%'
+                         AND al.ts >= now() - interval '12 months'
+                  ) c ON TRUE
                   {where}
                  ORDER BY u.signatura NULLS LAST, e.code
-                """,
+                """ % {"tenant": tenant_pos},
                 *params,
             )
         )

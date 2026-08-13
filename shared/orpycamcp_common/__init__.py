@@ -17,12 +17,26 @@ Fuente única de verdad para lógica transversal delicada (ADR-010):
                idempotente (00-contrato-eventos.md), y la supervisión de los
                consumidores (``spawn_supervised``).
 - ``health`` — separación entre sonda de vivacidad y sonda de disponibilidad.
+- ``secrets``— comprobación de arranque de que los secretos vienen del entorno y
+               no del default publicado en este repositorio.
+- ``request_log`` — registro estructurado por petición, con el ``X-Request-Id``
+               que el gateway propaga (traza de extremo a extremo).
+- ``migrations``— libro único de migraciones aplicadas (esquema + servicio +
+               archivo), compartido por los dos ejecutores.
 
 Se instala en cada imagen Docker vía ``pip install /shared`` (no se publica a
 ningún registry; se versiona con el monorepo).
 """
 
-from orpycamcp_common import audit, events, health
+from orpycamcp_common import audit, events, health, migrations, request_log, secrets
 
 __version__ = "0.1.0"
-__all__ = ["audit", "events", "health", "__version__"]
+__all__ = [
+    "audit",
+    "events",
+    "health",
+    "migrations",
+    "request_log",
+    "secrets",
+    "__version__",
+]

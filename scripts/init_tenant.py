@@ -4,6 +4,12 @@ init_tenant.py — Inicializar un nuevo tenant en OrpycaMCP.
 Aplica migraciones globales (public schema) y por-tenant para todos los servicios,
 luego registra el tenant en public.tenants.
 
+Lo aplicado se anota en el libro único `public.schema_migrations`, compartido con
+`services/*/migrations/runner.py` (ver `orpycamcp_common.migrations`). Antes cada
+ejecutor llevaba su propia contabilidad con claves distintas y no se veían entre
+sí: uno reaplicaba lo que el otro ya había hecho, y el nombre desnudo del archivo
+—que se repite entre servicios— hacía saltar migraciones en silencio.
+
 Uso:
     python scripts/init_tenant.py --slug icetex --name "ICETEX" --code "ICETEX"
 
@@ -19,6 +25,7 @@ import sys
 from pathlib import Path
 
 import asyncpg
+from orpycamcp_common import migrations as ledger
 
 # ---------------------------------------------------------------------------
 # Rutas a las migraciones de cada servicio
@@ -81,75 +88,45 @@ def _sql_files(directory: Path) -> list[Path]:
     )
 
 
-def _mig_key(migrations_dir: Path, path: Path) -> str:
-    """Identidad de una migración en `_migrations`: ``servicio/archivo``.
+def _servicio_de(migrations_dir: Path) -> str:
+    """…/services/<svc>/migrations/<ámbito> → `<svc>`."""
+    return migrations_dir.parent.parent.name
 
-    El nombre DESNUDO no es único entre servicios — cada uno numera su propia
-    serie desde 001. Hoy colisionan `002_batch_jobs.sql` (archive + document) y
-    `005_evento_dead_letter.sql` / `006_deadletter_status.sql` /
-    `007_deadletter_origin_group_notnull_index.sql` (notification + signature).
-    Registrando solo el nombre, el segundo servicio violaba el UNIQUE de
-    `_migrations` y abortaba la provisión a medias.
+
+def _mapa_servicios(dirs: list[Path]) -> dict[str, list[str]]:
+    """`{archivo: [servicios que lo declaran]}` para el import del libro único.
+
+    Es lo que permite devolverle el servicio a las entradas antiguas, que
+    guardaban el nombre desnudo. Cuatro nombres los declaran DOS servicios
+    (`002_batch_jobs.sql` en archive/document; `005`, `006` y `007` de
+    dead-letter en notification/signature): la ambigüedad no se puede resolver
+    leyendo el registro, y `orpycamcp_common.migrations` la resuelve avisando en
+    vez de en silencio.
     """
-    # …/services/<svc>/migrations/<ámbito> → .parent = migrations, .parent.parent = <svc>
-    return f"{migrations_dir.parent.parent.name}/{path.name}"
-
-
-async def _backfill_legacy_keys(
-    conn: asyncpg.Connection, table: str, dirs: list[Path]
-) -> None:
-    """Compatibilidad: los tenants provisionados con el esquema ANTIGUO guardan
-    el nombre desnudo. Se reescriben a ``servicio/archivo`` para que no se
-    vuelvan a aplicar. A un nombre duplicado se le atribuye el PRIMER servicio
-    que lo declara, que es justamente el único que alcanzó a aplicarse.
-    """
-    legacy = {
-        r["filename"]
-        for r in await conn.fetch(f"SELECT filename FROM {table}")  # noqa: S608 — literal interno
-        if "/" not in r["filename"]
-    }
-    if not legacy:
-        return
-    for migrations_dir in dirs:
-        for path in _sql_files(migrations_dir):
-            if path.name in legacy:
-                legacy.discard(path.name)
-                await conn.execute(
-                    f"UPDATE {table} SET filename = $1 WHERE filename = $2",  # noqa: S608
-                    _mig_key(migrations_dir, path), path.name,
-                )
+    mapa: dict[str, list[str]] = {}
+    for d in dirs:
+        for path in _sql_files(d):
+            mapa.setdefault(path.name, []).append(_servicio_de(d))
+    return mapa
 
 
 # ---------------------------------------------------------------------------
-# Migraciones globales — se rastrean en public._migrations
+# Migraciones globales — se anotan en el libro único public.schema_migrations
 # ---------------------------------------------------------------------------
 
 async def apply_global_migrations(conn: asyncpg.Connection) -> None:
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS public._migrations (
-            id         SERIAL PRIMARY KEY,
-            filename   TEXT NOT NULL UNIQUE,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await _backfill_legacy_keys(conn, "public._migrations", GLOBAL_MIGRATIONS)
-    applied = {r["filename"] for r in await conn.fetch(
-        "SELECT filename FROM public._migrations"
-    )}
+    aplicadas = await ledger.applied(conn, ledger.ESQUEMA_GLOBAL)
     for migrations_dir in GLOBAL_MIGRATIONS:
+        servicio = _servicio_de(migrations_dir)
         for path in _sql_files(migrations_dir):
-            key = _mig_key(migrations_dir, path)
-            if key in applied:
-                print(f"  [global] skip  {key}")
+            if (servicio, path.name) in aplicadas:
+                print(f"  [global] skip  {servicio}/{path.name}")
                 continue
-            print(f"  [global] apply {key}")
+            print(f"  [global] apply {servicio}/{path.name}")
             await conn.execute(path.read_text())
-            await conn.execute(
-                "INSERT INTO public._migrations (filename) VALUES ($1)", key
-            )
-            # Alimentar el conjunto en caliente: dos servicios pueden declarar el
-            # mismo nombre y `applied` se leyó UNA vez antes del bucle.
-            applied.add(key)
+            await ledger.record(conn, ledger.ESQUEMA_GLOBAL, servicio, path.name)
+            # Alimentar el conjunto en caliente: se leyó UNA vez antes del bucle.
+            aplicadas.add((servicio, path.name))
 
 
 # ---------------------------------------------------------------------------
@@ -163,36 +140,27 @@ async def provision_schema(conn: asyncpg.Connection, slug: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Migraciones por tenant — se rastrean en tenant_{slug}._migrations
-# para permitir el mismo filename en distintos tenants
+# Migraciones por tenant — mismo libro único, con `schema_name = tenant_{slug}`.
+#
+# Antes vivían en `tenant_{slug}._migrations`, invisible para el registro que usa
+# `services/*/migrations/runner.py` (`public._tenant_migrations`): provisionar
+# con un ejecutor y actualizar con el otro reaplicaba TODAS las migraciones.
 # ---------------------------------------------------------------------------
 
 async def apply_tenant_migrations(conn: asyncpg.Connection, slug: str) -> None:
     schema = f"tenant_{slug.replace('-', '_')}"
     await conn.execute(f"SET search_path = {schema}, public")
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS _migrations (
-            id         SERIAL PRIMARY KEY,
-            filename   TEXT NOT NULL UNIQUE,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await _backfill_legacy_keys(conn, "_migrations", TENANT_MIGRATIONS)
-    applied = {r["filename"] for r in await conn.fetch(
-        "SELECT filename FROM _migrations"
-    )}
+    aplicadas = await ledger.applied(conn, schema)
     for migrations_dir in TENANT_MIGRATIONS:
+        servicio = _servicio_de(migrations_dir)
         for path in _sql_files(migrations_dir):
-            key = _mig_key(migrations_dir, path)
-            if key in applied:
-                print(f"  [{schema}] skip  {key}")
+            if (servicio, path.name) in aplicadas:
+                print(f"  [{schema}] skip  {servicio}/{path.name}")
                 continue
-            print(f"  [{schema}] apply {key}")
+            print(f"  [{schema}] apply {servicio}/{path.name}")
             await conn.execute(path.read_text())
-            await conn.execute(
-                "INSERT INTO _migrations (filename) VALUES ($1)", key
-            )
-            applied.add(key)
+            await ledger.record(conn, schema, servicio, path.name)
+            aplicadas.add((servicio, path.name))
     # Restaurar search_path al terminar
     await conn.execute("SET search_path = public")
 
@@ -236,6 +204,19 @@ async def main(slug: str, name: str, code: str) -> None:
     conn = await asyncpg.connect(dsn=dsn)
 
     try:
+        print("\n── Libro de migraciones ──────────────────────────────────────")
+        await ledger.ensure_ledger(conn)
+        # Import único de los tres registros antiguos. Este ejecutor ve los
+        # directorios de todos los servicios, así que puede atribuir cada nombre
+        # desnudo; un nombre que no reconoce es una migración retirada del
+        # código y merece aviso (de ahí `ignorar_desconocidos` por defecto).
+        for aviso in await ledger.importar_libros_antiguos(
+            conn,
+            servicios_por_archivo_global=_mapa_servicios(GLOBAL_MIGRATIONS),
+            servicios_por_archivo_tenant=_mapa_servicios(TENANT_MIGRATIONS),
+        ):
+            print(aviso)
+
         print("\n── Migraciones globales (public schema) ──────────────────────")
         await apply_global_migrations(conn)
 

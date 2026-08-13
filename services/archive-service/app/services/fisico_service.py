@@ -29,6 +29,7 @@ from app.repositories.fisico_repository import FisicoRepository
 from app.schemas.fisico import (
     ExpedienteEnUnidad,
     ExpedienteUnidadLink,
+    FuidCabecera,
     FuidResponse,
     FuidRow,
     MovimientoResponse,
@@ -47,6 +48,21 @@ _SERVICE = "archive-service"
 
 def _fuid_to_xml(fuid: FuidResponse) -> str:
     root = ET.Element(f"{{{_FUID_NS}}}fuid", attrib={"generado": fuid.generado_ts.isoformat()})
+    # Cabecera del formato (Ac. AGN 042/2002, Anexo). El XML salía sin ella: una
+    # lista de filas sin decir de qué entidad ni de qué oficina es el inventario
+    # no es un FUID, y el receptor de una transferencia no tiene cómo saber qué
+    # está recibiendo.
+    cab = ET.SubElement(root, f"{{{_FUID_NS}}}cabecera")
+    ET.SubElement(cab, f"{{{_FUID_NS}}}entidadProductora").text = (
+        fuid.cabecera.entidad_productora
+    )
+    ET.SubElement(cab, f"{{{_FUID_NS}}}unidadAdministrativa").text = (
+        fuid.cabecera.unidad_administrativa or ""
+    )
+    ET.SubElement(cab, f"{{{_FUID_NS}}}oficinaProductora").text = (
+        fuid.cabecera.oficina_productora or ""
+    )
+    ET.SubElement(cab, f"{{{_FUID_NS}}}objeto").text = fuid.cabecera.objeto or ""
     for r in fuid.rows:
         e = ET.SubElement(root, f"{{{_FUID_NS}}}registro", attrib={"orden": str(r.orden)})
         ET.SubElement(e, f"{{{_FUID_NS}}}expediente").text = r.expediente_code
@@ -60,6 +76,7 @@ def _fuid_to_xml(fuid: FuidResponse) -> str:
         ET.SubElement(e, f"{{{_FUID_NS}}}fechaFinal").text = (
             r.fecha_final.isoformat() if r.fecha_final else ""
         )
+        ET.SubElement(e, f"{{{_FUID_NS}}}frecuenciaConsulta").text = r.frecuencia_consulta
     return ET.canonicalize(ET.tostring(root, encoding="unicode"))
 
 
@@ -362,6 +379,9 @@ class FisicoService:
         expediente_id: uuid.UUID | None = None,
         user_id: uuid.UUID | None = None,
         max_clearance: int | None = None,
+        unidad_administrativa: str | None = None,
+        oficina_productora: str | None = None,
+        objeto: str | None = None,
     ) -> FuidResponse:
         # No-read-up (RF-SEG-08): el FUID expone asunto/serie/signatura del
         # expediente — es contenido, no metadato de custodia (defensa en
@@ -385,7 +405,17 @@ class FisicoService:
             max_clearance=max_clearance,
         )
         fuid_rows = [FuidRow(orden=i, **dict(r)) for i, r in enumerate(rows, start=1)]
-        return FuidResponse(generado_ts=datetime.now(tz=UTC), total=len(fuid_rows), rows=fuid_rows)
+        return FuidResponse(
+            cabecera=FuidCabecera(
+                entidad_productora=await self._repo.entidad_productora(),
+                unidad_administrativa=unidad_administrativa,
+                oficina_productora=oficina_productora,
+                objeto=objeto,
+            ),
+            generado_ts=datetime.now(tz=UTC),
+            total=len(fuid_rows),
+            rows=fuid_rows,
+        )
 
     async def generate_fuid_xml(
         self,
@@ -393,8 +423,16 @@ class FisicoService:
         ubicacion_id: uuid.UUID | None,
         trd_serie_id: uuid.UUID | None,
         user_id: uuid.UUID | None = None,
+        unidad_administrativa: str | None = None,
+        oficina_productora: str | None = None,
+        objeto: str | None = None,
     ) -> str:
         fuid = await self.generate_fuid(
-            ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id, user_id=user_id
+            ubicacion_id=ubicacion_id,
+            trd_serie_id=trd_serie_id,
+            user_id=user_id,
+            unidad_administrativa=unidad_administrativa,
+            oficina_productora=oficina_productora,
+            objeto=objeto,
         )
         return _fuid_to_xml(fuid)

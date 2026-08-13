@@ -24,12 +24,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from orpycamcp_common import request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
-from app.jobs.indice_reconciliation import run_once_actas_worm as _reconcile_actas_worm_once
+from app.jobs.indice_reconciliation import (
+    run_once_actas_worm as _reconcile_actas_worm_once,
+)
 from app.jobs.indice_reconciliation import run_once_aip as _reconcile_aip_once
 from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
 from app.jobs.indice_reconciliation import (
@@ -180,6 +183,11 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
+# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
+# escribe, que es el mismo defecto de partida movido un salto más allá.
+app.add_middleware(request_log.RequestLogMiddleware, servicio="archive-service")
 
 app.include_router(batch_router)
 app.include_router(expedientes_router)

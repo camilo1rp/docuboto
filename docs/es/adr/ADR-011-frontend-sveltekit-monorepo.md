@@ -18,7 +18,7 @@ Las preguntas a resolver:
 Restricciones y hechos relevantes del proyecto:
 
 - La carpeta `services/` está reservada a **microservicios de dominio FastAPI** con un patrón fijo (app factory, pool asyncpg, `migrations/runner.py`, eventos Redis, schema `tenant_{slug}`). Un frontend **no tiene** dominio, BD, ni migraciones.
-- El realm de Keycloak (`infra/keycloak/realm-export.json`) ya define un cliente público **`orpycamcp-frontend`** con `redirectUris` a `:3000` y `:5173` (puertos de Node/Vite) → el diseño ya anticipa un cliente web con OAuth2 + PKCE.
+- El realm de Keycloak (`infra/keycloak/realm-dev.json`) ya define un cliente público **`orpycamcp-frontend`** con `redirectUris` a `:3000` y `:5173` (puertos de Node/Vite) → el diseño ya anticipa un cliente web con OAuth2 + PKCE.
 - El proyecto se publica bajo **AGPL-3.0**.
 - Regla **Docker-only**: nada se instala en el host; build y dev server corren en contenedores.
 - Existe un frontend **ya probado en producción en `sgdINTI`** (mismo autor/ecosistema) cuyo stack puede reutilizarse para no reinventar decisiones.

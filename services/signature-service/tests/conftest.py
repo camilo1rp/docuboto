@@ -16,8 +16,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app.core.config import settings
 from app.core.database import get_tenant_conn
 from app.main import app
+
+# El default de `signature_secret` es "" desde que el arranque exige que venga
+# del entorno (11.5). Los tests fijan aquí un valor propio: sin él ejercerían el
+# HMAC con clave vacía, que es justo la configuración que el guard rechaza.
+settings.signature_secret = "test-signature-secret-0123456789abcdef"
 
 # X-User-Id now carries the internal auth_users.id UUID (not keycloak_sub).
 # auth-service /validate resolves keycloak_sub → auth_users.id before the gateway

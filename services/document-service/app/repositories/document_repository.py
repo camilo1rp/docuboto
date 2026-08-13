@@ -471,6 +471,41 @@ class DocumentRepository:
         )
         return _json_obj(row["disposition"]) if row is not None else None
 
+    async def set_publicable(
+        self,
+        document_id: uuid.UUID,
+        publicable: bool,
+        max_clearance: int,
+        actor: uuid.UUID | None,
+    ) -> asyncpg.Record | None:
+        """Marca o retira la publicación de oficio (11.1, Ley 1712 art. 12).
+
+        El gate va en el `WHERE` del UPDATE, como en `set_disposition`: publicar
+        es la decisión que hace visible un documento a cualquiera en internet, y
+        un actor sin nivel para leerlo no debe poder tomarla ni en la ventana
+        entre comprobar y escribir.
+
+        `nivel_seguridad = 1` está en el `WHERE` además del clearance: marcar
+        como publicable un documento reservado no es un caso a filtrar más
+        tarde, es una operación que no debe existir. El recorte de
+        `oai_repository._PUBLIC` volvería a exigirlo de todas formas, pero
+        dejarlo pasar aquí guardaría en la base una afirmación falsa —«esto es
+        público»— sobre un documento reservado, y la próxima
+        desclasificación lo publicaría sin que nadie lo hubiera decidido.
+        """
+        return await self._conn.fetchrow(
+            "UPDATE radicados SET publicable = $2, "
+            "    publicado_at  = CASE WHEN $2 THEN now() ELSE NULL END, "
+            "    publicado_por = CASE WHEN $2 THEN $4::uuid ELSE NULL END "
+            "WHERE id = $1 AND nivel_seguridad <= $3 AND nivel_seguridad = 1 "
+            "  AND status <> 'anulado' "
+            "RETURNING tracking_number, publicable, publicado_at",
+            document_id,
+            publicable,
+            max_clearance,
+            actor,
+        )
+
     async def get_security_context(self, document_id: uuid.UUID) -> asyncpg.Record | None:
         """Returns id, tracking_number and nivel_seguridad for a radicado by UUID.
 

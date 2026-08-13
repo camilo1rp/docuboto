@@ -6,6 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
     "asyncpg>=0.29.0",
     "redis>=5.0.0",
+    # `request_log` es middleware ASGI (11.2). Starlette ya viene con FastAPI en
+    # los once servicios, pero declararlo es lo que permite que el linter y los
+    # tests de esta librería lo verifiquen de verdad en vez de colapsarlo a `Any`.
+    "starlette>=0.37.0",
 ]
 
 [build-system]

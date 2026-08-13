@@ -318,6 +318,9 @@ def _fuid_inv_row(**kw) -> dict:
         "num_folios": 200,
         "folio_inicio": 1,
         "folio_fin": 200,
+        # Columna 9 del formato (11.11): la calcula Postgres en la propia
+        # consulta a partir de la pista de acceso.
+        "frecuencia_consulta": "baja",
     }
     base.update(kw)
     return base
@@ -839,3 +842,97 @@ async def test_devolver_prestamo_audit_failure_not_swallowed(monkeypatch: pytest
         await service.devolver_prestamo(pid, "ana", actor=USER_ID)
 
     assert mock_conn.fetchrow.call_count == 2
+
+
+# ── 11.11: el FUID salía sin cabecera ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_el_fuid_lleva_cabecera_con_la_entidad_productora(client_with_conn) -> None:
+    """Una lista de filas sin decir de qué entidad y de qué oficina es no es un
+    FUID: el receptor de una transferencia no tiene cómo saber qué recibe
+    (Ac. AGN 042/2002, Anexo)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = "Instituto Colombiano de Crédito Educativo"
+    mock_conn.fetch.return_value = [_fuid_inv_row()]
+
+    resp = await client.get(
+        "/api/v1/fuid",
+        params={
+            "unidad_administrativa": "Subdirección Administrativa",
+            "oficina_productora": "Grupo de Contratación",
+            "objeto": "Transferencia primaria 2026",
+        },
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    cabecera = resp.json()["cabecera"]
+    assert cabecera["entidad_productora"] == "Instituto Colombiano de Crédito Educativo"
+    assert cabecera["unidad_administrativa"] == "Subdirección Administrativa"
+    assert cabecera["oficina_productora"] == "Grupo de Contratación"
+    assert cabecera["objeto"] == "Transferencia primaria 2026"
+
+
+@pytest.mark.asyncio
+async def test_la_entidad_productora_no_la_elige_el_cliente(client_with_conn) -> None:
+    """Encabeza un documento oficial: un campo libre convertiría el inventario
+    de una entidad en el de cualquier otra con solo cambiar un parámetro."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = "Entidad Real"
+    mock_conn.fetch.return_value = [_fuid_inv_row()]
+
+    resp = await client.get(
+        "/api/v1/fuid",
+        params={"entidad_productora": "Entidad Suplantada"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.json()["cabecera"]["entidad_productora"] == "Entidad Real"
+
+
+@pytest.mark.asyncio
+async def test_el_xml_del_fuid_lleva_cabecera_y_frecuencia(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = "Entidad Real"
+    mock_conn.fetch.return_value = [_fuid_inv_row(frecuencia_consulta="alta")]
+
+    resp = await client.get(
+        "/api/v1/fuid.xml", params={"objeto": "Entrega de cargo"}, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 200
+    assert "<cabecera" in resp.text or "cabecera" in resp.text
+    assert "Entidad Real" in resp.text
+    assert "Entrega de cargo" in resp.text
+    assert "alta" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_la_frecuencia_de_consulta_se_deriva_de_la_pista_de_acceso(
+    client_with_conn,
+) -> None:
+    """Columna 9 del formato. En papel es una estimación de memoria; aquí sale de
+    `audit_log`, que el servicio ya escribe en cada consulta de expediente.
+
+    El filtro por `tenant_slug` es lo que se comprueba con más cuidado:
+    `audit_log` está en `public` y es la ÚNICA tabla compartida entre entidades,
+    así que sin él dos entidades con códigos de expediente coincidentes —y
+    `code` es un consecutivo— se contarían las consultas la una a la otra.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = "Entidad Real"
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return [_fuid_inv_row()]
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    await client.get("/api/v1/fuid", headers=TENANT_HEADERS)
+
+    inventario = next(q for q in consultas if "expediente_unidad" in q)
+    assert "public.audit_log" in inventario
+    assert "al.tenant_slug" in inventario
+    assert "12 months" in inventario

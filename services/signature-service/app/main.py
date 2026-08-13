@@ -15,7 +15,8 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import events
+from orpycamcp_common import events, request_log
+from orpycamcp_common import secrets as common_secrets
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -34,6 +35,12 @@ logger = logging.getLogger("signature.startup")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("signature-service starting up")
+    # Antes de tocar nada: sin el secreto HMAC este servicio no firma, *firma
+    # mal* — con la clave publicada en el repositorio. Fallar aquí es ruidoso y
+    # reparable; arrancar es un daño que solo se descubre auditando firmas.
+    common_secrets.require_secrets(
+        {"SIGNATURE_SECRET": settings.signature_secret}, servicio="signature-service"
+    )
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     await init_redis(settings.redis_url)
     # Re-sync firma_solicitud.nivel_seguridad on reclassification events (RF-SEG-08).
@@ -60,6 +67,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
+# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
+# escribe, que es el mismo defecto de partida movido un salto más allá.
+app.add_middleware(request_log.RequestLogMiddleware, servicio="signature-service")
 
 app.include_router(signature_router)
 app.include_router(cadena_router)

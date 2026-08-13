@@ -154,10 +154,76 @@ nano .env
 | `KEYCLOAK_*_SECRET` | Secrets de clientes OAuth2 | `<32 char hex>` |
 | `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN` y el `redirect_uri` del login) | `app.yourdomain.com` |
 | `API_PUBLIC_HOSTNAME` | FQDN público del api-gateway que ve el navegador | `api.yourdomain.com` |
-| `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar | `<openssl rand -base64 32>` |
+| `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
+| `MINIO_ROOT_USER` | Usuario del almacén de objetos. **storage-service no arranca sin él** | `orpyca_prod` |
 | `KNOWLEDGE_INTERNAL_TOKEN` | Token de ingesta interna (E21). Vacío ⇒ ingesta fail-closed | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | Host SMTP | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | Contraseña o token de aplicación SMTP | `app-specific-password` |
+
+### Variables que impiden el arranque si faltan
+
+Tres secretos tenían **valor por defecto funcional** en el código, publicado en un
+repositorio AGPL: `SIGNATURE_SECRET` valía `change-me-in-production` y las
+credenciales de MinIO eran las de desarrollo que aparecen en el propio
+`CLAUDE.md`. Un despliegue que se olvidara de definirlos **no fallaba**: arrancaba
+y firmaba —o guardaba los anexos oficiales— con una clave que cualquiera puede
+leer en GitHub.
+
+Ahora el default es cadena vacía **y** el arranque lo comprueba: `signature-service`
+y `storage-service` se niegan a servir sin `SIGNATURE_SECRET`,
+`MINIO_ACCESS_KEY` y `MINIO_SECRET_KEY`. También se rechaza el valor de ejemplo
+(`change-me-in-production` y similares), por si alguien copia el `.env.example`
+sin tocarlo. El mensaje de error nombra la variable, nunca el valor recibido.
+
+Si además se usa la ingesta de correo (E19), `IMAP_TENANT_SLUG` es obligatoria:
+declara **a qué entidad pertenece el buzón**. Sin ella, `POST /ingest/email/poll`
+responde `503` aunque IMAP esté configurado.
+
+### CORS
+
+`CORS_ALLOW_ORIGINS` está **vacío por defecto y el middleware no se instala**. No
+es una regresión: el frontend habla con el gateway **desde el servidor** (SSR), no
+desde el navegador, así que el despliegue típico no necesita CORS. Solo hay que
+declararlo para una integración de terceros o un SPA en otro dominio:
+
+```bash
+CORS_ALLOW_ORIGINS=https://sgd.entidad.gov.co,https://portal.entidad.gov.co
+```
+
+> El comodín `*` se acepta pero **desactiva las credenciales**. La configuración
+> anterior era `allow_origins=["*"]` **junto con** `allow_credentials=True`, en
+> duro: con credenciales, Starlette no puede responder `*` y refleja el `Origin`
+> recibido — cualquier página de internet podía llamar al gateway con las
+> credenciales del visitante.
+
+### Particiones del registro de auditoría
+
+`public.audit_log` está declarado particionado por mes desde su primera migración,
+pero la tarea que crea las particiones no existía: todo se acumulaba en
+`audit_log_default`. Además de la lentitud, la trampa se cierra con el tiempo —
+PostgreSQL **rechaza** crear una partición cuyo rango solape con filas que ya están
+en el default.
+
+La migración `005_audit_partition_job.sql` instala `ensure_audit_partitions(n)` y la
+ejecuta una vez. Prográmala mensualmente:
+
+```bash
+# Crea (y endurece) las particiones de los próximos 3 meses. Idempotente.
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+    -v "$PWD/scripts:/scripts:ro" auth-service \
+    python /scripts/audit_partitions.py --meses 3
+
+# Para la supervisión: 0 si están al día, 1 si falta la del mes siguiente.
+... python /scripts/audit_partitions.py --verificar
+```
+
+Se adelanta varios meses a propósito: si el cron falla en silencio, hay margen
+antes de que los asientos vuelvan a caer en la partición por defecto.
+
+> El histórico que ya está en `audit_log_default` **no se mueve**. Reescribir filas
+> de un registro append-only con cadena de hash es tocar la base probatoria de todo
+> el archivo, y ordenar lo viejo no lo compensa. La función arranca en el primer mes
+> que no solape: el default se congela y deja de crecer.
 
 ### Contrato de issuer (`iss`) — crítico
 
@@ -568,16 +634,23 @@ Configurar alertas para:
 - [ ] Rate limiting en api-gateway activado
 - [ ] Headers de seguridad (HSTS, X-Content-Type-Options, etc.)
 
-### Headers de seguridad en Nginx
+### Cabeceras de seguridad en Nginx
 
-```nginx
-# infra/nginx.conf
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-add_header X-Content-Type-Options "nosniff" always;
-add_header X-Frame-Options "SAMEORIGIN" always;
-add_header X-XSS-Protection "1; mode=block" always;
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-```
+Están en `infra/nginx.conf.example`, que hasta ahora esta guía mandaba copiar sin
+que el archivo existiera. Lo importante de esa plantilla no son las cabeceras: son
+las tres cosas que dependen de `X-Forwarded-*` y fallan en silencio sin ellas — el
+`redirect_uri` del login PKCE, la IP real que se sella en `audit_log` (registro con
+valor probatorio) y el reparto del límite por IP. Lleva también `proxy_buffering off`,
+sin el cual nginx vuelve a acumular en disco cada descarga que el sistema sirve por
+trozos (anexos, ZIP de expediente, AIP).
+
+**HSTS va en el proxy, no en la aplicación.** Es una promesa sobre el dominio entero
+y quien puede hacerla es quien termina el TLS; el frontend SSR no la emite por eso
+mismo — si la emitiera un despliegue servido por `http`, dejaría el dominio
+inalcanzable durante un año. Las demás cabeceras (CSP, `nosniff`, `Referrer-Policy`,
+`X-Frame-Options`, `Permissions-Policy`) **las emite el propio SSR**: no las
+dupliques en nginx, porque `add_header` no sustituye la del backend y dos valores
+distintos de la misma cabecera dan un comportamiento que depende del navegador.
 
 ### Auditoría de seguridad
 

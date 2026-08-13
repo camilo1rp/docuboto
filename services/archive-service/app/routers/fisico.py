@@ -16,7 +16,16 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
@@ -324,12 +333,25 @@ async def list_movimientos(
 async def get_fuid(
     ubicacion_id: uuid.UUID | None = Query(default=None),
     trd_serie_id: uuid.UUID | None = Query(default=None),
+    # Campos declarativos de la cabecera del FUID (Ac. AGN 042/2002, Anexo).
+    # Los rellena quien elabora el inventario, igual que en papel — el sistema no
+    # los verifica y por eso no los inventa: un valor por defecto plausible sería
+    # peor que un hueco, porque nadie lo revisaría. La `entidadProductora`, en
+    # cambio, la resuelve el servidor desde `public.tenants` (11.11).
+    unidad_administrativa: str | None = Query(default=None, max_length=200),
+    oficina_productora: str | None = Query(default=None, max_length=200),
+    objeto: str | None = Query(default=None, max_length=500),
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FuidResponse:
     return await FisicoService(conn, tenant_slug).generate_fuid(
-        ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id, user_id=user_id
+        ubicacion_id=ubicacion_id,
+        trd_serie_id=trd_serie_id,
+        user_id=user_id,
+        unidad_administrativa=unidad_administrativa,
+        oficina_productora=oficina_productora,
+        objeto=objeto,
     )
 
 
@@ -341,11 +363,24 @@ async def get_fuid(
 async def get_fuid_xml(
     ubicacion_id: uuid.UUID | None = Query(default=None),
     trd_serie_id: uuid.UUID | None = Query(default=None),
+    # Campos declarativos de la cabecera del FUID (Ac. AGN 042/2002, Anexo).
+    # Los rellena quien elabora el inventario, igual que en papel — el sistema no
+    # los verifica y por eso no los inventa: un valor por defecto plausible sería
+    # peor que un hueco, porque nadie lo revisaría. La `entidadProductora`, en
+    # cambio, la resuelve el servidor desde `public.tenants` (11.11).
+    unidad_administrativa: str | None = Query(default=None, max_length=200),
+    oficina_productora: str | None = Query(default=None, max_length=200),
+    objeto: str | None = Query(default=None, max_length=500),
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> Response:
     xml = await FisicoService(conn, tenant_slug).generate_fuid_xml(
-        ubicacion_id=ubicacion_id, trd_serie_id=trd_serie_id, user_id=user_id
+        ubicacion_id=ubicacion_id,
+        trd_serie_id=trd_serie_id,
+        user_id=user_id,
+        unidad_administrativa=unidad_administrativa,
+        oficina_productora=oficina_productora,
+        objeto=objeto,
     )
     return Response(content=xml, media_type="application/xml")

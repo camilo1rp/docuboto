@@ -54,7 +54,13 @@ class Settings(BaseSettings):
     # Server-side HMAC secret — makes firma_blob non-reproducible from public data
     # (RF-FIR-12, D-01). Must be at least 32 random bytes; rotate with a migration
     # of existing firmas if compromised. NEVER commit the real value.
-    signature_secret: str = "change-me-in-production"
+    #
+    # Default VACÍO a propósito. El anterior (`"change-me-in-production"`) era un
+    # secreto funcional publicado en un repositorio AGPL: un despliegue que se
+    # olvidara de definirlo arrancaba y firmaba con una clave que cualquiera
+    # puede leer. El arranque ahora lo exige — ver `main.py` y
+    # `orpycamcp_common.secrets`.
+    signature_secret: str = ""
 
     # --- Sello institucional XAdES-B (app/core/keys.py, RT-16, Inc.1) ---
     # Directorio raíz montado como secreto/volumen Docker de solo lectura, con

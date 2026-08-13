@@ -82,7 +82,7 @@ Ver el detalle de propósito, rol y endpoints de cada vista en
 ## Integración con la plataforma
 
 - **Autenticación:** OAuth2 Authorization Code + **PKCE** contra Keycloak. El cliente
-  público **`orpyca-frontend`** existe en `infra/keycloak/realm-export.json`
+  público **`orpyca-frontend`** existe en `infra/keycloak/realm-dev.json`
   (redirectUris `:19300` en Docker y `:5173` en dev local con Vite). El `access_token`
   es **httpOnly y server-only** — nunca se expone al JS del cliente (D-05).
 - **API:** todas las llamadas pasan por el **`api-gateway`** (nunca directo a un

@@ -231,9 +231,11 @@ services:
     #   # Certificado TLS (si NO terminas TLS en el reverse proxy):
     #   - ./certs/tls.crt:/etc/x509/https/tls.crt:ro
     #   - ./certs/tls.key:/etc/x509/https/tls.key:ro
-    #   # Realm de PRODUCCIÓN propio (NO reutilizar el realm-export.json de dev:
-    #   # ese trae usuarios de prueba y redirectUris localhost). El realm de prod
-    #   # debe tener redirectUris/webOrigins SOLO con https://app.yourdomain.com:
+    #   # Realm de PRODUCCIÓN propio. NO reutilizar `realm-dev.json`: trae dos
+    #   # usuarios con contraseña publicada en el repositorio, secretos de cliente
+    #   # `change-me-in-production`, `sslRequired: none` y redirectUris a localhost.
+    #   # Parte de `infra/keycloak/realm-prod.json.example`, cópialo a
+    #   # `realm-prod.json` y sustituye todo lo que aparece entre <>:
     #   - ./keycloak/realm-prod.json:/opt/keycloak/data/import/realm-prod.json:ro
     depends_on:
       postgres:

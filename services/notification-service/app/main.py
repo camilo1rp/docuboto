@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import events
+from orpycamcp_common import events, request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, init_pool
@@ -49,6 +49,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
+# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
+# escribe, que es el mismo defecto de partida movido un salto más allá.
+app.add_middleware(request_log.RequestLogMiddleware, servicio="notification-service")
 
 app.include_router(health.router)
 app.include_router(notifications.router)

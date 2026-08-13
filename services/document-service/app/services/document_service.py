@@ -119,7 +119,7 @@ async def audit_search_access(
             canal=canal,
             payload={**filtros, "total": total, "page": page, "size": size},
         )
-    except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+    except Exception:
         logger.warning("audit.append (%s) failed", _SEARCH_ACTION, exc_info=True)
 
 
@@ -306,7 +306,7 @@ class DocumentService:
                     "nivel_seguridad": radicado.nivel_seguridad,
                 },
             )
-        except Exception:  # noqa: BLE001 — evento best-effort
+        except Exception:
             logger.warning(
                 "No se pudo publicar el evento de radicado %s",
                 radicado.tracking_number,
@@ -325,7 +325,13 @@ class DocumentService:
         return disp
 
     async def set_disposition(
-        self, document_id: uuid.UUID, payload: DispositionUpdate, max_clearance: int
+        self,
+        document_id: uuid.UUID,
+        payload: DispositionUpdate,
+        max_clearance: int,
+        *,
+        actor: str | None = None,
+        canal: str = "system",
     ) -> dict:
         """Fija/actualiza (merge) los metadatos de disposición (RF-MET-08).
 
@@ -333,15 +339,91 @@ class DocumentService:
         llevan el gate de clearance. Si el radicado se reclasifica POR ENCIMA del
         llamante entre una y otra, el UPDATE no encuentra fila y se eleva 404 en
         lugar de devolver un resultado vacío que aparentaría éxito.
+
+        La escritura y su asiento son **un solo acto** (misma transacción): la
+        disposición decide entre conservar y destruir (Ley 594/2000 art. 24), y
+        un cambio sin asiento —o un asiento sin cambio— es justamente lo que la
+        trazabilidad legal no admite. Aquí NO es best-effort, a diferencia de
+        las trazas de lectura: si la auditoría falla, el cambio no ocurre.
         """
         exists, current = await self._repo.get_disposition(document_id, max_clearance)
         if not exists:
             raise DocumentNotFoundError(str(document_id))
-        merged = {**current, **payload.model_dump(exclude_unset=True)}
-        result = await self._repo.set_disposition(document_id, merged, max_clearance)
-        if result is None:
-            raise DocumentNotFoundError(str(document_id))
+        cambios = payload.model_dump(exclude_unset=True)
+        merged = {**current, **cambios}
+
+        async with self._conn.transaction():
+            result = await self._repo.set_disposition(document_id, merged, max_clearance)
+            if result is None:
+                raise DocumentNotFoundError(str(document_id))
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.disposition_set",
+                object_type="radicado",
+                object_ref=str(document_id),
+                actor=actor,
+                canal=canal,
+                # El estado ANTERIOR va en el asiento: sin él, la cadena dice
+                # que alguien fijó «eliminar» pero no si eso cambió algo ni qué
+                # había antes, que es la mitad de la pregunta cuando se audita
+                # una eliminación años después.
+                payload={"anterior": current, "cambios": cambios, "resultado": result},
+            )
         return result
+
+    async def set_publicacion(
+        self,
+        document_id: uuid.UUID,
+        publicar: bool,
+        fundamento: str,
+        max_clearance: int,
+        *,
+        actor: str | None = None,
+        canal: str = "system",
+    ) -> dict:
+        """Acto de publicación de oficio (11.1, Ley 1712/2014 art. 12).
+
+        Mutación y asiento son **un solo acto**, como en la disposición: publicar
+        hace visible un documento a cualquiera en internet, y despublicar lo
+        retira; ambas decisiones tienen que poder responderse años después con
+        quién, cuándo y por qué. Si la auditoría falla, la publicación no ocurre.
+
+        El 404 es el mismo para «no existe», «te supera el clearance», «no es de
+        nivel público» y «está anulado». No es pereza: distinguirlos convertiría
+        este endpoint en un oráculo sobre la existencia y la clasificación de
+        radicados reservados, que es justo lo que el resto del servicio evita.
+        """
+        actor_uuid: uuid.UUID | None = None
+        if actor:
+            try:
+                actor_uuid = uuid.UUID(actor)
+            except ValueError:
+                actor_uuid = None
+
+        async with self._conn.transaction():
+            fila = await self._repo.set_publicable(
+                document_id, publicar, max_clearance, actor_uuid
+            )
+            if fila is None:
+                raise DocumentNotFoundError(str(document_id))
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.publicacion_activada" if publicar else "document.publicacion_retirada",
+                object_type="radicado",
+                object_ref=fila["tracking_number"],
+                actor=actor,
+                canal=canal,
+                payload={"publicable": publicar, "fundamento": fundamento},
+            )
+        return {
+            "tracking_number": fila["tracking_number"],
+            "publicable": fila["publicable"],
+            "publicado_at": fila["publicado_at"],
+        }
 
     async def _resolve_dependencia(self, codigo: int) -> str:
         """Valida la dependencia por código y devuelve su nombre (denormalizado)."""
@@ -485,7 +567,7 @@ class DocumentService:
                 canal=canal,
                 payload={"file_id": str(file_id), "nivel_seguridad": nivel_seguridad},
             )
-        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+        except Exception:
             logger.warning("audit.append (anexo_descargado) failed", exc_info=True)
 
     async def get_by_tracking_number(
@@ -529,7 +611,7 @@ class DocumentService:
                 actor=str(user_id),
                 canal=canal,
             )
-        except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+        except Exception:
             logger.warning("audit.append (radicado_consultado) failed", exc_info=True)
 
     async def crear_respuesta(
@@ -703,7 +785,7 @@ class DocumentService:
                         "plazo_reserva_meses": plazo_reserva_meses,
                     },
                 )
-            except Exception:  # noqa: BLE001 — evento best-effort
+            except Exception:
                 logger.warning(
                     "No se pudo publicar el evento de reclasificación %s",
                     result_tracking,
@@ -764,7 +846,7 @@ class DocumentService:
                 actor=str(actor) if actor else None,
                 payload={"total": len(items)},
             )
-        except Exception:  # noqa: BLE001 — auditoría best-effort, nunca degrada a 500
+        except Exception:
             logger.warning("audit.append (indice_clasificados) failed", exc_info=True)
         return IndiceClasificadosResponse(total=len(items), items=items)
 

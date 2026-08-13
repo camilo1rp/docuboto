@@ -22,9 +22,19 @@ from datetime import datetime
 
 import asyncpg
 
-# Un radicado es cosechable SOLO si es público y no está anulado. Fuente única de
-# verdad del recorte; cualquier consulta OAI la usa → no hay canal lateral de fuga.
-_PUBLIC = "nivel_seguridad = 1 AND status <> 'anulado'"
+# Un radicado es cosechable SOLO si la entidad lo PUBLICÓ, es público y no está
+# anulado. Fuente única de verdad del recorte; cualquier consulta OAI la usa → no
+# hay canal lateral de fuga.
+#
+# `publicable` (11.1, Ley 1712/2014 art. 12) se añade a las otras dos, no las
+# sustituye. Antes, «público» se deducía de la ausencia de reserva: un radicado
+# sin clasificar se cosechaba solo. Ahora hace falta un acto positivo de la
+# entidad (`POST /documents/{id}/publicacion`), y aun así un documento reservado
+# sigue sin poder publicarse aunque alguien marque la casilla — las tres
+# condiciones se exigen a la vez, a propósito: la publicación es una decisión de
+# transparencia y la clasificación una de reserva, y ninguna debe poder anular a
+# la otra por descuido.
+_PUBLIC = "publicable AND nivel_seguridad = 1 AND status <> 'anulado'"
 
 _RECORD_COLS = "tracking_number, doc_type, subject, origin_dept, registered_at, tenant_code"
 

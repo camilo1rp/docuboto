@@ -8,20 +8,19 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 import logging
-import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.middleware.auth import JWTValidationMiddleware
 from app.middleware.path_guard import PathNormalizationMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.request_context import RequestContextMiddleware
 from app.routers import health, openapi, proxy
 
 logging.basicConfig(level=settings.log_level.upper())
@@ -75,31 +74,45 @@ app = FastAPI(
     redoc_url=None,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Starlette inserts at index 0 then reverses to build the stack.
 # To get PathNormalization → RateLimit → JWT on the request path, se añaden en el
-# orden INVERSO al que corren. El guard de ruta va el ÚLTIMO (= el más externo) a
-# propósito: valida antes que la autenticación y que el ruteo, que son las dos
-# decisiones que un salto `..` engaña (ver middleware/path_guard.py).
+# orden INVERSO al que corren. El guard de ruta va antes de la autenticación y
+# del ruteo a propósito: son las dos decisiones que un salto `..` engaña (ver
+# middleware/path_guard.py).
 app.add_middleware(JWTValidationMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(PathNormalizationMiddleware)
+
+_cors_origins = settings.cors_origins_list
+if _cors_origins:
+    # `*` y credenciales son incompatibles por seguridad, no por capricho del
+    # navegador: con credenciales Starlette refleja el `Origin` recibido, que
+    # equivale a autorizarlos todos. Si el operador pide comodín, se le da
+    # comodín SIN credenciales.
+    _comodin = "*" in _cors_origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if _comodin else _cors_origins,
+        allow_credentials=not _comodin,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logger.info(
+        "CORS habilitado para %s (credenciales: %s)",
+        "cualquier origen" if _comodin else ", ".join(_cors_origins),
+        not _comodin,
+    )
+else:
+    logger.info("CORS deshabilitado (CORS_ALLOW_ORIGINS vacío): el frontend habla por SSR")
+
+# El MÁS externo: el identificador de petición tiene que existir antes de que
+# nada —incluido el rechazo por ruta o por rate limit— tenga algo que registrar.
+app.add_middleware(RequestContextMiddleware)
 
 app.include_router(health.router)
 app.include_router(openapi.router)
 app.include_router(proxy.router)
 
-
-@app.middleware("http")
-async def add_gateway_headers(request: Request, call_next: Any) -> Response:
-    response: Response = await call_next(request)
-    response.headers["X-Request-Id"] = str(uuid.uuid4())
-    response.headers["X-Gateway-Version"] = "1.0.0"
-    return response
+# `X-Request-Id` y `X-Gateway-Version` los pone ahora RequestContextMiddleware,
+# que corre ANTES del proxy: el identificador viaja a los servicios en vez de
+# inventarse al volver.

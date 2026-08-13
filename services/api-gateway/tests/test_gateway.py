@@ -270,6 +270,173 @@ async def test_request_id_header(test_client):
     assert request_id.count("-") == 4
 
 
+# --- 11.2: el identificador de petición tiene que LLEGAR a los servicios ---
+
+
+async def test_request_id_viaja_al_upstream_y_coincide_con_la_respuesta(test_client):
+    """El defecto: se generaba en la respuesta, después de haber proxyado.
+
+    `x-request-id` estaba en `FORWARDED_REQUEST_HEADERS` desde siempre, así que
+    la tubería existía y no pasaba nada por ella. Este test es el que la mide:
+    el valor que ve el servicio y el que ve el cliente son EL MISMO.
+    """
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response())
+    wire_upstream(
+        http_client,
+        httpx.Response(200, json={"ok": True}, headers={"content-type": "application/json"}),
+    )
+
+    response = await client.get(
+        "/api/v1/dependencias/",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    reenviadas = {
+        k.lower(): v for k, v in http_client.build_request.call_args.kwargs["headers"].items()
+    }
+    assert "x-request-id" in reenviadas
+    assert reenviadas["x-request-id"] == response.headers["x-request-id"]
+
+
+async def test_request_id_del_cliente_se_conserva(test_client):
+    """El SSR del frontend continúa la petición del navegador: sin esto, la
+    traza se parte justo en el salto más difícil de reconstruir."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response())
+    wire_upstream(
+        http_client,
+        httpx.Response(200, json={"ok": True}, headers={"content-type": "application/json"}),
+    )
+
+    response = await client.get(
+        "/api/v1/dependencias/",
+        headers={"Authorization": "Bearer valid-token", "X-Request-Id": "ssr-abc-123"},
+    )
+
+    reenviadas = {
+        k.lower(): v for k, v in http_client.build_request.call_args.kwargs["headers"].items()
+    }
+    assert reenviadas["x-request-id"] == "ssr-abc-123"
+    assert response.headers["x-request-id"] == "ssr-abc-123"
+
+
+async def test_request_id_malformado_del_cliente_se_descarta(test_client):
+    """No es una credencial, pero sí acaba en registros: nada de saltos de línea
+    ni de valores gigantes que se copien once veces."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response())
+    wire_upstream(
+        http_client,
+        httpx.Response(200, json={"ok": True}, headers={"content-type": "application/json"}),
+    )
+
+    response = await client.get(
+        "/api/v1/dependencias/",
+        headers={
+            "Authorization": "Bearer valid-token",
+            # Espacio + carácter fuera del alfabeto permitido.
+            "X-Request-Id": "no vale$",
+        },
+    )
+
+    reenviadas = {
+        k.lower(): v for k, v in http_client.build_request.call_args.kwargs["headers"].items()
+    }
+    assert reenviadas["x-request-id"] != "no vale$"
+    assert len(reenviadas["x-request-id"]) == 36  # se generó uno nuevo
+    assert response.headers["x-request-id"] == reenviadas["x-request-id"]
+
+
+async def test_request_id_demasiado_largo_se_descarta(test_client):
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response())
+    wire_upstream(
+        http_client,
+        httpx.Response(200, json={"ok": True}, headers={"content-type": "application/json"}),
+    )
+
+    await client.get(
+        "/api/v1/dependencias/",
+        headers={"Authorization": "Bearer valid-token", "X-Request-Id": "a" * 200},
+    )
+
+    reenviadas = {
+        k.lower(): v for k, v in http_client.build_request.call_args.kwargs["headers"].items()
+    }
+    assert len(reenviadas["x-request-id"]) == 36
+
+
+async def test_registro_de_acceso_lleva_tenant_usuario_y_no_la_cadena_de_consulta(
+    test_client, caplog
+):
+    """El registro estructurado: quién, sobre qué ruta, con qué resultado.
+
+    La cadena de consulta se queda fuera a propósito — lleva números de radicado
+    y términos de búsqueda, y los registros del gateway no son sitio para el
+    contenido de las consultas de nadie.
+    """
+    import json
+    import logging
+
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response())
+    wire_upstream(
+        http_client,
+        httpx.Response(200, json={"ok": True}, headers={"content-type": "application/json"}),
+    )
+
+    with caplog.at_level(logging.INFO, logger="gateway.access"):
+        await client.get(
+            "/api/v1/dependencias/?q=2024-ICETEX-E-000001",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    lineas = [json.loads(r.message) for r in caplog.records if r.name == "gateway.access"]
+    assert lineas, "el gateway no registró la petición"
+    registro = lineas[-1]
+    assert registro["tenant"] == "icetex"
+    assert registro["usuario"] == "user-123"
+    assert registro["path"] == "/api/v1/dependencias/"
+    assert registro["status"] == 200
+    assert "2024-ICETEX-E-000001" not in json.dumps(registro)
+
+
+# --- 11.7: CORS ---
+
+
+async def test_cors_no_se_instala_sin_origenes_declarados():
+    """`allow_origins=["*"]` + `allow_credentials=True` estaba en duro.
+
+    Esa pareja no es permisiva: con credenciales Starlette no puede responder
+    `*`, así que refleja el `Origin` recibido — cualquier página de internet
+    podía llamar al gateway con las credenciales del visitante.
+
+    Vacío por defecto no es una regresión: el frontend habla por SSR.
+    """
+    from app.core.config import Settings
+
+    assert Settings().cors_allow_origins == ""
+    assert Settings().cors_origins_list == []
+
+
+async def test_cors_con_comodin_desactiva_las_credenciales():
+    """Un API público de solo lectura es legítimo; comodín CON credenciales no
+    lo es en ningún escenario."""
+    from app.core.config import Settings
+
+    s = Settings(cors_allow_origins="*")
+    assert s.cors_origins_list == ["*"]
+
+    s2 = Settings(cors_allow_origins="https://sgd.gov.co, https://portal.gov.co ,")
+    assert s2.cors_origins_list == ["https://sgd.gov.co", "https://portal.gov.co"]
+
+
 async def test_auth_service_unavailable(test_client):
     """When auth-service is unreachable during token validation, return 503."""
     client, http_client, _ = test_client

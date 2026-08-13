@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     imap_password: str = ""
     imap_use_ssl: bool = True
     imap_mailbox: str = "INBOX"
+    # Entidad DUEÑA del buzón. El proceso tiene UN solo buzón configurado, pero
+    # el endpoint de poll acepta el tenant de la cabecera: sin este campo, un
+    # usuario de la entidad A dispara la ingesta y los correos del buzón —que
+    # pueden ser de la entidad B— acaban radicados en A y marcados como leídos.
+    # No es una fuga de lectura: es una apropiación irreversible de documentos
+    # ajenos, porque el correo ya no vuelve a aparecer como no leído.
+    #
+    # Vacío por defecto = fail-closed: la ingesta responde 503 aunque IMAP esté
+    # configurado. Es deliberado — un buzón sin dueño declarado no tiene forma
+    # de saber en qué entidad debe radicar.
+    imap_tenant_slug: str = ""
 
     # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
     # que el gateway declara público sin autenticación.

@@ -23,6 +23,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from orpycamcp_common import request_log
+from orpycamcp_common import secrets as common_secrets
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -41,6 +43,18 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("storage-service starting up")
+
+    # Sin credenciales propias de MinIO no se arranca: las de desarrollo están
+    # publicadas en este repositorio y en el CLAUDE.md, y un despliegue que las
+    # heredara dejaría el almacén de anexos —los documentos oficiales— accesible
+    # con una clave conocida.
+    common_secrets.require_secrets(
+        {
+            "MINIO_ACCESS_KEY": settings.minio_access_key,
+            "MINIO_SECRET_KEY": settings.minio_secret_key,
+        },
+        servicio="storage-service",
+    )
 
     # Guard de arranque de preservación WORM (E10 Increment A): en producción,
     # un modo de retención distinto de COMPLIANCE es evadible por un usuario con
@@ -87,6 +101,11 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
+# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
+# escribe, que es el mismo defecto de partida movido un salto más allá.
+app.add_middleware(request_log.RequestLogMiddleware, servicio="storage-service")
 
 app.include_router(storage_router)
 app.include_router(preservacion_router)

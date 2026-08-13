@@ -128,6 +128,57 @@ class DispositionUpdate(BaseModel):
     accion: Literal["conservar", "eliminar", "transferir", "seleccionar"] | None = None
     confirmado: bool | None = None
     marcado_eliminacion: bool | None = None
+    # Motivación del acto. La disposición decide entre conservar y DESTRUIR un
+    # documento oficial (Ley 594/2000 art. 24), y hasta ahora se podía fijar
+    # «eliminar» sin decir por qué y sin dejar rastro. Mismo criterio que la
+    # reclasificación, que ya exige fundamento: un acto irreversible sobre el
+    # patrimonio documental se motiva o no se hace.
+    fundamento: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _exigir_fundamento_al_eliminar(self) -> "DispositionUpdate":
+        """El fundamento es obligatorio SOLO en el camino destructivo.
+
+        Marcar «conservar» o fijar el programa no destruye nada y exigirlo ahí
+        sería el defecto simétrico: fricción que no protege y que acaba
+        rellenándose con una palabra cualquiera, devaluando el campo donde sí
+        importa.
+
+        NOTA de alcance: esto NO deriva la disposición de la TRD. La tabla de
+        retención vive en archive-service y el radicado no guarda hoy su serie,
+        así que derivarla exige un cambio de modelo y un contrato entre
+        servicios. Mientras tanto, el fundamento y el asiento en `audit_log` son
+        el control compensatorio: la decisión sigue siendo humana, pero deja de
+        ser anónima y silenciosa.
+        """
+        destructivo = self.accion == "eliminar" or self.marcado_eliminacion is True
+        if destructivo and not (self.fundamento and self.fundamento.strip()):
+            raise ValueError(
+                "fundamento es obligatorio al disponer la eliminación de un radicado "
+                "(Ley 594/2000 art. 24): la eliminación es irreversible y debe quedar "
+                "motivada en el registro de auditoría"
+            )
+        return self
+
+
+class PublicacionRequest(BaseModel):
+    """Acto de publicación de oficio (11.1, Ley 1712/2014 art. 12).
+
+    `publicar=False` retira la publicación. El fundamento es obligatorio en
+    AMBOS sentidos: publicar difunde información de la entidad a cualquiera en
+    internet y retirarla la deja de difundir, y las dos decisiones tienen que
+    poder explicarse ante quien las revise. Un campo obligatorio solo en un
+    sentido invita a usar el otro para deshacer sin dar cuentas.
+    """
+
+    publicar: bool
+    fundamento: str = Field(..., min_length=1, max_length=500)
+
+
+class PublicacionResponse(BaseModel):
+    tracking_number: str
+    publicable: bool
+    publicado_at: datetime | None = None
 
 
 class DispositionResponse(BaseModel):

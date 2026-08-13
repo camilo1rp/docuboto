@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from orpycamcp_common import events
+from orpycamcp_common import events, request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -75,6 +75,11 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
+# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
+# escribe, que es el mismo defecto de partida movido un salto más allá.
+app.add_middleware(request_log.RequestLogMiddleware, servicio="workflow-service")
 
 app.include_router(workflow_router)
 app.include_router(rules_router)

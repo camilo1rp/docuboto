@@ -100,7 +100,10 @@ services:
     ports:
       - "19180:8080"
     volumes:
-      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      # `realm-dev.json`, no `realm-export.json`: el nombre anterior no decía para
+      # qué entorno servía, y este trae usuarios con contraseña publicada en el
+      # repositorio. Producción parte de `realm-prod.json.example` (11.6).
+      - ./infra/keycloak/realm-dev.json:/opt/keycloak/data/import/realm-dev.json:ro
     networks:
       - orpycamcp-net
     depends_on:

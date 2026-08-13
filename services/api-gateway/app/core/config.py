@@ -32,6 +32,31 @@ class Settings(BaseSettings):
     rate_limit_per_ip: int = 100
     rate_limit_global: int = 1000
 
+    # Orígenes autorizados a llamar al gateway desde un navegador (CSV).
+    #
+    # Antes estaba en duro `allow_origins=["*"]` **junto con**
+    # `allow_credentials=True`. Esa pareja no es "permisiva": Starlette, cuando
+    # hay credenciales, no puede responder `*` — así que refleja el `Origin` que
+    # venga, y el resultado es que CUALQUIER página de internet podía llamar al
+    # gateway con las credenciales del visitante. Es la definición de CSRF.
+    #
+    # Vacío por defecto = **no se instala el middleware CORS**. No es una
+    # regresión: el frontend habla con el gateway desde el servidor (SSR), no
+    # desde el navegador, así que el despliegue normal no necesita CORS. Quien
+    # sí lo necesite (una integración de terceros, un SPA en otro dominio) tiene
+    # que enumerar los orígenes, que es exactamente la decisión que antes se
+    # tomaba sola. Ejemplo:
+    #   CORS_ALLOW_ORIGINS=https://sgd.entidad.gov.co,https://portal.entidad.gov.co
+    #
+    # El comodín `*` se acepta pero **desactiva las credenciales** (ver
+    # `app/main.py`): un API público de solo lectura es un caso legítimo; un
+    # comodín con credenciales no lo es en ningún escenario.
+    cors_allow_origins: str = ""
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
     # Redes de los intermediarios de CONFIANZA (CSV de CIDR o direcciones), en
     # orden indiferente. Solo se cree lo que estas redes escriben en
     # `X-Forwarded-For`; ver `app/core/client_ip.py` para la regla completa.

@@ -42,7 +42,7 @@ export const KEYCLOAK_URL = PUBLIC_KEYCLOAK_URL;
 /** Realm de OrpycaMCP */
 export const KEYCLOAK_REALM = "orpycamcp";
 
-/** Client ID público del frontend (sin secret) — ver realm-export.json */
+/** Client ID público del frontend (sin secret) — ver realm-dev.json */
 export const KEYCLOAK_CLIENT_ID = "orpycamcp-frontend";
 
 /**

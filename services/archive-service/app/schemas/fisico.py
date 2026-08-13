@@ -144,9 +144,38 @@ class FuidRow(BaseModel):
     folio_fin: int | None
     fecha_inicial: datetime
     fecha_final: datetime | None
+    # Columna 9 del formato (Acuerdo AGN 042/2002). En el inventario de papel es
+    # una estimación que rellena quien elabora; aquí se DERIVA de las consultas
+    # registradas en `audit_log` durante los últimos 12 meses. No es un adorno:
+    # la frecuencia de consulta es uno de los criterios de valoración para la
+    # transferencia y la disposición final, y una estimación de memoria es
+    # justamente lo que un SGDEA puede dejar de necesitar.
+    frecuencia_consulta: Literal["alta", "media", "baja"] = "baja"
+
+
+class FuidCabecera(BaseModel):
+    """Cabecera del FUID (Acuerdo AGN 042/2002, Anexo; Ac. 001/2024).
+
+    Faltaba entera: el inventario salía como una lista de filas sin decir de qué
+    entidad es, de qué oficina, ni para qué se levantó. Un inventario documental
+    sin esos datos no es un FUID — es una consulta.
+
+    `entidad_productora` se resuelve SERVER-SIDE desde `public.tenants`: es la
+    identidad institucional que encabeza un documento archivístico oficial y no
+    puede depender de lo que escriba el cliente. Los demás son declarativos por
+    naturaleza (los rellena quien elabora el inventario, igual que en papel) y
+    viajan como parámetros; se marcan como tales para que nadie los lea como
+    datos verificados por el sistema.
+    """
+
+    entidad_productora: str
+    unidad_administrativa: str | None = None
+    oficina_productora: str | None = None
+    objeto: str | None = None
 
 
 class FuidResponse(BaseModel):
+    cabecera: FuidCabecera
     generado_ts: datetime
     total: int
     rows: list[FuidRow]

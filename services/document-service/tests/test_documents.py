@@ -40,6 +40,7 @@ Repository call sequence for UPDATE:
 """
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -416,7 +417,12 @@ async def test_set_and_get_disposition(
     ]
     resp = await client.patch(
         f"/api/v1/documents/{doc_id}/disposition",
-        json={"accion": "eliminar", "marcado_eliminacion": True},
+        json={
+            "accion": "eliminar",
+            "marcado_eliminacion": True,
+            # Obligatorio desde 11.10: eliminar es irreversible y se motiva.
+            "fundamento": "Serie 200-15 con disposición de eliminación en la TRD",
+        },
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 200
@@ -589,7 +595,11 @@ async def test_set_disposition_con_permiso_200(
     ]
     response = await client.patch(
         f"/api/v1/documents/{doc_id}/disposition",
-        json={"accion": "eliminar", "marcado_eliminacion": True},
+        json={
+            "accion": "eliminar",
+            "marcado_eliminacion": True,
+            "fundamento": "Serie 200-15 con disposición de eliminación en la TRD",
+        },
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert response.status_code == 200
@@ -675,7 +685,11 @@ async def test_set_disposition_consulta_lleva_gate_y_no_escribe_sobre_clearance(
 
     resp = await client.patch(
         f"/api/v1/documents/{uuid.uuid4()}/disposition",
-        json={"accion": "eliminar", "marcado_eliminacion": True},
+        json={
+            "accion": "eliminar",
+            "marcado_eliminacion": True,
+            "fundamento": "Serie 200-15 con disposición de eliminación en la TRD",
+        },
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 404
@@ -935,3 +949,240 @@ async def test_health_check(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "document-service"}
+
+
+# ── 11.10: la disposición decide destruir, y se trataba como una lectura ──────
+
+
+@pytest.mark.asyncio
+async def test_fijar_disposicion_exige_nivel_de_escritura(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El defecto: `require_permission("USUA_PERM_EXPEDIENTE")` con el default
+    `min_crud=1`. Cualquiera que pudiera LEER la disposición podía marcar el
+    radicado para eliminación — mismo permiso, mismo nivel, acto opuesto.
+
+    Se comprueba sobre la consulta RBAC que sale de verdad (`gp.crud >= $3`),
+    no sobre la firma: el nivel exigido es un ARGUMENTO, y un test que solo
+    mirara la lista de dependencias seguiría verde con el valor equivocado.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"disposition": None},
+        {"disposition": '{"accion": "conservar"}'},
+    ]
+
+    await client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}/disposition",
+        json={"accion": "conservar"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    rbac = [c for c in mock_conn.fetchval.call_args_list if "auth_users" in str(c[0][0])]
+    assert rbac, "no se consultó el RBAC"
+    # (sql, user_id, perm_name, min_crud)
+    assert rbac[0][0][2] == "USUA_PERM_EXPEDIENTE"
+    assert rbac[0][0][3] == 3, (
+        "el PATCH de disposición debe exigir escritura (min_crud=3), como las "
+        "disposiciones de storage-service"
+    )
+
+
+@pytest.mark.asyncio
+async def test_eliminar_sin_fundamento_se_rechaza(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Ley 594/2000 art. 24: la eliminación es irreversible y debe motivarse."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+
+    response = await client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}/disposition",
+        json={"accion": "eliminar", "marcado_eliminacion": True},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert response.status_code == 422
+    assert "fundamento" in response.text
+
+
+@pytest.mark.asyncio
+async def test_conservar_no_exige_fundamento(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El defecto simétrico: exigirlo en el camino que no destruye nada es
+    fricción que no protege y que acaba rellenándose con cualquier palabra,
+    devaluando el campo donde sí importa."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"disposition": None},
+        {"disposition": '{"accion": "conservar"}'},
+    ]
+
+    response = await client.patch(
+        f"/api/v1/documents/{doc_id}/disposition",
+        json={"accion": "conservar"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_fijar_disposicion_deja_asiento_con_el_estado_anterior(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """No dejaba rastro de quién decidió eliminar.
+
+    El estado anterior va en el asiento: sin él, la cadena dice que alguien fijó
+    «eliminar» pero no qué había antes, que es la mitad de la pregunta cuando se
+    audita una eliminación años después.
+    """
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"disposition": '{"accion": "conservar"}'},
+        {"disposition": '{"accion": "eliminar"}'},
+    ]
+
+    response = await client.patch(
+        f"/api/v1/documents/{doc_id}/disposition",
+        json={"accion": "eliminar", "fundamento": "TRD serie 200-15"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert response.status_code == 200
+    inserciones = [str(c[0][0]) for c in mock_conn.execute.call_args_list]
+    assert any("audit_log" in q for q in inserciones), "el acto no dejó asiento"
+    argumentos = " ".join(str(c) for c in mock_conn.execute.call_args_list)
+    assert "disposition_set" in argumentos
+    assert "conservar" in argumentos, "el estado anterior no llegó al asiento"
+
+
+# ── 11.1: esquema de publicación (Ley 1712/2014 art. 12) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_el_recorte_publico_exige_el_acto_de_publicacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El defecto: «público» se DEDUCÍA de la ausencia de reserva.
+
+    Un radicado sin clasificar se cosechaba solo por OAI-PMH. Este test mira el
+    chokepoint, que es el único sitio donde el recorte se decide: si alguien lo
+    relaja, aquí se ve.
+    """
+    from app.repositories.oai_repository import _PUBLIC
+
+    assert "publicable" in _PUBLIC, "el recorte público no exige el acto de publicación"
+    # Las tres condiciones se exigen a la vez: la publicación no puede sacar a
+    # la luz un documento reservado ni uno anulado.
+    assert "nivel_seguridad = 1" in _PUBLIC
+    assert "anulado" in _PUBLIC
+
+
+@pytest.mark.asyncio
+async def test_publicar_deja_asiento_y_devuelve_el_estado(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {
+            "tracking_number": "2026-DEMO-E-000042",
+            "publicable": True,
+            "publicado_at": datetime(2026, 8, 11, tzinfo=UTC),
+        },
+    ]
+
+    resp = await client.post(
+        f"/api/v1/documents/{doc_id}/publicacion",
+        json={"publicar": True, "fundamento": "Esquema de publicación 2026, numeral 4.2"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["publicable"] is True
+    ejecutadas = " ".join(str(c) for c in mock_conn.execute.call_args_list)
+    assert "publicacion_activada" in ejecutadas, "el acto no dejó asiento"
+    # Sin la tilde: `json.dumps` la escapa a \u00f3 en el payload del asiento.
+    assert "numeral 4.2" in ejecutadas
+
+
+@pytest.mark.asyncio
+async def test_publicar_sin_fundamento_se_rechaza(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Y también RETIRAR sin fundamento: un campo obligatorio en un solo sentido
+    invita a usar el otro para deshacer sin dar cuentas."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+
+    for cuerpo in ({"publicar": True}, {"publicar": False}):
+        resp = await client.post(
+            f"/api/v1/documents/{uuid.uuid4()}/publicacion",
+            json=cuerpo,
+            headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        )
+        assert resp.status_code == 422, cuerpo
+
+
+@pytest.mark.asyncio
+async def test_publicar_un_reservado_da_404_neutro(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El UPDATE exige `nivel_seguridad = 1` en su propio WHERE.
+
+    Guardar «esto es público» sobre un documento reservado no es algo que se
+    filtre después: la próxima desclasificación lo publicaría sin que nadie lo
+    hubiera decidido. Y el 404 es el mismo que para «no existe», para no
+    convertir el endpoint en un oráculo.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [_clearance_row(), None]
+
+    resp = await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/publicacion",
+        json={"publicar": True, "fundamento": "x"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "document_not_found"
+    consultas = [str(c[0][0]) for c in mock_conn.fetchrow.call_args_list]
+    update = next(q for q in consultas if "UPDATE radicados" in q and "publicable" in q)
+    assert "nivel_seguridad = 1" in update
+
+
+@pytest.mark.asyncio
+async def test_publicar_exige_la_competencia_sobre_el_regimen_de_acceso(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Mismo permiso que decide la RESERVA, con nivel de escritura: repartirlos
+    permitiría que quien no puede desclasificar publicara igualmente."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"tracking_number": "T", "publicable": True, "publicado_at": None},
+    ]
+
+    await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/publicacion",
+        json={"publicar": True, "fundamento": "x"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    rbac = [c for c in mock_conn.fetchval.call_args_list if "auth_users" in str(c[0][0])]
+    assert rbac[0][0][2] == "PERM_RECLASIFICAR"
+    assert rbac[0][0][3] == 3

@@ -11,8 +11,16 @@
 Aplica migraciones SQL pendientes (ADR-012).
 
 Dos clases por convención de carpetas:
-    migrations/global/   → schema public (track: public._migrations)
-    migrations/tenant/   → cada schema tenant_{slug} (track: public._tenant_migrations)
+    migrations/global/   → schema public
+    migrations/tenant/   → cada schema tenant_{slug}
+
+Ambas se anotan en el **libro único** `public.schema_migrations`, con la
+identidad completa (esquema + servicio + archivo). Antes había tres registros
+que no se veían entre sí y la clave era el nombre desnudo del archivo, que NO
+identifica una migración: cada servicio numera su serie desde 001, y con cuatro
+nombres repetidos entre archive/document y notification/signature el runner del
+segundo servicio hacía *skip* de una migración suya que nunca se había
+aplicado. Ver `orpycamcp_common.migrations` para el diagnóstico completo.
 
 Uso:
     python migrations/runner.py
@@ -26,6 +34,14 @@ import re
 from pathlib import Path
 
 import asyncpg
+from orpycamcp_common import migrations as ledger
+
+# Nombre del servicio dueño de estas migraciones. Es lo único que distingue a un
+# runner de otro: la lógica vive entera en `orpycamcp_common.migrations`. Dentro
+# de la imagen el código está en `/app`, así que el nombre no se puede derivar
+# del path — y adivinarlo mal reintroduce justamente el defecto de identidad que
+# este libro corrige.
+SERVICIO = "auth-service"
 
 MIGRATIONS_DIR = Path(__file__).parent
 GLOBAL_DIR = MIGRATIONS_DIR / "global"
@@ -56,44 +72,29 @@ def _sql_files(directory: Path) -> list[Path]:
     return sorted(f for f in directory.glob("*.sql") if re.match(r"^\d+_", f.name))
 
 
-async def _ensure_tracking(conn: asyncpg.Connection) -> None:
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS public._migrations (
-            id          SERIAL PRIMARY KEY,
-            filename    TEXT NOT NULL UNIQUE,
-            applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        """
-    )
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS public._tenant_migrations (
-            id           SERIAL PRIMARY KEY,
-            schema_name  TEXT NOT NULL,
-            filename     TEXT NOT NULL,
-            applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (schema_name, filename)
-        )
-        """
-    )
+def _mapa_propio(directory: Path) -> dict[str, list[str]]:
+    """`{archivo: [este servicio]}` — lo único que este runner puede afirmar.
+
+    Dentro de su imagen no existen los directorios de los demás servicios, así
+    que no puede atribuirles nada: sus entradas antiguas las importará el runner
+    de cada uno (de ahí `ignorar_desconocidos=True`).
+    """
+    return {p.name: [SERVICIO] for p in _sql_files(directory)}
 
 
 async def _apply_global(conn: asyncpg.Connection) -> None:
     files = _sql_files(GLOBAL_DIR)
     if not files:
         return
-    applied = {
-        row["filename"] for row in await conn.fetch("SELECT filename FROM public._migrations")
-    }
+    aplicadas = await ledger.applied(conn, ledger.ESQUEMA_GLOBAL)
     await conn.execute("SET search_path = public")
     for path in files:
-        if path.name in applied:
+        if (SERVICIO, path.name) in aplicadas:
             print(f"  skip  [global] {path.name}")
             continue
         print(f"  apply [global] {path.name}")
         await conn.execute(path.read_text())
-        await conn.execute("INSERT INTO public._migrations (filename) VALUES ($1)", path.name)
+        await ledger.record(conn, ledger.ESQUEMA_GLOBAL, SERVICIO, path.name)
 
 
 async def _tenant_schemas(conn: asyncpg.Connection) -> list[str]:
@@ -117,15 +118,9 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
         print("  (sin schemas tenant_*; migraciones de tenant diferidas)")
         return
     for schema in schemas:
-        applied = {
-            row["filename"]
-            for row in await conn.fetch(
-                "SELECT filename FROM public._tenant_migrations WHERE schema_name = $1",
-                schema,
-            )
-        }
+        aplicadas = await ledger.applied(conn, schema)
         for path in files:
-            if path.name in applied:
+            if (SERVICIO, path.name) in aplicadas:
                 print(f"  skip  [{schema}] {path.name}")
                 continue
             print(f"  apply [{schema}] {path.name}")
@@ -134,12 +129,7 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
             async with conn.transaction():
                 await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await conn.execute(path.read_text())
-                await conn.execute(
-                    "INSERT INTO public._tenant_migrations (schema_name, filename) "
-                    "VALUES ($1, $2)",
-                    schema,
-                    path.name,
-                )
+                await ledger.record(conn, schema, SERVICIO, path.name)
         await conn.execute("SET search_path = public")
 
 
@@ -156,7 +146,14 @@ def _warn_stray_root_files() -> None:
 async def run() -> None:
     conn = await asyncpg.connect(dsn=_require_dsn())
     try:
-        await _ensure_tracking(conn)
+        await ledger.ensure_ledger(conn)
+        for aviso in await ledger.importar_libros_antiguos(
+            conn,
+            servicios_por_archivo_global=_mapa_propio(GLOBAL_DIR),
+            servicios_por_archivo_tenant=_mapa_propio(TENANT_DIR),
+            ignorar_desconocidos=True,
+        ):
+            print(aviso)
         _warn_stray_root_files()
         await _apply_global(conn)
         await _apply_tenant(conn)
