@@ -59,6 +59,31 @@ import asyncpg
 # misma tabla, que es exactamente el problema de partida.
 LEDGER = "public.schema_migrations"
 
+# Nombres de archivo que declaran DOS servicios distintos. Existen porque cada
+# servicio numera su serie desde 001, y son el motivo de este módulo: con la
+# clave desnuda del registro antiguo, el runner del segundo servicio veía el
+# nombre y hacía *skip* de una migración suya que nunca se aplicó.
+#
+# Se listan explícitamente porque un runner **no puede detectarlos**: dentro de
+# su imagen solo existen sus propios directorios, así que ve un único candidato
+# —él mismo—, no percibe ambigüedad y se auto-atribuye el nombre. Eso fosilizaría
+# el *skip* en el libro nuevo, con identidad completa y para siempre: exactamente
+# el defecto que este módulo vino a cerrar, un salto más allá.
+#
+# `shared/tests/test_migrations_ambiguos.py` recalcula este conjunto desde
+# `services/*/migrations/**` y falla si diverge: una lista escrita a mano que
+# nadie revalida caduca en silencio, que es el modo de fallo de la familia.
+NOMBRES_AMBIGUOS = frozenset(
+    {
+        "002_batch_jobs.sql",  # archive-service, document-service
+        "005_evento_dead_letter.sql",  # notification-service, signature-service
+        "006_deadletter_status.sql",  # notification-service, signature-service
+        "007_deadletter_origin_group_notnull_index.sql",  # notification-service, signature-service
+    }
+)
+
+
+
 # Valor de `schema_name` para las migraciones del esquema `public`. Se guarda
 # explícitamente en vez de dejarlo a NULL: un NULL en una clave única no compara
 # igual consigo mismo en PostgreSQL, así que la unicidad de las globales se
@@ -141,8 +166,24 @@ async def importar_libros_antiguos(
     """
     avisos: list[str] = []
 
+    # Un llamador con visión PARCIAL (el runner de un servicio) no es autoridad
+    # sobre los nombres ambiguos: vería un solo candidato y se lo quedaría.
+    vision_parcial = ignorar_desconocidos
+
     def _atribuir(archivo: str, mapa: dict[str, list[str]], ambito: str) -> str | None:
         candidatos = sorted(mapa.get(archivo, []))
+        if archivo in NOMBRES_AMBIGUOS and vision_parcial and len(candidatos) <= 1:
+            # No se importa: se deja sin marcar para que la migración se APLIQUE
+            # (son idempotentes, y esa es la razón por la que hoy el defecto
+            # original no ha hecho daño). Dar por aplicada una que no lo está
+            # deja el esquema incompleto sin ningún error; reaplicar una
+            # idempotente no cuesta nada. La asimetría manda la decisión.
+            avisos.append(
+                f"  WARN  [{ambito}] '{archivo}' lo declaran dos servicios y este "
+                "ejecutor solo ve el suyo: no se importa del registro antiguo. Si "
+                "estaba pendiente, se aplica ahora; si ya estaba, es idempotente."
+            )
+            return None
         if not candidatos:
             if ignorar_desconocidos:
                 return None

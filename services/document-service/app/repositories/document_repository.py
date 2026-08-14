@@ -491,19 +491,25 @@ class DocumentRepository:
         un actor sin nivel para leerlo no debe poder tomarla ni en la ventana
         entre comprobar y escribir.
 
-        `nivel_seguridad = 1` está en el `WHERE` además del clearance: marcar
-        como publicable un documento reservado no es un caso a filtrar más
-        tarde, es una operación que no debe existir. El recorte de
-        `oai_repository._PUBLIC` volvería a exigirlo de todas formas, pero
-        dejarlo pasar aquí guardaría en la base una afirmación falsa —«esto es
-        público»— sobre un documento reservado, y la próxima
-        desclasificación lo publicaría sin que nadie lo hubiera decidido.
+        `nivel_seguridad = 1` está en el `WHERE` además del clearance, pero **solo
+        cuando se publica**: marcar como publicable un documento reservado no es
+        un caso a filtrar más tarde, es una operación que no debe existir, porque
+        guardaría en la base una afirmación falsa —«esto es público»— sobre un
+        documento reservado.
+
+        Exigirlo también al RETIRAR era un error de simetría: dejaba sin salida a
+        un radicado publicado y clasificado después, justo el estado en el que más
+        urge poder retirar la publicación. Un retiro no lee de más ni guarda
+        ninguna afirmación falsa, así que la única condición que conserva es el
+        clearance del actor. Fail-safe: en la duda, la dirección segura es poder
+        dejar de difundir.
         """
+        gate_nivel = " AND nivel_seguridad = 1" if publicable else ""
         return await self._conn.fetchrow(
             "UPDATE radicados SET publicable = $2, "
             "    publicado_at  = CASE WHEN $2 THEN now() ELSE NULL END, "
             "    publicado_por = CASE WHEN $2 THEN $4::uuid ELSE NULL END "
-            "WHERE id = $1 AND nivel_seguridad <= $3 AND nivel_seguridad = 1 "
+            f"WHERE id = $1 AND nivel_seguridad <= $3{gate_nivel} "
             "  AND status <> 'anulado' "
             "RETURNING tracking_number, publicable, publicado_at",
             document_id,
@@ -523,14 +529,6 @@ class DocumentRepository:
             document_id,
         )
 
-    async def set_nivel_seguridad(self, document_id: uuid.UUID, nivel: int) -> None:
-        """Updates nivel_seguridad and bumps updated_at for the given radicado."""
-        await self._conn.execute(
-            "UPDATE radicados SET nivel_seguridad = $2, updated_at = now() WHERE id = $1",
-            document_id,
-            nivel,
-        )
-
     async def set_classification(
         self,
         document_id: uuid.UUID,
@@ -547,6 +545,17 @@ class DocumentRepository:
         Al clasificar (`nivel >= 2`) se sella `clasificado_at = now()` y se guardan
         fundamento/causal/plazo. El `audit_log` conserva el histórico inmutable; esto
         es solo la proyección del estado vigente.
+
+        **Clasificar RETIRA la publicación** (`publicable = FALSE`), y no como
+        limpieza cosmética: sin esto la marca quedaba latente —inofensiva mientras
+        el recorte público exige las dos condiciones— y la siguiente
+        desclasificación, hecha meses después y con otro propósito, devolvía el
+        radicado a los canales de cosecha sin que nadie hubiera decidido
+        publicarlo. Es exactamente el modo de fallo que la migración 019 dice
+        querer evitar, entrando por la otra puerta: no «marcar publicable algo
+        reservado», sino «publicar primero y clasificar después». La reserva es un
+        acto motivado que prevalece (Ley 1712 arts. 18-19), así que el retiro es su
+        consecuencia legal y va en la misma transacción que su asiento.
         """
         if nivel <= 1:
             await self._conn.execute(
@@ -560,7 +569,9 @@ class DocumentRepository:
             await self._conn.execute(
                 "UPDATE radicados SET nivel_seguridad = $2, updated_at = now(), "
                 "clasificacion_fundamento = $3, clasificacion_causal = $4, "
-                "clasificacion_plazo_meses = $5, clasificado_at = now() WHERE id = $1",
+                "clasificacion_plazo_meses = $5, clasificado_at = now(), "
+                "publicable = FALSE, publicado_at = NULL, publicado_por = NULL "
+                "WHERE id = $1",
                 document_id,
                 nivel,
                 fundamento,

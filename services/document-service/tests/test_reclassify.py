@@ -16,7 +16,7 @@ Orden de llamadas a la conexión mockeada por request:
   fetchval #1 — check_permission("PERM_RECLASIFICAR")
   fetchrow #1 — get_security_context (SELECT id, tracking_number, nivel_seguridad)
   fetchrow #2 — resolve_caller_clearance (SELECT is_root, max_level)
-  execute  #N — set_nivel_seguridad (UPDATE radicados) [solo si hay cambio efectivo]
+  execute  #N — set_classification (UPDATE radicados) [solo si hay cambio efectivo]
   execute  #N — audit advisory lock (SELECT pg_advisory_xact_lock)  [solo si hay cambio]
   fetchval #2 — audit prev_hash (SELECT hash FROM audit_log)         [solo si hay cambio]
   execute  #N — audit INSERT INTO audit_log                          [solo si hay cambio]
@@ -177,7 +177,7 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
     """clearance=3, nivel_actual=1, nuevo=3 → 200 con nivel_seguridad=3.
 
     Verifica:
-    - set_nivel_seguridad (UPDATE radicados) invocado.
+    - set_classification (UPDATE radicados) invocado.
     - audit.append invocado con action="document.radicado_reclassified"
       y payload {nivel_anterior=1, nivel_nuevo=3, motivo}.
     - events.emit invocado (redis.xadd llamado una vez).
@@ -204,7 +204,7 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
     assert body["tracking_number"] == TRACKING
     assert body["nivel_seguridad"] == 3
 
-    # --- set_nivel_seguridad ejecutado ---
+    # --- el UPDATE de reclasificación (set_classification) se ejecutó ---
     radicado_updates = [
         c for c in mock_conn.execute.call_args_list
         if "UPDATE radicados" in str(c.args[0])
@@ -445,3 +445,67 @@ def test_reclassify_request_compliance_fields_are_optional() -> None:
     # Nivel ≥ 2 con fundamento: causal/plazo siguen opcionales.
     ok = ReclassifyRequest(nivel_seguridad=2, motivo="m", fundamento_juridico="Art. 19")
     assert ok.causal_reserva is None and ok.plazo_reserva_meses is None
+
+
+# ---------------------------------------------------------------------------
+# Auditoría de conformidad/seguridad (2026-08-13): clasificar retira la publicación
+#
+# El acto de publicación cubrió la ruta de escritura y NO la de reclasificación:
+# un radicado publicado y clasificado después conservaba `publicable = TRUE`
+# latente —inofensivo mientras el recorte exige las dos condiciones— y la
+# siguiente desclasificación, hecha con otro propósito, lo devolvía a los canales
+# de cosecha sin acto, sin fundamento y sin asiento. Es el modo de fallo que la
+# migración 019 dice querer evitar, entrando por la otra puerta.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clasificar_retira_la_publicacion(client_with_redis) -> None:
+    client, mock_conn, _ = client_with_redis
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.side_effect = [_sec_ctx(nivel=1), _clearance_row(max_level=3)]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={
+            "nivel_seguridad": 3,
+            "motivo": "Reserva sobrevenida",
+            "fundamento_juridico": "Art. 19 lit. a Ley 1712",
+        },
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    updates = [str(c.args[0]) for c in mock_conn.execute.call_args_list]
+    clasificar = [q for q in updates if "clasificado_at = now()" in q]
+    assert clasificar, "no se ejecutó la clasificación"
+    assert "publicable = FALSE" in clasificar[0], (
+        "clasificar deja la marca de publicación latente: la próxima "
+        "desclasificación republicaría sin que nadie lo decida"
+    )
+
+
+@pytest.mark.asyncio
+async def test_desclasificar_no_republica(client_with_redis) -> None:
+    """La otra mitad: al bajar a nivel público NO se enciende `publicable`.
+
+    Sin esta comprobación, "arreglar" el fallo anterior encendiendo la marca al
+    desclasificar produciría el mismo defecto con signo contrario.
+    """
+    client, mock_conn, _ = client_with_redis
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.side_effect = [_sec_ctx(nivel=3), _clearance_row(max_level=3)]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={"nivel_seguridad": 1, "motivo": "Vencimiento del plazo de reserva"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    updates = [str(c.args[0]) for c in mock_conn.execute.call_args_list]
+    desclasificar = [q for q in updates if "clasificado_at = NULL" in q]
+    assert desclasificar, "no se ejecutó la desclasificación"
+    assert "publicable = TRUE" not in desclasificar[0], (
+        "desclasificar no puede publicar: publicar es un acto propio"
+    )

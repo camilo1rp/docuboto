@@ -379,6 +379,8 @@ El recorte público exige las **tres** condiciones a la vez (`publicable AND niv
 
 **Lectura del estado.** `publicable` y `publicado_at` viajan en `DocumentResponse` — es decir, en `GET /documents/{id}` y en el listado. Añadirlos no fue cosmético: el acto se podía **ejecutar pero no consultar**, así que ni la interfaz podía ofrecerlo sobre un estado conocido ni la entidad acreditar qué había publicado. Un esquema de publicación que no se puede leer no es un esquema, es una escritura ciega.
 
+**Interacción con la reserva (corregido tras auditoría, 2026-08-13)**: clasificar un radicado (`PATCH /{id}/security-level` a nivel ≥ 2) **retira su publicación** en la misma transacción — antes la marca quedaba latente y la siguiente desclasificación, hecha con otro propósito, lo devolvía a los canales sin acto. Y el `UPDATE` exige `nivel_seguridad = 1` **solo al publicar**: retirar una publicación nunca está bloqueado, ni siquiera sobre un radicado ya reservado, que es donde más urge. El recorte de contenido de CMIS (`getContentStream`) exige ahora `publicable` igual que el de metadatos: llevaba una copia del `WHERE` escrita a mano que no se actualizó.
+
 **Pantalla**: el acto se ejecuta desde el drawer «Publicación» de `/bandeja` (ver `docs/es/pantallas.md`), que ofrece siempre el acto contrario al estado vigente y no ofrece formulario alguno sobre un radicado reservado o anulado — el `404` neutro del backend es correcto, pero dejar que alguien redacte un fundamento para recibir después «no existe» sería una pantalla que engaña.
 
 ### `GET /api/v1/documents/{id}`

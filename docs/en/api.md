@@ -374,6 +374,8 @@ The public cut requires **all three** conditions at once (`publicable AND nivel_
 
 **Reading the state.** `publicable` and `publicado_at` are carried in `DocumentResponse` — that is, in `GET /documents/{id}` and in the listing. Adding them was not cosmetic: the act could be **executed but not consulted**, so neither could the UI offer it over a known state nor could the entity attest to what it had published. A publication scheme that cannot be read is not a scheme, it is a blind write.
 
+**Interaction with reservation (fixed after audit, 2026-08-13)**: classifying a radicado (`PATCH /{id}/security-level` to level ≥ 2) **withdraws its publication** in the same transaction — the flag used to stay latent, and the next declassification, made for an unrelated purpose, returned it to the channels with no act. And the `UPDATE` requires `nivel_seguridad = 1` **only when publishing**: withdrawing is never blocked, not even on an already-reserved radicado, which is where it matters most. The CMIS content cut (`getContentStream`) now requires `publicable` just like the metadata one: it carried a hand-written copy of the `WHERE` that had not been updated.
+
 **Screen**: the act is performed from the "Publicación" drawer in `/bandeja`, which always offers the act opposite to the current state and offers no form at all over a reserved or annulled radicado — the backend's neutral `404` is correct, but letting someone draft a justification only to receive "does not exist" afterwards would be a screen that deceives.
 
 ### `GET /api/v1/documents/{id}`

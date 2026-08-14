@@ -1280,3 +1280,83 @@ async def test_una_fila_sin_la_columna_se_lee_como_no_publicada(
 
     assert resp.status_code == 200
     assert resp.json()["publicable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Auditoría de conformidad (2026-08-13): tres canales, un solo acto
+#
+# El acto de publicación se aplicó al recorte de metadatos y NO a la copia
+# escrita a mano que sirve los BYTES por CMIS, ni a la interacción con la
+# reserva. Los dos fallos son de alcance, no de diseño.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_el_contenido_servido_por_cmis_exige_el_acto_de_publicacion() -> None:
+    """Servir los bytes es la difusión más intensa: no puede tener otra polaridad.
+
+    Se inspecciona el SQL **que la consulta envía**, no el código fuente del
+    método: la primera versión de este test buscaba `_public(` en
+    `inspect.getsource(...)` y lo encontraba en el docstring, así que sobrevivía
+    a la mutación. Un test que se conforma con lo que el código *dice* hacer
+    reproduce exactamente el defecto que persigue — aquí el `WHERE` llevaba una
+    copia obsoleta mientras el docstring afirmaba anclar en el chokepoint.
+    """
+    from app.repositories.oai_repository import OaiRepository
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = None
+    await OaiRepository(conn).get_public_anexo("2026-DEMO-E-000001")
+
+    sql = str(conn.fetchrow.call_args[0][0])
+    assert "r.publicable" in sql, "el contenido se sirve sin exigir el acto de publicación"
+    assert "r.nivel_seguridad = 1" in sql
+    assert "r.status <> 'anulado'" in sql
+
+
+@pytest.mark.asyncio
+async def test_retirar_la_publicacion_no_exige_nivel_publico(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Un radicado publicado y clasificado después no podía despublicarse: el
+    estado en el que más urge retirar era el único sin salida."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"tracking_number": "T", "publicable": False, "publicado_at": None},
+    ]
+
+    await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/publicacion",
+        json={"publicar": False, "fundamento": "Retiro por reclasificación sobrevenida"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    consultas = [str(c[0][0]) for c in mock_conn.fetchrow.call_args_list]
+    update = next(q for q in consultas if "UPDATE radicados" in q and "publicable" in q)
+    assert "nivel_seguridad <= $3" in update, "el clearance sigue siendo obligatorio"
+    assert "nivel_seguridad = 1" not in update, "el retiro no debe exigir nivel público"
+
+
+@pytest.mark.asyncio
+async def test_publicar_si_exige_nivel_publico(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """La asimetría es el punto: relajar el retiro no debe relajar la publicación."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"tracking_number": "T", "publicable": True, "publicado_at": None},
+    ]
+
+    await client.post(
+        f"/api/v1/documents/{uuid.uuid4()}/publicacion",
+        json={"publicar": True, "fundamento": "Numeral 4.2 del esquema"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    consultas = [str(c[0][0]) for c in mock_conn.fetchrow.call_args_list]
+    update = next(q for q in consultas if "UPDATE radicados" in q and "publicable" in q)
+    assert "nivel_seguridad = 1" in update

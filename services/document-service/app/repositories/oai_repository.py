@@ -36,6 +36,22 @@ import asyncpg
 # la otra por descuido.
 _PUBLIC = "publicable AND nivel_seguridad = 1 AND status <> 'anulado'"
 
+
+def _public(alias: str = "") -> str:
+    """El mismo recorte, cualificado por alias de tabla.
+
+    Existe porque la versión escrita a mano se quedó atrás: `get_public_anexo`
+    —lo que alimenta el `getContentStream` de CMIS, es decir, los BYTES del
+    anexo— llevaba su propia copia del `WHERE` con un JOIN, y cuando el acto de
+    publicación añadió `publicable` al recorte, esa copia no se actualizó. El
+    docstring afirmaba usar `_PUBLIC`, lo que hacía la divergencia invisible al
+    leer: el canal más sensible seguía sirviendo contenido por ausencia de
+    reserva. Una constante que hay que reescribir a mano para cualificarla no es
+    un chokepoint; esto sí lo es.
+    """
+    p = f"{alias}." if alias else ""
+    return f"{p}publicable AND {p}nivel_seguridad = 1 AND {p}status <> 'anulado'"
+
 _RECORD_COLS = "tracking_number, doc_type, subject, origin_dept, registered_at, tenant_code"
 
 
@@ -110,16 +126,21 @@ class OaiRepository:
 
     async def get_public_anexo(self, tracking_number: str) -> asyncpg.Record | None:
         """Primer anexo de un radicado PÚBLICO (para el `getContentStream` de CMIS).
-        None si el radicado no es público/no existe o no tiene anexos — mismo recorte
-        `_PUBLIC` (aquí cualificado por el JOIN), así el content stream nunca sirve un
-        byte de un reservado (indistinguible de "sin contenido")."""
+
+        None si el radicado no es público/no existe o no tiene anexos — el recorte
+        se construye con `_public("r")`, no se reescribe: servir los bytes es la
+        difusión más intensa que hace el sistema y no puede tener una polaridad
+        distinta de la de los metadatos. Los números de radicado son consecutivos
+        y predecibles, así que este canal es enumerable sin pasar por ningún
+        listado filtrado.
+        """
         return await self._conn.fetchrow(
-            """
+            f"""
             SELECT a.file_id, a.filename, a.file_size, a.mime_type
               FROM anexos a
               JOIN radicados r ON r.id = a.radicado_id
              WHERE r.tracking_number = $1
-               AND r.nivel_seguridad = 1 AND r.status <> 'anulado'
+               AND {_public("r")}
              ORDER BY a.created_at
              LIMIT 1
             """,

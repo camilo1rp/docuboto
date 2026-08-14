@@ -110,6 +110,27 @@ test-unit:
 # El host `postgres` está en la allowlist por defecto del conftest de integración
 # (`_DEFAULT_INTEGRATION_DB_HOSTS`), que existe para que este tier no pueda
 # apuntar por accidente a una base que no sea desechable.
+test-unit-shared:
+  stage: test
+  image: python:3.11-slim
+  interruptible: true
+  # `shared/orpycamcp_common` es la auditoría inmutable, el sobre de eventos, el
+  # arranque fail-fast de secretos y el libro único de migraciones: lo que más
+  # cara sale si se rompe. Sus tests existían y **no los corría nadie** — el
+  # matrix de `test-unit` enumera los once servicios y la librería no es un
+  # servicio, así que caía por el hueco de la enumeración. Mismo modo de fallo
+  # que el gate de tipos, que cubría 8 de 11 por una lista escrita a mano.
+  before_script:
+    - pip install --quiet ./shared
+    - pip install --quiet pytest pytest-asyncio
+  script:
+    - cd shared
+    - pytest tests/ -q --tb=short
+  cache:
+    key: "pip-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip
+
 test-integration:
   stage: test
   image: python:3.11-slim
