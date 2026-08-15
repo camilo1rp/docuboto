@@ -98,26 +98,49 @@ def make_gateway(
     user_id: str = "user-1",
     tool_response: httpx.Response | None = None,
 ) -> AsyncMock:
-    """Gateway simulado: enruta `/api/v1/auth/me` y las llamadas GET de tool.
+    """Gateway simulado, con los dos caminos separados a propósito.
 
-    `tool_response` es la respuesta httpx que se devuelve a CUALQUIER GET que no
-    sea `/auth/me` (las tools de lectura del asistente son todas GET). `user_id`
-    es la identidad validada que `/auth/me` devuelve (llavea el historial).
+    - `.get` sirve las **lecturas de contexto**: `/auth/me` (identidad),
+      `/auth/clearance` y `/auth/context` (marco de alcance).
+    - `.request` sirve los **despachos de tool**, que es por donde pasa ahora el
+      dispatcher para poder usar PATCH/PUT/DELETE.
+
+    Mantenerlos separados no es un detalle del doble: es lo que permite que
+    `gateway.request.await_count == 0` signifique «no se despachó ninguna tool»
+    sin que la aserción se vacíe cuando una tool cambia de método. Con el mock
+    anterior, atado a `.post`, un despacho por GET habría pasado inadvertido.
+
+    `tool_response` es la respuesta que se devuelve a cualquier despacho.
+    `user_id` es la identidad validada que `/auth/me` devuelve (llavea el
+    historial).
     """
     gw = AsyncMock()
-    me_body = {"permissions": permissions or [], "roles": roles or [], "user_id": user_id}
+    me_body = {
+        "permissions": permissions or [],
+        "permission_levels": {p: 3 for p in (permissions or [])},
+        "roles": roles or [],
+        "user_id": user_id,
+    }
 
     async def _get(path: str, **kwargs: Any) -> httpx.Response:
         if path == "/api/v1/auth/me":
             if me_status == 200:
                 return httpx.Response(200, json=me_body)
             return httpx.Response(me_status, json={"error": "x"})
+        if path == "/api/v1/auth/clearance":
+            return httpx.Response(
+                200, json={"user_id": user_id, "max_level": 3, "accessible_levels": [1, 2, 3]}
+            )
+        if path == "/api/v1/auth/context":
+            return httpx.Response(
+                200, json={"user_id": user_id, "active_depe_id": None, "available_depts": []}
+            )
         return tool_response if tool_response is not None else httpx.Response(200, json={})
 
     gw.get.side_effect = _get
 
-    async def _post(path: str, **kwargs: Any) -> httpx.Response:
+    async def _request(method: str, path: str, **kwargs: Any) -> httpx.Response:
         return tool_response if tool_response is not None else httpx.Response(200, json={})
 
-    gw.post.side_effect = _post
+    gw.request.side_effect = _request
     return gw

@@ -93,8 +93,8 @@ async def test_loop_de_tool_despacha_al_gateway() -> None:
 
     assert "tutela" in resp.message.texto
     # el dispatcher tradujo la tool a GET /api/v1/search
-    called_paths = [c.args[0] for c in gateway.get.call_args_list]
-    assert "/api/v1/search" in called_paths
+    despachos = [c.args[1] for c in gateway.request.call_args_list]
+    assert "/api/v1/search" in despachos
 
 
 # -- v1 SOLO LECTURA: la tool de escritura nunca se ofrece ------------
@@ -161,7 +161,11 @@ async def test_tool_fuera_del_conjunto_se_deniega_sin_tocar_gateway() -> None:
     assert set(called_paths) <= lecturas_de_contexto, (
         f"se despachó algo que no es contexto: {sorted(set(called_paths) - lecturas_de_contexto)}"
     )
-    assert gateway.post.await_count == 0
+    # `request` es exclusivo de los despachos de tool: las lecturas de contexto
+    # (identidad, marco de alcance) usan `.get`. Así esta aserción dice
+    # exactamente «no se despachó ninguna tool», y no se vacía si mañana la tool
+    # que se intenta cambia de método.
+    assert gateway.request.await_count == 0
     # el tool_result inyectado al modelo marcó el error (se busca en el historial;
     # los kwargs de `create` comparten la MISMA lista por referencia, así que se
     # inspecciona el estado final de la conversación)
@@ -293,7 +297,7 @@ async def test_403_y_404_colapsan_a_generico_para_el_modelo() -> None:
         anthropic = FakeAnthropic(
             [
                 Response(
-                    [tool_use_block("t1", "consultar_expediente", {"expediente_id": "e1"})],
+                    [tool_use_block("t1", "consultar_expediente", {"expediente_id": "11111111-1111-1111-1111-111111111111"})],
                     "tool_use",
                 ),
                 Response([text_block("No encontré ese expediente.")], "end_turn"),
@@ -429,9 +433,10 @@ async def test_buscar_conocimiento_despacha_post_al_gateway_con_token_del_usuari
     assert "fragmentos" in resp.message.texto
     # el dispatcher tradujo la tool a POST /api/v1/knowledge/search con el body
     # {query, top_k}, propagando Authorization + X-Tenant-Slug del usuario.
-    assert gateway.post.await_count == 1
-    call = gateway.post.await_args
-    assert call.args[0] == "/api/v1/knowledge/search"
+    assert gateway.request.await_count == 1
+    call = gateway.request.await_args
+    assert call.args[0] == "POST"
+    assert call.args[1] == "/api/v1/knowledge/search"
     assert call.kwargs["json"] == {"query": "tutela salud", "top_k": 3}
     assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
     assert call.kwargs["headers"]["X-Tenant-Slug"] == "demo"
@@ -462,7 +467,7 @@ async def test_input_no_declarado_se_descarta_antes_de_despachar() -> None:
 
     await _run(anthropic=anthropic, gateway=gateway)
 
-    body = gateway.post.await_args.kwargs["json"]
+    body = gateway.request.await_args.kwargs["json"]
     assert body == {"query": "algo"}  # `acl` y `otra` (no declaradas) descartadas
 
 

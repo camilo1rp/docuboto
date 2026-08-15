@@ -48,12 +48,13 @@ async def test_call_dispatches_to_gateway(monkeypatch) -> None:
     monkeypatch.setattr(settings, "mcp_bearer_token", "tok")
     monkeypatch.setattr(settings, "mcp_tenant_slug", "demo")
     client = AsyncMock()
-    client.get.return_value = httpx.Response(200, json={"total": 2})
+    client.request.return_value = httpx.Response(200, json={"total": 2})
 
     text = await mcp_app.call("buscar_radicados", {"q": "tutela"}, client)
     assert '"total": 2' in text or '"total":2' in text
-    call = client.get.call_args
-    assert call.args[0] == "/api/v1/search"
+    call = client.request.call_args
+    assert call.args[0] == "GET"
+    assert call.args[1] == "/api/v1/search"
     assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
     assert call.kwargs["headers"]["X-Tenant-Slug"] == "demo"
 

@@ -18,6 +18,12 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `fix(mcp)`: **Un identificador manipulado podía hacer que el asistente consultara otra cosa con las credenciales del usuario**
+  Cuando el asistente consulta un documento por su identificador, ese identificador se insertaba en la dirección interna **sin sanear**. Un valor manipulado con `../` no producía un error: hacía que el sistema consultara **un endpoint distinto del previsto, con las credenciales de quien preguntaba**. Es el mismo problema de direcciones torcidas que se corrigió en la puerta de entrada, reaparecido un paso más adentro. Corregido, y con doble barrera: los identificadores se validan antes, así que la mayoría ni llega a la segunda.
+  Además, la capa de traducción solo sabía hacer dos tipos de petición, y la mayoría de las operaciones del sistema usan un tercero. Sin eso, buena parte de las tareas no se podían expresar siquiera.
+  *Por qué*: una capa que traduce peticiones y no sanea lo que inserta deja de ser una fachada y pasa a ser una puerta.
+  *Impacto*: interno; ninguna funcionalidad cambia de comportamiento.
+
 - `feat(mcp)`: **El asistente ahora dice qué puede hacer cada persona antes de empezar**
   Hasta ahora los permisos funcionaban como un filtro invisible: el asistente escondía lo que el funcionario no podía hacer, de modo que el límite se descubría **fallando**. Alguien pedía «envía este documento» y, o aparecía un error incomprensible, o se quedaba esperando una acción que con sus credenciales nunca iba a ocurrir.
   Ahora, al abrir el asistente, la persona ve **qué puede consultar, qué puede ejecutar y qué no** — y, cuando algo no está a su alcance, **por dónde sí puede llegar**: «no puede enviar el documento, pero puede trasladarlo a correspondencia para que lo envíen». Esa segunda parte es la útil; negar sin más deja a la gente igual de atascada.

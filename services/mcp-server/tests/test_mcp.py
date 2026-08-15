@@ -51,7 +51,7 @@ async def test_list_tools_endpoint(client_with_gateway) -> None:
 @pytest.mark.asyncio
 async def test_invoke_read_tool_dispatches_to_gateway(client_with_gateway) -> None:
     client, gateway = client_with_gateway
-    gateway.get.return_value = httpx.Response(200, json={"total": 1, "hits": []})
+    gateway.request.return_value = httpx.Response(200, json={"total": 1, "hits": []})
 
     resp = await client.post(
         "/api/v1/mcp/tools/buscar_radicados/invoke",
@@ -63,8 +63,9 @@ async def test_invoke_read_tool_dispatches_to_gateway(client_with_gateway) -> No
     assert body["status"] == 200
     assert body["data"]["total"] == 1
     # Reenvió a la ruta del gateway con Authorization + tenant.
-    call = gateway.get.call_args
-    assert call.args[0] == "/api/v1/search"
+    call = gateway.request.call_args
+    assert call.args[0] == "GET"
+    assert call.args[1] == "/api/v1/search"
     assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
     assert call.kwargs["headers"]["X-Tenant-Slug"] == "demo"
 
@@ -79,7 +80,7 @@ async def test_invoke_write_requires_confirmation(client_with_gateway) -> None:
     )
     assert resp.status_code == 412
     assert resp.json()["detail"]["error"] == "confirmacion_requerida"
-    gateway.post.assert_not_called()
+    gateway.request.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -97,7 +98,7 @@ async def test_invoke_write_without_permission_forbidden(client_with_gateway) ->
 @pytest.mark.asyncio
 async def test_invoke_write_path_param_and_confirm(client_with_gateway) -> None:
     client, gateway = client_with_gateway
-    gateway.post.return_value = httpx.Response(201, json={"tracking_number": "2024-DEMO-E-000001"})
+    gateway.request.return_value = httpx.Response(201, json={"tracking_number": "2024-DEMO-E-000001"})
 
     resp = await client.post(
         "/api/v1/mcp/tools/radicar_documento/invoke",
@@ -111,7 +112,7 @@ async def test_invoke_write_path_param_and_confirm(client_with_gateway) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["tracking_number"] == "2024-DEMO-E-000001"
-    assert gateway.post.call_args.args[0] == "/api/v1/documents"
+    assert gateway.request.call_args.args[:2] == ("POST", "/api/v1/documents")
 
 
 @pytest.mark.asyncio
@@ -124,7 +125,7 @@ async def test_invoke_unknown_tool(client_with_gateway) -> None:
 @pytest.mark.asyncio
 async def test_invoke_path_param_fills_route(client_with_gateway) -> None:
     client, gateway = client_with_gateway
-    gateway.get.return_value = httpx.Response(200, json={"version": 0})
+    gateway.request.return_value = httpx.Response(200, json={"version": 0})
     eid = "11111111-1111-1111-1111-111111111111"
 
     resp = await client.post(
@@ -133,4 +134,4 @@ async def test_invoke_path_param_fills_route(client_with_gateway) -> None:
         headers={"Authorization": "Bearer t", "X-Tenant-Slug": "demo"},
     )
     assert resp.status_code == 200
-    assert gateway.get.call_args.args[0] == f"/api/v1/expedientes/{eid}/indice"
+    assert gateway.request.call_args.args[1] == f"/api/v1/expedientes/{eid}/indice"
