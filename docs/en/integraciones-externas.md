@@ -67,7 +67,7 @@ Common principle: the contract (function signatures / REST endpoints) **does not
 ```bash
 GATEWAY_URL=http://localhost:19080 \
 MCP_TENANT_SLUG=icetex \
-MCP_USER_PERMISSIONS=RADI_CREAR,... \
+MCP_USER_PERMISSIONS=PERM_RADI,... \
 # (a) static token (no refresh):   MCP_BEARER_TOKEN=<jwt>
 # (b) per-session refresh:         MCP_REFRESH_TOKEN=<refresh-token>
 # (c) ROPC (username/password):    MCP_AUTH_USERNAME=ana MCP_AUTH_PASSWORD=...

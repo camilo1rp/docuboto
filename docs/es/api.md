@@ -383,6 +383,19 @@ El recorte público exige las **tres** condiciones a la vez (`publicable AND niv
 
 **Pantalla**: el acto se ejecuta desde el drawer «Publicación» de `/bandeja` (ver `docs/es/pantallas.md`), que ofrece siempre el acto contrario al estado vigente y no ofrece formulario alguno sobre un radicado reservado o anulado — el `404` neutro del backend es correcto, pero dejar que alguien redacte un fundamento para recibir después «no existe» sería una pantalla que engaña.
 
+### `POST /api/v1/expedientes/{id}/publicacion`
+Acto de **publicación de oficio del expediente** (Ley 1712/2014 art. 12, migración archive `042`). Mismo contrato que el gemelo de radicados: `{publicar: bool, fundamento: str}` → `{code, publicable, publicado_at}`, `PERM_RECLASIFICAR` con `crud≥3`, fundamento obligatorio en ambos sentidos, acto y asiento en una sola transacción.
+
+Cierra la asimetría que destapó la auditoría cruzada: la corrección del art. 12 se había aplicado a los radicados y **no aquí**, así que `oai_repository._PUBLIC` de archive-service seguía siendo `nivel_seguridad = 1` y el OAI EAD multinivel difundía de oficio todo expediente no clasificado — el valor por defecto. La asimetría era además implícita: quien leyera el recorte de document-service supondría que este servicio hace lo mismo.
+
+Dos diferencias con radicados, **deliberadas**:
+- El recorte **no lleva condición de estado**. Un radicado anulado está retirado de la circulación; un expediente `closed`/`transferred` no lo está — son estados normales de su ciclo de vida. Copiar `status <> …` por simetría habría despublicado en silencio todo el archivo cerrado, que es la mayor parte de un fondo.
+- Lo que se difunde es de nivel agregado: código, nombre, descripción, fechas extremas y el **número** de radicados. Los `tracking_number` hijos no se enumeran nunca (un expediente público puede contener radicados reservados).
+
+`publicable` y `publicado_at` viajan en `ExpedienteResponse`. **Compatibilidad**: los expedientes existentes quedan **no publicables** tras la migración `042`.
+
+**Pantalla**: drawer «Publicación» en `/expedientes/{id}`. Sobre un expediente reservado no ofrece publicar —y lo explica— pero **sí ofrece retirar**, que es la asimetría real del backend.
+
 ### `GET /api/v1/documents/{id}`
 Obtener por UUID. Incluye lista de anexos. **Control de acceso (RF-SEG-08):** si el radicado supera el *clearance* del llamante, responde `404` (no revela su existencia).
 

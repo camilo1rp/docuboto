@@ -67,7 +67,7 @@ Principio común: el contrato (firmas de función / endpoints REST) **no cambia*
 ```bash
 GATEWAY_URL=http://localhost:19080 \
 MCP_TENANT_SLUG=icetex \
-MCP_USER_PERMISSIONS=RADI_CREAR,... \
+MCP_USER_PERMISSIONS=PERM_RADI,... \
 # (a) token estático (sin refresco):   MCP_BEARER_TOKEN=<jwt>
 # (b) refresh por sesión:              MCP_REFRESH_TOKEN=<refresh-token>
 # (c) ROPC (usuario/contraseña):       MCP_AUTH_USERNAME=ana MCP_AUTH_PASSWORD=...

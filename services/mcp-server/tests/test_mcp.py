@@ -24,12 +24,12 @@ def test_catalog_has_core_tools() -> None:
 
 
 def test_visible_tools_filters_by_permission() -> None:
-    # radicar_documento exige RADI_CREAR; sin él no es visible.
+    # radicar_documento exige PERM_RADI; sin él no es visible.
     sin = {t.name for t in visible_tools(set(), is_root=False)}
     assert "radicar_documento" not in sin
     assert "buscar_radicados" in sin  # lectura, sin permiso → visible
 
-    con = {t.name for t in visible_tools({"RADI_CREAR"}, is_root=False)}
+    con = {t.name for t in visible_tools({"PERM_RADI"}, is_root=False)}
     assert "radicar_documento" in con
 
     root = {t.name for t in visible_tools(set(), is_root=True)}
@@ -42,7 +42,7 @@ def test_visible_tools_filters_by_permission() -> None:
 @pytest.mark.asyncio
 async def test_list_tools_endpoint(client_with_gateway) -> None:
     client, _ = client_with_gateway
-    resp = await client.get("/api/v1/mcp/tools", headers={"X-User-Permissions": "RADI_CREAR"})
+    resp = await client.get("/api/v1/mcp/tools", headers={"X-User-Permissions": "PERM_RADI"})
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()["tools"]}
     assert "radicar_documento" in names and "listar_trd" in names
@@ -75,7 +75,7 @@ async def test_invoke_write_requires_confirmation(client_with_gateway) -> None:
     resp = await client.post(
         "/api/v1/mcp/tools/radicar_documento/invoke",
         json={"doc_type": "E", "subject": "x"},
-        headers={"X-User-Permissions": "RADI_CREAR"},  # sin X-Confirm-Write
+        headers={"X-User-Permissions": "PERM_RADI"},  # sin X-Confirm-Write
     )
     assert resp.status_code == 412
     assert resp.json()["detail"]["error"] == "confirmacion_requerida"
@@ -88,7 +88,7 @@ async def test_invoke_write_without_permission_forbidden(client_with_gateway) ->
     resp = await client.post(
         "/api/v1/mcp/tools/radicar_documento/invoke",
         json={"doc_type": "E", "subject": "x"},
-        headers={"X-Confirm-Write": "true"},  # sin RADI_CREAR
+        headers={"X-Confirm-Write": "true"},  # sin PERM_RADI
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "permiso_insuficiente"
@@ -103,7 +103,7 @@ async def test_invoke_write_path_param_and_confirm(client_with_gateway) -> None:
         "/api/v1/mcp/tools/radicar_documento/invoke",
         json={"doc_type": "E", "subject": "Tutela"},
         headers={
-            "X-User-Permissions": "RADI_CREAR",
+            "X-User-Permissions": "PERM_RADI",
             "X-Confirm-Write": "true",
             "Authorization": "Bearer tok",
             "X-Tenant-Slug": "demo",

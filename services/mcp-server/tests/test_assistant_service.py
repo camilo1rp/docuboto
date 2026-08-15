@@ -25,10 +25,10 @@ from app.services import assistant
 from app.services.assistant import (
     ConversationLimitError,
     ConversationState,
-    IdentityError,
     run_turn,
     to_anthropic_schema,
 )
+from app.services.identity import IdentityError
 from app.tools import catalog
 from tests._assistant_fakes import (
     FakeAnthropic,
@@ -104,7 +104,7 @@ async def test_loop_de_tool_despacha_al_gateway() -> None:
 async def test_write_tool_excluida_del_conjunto_ofrecido() -> None:
     anthropic = FakeAnthropic([Response([text_block("ok")], "end_turn")])
     # ROOT ve TODAS en el catálogo, pero el asistente v1 filtra las write.
-    gateway = make_gateway(permissions=["RADI_CREAR"], roles=["ROOT"])
+    gateway = make_gateway(permissions=["PERM_RADI"], roles=["ROOT"])
 
     await _run(anthropic=anthropic, gateway=gateway)
 
@@ -142,7 +142,7 @@ async def test_tool_fuera_del_conjunto_se_deniega_sin_tocar_gateway() -> None:
             Response([text_block("No puedo radicar desde aquí.")], "end_turn"),
         ]
     )
-    gateway = make_gateway(permissions=["RADI_CREAR"], roles=["ROOT"])
+    gateway = make_gateway(permissions=["PERM_RADI"], roles=["ROOT"])
     conversations: dict = {}
 
     resp = await _run(anthropic=anthropic, gateway=gateway, conversations=conversations)
@@ -463,10 +463,22 @@ def test_buscar_conocimiento_schema_no_expone_acl() -> None:
 
     assert input_schema["required"] == ["query"]
     assert "acl" not in input_schema["properties"]
-    assert input_schema["properties"]["query"]["minLength"] == 2
+    assert input_schema["additionalProperties"] is False
+
+    # Los límites se alinearon con el backend al migrar los parámetros al
+    # catálogo. `SearchRequest` (knowledge-service/app/routers/knowledge.py)
+    # declara `query: min_length=1` y `top_k: ge=1, le=50`; la tabla paralela que
+    # había aquí anunciaba al modelo `minLength: 2`, y este test **congelaba esa
+    # divergencia**: nadie la revalidaba contra la API porque el test la daba por
+    # buena. Anunciar al modelo un contrato más estrecho que el real le hace
+    # descartar consultas que el sistema sí acepta.
+    assert input_schema["properties"]["query"]["minLength"] == 1
+
+    # `top_k` sí se queda por debajo del backend (20 frente a 50), pero ahora es
+    # una decisión declarada en el catálogo —un límite del ASISTENTE para no
+    # inundar la ventana de contexto del modelo— y no una deriva heredada.
     assert input_schema["properties"]["top_k"]["minimum"] == 1
     assert input_schema["properties"]["top_k"]["maximum"] == 20
-    assert input_schema["additionalProperties"] is False
 
 
 @pytest.mark.asyncio

@@ -106,7 +106,16 @@ for svc in "${SERVICES[@]}"; do
         python:3.11-slim \
         sh -c "
             set -e
-            pip install -q 'ruff>=0.4.0' 'mypy==1.11.0' -r requirements.txt 2>/dev/null
+            # Sin \`2>/dev/null\`, por la MISMA razón que la instalación de
+            # \`shared/\` de abajo — la lección estaba aplicada solo a la mitad.
+            # Bajo \`set -e\`, un fallo aquí (red, contención al correr varios
+            # gates a la vez, un índice caído) aborta el servicio y el script
+            # lo lista como FAILED **sin un solo mensaje**: un rojo sin causa
+            # visible. Eso ocurrió de verdad — cuatro servicios en rojo, dos de
+            # ellos sin cambios, y nada que leer— y un gate que da rojos
+            # inexplicables entrena a ignorarlo, que es exactamente el modo de
+            # fallo que este repositorio lleva corrigiendo.
+            pip install -q 'ruff>=0.4.0' 'mypy==1.11.0' -r requirements.txt
             # Se COPIA antes de instalar: el build de setuptools escribe
             # \`orpycamcp_common.egg-info\` junto al fuente, y sobre el montaje
             # :ro eso falla. Copiar es lo que mantiene el :ro intacto — es el

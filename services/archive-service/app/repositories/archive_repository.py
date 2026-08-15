@@ -264,6 +264,43 @@ class ArchiveRepository:
         )
         return [_row_to_radicado(r) for r in rows]
 
+    async def set_publicable(
+        self,
+        expediente_id: uuid.UUID,
+        publicable: bool,
+        max_clearance: int,
+        actor: uuid.UUID | None,
+    ) -> asyncpg.Record | None:
+        """Marca o retira la publicación de oficio del expediente (Ley 1712 art. 12).
+
+        Espejo de `document_repository.set_publicable`, con sus dos lecciones ya
+        incorporadas:
+
+        - El gate va en el `WHERE` del propio `UPDATE`, no en una comprobación
+          previa: autorización y mutación son un solo acto, sin ventana TOCTOU.
+        - `nivel_seguridad = 1` se exige **solo al publicar**. Publicar algo
+          reservado guardaría una afirmación falsa que una futura desclasificación
+          convertiría en difusión; retirar no lee de más ni afirma nada, y
+          bloquearlo dejaba sin salida justo al expediente reservado que hubiera
+          quedado publicado. En la duda, la dirección segura es poder dejar de
+          difundir.
+
+        No hay condición de estado: `closed`/`transferred` son estados normales
+        del ciclo de vida, no una retirada de la circulación.
+        """
+        gate_nivel = " AND nivel_seguridad = 1" if publicable else ""
+        return await self._conn.fetchrow(
+            "UPDATE expedientes SET publicable = $2, "
+            "    publicado_at  = CASE WHEN $2 THEN now() ELSE NULL END, "
+            "    publicado_por = CASE WHEN $2 THEN $4::uuid ELSE NULL END "
+            f"WHERE id = $1 AND nivel_seguridad <= $3{gate_nivel} "
+            "RETURNING code, publicable, publicado_at",
+            expediente_id,
+            publicable,
+            max_clearance,
+            actor,
+        )
+
     async def update_expediente(
         self,
         expediente_id: uuid.UUID,
@@ -1657,6 +1694,12 @@ def _row_to_expediente(row: asyncpg.Record) -> Expediente:
         fecha_extrema_final=(
             row["fecha_extrema_final"] if "fecha_extrema_final" in row.keys() else None
         ),
+        # Migración 042. El default es el seguro y la dirección importa: si una
+        # consulta futura no trajera la columna, se ve «no publicado», nunca lo
+        # contrario. La difusión real no depende de este mapeo — el chokepoint
+        # `oai_repository._PUBLIC` lee la columna en su propio SQL.
+        publicable=bool(row["publicable"]) if "publicable" in row.keys() else False,
+        publicado_at=row["publicado_at"] if "publicado_at" in row.keys() else None,
     )
 
 

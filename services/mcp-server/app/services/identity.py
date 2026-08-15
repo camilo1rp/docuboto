@@ -1,0 +1,117 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+Identidad del llamante: una sola resolución para los tres transportes.
+
+**El problema que cierra este módulo.** Había tres caminos distintos para la misma
+pregunta —«¿quién es y qué puede hacer?»— y dos de ellos no funcionaban:
+
+1. `routers/mcp.py` y el transporte MCP streamable leían la cabecera
+   `X-User-Permissions`. Esa cabecera **no la produce nadie**: el api-gateway
+   inyecta `X-User-Id`, `X-Username`, `X-Tenant-Slug`, `X-User-Roles`, `X-Canal` y
+   `X-Real-Ip`, y su allowlist de reenvío la descarta si la manda un cliente
+   (bien: sería forjable). Llegaba siempre vacía, así que **toda tool con permiso
+   quedaba invisible salvo para ROOT**. Solo aparecía poblada en los tests, que la
+   fabricaban a mano y por eso no detectaban nada.
+2. `services/assistant.py` sí lo hacía bien: `GET /api/v1/auth/me` con el token
+   del usuario, que devuelve `permissions` **y** `permission_levels`.
+
+Este módulo generaliza (2) y elimina (1). La identidad sale siempre del token
+validado, nunca de una cabecera que el cliente controla.
+
+**Por qué también `permission_levels`.** El sistema autoriza por permiso *y* por
+nivel (`crud` 0..5; las escrituras exigen 3). Con la lista plana no se puede saber
+si alguien tiene `PERM_RADI` para *leer* o para *crear*, y ofrecerle una tool que
+no puede ejecutar produce un 403 al pulsar — el defecto que ya se corrigió en la
+interfaz web.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import httpx
+
+
+class IdentityError(Exception):
+    """Fallo al resolver identidad/permisos contra el auth-service (vía gateway)."""
+
+    def __init__(self, status: int, code: str) -> None:
+        self.status = status
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class Identity:
+    user_id: str
+    tenant_slug: str
+    permissions: set[str] = field(default_factory=set)
+    levels: dict[str, int] = field(default_factory=dict)
+    is_root: bool = False
+
+
+# **Sin caché, a propósito.** El plan contemplaba cachear la identidad por hash del
+# token con TTL de 60 s para ahorrar un viaje en el par proponer/ejecutar. Al
+# implementarlo, el coste resultó mayor que el ahorro: una caché de permisos abre
+# una ventana en la que un permiso REVOCADO sigue surtiendo efecto, y este trabajo
+# va precisamente de que la autorización sea explícita y esté al día. Un TTL corto
+# tampoco servía: entre proponer y ejecutar media el tiempo que tarda una persona
+# en leer la tarjeta.
+#
+# El coste que se acepta a cambio son dos llamadas a `/auth/me` por acto, contra un
+# servicio de la misma red. ADR-019 ya asume el salto extra: esto es una capa de
+# asistencia, no de alto rendimiento. Si algún día pesa, la solución es que el
+# gateway inyecte los permisos ya validados, no cachearlos aquí.
+
+
+async def resolve_identity(
+    gateway_client: httpx.AsyncClient,
+    *,
+    authorization: str,
+    tenant_slug: str,
+) -> Identity:
+    """Resuelve la identidad del portador vía `GET /api/v1/auth/me`.
+
+    Fail-closed en todos los caminos: sin `user_id` no se puede aislar el historial
+    ni atar una propuesta a su autor, así que se rechaza en vez de colapsar dos
+    usuarios en una misma llave.
+    """
+    try:
+        resp = await gateway_client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": authorization, "X-Tenant-Slug": tenant_slug},
+        )
+    except httpx.RequestError as exc:
+        raise IdentityError(502, "gateway_unreachable") from exc
+
+    if resp.status_code == 401:
+        raise IdentityError(401, "unauthenticated")
+    if resp.status_code != 200:
+        raise IdentityError(503, "auth_service_error")
+
+    data = resp.json()
+    user_id = str(data.get("user_id") or "")
+    if not user_id:
+        raise IdentityError(401, "unauthenticated")
+
+    # `permission_levels` puede venir vacío (superadmin sin tenant, usuario no
+    # aprovisionado): el auth-service lo deja vacío, nunca ausente ni nulo. Un
+    # nivel ausente vale 0 al comprobarse, que es el lado seguro.
+    niveles_crudos = data.get("permission_levels") or {}
+    levels = {str(k): int(v) for k, v in niveles_crudos.items() if isinstance(v, int | float)}
+
+    return Identity(
+        user_id=user_id,
+        tenant_slug=str(data.get("tenant_slug") or tenant_slug),
+        permissions=set(data.get("permissions") or []),
+        levels=levels,
+        is_root="ROOT" in set(data.get("roles") or []),
+    )

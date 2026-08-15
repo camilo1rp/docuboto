@@ -17,7 +17,7 @@ def test_build_tools_have_mcp_schema(monkeypatch) -> None:
     from app import mcp_app
     from app.core.config import settings
 
-    monkeypatch.setattr(settings, "mcp_user_permissions", "RADI_CREAR")
+    monkeypatch.setattr(settings, "mcp_user_permissions", "PERM_RADI")
     tools = mcp_app.build_tools()
     names = {t.name for t in tools}
     assert "radicar_documento" in names and "buscar_radicados" in names
@@ -34,7 +34,7 @@ def test_build_tools_scope_sin_permiso(monkeypatch) -> None:
     monkeypatch.setattr(settings, "mcp_user_permissions", "")
     monkeypatch.setattr(settings, "mcp_user_roles", "")
     names = {t.name for t in mcp_app.build_tools()}
-    assert "radicar_documento" not in names  # exige RADI_CREAR
+    assert "radicar_documento" not in names  # exige PERM_RADI
     assert "buscar_radicados" in names  # lectura
 
 
@@ -92,7 +92,7 @@ def test_set_context_overrides_env(monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "mcp_user_permissions", "")  # entorno: sin permisos
     tok = mcp_app.set_context(
-        authorization="Bearer h", tenant="t1", permissions={"RADI_CREAR"}, is_root=False
+        authorization="Bearer h", tenant="t1", permissions={"PERM_RADI"}, is_root=False
     )
     try:
         names = {t.name for t in mcp_app.build_tools()}

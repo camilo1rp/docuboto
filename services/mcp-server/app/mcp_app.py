@@ -77,14 +77,10 @@ def _session() -> dict:
     }
 
 
-def _input_schema(tool: catalog.Tool) -> dict:
-    props = {p: {"type": "string"} for p in tool.path_params}
-    return {
-        "type": "object",
-        "properties": props,
-        "required": list(tool.path_params),
-        "additionalProperties": True,
-    }
+# `_input_schema` se eliminó: declaraba solo los parámetros de RUTA como cadenas
+# y dejaba `additionalProperties: True`, de modo que el cliente MCP veía un
+# contrato distinto —y mucho más laxo— del que veía el modelo del asistente. Los
+# dos consumen ahora `catalog.json_schema`, que es la única declaración.
 
 
 def build_tools() -> list[types.Tool]:
@@ -93,7 +89,7 @@ def build_tools() -> list[types.Tool]:
         types.Tool(
             name=t.name,
             description=t.description + (" [escritura]" if t.write else ""),
-            inputSchema=_input_schema(t),
+            inputSchema=catalog.json_schema(t),
         )
         for t in catalog.visible_tools(s["permissions"], is_root=s["is_root"])
     ]

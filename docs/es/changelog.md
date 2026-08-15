@@ -18,6 +18,20 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `fix(tooling)`: **La comprobación automática de código podía fallar sin decir por qué**
+  Apareció al ejecutarla mientras otra instancia estaba en marcha: cuatro servicios en rojo —dos de ellos sin ningún cambio— y ningún mensaje que explicara nada. No fallaba el código: fallaba la instalación de las herramientas dentro del contenedor, y esa instalación tenía los mensajes de error **suprimidos**, de modo que un problema de red o de saturación se presentaba como «este servicio no pasa» sin más.
+  La misma lección ya estaba escrita dos líneas más abajo en el propio archivo, para otra instalación. Estaba aplicada solo a la mitad.
+  *Por qué*: una comprobación que da fallos inexplicables enseña a no hacerle caso, y entonces deja de proteger.
+  *Impacto*: solo herramientas de desarrollo.
+
+- `feat(archive,frontend)`: **La decisión de publicar ya alcanza también a los expedientes**
+  Faltaba la mitad. Cuando se corrigió que publicar fuera una decisión y no un efecto de no haber clasificado, el cambio se aplicó a los documentos individuales y no a los expedientes: el canal de consulta pública seguía difundiendo el código, el nombre, la descripción, las fechas y el número de documentos de **todo expediente no clasificado**. Lo detectaron por separado las dos revisiones —de seguridad y de conformidad normativa— hechas sobre el trabajo anterior.
+  Ahora los expedientes tienen su propio acto de publicación, con el mismo permiso, el mismo fundamento obligatorio y el mismo registro que los documentos, y con su pantalla construida en el mismo cambio: dejar la capacidad sin pantalla ya nos costó una corrección hace dos entregas.
+  Dos detalles que no son evidentes y se decidieron a propósito. Un expediente **cerrado o transferido sigue siendo publicable**: al contrario que un documento anulado, no está retirado de la circulación, sino en un estado normal de su ciclo de vida — copiar la regla del documento habría dejado de difundir, sin avisar, la mayor parte del archivo histórico. Y sobre un expediente reservado la pantalla no ofrece publicarlo, pero **sí retirar** una publicación anterior, que es justo cuando más urge poder hacerlo.
+  Lo que se difunde de un expediente es siempre agregado: nunca se enumeran los números de los documentos que contiene, porque un expediente público puede incluir documentos reservados.
+  *Por qué*: una decisión que vale para un tipo de documento y no para otro no es una decisión, es una excepción.
+  *Impacto*: **los expedientes existentes quedan sin publicar**. Si su institución usa el canal de consulta pública de expedientes, debe publicar expresamente lo que quiera difundir. Hay que reconstruir las imágenes al desplegar.
+
 - `fix(document,shared,ci)`: **La decisión de publicar no alcanzaba a los archivos adjuntos, y reclasificar un documento la deshacía sin que nadie lo decidiera**
   Auditoría cruzada de seguridad y de conformidad archivística sobre lo construido. Los tres problemas tienen la misma forma: la corrección anterior era correcta, pero **no llegaba a todas partes**.
   **Los adjuntos se seguían entregando.** El cambio anterior hizo que un documento solo se difundiera si la entidad lo decidía expresamente. Eso quedó bien para la ficha del documento —número, asunto, dependencia—, pero el canal que entrega **el archivo adjunto completo** conservaba la regla antigua escrita aparte, y nadie la actualizó. Con los canales de consulta pública activos, cualquiera en internet podía descargar el adjunto de cualquier documento no clasificado, aunque la entidad no lo hubiera publicado nunca. Y como los números de radicado son consecutivos, se podían recorrer uno a uno. Corregido de forma que la regla ya no se pueda copiar mal: ahora hay una sola, y las dos consultas la construyen desde el mismo sitio.

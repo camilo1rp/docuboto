@@ -25,7 +25,7 @@ from fastapi import (
 )
 
 from app.core.actor import Actor, require_actor
-from app.core.clearance import require_permission
+from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_db_conn
 from app.schemas.archive import (
     AipResponse,
@@ -42,6 +42,8 @@ from app.schemas.archive import (
     ExpedienteSearchResponse,
     ExpedienteUpdate,
     HistorialAccesoEntry,
+    PublicacionRequest,
+    PublicacionResponse,
     RadicadoLink,
     RolAutorizado,
 )
@@ -251,6 +253,47 @@ async def close_expediente(
     return await ArchiveService(conn, tenant_slug).close_expediente(
         expediente_id, actor.audit_actor, actor_id=actor.audit_actor
     )
+
+
+@router.post(
+    "/{expediente_id}/publicacion",
+    response_model=PublicacionResponse,
+    summary="Acto de publicación de oficio del expediente (Ley 1712/2014 art. 12)",
+    # Mismo permiso que decide la RESERVA (`PERM_RECLASIFICAR`) con nivel de
+    # escritura, igual que el gemelo de document-service: publicar y clasificar
+    # son las dos caras de la competencia sobre el régimen de acceso. Repartirlas
+    # entre permisos distintos dejaría publicar a quien no puede desclasificar.
+    dependencies=[Depends(require_permission("PERM_RECLASIFICAR", min_crud=3))],
+)
+async def set_publicacion_expediente(
+    expediente_id: uuid.UUID,
+    payload: PublicacionRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> PublicacionResponse:
+    """Publica el expediente de oficio, o retira su publicación.
+
+    Este servicio conservaba `_PUBLIC = "nivel_seguridad = 1"` mientras
+    document-service ya exigía el acto: el OAI EAD multinivel difundía todo
+    expediente no clasificado, que es el valor por defecto. La corrección del
+    art. 12 se había aplicado a un canal de tres.
+    """
+    # `actor.id` (UUID) para resolver el clearance; `actor.audit_actor` (el mismo
+    # UUID como texto) para el asiento. La distinción no es cosmética: el helper
+    # de identidad existe justo para que el mismo funcionario no acabe con dos
+    # identidades según la ruta.
+    clearance = await resolve_caller_clearance(conn, actor.id)
+    resultado = await ArchiveService(conn, tenant_slug).set_publicacion(
+        expediente_id,
+        payload.publicar,
+        payload.fundamento,
+        clearance,
+        actor=actor.audit_actor,
+        canal=canal,
+    )
+    return PublicacionResponse(**resultado)
 
 
 @router.post(

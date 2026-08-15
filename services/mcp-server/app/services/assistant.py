@@ -46,6 +46,7 @@ import httpx
 from app.core.config import settings
 from app.schemas.assistant import AssistantMessageResponse, AssistantTurn
 from app.services import dispatcher
+from app.services.identity import resolve_identity
 from app.tools import catalog
 from app.tools.catalog import Tool
 
@@ -85,186 +86,45 @@ CONFIDENCIALIDAD SIN ORACULO (RF-SEG-08, Ley 1712/2014):
   "No encontrado" y "sin permiso" deben ser INDISTINGUIBLES en tu respuesta.
 """
 
-# input_schema por tool (Anthropic no admite el {name,method,write,epic} de
-# catalog.Tool.to_schema() -- eso es el contrato MCP/HTTP, no tool-use). Los
-# parámetros se leen de los routers reales que el dispatcher termina llamando
-# (document-service/search.py, workflow-service/workflow.py::get_inbox,
-# archive-service/trd.py::list_trd_series). Tools no listadas aquí (p.ej. las
-# de solo path_params) caen al esquema derivado de `tool.path_params`.
-_TOOL_ARGS: dict[str, tuple[dict[str, dict[str, Any]], list[str]]] = {
-    "consultar_radicado": (
-        {"document_id": {"type": "string", "format": "uuid", "description": "UUID del radicado."}},
-        ["document_id"],
-    ),
-    "buscar_radicados": (
-        {
-            "q": {
-                "type": "string",
-                "minLength": 2,
-                "description": "Texto a buscar (opcional; sin texto es una consulta filtrada por fecha).",
-            },
-            "doc_type": {
-                "type": "string",
-                "enum": ["E", "S", "I"],
-                "description": "Tipo de radicado: Entrada, Salida o Interno.",
-            },
-            "status": {"type": "string", "description": "Estado del radicado."},
-            "date_from": {
-                "type": "string",
-                "format": "date",
-                "description": "Fecha de registro desde (ISO 8601, incluida).",
-            },
-            "date_to": {
-                "type": "string",
-                "format": "date",
-                "description": "Fecha de registro hasta (ISO 8601, incluida).",
-            },
-            "dest_dept_code": {"type": "integer", "description": "Código de la dependencia destino."},
-            "page": {"type": "integer", "minimum": 1, "description": "Página, 1-indexada."},
-            "size": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Tamaño de página (máx. 100)."},
-        },
-        [],
-    ),
-    "consultar_expediente": (
-        {"expediente_id": {"type": "string", "format": "uuid", "description": "UUID del expediente."}},
-        ["expediente_id"],
-    ),
-    "indice_expediente": (
-        {"expediente_id": {"type": "string", "format": "uuid", "description": "UUID del expediente."}},
-        ["expediente_id"],
-    ),
-    "listar_trd": (
-        {
-            "is_active": {"type": "boolean", "description": "Filtra por series activas/inactivas."},
-            "page": {"type": "integer", "minimum": 1, "description": "Página, 1-indexada."},
-            "size": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Tamaño de página (máx. 200)."},
-        },
-        [],
-    ),
-    "bandeja_tramite": (
-        {
-            "box": {
-                "type": "string",
-                "enum": ["entrada", "salida", "internos"],
-                "description": "Bandeja tipada.",
-            },
-            "dept": {"type": "string", "description": "Filtra por dependencia."},
-            "assigned_to": {
-                "type": "string",
-                "format": "uuid",
-                "description": "Filtra por usuario asignado (UUID).",
-            },
-            "page": {"type": "integer", "minimum": 1, "description": "Página, 1-indexada."},
-            "size": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Tamaño de página (máx. 100)."},
-        },
-        [],
-    ),
-    "consultar_fuid": (
-        {"transferencia_id": {"type": "string", "format": "uuid", "description": "UUID de la transferencia."}},
-        ["transferencia_id"],
-    ),
-    # E21: NO se expone `acl` -- el knowledge-service impone el techo de clearance
-    # server-side desde X-User-Id (RF-SEG-08); exponerlo al modelo sería superficie
-    # de mando innecesaria (ver docstring de módulo / spec de integración E18↔E21).
-    "buscar_conocimiento": (
-        {
-            "query": {
-                "type": "string",
-                "minLength": 2,
-                "description": "Consulta en lenguaje natural para recuperar fragmentos relevantes de la base de conocimiento.",
-            },
-            "top_k": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 20,
-                "description": "Número máximo de fragmentos a devolver (por defecto 5 si se omite).",
-            },
-        },
-        ["query"],
-    ),
-}
-
-
 def to_anthropic_schema(tool: Tool) -> dict[str, Any]:
-    """Adapta una `Tool` del catálogo al `input_schema` de la API de Anthropic.
+    """Adapta una `Tool` del catálogo al formato de tool-use de Anthropic.
 
-    `Tool.to_schema()` (catalog.py) emite {name,description,method,write,epic}:
-    es el contrato del catálogo MCP/HTTP, no un `input_schema` de tool-use. El
-    adaptador vive en el servicio del asistente (no en catalog.py) porque es un
-    detalle del cliente LLM, no del contrato MCP compartido con el resto de
-    consumidores del catálogo.
+    El `input_schema` sale íntegro de `catalog.json_schema`: el adaptador solo
+    envuelve nombre y descripción, que es lo único específico de este cliente.
+
+    Antes, los parámetros vivían aquí en `_TOOL_ARGS`, una tabla paralela al
+    catálogo mantenida a mano. Su modo de fallo era silencioso y real: una tool
+    sin entrada en la tabla y sin parámetros de ruta obtenía `properties: {}`,
+    y como la whitelist de `_execute_tool` intersecta con esas propiedades, la
+    llamada se despachaba **sin argumentos** — un `POST` con el cuerpo vacío que
+    el backend rechaza con un 422 incomprensible, o peor, una consulta sin
+    filtros. Con una sola declaración, ese estado ya no se puede escribir.
     """
-    properties, required = _TOOL_ARGS.get(tool.name, ({}, []))
-    if not properties and tool.path_params:
-        # Fallback: tools de solo path_params sin entrada explícita arriba.
-        properties = {p: {"type": "string", "description": f"Parámetro de ruta {p}."} for p in tool.path_params}
-        required = list(tool.path_params)
     return {
         "name": tool.name,
         "description": tool.description,
-        "input_schema": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
+        "input_schema": catalog.json_schema(tool),
     }
-
-
-class IdentityError(Exception):
-    """Fallo al resolver identidad/permisos contra el auth-service (vía gateway)."""
-
-    def __init__(self, status: int, code: str) -> None:
-        self.status = status
-        self.code = code
-        super().__init__(code)
 
 
 class ConversationLimitError(Exception):
     """La conversación agotó su tope de turnos (`assistant_max_turns`)."""
 
 
-async def resolve_identity(
-    gateway_client: httpx.AsyncClient, *, authorization: str, tenant_slug: str
-) -> tuple[set[str], bool, str]:
-    """Resuelve permisos + is_root + user_id del portador vía `GET /api/v1/auth/me`.
+def _visible_read_tools(
+    permissions: set[str], is_root: bool, levels: dict[str, int] | None = None
+) -> list[Tool]:
+    """Tools visibles filtradas a v1 = SOLO LECTURA (excluye toda tool write=True).
 
-    Devuelve `(permissions, is_root, user_id)`. El `user_id` proviene del token
-    VALIDADO (no de una cabecera falsificable) y es la identidad con la que se
-    llavea el historial de conversación (aislamiento por usuario, RF-SEG-08).
-
-    Ver nota de desviación de diseño en el docstring del módulo: el brief
-    original apuntaba a `/api/v1/auth/validate`, que no expone `permissions`.
+    `levels` (el `permission_levels` de `/auth/me`) hace que el filtro respete el
+    nivel CRUD y no solo la presencia del permiso: tener `PERM_RADI` para *leer*
+    no habilita las tools que exigen crear.
     """
-    try:
-        resp = await gateway_client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": authorization, "X-Tenant-Slug": tenant_slug},
-        )
-    except httpx.RequestError as exc:
-        raise IdentityError(502, "gateway_unreachable") from exc
-
-    if resp.status_code == 401:
-        raise IdentityError(401, "unauthenticated")
-    if resp.status_code != 200:
-        raise IdentityError(503, "auth_service_error")
-
-    data = resp.json()
-    permissions = set(data.get("permissions") or [])
-    roles = set(data.get("roles") or [])
-    # Consistente con routers/mcp.py::_is_root y mcp_app.py::_session.
-    is_root = "ROOT" in roles
-    user_id = str(data.get("user_id") or "")
-    if not user_id:
-        # Fail-closed: sin identidad de usuario NO se puede aislar el historial
-        # por portador -> se rechaza en vez de colapsar dos usuarios en una llave.
-        raise IdentityError(401, "unauthenticated")
-    return permissions, is_root, user_id
-
-
-def _visible_read_tools(permissions: set[str], is_root: bool) -> list[Tool]:
-    """Tools visibles filtradas a v1 = SOLO LECTURA (excluye toda tool write=True)."""
-    return [t for t in catalog.visible_tools(permissions, is_root=is_root) if not t.write]
+    return [
+        t
+        for t in catalog.visible_tools(permissions, is_root=is_root, levels=levels)
+        if not t.write
+    ]
 
 
 @dataclass
@@ -400,9 +260,10 @@ async def run_turn(
     conversations: dict[tuple[str, str, str], ConversationState],
 ) -> AssistantMessageResponse:
     """Orquesta un turno completo: identidad -> loop manual tool_use -> respuesta."""
-    permissions, is_root, user_id = await resolve_identity(
+    identidad = await resolve_identity(
         gateway_client, authorization=authorization, tenant_slug=tenant_slug
     )
+    permissions, is_root, user_id = identidad.permissions, identidad.is_root, identidad.user_id
 
     conv_id = conversation_id or str(uuid.uuid4())
     # La llave incluye tenant Y user_id: un conversation_id NUNCA cruza tenants
@@ -415,7 +276,7 @@ async def run_turn(
     if state.turn_count >= settings.assistant_max_turns:
         raise ConversationLimitError()
 
-    tools = _visible_read_tools(permissions, is_root)
+    tools = _visible_read_tools(permissions, is_root, identidad.levels)
     tools_by_name = {t.name: t for t in tools}
     anthropic_tools = [to_anthropic_schema(t) for t in tools]
 

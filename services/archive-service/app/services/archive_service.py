@@ -277,6 +277,56 @@ class ArchiveService:
             )
         return _to_expediente_response(expediente)
 
+    async def set_publicacion(
+        self,
+        expediente_id: uuid.UUID,
+        publicar: bool,
+        fundamento: str,
+        max_clearance: int,
+        *,
+        actor: str | None,
+        canal: str = "system",
+    ) -> dict[str, Any]:
+        """Ejecuta el acto de publicación de oficio del expediente (art. 12).
+
+        La escritura y su asiento van en UNA transacción: un acto de difusión sin
+        constancia de quién lo decidió y con qué fundamento no es un acto
+        administrativo, es un cambio de estado. Si la auditoría falla, la
+        publicación no ocurre.
+
+        `404` neutro para «no existe», «te supera el clearance» y «no es de nivel
+        público»: distinguirlos convertiría este endpoint en un oráculo sobre
+        expedientes reservados.
+        """
+        async with self._conn.transaction():
+            row = await self._repo.set_publicable(
+                expediente_id, publicar, max_clearance, _safe_uuid(actor)
+            )
+            if row is None:
+                raise _expediente_not_found(expediente_id)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action=(
+                    "archive.expediente_publicacion_activada"
+                    if publicar
+                    else "archive.expediente_publicacion_retirada"
+                ),
+                object_type="expediente",
+                # El código del expediente lo resuelve el `RETURNING`, nunca el
+                # cliente: es el identificador con el que se auditará el acto.
+                object_ref=row["code"],
+                actor=actor,
+                canal=canal,
+                payload={"publicable": row["publicable"], "fundamento": fundamento},
+            )
+        return {
+            "code": row["code"],
+            "publicable": row["publicable"],
+            "publicado_at": row["publicado_at"],
+        }
+
     async def list_expedientes(
         self,
         *,
@@ -3802,6 +3852,8 @@ def _to_expediente_response(exp: Expediente) -> ExpedienteResponse:
         origen=exp.origen,
         fecha_extrema_inicial=exp.fecha_extrema_inicial,
         fecha_extrema_final=exp.fecha_extrema_final,
+        publicable=exp.publicable,
+        publicado_at=exp.publicado_at,
     )
 
 

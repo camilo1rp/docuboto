@@ -43,6 +43,7 @@
   import VincularRadicadosDrawer from "$lib/components/features/expedientes/VincularRadicadosDrawer.svelte";
   import EditarMetadatosModal from "$lib/components/features/expedientes/EditarMetadatosModal.svelte";
   import DisposicionExpedienteDrawer from "$lib/components/features/disposicion/DisposicionExpedienteDrawer.svelte";
+  import PublicacionExpedienteDrawer from "$lib/components/features/publicacion/PublicacionExpedienteDrawer.svelte";
 
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
@@ -90,6 +91,13 @@
   // Vincular (POST /radicados, min_crud=1) exige solo el expediente en
   // estado 'open' — cerrado/transferido responde 409 expediente_not_open.
   $: canLink = can("USUA_PERM_EXPEDIENTE") && expediente?.status === "open";
+  // Acto de publicación de oficio (Ley 1712/2014 art. 12). Mismo permiso y nivel
+  // que en el gemelo del radicado: publicar y clasificar son las dos caras de la
+  // competencia sobre el régimen de acceso, y el backend exige
+  // `PERM_RECLASIFICAR` con `min_crud=3`. No se condiciona por `status`: un
+  // expediente cerrado o transferido sigue siendo difundible.
+  $: canPublicar = can("PERM_RECLASIFICAR", 3);
+  let showPublicacionDrawer = false;
   // Excluir (DELETE /radicados/{id}, min_crud=3) — ver nota A6 arriba.
   $: canUnlink = can("USUA_PERM_EXPEDIENTE", 3) && expediente?.status === "open";
   // Solo para el mensaje informativo "no admite vincular ni excluir" — no
@@ -879,6 +887,11 @@
       {#if canVerDisposicion}
         <Button variant="ghost" on:click={() => (showDisposicionDrawer = true)}>
           <i class="fas fa-box-archive" aria-hidden="true"></i> Disposición final
+        </Button>
+      {/if}
+      {#if canPublicar}
+        <Button variant="ghost" on:click={() => (showPublicacionDrawer = true)}>
+          <i class="fas fa-bullhorn" aria-hidden="true"></i> Publicación
         </Button>
       {/if}
       {#if canClose}
@@ -2083,6 +2096,22 @@
   {expediente}
   trdSerieDetail={data.trdSerieDetail ?? null}
   on:close={() => (showDisposicionDrawer = false)}
+/>
+
+<!-- Acto de publicación de oficio (Ley 1712/2014 art. 12) -->
+<PublicacionExpedienteDrawer
+  open={showPublicacionDrawer}
+  {expediente}
+  on:close={() => (showPublicacionDrawer = false)}
+  on:changed={(e) => {
+    // Reflejo optimista sobre el objeto ya cargado: el backend es la fuente de
+    // verdad y devolvió el estado nuevo, así que no hace falta recargar la
+    // página entera para que el drawer y la ficha dejen de discrepar.
+    if (expediente) {
+      expediente.publicable = e.detail.publicable;
+      expediente.publicado_at = e.detail.publicado_at;
+    }
+  }}
 />
 
 <style lang="scss">

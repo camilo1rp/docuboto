@@ -378,6 +378,19 @@ The public cut requires **all three** conditions at once (`publicable AND nivel_
 
 **Screen**: the act is performed from the "Publicación" drawer in `/bandeja`, which always offers the act opposite to the current state and offers no form at all over a reserved or annulled radicado — the backend's neutral `404` is correct, but letting someone draft a justification only to receive "does not exist" afterwards would be a screen that deceives.
 
+### `POST /api/v1/expedientes/{id}/publicacion`
+**Proactive publication** act for the expediente (Ley 1712/2014 art. 12, archive migration `042`). Same contract as the radicado twin: `{publicar: bool, fundamento: str}` → `{code, publicable, publicado_at}`, `PERM_RECLASIFICAR` at `crud≥3`, justification mandatory in both directions, act and audit entry in a single transaction.
+
+It closes the asymmetry the cross audit uncovered: the art. 12 correction had been applied to radicados and **not here**, so archive-service's `oai_repository._PUBLIC` was still `nivel_seguridad = 1` and the multi-level EAD OAI kept proactively disseminating every unclassified expediente — the column's default. The asymmetry was also implicit: anyone reading document-service's cut would assume this service did the same.
+
+Two **deliberate** differences from radicados:
+- The cut carries **no status condition**. An annulled radicado is withdrawn from circulation; a `closed`/`transferred` expediente is not — those are normal lifecycle states. Copying `status <> …` for symmetry would have silently unpublished the entire closed archive, which is most of a fonds.
+- What is disseminated is aggregate: code, name, description, extreme dates and the **count** of radicados. Child `tracking_number`s are never enumerated (a public expediente may contain reserved radicados).
+
+`publicable` and `publicado_at` are carried in `ExpedienteResponse`. **Compatibility**: existing expedientes become **non-publishable** after migration `042`.
+
+**Screen**: the "Publicación" drawer in `/expedientes/{id}`. Over a reserved expediente it does not offer publishing — and says why — but it **does** offer withdrawal, which is the backend's real asymmetry.
+
 ### `GET /api/v1/documents/{id}`
 Get by UUID. Includes the list of anexos (attachments). **Access control (RF-SEG-08):** if the radicado exceeds the caller's clearance, it answers `404` (it does not reveal its existence).
 

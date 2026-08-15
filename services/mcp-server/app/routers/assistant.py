@@ -28,11 +28,8 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.schemas.assistant import AssistantMessageRequest, AssistantMessageResponse
-from app.services.assistant import (
-    ConversationLimitError,
-    IdentityError,
-    run_turn,
-)
+from app.services.assistant import ConversationLimitError, run_turn
+from app.services.identity import IdentityError
 
 logger = logging.getLogger(__name__)
 

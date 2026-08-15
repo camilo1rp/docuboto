@@ -54,6 +54,11 @@ class Expediente:
     origen: str = "corriente"
     fecha_extrema_inicial: date | None = None
     fecha_extrema_final: date | None = None
+    # Esquema de publicación (Ley 1712/2014 art. 12, migración 042). `publicable`
+    # NO se deduce de `nivel_seguridad`: un expediente de nivel público que nadie
+    # ha decidido difundir sigue sin difundirse.
+    publicable: bool = False
+    publicado_at: datetime | None = None
 
 
 @dataclass

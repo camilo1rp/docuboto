@@ -216,6 +216,32 @@ class ExpedienteResponse(BaseModel):
     origen: str = "corriente"
     fecha_extrema_inicial: date | None = None
     fecha_extrema_final: date | None = None
+    # Estado del acto de publicación (Ley 1712/2014 art. 12). Aditivo: sin esto
+    # el acto se podría ejecutar pero no consultar, y la entidad no podría
+    # acreditar qué expedientes difunde de oficio. Lección ya pagada en el
+    # gemelo de radicados.
+    publicable: bool = False
+    publicado_at: datetime | None = None
+
+
+class PublicacionRequest(BaseModel):
+    """Acto de publicación de oficio del expediente (Ley 1712/2014 art. 12).
+
+    Espejo de `document-service`. `publicar=False` retira la publicación, y el
+    fundamento es obligatorio en AMBOS sentidos: difundir un expediente y dejar
+    de difundirlo son dos decisiones que la entidad tiene que poder explicar ante
+    quien las revise. Un campo obligatorio solo en un sentido invita a usar el
+    otro para deshacer sin dar cuentas.
+    """
+
+    publicar: bool
+    fundamento: str = Field(..., min_length=1, max_length=500)
+
+
+class PublicacionResponse(BaseModel):
+    code: str
+    publicable: bool
+    publicado_at: datetime | None = None
 
 
 class ExpedienteDisposicionResult(BaseModel):

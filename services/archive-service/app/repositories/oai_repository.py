@@ -32,10 +32,22 @@ from datetime import datetime
 
 import asyncpg
 
-# Un expediente es cosechable SOLO si es público. No hay estado 'anulado' en
-# expedientes (a diferencia de radicados) — open/closed/transferred son todos
-# cosechables si son públicos. Fuente única de verdad del recorte.
-_PUBLIC = "nivel_seguridad = 1"
+# Un expediente es cosechable SOLO si la entidad lo publicó Y no está reservado
+# (migración 042, Ley 1712/2014 art. 12). Las dos condiciones se exigen a la vez:
+# la publicación es una decisión de transparencia y la clasificación una de
+# reserva, y ninguna debe poder anular a la otra por descuido.
+#
+# `publicable` llegó tarde a este servicio: la migración 019 de document-service
+# corrigió la premisa para radicados y aquí quedó `nivel_seguridad = 1`, así que
+# el OAI EAD multinivel siguió difundiendo de oficio todo expediente no
+# clasificado — el default de la columna. La asimetría era implícita, que es lo
+# peor: quien leyera el recorte de document-service supondría que este hace lo
+# mismo.
+#
+# No hay condición de estado, a diferencia de radicados: no existe 'anulado' en
+# expedientes, y open/closed/transferred son estados normales del ciclo de vida
+# en los que la difusión sigue siendo legítima. Fuente única de verdad del recorte.
+_PUBLIC = "publicable AND nivel_seguridad = 1"
 
 # `radicado_count` es un CONTEO agregado (subconsulta correlacionada) — NUNCA
 # se listan los tracking_number hijos (fuga de item-level, ver docstring del
