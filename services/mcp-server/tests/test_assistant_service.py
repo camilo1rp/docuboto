@@ -147,9 +147,20 @@ async def test_tool_fuera_del_conjunto_se_deniega_sin_tocar_gateway() -> None:
 
     resp = await _run(anthropic=anthropic, gateway=gateway, conversations=conversations)
 
-    # el gateway solo recibió /auth/me (identidad); NUNCA una llamada de dispatch
+    # El gateway solo recibió LECTURAS de contexto —identidad y marco de alcance—,
+    # nunca una llamada de despacho. Se comprueba por lo que NO está en la lista,
+    # no por igualdad exacta: el marco de alcance (bloque A) añadió `/auth/clearance`
+    # y `/auth/context`, y un test atado a la lista literal habría marcado en rojo
+    # una lectura legítima mientras dejaba de vigilar lo único que importa aquí.
     called_paths = [c.args[0] for c in gateway.get.call_args_list]
-    assert called_paths == ["/api/v1/auth/me"]
+    lecturas_de_contexto = {
+        "/api/v1/auth/me",
+        "/api/v1/auth/clearance",
+        "/api/v1/auth/context",
+    }
+    assert set(called_paths) <= lecturas_de_contexto, (
+        f"se despachó algo que no es contexto: {sorted(set(called_paths) - lecturas_de_contexto)}"
+    )
     assert gateway.post.await_count == 0
     # el tool_result inyectado al modelo marcó el error (se busca en el historial;
     # los kwargs de `create` comparten la MISMA lista por referencia, así que se

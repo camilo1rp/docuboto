@@ -378,6 +378,17 @@ The public cut requires **all three** conditions at once (`publicable AND nivel_
 
 **Screen**: the act is performed from the "Publicación" drawer in `/bandeja`, which always offers the act opposite to the current state and offers no form at all over a reserved or annulled radicado — the backend's neutral `404` is correct, but letting someone draft a justification only to receive "does not exist" afterwards would be a screen that deceives.
 
+### `GET /api/v1/assistant/alcance`
+The caller's scope frame: **what they can do, what they can consult, and what they cannot — with their alternative route**. No permission of its own: it describes the asker's capabilities, resolved from their token.
+
+It exists because permissions had been a silent filter: the catalogue hid what the user could not use, so the limit was discovered **by failing** — or by waiting for an action that was never going to happen. The frame states it up front and offers the way out when there is one ("you cannot send it, but you can transfer the radicado to correspondence").
+
+It is **derived**, not maintained: from the tool catalogue — which declares permission, level, domain operation and alternative route — crossed with `/auth/me`, `/auth/clearance` and `/auth/context`. Adding a tool updates the frame by itself.
+
+It includes `limites_declarados`: what the system does **not** distinguish, so as not to promise precision it lacks — the registration permission does not separate by document type (`PERM_RADI_ENTRADA`/`PERM_RADI_INTERNO` exist and **no gate uses them**), and reads are bounded by security level, not by dependencia.
+
+It lives under `/api/v1/assistant/` because that is the only mcp-server prefix the gateway routes. It does not require the assistant to be available: knowing what you can do should not depend on a model being up.
+
 ### `POST /api/v1/expedientes/{id}/publicacion`
 **Proactive publication** act for the expediente (Ley 1712/2014 art. 12, archive migration `042`). Same contract as the radicado twin: `{publicar: bool, fundamento: str}` → `{code, publicable, publicado_at}`, `PERM_RECLASIFICAR` at `crud≥3`, justification mandatory in both directions, act and audit entry in a single transaction.
 

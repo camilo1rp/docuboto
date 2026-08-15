@@ -18,6 +18,14 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ### Añadido
 
+- `feat(mcp)`: **El asistente ahora dice qué puede hacer cada persona antes de empezar**
+  Hasta ahora los permisos funcionaban como un filtro invisible: el asistente escondía lo que el funcionario no podía hacer, de modo que el límite se descubría **fallando**. Alguien pedía «envía este documento» y, o aparecía un error incomprensible, o se quedaba esperando una acción que con sus credenciales nunca iba a ocurrir.
+  Ahora, al abrir el asistente, la persona ve **qué puede consultar, qué puede ejecutar y qué no** — y, cuando algo no está a su alcance, **por dónde sí puede llegar**: «no puede enviar el documento, pero puede trasladarlo a correspondencia para que lo envíen». Esa segunda parte es la útil; negar sin más deja a la gente igual de atascada.
+  Se corrigieron además dos cosas que estaban rotas por dentro. La capacidad de **radicar desde el asistente** llevaba apagada desde el principio, porque estaba amarrada a un permiso que no existe en el sistema; nadie lo notó porque las propias pruebas se inventaban ese permiso. Y el asistente anunciaba límites de búsqueda distintos de los reales del sistema, con una prueba que daba por buena esa diferencia.
+  El marco de alcance también **declara lo que el sistema no distingue**, para no prometer precisión que no tiene: quien puede radicar puede radicar cualquier tipo de documento, y lo que cada quien ve no depende de su dependencia sino de su nivel de acceso a la información.
+  *Por qué*: enterarse de un límite fallando hace perder el tiempo a dos personas, y una negativa sin alternativa no resuelve nada.
+  *Impacto*: el asistente sigue siendo de solo consulta; lo que cambia es que ahora dice con claridad qué está a su alcance. Hay que reconstruir las imágenes al desplegar.
+
 - `fix(tooling)`: **La comprobación automática de código podía fallar sin decir por qué**
   Apareció al ejecutarla mientras otra instancia estaba en marcha: cuatro servicios en rojo —dos de ellos sin ningún cambio— y ningún mensaje que explicara nada. No fallaba el código: fallaba la instalación de las herramientas dentro del contenedor, y esa instalación tenía los mensajes de error **suprimidos**, de modo que un problema de red o de saturación se presentaba como «este servicio no pasa» sin más.
   La misma lección ya estaba escrita dos líneas más abajo en el propio archivo, para otra instalación. Estaba aplicada solo a la mitad.

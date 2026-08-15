@@ -47,6 +47,7 @@ from app.core.config import settings
 from app.schemas.assistant import AssistantMessageResponse, AssistantTurn
 from app.services import dispatcher
 from app.services.identity import resolve_identity
+from app.services.scope import build_scope, marco_a_texto
 from app.tools import catalog
 from app.tools.catalog import Tool
 
@@ -84,6 +85,22 @@ CONFIDENCIALIDAD SIN ORACULO (RF-SEG-08, Ley 1712/2014):
   ("no encontre ese radicado/expediente"). NUNCA verbalices "existe pero esta clasificado y no
   tienes acceso": eso reconstruiria el oraculo de existencia que el backend elimino a proposito.
   "No encontrado" y "sin permiso" deben ser INDISTINGUIBLES en tu respuesta.
+
+ALCANCE DEL USUARIO (se te entrega calculado mas abajo):
+- Si lo que se pide NO esta en su alcance, dilo DE INMEDIATO, con el motivo y con la via
+  alternativa que se indique, y NO inicies ningun trabajo hacia esa accion: ni la intentes,
+  ni prepares sus datos, ni pidas informacion para ella. Que la persona espere una accion que
+  con sus credenciales no va a ocurrir es peor que negarsela de entrada.
+- La via alternativa es la parte util de la respuesta. "No puede enviar el documento" deja a la
+  persona igual de atascada; "no puede enviarlo, pero puede trasladar el radicado a
+  correspondencia para que lo envien" la desatasca. Ofrecela siempre que exista.
+- No afirmes limites que no figuren en ese alcance. En particular, NO digas que solo puede
+  radicar cierto tipo de documento ni que solo ve lo de su dependencia: el sistema no hace esas
+  distinciones, y anunciarlas seria inventar una precision que no existe.
+
+NOTA sobre la confidencialidad de arriba: el alcance describe las CAPACIDADES de esta persona,
+no la existencia de documentos concretos. Decir "no tiene permiso para anular" no revela nada
+sobre ningun radicado; seguir sin decir nada, en cambio, la deja esperando.
 """
 
 def to_anthropic_schema(tool: Tool) -> dict[str, Any]:
@@ -265,6 +282,15 @@ async def run_turn(
     )
     permissions, is_root, user_id = identidad.permissions, identidad.is_root, identidad.user_id
 
+    # El marco de alcance se calcula EN CADA TURNO, no una vez por conversación:
+    # los permisos y la dependencia activa pueden cambiar a mitad de sesión
+    # (`context/switch` no reemite el token), y un marco heredado del primer turno
+    # afirmaría capacidades que ya no existen — o escondería las que acaban de
+    # concederse. Es una lectura barata contra un servicio de la misma red.
+    marco = await build_scope(
+        gateway_client, identidad, authorization=authorization, tenant_slug=tenant_slug
+    )
+
     conv_id = conversation_id or str(uuid.uuid4())
     # La llave incluye tenant Y user_id: un conversation_id NUNCA cruza tenants
     # NI usuarios. Sin el user_id, otro usuario del mismo tenant que conociera
@@ -292,7 +318,7 @@ async def run_turn(
             model=settings.assistant_model,
             max_tokens=settings.assistant_max_tokens,
             thinking={"type": "adaptive"},
-            system=SYSTEM_PROMPT,
+            system=f"{SYSTEM_PROMPT}\n\n{marco_a_texto(marco)}",
             tools=anthropic_tools,
             messages=state.messages,
         )

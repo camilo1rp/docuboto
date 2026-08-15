@@ -29,7 +29,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.schemas.assistant import AssistantMessageRequest, AssistantMessageResponse
 from app.services.assistant import ConversationLimitError, run_turn
-from app.services.identity import IdentityError
+from app.services.identity import IdentityError, resolve_identity
+from app.services.scope import build_scope
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,57 @@ def _unavailable() -> HTTPException:
             "status": 503,
         },
     )
+
+
+@router.get(
+    "/alcance",
+    summary="Qué puede hacer esta persona en el sistema, y por dónde sí cuando no puede",
+)
+async def assistant_alcance(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_tenant_slug: str | None = Header(default=None),
+) -> dict:
+    """Marco de alcance del llamante.
+
+    Vive bajo `/api/v1/assistant/` y no bajo `/api/v1/mcp/` por una razón
+    concreta: es el único prefijo del mcp-server que el api-gateway enruta, así
+    que es el único por el que la interfaz web puede preguntar. Y la interfaz
+    tiene que poder: el marco existe para que la persona sepa qué puede hacer
+    **sin** tener que preguntárselo al asistente.
+
+    No exige que el asistente esté disponible. Saber qué se puede hacer no
+    depende de que haya un modelo detrás, y negar esta respuesta cuando el
+    asistente está caído dejaría a la persona sin la información justo cuando más
+    desorientada está.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthenticated", "detail": "Falta el token.", "status": 401},
+        )
+    if not x_tenant_slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "missing_tenant", "detail": "Falta X-Tenant-Slug.", "status": 400},
+        )
+
+    gateway_client = request.app.state.gateway_client
+    try:
+        identidad = await resolve_identity(
+            gateway_client, authorization=authorization, tenant_slug=x_tenant_slug
+        )
+        return await build_scope(
+            gateway_client,
+            identidad,
+            authorization=authorization,
+            tenant_slug=x_tenant_slug,
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        )
 
 
 @router.post(

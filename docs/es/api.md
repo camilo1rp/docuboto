@@ -383,6 +383,17 @@ El recorte público exige las **tres** condiciones a la vez (`publicable AND niv
 
 **Pantalla**: el acto se ejecuta desde el drawer «Publicación» de `/bandeja` (ver `docs/es/pantallas.md`), que ofrece siempre el acto contrario al estado vigente y no ofrece formulario alguno sobre un radicado reservado o anulado — el `404` neutro del backend es correcto, pero dejar que alguien redacte un fundamento para recibir después «no existe» sería una pantalla que engaña.
 
+### `GET /api/v1/assistant/alcance`
+Marco de alcance del llamante: **qué puede hacer, qué puede consultar y qué no puede — con su vía alternativa**. Sin permiso propio: describe las capacidades de quien pregunta, resueltas de su token.
+
+Existe porque los permisos venían siendo un filtro silencioso: el catálogo escondía lo que el usuario no podía usar, y el límite se descubría **fallando** —o esperando una acción que nunca iba a ocurrir—. El marco lo declara antes de empezar y ofrece la salida cuando la hay («no puede enviar, pero puede trasladar el radicado a correspondencia»).
+
+Se **deriva**, no se mantiene: sale del catálogo de tools —que declara permiso, nivel, operación de dominio y vía alternativa— cruzado con `/auth/me`, `/auth/clearance` y `/auth/context`. Añadir una tool actualiza el marco sola.
+
+Incluye `limites_declarados`: lo que el sistema **no** distingue, para no prometer precisión inexistente — el permiso de radicación no separa por tipo de documento (`PERM_RADI_ENTRADA`/`PERM_RADI_INTERNO` existen y **ningún gate los usa**) y las lecturas se acotan por nivel de seguridad, no por dependencia.
+
+Vive bajo `/api/v1/assistant/` porque es el único prefijo del mcp-server que el gateway enruta. No exige que el asistente esté disponible: saber qué se puede hacer no depende de que haya un modelo detrás.
+
 ### `POST /api/v1/expedientes/{id}/publicacion`
 Acto de **publicación de oficio del expediente** (Ley 1712/2014 art. 12, migración archive `042`). Mismo contrato que el gemelo de radicados: `{publicar: bool, fundamento: str}` → `{code, publicable, publicado_at}`, `PERM_RECLASIFICAR` con `crud≥3`, fundamento obligatorio en ambos sentidos, acto y asiento en una sola transacción.
 

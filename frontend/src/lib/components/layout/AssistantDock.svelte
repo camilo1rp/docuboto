@@ -44,6 +44,39 @@
   /** Manejador de cierre (padre lo gestiona) */
   export let onClose = () => {};
 
+  // Marco de alcance (bloque A). Se carga al abrir el panel, no al montarlo: no
+  // tiene sentido consultar permisos de un panel que nadie ha abierto.
+  //
+  // `alcanceError` se distingue de `alcance vacío` a propósito. Un panel de
+  // capacidades en blanco por un fallo de red es indistinguible de un usuario
+  // sin permisos, y esa confusión manda a la gente a pedir al administrador algo
+  // que ya tiene.
+  /** @type {{puede_hacer?: any[], puede_consultar?: any[], no_puede?: any[], acceso?: any} | null} */
+  let alcance = null;
+  let alcanceError = "";
+  let alcanceCargando = false;
+
+  async function cargarAlcance() {
+    if (alcance || alcanceCargando) return;
+    alcanceCargando = true;
+    alcanceError = "";
+    try {
+      const res = await fetch("/asistente/api/alcance");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        alcanceError = body.detail ?? "No se pudo consultar qué acciones tiene disponibles.";
+        return;
+      }
+      alcance = await res.json();
+    } catch {
+      alcanceError = "No se pudo consultar qué acciones tiene disponibles.";
+    } finally {
+      alcanceCargando = false;
+    }
+  }
+
+  $: if (open) cargarAlcance();
+
   // ---------------------------------------------------------------------------
   // Trampa de foco (patrón de Modal.svelte)
   // ---------------------------------------------------------------------------
@@ -208,10 +241,52 @@
         <div class="assistant-dock__placeholder">
           <i class="fas fa-comments" aria-hidden="true"></i>
           <p>Escribe una consulta para comenzar.</p>
-          <p class="assistant-dock__placeholder-sub">
-            Podrá radicar, consultar expedientes y ejecutar tareas mediante lenguaje natural,
-            acotado por sus permisos. Toda acción de escritura pedirá confirmación explícita.
-          </p>
+
+          {#if alcanceCargando}
+            <p class="assistant-dock__placeholder-sub">Consultando qué puedes hacer aquí…</p>
+          {:else if alcanceError}
+            <p class="assistant-dock__scope-error" role="status">{alcanceError}</p>
+          {:else if alcance}
+            <div class="assistant-dock__scope">
+              {#if alcance.puede_consultar?.length}
+                <p class="assistant-dock__scope-title">Puedes consultar</p>
+                <ul>
+                  {#each alcance.puede_consultar as op (op.herramienta)}
+                    <li>{op.operacion}</li>
+                  {/each}
+                </ul>
+              {/if}
+
+              {#if alcance.puede_hacer?.length}
+                <p class="assistant-dock__scope-title">Puedes ejecutar</p>
+                <ul>
+                  {#each alcance.puede_hacer as op (op.herramienta)}
+                    <li>{op.operacion}</li>
+                  {/each}
+                </ul>
+              {/if}
+
+              {#if alcance.no_puede?.length}
+                <p class="assistant-dock__scope-title">Con tus permisos actuales, no</p>
+                <ul>
+                  {#each alcance.no_puede as op (op.herramienta)}
+                    <li>
+                      {op.operacion}
+                      {#if op.via_alternativa}
+                        <span class="assistant-dock__scope-via">→ {op.via_alternativa}</span>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+
+              {#if alcance.acceso}
+                <p class="assistant-dock__scope-nivel">
+                  Ves información hasta el nivel <strong>{alcance.acceso.etiqueta}</strong>.
+                </p>
+              {/if}
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -358,6 +433,45 @@
       flex-direction: column;
       gap: var(--op-space-3);
       padding: var(--op-space-4);
+    }
+
+    &__scope {
+      text-align: left;
+      margin-top: var(--op-space-3);
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+
+      ul {
+        margin: 0 0 var(--op-space-2);
+        padding-left: var(--op-space-4);
+        list-style: disc;
+      }
+
+      li {
+        margin-bottom: 2px;
+      }
+    }
+
+    &__scope-title {
+      font-weight: 600;
+      color: var(--op-text);
+      margin: var(--op-space-2) 0 2px;
+    }
+
+    &__scope-via {
+      display: block;
+      color: var(--op-text-secondary);
+      font-style: italic;
+    }
+
+    &__scope-nivel {
+      margin: var(--op-space-2) 0 0;
+    }
+
+    &__scope-error {
+      font-size: var(--op-font-xs);
+      color: var(--op-warning, var(--op-text-secondary));
+      margin-top: var(--op-space-3);
     }
 
     &__placeholder {
