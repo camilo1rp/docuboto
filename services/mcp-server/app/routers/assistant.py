@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Body, Header, HTTPException, Request, status
 
 from app.schemas.assistant import AssistantMessageRequest, AssistantMessageResponse
+from app.services import proposals, write_gate
 from app.services.assistant import ConversationLimitError, run_turn
 from app.services.identity import IdentityError, resolve_identity
 from app.services.scope import build_scope
@@ -46,6 +47,65 @@ def _unavailable() -> HTTPException:
             "status": 503,
         },
     )
+
+
+@router.post(
+    "/confirmar",
+    summary="Ejecuta una propuesta que la persona aprobó en la tarjeta de confirmación",
+)
+async def assistant_confirmar(
+    request: Request,
+    body: dict = Body(default_factory=dict),
+    authorization: str | None = Header(default=None),
+    x_tenant_slug: str | None = Header(default=None),
+) -> dict:
+    """La confirmación de la interfaz web.
+
+    Vive aquí y no en `/api/v1/mcp/` porque `/api/v1/assistant/` es el único
+    prefijo del mcp-server que el api-gateway enruta: sin esto, la tarjeta de
+    confirmación no tendría a dónde llamar.
+
+    El cuerpo lleva **solo el token**. Los argumentos salen del token firmado.
+    """
+    token = body.get("token")
+    if not isinstance(token, str) or not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "propuesta_invalida", "detail": "falta el token", "status": 400},
+        )
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthenticated", "detail": "Falta el token.", "status": 401},
+        )
+    if not x_tenant_slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "missing_tenant", "detail": "Falta X-Tenant-Slug.", "status": 400},
+        )
+
+    gateway_client = request.app.state.gateway_client
+    try:
+        identidad = await resolve_identity(
+            gateway_client, authorization=authorization, tenant_slug=x_tenant_slug
+        )
+        return await write_gate.ejecutar(
+            gateway_client,
+            token,
+            identidad=identidad,
+            authorization=authorization,
+            tenant_slug=x_tenant_slug,
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        )
+    except proposals.ProposalError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.detail, "status": exc.status},
+        )
 
 
 @router.get(

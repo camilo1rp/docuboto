@@ -7,11 +7,29 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+# mcp-server — se construye con el contexto en la RAÍZ del repo (ADR-010), como
+# los otros nueve servicios que usan la librería compartida.
+#   build: { context: ., dockerfile: services/mcp-server/Dockerfile }
+#
+# Antes se construía con contexto propio, porque no dependía de `shared/`. Pasa a
+# necesitarla al añadirse el gate de escritura: la comprobación de secretos al
+# arrancar (`orpycamcp_common.secrets`) es la que impide que el servicio levante
+# con una clave de firma vacía. Reimplementarla aquí habría duplicado el criterio
+# de qué valores son inadmisibles, y esa copia se habría quedado atrás en cuanto
+# el criterio cambiara.
 FROM python:3.11-slim
 WORKDIR /app
-COPY requirements.txt requirements.lock ./
+
+# 1) Librería compartida (capa cacheable; cambia poco).
+COPY shared /shared
+RUN pip install --no-cache-dir /shared
+
+# 2) Dependencias del servicio.
+COPY services/mcp-server/requirements.txt services/mcp-server/requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
-COPY . .
+
+# 3) Código del servicio.
+COPY services/mcp-server/ .
 # Usuario NO-root. Cada uno de estos servicios procesa entrada que no controla
 # —cuerpos HTTP, XML, PDF, correo, eventos de Redis—, así que un fallo de memoria
 # o una deserialización insegura en cualquier dependencia escalaría a root DEL

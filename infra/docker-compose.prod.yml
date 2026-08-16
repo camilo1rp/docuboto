@@ -803,13 +803,23 @@ services:
   mcp-server:
     # Capa MCP (E18): fachada cliente del api-gateway. Sin BD/Redis/MinIO.
     build:
-      context: ../services/mcp-server
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common
+      # (ADR-010), que NO existe dentro de services/mcp-server/. Cambió al
+      # añadirse el gate de escritura, cuya comprobación de secretos al arrancar
+      # vive en la librería compartida.
+      context: ..
+      dockerfile: services/mcp-server/Dockerfile
     container_name: orpycamcp-mcp-server-prod
     restart: unless-stopped
     environment:
       GATEWAY_URL: http://api-gateway:8080
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # `:?` aborta el despliegue si falta: sin clave de firma el gate de
+      # escritura del MCP sería decorativo, y un control decorativo es peor que
+      # ninguno porque nadie lo revisa. Debe respaldarse con la misma disciplina
+      # que el resto de secretos (ver .env.example).
+      MCP_PROPOSAL_SECRET: ${MCP_PROPOSAL_SECRET:?MCP_PROPOSAL_SECRET es obligatorio}
+      MCP_PROPOSAL_SECRET_PREVIOUS: ${MCP_PROPOSAL_SECRET_PREVIOUS:-}
     networks:
       - orpycamcp-net
     expose:

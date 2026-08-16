@@ -22,7 +22,9 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Body, Header, HTTPException, Request, status
 
+from app.services import proposals, write_gate
 from app.services.dispatcher import DispatchError, authorize, dispatch
+from app.services.identity import IdentityError, resolve_identity
 from app.tools.catalog import get_tool, visible_tools
 
 router = APIRouter(prefix="/api/v1/mcp", tags=["mcp"])
@@ -57,22 +59,44 @@ async def invoke_tool(
     x_tenant_slug: str | None = Header(default=None),
     x_user_permissions: str | None = Header(default=None),
     x_user_roles: str | None = Header(default=None),
-    x_confirm_write: bool = Header(default=False),
 ) -> dict[str, Any]:
+    """Invoca una tool. Las de ESCRITURA devuelven una propuesta, no un efecto.
+
+    `X-Confirm-Write` ya no se lee. Era un booleano que cualquiera podía poner y
+    que no ataba la confirmación a ningún acto concreto: confirmaba «algo», no
+    «esto». Quien la envíe ahora recibirá una propuesta igualmente — el camino
+    seguro es el que sale por defecto.
+    """
     tool = get_tool(name)
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "tool_not_found", "detail": name, "status": 404},
         )
+    client: httpx.AsyncClient = request.app.state.gateway_client
+    try:
+        identidad = await resolve_identity(
+            client, authorization=authorization or "", tenant_slug=x_tenant_slug or ""
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        )
+
     try:
         authorize(
             tool,
-            permissions=_perms(x_user_permissions),
-            is_root=_is_root(x_user_roles),
-            confirm_write=x_confirm_write,
+            permissions=identidad.permissions,
+            is_root=identidad.is_root,
+            levels=identidad.levels,
         )
-        client: httpx.AsyncClient = request.app.state.gateway_client
+        if tool.write:
+            # No se despacha: se propone. La ejecución vive en
+            # `POST /proposals/execute`, y consume el token firmado.
+            return write_gate.preparar(
+                tool, args, sub=identidad.user_id, ten=identidad.tenant_slug
+            )
         resp = await dispatch(
             client, tool, args, authorization=authorization, tenant_slug=x_tenant_slug
         )
@@ -80,6 +104,11 @@ async def invoke_tool(
         raise HTTPException(
             status_code=exc.status,
             detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        )
+    except proposals.ProposalError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.detail, "status": exc.status},
         )
     except httpx.RequestError as exc:
         raise HTTPException(

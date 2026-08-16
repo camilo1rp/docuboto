@@ -127,3 +127,40 @@ async def test_streamable_http_initialize() -> None:
             resp = await ac.post("/mcp/", json=body, headers=headers)
     assert resp.status_code == 200
     assert "protocolVersion" in resp.text and "orpycamcp" in resp.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_el_binding_no_ejecuta_escrituras_y_devuelve_propuesta(monkeypatch) -> None:
+    """El transporte que ANTES auto-confirmaba.
+
+    `mcp_app.call` llamaba a `authorize(..., confirm_write=True)`: daba la
+    escritura por aprobada «porque el human-in-the-loop lo aporta el cliente
+    MCP». Eso convertía una garantía en una suposición sobre software ajeno — un
+    cliente que no preguntara nada ejecutaba igual.
+
+    Este test faltaba, y su ausencia se vio por mutación: quitar el gate del
+    binding dejaba la suite entera en verde.
+    """
+    import json as _json
+    from unittest.mock import AsyncMock
+
+    from app import mcp_app
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_user_permissions", "PERM_RADI")
+    monkeypatch.setattr(settings, "mcp_bearer_token", "tok")
+    monkeypatch.setattr(settings, "mcp_tenant_slug", "demo")
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+
+    client = AsyncMock()
+    texto = await mcp_app.call(
+        "radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client
+    )
+
+    cuerpo = _json.loads(texto)
+    assert cuerpo["kind"] == "proposal"
+    assert cuerpo["ejecutado"] is False
+    assert cuerpo["proposal"]["token"].startswith("op1.")
+    # Lo esencial: no se despachó nada al gateway.
+    client.request.assert_not_called()
+    client.post.assert_not_called()

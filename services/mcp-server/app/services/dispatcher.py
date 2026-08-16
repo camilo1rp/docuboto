@@ -59,12 +59,32 @@ def _forward_headers(authorization: str | None, tenant_slug: str | None) -> dict
     return headers
 
 
-def authorize(tool: Tool, *, permissions: set[str], is_root: bool, confirm_write: bool) -> None:
-    """Aplica scope por permiso y gate de escritura antes de invocar."""
-    if tool.permission and not is_root and tool.permission not in permissions:
-        raise DispatchError("permiso_insuficiente", 403)
-    if tool.write and not confirm_write:
-        raise DispatchError("confirmacion_requerida", 412)
+def authorize(
+    tool: Tool,
+    *,
+    permissions: set[str],
+    is_root: bool,
+    levels: dict[str, int] | None = None,
+) -> None:
+    """Aplica el scope por permiso **y nivel** antes de invocar.
+
+    Ya NO recibe `confirm_write`. Ese booleano era el gate de escritura entero, y
+    cualquier cliente podía ponerlo: confirmaba «algo», no «esto». El binding MCP
+    directamente lo daba por puesto. Ahora una escritura no llega a ejecutarse por
+    esta vía —devuelve una propuesta firmada— y la confirmación es un compromiso
+    sobre un acto concreto, con su usuario y su ventana.
+
+    Quitar el parámetro es deliberado: mientras existiera, alguien podría volver a
+    pasar `True` y saltarse el mecanismo sin que nada lo delatara.
+    """
+    if tool.permission and not is_root:
+        if tool.permission not in permissions:
+            raise DispatchError("permiso_insuficiente", 403)
+        if levels is not None and levels.get(tool.permission, 0) < tool.min_crud:
+            # El permiso está, pero no con nivel suficiente. Mismo código: para el
+            # llamante ambos casos son «no autorizado», y distinguirlos aquí sería
+            # un oráculo sobre la configuración de permisos ajena.
+            raise DispatchError("permiso_insuficiente", 403)
 
 
 def build_request(tool: Tool, args: dict) -> PreparedCall:

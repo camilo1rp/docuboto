@@ -204,7 +204,7 @@ async def _execute_tool(
         # write=False (ver _visible_read_tools), así que esto nunca dispara el
         # gate 412 -- pero si por error de programación una write se colara en
         # tools_by_name, queda bloqueada en vez de auto-confirmada.
-        dispatcher.authorize(tool, permissions=permissions, is_root=is_root, confirm_write=False)
+        dispatcher.authorize(tool, permissions=permissions, is_root=is_root)
         # Whitelist del input al esquema DECLARADO de la tool antes de despachar:
         # `additionalProperties:False` solo es advisory para el modelo, no se aplica
         # server-side; sin esto, el modelo (o una inyección desde el contenido de un

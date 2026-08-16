@@ -32,7 +32,7 @@ import mcp.types as types
 from mcp.server import Server
 
 from app.core.config import settings
-from app.services import dispatcher
+from app.services import dispatcher, write_gate
 from app.tools import catalog
 
 server: Server = Server("orpycamcp")
@@ -100,11 +100,20 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
     tool = catalog.get_tool(name)
     if tool is None:
         raise dispatcher.DispatchError("tool_not_found", 404)
-    # En MCP la aprobación de la operación la da el cliente/agente (human-in-the-loop):
-    # el gate de escritura se da por confirmado; el scope por permiso sí se aplica.
-    dispatcher.authorize(
-        tool, permissions=s["permissions"], is_root=s["is_root"], confirm_write=True
-    )
+    # El binding ya NO auto-confirma. Antes daba la escritura por aprobada
+    # «porque el human-in-the-loop lo aporta el cliente MCP», y eso convertía la
+    # garantía en una suposición sobre software ajeno: un cliente que no
+    # preguntara nada ejecutaba igual. Ahora una escritura devuelve la propuesta
+    # firmada y la ejecución exige una segunda llamada con ese token.
+    dispatcher.authorize(tool, permissions=s["permissions"], is_root=s["is_root"])
+    if tool.write:
+        return json.dumps(
+            write_gate.preparar(
+                tool, arguments, sub=s.get("sub") or "", ten=s.get("tenant") or ""
+            ),
+            ensure_ascii=False,
+        )
+
     # HTTP: el bearer llega por cabecera. stdio: lo gestiona el TokenManager (OAuth).
     if s.get("from_header"):
         authorization = s["authorization"]

@@ -143,7 +143,9 @@ services:
 
   mcp-server:
     # Capa MCP (E18, ADR-019): fachada fina cliente del api-gateway. Sin BD/MinIO/Redis.
-    build: ./services/mcp-server
+    build:
+      context: .
+      dockerfile: services/mcp-server/Dockerfile
     container_name: orpycamcp-mcp
     ports:
       - "19009:8009"
@@ -154,6 +156,12 @@ services:
       # La clave NUNCA se versiona: se toma del entorno del host (o .env no
       # versionado). Modelo por defecto: claude-opus-4-8 (config.py).
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Clave de firma de las propuestas de escritura. Sin ella el servicio NO
+      # arranca: una firma con clave vacía la reproduce cualquiera, y el gate
+      # quedaría decorativo. En desarrollo se fija aquí, como el resto de
+      # credenciales del stack local; en producción viene del entorno con
+      # `${VAR:?}`, que aborta el despliegue si falta.
+      - MCP_PROPOSAL_SECRET=${MCP_PROPOSAL_SECRET:-orpycamcp_dev_proposal_secret}
     networks:
       - orpycamcp-net
     depends_on:

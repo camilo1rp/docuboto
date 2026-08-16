@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator
 import httpx
 from fastapi import FastAPI
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from orpycamcp_common import secrets as common_secrets
 
 from app import mcp_app
 from app.core.config import settings
@@ -67,6 +68,17 @@ async def _handle_mcp(scope, receive, send) -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Sin clave de firma no se arranca. Una clave vacía produce firmas que
+    # cualquiera reproduce: el gate de escritura seguiría ahí, con su tarjeta y
+    # su token, y no protegería nada — un control decorativo es peor que ninguno,
+    # porque nadie lo revisa. Mismo criterio que los secretos con valor de ejemplo
+    # del bloque 11: default vacío MÁS comprobación al arrancar; con una sola de
+    # las dos mitades, el fallo vuelve a ser silencioso.
+    common_secrets.require_secrets(
+        {"MCP_PROPOSAL_SECRET": settings.mcp_proposal_secret},
+        servicio="mcp-server",
+    )
+
     # Cliente HTTP hacia el api-gateway (el MCP nunca toca BD/MinIO/Redis).
     app.state.gateway_client = httpx.AsyncClient(
         base_url=settings.gateway_url, timeout=settings.request_timeout

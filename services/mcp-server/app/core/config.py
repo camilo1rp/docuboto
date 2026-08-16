@@ -46,5 +46,19 @@ class Settings(BaseSettings):
     assistant_history_ttl_seconds: int = 1800  # inactividad → se descarta el historial
     assistant_max_turns: int = 20  # tope de turnos de usuario por conversación
 
+    # ---------------------------------------------------------------------
+    # Propuestas firmadas (gate de escritura)
+    # ---------------------------------------------------------------------
+    # Clave HMAC con la que se firma cada propuesta. **Sin ella el servicio no
+    # arranca** (ver `app/main.py`): una clave vacía produce firmas que cualquiera
+    # reproduce, y el gate quedaría decorativo sin que nada lo aparentara — el
+    # mismo modo de fallo que los secretos con valor de ejemplo del bloque 11.
+    mcp_proposal_secret: str = ""
+    # Clave anterior, para que una rotación no invalide las propuestas vivas.
+    mcp_proposal_secret_previous: str = ""
+    # Ventana de la propuesta. Corta a propósito: lo justo para leer la tarjeta y
+    # decidir. Alargarla amplía la ventana en la que un token filtrado sirve.
+    mcp_proposal_ttl_seconds: int = 120
+
 
 settings = Settings()
