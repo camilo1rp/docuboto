@@ -228,3 +228,27 @@ def test_las_etiquetas_de_la_tarjeta_son_legibles() -> None:
         for p in t.params:
             if p.show_in_card:
                 assert p.label, f"{t.name}.{p.name} se pinta en la tarjeta sin etiqueta"
+
+
+def test_toda_escritura_declara_si_es_irreversible() -> None:
+    """`destructive` se declara, no se hereda de un default.
+
+    El campo vale `None` cuando nadie lo ha declarado, y este test es la razón:
+    con default `False`, olvidarlo habría equivalido a afirmar «este acto se
+    deshace» sin que nadie lo hubiera comprobado, y un cliente MCP externo
+    habría bajado su fricción confiando en esa afirmación fantasma.
+
+    Con ~40 tools por delante, este invariante es lo que impide que el catálogo
+    se vuelva mentira a fuerza de entradas añadidas con prisa — que es
+    exactamente cómo entró `RADI_CREAR`.
+    """
+    for t in CATALOG:
+        if t.write:
+            assert t.destructive is not None, (
+                f"{t.name} es de escritura y no declara `destructive`: "
+                "decláralo True o False explícitamente"
+            )
+        else:
+            assert t.destructive is None, (
+                f"{t.name} no es de escritura; `destructive` no aplica y confunde"
+            )

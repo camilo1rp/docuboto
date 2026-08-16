@@ -110,7 +110,17 @@ class Tool:
     # nivel de lectura produce un 403 al ejecutarla, y exigir de más la esconde a
     # quien sí puede — el mismo defecto al revés, y ese falla en silencio.
     min_crud: int = 1
-    write: bool = False  # operación de escritura/destructiva
+    write: bool = False  # operación de escritura
+    # ¿El acto es irreversible o de alto impacto? Alimenta el `destructiveHint`
+    # de MCP, con el que un cliente externo decide cuánta fricción poner antes de
+    # ejecutar.
+    #
+    # El default es `None`, no `False`, **a propósito**: `None` significa «nadie
+    # lo declaró», y el invariante de tests rechaza una tool de escritura que lo
+    # deje sin declarar. Con default `False` la omisión pasaría por una
+    # afirmación —«no es destructiva»— sin que nadie la hubiera hecho, que es la
+    # forma en que un catálogo mantenido a mano se va volviendo mentira.
+    destructive: bool | None = None
     epic: str = ""
     # Argumentos declarados. Fuente única: ver `Param`.
     params: tuple[Param, ...] = ()
@@ -210,6 +220,10 @@ CATALOG: tuple[Tool, ...] = (
         permission="PERM_RADI",
         min_crud=1,
         write=True,
+        # Consume un número de radicado, que es inmutable y no se reutiliza: el
+        # acto no se deshace, aunque no borre nada. `destructiveHint` pregunta si
+        # el efecto es irreversible, no si destruye datos.
+        destructive=True,
         epic="E01",
         operacion="Radicar un documento de entrada, salida o interno",
         # Los tres tipos exigen el MISMO permiso: `PERM_RADI_ENTRADA` y

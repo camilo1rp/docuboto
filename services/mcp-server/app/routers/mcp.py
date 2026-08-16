@@ -50,6 +50,55 @@ async def list_tools(
     return {"tools": [t.to_schema() for t in tools]}
 
 
+@router.post("/proposals/execute", summary="Ejecuta una propuesta de escritura ya aprobada")
+async def execute_proposal(
+    request: Request,
+    body: dict[str, Any] = Body(default_factory=dict),
+    authorization: str | None = Header(default=None),
+    x_tenant_slug: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """El otro extremo del ciclo: `invoke` propone, esto ejecuta.
+
+    El cuerpo lleva **solo el token**. Los argumentos salen del token firmado, no
+    de aquí: si se aceptaran del cuerpo, la propuesta describiría un acto y se
+    ejecutaría otro, que es justo lo que este diseño existe para impedir.
+    """
+    token = body.get("token")
+    if not isinstance(token, str) or not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "propuesta_invalida", "detail": "falta el token", "status": 400},
+        )
+
+    client: httpx.AsyncClient = request.app.state.gateway_client
+    try:
+        identidad = await resolve_identity(
+            client, authorization=authorization or "", tenant_slug=x_tenant_slug or ""
+        )
+        return await write_gate.ejecutar(
+            client,
+            token,
+            identidad=identidad,
+            authorization=authorization or "",
+            tenant_slug=x_tenant_slug or "",
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        )
+    except proposals.ProposalError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.detail, "status": exc.status},
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"error": "gateway_unreachable", "detail": str(exc), "status": 502},
+        )
+
+
 @router.post("/tools/{name}/invoke", summary="Invoke an MCP tool (RF-MCP-03..08)")
 async def invoke_tool(
     name: str,

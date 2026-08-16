@@ -142,7 +142,6 @@ async def test_el_binding_no_ejecuta_escrituras_y_devuelve_propuesta(monkeypatch
     binding dejaba la suite entera en verde.
     """
     import json as _json
-    from unittest.mock import AsyncMock
 
     from app import mcp_app
     from app.core.config import settings
@@ -152,7 +151,7 @@ async def test_el_binding_no_ejecuta_escrituras_y_devuelve_propuesta(monkeypatch
     monkeypatch.setattr(settings, "mcp_tenant_slug", "demo")
     monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
 
-    client = AsyncMock()
+    client = _cliente_con_identidad()
     texto = await mcp_app.call(
         "radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client
     )
@@ -164,3 +163,250 @@ async def test_el_binding_no_ejecuta_escrituras_y_devuelve_propuesta(monkeypatch
     # Lo esencial: no se despachó nada al gateway.
     client.request.assert_not_called()
     client.post.assert_not_called()
+
+
+_UID = "11111111-1111-1111-1111-111111111111"
+
+
+def _cliente_con_identidad():
+    """Doble del gateway que responde `/auth/me` y registra los despachos.
+
+    `get` se distingue de `request` a propósito: resolver identidad es una
+    lectura del propio mcp-server, y confundirla con un despacho dejaría sin
+    sentido los `assert_not_called` que sostienen este archivo.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    me = MagicMock()
+    me.status_code = 200
+    me.json.return_value = {
+        "user_id": _UID,
+        "tenant_slug": "demo",
+        "permissions": ["PERM_RADI"],
+        "permission_levels": {"PERM_RADI": 3},
+        "roles": [],
+    }
+    client = AsyncMock()
+    client.get.return_value = me
+    return client
+
+
+@pytest.mark.asyncio
+async def test_el_binding_confirma_la_propuesta_que_el_mismo_emitio(monkeypatch) -> None:
+    """El ciclo cerrado por el transporte MCP, sin pasar por la interfaz web.
+
+    Es el test que destapó que la propuesta emitida por este transporte nacía
+    muerta: se firmaba con `s.get("sub")`, una clave que nunca existió en el
+    diccionario de sesión, así que el `sub` iba vacío y la verificación la
+    rechazaba después como ajena. La propuesta se veía impecable y no había
+    manera de ejecutarla — el fallo solo aparecía al pulsar el botón.
+    """
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from app import mcp_app
+    from app.core.config import settings
+    from app.services import proposals
+
+    monkeypatch.setattr(settings, "mcp_user_permissions", "PERM_RADI")
+    monkeypatch.setattr(settings, "mcp_bearer_token", "tok")
+    monkeypatch.setattr(settings, "mcp_tenant_slug", "demo")
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+    proposals.limpiar_consumidas()
+
+    client = _cliente_con_identidad()
+    creado = MagicMock()
+    creado.status_code = 201
+    creado.json.return_value = {"tracking_number": "2026-DEMO-E-000001"}
+    client.request.return_value = creado
+
+    propuesta = _json.loads(
+        await mcp_app.call("radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client)
+    )
+    resultado = _json.loads(
+        await mcp_app.call(
+            mcp_app.CONFIRMAR, {"token": propuesta["proposal"]["token"]}, client
+        )
+    )
+
+    assert resultado["ejecutado"] is True
+    assert resultado["data"]["tracking_number"] == "2026-DEMO-E-000001"
+    client.request.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sin_escrituras_al_alcance_no_se_ofrece_confirmar(monkeypatch) -> None:
+    """Ofrecer «confirmar» a quien no puede escribir sugiere un poder que no tiene."""
+    from app import mcp_app
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_user_permissions", "")
+    monkeypatch.setattr(settings, "mcp_user_roles", "")
+    nombres = {t.name for t in mcp_app.build_tools()}
+    assert mcp_app.CONFIRMAR not in nombres
+
+    monkeypatch.setattr(settings, "mcp_user_permissions", "PERM_RADI")
+    assert mcp_app.CONFIRMAR in {t.name for t in mcp_app.build_tools()}
+
+
+@pytest.mark.asyncio
+async def test_las_escrituras_se_anuncian_como_tales_en_las_anotaciones(monkeypatch) -> None:
+    """`readOnlyHint`/`destructiveHint`: pistas para el cliente, no controles.
+
+    Se comprueban porque un cliente que las honra pone su propia fricción antes
+    de radicar. Que sean solo pistas es lo que obliga a que la garantía siga
+    viviendo en la propuesta firmada — este test no releva a los otros.
+    """
+    from app import mcp_app
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_user_permissions", "PERM_RADI")
+    por_nombre = {t.name: t for t in mcp_app.build_tools()}
+
+    radicar = por_nombre["radicar_documento"]
+    assert radicar.annotations.readOnlyHint is False
+    assert radicar.annotations.destructiveHint is True
+
+    consulta = por_nombre["consultar_radicado"]
+    assert consulta.annotations.readOnlyHint is True
+    assert consulta.annotations.destructiveHint is False
+
+
+class _SesionFalsa:
+    """Doble de sesión MCP: anuncia elicitación y responde lo que se le diga."""
+
+    def __init__(self, accion: str, confirmar: bool = True, capaz: bool = True) -> None:
+        self.accion = accion
+        self.confirmar = confirmar
+        self.capaz = capaz
+        self.mensajes: list[str] = []
+
+    def check_client_capability(self, _cap) -> bool:
+        return self.capaz
+
+    async def elicit(self, message: str, requestedSchema: dict):
+        import mcp.types as types
+
+        self.mensajes.append(message)
+        return types.ElicitResult(action=self.accion, content={"confirmar": self.confirmar})
+
+
+def _con_sesion(monkeypatch, sesion):
+    """Inyecta la sesión en el `request_context` del server MCP."""
+    from unittest.mock import MagicMock
+
+    from app import mcp_app
+
+    ctx = MagicMock()
+    ctx.session = sesion
+    monkeypatch.setattr(type(mcp_app.server), "request_context", property(lambda self: ctx))
+
+
+def _preparar_binding(monkeypatch):
+    from app.core.config import settings
+    from app.services import proposals
+
+    monkeypatch.setattr(settings, "mcp_user_permissions", "PERM_RADI")
+    monkeypatch.setattr(settings, "mcp_bearer_token", "tok")
+    monkeypatch.setattr(settings, "mcp_tenant_slug", "demo")
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+    proposals.limpiar_consumidas()
+
+
+@pytest.mark.asyncio
+async def test_la_elicitacion_pregunta_con_el_texto_del_catalogo(monkeypatch) -> None:
+    """Aprobar por elicitación ejecuta — y la pregunta la redacta el catálogo.
+
+    Lo segundo no es cosmética: si el mensaje lo compusiera el modelo, podría
+    describir un acto distinto del que va firmado en el token, y la persona
+    estaría aprobando una cosa creyendo aprobar otra.
+    """
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from app import mcp_app
+
+    _preparar_binding(monkeypatch)
+    sesion = _SesionFalsa("accept", confirmar=True)
+    _con_sesion(monkeypatch, sesion)
+
+    client = _cliente_con_identidad()
+    creado = MagicMock()
+    creado.status_code = 201
+    creado.json.return_value = {"tracking_number": "2026-DEMO-E-000002"}
+    client.request.return_value = creado
+
+    cuerpo = _json.loads(
+        await mcp_app.call("radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client)
+    )
+
+    assert cuerpo["ejecutado"] is True
+    assert "Tutela" in sesion.mensajes[0]
+    client.request.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_rechazar_en_la_elicitacion_no_ejecuta_nada(monkeypatch) -> None:
+    """El camino que de verdad importa: decir que no tiene que no hacer nada."""
+    import json as _json
+
+    from app import mcp_app
+
+    _preparar_binding(monkeypatch)
+    _con_sesion(monkeypatch, _SesionFalsa("decline"))
+
+    client = _cliente_con_identidad()
+    cuerpo = _json.loads(
+        await mcp_app.call("radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client)
+    )
+
+    assert cuerpo["ejecutado"] is False
+    assert cuerpo["kind"] == "cancelled"
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_aceptar_sin_marcar_la_casilla_no_ejecuta(monkeypatch) -> None:
+    """`accept` con la casilla en falso es un NO, no un sí.
+
+    Sin este test, leer solo `action` daría el acto por aprobado en cuanto el
+    cliente cerrara el formulario.
+    """
+    import json as _json
+
+    from app import mcp_app
+
+    _preparar_binding(monkeypatch)
+    _con_sesion(monkeypatch, _SesionFalsa("accept", confirmar=False))
+
+    client = _cliente_con_identidad()
+    cuerpo = _json.loads(
+        await mcp_app.call("radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client)
+    )
+
+    assert cuerpo["ejecutado"] is False
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sin_canal_de_vuelta_queda_el_camino_de_dos_tools(monkeypatch) -> None:
+    """Límite declarado: en HTTP streamable no hay a quién preguntar.
+
+    Y ante la duda no se ejecuta: se devuelve la propuesta, que es el camino que
+    exige una segunda llamada con el token.
+    """
+    import json as _json
+
+    from app import mcp_app
+
+    _preparar_binding(monkeypatch)
+    _con_sesion(monkeypatch, _SesionFalsa("accept", capaz=False))
+
+    client = _cliente_con_identidad()
+    cuerpo = _json.loads(
+        await mcp_app.call("radicar_documento", {"doc_type": "E", "subject": "Tutela"}, client)
+    )
+
+    assert cuerpo["kind"] == "proposal"
+    assert cuerpo["ejecutado"] is False
+    client.request.assert_not_called()
