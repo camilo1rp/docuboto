@@ -311,6 +311,85 @@ CATALOG: tuple[Tool, ...] = (
         ),
     ),
     Tool(
+        name="listar_tipos_documentales",
+        description=(
+            "Lista los tipos documentales de la TRD, opcionalmente los de una serie. "
+            "Es de donde sale el nombre que espera `tipificar_radicado`."
+        ),
+        method="GET",
+        path="/api/v1/tipos-documentales",
+        epic="E04",
+        operacion="Consultar los tipos documentales de la TRD",
+        params=(
+            Param(
+                name="trd_serie_id",
+                format="uuid",
+                description="Filtra por la serie documental a la que pertenecen.",
+                label="Serie",
+            ),
+            Param(
+                name="activo",
+                type="boolean",
+                description="Filtra por tipos vigentes o retirados.",
+                label="Solo vigentes",
+            ),
+        ),
+    ),
+    Tool(
+        name="tipificar_radicado",
+        description=(
+            "Tipifica un radicado ya creado: le asigna o le corrige el tipo documental "
+            "(`doc_class`) y, si ese tipo tiene plantilla de metadatos, sus campos "
+            "variables. El tipo fija la serie TRD y con ella la retención del documento."
+        ),
+        method="PATCH",
+        path="/api/v1/documents/{document_id}",
+        path_params=("document_id",),
+        permission="PERM_RADI",
+        # `crud >= 3`, no el 1 del resto del PATCH. El endpoint deja corregir un
+        # asunto con nivel de lectura, pero tipificar exige nivel de creación:
+        # decide cuánto se conserva el documento y si acaba destruido (Ley
+        # 594/2000 art. 24). Ofrecer la tool a quien solo alcanza el nivel 1
+        # produciría un 403 al confirmar, que es el defecto que el marco de
+        # alcance existe para evitar.
+        min_crud=3,
+        write=True,
+        # Reversible: se puede volver a tipificar, y el asiento guarda el tipo
+        # anterior. No por eso es inocuo —cambia la retención—, pero
+        # `destructiveHint` pregunta por lo irreversible, y esto no lo es.
+        destructive=False,
+        epic="E03",
+        operacion="Tipificar un radicado (asignar o corregir su tipo documental)",
+        fallback=(
+            "Sin nivel de creación en el permiso de radicación, el radicado puede "
+            "trasladarse a la dependencia de correspondencia para que allí lo tipifiquen."
+        ),
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="doc_class",
+                required=True,
+                max_length=100,
+                description=(
+                    "Nombre del tipo documental, tal y como aparece en la TRD. "
+                    "Consúltalo con `listar_tipos_documentales` antes de proponerlo: "
+                    "un nombre inventado no falla, se guarda tal cual."
+                ),
+                label="Tipo documental",
+            ),
+            Param(
+                name="metadata",
+                type="object",
+                description=(
+                    "Campos variables del tipo documental. Se REEMPLAZAN enteros, no se "
+                    "fusionan con los que hubiera. Si el tipo tiene plantilla activa, se "
+                    "validan contra ella y el acto falla si no encajan."
+                ),
+                label="Metadatos del tipo",
+            ),
+        ),
+    ),
+    Tool(
         name="consultar_radicado",
         description="Consulta un radicado por su id.",
         method="GET",

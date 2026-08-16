@@ -115,3 +115,55 @@ def test_el_schema_declara_obligatorios_y_cierra_la_puerta() -> None:
     assert esquema["additionalProperties"] is False
     assert esquema["properties"]["tipo"]["enum"] == ["E", "S"]
     assert esquema["properties"]["texto"]["minLength"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Tipificar (E03) — el acto que el backend no tenía
+# ---------------------------------------------------------------------------
+
+
+def test_tipificar_solo_se_ofrece_con_nivel_de_creacion() -> None:
+    """`min_crud=3`, y en los DOS sentidos.
+
+    El backend exige nivel de creación para tipificar (fija la serie TRD, y con
+    ella la retención), así que ofrecer la tool a quien solo tiene lectura
+    produciría un 403 al confirmar — el defecto que el marco de alcance existe
+    para evitar. Y exigir de más la escondería a quien sí puede, que falla en
+    silencio y es peor.
+    """
+    from app.tools.catalog import get_tool, puede_usar
+
+    tool = get_tool("tipificar_radicado")
+    assert tool is not None
+    perms = {"PERM_RADI"}
+    assert not puede_usar(tool, perms, levels={"PERM_RADI": 1})
+    assert not puede_usar(tool, perms, levels={"PERM_RADI": 2})
+    assert puede_usar(tool, perms, levels={"PERM_RADI": 3})
+
+
+def test_tipificar_viaja_como_PATCH_con_el_tipo_en_el_cuerpo() -> None:
+    """El id va en la ruta y el tipo en el cuerpo; el método es PATCH, no POST.
+
+    Antes de que el dispatcher supiera de PATCH, todo lo que no era GET caía en
+    un POST incondicional — y `POST /documents/{id}` no existe: habría sido un
+    404 presentado como un fallo del sistema.
+    """
+    from app.services.dispatcher import build_request
+    from app.tools.catalog import coerce_args, get_tool
+
+    tool = get_tool("tipificar_radicado")
+    assert tool is not None
+    args = coerce_args(
+        tool,
+        {
+            "document_id": "11111111-1111-1111-1111-111111111111",
+            "doc_class": "Contratos",
+            "metadata": {"numero_contrato": "C-1"},
+        },
+    )
+    preparada = build_request(tool, args)
+
+    assert preparada.method == "PATCH"
+    assert preparada.path == "/api/v1/documents/11111111-1111-1111-1111-111111111111"
+    assert preparada.body == {"doc_class": "Contratos", "metadata": {"numero_contrato": "C-1"}}
+    assert preparada.query == {}

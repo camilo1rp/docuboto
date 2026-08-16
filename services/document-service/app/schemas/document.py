@@ -78,6 +78,22 @@ class DocumentUpdate(BaseModel):
     observations: str | None = None
     status: Literal["registered", "distributed", "in_progress", "closed"] | None = None
     pages: int | None = Field(default=None, ge=0)
+    # **Tipificar** un radicado ya creado (E03/E04). Hasta ahora `doc_class` solo
+    # se podía fijar AL RADICAR: un documento mal tipificado en ventanilla —o
+    # radicado sin tipificar, que el schema permite— se quedaba así para siempre,
+    # y con él la serie TRD que gobierna su retención y su disposición final
+    # (Ley 594/2000 art. 24). No era una restricción deliberada: no había ningún
+    # endpoint que lo hiciera, ni por esta vía ni por otra.
+    #
+    # Cambiar el tipo **revalida los metadatos** contra la plantilla activa del
+    # tipo nuevo (ver `DocumentService.update`): un radicado no puede quedar
+    # tipificado como X arrastrando los campos variables de Y.
+    doc_class: str | None = Field(default=None, max_length=100)
+    # Metadatos variables del tipo documental (E03, ADR-007). Se REEMPLAZAN
+    # enteros, no se fusionan: una fusión dejaría campos del tipo anterior
+    # sobreviviendo a la retipificación sin que nadie los hubiera pedido, y ese
+    # residuo es exactamente lo que hace que un expediente deje de cuadrar.
+    metadata: dict[str, Any] | None = None
 
 
 class AnexoResponse(BaseModel):

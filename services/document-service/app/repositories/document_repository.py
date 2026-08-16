@@ -358,6 +358,9 @@ class DocumentRepository:
         document_id: uuid.UUID,
         payload: DocumentUpdate,
         max_clearance: int,
+        *,
+        metadata_template_id: uuid.UUID | None = None,
+        escribir_template: bool = False,
     ) -> Radicado | None:
         """Actualiza los campos mutables de un radicado (RF-SEG-08: no-read-up).
 
@@ -401,6 +404,26 @@ class DocumentRepository:
         if payload.pages is not None:
             fields.append(f"pages = ${idx}")
             params.append(payload.pages)
+            idx += 1
+
+        if payload.doc_class is not None:
+            fields.append(f"doc_class = ${idx}")
+            params.append(payload.doc_class)
+            idx += 1
+
+        if payload.metadata is not None:
+            fields.append(f"metadata = ${idx}::jsonb")
+            params.append(json.dumps(payload.metadata))
+            idx += 1
+
+        # La versión de plantilla usada viaja SIEMPRE que el servicio haya
+        # revalidado, incluida la escritura de `NULL` cuando el tipo nuevo no
+        # tiene plantilla activa. Sin ese `NULL` explícito, el radicado quedaría
+        # apuntando a la plantilla del tipo ANTERIOR: una traza que dice que sus
+        # metadatos se validaron contra un esquema que ya no le corresponde.
+        if escribir_template:
+            fields.append(f"metadata_template_id = ${idx}")
+            params.append(metadata_template_id)
             idx += 1
 
         if not fields:

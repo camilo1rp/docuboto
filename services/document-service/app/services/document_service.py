@@ -850,7 +850,19 @@ class DocumentService:
             logger.warning("audit.append (indice_clasificados) failed", exc_info=True)
         return IndiceClasificadosResponse(total=len(items), items=items)
 
-    _CAMPOS_AUDITABLES = ("subject", "dest_dept", "observations", "status", "pages")
+    # `doc_class` y `metadata` entran aquí junto a los demás: retipificar decide la
+    # serie TRD, y con ella cuánto se conserva el documento y si acaba destruido
+    # (Ley 594/2000 art. 24). Un cambio con esa consecuencia que no dejara antes y
+    # después sería la traza más pobre justo en el campo más caro de reconstruir.
+    _CAMPOS_AUDITABLES = (
+        "subject",
+        "dest_dept",
+        "observations",
+        "status",
+        "pages",
+        "doc_class",
+        "metadata",
+    )
 
     async def update(
         self,
@@ -877,6 +889,15 @@ class DocumentService:
         una traza que dice «se cambió el asunto» sin decir a qué no permite
         reconstruir nada. El estado previo se lee con el MISMO gate de clearance, así
         que el asiento nunca puede revelar un campo que el llamante no podía ver.
+
+        **Retipificar revalida los metadatos** (E03/E04). Cambiar `doc_class` cambia
+        la serie TRD que gobierna la retención y la disposición final del radicado, y
+        los campos variables que le corresponden. Los metadatos efectivos —los que
+        vengan en el cuerpo, o los que ya tuviera— se validan contra la plantilla
+        activa del tipo NUEVO antes de escribir nada; si no encajan, el acto falla con
+        422 en vez de dejar un radicado tipificado como X con los campos de Y. Es la
+        misma comprobación que hace `create`, y a propósito: un radicado retipificado
+        tiene que ser indistinguible de uno radicado así desde el principio.
         """
         async with self._conn.transaction():
             previo = await self._repo.get_by_id(document_id, max_clearance)
@@ -889,7 +910,30 @@ class DocumentService:
                 # encima de su clearance ya salió por el 404 neutro de arriba.
                 raise DocumentAnuladoError(previo.tracking_number)
 
-            radicado = await self._repo.update(document_id, payload, max_clearance)
+            # Revalidación de metadatos. Se dispara si se toca el tipo O los
+            # metadatos: cambiar solo los metadatos también tiene que cumplir la
+            # plantilla vigente, o el gate de la radicación sería puenteable con un
+            # PATCH posterior.
+            template_id: uuid.UUID | None = None
+            escribir_template = payload.doc_class is not None or payload.metadata is not None
+            if escribir_template:
+                tipo_efectivo = payload.doc_class or previo.doc_class
+                meta_efectiva = (
+                    payload.metadata if payload.metadata is not None else (previo.metadata or {})
+                )
+                if tipo_efectivo:
+                    template = await self._metadata_repo.get_active_template(tipo_efectivo)
+                    if template is not None:
+                        validate_metadata(meta_efectiva, template["json_schema"])
+                        template_id = template["id"]
+
+            radicado = await self._repo.update(
+                document_id,
+                payload,
+                max_clearance,
+                metadata_template_id=template_id,
+                escribir_template=escribir_template,
+            )
             if radicado is None:
                 # Carrera: alguien lo anuló o lo reclasificó entre la lectura y el
                 # UPDATE. El `WHERE` del UPDATE es el guard autoritativo.

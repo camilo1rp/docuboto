@@ -39,7 +39,7 @@ from starlette.background import BackgroundTask
 
 from app.clients import storage_client
 from app.clients.tenant_client import TenantServiceClient, TenantServiceError
-from app.core.clearance import require_permission, resolve_caller_clearance
+from app.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.document import (
     AnexoResponse,
@@ -591,12 +591,49 @@ async def update_document(
 
     No-read-up (RF-SEG-08): mismo 404 neutro para inexistente y sobre-clearance.
     El gate es imprescindible porque la respuesta devuelve el radicado COMPLETO.
+
+    **Tipificar exige `crud >= 3`, el resto del PATCH no.** El gate del endpoint es
+    `PERM_RADI` a nivel 1 y así se queda: subirlo entero rompería a quien hoy corrige
+    un asunto o un número de folios, y alinear ese umbral con el de la radicación es
+    una decisión propia de esta épica, no un efecto colateral de este cambio. Pero
+    `doc_class` no es un campo más — fija la serie TRD y con ella la retención y la
+    disposición final del documento (Ley 594/2000 art. 24) —, así que se comprueba
+    aparte y con el umbral de escritura. El acto nuevo entra con su nivel correcto sin
+    tocar el de los que ya existían.
     """
     service = _build_service(conn, _tenant_slug(request))
     actor = _get_registered_by(request)
+    if payload.doc_class is not None and not await check_permission(
+        conn, actor, "PERM_RADI", 3
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": (
+                    "Tipificar un radicado exige PERM_RADI con nivel de creación "
+                    "(crud >= 3): fija la serie TRD que gobierna su retención."
+                ),
+                "status": 403,
+            },
+        )
     clearance = await resolve_caller_clearance(conn, actor)
     try:
         return await service.update(document_id, payload, clearance, actor=actor)
+    except MetadataValidationError as exc:
+        # Mismo 422 y mismo cuerpo que en la radicación: retipificar valida contra
+        # la plantilla del tipo nuevo, y quien lo intente tiene que recibir el
+        # mismo mensaje que si lo hubiera radicado así de entrada. Sin esta
+        # cláusula el fallo salía como 500 — un modo de fallo añadido sin su
+        # respuesta, que es como una validación se convierte en una caída.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "metadata_validation_failed",
+                "detail": str(exc),
+                "status": 422,
+            },
+        )
     except DocumentAnuladoError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
