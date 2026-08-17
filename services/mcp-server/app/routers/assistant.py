@@ -25,13 +25,25 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, Header, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    Body,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 
+from app.core.config import settings
 from app.schemas.assistant import AssistantMessageRequest, AssistantMessageResponse
 from app.services import proposals, write_gate
 from app.services.assistant import ConversationLimitError, run_turn
 from app.services.identity import IdentityError, resolve_identity
 from app.services.scope import build_scope
+from app.services.stt import SttNoDisponible
 
 logger = logging.getLogger(__name__)
 
@@ -228,3 +240,115 @@ async def assistant_message(
         # (RF-FIR-15). Se registra con traza para diagnóstico.
         logger.warning("assistant run_turn failed -> 503 assistant_unavailable", exc_info=True)
         raise _unavailable() from exc
+
+
+@router.get(
+    "/transcribe",
+    summary="¿Hay transcripción disponible en esta instalación?",
+)
+async def assistant_transcribe_disponible(request: Request) -> dict:
+    """Capacidad, para que la interfaz no ofrezca un botón que va a fallar.
+
+    Sin esto, el frontend solo puede averiguarlo **intentándolo**: la persona
+    graba, espera, y recibe un 503. Preguntar antes es el mismo criterio que el
+    marco de alcance — no ofrecer lo que el backend va a negar.
+
+    No exige autenticación: no dice nada de nadie, solo si esta instalación tiene
+    activada la transcripción. Que el propio dictado sí la exija es otra cosa.
+    """
+    proveedor = request.app.state.stt_provider
+    return {
+        "disponible": proveedor.nombre != "disabled",
+        "proveedor": proveedor.nombre,
+        # Se dice DÓNDE se procesa. Es la pregunta que importa cuando lo que se
+        # manda es la voz de un funcionario público.
+        "procesa_en": (
+            "la propia entidad" if proveedor.nombre == "whisper" else "ningún sitio"
+        ),
+    }
+
+
+@router.post(
+    "/transcribe",
+    summary="Audio → texto (STT). El audio NO sale de la entidad.",
+)
+async def assistant_transcribe(
+    request: Request,
+    file: UploadFile = File(...),
+    idioma: str = Form(default="es"),
+    authorization: str | None = Header(default=None),
+    x_tenant_slug: str | None = Header(default=None),
+) -> dict:
+    """Transcribe un dictado, en servidor y sin terceros (ADR-020).
+
+    Es el camino que funciona en **cualquier** navegador. El `VoiceInput` del
+    frontend usa el reconocedor del dispositivo cuando existe, pero en Chrome y
+    Edge la Web Speech API clásica manda el audio a Google, así que allí no se
+    ofrece: para esos navegadores, esto es lo que hay, y aquí el audio no cruza
+    la red de la entidad.
+
+    **Nunca devuelve texto que no se haya oído.** Sin proveedor configurado
+    responde 503 diciendo qué falta; no hay un modo «de prueba» que aproxime,
+    porque una transcripción inventada acabaría en el cuerpo de un documento
+    oficial (ver `app/services/stt.py`).
+
+    Se gatea por autenticación y nada más, igual que el resto del asistente: es
+    transporte de la propia voz de quien llama, no acceso a información de
+    nadie. Lo que se haga con el texto después sí pasa por su RBAC.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthenticated", "detail": "Falta el token.", "status": 401},
+        )
+    if not x_tenant_slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "missing_tenant", "detail": "Falta X-Tenant-Slug.", "status": 400},
+        )
+
+    audio = await file.read()
+    if not audio:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "audio_vacio", "detail": "No llegó audio.", "status": 400},
+        )
+    # El tope se comprueba tras leer porque `UploadFile` ya trasvasó a disco lo
+    # que excediera el buffer; el límite duro de tamaño de petición es del
+    # gateway. Aquí se acota lo que este servicio se lleva a memoria y se dice
+    # en qué unidades, para que el mensaje sirva de algo.
+    if len(audio) > settings.stt_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error": "audio_demasiado_grande",
+                "detail": (
+                    f"El audio supera {settings.stt_max_bytes // (1024 * 1024)} MB. "
+                    "Esto es para dictar al compositor, no para grabar una reunión."
+                ),
+                "status": 413,
+            },
+        )
+
+    proveedor = request.app.state.stt_provider
+    try:
+        resultado = await proveedor.transcribir(
+            audio,
+            nombre_fichero=file.filename or "dictado.webm",
+            mime=file.content_type or "application/octet-stream",
+            idioma=idioma,
+        )
+    except SttNoDisponible as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": "stt_no_disponible", "detail": exc.detalle, "status": exc.status},
+        ) from exc
+
+    return {
+        "texto": resultado.texto,
+        "idioma": resultado.idioma,
+        # Se dice QUIÉN transcribió y con qué modelo. Quien revisa un documento
+        # que salió de un dictado tiene derecho a saber por dónde pasó su voz.
+        "proveedor": resultado.proveedor,
+        "modelo": resultado.modelo,
+    }

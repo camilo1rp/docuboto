@@ -1,0 +1,10 @@
+# OrpycaMCP — whisper-service. Dependencias de alto nivel; el árbol exacto vive
+# en `requirements.lock`, que es de donde instala el Dockerfile.
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic-settings>=2.6.0
+python-multipart>=0.0.18
+# faster-whisper (CTranslate2) y NO openai-whisper: el segundo arrastra torch,
+# que son varios GB de imagen para el mismo trabajo. Este corre en CPU y es lo
+# que permite que una entidad transcriba sin GPU.
+faster-whisper>=1.0.0

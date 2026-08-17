@@ -76,9 +76,36 @@ La pregunta de esta ADR: **qué sistema de diseño adopta el frontend y cómo se
 > tercero, en un sistema que gestiona radicados reservados. Donde no hay reconocimiento local,
 > **no hay botón**: la degradación honesta aplicada a la soberanía y no solo al soporte.
 >
-> El camino soberano completo para todos los navegadores sigue siendo el `transcribe` con
-> Whisper de esta ADR. Queda como pendiente declarado, no como algo ya resuelto por la vía del
-> navegador.
+> **Construido (2026-08-17): `POST /api/v1/assistant/transcribe` + `whisper-service`.**
+> El camino soberano completo ya existe y funciona en cualquier navegador: el audio va del
+> navegador al gateway, de ahí al mcp-server y de ahí a `whisper-service`, que corre
+> `faster-whisper` en CPU dentro de la propia instalación. No hay ningún salto a un tercero.
+>
+> Tres decisiones que conviene no revertir sin leer esto:
+>
+> * **No hay proveedor `stub`, a diferencia de los embeddings de E21.** Un vectorizador por
+>   *hashing* es recuperación léxica honesta; un «stub» de transcripción tendría que
+>   **inventarse lo que la persona dijo**, y ese texto acaba en el compositor del asistente o en
+>   el cuerpo de un documento oficial. El default es `disabled` y su comportamiento es negarse
+>   con un 503 que dice qué falta.
+> * **`whisper-service` arranca desactivado** (perfil `assistant` de Compose) y **no lo enruta
+>   el gateway**: es interno, solo le habla el mcp-server — mismo criterio que storage-service
+>   con D-02.
+> * **`faster-whisper`, no `openai-whisper`**: el segundo arrastra torch (varios GB) para el
+>   mismo trabajo. Este corre en CPU, que es lo que permite a una entidad sin GPU transcribir su
+>   propia voz en vez de mandarla fuera.
+>
+> **Rendimiento medido, no estimado** (modelo `small`, `int8`, 4 CPU): ~9 s para ~5 s de audio,
+> es decir, cerca del doble del tiempo real. Sirve para dictar una frase al compositor; no para
+> transcribir una reunión. El modelo se cambia por entorno (`WHISPER_MODEL`) si una entidad
+> quiere más calidad y puede pagar el tiempo, o menos y más rápido.
+>
+> **Lo que NO está verificado**: la calidad sobre voz humana real. La prueba de extremo a
+> extremo se hizo con voz sintética (`espeak-ng`), que es notoriamente difícil para cualquier
+> ASR: transcribió bien la parte final y se equivocó en los nombres propios. Eso dice que la
+> tubería funciona, no que la transcripción sea buena — y en dictado de números de radicado y
+> nombres propios es justo donde importa. Antes de ofrecerlo como función terminada a una
+> entidad conviene probarlo con personas.
 - **Opt-in por perfiles de Compose**: los servicios pesados de IA (Ollama, Whisper) y de edición en línea (OnlyOffice, ver E07 §9) se declaran con `profiles: ["assistant"]` / `["editor"]` y **arrancan desactivados**. Una instalación mínima corre sin GPU ni contenedores de inferencia; quien quiera el asistente activa el perfil.
 
 ### 4. Entrega gradual (5 fases de E22)

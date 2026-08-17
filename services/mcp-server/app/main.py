@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.routers.assistant import router as assistant_router
 from app.routers.health import router as health_router
 from app.routers.mcp import router as mcp_router
+from app.services.stt import build_stt_provider
 
 # Import guardado del SDK de Anthropic (E18): si el paquete falta, el asistente
 # degrada a "no disponible" en vez de tumbar el arranque del mcp-server (que
@@ -87,6 +88,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.gateway_client = httpx.AsyncClient(
         base_url=settings.gateway_url, timeout=settings.request_timeout
     )
+
+    # Transcripción de voz (ADR-020). Se construye UNA vez: el proveedor no
+    # tiene estado que dependa de la petición, y resolverlo en cada llamada
+    # escondería un error de configuración hasta el momento de dictar.
+    app.state.stt_provider = build_stt_provider(
+        settings.stt_provider,
+        whisper_url=settings.whisper_url,
+        timeout=settings.stt_timeout,
+    )
+    if settings.stt_provider.strip().lower() != "whisper":
+        logger.info(
+            "Transcripción de voz DESHABILITADA (STT_PROVIDER=%s): "
+            "POST /api/v1/assistant/transcribe responderá 503. No hay modo de "
+            "prueba que aproxime lo que se dijo.",
+            settings.stt_provider,
+        )
 
     # Asistente conversacional (E18/ADR-019). Historial efímero por proceso
     # (límite declarado: no multi-réplica; migración a Redis diferida).

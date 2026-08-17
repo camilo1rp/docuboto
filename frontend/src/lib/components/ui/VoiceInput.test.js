@@ -19,8 +19,14 @@
  * terceros»).
  *
  * El caso peligroso no es el fallo ruidoso: es el que funciona perfectamente y
- * nadie mira. Por eso el control importante aquí es el NEGATIVO — sin
- * `availableOnDevice`, no hay botón.
+ * nadie mira. Por eso el control importante aquí es el NEGATIVO.
+ *
+ * OJO al leer los tests de este primer bloque: «sin `availableOnDevice` no hay
+ * botón» vale porque **tampoco hay transcripción en el servidor** — estos tests
+ * no simulan `fetch`, así que la consulta de capacidad falla y devuelve «no
+ * disponible». El segundo camino (Whisper en la propia entidad, ADR-020) tiene
+ * su propio bloque más abajo. Lo que NUNCA existe es un tercero que mande la voz
+ * fuera.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
@@ -62,11 +68,18 @@ function instalar(SR) {
   }
 }
 
-/** Deja pasar el `onMount` asíncrono que resuelve la disponibilidad. */
+/** Deja pasar el `onMount` asíncrono que resuelve la disponibilidad.
+ *
+ * Varias vueltas a propósito: el camino del servidor encadena DOS promesas
+ * (comprobar el dispositivo y luego preguntar la capacidad al backend), y con
+ * un solo `tick` el componente aún no ha decidido si hay botón — el test daría
+ * «no hay» por una carrera, no por la regla que quiere comprobar.
+ */
 async function asentar() {
-  await tick();
-  await Promise.resolve();
-  await tick();
+  for (let i = 0; i < 6; i += 1) {
+    await tick();
+    await Promise.resolve();
+  }
 }
 
 afterEach(() => {
@@ -255,5 +268,171 @@ describe("VoiceInput — los fallos dicen lo que son", () => {
 
     expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
     expect(screen.getByTestId("voice-aviso")).toHaveTextContent(/dispositivo/i);
+  });
+});
+
+describe("VoiceInput — segundo camino: transcripción en el servidor de la entidad", () => {
+  /** Sin reconocimiento local, pero con Whisper activado en la instalación. */
+  function instalarSinReconocedorLocal() {
+    class SR {
+      start() {}
+      stop() {}
+    }
+    vi.stubGlobal("SpeechRecognition", SR); // sin availableOnDevice
+  }
+
+  function stubFetch(respuestaGet, respuestaPost) {
+    const fn = vi.fn(async (url, opciones) => {
+      if (!opciones || opciones.method !== "POST") {
+        return { ok: true, json: async () => respuestaGet };
+      }
+      return respuestaPost;
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  it("con Whisper activado SÍ hay botón, aunque el navegador no reconozca en local", async () => {
+    // Es el caso de Chrome y Edge: su API existe pero manda el audio a Google,
+    // así que el camino local no se ofrece — y sin embargo la persona puede
+    // dictar, porque la entidad transcribe en su propio servidor.
+    instalarSinReconocedorLocal();
+    stubFetch({ disponible: true, proveedor: "whisper", procesa_en: "la propia entidad" });
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.getByTestId("voice-toggle")).toBeInTheDocument();
+  });
+
+  it("la etiqueta DICE que se transcribe en el servidor de la entidad", async () => {
+    // Quien dicta tiene derecho a saber por dónde pasa su voz, y los dos
+    // caminos no son equivalentes en eso.
+    instalarSinReconocedorLocal();
+    stubFetch({ disponible: true, proveedor: "whisper" });
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.getByTestId("voice-toggle")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("servidor de la entidad"),
+    );
+  });
+
+  it("si la instalación NO tiene Whisper, no hay botón", async () => {
+    // Control negativo del bloque: se pregunta ANTES de ofrecer, para que nadie
+    // grabe, espere y reciba un 503.
+    instalarSinReconocedorLocal();
+    stubFetch({ disponible: false, proveedor: "disabled" });
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+
+  it("si la consulta de capacidad falla, no hay botón (fail-closed)", async () => {
+    instalarSinReconocedorLocal();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("red caída");
+      }),
+    );
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+});
+
+describe("VoiceInput — lo que el servidor NO entendió no se inventa", () => {
+  /** Doble de MediaRecorder: deja disparar `onstop` desde el test. */
+  function instalarGrabadora() {
+    const instancias = [];
+    class MR {
+      constructor(stream, opciones) {
+        this.stream = stream;
+        this.mimeType = opciones?.mimeType || "audio/webm";
+        instancias.push(this);
+      }
+      start() {
+        this.ondataavailable?.({ data: new Blob(["audio"], { type: "audio/webm" }) });
+      }
+      stop() {
+        this.onstop?.();
+      }
+    }
+    vi.stubGlobal("MediaRecorder", MR);
+    vi.stubGlobal("navigator", {
+      ...globalThis.navigator,
+      mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+    });
+    return instancias;
+  }
+
+  async function dictarConRespuesta(respuestaPost) {
+    class SR {
+      start() {}
+      stop() {}
+    }
+    vi.stubGlobal("SpeechRecognition", SR); // sin reconocimiento local
+    const peticiones = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, opciones) => {
+        peticiones.push(opciones?.method ?? "GET");
+        if (opciones?.method !== "POST") {
+          return { ok: true, json: async () => ({ disponible: true, proveedor: "whisper" }) };
+        }
+        return respuestaPost;
+      }),
+    );
+    const grabadoras = instalarGrabadora();
+    const util = render(VoiceInput);
+    await asentar();
+
+    const oido = vi.fn();
+    util.component.$on("texto", (e) => oido(e.detail));
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await asentar();
+    grabadoras[0].stop();
+    await asentar();
+    return { oido, peticiones };
+  }
+
+  it("un audio que no se entendió NO rellena el compositor", async () => {
+    // El caso donde la tentación de «devolver algo» es mayor: un compositor
+    // vacío parece un fallo del sistema. No lo es — es lo que se oyó. Inventar
+    // una frase plausible es el único fallo grave posible en todo el dictado,
+    // porque ese texto acaba en el cuerpo de un documento oficial.
+    const { oido } = await dictarConRespuesta({
+      ok: true,
+      json: async () => ({ texto: "   ", proveedor: "whisper" }),
+    });
+
+    expect(oido).not.toHaveBeenCalled();
+    expect(screen.getByTestId("voice-aviso")).toHaveTextContent(/no se entendió/i);
+  });
+
+  it("control positivo: lo que SÍ se transcribió llega al compositor", async () => {
+    // Sin esto, un componente que nunca emitiera dejaría el test de arriba
+    // verde y el dictado por servidor inservible.
+    const { oido } = await dictarConRespuesta({
+      ok: true,
+      json: async () => ({ texto: "radica esta tutela", proveedor: "whisper" }),
+    });
+
+    expect(oido).toHaveBeenCalledWith({ texto: "radica esta tutela", definitivo: true });
+  });
+
+  it("un error del backend muestra SU motivo, no un genérico", async () => {
+    // El detalle dice qué falta configurar; sustituirlo por «no se pudo
+    // transcribir» deja a la persona sin saber qué hacer.
+    await dictarConRespuesta({
+      ok: false,
+      json: async () => ({ detail: "Falta STT_PROVIDER en esta instalación." }),
+    });
+
+    expect(screen.getByTestId("voice-aviso")).toHaveTextContent(/STT_PROVIDER/);
   });
 });

@@ -1,0 +1,114 @@
+annotated-doc==0.0.5
+    # via fastapi
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.14.2
+    # via
+    #   httpx
+    #   starlette
+    #   watchfiles
+av==18.1.0
+    # via faster-whisper
+certifi==2026.7.22
+    # via
+    #   httpcore
+    #   httpx
+click==8.4.2
+    # via
+    #   huggingface-hub
+    #   uvicorn
+ctranslate2==4.8.1
+    # via faster-whisper
+fastapi==0.141.1
+    # via -r services/whisper-service/requirements.txt
+faster-whisper==1.2.1
+    # via -r services/whisper-service/requirements.txt
+filelock==3.32.3
+    # via huggingface-hub
+flatbuffers==25.12.19
+    # via onnxruntime
+fsspec==2026.7.0
+    # via huggingface-hub
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+hf-xet==1.6.0
+    # via huggingface-hub
+httpcore==1.0.9
+    # via httpx
+httptools==0.8.0
+    # via uvicorn
+httpx==0.28.1
+    # via huggingface-hub
+huggingface-hub==1.27.0
+    # via
+    #   faster-whisper
+    #   tokenizers
+idna==3.18
+    # via
+    #   anyio
+    #   httpx
+numpy==2.4.6
+    # via
+    #   ctranslate2
+    #   onnxruntime
+onnxruntime==1.28.0
+    # via faster-whisper
+packaging==26.3
+    # via
+    #   huggingface-hub
+    #   onnxruntime
+protobuf==7.35.1
+    # via onnxruntime
+pydantic==2.13.4
+    # via
+    #   fastapi
+    #   pydantic-settings
+pydantic-core==2.46.4
+    # via pydantic
+pydantic-settings==2.15.0
+    # via -r services/whisper-service/requirements.txt
+python-dotenv==1.2.3
+    # via
+    #   pydantic-settings
+    #   uvicorn
+python-multipart==0.0.32
+    # via -r services/whisper-service/requirements.txt
+pyyaml==6.0.3
+    # via
+    #   ctranslate2
+    #   huggingface-hub
+    #   uvicorn
+setuptools==84.0.0
+    # via ctranslate2
+starlette==1.6.0
+    # via fastapi
+tokenizers==0.23.1
+    # via faster-whisper
+tqdm==4.70.0
+    # via
+    #   faster-whisper
+    #   huggingface-hub
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   fastapi
+    #   huggingface-hub
+    #   pydantic
+    #   pydantic-core
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via
+    #   fastapi
+    #   pydantic
+    #   pydantic-settings
+uvicorn==0.52.3
+    # via -r services/whisper-service/requirements.txt
+uvloop==0.22.1
+    # via uvicorn
+watchfiles==1.2.0
+    # via uvicorn
+websockets==17.0.1
+    # via uvicorn

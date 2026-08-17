@@ -35,6 +35,18 @@
   o no la trae, el resultado es que no hay botón. El peor caso posible es
   quedarse sin dictado; nunca dictar hacia fuera sin que nadie lo sepa.
 
+  ## Dos caminos, y el orden importa
+
+  1. **En el dispositivo** (`availableOnDevice` + `processLocally`): instantáneo y
+     sin salir del equipo. Es el mejor cuando existe.
+  2. **En el servidor de la entidad** (`POST /asistente/api/transcribe` → Whisper
+     local, ADR-020): funciona en CUALQUIER navegador y el audio no sale de la
+     instalación. Tarda unos segundos porque transcribe de verdad.
+
+  Lo que NO hay es un tercer camino que mande la voz fuera. Si ninguno de los dos
+  está disponible, no hay botón — y en el caso del servidor se pregunta ANTES
+  (`GET`), para no ofrecer algo que va a fallar al pulsarlo.
+
   ## El dictado NUNCA confirma
 
   Rellena el compositor y ahí se acaba: la persona lee, corrige y envía. Y una
@@ -60,11 +72,20 @@
 
   /** `null` mientras se comprueba; `false` fija que no se ofrece. */
   let soportado = null;
+  /** 'dispositivo' | 'servidor' — qué camino se usará al pulsar. */
+  let modo = "dispositivo";
   let escuchando = false;
+  let transcribiendo = false;
   let aviso = "";
 
   /** @type {any} */
   let rec = null;
+  /** @type {MediaRecorder|null} */
+  let grabadora = null;
+  /** @type {MediaStream|null} */
+  let pista = null;
+  /** @type {Blob[]} */
+  let trozos = [];
 
   function Reconocedor() {
     if (typeof window === "undefined") return null;
@@ -95,6 +116,19 @@
     }
   }
 
+  /** ¿Tiene esta instalación transcripción en servidor? (ADR-020) */
+  async function hayTranscripcionEnServidor() {
+    if (typeof fetch !== "function") return false;
+    try {
+      const r = await fetch("/asistente/api/transcribe");
+      if (!r.ok) return false;
+      const d = await r.json();
+      return Boolean(d?.disponible);
+    } catch {
+      return false;
+    }
+  }
+
   onMount(() => {
     let vivo = true;
 
@@ -106,12 +140,29 @@
       }
       const local = await reconoceEnElDispositivo(SR);
       if (!vivo) return;
-      soportado = local;
+      if (local) {
+        modo = "dispositivo";
+        soportado = true;
+        return;
+      }
+      // Sin reconocimiento local, queda el servidor de la entidad — si esta
+      // instalación lo tiene activado. Se PREGUNTA, no se supone.
+      soportado = await hayTranscripcionEnServidor();
+      modo = "servidor";
     })();
 
     return () => {
       vivo = false;
       detener();
+      // El micrófono se suelta SIEMPRE al desmontar: dejar la pista abierta
+      // mantiene el indicador de grabación encendido en el navegador, que es
+      // exactamente lo que una persona no debe ver cuando ya cerró el panel.
+      try {
+        grabadora?.stop();
+      } catch {
+        // Ya estaba parada.
+      }
+      soltarMicrofono();
     };
   });
 
@@ -126,7 +177,88 @@
     rec = null;
   }
 
+  /** Graba con el micrófono y manda el audio al servidor de la entidad. */
+  async function grabarYTranscribir() {
+    if (escuchando) {
+      // Parar cierra la grabación; el envío ocurre en `onstop`.
+      grabadora?.stop();
+      return;
+    }
+    aviso = "";
+    try {
+      pista = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      aviso = "El navegador no dio permiso para usar el micrófono.";
+      return;
+    }
+    trozos = [];
+    grabadora = new MediaRecorder(pista);
+    grabadora.ondataavailable = (e) => {
+      if (e.data?.size) trozos.push(e.data);
+    };
+    grabadora.onstop = async () => {
+      escuchando = false;
+      soltarMicrofono();
+      const audio = new Blob(trozos, { type: grabadora?.mimeType || "audio/webm" });
+      trozos = [];
+      if (!audio.size) {
+        aviso = "No se grabó nada.";
+        return;
+      }
+      transcribiendo = true;
+      try {
+        const cuerpo = new FormData();
+        cuerpo.append("file", audio, "dictado.webm");
+        cuerpo.append("idioma", lang.split("-")[0]);
+        const r = await fetch("/asistente/api/transcribe", { method: "POST", body: cuerpo });
+        const d = await r.json().catch(() => null);
+        if (!r.ok) {
+          // El detalle del backend es la explicación buena —dice qué falta
+          // configurar— y sustituirlo por un genérico dejaría a la persona sin
+          // saber qué hacer.
+          aviso = d?.detail ?? "No se pudo transcribir el dictado.";
+          return;
+        }
+        const texto = (d?.texto ?? "").trim();
+        if (!texto) {
+          // Silencio es un resultado, no un fallo. Y NO se rellena el
+          // compositor con nada: inventar una frase es el único fallo grave
+          // posible aquí.
+          aviso = "No se entendió nada en el audio.";
+          return;
+        }
+        dispatch("texto", { texto, definitivo: true });
+      } catch {
+        aviso = "No se pudo enviar el dictado.";
+      } finally {
+        transcribiendo = false;
+      }
+    };
+    grabadora.start();
+    escuchando = true;
+  }
+
+  function soltarMicrofono() {
+    pista?.getTracks().forEach((t) => t.stop());
+    pista = null;
+    grabadora = null;
+  }
+
+  // La etiqueta dice DÓNDE se transcribe cuando toca al servidor: quien dicta
+  // tiene derecho a saber por dónde pasa su voz.
+  $: etiqueta = transcribiendo
+    ? "Transcribiendo el dictado…"
+    : escuchando
+      ? "Detener el dictado"
+      : modo === "servidor"
+        ? "Dictar el mensaje (se transcribe en el servidor de la entidad)"
+        : "Dictar el mensaje";
+
   async function alternar() {
+    if (modo === "servidor") {
+      await grabarYTranscribir();
+      return;
+    }
     if (escuchando) {
       detener();
       return;
@@ -207,14 +339,17 @@
     type="button"
     class="voice-input"
     class:voice-input--on={escuchando}
-    {disabled}
+    disabled={disabled || transcribiendo}
     aria-pressed={escuchando}
-    aria-label={escuchando ? "Detener el dictado" : "Dictar el mensaje"}
-    title={escuchando ? "Detener el dictado" : "Dictar el mensaje"}
+    aria-label={etiqueta}
+    title={etiqueta}
     data-testid="voice-toggle"
     on:click={alternar}
   >
-    <i class="fas {escuchando ? 'fa-stop' : 'fa-microphone'}" aria-hidden="true"></i>
+    <i
+      class="fas {transcribiendo ? 'fa-spinner fa-spin' : escuchando ? 'fa-stop' : 'fa-microphone'}"
+      aria-hidden="true"
+    ></i>
   </button>
 {/if}
 

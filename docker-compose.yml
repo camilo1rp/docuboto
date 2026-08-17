@@ -12,6 +12,10 @@ volumes:
   minio-data:
   keycloak-data:
   redis-data:
+  # El modelo de Whisper se baja al primer arranque y se queda aquí: empaquetarlo
+  # en la imagen la ataría a un modelo concreto y la haría crecer cientos de MB
+  # para quien luego elija otro.
+  whisper-models:
 
 services:
 
@@ -162,6 +166,11 @@ services:
       # credenciales del stack local; en producción viene del entorno con
       # `${VAR:?}`, que aborta el despliegue si falta.
       - MCP_PROPOSAL_SECRET=${MCP_PROPOSAL_SECRET:-orpycamcp_dev_proposal_secret}
+      # STT (ADR-020): `disabled` por defecto — no hay «stub» honesto de
+      # transcripción, así que sin proveedor el endpoint se NIEGA en vez de
+      # aproximar lo que se dijo. `whisper` exige levantar el perfil `assistant`.
+      - STT_PROVIDER=${STT_PROVIDER:-disabled}
+      - WHISPER_URL=${WHISPER_URL:-http://whisper-service:8012}
     networks:
       - orpycamcp-net
     depends_on:
@@ -265,6 +274,43 @@ services:
     restart: "no"
     mem_limit: 2g
     memswap_limit: 2g
+
+  whisper-service:
+    # Transcripción de voz EN LA PROPIA ENTIDAD (ADR-020, épica de dictado
+    # soberano). Existe porque el reconocedor del navegador NO cumple la
+    # decisión de soberanía: en Chrome y Edge la Web Speech API clásica manda el
+    # audio a un servicio de Google, así que `VoiceInput` solo se ofrece cuando
+    # el navegador reconoce en el dispositivo. Para el resto, la voz llega aquí y
+    # no sale.
+    #
+    # ARRANCA DESACTIVADO (perfil `assistant`), como decidió ADR-020 para los
+    # servicios pesados de inferencia: una instalación mínima corre sin él y sin
+    # descargar ningún modelo, y `POST /api/v1/assistant/transcribe` responde 503
+    # explicando cómo activarlo.
+    #
+    #     docker compose --profile assistant up -d whisper-service
+    #
+    # NO se enruta por el gateway: es interno, solo le habla el mcp-server —
+    # mismo criterio que storage-service, que sirve bytes únicamente al mediador
+    # de document-service (D-02). Superficie de red que nadie necesita es
+    # superficie que alguien acabará usando.
+    build:
+      context: .
+      dockerfile: services/whisper-service/Dockerfile
+    container_name: orpycamcp-whisper
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-es}
+      - LOG_LEVEL=info
+    volumes:
+      - whisper-models:/models
+    networks:
+      - orpycamcp-net
+    profiles:
+      - assistant
+    restart: unless-stopped
 
   knowledge-service:
     # Capa de conocimiento (E21, ADR-006): pgvector por tenant, advisoria/derivada.

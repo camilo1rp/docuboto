@@ -51,6 +51,22 @@ class Settings(BaseSettings):
     # arranca** (ver `app/main.py`): una clave vacía produce firmas que cualquiera
     # reproduce, y el gate quedaría decorativo sin que nada lo aparentara — el
     # mismo modo de fallo que los secretos con valor de ejemplo del bloque 11.
+    # ── Transcripción de voz (STT, ADR-020) ────────────────────────────────
+    # `disabled` por defecto y a propósito: no existe un «stub» honesto de
+    # transcripción — cualquiera tendría que inventarse lo que la persona dijo, y
+    # ese texto acabaría en un documento oficial. Ver `app/services/stt.py`.
+    stt_provider: str = "disabled"
+    # `whisper-service` corre bajo el perfil `assistant` de Compose y arranca
+    # desactivado: es un servicio pesado y una instalación mínima no lo necesita.
+    whisper_url: str = "http://whisper-service:8012"
+    # Un minuto de audio tarda unos segundos en CPU; el margen cubre un dictado
+    # largo sin dejar la petición colgada para siempre.
+    stt_timeout: float = 120.0
+    # Tope del audio aceptado. Un dictado para el compositor del asistente son
+    # segundos, no una grabación de una reunión: el límite protege la memoria del
+    # servicio y hace explícito para qué es esto.
+    stt_max_bytes: int = 10 * 1024 * 1024
+
     mcp_proposal_secret: str = ""
     # Clave anterior, para que una rotación no invalide las propuestas vivas.
     mcp_proposal_secret_previous: str = ""
