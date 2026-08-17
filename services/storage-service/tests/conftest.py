@@ -177,6 +177,40 @@ def make_aip_row(
     }
 
 
+def conceder_permisos(conn: AsyncMock, *, conceder: bool = True) -> None:
+    """Hace que `check_permission` responda `conceder` sin tocar el resto.
+
+    `POST /upload` dejó de estar sin gate: exige `PERM_RADI` (era el único
+    endpoint que el gateway expone de este servicio y no pedía nada). Los tests
+    lo tienen que declarar, y se declara **aquí** y no test a test para que
+    `conceder=False` siga siendo escribible: un doble que concediera siempre
+    dejaría el gate sin control negativo.
+
+    Se distingue por la forma de la consulta —`check_permission` la hace con un
+    SQL que menciona `auth_group_permissions`— en vez de forzar todos los
+    `fetchval` a `True`, que taparía las consultas de dominio que los tests sí
+    quieren ver devolver `None`.
+
+    **No se aplica por defecto, a propósito.** La primera versión la ponía en
+    `_make_mock_conn` y dejó en rojo los tres tests que deniegan adrede
+    (`test_rbac_denial_audit`, `test_preservacion`): un doble que conceda
+    siempre convierte cualquier gate en decorativo, y el sitio donde eso se paga
+    es justo el test que comprueba la denegación. El doble falla cerrado como el
+    sistema; conceder es un acto explícito del test que lo necesita.
+    """
+    original = conn.fetchval.side_effect
+
+    async def _fetchval(*args, **kwargs):
+        sql = args[0] if args and isinstance(args[0], str) else ""
+        if "auth_group_permissions" in sql:
+            return conceder
+        if original is not None:
+            return await original(*args, **kwargs)
+        return conn.fetchval.return_value
+
+    conn.fetchval.side_effect = _fetchval
+
+
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None

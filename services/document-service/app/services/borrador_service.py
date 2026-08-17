@@ -140,6 +140,31 @@ class BorradorService:
                     "status": 409,
                 },
             )
+        # La aprobación es REQUISITO, y hasta ahora solo la exigía el navegador.
+        #
+        # El ciclo documentado en la cabecera de este módulo es crear → editar →
+        # aprobar → RADICAR, y la pantalla de borradores lo respeta
+        # (`canRadicar = estado === "aprobado"`). Pero el servicio solo
+        # comprobaba que no estuviera ya radicado, así que un `POST
+        # /borradores/{id}/radicar` directo saltaba la aprobación y consumía el
+        # número igualmente. Un control que vive solo en el cliente no es un
+        # control: el cliente es la parte hostil (D-05).
+        #
+        # No rompe nada de lo que hoy funciona — la única interfaz que llama a
+        # esta ruta no la ofrece sin aprobar — y convierte la marca de
+        # aprobación en lo que su nombre dice que es.
+        if row["estado"] != "aprobado":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "borrador_sin_aprobar",
+                    "detail": (
+                        "El borrador debe aprobarse antes de radicarlo: radicar "
+                        "consume un número inmutable."
+                    ),
+                    "status": 409,
+                },
+            )
         payload = DocumentCreate(
             doc_type=row["doc_type"],
             subject=row["subject"],

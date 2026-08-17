@@ -509,3 +509,45 @@ async def test_desclasificar_no_republica(client_with_redis) -> None:
     assert "publicable = TRUE" not in desclasificar[0], (
         "desclasificar no puede publicar: publicar es un acto propio"
     )
+
+
+# ---------------------------------------------------------------------------
+# Case 8 — reclasificar exige NIVEL DE ESCRITURA, no de consulta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reclasificar_exige_nivel_de_escritura(client_with_conn) -> None:
+    """`PERM_RECLASIFICAR` con nivel de LECTURA no basta para reclasificar.
+
+    El endpoint pedía el permiso con el `min_crud` por defecto —1, leer—, de
+    modo que quien lo tuviera solo para consultar podía subir o bajar la reserva
+    de un radicado oficial. Sus dos gemelos ya exigían 3 y su comentario dice
+    por qué: `publicacion` usa el MISMO permiso con nivel de escritura porque
+    publicar y clasificar son las dos caras de la misma competencia sobre el
+    régimen de acceso; `disposition` se corrigió antes por lo mismo. Este era el
+    tercer hermano y el único que se quedó en 1.
+
+    Se comprueba por el nivel que el gate EXIGE, no por el que el usuario tiene:
+    `check_permission` recibe `min_crud` como parámetro de la consulta, así que
+    mirar ahí es mirar el contrato y no el escenario.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # denegado: solo interesa la llamada
+
+    await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={
+            "nivel_seguridad": 1,
+            "motivo": "Desclasificar",
+            "fundamento_juridico": "Art. 19 Ley 1712",
+        },
+        headers=TENANT_HEADERS,
+    )
+
+    llamada = mock_conn.fetchval.await_args_list[0]
+    assert "PERM_RECLASIFICAR" in llamada.args, "no se comprobó el permiso esperado"
+    assert 3 in llamada.args, (
+        "el gate se conformó con nivel de lectura: desclasificar un radicado "
+        "reservado no puede exigir menos que publicarlo"
+    )

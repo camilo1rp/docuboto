@@ -28,6 +28,7 @@ from tests.conftest import (
     FILE_ID,
     TENANT_HEADERS,
     TEST_INTERNAL_TOKEN,
+    conceder_permisos,
     make_file_record,
     minio_get_object_stream,
 )
@@ -100,6 +101,7 @@ async def test_gated_endpoint_with_correct_token_succeeds(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     record = make_file_record(file_id=FILE_ID)
     mock_conn.fetchrow.return_value = record
     mock_minio.presigned_get_object.return_value = "http://minio/presigned-url"
@@ -120,6 +122,7 @@ async def test_upload_is_not_gated_by_internal_token(
     """/upload sigue expuesto: el frontend sube directo, sin X-Internal-Token,
     incluso cuando el token de servicio interno SÍ está configurado."""
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     mock_conn.fetchrow.side_effect = [None, make_file_record(file_id=FILE_ID)]
 
     response = await client.post(

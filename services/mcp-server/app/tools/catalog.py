@@ -1541,10 +1541,9 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="aprobar_borrador",
         description=(
-            "Marca el borrador como aprobado, el paso previo a radicarlo en el "
-            "procedimiento de la entidad. AVISO: hoy el sistema NO lo exige para radicar "
-            "— un borrador sin aprobar se radica igual —, así que no lo presentes como "
-            "un control que impide radicar."
+            "Aprueba el borrador. Es REQUISITO para radicarlo: un borrador sin "
+            "aprobar no se puede radicar. Es el paso previo al acto que consume el "
+            "número."
         ),
         method="POST",
         path="/api/v1/borradores/{borrador_id}/aprobar",
@@ -1555,6 +1554,12 @@ CATALOG: tuple[Tool, ...] = (
         # El borrador aprobado se sigue editando (`_require_editable` solo cierra
         # el estado `radicado`), así que la marca se pone y se quita de hecho al
         # seguir trabajando: no es un acto irreversible.
+        #
+        # La descripción decía que la aprobación NO era requisito para radicar, y
+        # era cierto: el servicio solo comprobaba que no estuviera ya radicado.
+        # Se cerró ese hueco —la exigencia vivía únicamente en el navegador— y
+        # con él se corrige aquí la frase, que si no quedaría afirmando lo
+        # contrario de lo que hace el backend.
         destructive=False,
         epic="E01",
         operacion="Aprobar un borrador de salida",
@@ -1565,8 +1570,8 @@ CATALOG: tuple[Tool, ...] = (
         name="radicar_borrador",
         description=(
             "Convierte el borrador en un radicado real: le asigna número, que es "
-            "INMUTABLE y no se reutiliza. A partir de aquí el borrador ya no se edita. "
-            "Es el acto que cierra la redacción, no un guardado más."
+            "INMUTABLE y no se reutiliza. Exige que el borrador esté APROBADO. A partir "
+            "de aquí ya no se edita: es el acto que cierra la redacción, no un guardado más."
         ),
         method="POST",
         path="/api/v1/borradores/{borrador_id}/radicar",

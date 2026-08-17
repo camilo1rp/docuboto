@@ -306,3 +306,34 @@ async def test_radicar_borrador_con_permiso_201(client_with_conn) -> None:
     )
     assert resp.status_code == 201
     assert "tracking_number" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_radicar_un_borrador_sin_aprobar_es_409(client_with_conn) -> None:
+    """La aprobación era un control que solo vivía en el navegador.
+
+    El ciclo documentado es crear → editar → aprobar → radicar, y la pantalla de
+    borradores lo respeta (`canRadicar = estado === "aprobado"`). El servicio, en
+    cambio, solo comprobaba que no estuviera YA radicado: un `POST` directo a
+    esta ruta saltaba la aprobación y consumía el número igualmente. Un control
+    que vive solo en el cliente no es un control — el cliente es la parte hostil
+    (D-05).
+
+    Se comprueba que **no se asigna número**: el daño de este hueco no es el
+    estado de una fila, es un número de radicado inmutable consumido por un
+    documento que nadie aprobó.
+    """
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True  # permiso concedido: no es lo que se prueba
+    mock_conn.fetchrow.side_effect = [_borrador_row(id=bid, doc_type="S", estado="borrador")]
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "borrador_sin_aprobar"
+    # Nada de la secuencia de radicación llegó a ejecutarse.
+    assert mock_conn.fetchrow.await_count == 1

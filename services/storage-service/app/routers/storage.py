@@ -23,6 +23,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.core.clearance import require_permission
 from app.core.config import settings
 from app.core.database import get_db_conn
 from app.core.internal_auth import require_internal_token as _require_internal_token
@@ -104,6 +105,21 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
     response_model=FileResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload a file",
+    # ÚNICO endpoint de storage-service que el gateway expone al exterior (los
+    # que sirven bytes, URL o metadata están sellados con `X-Internal-Token`,
+    # D-02) y **no tenía ningún gate**: cualquier autenticado de la entidad
+    # subía archivos al almacén, con el coste y la superficie que eso abre.
+    #
+    # `PERM_RADI` es el permiso, no uno inventado: el único consumidor es el
+    # flujo de radicación (`frontend/src/routes/(app)/radicar/api/storage`), que
+    # sube el anexo antes de radicar. Quien radica ya tiene este permiso, así que
+    # el gate **no deja fuera a nadie que hoy trabaje** — que es la comprobación
+    # que hay que hacer antes de encender un control que estaba apagado.
+    #
+    # Nivel 1 a propósito: `POST /documents` exige `PERM_RADI` con el mismo
+    # nivel, y pedir aquí más que en el acto que este archivo acompaña sería
+    # exigir de más — el defecto simétrico, que además falla en silencio.
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def upload_file(
     file: UploadFile,

@@ -520,7 +520,21 @@ async def set_disposition(
     "/{document_id}/security-level",
     response_model=ReclassifyResponse,
     summary="Reclassify the security level of a radicado (E08, RF-SEG-08, Ley 594 art. 28)",
-    dependencies=[Depends(require_permission("PERM_RECLASIFICAR"))],
+    # `min_crud=3`, no el default 1. Reclasificar decide el RÉGIMEN DE ACCESO de
+    # un documento oficial —sube o baja su reserva— y eso es un acto de
+    # escritura, no de consulta. Con el default, tener `PERM_RECLASIFICAR` para
+    # LEER bastaba para desclasificar un radicado reservado.
+    #
+    # Sus dos gemelos ya lo tenían y su comentario dice por qué: `publicacion`
+    # exige el mismo permiso con nivel 3 porque «publicar y clasificar son las
+    # dos caras de la misma competencia sobre el régimen de acceso», y
+    # `disposition` lo corrigió antes por la misma razón. Este era el tercer
+    # hermano, y el único que se quedó en 1.
+    #
+    # No deja fuera a nadie que hoy trabaje: quien puede publicar ya necesita
+    # nivel 3 sobre este mismo permiso, así que la competencia real ya estaba
+    # repartida a ese nivel.
+    dependencies=[Depends(require_permission("PERM_RECLASIFICAR", min_crud=3))],
 )
 async def reclassify_security_level(
     document_id: uuid.UUID,

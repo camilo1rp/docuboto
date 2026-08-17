@@ -47,6 +47,7 @@ from tests.conftest import (
     FILE_ID,
     INTERNAL_HEADERS,
     TENANT_HEADERS,
+    conceder_permisos,
     make_file_record,
     minio_get_object_stream,
 )
@@ -66,6 +67,7 @@ async def test_upload_file_success(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     record = make_file_record(file_id=FILE_ID)
 
     # find_by_sha256 returns None (no duplicate), then create returns the record
@@ -99,6 +101,7 @@ async def test_upload_file_deduplication(
 ) -> None:
     """Uploading the same content twice returns the existing record with 200."""
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     existing = make_file_record(file_id=FILE_ID)
 
     # find_by_sha256 returns the existing record → short-circuit, no MinIO call
@@ -123,12 +126,21 @@ async def test_upload_file_deduplication(
 
 @pytest.mark.asyncio
 async def test_upload_missing_tenant_header(client: AsyncClient) -> None:
+    """Sin tenant ya no es 400 sino 403, y el cambio se DECLARA.
+
+    `/upload` pasó a exigir `PERM_RADI`, y el gate corre antes que el
+    `_require_tenant` del propio endpoint: sin `X-Tenant-Slug` no hay schema
+    contra el que resolver el permiso, así que niega. El resultado sigue siendo
+    el correcto —la petición no se atiende— y es además el mismo código que
+    devuelven los demás endpoints gateados de este servicio ante la misma
+    falta, en vez de dos respuestas distintas para la misma causa.
+    """
     response = await client.post(
         "/api/v1/storage/upload",
         files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
         # no X-Tenant-Slug header
     )
-    assert response.status_code == 400
+    assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +199,7 @@ async def test_get_presigned_url(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     record = make_file_record(file_id=FILE_ID)
     mock_conn.fetchrow.return_value = record
     mock_minio.presigned_get_object.return_value = "http://minio/presigned-url"
@@ -214,6 +227,7 @@ async def test_get_file_content_streams_bytes(
 ) -> None:
     """El mediador (document-service) pide los BYTES, no una presigned URL."""
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     record = make_file_record(file_id=FILE_ID)
     mock_conn.fetchrow.return_value = record
     mock_minio.get_object = minio_get_object_stream(_FILE_CONTENT)
@@ -265,6 +279,7 @@ async def test_delete_file_soft_deletes_not_purges(
       #5 INSERT INTO public.audit_log inside audit.append transaction
     """
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     record = make_file_record(file_id=FILE_ID)
 
     mock_conn.fetchrow.return_value = record
@@ -288,6 +303,7 @@ async def test_delete_file(
 ) -> None:
     """Alias kept for backward compatibility; delegates to the canonical test above."""
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     record = make_file_record(file_id=FILE_ID)
 
     mock_conn.fetchrow.return_value = record
@@ -360,6 +376,7 @@ async def test_upload_unsupported_format_is_415(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
     response = await client.post(
         "/api/v1/storage/upload",
@@ -384,6 +401,7 @@ async def test_verify_integrity_ok(
     import hashlib
 
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     content = b"verified content"
     real_sha = hashlib.sha256(content).hexdigest()
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID, sha256=real_sha)
@@ -407,6 +425,7 @@ async def test_verify_integrity_mismatch_is_409(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     # El registro dice "a"*64 pero el objeto en MinIO es otro contenido.
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID, sha256="a" * 64)
 
@@ -446,6 +465,7 @@ async def test_replace_creates_new_version(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     current = make_file_record(file_id=FILE_ID)  # v1, sha = "a"*64
     v2 = make_file_record(file_id=uuid.uuid4(), version=2, root_id=FILE_ID, replaces_id=FILE_ID)
     # get_by_id → current; create_version INSERT RETURNING → v2
@@ -469,6 +489,7 @@ async def test_replace_same_content_no_new_version(
     import hashlib
 
     client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
     content = b"contenido identico"
     sha = hashlib.sha256(content).hexdigest()
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID, sha256=sha)
@@ -568,7 +589,8 @@ async def test_upload_por_encima_del_tope_es_413(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, mock_minio = client_with_conn
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)  # el tope es lo que se prueba, no el gate
     monkeypatch.setattr(cfg_module.settings, "max_upload_bytes", 1024)
 
     response = await client.post(
@@ -590,6 +612,7 @@ async def test_upload_dentro_del_tope_sigue_funcionando(
 ) -> None:
     """Control positivo: sin esto, un 413 constante pasaría el test de arriba."""
     client, mock_conn, _ = client_with_conn
+    conceder_permisos(mock_conn)  # el tope es lo que se prueba, no el gate
     monkeypatch.setattr(cfg_module.settings, "max_upload_bytes", 1024)
     # find_by_sha256 → None (sin duplicado), luego create devuelve el registro.
     mock_conn.fetchrow.side_effect = [None, make_file_record(file_id=FILE_ID)]
@@ -601,3 +624,32 @@ async def test_upload_dentro_del_tope_sigue_funcionando(
     )
 
     assert response.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_upload_exige_permiso_de_radicacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """El control negativo del gate que `/upload` no tenía.
+
+    Era el ÚNICO endpoint de este servicio que el gateway expone al exterior
+    —los que sirven bytes, URL o metadata están sellados con `X-Internal-Token`
+    (D-02)— y no pedía nada: cualquier autenticado de la entidad subía archivos
+    al almacén.
+
+    Se comprueba que la denegación ocurre **antes de tocar MinIO**: un gate que
+    rechazara después de haber subido el objeto habría dejado el fichero en el
+    bucket y solo se habría notado en la factura de almacenamiento.
+    """
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn, conceder=False)
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["detail"] == "Se requiere el permiso PERM_RADI"
+    mock_minio.put_object.assert_not_called()
