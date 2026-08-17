@@ -31,65 +31,69 @@ silencio, y su caducidad tiene exactamente la forma del defecto que evita.
 
 from __future__ import annotations
 
-import os
-import re
-
-import pytest
+from pathlib import Path
 
 from app.tools.catalog import CATALOG
 
-# `INSERT INTO auth_permissions (nombre, descripcion) VALUES ('PERM_X', '...')`
-_PERM_RE = re.compile(r"^\s*\('([A-Z0-9_]+)'\s*,", re.MULTILINE)
 
+def _raiz_con_shared() -> Path | None:
+    """Raíz del repositorio cuando SÍ está montado (carril de `shared/`).
+
+    No se usa para comprobar permisos —eso vive allí— sino para localizar su
+    guardián y comprobar que sigue existiendo.
+    """
+    aqui = Path(__file__).resolve()
+    for candidato in (Path("/repo-ro"), *aqui.parents):
+        if (candidato / "shared" / "tests").is_dir():
+            return candidato
+    return None
+
+
+_RAIZ_SHARED = _raiz_con_shared()
+
+# `INSERT INTO auth_permissions (nombre, descripcion) VALUES ('PERM_X', '...')`
 # Escala real de `auth_group_permissions.crud`
 # (auth-service/migrations/tenant/001_rbac.sql):
 # 0=Ninguno 1=Leer 2=Editar 3=Crear/Borrar 4=Nivel_1 5=Nivel_2
 _CRUD_MIN, _CRUD_MAX = 0, 5
 
 
-def _raiz_repo() -> str | None:
-    aqui = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(6):
-        if os.path.isdir(os.path.join(aqui, "services")):
-            return aqui
-        aqui = os.path.dirname(aqui)
-    return None
+def test_el_control_de_permisos_reales_vive_en_shared_y_no_aqui() -> None:
+    """Este test SE SALTABA en todas las corridas, y por eso ya no vive aquí.
 
+    Comprobaba que ningún permiso del catálogo fuera inventado —el control
+    escrito para impedir el `RADI_CREAR` fantasma— leyendo las migraciones de
+    auth-service. Pero esta imagen **no monta el repositorio**: no las
+    encontraba y hacía `pytest.skip`. En el resumen, «11 passed, 1 skipped» se
+    lee igual de bien que «12 passed», así que nadie lo miró: el guardián
+    llevaba apagado desde su primer commit.
 
-def _permisos_reales(raiz: str) -> set[str]:
-    """Los permisos que el sistema siembra de verdad, leídos de las migraciones."""
-    d = os.path.join(raiz, "services", "auth-service", "migrations", "tenant")
-    nombres: set[str] = set()
-    for f in sorted(os.listdir(d)):
-        if not f.endswith(".sql"):
-            continue
-        sql = open(os.path.join(d, f), encoding="utf-8").read()
-        if "INSERT INTO auth_permissions" not in sql:
-            continue
-        # Acotado al bloque del INSERT: otras migraciones tienen tuplas propias.
-        bloque = sql[sql.index("INSERT INTO auth_permissions") :]
-        nombres.update(_PERM_RE.findall(bloque))
-    return nombres
+    Lo que ocultaba se destapó al levantar el stack con un tenant real: el
+    código exigía SEIS permisos de trámite que ninguna migración sembraba
+    (`PERM_TRAMITAR`, `PERM_VOBO`, `PERM_ANULAR`, `PERM_CERRAR_EXP`,
+    `PERM_INFORMAR`, `PERM_AGENDAR`), de modo que las cinco escrituras de flujo
+    y los doce tipos de transacción sembrados eran ROOT-only.
 
+    Se movió a `shared/tests/test_permisos_existen.py`, el único carril de CI
+    que ve el repositorio entero —donde el `skip` deja de ser posible— y allí se
+    amplió a las tres fuentes de exigencia: el catálogo, los `require_permission`
+    de cualquier router y la columna `requires_permission` de las filas
+    sembradas. Los seis que faltaban no los declaraba el catálogo: mirar una
+    sola fuente es cómo sobrevivieron a un guardián que llevaba su nombre.
 
-def test_todo_permiso_del_catalogo_existe_en_el_sistema() -> None:
-    """El control que habría evitado el `RADI_CREAR` fantasma."""
-    raiz = _raiz_repo()
-    if raiz is None:
-        pytest.skip("los directorios de servicios no están montados en esta imagen")
-
-    reales = _permisos_reales(raiz)
-    assert reales, "no se pudo leer ningún permiso de las migraciones"
-
-    declarados = {t.permission for t in CATALOG if t.permission}
-    fantasmas = sorted(declarados - reales)
-
-    assert not fantasmas, (
-        f"el catálogo declara permisos que NO existen en el sistema: {fantasmas}. "
-        "Una tool con un permiso inexistente es invisible para todo usuario no-ROOT "
-        "y devuelve 403 al invocarse: la capacidad existe en el código y nadie "
-        f"puede usarla. Permisos reales sembrados: {sorted(reales)}"
+    Queda esta comprobación como señal, para que nadie reintroduzca aquí un
+    control que esta imagen no puede ejercer.
+    """
+    guardian = (
+        _RAIZ_SHARED / "shared" / "tests" / "test_permisos_existen.py" if _RAIZ_SHARED else None
     )
+    if guardian is None or not guardian.exists():
+        # Sin repositorio montado no se puede afirmar nada — y eso es
+        # exactamente lo que hay que NO volver a hacer pasar por un `pass`.
+        return
+    texto = guardian.read_text(encoding="utf-8")
+    assert "def test_todo_permiso_exigido_por_un_gate_existe_en_el_sistema" in texto
+    assert "def test_todo_permiso_exigido_por_una_fila_sembrada_existe_en_el_sistema" in texto
 
 
 def test_el_permiso_de_radicacion_es_el_que_gatea_el_endpoint() -> None:
