@@ -56,6 +56,25 @@ class AnulacionRepository:
             max_clearance,
         )
 
+    async def radicado_estado_y_tipo(
+        self, radicado_id: uuid.UUID, max_clearance: int
+    ) -> tuple[str, str] | None:
+        """Estado Y tipo en una sola lectura, para decidir si el acto aplica.
+
+        El tipo hace falta porque una Entrada NO se anula (ver
+        `app/core/reglas_tipo.py`) y esa comprobación es previa a cualquier
+        consideración de permiso. Se lee junto al estado y no en una consulta
+        aparte: son dos datos de la misma fila y el no-read-up
+        (`nivel_seguridad <= $2`) tiene que aplicarse igual a los dos — con dos
+        lecturas separadas sería una repetición fácil de olvidar en una de ellas.
+        """
+        fila = await self._conn.fetchrow(
+            "SELECT status, doc_type FROM radicados WHERE id = $1 AND nivel_seguridad <= $2",
+            radicado_id,
+            max_clearance,
+        )
+        return (fila["status"], fila["doc_type"]) if fila is not None else None
+
     async def get_tracking_number(self, radicado_id: uuid.UUID) -> str | None:
         """Usado tras aprobar la anulación para publicar `document.radicado.annulled`
         (el sobre del evento, gemelo de `_emit_created`, necesita el tracking_number

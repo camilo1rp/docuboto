@@ -105,11 +105,17 @@ async def test_solicitar_audita_con_actor_causal_y_tracking(client_with_conn) ->
     client, mock_conn = client_with_conn
     rid = uuid.uuid4()
     tracking = "2026-DEMO-E-000042"
-    # Un solo `fetchval.return_value` (patrón de `test_anulacion.py`): sirve tanto
-    # al gate RBAC (truthy) como a `radicado_status` (!= "anulado"/None) como a
-    # `get_tracking_number` — el mismo valor es válido para los tres usos.
+    # `fetchval` sirve al gate RBAC (truthy) y a `get_tracking_number`. El estado
+    # del radicado ya NO sale de ahí: se lee con `fetchrow` junto a su TIPO,
+    # porque una Entrada no se anula (`app/core/reglas_tipo.py`) y esa
+    # comprobación necesita el tipo. Se declara "S": el caso de la Entrada tiene
+    # su propio test.
     mock_conn.fetchval.return_value = tracking
-    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "S"},
+        _anulacion_row(radicado_id=rid),
+    ]
 
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion",
@@ -215,7 +221,11 @@ async def test_solicitar_no_sobrevive_a_fallo_de_auditoria(client_with_conn) -> 
     _client, mock_conn = client_with_conn  # activa los dependency_overrides
     rid = uuid.uuid4()
     mock_conn.fetchval.return_value = "2026-DEMO-E-000050"
-    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "S"},
+        _anulacion_row(radicado_id=rid),
+    ]
 
     with patch(
         "app.services.anulacion_service.audit.append",

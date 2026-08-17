@@ -40,6 +40,51 @@ variables:
 #     del repositorio, así que salían `skipped` en silencio.
 # ═════════════════════════════════════════════════════════════════════════════
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  POLÍTICA DE COSTE — qué corre solo y qué se pide a mano (2026-08-17)
+#
+#  El grupo agotó 391 de sus 400 minutos mensuales de runner compartido. La
+#  causa no era un job desbocado: se commitea DIRECTO a `main`, así que cada
+#  push disparaba la suite completa MÁS la construcción de las once imágenes
+#  Docker MÁS la publicación del sitio MÁS un job de Claude que regenera
+#  documentación. Unos veinte minutos por commit.
+#
+#  Qué queda AUTOMÁTICO en cada push, y por qué solo esto:
+#
+#    * `lint` y `test-unit-shared`. Son baratos y son los que **cruzan
+#      servicios**: el gate de tipos de los once, y los guardianes de `shared/`
+#      —permisos que existen, rutas alcanzables, catálogo contra gates— que
+#      NO se pueden ejercer bien desde el contenedor de un solo servicio. De
+#      hecho el guardián de permisos llevaba meses haciendo `skip` justo por
+#      vivir donde no veía el repositorio, y eso escondió seis permisos que
+#      nadie podía tener. Estos dos no se tocan.
+#
+#  Todo lo demás pasa a `when: manual`: corre solo en **tags** (una versión) y
+#  en **merge requests**, y en cualquier otro caso se queda esperando a que una
+#  persona lo pulse.
+#
+#  **Por qué `manual` y NO `rules:changes`.** Filtrar por rutas ahorraría lo
+#  mismo y es la opción obvia, pero un filtro mal escrito deja de correr un
+#  gate **sin que nadie se entere** — exactamente el modo de fallo del `skip`
+#  de arriba. Un job manual se queda A LA VISTA en la interfaz, sin ejecutar y
+#  diciéndolo. Si el ahorro va a costar cobertura, que al menos se vea.
+#
+#  Lo que esto NO significa: que la suite completa sobre. Corre entera en local
+#  y en Docker antes de cada commit. Lo que se retira es la REPETICIÓN
+#  automática, no la comprobación — y sigue habiendo un botón para pedirla
+#  sobre una máquina limpia, que es lo que caza una imagen local sin
+#  reconstruir.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Corre solo en una versión (tag) o en un merge request; si no, a un clic.
+.bajo_peticion: &bajo_peticion
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: manual
+      allow_failure: true
+
 # ─── Stage: Validate ───────────────────────────────────────────────────────────
 lint:
   stage: validate
@@ -70,6 +115,7 @@ lint:
 # Un job por servicio: un fallo señala QUÉ servicio, y los once corren en
 # paralelo en vez de en un bucle secuencial que aborta en el primero.
 test-unit:
+  <<: *bajo_peticion
   stage: test
   image: python:3.11-slim
   interruptible: true
@@ -132,6 +178,7 @@ test-unit-shared:
       - .cache/pip
 
 test-integration:
+  <<: *bajo_peticion
   stage: test
   image: python:3.11-slim
   interruptible: true
@@ -180,6 +227,7 @@ test-integration:
 # No tenía NI UN job. `svelte-check` y el build son los que atrapan los errores
 # que el navegador solo enseña en la pantalla concreta que nadie abrió.
 test-frontend:
+  <<: *bajo_peticion
   stage: test
   image: node:22-alpine
   interruptible: true
@@ -207,6 +255,7 @@ test-frontend:
 # proceso EXTERNO de verdad -- sin esto, el subprocess quedaría sin ejercitar
 # en CI pese a operar sobre input adversarial.
 storage-verapdf-subprocess:
+  <<: *bajo_peticion
   stage: test
   image: python:3.11-slim
   interruptible: true
@@ -280,6 +329,15 @@ claude-review:
 # Claude genera la documentación y abre un Merge Request para revisión humana.
 # NO hace push directo a main: usa push options de GitLab para crear el MR.
 claude-update-docs:
+  # A PETICIÓN. Este job regenera documentación y abre un MR, pero la
+  # documentación de este repositorio se escribe A MANO en el mismo commit que
+  # el código —changelog, api.md, roadmap, ADRs—, así que en cada push estaba
+  # rehaciendo un trabajo que ya venía hecho, gastando minutos de runner y API
+  # de Anthropic. Se conserva porque sigue siendo útil como red para un cambio
+  # grande que se haya documentado a la ligera; deja de correr por reflejo.
+  rules:
+    - when: manual
+      allow_failure: true
   stage: docs
   image: node:20-slim
   interruptible: true
@@ -394,8 +452,16 @@ build-images:
                                           -t "$CI_REGISTRY_IMAGE/frontend:latest" frontend
       docker push "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA"
       docker push "$CI_REGISTRY_IMAGE/frontend:latest"
+  # Solo en un TAG, no en cada commit de `main`. Su razón de ser —que exista
+  # «la versión anterior» a la que volver— es una propiedad de las VERSIONES,
+  # no de los commits: construir once imágenes en cada push producía decenas de
+  # etiquetas que nadie iba a desplegar nunca, y era el job más caro del
+  # pipeline con diferencia. Queda además el botón manual para cuando haga
+  # falta una imagen de un commit concreto.
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: $CI_COMMIT_TAG
+    - when: manual
+      allow_failure: true
 
 # ─── Stage: Build ─────────────────────────────────────────────────────────────
 build-site:
@@ -410,21 +476,42 @@ build-site:
     paths:
       - public
     expire_in: 1 hour
-  only:
-    - main
+  # A PETICIÓN: la documentación se publica cuando se decide publicarla, no en
+  # cada commit. Este es el botón; `pages` cuelga de él por `needs`, así que
+  # pulsar aquí publica y no pulsar no publica — sin dos interruptores que
+  # haya que acordarse de accionar en orden.
+  rules:
+    - if: $CI_COMMIT_TAG
+    - when: manual
+      allow_failure: true
 
 # ─── Stage: Deploy ────────────────────────────────────────────────────────────
 pages:
   stage: deploy
-  dependencies:
+  # `needs` y no `dependencies`: si `build-site` no se pulsó, esto NO corre en
+  # vez de correr y publicar un directorio vacío. La diferencia importa — con
+  # `dependencies` a secas, un `public/` ausente se publica igual y el sitio se
+  # queda en blanco sin que nada falle.
+  needs:
     - build-site
   script:
+    # Guarda contra el ÚNICO fallo grave de este job: publicar un `public/`
+    # vacío ENCIMA de la documentación buena. `needs` debería impedir que esto
+    # corra si `build-site` no se pulsó, pero ese comportamiento depende de
+    # cómo trate GitLab un `needs` sobre un job manual con `allow_failure`, y
+    # una publicación destructiva no puede descansar en una semántica sutil.
+    # Con esto, el peor caso es un job en rojo — no un sitio en blanco.
+    - |
+      if [ ! -s public/index.html ]; then
+        echo "ABORTADO: no hay sitio construido (falta public/index.html)."
+        echo "Pulsa primero 'build-site'. NO se publica nada: la documentación"
+        echo "actualmente en línea se queda como está."
+        exit 1
+      fi
     - echo "Publishing OrpycaMCP docs to GitLab Pages..."
   artifacts:
     paths:
       - public
-  only:
-    - main
 
 # ─── Deploy: avisar al sitio para que republique la documentación ─────────────
 # El sitio orpyca.com publica ESTA documentación en orpyca.com/docs: su pipeline
@@ -432,8 +519,11 @@ pages:
 # documentación vive aquí y el sitio está en otro proyecto, un commit nuestro no
 # dispara nada allá: hay que avisarle explícitamente.
 #
-# Solo se dispara cuando cambia algo que el sitio publica — la documentación o la
-# configuración de MkDocs —, no en cada commit de código.
+# A PETICIÓN, igual que `build-site`. Antes se disparaba solo con que cambiara
+# `docs/**`, y esta documentación se toca en CASI TODOS los commits (el changelog
+# entra con el código, por convención del proyecto), así que en la práctica corría
+# siempre. Publicar el sitio es una decisión, no una consecuencia de haber tocado
+# un fichero.
 #
 # Requiere dos variables en Settings → CI/CD → Variables de ESTE proyecto:
 #   ORPYCAWEB_PROJECT_ID    → id numérico del proyecto del sitio en GitLab
@@ -448,10 +538,9 @@ notify-website-docs:
   image: curlimages/curl:latest
   interruptible: true
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - docs/**/*
-        - mkdocs.yml
+    - if: $CI_COMMIT_TAG
+    - when: manual
+      allow_failure: true
   script:
     - |
       if [ -z "$ORPYCAWEB_TRIGGER_TOKEN" ] || [ -z "$ORPYCAWEB_PROJECT_ID" ]; then

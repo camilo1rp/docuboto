@@ -159,3 +159,70 @@ def test_el_control_ve_de_verdad_las_tres_fuentes() -> None:
     assert permisos_exigidos_por_los_datos_sembrados(), (
         "ninguna fila sembrada declara permiso: el barrido de migraciones se rompió"
     )
+
+
+# Permisos SEMBRADOS que hoy no exige nadie, declarados a mano y vigilados abajo.
+#
+# Un permiso otorgable que no restringe nada es una promesa falsa: la entidad lo
+# concede creyendo que acota a un funcionario, y no acota. La migración 018
+# corrige su DESCRIPCIÓN para que quien va a concederlo lo lea; esta lista es la
+# que permite comprobar que esa corrección sigue estando al día.
+#
+# `USUA_PERM_ROOT` entra aquí porque tampoco aparece en ningún
+# `require_permission` — pero por un motivo legítimo y distinto: es el bypass, se
+# comprueba con `is_root`. Se declara junto a los demás para que la comparación
+# de abajo sea exacta y no haya que llevar dos listas.
+_INERTES_DECLARADOS = {
+    "USUA_PERM_ROOT",  # legítimo: bypass, no se comprueba con require_permission
+    "PERM_APRO_ANULAR",
+    "PERM_BORRAR_ANEXO",
+    "PERM_DESCARGAEXP",
+    "PERM_NRR",
+    "PERM_RADI_ENTRADA",
+    "PERM_RADI_INTERNO",
+    "PERM_TIPIF_ANEXO",
+}
+
+
+def test_la_lista_de_permisos_inertes_esta_al_dia() -> None:
+    """Una lista a mano solo es segura si algo deriva la verdad y la compara.
+
+    Este test cierra el barrido en el sentido INVERSO al de arriba. Aquellos
+    persiguen un permiso EXIGIDO que nadie siembra —el gate que nadie puede
+    satisfacer—; este persigue un permiso SEMBRADO que nadie exige: el control
+    que una entidad concede creyendo que restringe, y no restringe. De los 26
+    sembrados había NUEVE así, y solo uno era legítimo.
+
+    Falla en los dos sentidos, y los dos importan:
+
+    * Si alguien **cablea** uno de estos permisos a un gate, hay que sacarlo de
+      la lista y corregir su descripción, que dice «RESERVADO — hoy NO restringe
+      nada» y pasaría a ser falsa justo cuando empieza a restringir.
+    * Si aparece un permiso sembrado **nuevo** que nadie exige, hay que
+      declararlo aquí y decirlo en su descripción, en vez de dejar otra promesa
+      vacía en el catálogo que ve el administrador.
+
+    El caso que motivó todo esto fue `SGD_PERM_ESTADISTICA`: estaba en este
+    grupo, la interfaz lo honraba y el backend no. Ya lo exigen los dos
+    endpoints de reportes, así que NO figura en la lista — y si alguien
+    revirtiera ese gate, este test lo diría.
+    """
+    sembrados = permisos_sembrados()
+    exigidos = set(permisos_exigidos_por_los_gates()) | set(
+        permisos_exigidos_por_los_datos_sembrados()
+    )
+    inertes_reales = sembrados - exigidos
+
+    sobran = sorted(_INERTES_DECLARADOS - inertes_reales)
+    faltan = sorted(inertes_reales - _INERTES_DECLARADOS)
+
+    assert not sobran, (
+        "estos permisos YA están cableados a un gate, así que sobran de la lista "
+        "de inertes; hay que quitarlos de aquí y corregir su descripción en una "
+        f"migración, que sigue diciendo que no restringen nada: {sobran}"
+    )
+    assert not faltan, (
+        "estos permisos se siembran y NO los exige nadie: se pueden conceder "
+        "creyendo que restringen algo. Decláralos aquí y di en su descripción "
+        f"que no restringen, o cabléalos a su gate: {faltan}"
+    )

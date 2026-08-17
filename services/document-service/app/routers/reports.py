@@ -58,7 +58,28 @@ async def _build_summary(
     )
 
 
-@router.get("/radicados", response_model=ReportSummary)
+# `SGD_PERM_ESTADISTICA` era un control que vivía SOLO en el navegador.
+#
+# El permiso está sembrado desde la migración 004 y la interfaz lo honra: el
+# menú «Reportes» y la sección de métricas del panel se muestran solo a quien lo
+# tiene (`SidebarNav`). Pero estos dos endpoints no lo exigían, así que cualquier
+# autenticado de la entidad podía pedirlos directamente. Una entidad que lo
+# concediera a unos pocos creía estar acotando quién ve sus estadísticas de
+# gestión documental, y no lo estaba.
+#
+# Es el mismo patrón que apareció hoy en `radicar_borrador` (la aprobación la
+# exigía la pantalla y no el servicio): el cliente es la parte hostil, así que un
+# control que solo él aplica no es un control.
+#
+# Los dos endpoints del índice de clasificados de más abajo ya exigen
+# `PERM_RECLASIFICAR`: no se tocan.
+
+
+@router.get(
+    "/radicados",
+    response_model=ReportSummary,
+    dependencies=[Depends(require_permission("SGD_PERM_ESTADISTICA"))],
+)
 async def radicado_report(
     date_from: date | None = Query(None, description="registered_at >= (ISO date)"),
     date_to: date | None = Query(None, description="registered_at <= (ISO date)"),
@@ -68,7 +89,11 @@ async def radicado_report(
     return await _build_summary(conn, date_from, date_to)
 
 
-@router.get("/radicados.csv", summary="Export del resumen estadístico en CSV (AGN)")
+@router.get(
+    "/radicados.csv",
+    summary="Export del resumen estadístico en CSV (AGN)",
+    dependencies=[Depends(require_permission("SGD_PERM_ESTADISTICA"))],
+)
 async def radicado_report_csv(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),

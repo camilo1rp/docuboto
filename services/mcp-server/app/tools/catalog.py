@@ -1678,12 +1678,18 @@ CATALOG: tuple[Tool, ...] = (
         ),
         method="GET",
         path="/api/v1/reports/radicados",
-        # El endpoint no exige permiso atómico y devuelve SOLO agregados: ni
-        # número de radicado, ni asunto, ni remitente. Se expone tal cual y con
-        # esa advertencia en la descripción, para que el modelo no lo use como
-        # sustituto de una búsqueda y presente un conteo como si fuera un
-        # inventario.
-        permission=None,
+        # `SGD_PERM_ESTADISTICA`, el permiso que la interfaz ya usaba para
+        # mostrar el menú «Reportes» y que el endpoint no exigía. Al gatearlo,
+        # `shared/tests/test_permisos_declarados.py` puso esta entrada en rojo
+        # sola —declaraba «sin permiso» sobre un endpoint que ahora sí lo pide—,
+        # que es exactamente para lo que existe ese guardián.
+        #
+        # Devuelve SOLO agregados: ni número de radicado, ni asunto, ni
+        # remitente. La advertencia sigue en la descripción para que el modelo no
+        # lo use como sustituto de una búsqueda y presente un conteo como si
+        # fuera un inventario.
+        permission="SGD_PERM_ESTADISTICA",
+        min_crud=1,
         write=False,
         epic="E09",
         operacion="Ver el resumen estadístico de radicación",

@@ -57,8 +57,13 @@ def _anulacion_row(**kw) -> dict:
 async def test_solicitar_anulacion(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     rid = uuid.uuid4()
-    mock_conn.fetchval.return_value = "registered"  # radicado_status → vigente
-    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+    # `radicado_estado_y_tipo` (fetchrow) + la fila de la solicitud. El tipo es
+    # "S": una Entrada NO se anula, y ese caso tiene su propio test.
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "S"},
+        _anulacion_row(radicado_id=rid),
+    ]
 
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion",
@@ -72,7 +77,10 @@ async def test_solicitar_anulacion(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_solicitar_sobre_anulado_409(client_with_conn) -> None:
     client, mock_conn = client_with_conn
-    mock_conn.fetchval.return_value = "anulado"
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "anulado", "doc_type": "S"},
+    ]
     resp = await client.post(
         f"/api/v1/documents/{uuid.uuid4()}/anulacion",
         json={"causal": "ANU-DUP"},
@@ -137,11 +145,15 @@ async def test_solicitar_sin_permiso_403(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_solicitar_con_permiso_201(client_with_conn) -> None:
-    """fetchval truthy → permission ok; fetchrow → INSERT anulacion."""
+    """fetchval truthy → permission ok; fetchrow → estado/tipo, luego INSERT."""
     client, mock_conn = client_with_conn
     rid = uuid.uuid4()
     mock_conn.fetchval.return_value = True  # permission granted
-    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "S"},
+        _anulacion_row(radicado_id=rid),
+    ]
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion",
         json={"causal": "ANU-ERR", "motivo": "Con permiso"},
@@ -246,8 +258,13 @@ async def test_solicitar_no_emite_evento(client_with_redis) -> None:
     """Solicitar (paso 1) tampoco cambia el estado del radicado: sin evento."""
     client, mock_conn, fake_redis = client_with_redis
     rid = uuid.uuid4()
-    mock_conn.fetchval.return_value = "registered"  # radicado_status → vigente
-    mock_conn.fetchrow.return_value = _anulacion_row(radicado_id=rid)
+    # `radicado_estado_y_tipo` (fetchrow) + la fila de la solicitud. El tipo es
+    # "S": una Entrada NO se anula, y ese caso tiene su propio test.
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "S"},
+        _anulacion_row(radicado_id=rid),
+    ]
 
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion",
@@ -283,3 +300,97 @@ async def test_aprobar_evento_best_effort_no_revierte_anulacion(client_with_redi
 
     assert resp.status_code == 200  # la anulación se aplicó pese al fallo de Redis
     assert resp.json()["estado"] == "aprobada"
+
+
+# ---------------------------------------------------------------------------
+# Reglas del TIPO documental — otro eje distinto del permiso
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_un_radicado_de_entrada_no_se_anula(client_with_conn) -> None:
+    """La regla es del DOCUMENTO, no del usuario.
+
+    Si un documento entró a la entidad, entró: ese es un hecho ocurrido, no una
+    decisión revisable. La anulación existe para lo que la entidad **produce**
+    —una Salida o un Interno emitidos por error—, donde sí cabe dejar sin efecto
+    lo emitido. Sobre una Entrada no hay nada que dejar sin efecto.
+
+    Hasta ahora el servicio solo miraba que el radicado existiera y no estuviera
+    ya anulado, así que con `PERM_SOL_ANULAR` se anulaba una Entrada igual. El
+    permiso responde a «¿está autorizada esta persona?»; esto responde a una
+    pregunta anterior: «¿es este acto posible sobre esta clase de documento?».
+
+    Se comprueba que **no se inserta la solicitud**: el daño no es el código de
+    respuesta, es que quede en la base una solicitud de anulación sobre un
+    documento que no admite ninguna.
+    """
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True  # permiso CONCEDIDO: no es el eje
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "E"},
+    ]
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion",
+        json={"causal": "ANU-ERR", "motivo": "Me equivoqué"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 409
+    cuerpo = resp.json()["detail"]
+    assert cuerpo["error"] == "acto_no_aplica_al_tipo"
+    # El mensaje explica POR QUÉ y ofrece la vía que sí existe: un 403 seco
+    # mandaría a la persona a pedir un permiso que no le iba a servir de nada.
+    assert "Entrada" in cuerpo["detail"]
+    # Solo se consumieron las DOS lecturas previas: ninguna inserción.
+    assert mock_conn.fetchrow.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ni_siquiera_ROOT_anula_una_entrada(client_with_conn) -> None:
+    """El bypass de ROOT es sobre AUTORIZACIÓN, no sobre lo que es posible.
+
+    ROOT sirve para permitir a quien no estaba permitido. No convierte en
+    posible un acto que sobre ese tipo de documento no existe — si lo hiciera,
+    la regla archivística dependería de con qué cuenta se entre.
+    """
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(max_level=3, is_root=True),  # ROOT
+        {"status": "registered", "doc_type": "E"},
+    ]
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion",
+        json={"causal": "ANU-ERR", "motivo": "Soy root"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "acto_no_aplica_al_tipo"
+
+
+@pytest.mark.asyncio
+async def test_una_salida_si_se_anula(client_with_conn) -> None:
+    """Control positivo, sin el cual una regla que negara SIEMPRE pasaría los dos
+    tests de arriba y dejaría la anulación inservible para todo el sistema."""
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        {"status": "registered", "doc_type": "S"},
+        _anulacion_row(radicado_id=rid),
+    ]
+
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion",
+        json={"causal": "ANU-ERR", "motivo": "Salida emitida por error"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 201

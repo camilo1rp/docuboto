@@ -38,6 +38,7 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit, events
 
+from app.core import reglas_tipo
 from app.repositories.anulacion_repository import AnulacionRepository
 from app.schemas.anulacion import (
     AnulacionDecision,
@@ -94,12 +95,20 @@ class AnulacionService:
         solicitado_por: uuid.UUID | None,
         max_clearance: int,
     ) -> AnulacionResponse:
-        estado_rad = await self._repo.radicado_status(radicado_id, max_clearance)
-        if estado_rad is None:
+        fila = await self._repo.radicado_estado_y_tipo(radicado_id, max_clearance)
+        if fila is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "document_not_found", "detail": str(radicado_id), "status": 404},
             )
+        estado_rad, tipo_rad = fila
+        # ANTES que el estado y que cualquier permiso: hay actos que sobre cierto
+        # tipo de documento no existen. Una Entrada no se anula —el documento
+        # entró, y eso no se deja sin efecto—, y eso no depende de lo que tenga
+        # concedido quien lo pide: ni ROOT lo salta, porque el bypass de ROOT es
+        # sobre autorización, no sobre lo que es posible. Ver
+        # `app/core/reglas_tipo.py`.
+        reglas_tipo.exigir("anular", tipo_rad)
         if estado_rad == "anulado":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

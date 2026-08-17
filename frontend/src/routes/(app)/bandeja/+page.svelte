@@ -968,6 +968,26 @@
 
   // T-08b: permisos para acciones de operador
   $: canAnular = $permissions.includes("PERM_SOL_ANULAR");
+
+  /**
+   * ¿Este radicado ADMITE anulación, con independencia de quién lo mire?
+   *
+   * Un radicado de Entrada no se anula: si el documento entró a la entidad,
+   * entró, y eso no se deja sin efecto. La anulación existe para lo que la
+   * entidad emite —Salida o Interno— donde sí cabe anular lo emitido.
+   *
+   * Es un eje DISTINTO del permiso: `canAnular` responde a «¿está autorizada
+   * esta persona?» y esto a «¿es posible sobre este documento?». Las dos tienen
+   * que cumplirse, y esta no la salta ni ROOT.
+   *
+   * La barrera de verdad está en el backend (`reglas_tipo.py`, 409
+   * `acto_no_aplica_al_tipo`). Esto es lo que evita OFRECER un botón que va a
+   * ser rechazado — el mismo criterio que la frase de las propuestas
+   * irreversibles: el servidor decide, la pantalla no promete de más.
+   *
+   * @param {{doc_type?: string}} d
+   */
+  const admiteAnulacion = (d) => d?.doc_type === "S" || d?.doc_type === "I";
   $: canDevolver = $permissions.includes("PERM_RADI");
   $: canResponder =
     $permissions.includes("PERM_RESPUESTA_VINCULADA") || $permissions.includes("PERM_RADI_SALIDA");
@@ -1270,7 +1290,7 @@
                         {/if}
                       {/if}
                       <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
-                      {#if canAnular && doc.status !== "closed" && doc.status !== "cancelled"}
+                      {#if canAnular && admiteAnulacion(doc) && doc.status !== "closed" && doc.status !== "cancelled"}
                         <button
                           class="action-btn action-btn--danger"
                           type="button"
@@ -1577,7 +1597,7 @@
           Cadena VoBo
         </Button>
       {/if}
-      {#if canAnular && selectedDoc.status !== "closed" && selectedDoc.status !== "cancelled"}
+      {#if canAnular && admiteAnulacion(selectedDoc) && selectedDoc.status !== "closed" && selectedDoc.status !== "cancelled"}
         <Button variant="danger" size="sm" disabled={actionLoading} on:click={openModalAnulacion}>
           <i class="fas fa-ban" aria-hidden="true"></i>
           Anular

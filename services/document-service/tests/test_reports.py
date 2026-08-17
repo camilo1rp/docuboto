@@ -68,3 +68,33 @@ async def test_radicado_report_csv(client_with_conn) -> None:
     assert "seccion,clave,valor" in text
     assert "tipo,E,5" in text
     assert "dependencia,Jurídica,5" in text
+
+
+@pytest.mark.asyncio
+async def test_los_reportes_exigen_el_permiso_de_estadistica(client_with_conn) -> None:
+    """El control que estaba SOLO en el navegador.
+
+    `SGD_PERM_ESTADISTICA` se siembra desde la migración 004 y la interfaz lo
+    honra —el menú «Reportes» y la sección de métricas del panel se muestran
+    solo a quien lo tiene—, pero estos endpoints no lo exigían: cualquier
+    autenticado de la entidad podía pedirlos directamente. Una entidad que lo
+    concediera a unos pocos creía estar acotando quién ve sus estadísticas de
+    gestión documental, y no lo estaba.
+
+    Tercera aparición hoy del mismo patrón, tras `radicar_borrador` y el gate
+    ausente de `/storage/upload`: el cliente es la parte hostil, así que un
+    control que solo él aplica no es un control.
+
+    Se comprueba que la denegación ocurre **antes de consultar la base**: el
+    resumen agrega sobre toda la tabla de radicados del tenant, así que un gate
+    que rechazara después habría hecho igualmente el trabajo de leerla.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None  # check_permission → denegado
+
+    for ruta in ("/api/v1/reports/radicados", "/api/v1/reports/radicados.csv"):
+        mock_conn.fetch.reset_mock()
+        resp = await client.get(ruta, headers=TENANT_HEADERS)
+        assert resp.status_code == 403, ruta
+        assert resp.json()["detail"]["error"] == "forbidden"
+        mock_conn.fetch.assert_not_awaited()
