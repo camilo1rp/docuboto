@@ -24,7 +24,13 @@ from app.main import app
 # en cada test porque el router resuelve la identidad de VERDAD desde que dejó de
 # leer `X-User-Permissions` —cabecera que nadie producía— y esa resolución es
 # ahora parte del camino de cualquier invocación.
-PERMISOS_POR_DEFECTO = ["PERM_RADI"]
+# `USUA_PERM_EXPEDIENTE` se suma al descubrirse que tres tools de expedientes
+# declaraban «sin permiso» sobre endpoints que sí lo exigen: con el catálogo
+# corregido, un usuario de pruebas que solo tuviera `PERM_RADI` deja de alcanzar
+# `consultar_expediente`/`indice_expediente`/`consultar_fuid`. Los dos tests que
+# se pusieron en rojo lo hicieron por la razón correcta — pasaban sobre la
+# premisa equivocada.
+PERMISOS_POR_DEFECTO = ["PERM_RADI", "USUA_PERM_EXPEDIENTE"]
 USER_ID = "11111111-1111-1111-1111-111111111111"
 
 

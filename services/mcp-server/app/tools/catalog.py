@@ -121,6 +121,17 @@ class Tool:
     # afirmación —«no es destructiva»— sin que nadie la hubiera hecho, que es la
     # forma en que un catálogo mantenido a mano se va volviendo mentira.
     destructive: bool | None = None
+    # El permiso REAL lo resuelve el servicio en tiempo de ejecución y no hay
+    # decorador que leer. Hoy solo `ejecutar_transaccion`: cada tipo de
+    # transacción declara el suyo en `transaction_types.requires_permission`, así
+    # que gatear la ruta con un permiso fijo rompería a quien tiene `PERM_VOBO`
+    # para dar vistos buenos y nada más.
+    #
+    # Marcarlo es la ÚNICA manera de que `shared/tests/test_permisos_declarados.py`
+    # acepte que el catálogo exija un permiso que el decorador no pide — y ese
+    # test comprueba además que la ruta marcada no tenga gate de decorador, para
+    # que la marca no sirva de interruptor para silenciar un hallazgo real.
+    permiso_en_runtime: bool = False
     epic: str = ""
     # Argumentos declarados. Fuente única: ver `Param`.
     params: tuple[Param, ...] = ()
@@ -179,6 +190,60 @@ _P_PAGE = Param(
     minimum=1,
     description="Página, 1-indexada.",
     label="Página",
+    show_in_card=False,
+)
+
+
+# El radicado como parámetro de RUTA (flujos: `/workflows/{radicado_id}/...`).
+_P_RADICADO_ID = Param(
+    name="radicado_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del radicado.",
+    label="Radicado",
+)
+# El mismo dato en el CUERPO (`/workflows/assign` y `/transfer` no lo llevan en
+# la ruta). Se declaran por separado porque `location` cambia a dónde va el
+# valor, y un `auto` aquí lo mandaría a la query.
+_P_RADICADO_ID_BODY = Param(
+    name="radicado_id",
+    required=True,
+    location="body",
+    format="uuid",
+    description="UUID del radicado que se tramita.",
+    label="Radicado",
+)
+_P_TRACKING_BODY = Param(
+    name="tracking_number",
+    required=True,
+    location="body",
+    min_length=1,
+    max_length=50,
+    description=(
+        "Número del radicado. Lo exige el servicio de flujos y queda en la hoja "
+        "de ruta; sácalo del propio radicado, no lo compongas."
+    ),
+    label="Número de radicado",
+)
+# `action` lo sobreescribe el propio router (`model_copy(update=...)`), pero el
+# schema lo declara obligatorio: sin enviarlo, Pydantic rechaza el cuerpo antes
+# de llegar ahí. Se fija con un `enum` de un solo valor para que el modelo no
+# tenga que adivinarlo ni pueda equivocarse.
+_P_ACTION_ASSIGN = Param(
+    name="action",
+    required=True,
+    enum=("assign",),
+    description='Siempre "assign".',
+    label="Acción",
+    show_in_card=False,
+)
+_P_ACTION_TRANSFER = Param(
+    name="action",
+    required=True,
+    enum=("transfer",),
+    description='Siempre "transfer".',
+    label="Acción",
     show_in_card=False,
 )
 
@@ -400,6 +465,121 @@ CATALOG: tuple[Tool, ...] = (
         params=(_P_DOCUMENT_ID,),
     ),
     Tool(
+        name="consultar_por_numero",
+        description=(
+            "Consulta un radicado por su número (p. ej. 2026-ICETEX-E-001234). "
+            "Es como lo nombra la gente: el número va en el sello, el id no."
+        ),
+        method="GET",
+        path="/api/v1/documents/by-tracking/{tracking_number}",
+        path_params=("tracking_number",),
+        epic="E01",
+        operacion="Consultar un radicado por su número",
+        params=(
+            Param(
+                name="tracking_number",
+                required=True,
+                location="path",
+                max_length=64,
+                description="Número de radicado completo, con sus guiones.",
+                label="Número de radicado",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_anexos",
+        description=(
+            "Lista los anexos de un radicado: nombre, tamaño, tipo y folios. "
+            "Devuelve los datos del anexo, NO el fichero."
+        ),
+        method="GET",
+        path="/api/v1/documents/{document_id}/anexos",
+        path_params=("document_id",),
+        epic="E07",
+        operacion="Consultar los anexos de un radicado",
+        params=(_P_DOCUMENT_ID,),
+    ),
+    Tool(
+        name="consultar_disposicion",
+        description=(
+            "Consulta la disposición final del radicado: qué se hará con él al vencer "
+            "su retención (conservar, eliminar, seleccionar) y si está marcado para "
+            "eliminación."
+        ),
+        method="GET",
+        path="/api/v1/documents/{document_id}/disposition",
+        path_params=("document_id",),
+        # El endpoint exige `USUA_PERM_EXPEDIENTE` a nivel 1. La ESCRITURA de la
+        # disposición (nivel 3) no se expone: decide si un documento oficial se
+        # conserva o se destruye, y eso no se hace conversando.
+        permission="USUA_PERM_EXPEDIENTE",
+        epic="E04",
+        operacion="Consultar la disposición final de un radicado",
+        params=(_P_DOCUMENT_ID,),
+    ),
+    Tool(
+        name="actualizar_radicado",
+        description=(
+            "Corrige campos del radicado: asunto, dependencia destino, observaciones, "
+            "estado y número de folios. El número de radicado es INMUTABLE y no se "
+            "toca por aquí; para el tipo documental está `tipificar_radicado`."
+        ),
+        method="PATCH",
+        path="/api/v1/documents/{document_id}",
+        path_params=("document_id",),
+        permission="PERM_RADI",
+        # Nivel 1, que es el que el endpoint exige de verdad para estos campos.
+        # Poner 3 «por prudencia» escondería la tool a quien sí puede corregir un
+        # asunto: el mismo defecto al revés, y ese falla en silencio.
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E01",
+        operacion="Corregir los datos de un radicado",
+        fallback=(
+            "Sin permiso de radicación, la corrección puede pedirse a la dependencia "
+            "de correspondencia, que sí puede aplicarla."
+        ),
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="subject",
+                min_length=1,
+                max_length=2000,
+                description="Asunto del radicado.",
+                label="Asunto",
+            ),
+            Param(
+                name="dest_dept",
+                max_length=100,
+                description="Nombre de la dependencia destino.",
+                label="Dependencia destino",
+            ),
+            Param(
+                name="observations",
+                description="Observaciones.",
+                label="Observaciones",
+            ),
+            Param(
+                name="status",
+                # Los cinco literales del schema MENOS `anulado`: anular es un acto
+                # del circuito de anulación, con causal y aprobador, y el backend
+                # tampoco lo admite por esta vía. Ofrecerlo aquí sugeriría que se
+                # puede anular editando un campo.
+                enum=("registered", "distributed", "in_progress", "closed"),
+                description="Estado del trámite del radicado.",
+                label="Estado",
+            ),
+            Param(
+                name="pages",
+                type="integer",
+                minimum=0,
+                description="Número de folios.",
+                label="Folios",
+            ),
+        ),
+    ),
+    Tool(
         name="buscar_radicados",
         description="Búsqueda avanzada de radicados (texto + filtros).",
         method="GET",
@@ -443,11 +623,240 @@ CATALOG: tuple[Tool, ...] = (
         ),
     ),
     Tool(
+        name="crear_expediente",
+        description=(
+            "Abre un expediente: la agrupación lógica de los radicados de un mismo "
+            "asunto o trámite. La serie TRD que se le asigne determina su retención."
+        ),
+        method="POST",
+        path="/api/v1/expedientes",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E02",
+        operacion="Abrir un expediente",
+        fallback=(
+            "Sin permiso de expedientes, puede pedirse la apertura a la dependencia "
+            "que gestiona el archivo de la entidad."
+        ),
+        # Subconjunto de `ExpedienteCreate`. Se omiten a propósito:
+        # `nivel_seguridad` (clasificar es un acto motivado con su propio permiso)
+        # y el trío de fondo acumulado `origen`/`fecha_extrema_*`, que amarra el
+        # expediente a una TVD y solo se fija en la creación, sin ruta de vuelta
+        # (ADR-026): un valor equivocado dicho de palabra no se corrige después.
+        params=(
+            Param(
+                name="name",
+                required=True,
+                min_length=1,
+                max_length=500,
+                description="Nombre del expediente.",
+                label="Nombre",
+            ),
+            Param(
+                name="description",
+                description="Descripción del asunto que agrupa.",
+                label="Descripción",
+            ),
+            Param(
+                name="trd_serie_id",
+                format="uuid",
+                description=(
+                    "Serie documental de la TRD. Consúltala con `listar_trd`: "
+                    "de ella cuelgan la retención y la disposición final."
+                ),
+                label="Serie TRD",
+            ),
+            Param(
+                name="metadata",
+                type="object",
+                description=(
+                    "Metadatos variables del expediente. Si la serie tiene plantilla "
+                    "activa, se validan contra ella."
+                ),
+                label="Metadatos",
+            ),
+        ),
+    ),
+    Tool(
+        name="buscar_expedientes",
+        description="Búsqueda de expedientes por texto, estado o fechas.",
+        method="GET",
+        path="/api/v1/expedientes/search",
+        permission="USUA_PERM_EXPEDIENTE",
+        epic="E09",
+        operacion="Buscar expedientes",
+        params=(
+            Param(
+                name="q",
+                min_length=2,
+                description="Texto a buscar (opcional).",
+                label="Texto",
+            ),
+            Param(name="status", description="Estado del expediente.", label="Estado"),
+            Param(
+                name="date_from",
+                format="date",
+                description="Fecha de apertura desde (ISO 8601, incluida).",
+                label="Desde",
+            ),
+            Param(
+                name="date_to",
+                format="date",
+                description="Fecha de apertura hasta (ISO 8601, incluida).",
+                label="Hasta",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="vincular_radicado",
+        description=(
+            "Vincula un radicado a un expediente: lo incorpora a su foliación y al "
+            "índice electrónico."
+        ),
+        method="POST",
+        path="/api/v1/expedientes/{expediente_id}/radicados",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        # Desvincular existe (`DELETE`, crud 3) pero NO se expone: rompe la
+        # foliación. Que la vuelta atrás exista no hace inocua la ida, así que
+        # esto no se marca como reversible a la ligera — se marca porque el acto
+        # se corrige, no porque no importe.
+        destructive=False,
+        epic="E02",
+        operacion="Vincular un radicado a un expediente",
+        fallback=(
+            "Sin permiso de expedientes, el radicado puede trasladarse a la "
+            "dependencia de archivo indicando a qué expediente corresponde."
+        ),
+        params=(
+            _P_EXPEDIENTE_ID,
+            Param(
+                name="radicado_id",
+                required=True,
+                format="uuid",
+                description="UUID del radicado que se vincula.",
+                label="Radicado",
+            ),
+            Param(
+                name="tracking_number",
+                required=True,
+                min_length=1,
+                max_length=50,
+                description=(
+                    "Número del radicado. Lo exige el backend y viaja al índice "
+                    "electrónico; sácalo del propio radicado, no lo compongas."
+                ),
+                label="Número de radicado",
+            ),
+            Param(
+                name="folios",
+                type="integer",
+                minimum=0,
+                description="Número de folios que aporta al expediente.",
+                label="Folios",
+            ),
+        ),
+    ),
+    Tool(
+        name="actualizar_expediente",
+        description=(
+            "Corrige el nombre, la descripción o la serie TRD de un expediente. "
+            "NO cierra ni transfiere: esas son transiciones con su propio acto."
+        ),
+        method="PATCH",
+        path="/api/v1/expedientes/{expediente_id}",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E02",
+        operacion="Corregir los datos de un expediente",
+        fallback="Sin permiso de expedientes, la corrección se pide a la dependencia de archivo.",
+        # `ExpedienteUpdate` lleva `extra="forbid"`: cualquier clave de más
+        # devuelve 422 antes de tocar la base. Por eso se declaran exactamente
+        # sus tres campos y ni uno más — `status` está retirado a propósito allí,
+        # porque era una ruta alterna al cierre sin auditoría ni disposición.
+        params=(
+            _P_EXPEDIENTE_ID,
+            Param(name="name", description="Nombre del expediente.", label="Nombre"),
+            Param(name="description", description="Descripción.", label="Descripción"),
+            Param(
+                name="trd_serie_id",
+                format="uuid",
+                description="Serie documental de la TRD.",
+                label="Serie TRD",
+            ),
+        ),
+    ),
+    Tool(
+        name="cerrar_expediente",
+        description=(
+            "CIERRA el expediente: materializa la disposición de la TRD, congela su "
+            "índice electrónico y lo saca de la fase de gestión. No se reabre."
+        ),
+        method="POST",
+        path="/api/v1/expedientes/{expediente_id}/close",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        # `crud >= 3`, como el endpoint. Es el único irreversible del catálogo, y
+        # entra porque «archivar» era parte explícita de lo que se pidió poder
+        # hacer por esta vía.
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E02",
+        operacion="Cerrar un expediente (irreversible)",
+        fallback=(
+            "Sin nivel de disposición sobre expedientes, el cierre lo ejecuta la "
+            "dependencia de archivo; puede solicitárselo indicando el expediente."
+        ),
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="consultar_foliado",
+        description="Foliación del expediente: sus radicados en orden, con folios.",
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/foliado",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        epic="E02",
+        operacion="Consultar la foliación de un expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="hoja_ruta_expediente",
+        description=(
+            "Hoja de ruta del expediente: qué le ha pasado y cuándo, en orden y sin "
+            "posibilidad de edición."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/eventos",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        epic="E02",
+        operacion="Consultar la hoja de ruta de un expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
         name="consultar_expediente",
         description="Consulta un expediente por su id (incluye radicados vinculados).",
         method="GET",
         path="/api/v1/expedientes/{expediente_id}",
         path_params=("expediente_id",),
+        # `USUA_PERM_EXPEDIENTE`, declarado. El catálogo decía «sin permiso» y
+        # el endpoint sí lo exige: la tool se ofrecía a quien iba a recibir un
+        # 403 al usarla. Es el reflejo exacto de `RADI_CREAR` —allí se escondía
+        # algo utilizable, aquí se anunciaba algo inutilizable— y justo lo que el
+        # marco de alcance existe para evitar. Lo caza ahora
+        # `shared/tests/test_permisos_declarados.py`.
+        permission="USUA_PERM_EXPEDIENTE",
         epic="E02",
         operacion="Consultar un expediente",
         params=(_P_EXPEDIENTE_ID,),
@@ -458,6 +867,7 @@ CATALOG: tuple[Tool, ...] = (
         method="GET",
         path="/api/v1/expedientes/{expediente_id}/indice",
         path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
         epic="E15",
         operacion="Consultar el índice electrónico de un expediente",
         params=(_P_EXPEDIENTE_ID,),
@@ -478,6 +888,232 @@ CATALOG: tuple[Tool, ...] = (
             ),
             _P_PAGE,
             _p_size(200),
+        ),
+    ),
+    Tool(
+        name="pendientes_equipo",
+        description=(
+            "Pasos de trámite pendientes, filtrables por dependencia o por persona "
+            "asignada. Es la vista del equipo; `bandeja_tramite` es la propia."
+        ),
+        method="GET",
+        path="/api/v1/workflows/pending",
+        epic="E05",
+        operacion="Consultar los pendientes de trámite del equipo",
+        params=(
+            Param(name="dept", description="Filtra por dependencia.", label="Dependencia"),
+            Param(
+                name="assigned_to",
+                format="uuid",
+                description="Filtra por usuario asignado (UUID).",
+                label="Asignado a",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="tipos_transaccion",
+        description=(
+            "Tipos de transacción de trámite disponibles y el permiso que exige cada "
+            "uno. Consúltalo antes de proponer `ejecutar_transaccion`."
+        ),
+        method="GET",
+        path="/api/v1/workflows/transaction-types",
+        epic="E05",
+        operacion="Consultar los tipos de transacción de trámite",
+    ),
+    Tool(
+        name="hoja_ruta_radicado",
+        description="Historia completa del trámite de un radicado: por dónde ha pasado.",
+        method="GET",
+        path="/api/v1/workflows/{radicado_id}/history",
+        path_params=("radicado_id",),
+        epic="E05",
+        operacion="Consultar la hoja de ruta de un radicado",
+        params=(_P_RADICADO_ID,),
+    ),
+    Tool(
+        name="paso_actual",
+        description="Paso de trámite activo de un radicado: dónde está y quién lo tiene.",
+        method="GET",
+        path="/api/v1/workflows/{radicado_id}/current",
+        path_params=("radicado_id",),
+        epic="E05",
+        operacion="Consultar el paso de trámite activo de un radicado",
+        params=(_P_RADICADO_ID,),
+    ),
+    Tool(
+        name="asignar_radicado",
+        description=(
+            "Asigna un radicado a una dependencia (y opcionalmente a una persona) "
+            "para su trámite."
+        ),
+        method="POST",
+        path="/api/v1/workflows/assign",
+        permission="PERM_TRAMITAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Asignar un radicado a una dependencia",
+        fallback=(
+            "Sin permiso de trámite, el radicado puede dejarse en la bandeja de la "
+            "dependencia para que quien tramita lo asigne."
+        ),
+        params=(
+            _P_RADICADO_ID_BODY,
+            _P_TRACKING_BODY,
+            Param(
+                name="to_dept",
+                required=True,
+                min_length=1,
+                max_length=100,
+                description="Dependencia destino.",
+                label="Dependencia destino",
+            ),
+            Param(
+                name="assigned_to",
+                format="uuid",
+                description="UUID de la persona a la que se asigna (opcional).",
+                label="Asignado a",
+            ),
+            _P_ACTION_ASSIGN,
+            Param(name="notes", description="Notas del traslado.", label="Notas"),
+            Param(
+                name="doc_type",
+                enum=("E", "S", "I"),
+                description="Tipo del radicado, para las bandejas tipadas.",
+                label="Tipo",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="trasladar_radicado",
+        description=(
+            "Traslada un radicado de una dependencia a otra. A diferencia de asignar, "
+            "exige indicar la dependencia de origen."
+        ),
+        method="POST",
+        path="/api/v1/workflows/transfer",
+        permission="PERM_TRAMITAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Trasladar un radicado a otra dependencia",
+        fallback=(
+            "Sin permiso de trámite, puede pedirse el traslado a quien tramita en la "
+            "dependencia actual."
+        ),
+        params=(
+            _P_RADICADO_ID_BODY,
+            _P_TRACKING_BODY,
+            Param(
+                name="from_dept",
+                required=True,
+                min_length=1,
+                max_length=100,
+                description=(
+                    "Dependencia de origen. El servicio la EXIGE para trasladar; "
+                    "omitirla falla."
+                ),
+                label="Dependencia origen",
+            ),
+            Param(
+                name="to_dept",
+                required=True,
+                min_length=1,
+                max_length=100,
+                description="Dependencia destino.",
+                label="Dependencia destino",
+            ),
+            Param(
+                name="assigned_to",
+                format="uuid",
+                description="UUID de la persona a la que se asigna (opcional).",
+                label="Asignado a",
+            ),
+            _P_ACTION_TRANSFER,
+            Param(name="notes", description="Notas del traslado.", label="Notas"),
+        ),
+    ),
+    Tool(
+        name="completar_paso",
+        description=(
+            "Marca como completado un paso de trámite. OJO: el identificador es el "
+            "del PASO, no el del radicado — sácalo de `paso_actual`."
+        ),
+        method="PATCH",
+        path="/api/v1/workflows/{step_id}/complete",
+        path_params=("step_id",),
+        permission="PERM_TRAMITAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Completar un paso de trámite",
+        fallback="Sin permiso de trámite, el paso lo cierra quien lo tiene asignado.",
+        params=(
+            Param(
+                name="step_id",
+                required=True,
+                location="path",
+                format="uuid",
+                # `{step_id}` NO es `{radicado_id}`: esta ruta cuelga de otra
+                # entidad que el resto del router. Es el error más probable de
+                # todo el bloque, y por eso el parámetro se llama como lo que es
+                # en vez de heredar el común.
+                description=(
+                    "UUID del PASO de trámite (no del radicado). Se obtiene de "
+                    "`paso_actual` o de `bandeja_tramite`."
+                ),
+                label="Paso de trámite",
+            ),
+            Param(name="notes", description="Notas de cierre del paso.", label="Notas"),
+        ),
+    ),
+    Tool(
+        name="ejecutar_transaccion",
+        description=(
+            "Ejecuta una transacción de trámite sobre un radicado (informar, visto "
+            "bueno, marcar leído…). Cada tipo exige su propio permiso: consulta "
+            "`tipos_transaccion` antes de proponerla."
+        ),
+        method="POST",
+        path="/api/v1/workflows/{radicado_id}/transactions",
+        path_params=("radicado_id",),
+        # El permiso REAL depende del tipo y se resuelve en el servidor
+        # (`transaction_types.requires_permission`), así que el catálogo no puede
+        # declararlo por adelantado. Se declara el SUELO —el mismo que aplica el
+        # servicio cuando el tipo no declara el suyo—, que es lo mínimo cierto
+        # que se puede afirmar sin inventar precisión.
+        permission="PERM_TRAMITAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        permiso_en_runtime=True,
+        epic="E05",
+        operacion="Ejecutar una transacción de trámite",
+        fallback=(
+            "Cada transacción exige su permiso propio; sin él, puede solicitarse a "
+            "quien lo tenga trasladándole el radicado."
+        ),
+        params=(
+            _P_RADICADO_ID,
+            Param(
+                name="tipo_tx",
+                required=True,
+                min_length=1,
+                max_length=40,
+                description=(
+                    "Código del tipo de transacción, tal cual lo devuelve "
+                    "`tipos_transaccion`. Un código inventado devuelve 404."
+                ),
+                label="Transacción",
+            ),
+            Param(name="comentario", description="Comentario del acto.", label="Comentario"),
         ),
     ),
     Tool(
@@ -511,6 +1147,7 @@ CATALOG: tuple[Tool, ...] = (
         method="GET",
         path="/api/v1/transferencias/{transferencia_id}/fuid",
         path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
         epic="E12",
         operacion="Consultar el inventario documental (FUID) de una transferencia",
         params=(

@@ -545,14 +545,14 @@ Overdue sweep (RF-FLU-07): detects active overdue steps not yet alerted, emits `
 - `GET /api/v1/workflows/{radicado_id}/vistos-buenos` — chain + global status (`en_revision|aprobado|rechazado`).
 
 ### `POST /api/v1/workflows/{radicado_id}/devolver` (return to sender)
-Re-routes a misassigned radicado: `{ "to_dept": "...", "causal": "DEV-DEP", "comentario"? }`. Closes the active step as `returned` and creates a new one towards `to_dept`, with the reason code in the history. Authorization by tenure: only the current holder of the active step may return it. `403 not_current_holder` if the actor is not the holder. `404` if there is no active step.
+Re-routes a misassigned radicado: `{ "to_dept": "...", "causal": "DEV-DEP", "comentario"? }`. Closes the active step as `returned` and creates a new one towards `to_dept`, with the reason code in the history. Requires **`PERM_TRAMITAR`** (like `assign`, `transfer` and `complete`; this route and `rollback` were the only two trámite writes in the router with no gate at all). Authorization by tenure on top of the permission: only the current holder of the active step may return it. `403 not_current_holder` if the actor is not the holder. `404` if there is no active step.
 
 ### Procedure transactions (RF-FLU-01)
 - `GET /api/v1/workflows/transaction-types` — catalog (informar, NRR, agendar, no_agendar, change_folder, marcar_leido, validate_trd_send, solicitar_firma, vobo, cerrar_exp, anular…), with their atomic permission and state effect.
-- `POST /api/v1/workflows/{radicado_id}/transactions` `{ "tipo_tx": "anular", "comentario": "...", "detalles": {} }` — executes the transaction: applies the effect to the active step (e.g. `marcar_leido`→in_progress, `anular`→cancelled) and records the append-only event. **Per-type RBAC enforcement (RF-SEG-03):** each type declares in `transaction_types.requires_permission` the permission it demands (`anular`→`PERM_ANULAR`, `cerrar_exp`→`PERM_CERRAR_EXP`, `vobo`→`PERM_VOBO`…); without it, `403 forbidden` and the transaction is **not** applied. A type with `requires_permission = NULL` is open. `404 unknown_transaction` / `no_flow`. `PATCH /{step_id}/complete` requires `PERM_TRAMITAR`.
+- `POST /api/v1/workflows/{radicado_id}/transactions` `{ "tipo_tx": "anular", "comentario": "...", "detalles": {} }` — executes the transaction: applies the effect to the active step (e.g. `marcar_leido`→in_progress, `anular`→cancelled) and records the append-only event. **Per-type RBAC enforcement (RF-SEG-03):** each type declares in `transaction_types.requires_permission` the permission it demands (`anular`→`PERM_ANULAR`, `cerrar_exp`→`PERM_CERRAR_EXP`, `vobo`→`PERM_VOBO`…); without it, `403 forbidden` and the transaction is **not** applied. A type with `requires_permission = NULL` **falls back to the `PERM_TRAMITAR` floor**, it is not open: `transaction_types` is a tenant catalogue, and leaving the column empty cannot be the easiest way to open a door. All 12 seeded types declare their own, so the floor changes nothing observable today. There is deliberately no fixed route gate: requiring `PERM_TRAMITAR` for all of them would break someone who holds `PERM_VOBO` to sign off and nothing else. `404 unknown_transaction` / `no_flow`. `PATCH /{step_id}/complete` requires `PERM_TRAMITAR`.
 
 ### `POST /api/v1/workflows/{radicado_id}/rollback`
-`{motivo}` (**mandatory**, 5-500 characters). Reverts the last assignment (RF-FLU-08): cancels the current step —only if it is still `pending`— and reactivates the previous one, atomically, with a `tipo_tx=rollback` event. The `motivo` is recorded in two traces, atomically with the mutation (a single transaction): `flow_events.comentario` (the operational route map) and `public.audit_log.payload` (the forensic legal trace, the same pattern as assignment). `409 no_active_step` (no active step) or `cannot_rollback_initial` (it is the initial registration). `422` if the `motivo` is missing or below the minimum length.
+`{motivo}` (**mandatory**, 5-500 characters). Requires **`PERM_TRAMITAR`**. Reverts the last assignment (RF-FLU-08): cancels the current step —only if it is still `pending`— and reactivates the previous one, atomically, with a `tipo_tx=rollback` event. The `motivo` is recorded in two traces, atomically with the mutation (a single transaction): `flow_events.comentario` (the operational route map) and `public.audit_log.payload` (the forensic legal trace, the same pattern as assignment). `409 no_active_step` (no active step) or `cannot_rollback_initial` (it is the initial registration). `422` if the `motivo` is missing or below the minimum length.
 
 ### `POST /api/v1/workflows/reassign/cascade`
 Reassigns, in a single transaction, all the active steps of a user or dependencia to a new responsible party, leaving no orphan radicados (RF-FLU-08).
@@ -836,6 +836,45 @@ A separate service (not behind the gateway): it exposes the API as *tools* to ag
 - `POST /api/v1/mcp/proposals/execute` `{token}` — executes the act signed inside the token. **The body carries only the token**: the arguments come from it, so what runs is exactly what was described. It **re-authorizes** on confirmation (the permission may have been revoked between proposing and confirming: a proposal attests *what* was approved, not that whoever presents it may still do it) and **consumes** the proposal before dispatching. Errors: `400 propuesta_invalida`, `403 propuesta_ajena` / `permiso_insuficiente`, `409 propuesta_consumida`, `410 propuesta_expirada`.
   The same act over the **MCP protocol**: writes return the proposal as structured content and are confirmed with the `confirmar_accion(token)` tool; where the transport has a return channel (**stdio**) the user is asked in-band via **elicitation**, using those same fields. Over streamable HTTP (`stateless`) there is no session to ask and only the two-tool path remains — a declared limit. Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`) as **hints**, so the client can add its own friction: the guarantee still lives in the signed proposal, not in them.
   *Declared limit*: the consumption registry lives in process memory — it covers double-clicks and retries, not multi-replica. `Idempotency-Key: <jti>` is emitted to the gateway as a hook for each epic to implement, not as a guarantee.
+
+The current catalogue (30 tools, 11 of them writes). Every write returns a signed proposal and requires explicit confirmation (see above):
+
+| Tool | Endpoint | Permission (crud) | |
+|---|---|---|---|
+| `radicar_documento` | `POST /documents` | `PERM_RADI` (1) | **W** consumes an immutable number |
+| `tipificar_radicado` | `PATCH /documents/{id}` | `PERM_RADI` (**3**) | **W** fixes the TRD series |
+| `actualizar_radicado` | `PATCH /documents/{id}` | `PERM_RADI` (1) | **W** subject, destination, status, folios |
+| `consultar_radicado` | `GET /documents/{id}` | *clearance* | R |
+| `consultar_por_numero` | `GET /documents/by-tracking/{tn}` | *clearance* | R |
+| `buscar_radicados` | `GET /search` | *clearance* | R |
+| `listar_anexos` | `GET /documents/{id}/anexos` | *clearance* | R |
+| `consultar_disposicion` | `GET /documents/{id}/disposition` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `listar_tipos_documentales` | `GET /tipos-documentales` | *none* | R |
+| `crear_expediente` | `POST /expedientes` | `USUA_PERM_EXPEDIENTE` (1) | **W** |
+| `actualizar_expediente` | `PATCH /expedientes/{id}` | `USUA_PERM_EXPEDIENTE` (1) | **W** |
+| `vincular_radicado` | `POST /expedientes/{id}/radicados` | `USUA_PERM_EXPEDIENTE` (1) | **W** |
+| `cerrar_expediente` | `POST /expedientes/{id}/close` | `USUA_PERM_EXPEDIENTE` (**3**) | **W** IRREVERSIBLE |
+| `consultar_expediente` | `GET /expedientes/{id}` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `buscar_expedientes` | `GET /expedientes/search` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `consultar_foliado` | `GET /expedientes/{id}/foliado` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `hoja_ruta_expediente` | `GET /expedientes/{id}/eventos` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `indice_expediente` | `GET /expedientes/{id}/indice` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `listar_trd` | `GET /trd` | *none* | R |
+| `bandeja_tramite` | `GET /workflows/inbox` | *none* | R |
+| `pendientes_equipo` | `GET /workflows/pending` | *sin permiso* | R |
+| `tipos_transaccion` | `GET /workflows/transaction-types` | *sin permiso* | R |
+| `hoja_ruta_radicado` | `GET /workflows/{id}/history` | *sin permiso* | R |
+| `paso_actual` | `GET /workflows/{id}/current` | *sin permiso* | R |
+| `asignar_radicado` | `POST /workflows/assign` | `PERM_TRAMITAR` (1) | **W** |
+| `trasladar_radicado` | `POST /workflows/transfer` | `PERM_TRAMITAR` (1) | **W** |
+| `completar_paso` | `PATCH /workflows/{step_id}/complete` | `PERM_TRAMITAR` (1) | **W** el id es del PASO |
+| `ejecutar_transaccion` | `POST /workflows/{id}/transactions` | por tipo, suelo `PERM_TRAMITAR` | **W** |
+| `consultar_fuid` | `GET /transferencias/{id}/fuid` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `buscar_conocimiento` | `POST /knowledge/search` | *clearance* | R |
+
+**Left out by decision, not by oversight**: annulling and approving annulments, marking for destruction, setting the disposition, reclassifying the security level, publishing, unlinking a radicado (it breaks the foliation), transferring, repealing TRD/TVD, signing, and the whole tenant administration surface. **Bulk linking** (`/radicados/batch`, up to 500) stays out for as long as its confirmation card cannot be read: a card that says "500 radicados" does not let anyone confirm knowingly, which is the only reason the card exists.
+
+**Two cross-service invariants** live in `shared/tests/`, the only CI lane that sees the whole repository: `test_rutas_mcp_alcanzables.py` (every catalogue path is in the gateway's routing table — the gap that already slipped through with bulk upload) and `test_permisos_declarados.py` (what the catalogue declares is what the endpoint requires, in both directions: under-declaring offers the tool to someone who will get a 403; over-declaring hides it from someone who can actually use it).
 
 ### Conversational assistant (E18, ADR-019/ADR-020) — via the gateway
 Unlike the MCP catalog/protocol (which is **not** exposed through the gateway), the conversational assistant **is** routed by the `api-gateway` (`/api/v1/assistant/` → mcp-server), so it inherits its JWT validation and `X-Tenant-Slug` injection. The mcp-server orchestrates an **LLM loop (Claude)** that executes the catalog's **read-only** tools as calls to the gateway, **re-propagating the user's token** — the assistant runs *as-the-user*, never with credentials of its own, and every tool revalidates its RBAC/clearance in the backend.

@@ -319,6 +319,13 @@ async def execute_transaction(
     "/{radicado_id}/devolver",
     response_model=FlowStepResponse,
     summary="Devolver el radicado al remitente/origen con causal (RF-FLU)",
+    # `PERM_TRAMITAR`, como `assign`, `transfer` y `complete`. Esta ruta y
+    # `rollback` eran las DOS únicas escrituras de trámite del router sin ningún
+    # `require_permission`: mismo fichero, mismo objeto, solo algunas gateadas —
+    # es omisión, no diseño, y sus tres hermanas son el control positivo.
+    # Devolver un radicado lo saca de la dependencia que lo tramita y lo manda de
+    # vuelta al origen con una causal: es un acto de trámite, no una consulta.
+    dependencies=[Depends(require_permission("PERM_TRAMITAR"))],
 )
 async def devolver_radicado(
     radicado_id: uuid.UUID,
@@ -340,6 +347,9 @@ async def devolver_radicado(
     "/{radicado_id}/rollback",
     response_model=FlowStepResponse,
     summary="Roll back the last assignment of a radicado (RF-FLU-08)",
+    # Ver `devolver`: misma omisión, mismo permiso. Revertir la última asignación
+    # deshace el trabajo de otra persona sobre el radicado.
+    dependencies=[Depends(require_permission("PERM_TRAMITAR"))],
 )
 async def rollback_radicado(
     radicado_id: uuid.UUID,

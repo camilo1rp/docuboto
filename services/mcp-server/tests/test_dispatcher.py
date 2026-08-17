@@ -131,3 +131,29 @@ def test_la_ruta_sin_plantilla_se_deja_intacta() -> None:
     prep = build_request(tool, {"q": "tutela"})
     assert prep.path == "/api/v1/search"
     assert prep.query == {"q": "tutela"}
+
+
+def test_el_numero_de_radicado_tambien_se_escapa() -> None:
+    """`by-tracking` es la ÚNICA ruta del sistema con convertidor `:path`.
+
+    Un `:path` casa con barras a propósito, así que es el sitio donde un
+    parámetro sin escapar cambia de endpoint con más facilidad que en ningún
+    otro. El número de radicado no lleva barras —solo dígitos, letras y
+    guiones—, así que escaparlo no le quita nada y le quita todo a quien
+    intente colar una ruta dentro.
+
+    Se comprueba sobre la ruta construida, contra la tool REAL del catálogo, no
+    contra una de laboratorio: el escape podría estar bien en el dispatcher y
+    esta tool podría no llegar a usarlo.
+    """
+    from app.tools.catalog import get_tool
+
+    tool = get_tool("consultar_por_numero")
+    assert tool is not None
+
+    prep = build_request(tool, {"tracking_number": "2026-DEMO-E-000001"})
+    assert prep.path == "/api/v1/documents/by-tracking/2026-DEMO-E-000001"
+
+    hostil = build_request(tool, {"tracking_number": "../../auth/me"})
+    assert "/api/v1/auth/me" not in hostil.path
+    assert hostil.path == "/api/v1/documents/by-tracking/..%2F..%2Fauth%2Fme"

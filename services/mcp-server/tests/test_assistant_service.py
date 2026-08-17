@@ -303,8 +303,14 @@ async def test_403_y_404_colapsan_a_generico_para_el_modelo() -> None:
                 Response([text_block("No encontré ese expediente.")], "end_turn"),
             ]
         )
+        # CON el permiso: lo que aquí se fija es el colapso de lo que responde
+        # el GATEWAY, y sin permiso la tool ni se despacharía — el `authorize`
+        # local respondería `herramienta_no_disponible` y este test estaría
+        # comprobando otra cosa. Ese otro camino no es un oráculo: dice que a
+        # esta persona le falta un permiso, no si el expediente existe.
         gateway = make_gateway(
-            permissions=[], tool_response=httpx.Response(status, json={"detail": "clasificado"})
+            permissions=["USUA_PERM_EXPEDIENTE"],
+            tool_response=httpx.Response(status, json={"detail": "clasificado"}),
         )
         conversations: dict = {}
 

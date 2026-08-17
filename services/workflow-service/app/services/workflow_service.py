@@ -57,6 +57,10 @@ _EVT_COMPLETED = "workflow.step.completed"
 
 _SERVICE = "workflow-service"
 
+# Permiso mínimo de cualquier transacción de trámite. Ver `execute_transaction`:
+# es el suelo para los tipos que no declaran el suyo, no un permiso adicional.
+_PERMISO_SUELO = "PERM_TRAMITAR"
+
 # Traza de LECTURA (RF-BUS-10/E09; Ley 1712/2014, Decreto 1081/2015) — canales que
 # representan una consulta real de un usuario (gateway/mcp-server, ADR-019/D-03).
 # 'system' (llamadas sin canal explícito, p. ej. jobs) queda excluido para no
@@ -235,9 +239,22 @@ class WorkflowService:
         # el único punto donde el permiso por-tipo puede hacerse cumplir. `NULL` =
         # transacción abierta (no exige permiso). Fail-closed: sin actor
         # identificado, `check_permission` deniega.
-        required_perm = tt["requires_permission"]
-        if required_perm:
-            await self._require_permission(actor, required_perm)
+        # `NULL` ya NO significa «transacción abierta». Significaba eso, y era el
+        # último hueco de esta ruta: `transaction_types` es un catálogo del
+        # tenant, así que una fila con `requires_permission` nulo —sembrada por
+        # una migración futura, o por alguien con acceso a la base— habría
+        # quedado ejecutable por cualquier autenticado de la entidad, mientras
+        # `assign`, `transfer` y `complete` exigen `PERM_TRAMITAR`. Hoy los 12
+        # tipos sembrados declaran su permiso, de modo que este suelo no cambia
+        # nada observable; existe para que dejar la columna vacía no sea una
+        # manera silenciosa de abrir la puerta.
+        #
+        # El suelo es `PERM_TRAMITAR` y no un gate de router porque el permiso
+        # aquí es POR TIPO: exigir `PERM_TRAMITAR` a todas rompería a quien tiene
+        # `PERM_VOBO` para dar vistos buenos y nada más, que es un reparto
+        # legítimo.
+        required_perm = tt["requires_permission"] or _PERMISO_SUELO
+        await self._require_permission(actor, required_perm)
         latest = await self._repo.get_latest_step(radicado_id)
         if latest is None:
             raise TransactionError("no_flow")

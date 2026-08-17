@@ -777,13 +777,26 @@ async def test_execute_transaction_sin_permiso_del_tipo_403(
 
 
 @pytest.mark.asyncio
-async def test_execute_transaction_tipo_abierto_sin_permiso_ok(
+async def test_execute_transaction_tipo_abierto_cae_al_suelo_de_tramitar(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
-    """Un tipo con `requires_permission = NULL` es abierto: no exige permiso.
+    """Un tipo con `requires_permission = NULL` YA NO es abierto: exige el suelo.
 
-    Control positivo del gate: la nulidad de la columna significa "sin permiso",
-    no "fail-closed" — se ejecuta aunque el RBAC no conceda nada.
+    **Este test afirmaba lo contrario**, y decía «la nulidad de la columna
+    significa sin permiso, no fail-closed». Era una decisión escrita, no un
+    olvido — por eso se cambia declarándolo y no borrándolo.
+
+    Por qué se cambia: `transaction_types` es un catálogo del tenant, así que
+    una fila con la columna vacía —sembrada por una migración futura, o por
+    alguien con acceso a la base— quedaba ejecutable por cualquier autenticado
+    de la entidad, mientras `assign`, `transfer` y `complete` exigen
+    `PERM_TRAMITAR` sobre el mismo radicado. Dejar un campo en blanco no puede
+    ser la manera más fácil de abrir una puerta.
+
+    No cambia nada observable hoy: los 12 tipos sembrados declaran su permiso.
+    El suelo es `PERM_TRAMITAR` y no un gate de router porque el permiso aquí es
+    POR TIPO — exigirlo a todas rompería a quien tiene `PERM_VOBO` para dar
+    vistos buenos y nada más.
     """
     client, mock_conn, _ = client_with_conn
     tt = {
@@ -797,8 +810,20 @@ async def test_execute_transaction_tipo_abierto_sin_permiso_ok(
     latest = make_step_record(step_status="pending")
     event = make_event_record(tipo_tx="marcar_visto")
     mock_conn.fetchrow.side_effect = [tt, latest, event]
-    mock_conn.fetchval.return_value = None  # RBAC no concede nada; da igual, es abierto
+    mock_conn.fetchval.return_value = None  # el RBAC no concede nada
 
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/transactions",
+        json={"tipo_tx": "marcar_visto"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+
+    # Y el control positivo del suelo: con `PERM_TRAMITAR` concedido, el mismo
+    # tipo sin permiso propio se ejecuta. Sin esta mitad, el test pasaría igual
+    # con un `raise 403` incondicional.
+    mock_conn.fetchrow.side_effect = [tt, latest, event]
+    mock_conn.fetchval.return_value = True
     resp = await client.post(
         f"/api/v1/workflows/{RADICADO_ID}/transactions",
         json={"tipo_tx": "marcar_visto"},
@@ -1233,8 +1258,16 @@ async def test_rollback_without_motivo_is_rejected(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     """El motivo es obligatorio (espejo del modal `RevertirModal.svelte`, que ya
-    lo exige): sin él, la petición ni siquiera llega al servicio — 422, y ninguna
-    consulta/mutación se ejecuta contra la BD."""
+    lo exige): sin él, la petición no llega al servicio — 422, y no se ejecuta
+    ninguna consulta ni mutación **de negocio** contra la BD.
+
+    La aserción decía «ninguna consulta», sin matizar, y dejó de ser cierta al
+    gatearse esta ruta con `PERM_TRAMITAR`: la comprobación de autorización sí
+    toca la conexión (fija el `search_path` y consulta el RBAC) antes de que
+    Pydantic rechace el cuerpo. Eso es lo correcto —autorizar primero— así que
+    se ajusta la aserción a lo que el test quiere fijar de verdad: que el
+    `rollback` no ocurre. `fetchrow` sigue sin awaitarse, y por ahí pasa toda la
+    lectura del paso a revertir."""
     client, mock_conn, _ = client_with_conn
 
     response = await client.post(
@@ -1244,7 +1277,6 @@ async def test_rollback_without_motivo_is_rejected(
     )
     assert response.status_code == 422
     mock_conn.fetchrow.assert_not_awaited()
-    mock_conn.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1396,3 +1428,53 @@ async def test_health_check(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "workflow-service"}
+
+
+# ---------------------------------------------------------------------------
+# Los dos gates que faltaban: devolver y rollback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_devolver_exige_permiso_de_tramite(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Eran las DOS únicas escrituras de trámite del router sin ningún gate.
+
+    Sus tres hermanas —`assign`, `transfer` y `complete`— exigen
+    `PERM_TRAMITAR` sobre el mismo radicado: mismo fichero, mismo objeto, solo
+    algunas gateadas. Eso es omisión, no diseño, y el control positivo son ellas.
+
+    Devolver saca el radicado de la dependencia que lo tramita y lo manda al
+    origen con una causal. Cualquier autenticado de la entidad podía hacerlo.
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None  # el RBAC no concede nada
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/devolver",
+        json={"to_dept": "100", "causal": "No corresponde a esta dependencia"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+    mock_conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rollback_exige_permiso_de_tramite(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Revertir la última asignación deshace el trabajo de otra persona."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = None
+
+    resp = await client.post(
+        f"/api/v1/workflows/{RADICADO_ID}/rollback",
+        json={"motivo": "Asignada por error"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 403
+    mock_conn.fetchrow.assert_not_awaited()
