@@ -14,12 +14,13 @@
  * JWT verificado por hooks.server.js). El JS del cliente nunca ve el token
  * ni llama al api-gateway directamente — llama a este proxy.
  *
- * `POST /api/v1/assistant/message` en el gateway (mcp-server, E18) AÚN NO
- * EXISTE. Este proxy funciona contra su ausencia: cualquier fallo de
- * conexión, 404 (ruta sin construir) o 5xx/501 se traduce en un
- * `503 assistant_unavailable` — un estado HONESTO para la UI, nunca una
- * respuesta simulada. 401 se propaga (sesión inválida); 400 se propaga
- * (validación del backend).
+ * `POST /api/v1/assistant/message` en el gateway (mcp-server, E18) YA EXISTE
+ * — el comentario que decía lo contrario sobrevivió a su propia premisa. La
+ * degradación se mantiene igual, porque sigue siendo lo correcto cuando el
+ * servicio está caído o sin desplegar: cualquier fallo de conexión, 404 o
+ * 5xx/501 se traduce en un `503 assistant_unavailable`, un estado HONESTO para
+ * la UI, nunca una respuesta simulada. 401 se propaga (sesión inválida); 400
+ * se propaga (validación del backend).
  *
  * Autorización: gating por "autenticado", sin permiso `--op` fino (ver
  * contrato §5) — cada acción que el asistente dispare hacia adelante se
@@ -38,8 +39,18 @@
  * `texto` como texto plano (escapado por Svelte).
  *
  * POST → { mensaje: string, conversation_id?: string }
- *   Respuesta 200: { conversation_id: string|null, message: { id, role:"assistant", texto, html, ts } }
+ *   Respuesta 200: { conversation_id, message: {...}, propuestas: Propuesta[] }
  *   Respuesta 401/400/503: { error, detail, status }
+ *
+ * PROPUESTAS (bloque 10): una acción de escritura no se ejecuta — el backend
+ * devuelve un acto descrito y firmado que la persona aprueba en su tarjeta. Se
+ * reenvían campo a campo, igual que la entrada: los VALORES los compuso el
+ * modelo a partir de la conversación (que puede incluir el contenido de un
+ * radicado de Entrada, es decir, texto de un tercero), así que viajan como
+ * datos y se pintan como texto — nunca como HTML, ni siquiera saneado. Del
+ * `texto` del asistente sí se hace `{@html}`; de la tarjeta, jamás: es
+ * precisamente el sitio donde un texto engañoso serviría para que alguien
+ * apruebe una cosa creyendo aprobar otra.
  */
 
 import { json } from "@sveltejs/kit";
@@ -48,6 +59,47 @@ import { API_V1 } from "$lib/utils/config.server.js";
 import { sanitizeHtml } from "$lib/server/sanitizeHtml.js";
 
 const MAX_MENSAJE_LEN = 4000;
+/** Tope defensivo: una respuesta con cientos de tarjetas no es confirmable. */
+const MAX_PROPUESTAS = 10;
+const MAX_CAMPOS = 30;
+const MAX_VALOR_LEN = 2000;
+
+/** Un valor de tarjeta, reducido a algo que se pueda LEER antes de firmar. */
+function valorLegible(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v.slice(0, MAX_VALOR_LEN);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  // Objetos y listas (p. ej. `metadata`): se serializan acotados en vez de
+  // dejar que el componente los pinte como "[object Object]", que no le dice
+  // nada a quien tiene que aprobar el acto.
+  try {
+    return JSON.stringify(v).slice(0, MAX_VALOR_LEN);
+  } catch {
+    return "";
+  }
+}
+
+/** Allowlist campo a campo de las propuestas que devuelve el backend. */
+function propuestasSeguras(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, MAX_PROPUESTAS).flatMap((p) => {
+    if (!p || typeof p.token !== "string" || !p.token) return [];
+    const campos = Array.isArray(p.campos) ? p.campos.slice(0, MAX_CAMPOS) : [];
+    return [
+      {
+        id: typeof p.id === "string" ? p.id : "",
+        tool: typeof p.tool === "string" ? p.tool : "",
+        operacion: typeof p.operacion === "string" ? p.operacion : "",
+        campos: campos.map((c) => ({
+          etiqueta: typeof c?.etiqueta === "string" ? c.etiqueta : String(c?.arg ?? ""),
+          valor: valorLegible(c?.valor),
+        })),
+        expira_en: Number.isFinite(p.expira_en) ? p.expira_en : 0,
+        token: p.token,
+      },
+    ];
+  });
+}
 
 /** Ausencia/degradación del backend E18 → estado honesto "no disponible", nunca una respuesta fabricada. */
 function isUnavailableStatus(status) {
@@ -151,6 +203,7 @@ export async function POST({ locals, request }) {
   return json(
     {
       conversation_id: typeof data?.conversation_id === "string" ? data.conversation_id : null,
+      propuestas: propuestasSeguras(data?.propuestas),
       message: {
         id: typeof msg.id === "string" && msg.id ? msg.id : undefined,
         role: "assistant",

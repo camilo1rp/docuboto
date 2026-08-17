@@ -42,6 +42,37 @@ class AssistantTurn(BaseModel):
     ts: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+class PropuestaCampo(BaseModel):
+    """Un dato del acto, tal y como se le enseña a la persona."""
+
+    arg: str
+    etiqueta: str
+    valor: object
+    tipo: str
+
+
+class Propuesta(BaseModel):
+    """Un acto de escritura descrito y firmado, pendiente de aprobación.
+
+    **La redacta el catálogo, no el modelo.** `operacion` y `campos` salen de la
+    declaración de la tool; el texto del asistente va aparte, en `message`. Si la
+    tarjeta la escribiera el modelo podría describir un acto distinto del que va
+    firmado en el token, y la persona estaría aprobando una cosa creyendo
+    aprobar otra — ingeniería social sobre quien confirma.
+    """
+
+    id: str
+    tool: str
+    operacion: str
+    campos: list[PropuestaCampo]
+    expira_en: int
+    token: str
+
+
 class AssistantMessageResponse(BaseModel):
     conversation_id: str
     message: AssistantTurn
+    # Vacía en la inmensa mayoría de turnos. Añadirla es aditivo: un cliente que
+    # no la lea sigue funcionando igual que antes, y por eso el contrato del
+    # proxy BFF no necesita despliegue coordinado.
+    propuestas: list[Propuesta] = Field(default_factory=list)

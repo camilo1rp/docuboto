@@ -276,7 +276,9 @@ async def test_el_binding_confirma_la_propuesta_que_el_mismo_emitio(monkeypatch)
     )
     resultado = _json.loads(
         await mcp_app.call(
-            mcp_app.CONFIRMAR, {"token": propuesta["proposal"]["token"]}, client
+            mcp_app.CONFIRMAR,
+            {"token": propuesta["proposal"]["token"], "frase": "CONFIRMO"},
+            client,
         )
     )
 
@@ -321,11 +323,15 @@ async def test_las_escrituras_se_anuncian_como_tales_en_las_anotaciones() -> Non
 class _SesionFalsa:
     """Doble de sesión MCP: anuncia elicitación y responde lo que se le diga."""
 
-    def __init__(self, accion: str, confirmar: bool = True, capaz: bool = True) -> None:
+    def __init__(
+        self, accion: str, confirmar: bool = True, capaz: bool = True, frase: str = "CONFIRMO"
+    ) -> None:
         self.accion = accion
         self.confirmar = confirmar
         self.capaz = capaz
+        self.frase = frase
         self.mensajes: list[str] = []
+        self.esquemas: list[dict] = []
 
     def check_client_capability(self, _cap) -> bool:
         return self.capaz
@@ -334,7 +340,10 @@ class _SesionFalsa:
         import mcp.types as types
 
         self.mensajes.append(message)
-        return types.ElicitResult(action=self.accion, content={"confirmar": self.confirmar})
+        self.esquemas.append(requestedSchema)
+        return types.ElicitResult(
+            action=self.accion, content={"confirmar": self.confirmar, "frase": self.frase}
+        )
 
 
 def _con_sesion(monkeypatch, sesion):

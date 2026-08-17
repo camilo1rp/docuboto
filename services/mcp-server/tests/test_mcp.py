@@ -241,7 +241,7 @@ async def test_el_ciclo_completo_proponer_y_confirmar(client_with_gateway) -> No
     gateway.request.assert_not_called()  # proponer no escribe
 
     hecho = await client.post(
-        "/api/v1/mcp/proposals/execute", json={"token": token}, headers=cabeceras
+        "/api/v1/mcp/proposals/execute", json={"token": token, "frase": "CONFIRMO"}, headers=cabeceras
     )
 
     assert hecho.status_code == 200
@@ -275,7 +275,12 @@ async def test_los_argumentos_del_cuerpo_no_alteran_el_acto(client_with_gateway)
 
     await client.post(
         "/api/v1/mcp/proposals/execute",
-        json={"token": token, "subject": "LO QUE NADIE APROBÓ", "doc_type": "S"},
+        json={
+            "token": token,
+            "frase": "CONFIRMO",
+            "subject": "LO QUE NADIE APROBÓ",
+            "doc_type": "S",
+        },
         headers=cabeceras,
     )
 
@@ -299,10 +304,10 @@ async def test_una_propuesta_no_se_ejecuta_dos_veces(client_with_gateway) -> Non
     token = propuesta.json()["proposal"]["token"]
 
     primera = await client.post(
-        "/api/v1/mcp/proposals/execute", json={"token": token}, headers=cabeceras
+        "/api/v1/mcp/proposals/execute", json={"token": token, "frase": "CONFIRMO"}, headers=cabeceras
     )
     segunda = await client.post(
-        "/api/v1/mcp/proposals/execute", json={"token": token}, headers=cabeceras
+        "/api/v1/mcp/proposals/execute", json={"token": token, "frase": "CONFIRMO"}, headers=cabeceras
     )
 
     assert primera.status_code == 200
@@ -361,7 +366,7 @@ async def test_si_le_retiran_el_permiso_entre_proponer_y_confirmar_no_se_ejecuta
     gateway.get.side_effect = _sin_permisos
 
     resp = await client.post(
-        "/api/v1/mcp/proposals/execute", json={"token": token}, headers=cabeceras
+        "/api/v1/mcp/proposals/execute", json={"token": token, "frase": "CONFIRMO"}, headers=cabeceras
     )
 
     assert resp.status_code == 403
@@ -428,3 +433,100 @@ def test_la_cabecera_fantasma_no_se_lee_en_ninguna_parte_del_codigo() -> None:
         "que el backend no consulta; sale de `/auth/me` y de ningún otro sitio: "
         f"{hallazgos}"
     )
+
+
+# -- la frase de los actos irreversibles ------------------------------
+
+
+async def _propuesta_de(client, cabeceras, tool, args):
+    resp = await client.post(f"/api/v1/mcp/tools/{tool}/invoke", json=args, headers=cabeceras)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_un_acto_irreversible_no_se_ejecuta_sin_la_frase(client_with_gateway, monkeypatch):
+    """Un clic no basta cuando el acto no se deshace — y lo decide el TOKEN.
+
+    Quién dice que este acto es irreversible no es el cliente: es la propuesta
+    firmada, de la que sale la tool. Por eso no hay manera de confirmarlo
+    declarando que no lo era. Una frase validada solo en el navegador sería
+    teatro, porque el navegador es la parte hostil (D-05).
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+    client, gateway = client_with_gateway
+    gateway.request.return_value = httpx.Response(201, json={"tracking_number": "2026-D-E-1"})
+    cabeceras = {"Authorization": "Bearer tok", "X-Tenant-Slug": "demo"}
+
+    propuesta = await _propuesta_de(
+        client, cabeceras, "radicar_documento", {"doc_type": "E", "subject": "Tutela"}
+    )
+    # La tarjeta lo AVISA, para que la persona no descubra la frase fallando.
+    assert propuesta["proposal"]["irreversible"] is True
+    assert propuesta["proposal"]["frase_requerida"] == "CONFIRMO"
+    token = propuesta["proposal"]["token"]
+
+    sin_frase = await client.post(
+        "/api/v1/mcp/proposals/execute", json={"token": token}, headers=cabeceras
+    )
+    assert sin_frase.status_code == 400
+    assert sin_frase.json()["detail"]["error"] == "confirmacion_requerida"
+    assert gateway.request.await_count == 0
+
+    mal = await client.post(
+        "/api/v1/mcp/proposals/execute",
+        json={"token": token, "frase": "sí, adelante"},
+        headers=cabeceras,
+    )
+    assert mal.status_code == 400
+    assert gateway.request.await_count == 0
+
+    # Control positivo: con la frase exacta sí se ejecuta. Sin él, un gate que
+    # rechazara siempre dejaría los dos asertos de arriba verdes y el acto
+    # imposible de llevar a cabo.
+    bien = await client.post(
+        "/api/v1/mcp/proposals/execute",
+        json={"token": token, "frase": "confirmo"},  # se normaliza a mayúsculas
+        headers=cabeceras,
+    )
+    assert bien.status_code == 200, bien.text
+    assert gateway.request.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_un_acto_reversible_no_pide_frase(client_with_gateway, monkeypatch):
+    """El control negativo, sin el cual el gate podría ser universal.
+
+    Pedir la frase para todo la convertiría en un trámite que se teclea sin
+    leer, y entonces dejaría de significar nada justo donde importa. Solo la
+    piden los actos que el catálogo declara `destructive`.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+    client, gateway = client_with_gateway
+    gateway.request.return_value = httpx.Response(201, json={"ok": True})
+    cabeceras = {"Authorization": "Bearer tok", "X-Tenant-Slug": "demo"}
+
+    propuesta = await _propuesta_de(
+        client,
+        cabeceras,
+        "vincular_radicado",
+        {
+            "expediente_id": "44444444-4444-4444-4444-444444444444",
+            "radicado_id": "55555555-5555-5555-5555-555555555555",
+            "tracking_number": "2026-DEMO-E-000001",
+        },
+    )
+    assert propuesta["proposal"]["irreversible"] is False
+    assert propuesta["proposal"]["frase_requerida"] is None
+
+    resp = await client.post(
+        "/api/v1/mcp/proposals/execute",
+        json={"token": propuesta["proposal"]["token"]},
+        headers=cabeceras,
+    )
+    assert resp.status_code == 200, resp.text
+    assert gateway.request.await_count == 1

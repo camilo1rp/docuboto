@@ -101,15 +101,29 @@ async def test_loop_de_tool_despacha_al_gateway() -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_tool_excluida_del_conjunto_ofrecido() -> None:
+async def test_las_escrituras_SI_se_ofrecen_ahora_al_modelo() -> None:
+    """Cambio declarado, no test borrado.
+
+    La v1 excluía toda tool `write=True` del conjunto ofrecido, y era lo honesto
+    mientras no hubiera tarjeta de confirmación: sin ella, ofrecerlas habría sido
+    ejecutar sin preguntar. Pero el panel del asistente **prometía por escrito**
+    que toda escritura pediría confirmación explícita, sobre una interfaz que no
+    existía — la promesa describía un mecanismo, y el mecanismo estaba sin
+    construir.
+
+    Ahora se ofrecen porque el asistente no las ejecuta: las convierte en
+    propuestas firmadas. El gate no vivía en esta lista —vive en
+    `_execute_tool`—, así que recortarla nunca fue lo que hacía seguro el
+    sistema; lo que hacía era dejar al modelo sin manera de decir «puedo
+    preparártelo».
+    """
     anthropic = FakeAnthropic([Response([text_block("ok")], "end_turn")])
-    # ROOT ve TODAS en el catálogo, pero el asistente v1 filtra las write.
     gateway = make_gateway(permissions=["PERM_RADI"], roles=["ROOT"])
 
     await _run(anthropic=anthropic, gateway=gateway)
 
     offered = {t["name"] for t in anthropic.messages.calls[0]["tools"]}
-    assert "radicar_documento" not in offered  # write=True excluida
+    assert "radicar_documento" in offered
     assert "buscar_radicados" in offered and "consultar_expediente" in offered
 
 
@@ -131,15 +145,21 @@ async def test_tools_filtradas_por_permiso() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_fuera_del_conjunto_se_deniega_sin_tocar_gateway() -> None:
-    # El modelo "alucina"/es inducido a pedir radicar_documento (write, NO
-    # ofrecida). _execute_tool debe denegar sin despachar; luego cierra.
+    # El modelo "alucina" —o lo induce el contenido de un radicado— una tool que
+    # NO está en el conjunto ofrecido. `_execute_tool` debe denegar sin tocar el
+    # dispatcher ni el gateway; luego cierra.
+    #
+    # Antes este caso usaba `radicar_documento`, que entonces estaba fuera del
+    # conjunto por ser de escritura. Ya no lo está —se ofrece como propuesta—,
+    # así que el test se reescribe con una tool que de verdad no existe. Usar una
+    # que sí está lo habría dejado comprobando otra cosa sin avisar.
     anthropic = FakeAnthropic(
         [
             Response(
-                [tool_use_block("t1", "radicar_documento", {"foo": "bar"})],
+                [tool_use_block("t1", "anular_radicado", {"foo": "bar"})],
                 "tool_use",
             ),
-            Response([text_block("No puedo radicar desde aquí.")], "end_turn"),
+            Response([text_block("No puedo anular desde aquí."), ], "end_turn"),
         ]
     )
     gateway = make_gateway(permissions=["PERM_RADI"], roles=["ROOT"])
@@ -533,3 +553,224 @@ async def test_buscar_conocimiento_403_404_colapsan_a_generico() -> None:
             if isinstance(b, dict) and b.get("type") == "tool_result"
         ][0]
         assert tr["content"] == '{"error": "no_encontrado"}'
+
+
+# -- el asistente propone, no ejecuta ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_una_escritura_produce_propuesta_y_no_despacha_nada(monkeypatch) -> None:
+    """El acto se describe y se firma; el sistema no cambia.
+
+    Es la mitad que faltaba de una promesa que el panel ya hacía por escrito:
+    «toda acción de escritura pedirá confirmación explícita». Lo comprueba por
+    lo que NO ocurre —ninguna llamada de despacho al gateway— porque una tarjeta
+    que aparece después de haber radicado no es una confirmación, es un aviso.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+
+    anthropic = FakeAnthropic(
+        [
+            Response(
+                [
+                    tool_use_block(
+                        "t1",
+                        "radicar_documento",
+                        {"doc_type": "E", "subject": "Tutela de Juan Pérez"},
+                    )
+                ],
+                "tool_use",
+            ),
+            Response([text_block("Te lo he preparado.")], "end_turn"),
+        ]
+    )
+    gateway = make_gateway(permissions=["PERM_RADI"])
+
+    resp = await _run(anthropic=anthropic, gateway=gateway)
+
+    assert gateway.request.await_count == 0, "una propuesta no puede despachar nada"
+
+    assert len(resp.propuestas) == 1
+    p = resp.propuestas[0]
+    assert p.tool == "radicar_documento"
+    assert p.token.startswith("op1.")
+    # La tarjeta la redacta el CATÁLOGO: etiquetas en castellano y el valor
+    # exacto que se firmó. Si la escribiera el modelo podría describir un acto
+    # distinto del que va en el token.
+    por_arg = {c.arg: c for c in p.campos}
+    assert por_arg["subject"].valor == "Tutela de Juan Pérez"
+    assert por_arg["subject"].etiqueta == "Asunto", "la etiqueta sale del catálogo"
+    assert por_arg["doc_type"].valor == "E"
+    assert all(c.etiqueta for c in p.campos), "un campo sin etiqueta no se puede leer"
+
+
+@pytest.mark.asyncio
+async def test_el_modelo_recibe_dicho_que_no_ha_ocurrido_nada(monkeypatch) -> None:
+    """El anclaje del historial, sin el cual el modelo afirma lo que no pasó.
+
+    Un `tool_use` seguido de un resultado ambiguo se lee como que surtió efecto,
+    y el modelo redacta «he radicado el documento» — un hecho falso sobre un
+    registro oficial, que es exactamente lo que prohíbe la regla de no-invención
+    aplicada a los datos. Aquí se aplica a sus propios actos.
+    """
+    import json as _json
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+
+    anthropic = FakeAnthropic(
+        [
+            Response(
+                [tool_use_block("t1", "radicar_documento", {"doc_type": "E", "subject": "X"})],
+                "tool_use",
+            ),
+            Response([text_block("Preparado.")], "end_turn"),
+        ]
+    )
+    conversations: dict = {}
+    await _run(anthropic=anthropic, gateway=make_gateway(permissions=["PERM_RADI"]),
+               conversations=conversations)
+
+    historial = next(iter(conversations.values())).messages
+    resultados = [
+        b
+        for m in historial
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    ]
+    assert len(resultados) == 1
+    payload = _json.loads(resultados[0]["content"])
+    assert payload["ejecutado"] is False
+    assert payload["status"] == "propuesta_emitida"
+    assert "NO SE HA EJECUTADO NADA" in payload["aviso"]
+    # Y el token NO viaja al modelo: no lo necesita para nada, y meterlo en su
+    # contexto lo pone al alcance de cualquier cosa que consiga que lo repita.
+    assert "op1." not in resultados[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_una_escritura_sin_nivel_suficiente_ni_se_ofrece_ni_se_propone() -> None:
+    """El nivel CRUD, que este camino no comprobaba.
+
+    `_execute_tool` autorizaba con permiso y sin nivel, así que tener
+    `PERM_RADI` de consulta bastaba para que se firmara una propuesta de
+    tipificación que el backend rechazaría al confirmarla — una tarjeta que la
+    persona aprueba y que muere en un 403.
+    """
+    anthropic = FakeAnthropic(
+        [
+            Response(
+                [tool_use_block("t1", "tipificar_radicado", {})],
+                "tool_use",
+            ),
+            Response([text_block("No puedo tipificar.")], "end_turn"),
+        ]
+    )
+    gateway = make_gateway(permissions=["PERM_RADI"], levels={"PERM_RADI": 1})
+
+    resp = await _run(anthropic=anthropic, gateway=gateway)
+
+    ofrecidas = {t["name"] for t in anthropic.messages.calls[0]["tools"]}
+    assert "tipificar_radicado" not in ofrecidas
+    assert "radicar_documento" in ofrecidas  # exige nivel 1: sí se ofrece
+    assert resp.propuestas == []
+    assert gateway.request.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_argumentos_invalidos_en_una_escritura_no_tumban_el_turno(monkeypatch) -> None:
+    """Un fallo de validación vuelve al modelo, no revienta la conversación.
+
+    Al pasar de «no ejecutar escrituras» a «firmarlas», `coerce_args` empezó a
+    correr en este camino y su `ProposalError` se escapaba de `_execute_tool`:
+    un argumento que el modelo puede corregir solo tumbaba el turno entero con
+    un 500, y la persona veía caerse el asistente.
+    """
+    import json as _json
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+
+    anthropic = FakeAnthropic(
+        [
+            Response(
+                [tool_use_block("t1", "radicar_documento", {"subject": "sin tipo"})],
+                "tool_use",
+            ),
+            Response([text_block("Me falta el tipo de documento.")], "end_turn"),
+        ]
+    )
+    conversations: dict = {}
+    resp = await _run(anthropic=anthropic, gateway=make_gateway(permissions=["PERM_RADI"]),
+                      conversations=conversations)
+
+    assert resp.propuestas == []
+    historial = next(iter(conversations.values())).messages
+    resultado = next(
+        b
+        for m in historial
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    )
+    assert resultado["is_error"] is True
+    payload = _json.loads(resultado["content"])
+    # El código estable es lo que permite al modelo corregirse sin adivinar.
+    assert payload["error"] == "falta_parametro"
+    assert "doc_type" in payload["detail"]
+
+
+@pytest.mark.asyncio
+async def test_la_segunda_barrera_niega_aunque_la_primera_se_haya_saltado(monkeypatch) -> None:
+    """La defensa en profundidad de `_execute_tool`, probada rompiendo la de delante.
+
+    Se descubrió por mutación: quitarle `levels` a `dispatcher.authorize` dejaba
+    la suite entera en verde, porque el conjunto ofrecido ya filtra por nivel y
+    la tool nunca llegaba tan lejos. Un test que solo mira el conjunto ofrecido
+    comprueba la primera barrera **dos veces** y la segunda ninguna.
+
+    Aquí se le pasa a `_execute_tool` un `tools_by_name` que SÍ contiene la tool
+    —el estado que produciría un error de programación en el que las dos listas
+    dejen de coincidir— y se comprueba que igualmente no se firma nada. Es la
+    única forma de ejercer una capa que existe precisamente para el día en que
+    la anterior falle.
+    """
+    from app.core.config import settings
+    from app.services.assistant import _execute_tool
+    from app.services.identity import Identity
+    from app.tools.catalog import get_tool
+
+    monkeypatch.setattr(settings, "mcp_proposal_secret", "clave-de-pruebas")
+
+    gateway = make_gateway(permissions=["PERM_RADI"], levels={"PERM_RADI": 1})
+    identidad = Identity(
+        user_id="user-1",
+        tenant_slug="demo",
+        permissions={"PERM_RADI"},
+        levels={"PERM_RADI": 1},  # consulta, no creación
+    )
+    tool = get_tool("tipificar_radicado")
+    assert tool is not None and tool.min_crud == 3
+
+    propuestas: list = []
+    resultado = await _execute_tool(
+        tool_use_block("t1", "tipificar_radicado", {"document_id": _UUID, "doc_class": "X"}),
+        {"tipificar_radicado": tool},  # la primera barrera, deliberadamente rota
+        gateway,
+        authorization="Bearer tok",
+        tenant_slug="demo",
+        identidad=identidad,
+        propuestas=propuestas,
+    )
+
+    assert resultado["is_error"] is True
+    assert propuestas == [], "se firmó una propuesta que el backend rechazaría al confirmarla"
+    assert gateway.request.await_count == 0
+
+
+_UUID = "33333333-3333-3333-3333-333333333333"

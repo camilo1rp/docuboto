@@ -316,3 +316,64 @@ describe("POST /asistente/api/message — render 2xx y saneo server-side (D-05)"
     expect(raw).not.toContain("token-abc-123");
   });
 });
+
+describe("message — las propuestas se reenvían como DATO acotado", () => {
+  it("pasa la propuesta campo a campo y descarta lo no declarado", async () => {
+    stubFetch(() =>
+      jsonResponse(200, {
+        conversation_id: "c1",
+        message: { texto: "Te lo he preparado.", formato: "markdown" },
+        propuestas: [
+          {
+            id: "p1",
+            tool: "radicar_documento",
+            operacion: "Radicar un documento",
+            campos: [{ arg: "subject", etiqueta: "Asunto", valor: "Tutela", tipo: "string" }],
+            irreversible: true,
+            expira_en: 1780000000,
+            token: "op1.a.b",
+            // Campo que el backend no declara: no puede colarse al cliente.
+            script: "<img src=x onerror=alert(1)>",
+          },
+        ],
+      }),
+    );
+
+    const res = await POST({
+      locals: SESSION_LOCALS,
+      request: requestWith({ mensaje: "radica esto" }),
+    });
+    const body = await res.json();
+
+    expect(body.propuestas).toHaveLength(1);
+    const p = body.propuestas[0];
+    expect(p.token).toBe("op1.a.b");
+    expect(p.campos).toEqual([{ etiqueta: "Asunto", valor: "Tutela" }]);
+    expect(p).not.toHaveProperty("script");
+  });
+
+  it("una propuesta sin token se descarta: no se puede confirmar nada con ella", async () => {
+    stubFetch(() =>
+      jsonResponse(200, {
+        conversation_id: "c1",
+        message: { texto: "x", formato: "markdown" },
+        propuestas: [{ id: "p1", operacion: "Algo", campos: [] }],
+      }),
+    );
+
+    const res = await POST({ locals: SESSION_LOCALS, request: requestWith({ mensaje: "hola" }) });
+    expect((await res.json()).propuestas).toEqual([]);
+  });
+
+  it("sin propuestas el contrato sigue igual que antes (campo aditivo)", async () => {
+    stubFetch(() =>
+      jsonResponse(200, {
+        conversation_id: "c1",
+        message: { texto: "Hay 3 radicados.", formato: "markdown" },
+      }),
+    );
+
+    const res = await POST({ locals: SESSION_LOCALS, request: requestWith({ mensaje: "hola" }) });
+    expect((await res.json()).propuestas).toEqual([]);
+  });
+});

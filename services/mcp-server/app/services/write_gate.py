@@ -34,6 +34,26 @@ from app.core.config import settings
 from app.services import dispatcher, proposals
 from app.tools.catalog import ArgError, Tool, card_fields, coerce_args, get_tool
 
+# Frase que hay que TECLEAR para llevar a cabo un acto irreversible. Un clic no
+# basta cuando el acto no se deshace — es la convención que el proyecto ya usa
+# para la reasignación en cascada (`REASIGNAR`) y para la rotación de claves.
+#
+# Se comprueba **aquí**, no en la interfaz, y el acto se identifica por el TOKEN
+# FIRMADO: el cliente no puede mentir sobre si lo que confirma es irreversible,
+# porque no es él quien lo dice. Una frase validada solo en el navegador es
+# teatro: el navegador es la parte hostil.
+#
+# Límite dicho en voz alta: por un cliente MCP externo, quien teclea la frase es
+# el modelo, no una persona, así que ahí NO es un control humano — el control
+# humano lo aporta el flujo de aprobación del propio cliente. Se exige igual
+# para no tener dos gates distintos según por dónde entres, que es de donde
+# salió todo esto.
+FRASE_IRREVERSIBLE = "CONFIRMO"
+
+
+def frase_valida(frase: Any) -> bool:
+    return isinstance(frase, str) and frase.strip().upper() == FRASE_IRREVERSIBLE
+
 
 def secretos_vigentes() -> tuple[str, ...]:
     """Clave actual y anterior: rotar no invalida las propuestas ya emitidas."""
@@ -49,6 +69,7 @@ async def ejecutar(
     identidad: Any,
     authorization: str,
     tenant_slug: str,
+    frase: Any = None,
 ) -> dict[str, Any]:
     """Consume una propuesta y ejecuta el acto que lleva firmado dentro.
 
@@ -89,6 +110,16 @@ async def ejecutar(
         raise proposals.ProposalError(
             exc.code, exc.status, "ya no tiene permiso para ejecutar esta acción"
         ) from exc
+
+    # Qué acto es lo dice el TOKEN, no el cliente: `tool` sale de la propuesta
+    # verificada. Por eso nadie puede saltarse esta puerta declarando que su
+    # acto no era irreversible.
+    if tool.destructive and not frase_valida(frase):
+        raise proposals.ProposalError(
+            "confirmacion_requerida",
+            400,
+            f"Esta acción no se deshace. Para llevarla a cabo, escriba «{FRASE_IRREVERSIBLE}».",
+        )
 
     proposals.consume(propuesta)
 
@@ -143,6 +174,12 @@ def preparar(tool: Tool, args: dict[str, Any], *, sub: str, ten: str) -> dict[st
             "id": propuesta.jti,
             "tool": tool.name,
             "operacion": tool.operacion or tool.name,
+            # Para que la tarjeta lo AVISE antes, no después. El backend lo exige
+            # igualmente; esto es lo que evita que la persona descubra la frase
+            # al recibir un error, que es la misma forma de límite-descubierto-
+            # fallando que este trabajo persigue.
+            "irreversible": bool(tool.destructive),
+            "frase_requerida": FRASE_IRREVERSIBLE if tool.destructive else None,
             "campos": card_fields(tool, limpio),
             "expira_en": propuesta.exp,
             "token": token,

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar
+from typing import Any
 
 import httpx
 import mcp.types as types
@@ -130,7 +131,16 @@ _CONFIRMAR_SCHEMA = {
                 "El `proposal.token` que devolvió la invocación de la escritura. "
                 "Preséntalo tal cual; no lo modifiques ni lo construyas."
             ),
-        }
+        },
+        "frase": {
+            "type": "string",
+            "description": (
+                "Obligatoria SOLO para los actos irreversibles, que lo declaran en "
+                "`proposal.irreversible` junto con la frase exacta en "
+                "`proposal.frase_requerida`. Preséntasela a la persona y que sea ELLA "
+                "quien decida; tecleársela tú no aporta ninguna garantía."
+            ),
+        },
     },
     "required": ["token"],
     "additionalProperties": False,
@@ -237,7 +247,13 @@ async def _authorization(s: dict, client: httpx.AsyncClient) -> str:
     return await token_manager.authorization(client) or ""
 
 
-_ELICIT_SCHEMA = {
+_CAMPO_CONFIRMAR: dict[str, Any] = {
+    "type": "boolean",
+    "title": "¿Ejecutar esta acción?",
+    "description": "Marque solo si los datos de arriba son correctos.",
+}
+
+_ELICIT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "confirmar": {
@@ -250,11 +266,37 @@ _ELICIT_SCHEMA = {
 }
 
 
-async def _elicitar(propuesta: dict) -> bool | None:
+def _elicit_schema(p: dict) -> dict[str, Any]:
+    """La pregunta que se hace en banda; con frase si el acto no se deshace.
+
+    Sin esto, los actos irreversibles serían justamente los ÚNICOS que la
+    elicitación no puede aprobar —`ejecutar` exige la frase— y el cliente vería
+    una pregunta que, dijera lo que dijera, acababa en error. Un camino que
+    falla solo para lo más delicado es peor que no tenerlo.
+    """
+    if not p.get("irreversible"):
+        return _ELICIT_SCHEMA
+    return {
+        "type": "object",
+        "properties": {
+            "confirmar": _CAMPO_CONFIRMAR,
+            "frase": {
+                "type": "string",
+                "title": f"Escriba «{p.get('frase_requerida')}» para continuar",
+                "description": "Esta acción NO se deshace.",
+            },
+        },
+        "required": ["confirmar", "frase"],
+    }
+
+
+async def _elicitar(propuesta: dict) -> tuple[bool, str] | None:
     """Pregunta a la persona en banda, si el transporte tiene canal de vuelta.
 
-    Devuelve `True` (aprobó), `False` (rechazó) o `None` (no se pudo preguntar,
-    y entonces queda el camino de dos tools).
+    Devuelve `(aprobó, frase)` o `None` cuando no se pudo preguntar, y entonces
+    queda el camino de dos tools. La frase viaja porque los actos irreversibles
+    la exigen al ejecutar, y quien la teclea aquí es la persona a la que el
+    cliente le pintó la pregunta.
 
     **Por qué esto no debilita nada.** La aprobación por elicitación no ejecuta
     de una manera distinta: sigue pasando por `write_gate.ejecutar` con el mismo
@@ -278,10 +320,12 @@ async def _elicitar(propuesta: dict) -> bool | None:
 
     p = propuesta["proposal"]
     detalle = "\n".join(f"- {c['etiqueta']}: {c['valor']}" for c in p["campos"])
+    if p.get("irreversible"):
+        detalle += "\n\nATENCIÓN: esta acción no se deshace."
     try:
         resultado = await sesion.elicit(
             message=f"{p['operacion']}\n\n{detalle}",
-            requestedSchema=_ELICIT_SCHEMA,
+            requestedSchema=_elicit_schema(p),
         )
     except Exception:
         # Cliente que anuncia la capacidad y no la sirve, o se cayó la sesión. Se
@@ -289,9 +333,10 @@ async def _elicitar(propuesta: dict) -> bool | None:
         # duda, no se ejecuta.
         return None
 
+    contenido = resultado.content or {}
     if resultado.action != "accept":
-        return False
-    return bool((resultado.content or {}).get("confirmar"))
+        return (False, "")
+    return (bool(contenido.get("confirmar")), str(contenido.get("frase") or ""))
 
 
 async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
@@ -324,6 +369,7 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
                 identidad=identidad,
                 authorization=authorization,
                 tenant_slug=identidad.tenant_slug,
+                frase=arguments.get("frase"),
             ),
             ensure_ascii=False,
         )
@@ -363,7 +409,7 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
             tool, arguments, sub=identidad.user_id, ten=identidad.tenant_slug
         )
         elegida = await _elicitar(propuesta)
-        if elegida is False:
+        if elegida is not None and not elegida[0]:
             return json.dumps(
                 {
                     "kind": "cancelled",
@@ -372,7 +418,7 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
                 },
                 ensure_ascii=False,
             )
-        if elegida is True:
+        if elegida is not None:
             return json.dumps(
                 await write_gate.ejecutar(
                     client,
@@ -380,6 +426,7 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
                     identidad=identidad,
                     authorization=authorization,
                     tenant_slug=identidad.tenant_slug,
+                    frase=elegida[1],
                 ),
                 ensure_ascii=False,
             )

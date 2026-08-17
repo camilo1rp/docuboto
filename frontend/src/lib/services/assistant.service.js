@@ -38,6 +38,57 @@ export class AssistantError extends Error {
 }
 
 /**
+ * Confirma una propuesta que la persona aprobó en su tarjeta.
+ *
+ * El cuerpo lleva el token y —solo para los actos irreversibles— la frase
+ * tecleada. Los argumentos del acto NO viajan: salen del token firmado en el
+ * backend. Si se pudieran mandar desde aquí, la tarjeta describiría un acto y
+ * se ejecutaría otro.
+ *
+ * @param {{ token: string, frase?: string }} params
+ * @returns {Promise<any>}
+ * @throws {AssistantError}
+ */
+export async function confirmarPropuesta({ token, frase = "" }) {
+  let res;
+  try {
+    res = await fetch("/asistente/api/confirmar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, ...(frase ? { frase } : {}) }),
+    });
+  } catch {
+    throw new AssistantError("network", "No se pudo conectar con el asistente.");
+  }
+
+  /** @type {any} */
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    // Sin cuerpo o cuerpo no-JSON — se resuelve abajo por status.
+  }
+
+  if (res.ok) return data;
+
+  // El backend anida el error en `detail` (formato de error del proyecto).
+  const cuerpo = data?.detail && typeof data.detail === "object" ? data.detail : data;
+  const detail = cuerpo?.detail ?? null;
+
+  if (res.status === 503) {
+    throw new AssistantError("unavailable", "El asistente aún no está disponible.", detail);
+  }
+  if (res.status === 401) {
+    throw new AssistantError("auth", "Sesión no válida. Inicie sesión de nuevo.", detail);
+  }
+  // 400 (falta la frase, propuesta malformada), 403 (le retiraron el permiso
+  // entre proponer y confirmar), 409/410 (caducada o ya usada). El detalle del
+  // backend es la explicación buena: se propaga tal cual en vez de sustituirlo
+  // por un genérico que no dice qué hacer.
+  throw new AssistantError("invalid", detail ?? "No se pudo llevar a cabo la acción.", detail);
+}
+
+/**
  * @typedef {object} AssistantTurnDTO
  * @property {string} id
  * @property {'assistant'} role
@@ -45,9 +96,20 @@ export class AssistantError extends Error {
  * @property {string|null} html
  * @property {string} ts
  *
+ * @typedef {object} PropuestaDTO
+ * @property {string} id
+ * @property {string} tool
+ * @property {string} operacion
+ * @property {{etiqueta: string, valor: string}[]} campos
+ * @property {boolean} [irreversible]
+ * @property {string|null} [frase_requerida]
+ * @property {number} [expira_en]
+ * @property {string} token
+ *
  * @typedef {object} AssistantMessageResult
  * @property {string|null} conversation_id
  * @property {AssistantTurnDTO} message
+ * @property {PropuestaDTO[]} [propuestas]
  */
 
 /**

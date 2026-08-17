@@ -34,9 +34,12 @@
     assistantState,
     send as sendAssistant,
     reset as resetAssistant,
+    confirmar as confirmarPropuestaStore,
+    descartar as descartarPropuesta,
   } from "$lib/stores/assistant.js";
   import Button from "$lib/components/ui/Button.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import ProposalCard from "./ProposalCard.svelte";
 
   /** Controla si el dock está visible */
   export let open = false;
@@ -302,6 +305,22 @@
             <p class="assistant-turn__bubble assistant-turn__bubble--plain">{turn.texto}</p>
           {/if}
         </div>
+      {/each}
+
+      <!--
+        Las tarjetas van DESPUÉS de los turnos y no intercaladas: son actos
+        pendientes de una decisión, no parte del hilo de conversación. Una que
+        quedara enterrada bajo mensajes posteriores sería una acción que la
+        persona cree haber dejado zanjada y sigue esperándola.
+      -->
+      {#each $assistantState.propuestas as propuesta (propuesta.id)}
+        <ProposalCard
+          {propuesta}
+          estado={propuesta.estado}
+          detalleError={propuesta.detalleError ?? ""}
+          onConfirmar={({ frase }) => confirmarPropuestaStore(propuesta.id, frase)}
+          onCancelar={() => descartarPropuesta(propuesta.id)}
+        />
       {/each}
 
       {#if $assistantState.estado === "sending"}

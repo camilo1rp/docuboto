@@ -65,7 +65,10 @@ async def assistant_confirmar(
     prefijo del mcp-server que el api-gateway enruta: sin esto, la tarjeta de
     confirmación no tendría a dónde llamar.
 
-    El cuerpo lleva **solo el token**. Los argumentos salen del token firmado.
+    El cuerpo lleva **el token** y, para los actos irreversibles, la **frase**
+    tecleada. Los argumentos del acto NO viajan aquí: salen del token firmado.
+    La frase se comprueba en `write_gate`, que sabe por el propio token si el
+    acto es irreversible — el cliente no puede declarar que no lo era.
     """
     token = body.get("token")
     if not isinstance(token, str) or not token:
@@ -95,6 +98,7 @@ async def assistant_confirmar(
             identidad=identidad,
             authorization=authorization,
             tenant_slug=x_tenant_slug,
+            frase=body.get("frase"),
         )
     except IdentityError as exc:
         raise HTTPException(

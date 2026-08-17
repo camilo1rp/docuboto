@@ -94,6 +94,7 @@ async def execute_proposal(
             identidad=identidad,
             authorization=authorization or "",
             tenant_slug=x_tenant_slug or "",
+            frase=body.get("frase"),
         )
     except IdentityError as exc:
         raise HTTPException(

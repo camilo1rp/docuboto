@@ -21,7 +21,11 @@
  */
 
 import { writable, get } from "svelte/store";
-import { sendMessage, AssistantError } from "$lib/services/assistant.service.js";
+import {
+  sendMessage,
+  confirmarPropuesta,
+  AssistantError,
+} from "$lib/services/assistant.service.js";
 
 /**
  * @typedef {object} Turn
@@ -33,9 +37,21 @@ import { sendMessage, AssistantError } from "$lib/services/assistant.service.js"
  *
  * @typedef {'idle'|'sending'|'error'|'unavailable'} AssistantEstado
  *
+ * @typedef {object} Propuesta
+ * @property {string} id
+ * @property {string} tool
+ * @property {string} operacion
+ * @property {{etiqueta: string, valor: string}[]} campos
+ * @property {boolean} [irreversible]
+ * @property {string|null} [frase_requerida]
+ * @property {string} token
+ * @property {'pendiente'|'ejecutando'|'hecho'|'cancelado'|'error'} estado
+ * @property {string} [detalleError]
+ *
  * @typedef {object} AssistantState
  * @property {Turn[]} messages
  * @property {AssistantEstado} estado
+ * @property {Propuesta[]} propuestas
  * @property {string|null} conversationId
  * @property {string|null} errorDetail
  */
@@ -44,6 +60,7 @@ import { sendMessage, AssistantError } from "$lib/services/assistant.service.js"
 const initialState = {
   messages: [],
   estado: "idle",
+  propuestas: [],
   conversationId: null,
   errorDetail: null,
 };
@@ -101,10 +118,19 @@ export async function send(mensaje) {
       ts: result?.message?.ts ?? new Date().toISOString(),
     };
 
+    // Las propuestas del turno se AÑADEN a las que ya hubiera, no las
+    // sustituyen: una anterior que la persona no haya resuelto sigue siendo un
+    // acto pendiente de su decisión, y hacerla desaparecer porque llegó otro
+    // mensaje sería decidir por ella.
+    const nuevas = (result?.propuestas ?? []).map(
+      (p) => /** @type {Propuesta} */ ({ ...p, estado: "pendiente" }),
+    );
+
     assistantState.update((s) => ({
       ...s,
       messages: [...s.messages, assistantTurn],
       estado: "idle",
+      propuestas: [...s.propuestas, ...nuevas],
       conversationId: result?.conversation_id ?? s.conversationId,
       errorDetail: null,
     }));
@@ -119,7 +145,59 @@ export async function send(mensaje) {
   }
 }
 
+/**
+ * Confirma una propuesta que la persona aprobó en su tarjeta.
+ *
+ * Marca SOLO esa propuesta, por `id`: una confirmación por acto, también dentro
+ * de una cadena. Un botón que aprobara «todo lo pendiente» sería el booleano
+ * global que este diseño retiró, con otra forma.
+ *
+ * @param {string} id
+ * @param {string} [frase]
+ */
+export async function confirmar(id, frase = "") {
+  const actual = get(assistantState).propuestas.find((p) => p.id === id);
+  if (!actual || actual.estado !== "pendiente") return;
+
+  marcar(id, { estado: "ejecutando", detalleError: "" });
+  try {
+    await confirmarPropuesta({ token: actual.token, frase });
+    marcar(id, { estado: "hecho" });
+  } catch (err) {
+    // Se queda en 'error' y NO vuelve a 'pendiente' con el mismo token: si la
+    // propuesta caducó o ya se consumió, reintentar con ella no puede funcionar,
+    // y ofrecer un botón que siempre falla es peor que decir qué pasó.
+    const detalle = err instanceof AssistantError ? err.detail : null;
+    marcar(id, {
+      estado: "error",
+      detalleError: detalle ?? "No se pudo llevar a cabo la acción.",
+    });
+  }
+}
+
+/** Descarta una propuesta sin ejecutarla. No se avisa a nadie: no ocurrió nada. */
+export function descartar(id) {
+  marcar(id, { estado: "cancelado" });
+}
+
+/**
+ * @param {string} id
+ * @param {Partial<Propuesta>} cambios
+ */
+function marcar(id, cambios) {
+  assistantState.update((s) => ({
+    ...s,
+    propuestas: s.propuestas.map((p) => (p.id === id ? { ...p, ...cambios } : p)),
+  }));
+}
+
 /** Limpia la conversación (nuevo hilo). El historial solo vive en memoria. */
 export function reset() {
-  assistantState.set({ messages: [], estado: "idle", conversationId: null, errorDetail: null });
+  assistantState.set({
+    messages: [],
+    estado: "idle",
+    propuestas: [],
+    conversationId: null,
+    errorDetail: null,
+  });
 }

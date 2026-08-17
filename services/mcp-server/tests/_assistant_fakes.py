@@ -96,6 +96,7 @@ def make_gateway(
     permissions: list[str] | None = None,
     roles: list[str] | None = None,
     user_id: str = "user-1",
+    levels: dict[str, int] | None = None,
     tool_response: httpx.Response | None = None,
 ) -> AsyncMock:
     """Gateway simulado, con los dos caminos separados a propósito.
@@ -112,12 +113,16 @@ def make_gateway(
 
     `tool_response` es la respuesta que se devuelve a cualquier despacho.
     `user_id` es la identidad validada que `/auth/me` devuelve (llavea el
-    historial).
+    historial). `levels` permite declarar un nivel CRUD distinto del 3 por
+    defecto: sin él no se puede escribir el caso de quien tiene el permiso solo
+    para consultar, que es donde una tool se ofrece y muere en un 403.
     """
     gw = AsyncMock()
     me_body = {
         "permissions": permissions or [],
-        "permission_levels": {p: 3 for p in (permissions or [])},
+        "permission_levels": (
+            dict(levels) if levels is not None else {p: 3 for p in (permissions or [])}
+        ),
         "roles": roles or [],
         "user_id": user_id,
     }
