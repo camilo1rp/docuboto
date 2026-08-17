@@ -12,6 +12,7 @@
 import json
 import uuid
 
+import asyncpg
 import pytest
 
 from tests.conftest import TENANT_HEADERS, make_trd_serie_record
@@ -490,3 +491,35 @@ async def test_create_trd_serie_version_forbidden_without_permission(client_with
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
     mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_serie_con_codigo_duplicado_es_409_y_no_500(client_with_conn) -> None:
+    """Un dato que la persona puede corregir no puede salir como error interno.
+
+    `POST /api/v1/trd` con un código ya existente violaba
+    `trd_series_code_version_key` y el `UniqueViolationError` subía sin capturar:
+    la respuesta era un **500** «An unexpected error occurred», que no dice qué
+    pasó ni qué hacer. Su gemelo `tipos_documentales.py::create_tipo` sí lo
+    traduce a 409, sobre el mismo tipo de conflicto y en el mismo servicio — es
+    omisión, no diseño.
+
+    Lo destapó el guion de demostración al ejecutarse **dos veces seguidas**,
+    que es lo primero que hace cualquiera que lo prueba.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # permiso concedido
+    mock_conn.fetchrow.side_effect = asyncpg.UniqueViolationError(
+        "duplicate key value violates unique constraint \"trd_series_code_version_key\""
+    )
+
+    resp = await client.post(
+        "/api/v1/trd",
+        json={"code": "DEM-100", "name": "Serie repetida"},
+        headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())},
+    )
+
+    assert resp.status_code == 409
+    cuerpo = resp.json()["detail"]
+    assert cuerpo["error"] == "conflict"
+    assert "DEM-100" in cuerpo["detail"], "el mensaje tiene que decir QUÉ código chocó"

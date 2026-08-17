@@ -33,6 +33,25 @@ no admite nada, y un tipo documental nuevo llega sin actos hasta que alguien
 decida cuáles. Con una lista de exclusiones, el olvido queda del lado permisivo
 y no avisa — que es como se cuelan estas cosas.
 
+**Lo que NO va aquí: las reglas que cada entidad decide.** Este módulo es solo
+para lo que es igual en toda entidad porque lo impone la naturaleza del
+documento o la norma archivística. Hay otro grupo de reglas, distinto, que
+depende de **cómo quiera trabajar cada tenant** y del que no se ha construido
+nada todavía (2026-08-17, dicho por el usuario):
+
+* **Quién puede responder un radicado.** Unas entidades dejan que cualquier
+  usuario de cualquier dependencia responda; otras exigen el flujo tal y como se
+  concibió — solo responde quien tiene el radicado asignado y pertenece a la
+  dependencia que lo tramita.
+* **Visibilidad.** Si un radicado lo ve un único usuario en todo el sistema,
+  toda su dependencia, o cualquier usuario de la entidad.
+
+Esas son **decisiones de la entidad, no hechos del documento**, y necesitan un
+mecanismo propio: configuración por tenant, no una tabla en el código. Meterlas
+aquí las convertiría en universales y le impondría a todas las entidades la
+manera de trabajar de una — que es exactamente el error contrario al que este
+módulo evita. Cuando se construyan, irán a su propio sitio.
+
 **Ni ROOT lo salta.** El bypass de ROOT es sobre permisos: sirve para autorizar a
 quien no estaba autorizado, no para hacer posible lo que no lo es. Por eso la
 comprobación vive en el servicio de dominio y no en un `Depends` de autorización.

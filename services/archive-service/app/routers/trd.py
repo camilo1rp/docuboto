@@ -94,7 +94,25 @@ async def create_trd_serie(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TrdSerieResponse:
     service = ArchiveService(conn, tenant_slug)
-    return await service.create_trd_serie(payload, actor.id)
+    try:
+        return await service.create_trd_serie(payload, actor.id)
+    except asyncpg.UniqueViolationError:
+        # `trd_series_code_version_key`: el código ya existe. Sin esto salía un
+        # **500** —«An unexpected error occurred»— por un dato que la persona
+        # puede corregir sola, y sin decirle cuál era el problema.
+        #
+        # Su gemelo `tipos_documentales.py::create_tipo` sí lo traduce, sobre el
+        # mismo tipo de conflicto y en el mismo servicio: es omisión, no diseño.
+        # Lo destapó el guion de demostración al ejecutarse dos veces seguidas,
+        # que es lo primero que hace cualquiera.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "conflict",
+                "detail": f"Ya existe una serie con el código '{payload.code}'",
+                "status": 409,
+            },
+        )
 
 
 @router.get(

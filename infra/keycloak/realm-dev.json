@@ -51,8 +51,16 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:19300/*", "http://localhost:3000/*", "http://localhost:5173/*"],
-      "webOrigins": ["http://localhost:19300", "http://localhost:3000", "http://localhost:5173"],
+      "redirectUris": [
+        "http://localhost:19300/*",
+        "http://localhost:3000/*",
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:19300",
+        "http://localhost:3000",
+        "http://localhost:5173"
+      ],
       "protocolMappers": [
         {
           "name": "tenant_slug",
@@ -73,11 +81,26 @@
   ],
   "roles": {
     "realm": [
-      {"name": "superadmin", "description": "OrpycaMCP platform administrator"},
-      {"name": "tenant_admin", "description": "Institution administrator"},
-      {"name": "manager", "description": "Department manager"},
-      {"name": "operator", "description": "Document operator (radica, distribuye)"},
-      {"name": "viewer", "description": "Read-only access"}
+      {
+        "name": "superadmin",
+        "description": "OrpycaMCP platform administrator"
+      },
+      {
+        "name": "tenant_admin",
+        "description": "Institution administrator"
+      },
+      {
+        "name": "manager",
+        "description": "Department manager"
+      },
+      {
+        "name": "operator",
+        "description": "Document operator (radica, distribuye)"
+      },
+      {
+        "name": "viewer",
+        "description": "Read-only access"
+      }
     ]
   },
   "users": [
@@ -88,8 +111,16 @@
       "firstName": "Admin",
       "lastName": "Orpyca",
       "enabled": true,
-      "credentials": [{"type": "password", "value": "orpycamcp_dev", "temporary": false}],
-      "realmRoles": ["superadmin"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "superadmin"
+      ]
     },
     {
       "username": "operador",
@@ -98,9 +129,90 @@
       "firstName": "Operador",
       "lastName": "Demo",
       "enabled": true,
-      "credentials": [{"type": "password", "value": "orpycamcp_dev", "temporary": false}],
-      "realmRoles": ["operator"],
-      "attributes": {"tenant_slug": ["demo"]}
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "operator"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
+    },
+    {
+      "username": "jefe",
+      "email": "jefe@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Jefe",
+      "lastName": "Jurídica",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "manager"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
+    },
+    {
+      "username": "archivista",
+      "email": "archivista@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Archivista",
+      "lastName": "Demo",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "operator"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
+    },
+    {
+      "username": "secretaria",
+      "email": "secretaria@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Secretaría",
+      "lastName": "General",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "manager"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
     }
   ]
 }
