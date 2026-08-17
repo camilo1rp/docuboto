@@ -132,6 +132,16 @@ class Tool:
     # test comprueba además que la ruta marcada no tenga gate de decorador, para
     # que la marca no sirva de interruptor para silenciar un hallazgo real.
     permiso_en_runtime: bool = False
+    # Grupos de argumentos de los que hay que enviar EXACTAMENTE UNO. Es una
+    # restricción que existe en el backend —`AntecedentesRequest` la impone con
+    # un `model_validator`— y que JSON Schema no expresa con las piezas que este
+    # catálogo declara: haría falta un `oneOf`, otra forma de esquema.
+    #
+    # Sin declararla, los dos parámetros se anuncian como opcionales, el modelo
+    # manda ambos o ninguno y el backend devuelve un 422 — el límite descubierto
+    # fallando, que es exactamente lo que este trabajo viene a quitar de en
+    # medio. Declarándola, `coerce_args` lo dice antes de que salga la petición.
+    exactly_one_of: tuple[tuple[str, ...], ...] = ()
     epic: str = ""
     # Argumentos declarados. Fuente única: ver `Param`.
     params: tuple[Param, ...] = ()
@@ -183,6 +193,22 @@ _P_EXPEDIENTE_ID = Param(
     format="uuid",
     description="UUID del expediente.",
     label="Expediente",
+)
+_P_SERIE_ID = Param(
+    name="serie_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la serie o subserie de la TRD.",
+    label="Serie TRD",
+)
+_P_BORRADOR_ID = Param(
+    name="borrador_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del borrador (aún no tiene número de radicado).",
+    label="Borrador",
 )
 _P_PAGE = Param(
     name="page",
@@ -1207,6 +1233,470 @@ CATALOG: tuple[Tool, ...] = (
             ),
         ),
     ),
+    Tool(
+        name="buscar_antecedentes",
+        description=(
+            "Antecedentes de un asunto: radicados anteriores parecidos, cada uno con SU "
+            "NÚMERO para poder verificarlo en la fuente. Se pide de una de dos formas y "
+            "solo una: por asunto ('query') o por radicado ('radicado_ref', el número de "
+            "un radicado ya existente). Enviar las dos, o ninguna, es un error. "
+            "No redacta ni escribe nada: solo recupera."
+        ),
+        method="POST",
+        path="/api/v1/knowledge/antecedentes",
+        permission=None,
+        write=False,
+        epic="E21",
+        operacion="Buscar antecedentes de un asunto o de un radicado",
+        exactly_one_of=(("query", "radicado_ref"),),
+        # El XOR entre `query` y `radicado_ref` lo impone `AntecedentesRequest`
+        # con un `model_validator`. Se declara con `exactly_one_of` para que
+        # `coerce_args` lo rechace ANTES de salir: el 422 del backend dice lo
+        # mismo, pero solo después de que el usuario haya esperado.
+        #
+        # `source_type` NO se expone: su único valor real hoy es el default
+        # ("radicado"), y ofrecerlo como texto libre es superficie de mando que
+        # solo sirve para equivocarse.
+        params=(
+            Param(
+                name="query",
+                min_length=2,
+                description="Asunto o descripción del caso del que se buscan antecedentes.",
+                label="Asunto",
+            ),
+            Param(
+                name="radicado_ref",
+                min_length=1,
+                description=(
+                    "Número de un radicado existente cuyos antecedentes se buscan. "
+                    "El propio radicado no se devuelve como antecedente de sí mismo."
+                ),
+                label="Radicado de referencia",
+            ),
+            Param(
+                name="top_k",
+                type="integer",
+                minimum=1,
+                maximum=20,
+                description="Número máximo de antecedentes a devolver (5 si se omite).",
+                label="Antecedentes",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="redactar_con_antecedentes",
+        description=(
+            "Redacta un texto APOYADO en documentos del archivo y devuelve sus CITAS: "
+            "cada afirmación con el radicado del que sale. NO escribe nada en el "
+            "sistema — el texto se revisa y, si sirve, se lleva a un borrador con "
+            "'crear_borrador'. Si la respuesta llega sin 'answer' o sin citas, el "
+            "sistema no generó texto: entonces se ofrecen los antecedentes tal cual, "
+            "no una redacción propia. El texto es generado y así hay que presentarlo."
+        ),
+        method="POST",
+        path="/api/v1/knowledge/rag",
+        permission=None,
+        write=False,
+        epic="E21",
+        operacion="Redactar un texto apoyado en antecedentes, con citas",
+        params=(
+            Param(
+                name="query",
+                required=True,
+                min_length=2,
+                description="Lo que se quiere redactar o responder, en lenguaje natural.",
+                label="Consulta",
+            ),
+            Param(
+                name="top_k",
+                type="integer",
+                minimum=1,
+                maximum=20,
+                description="Número máximo de fragmentos de apoyo (5 si se omite).",
+                label="Fragmentos",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_respuestas",
+        description=(
+            "Salidas que responden a este radicado: qué se le ha contestado ya y cuándo. "
+            "Es la comprobación previa a redactar otra respuesta."
+        ),
+        method="GET",
+        path="/api/v1/documents/{document_id}/respuestas",
+        path_params=("document_id",),
+        # El endpoint no exige permiso atómico: acota por clearance (RF-SEG-08),
+        # que se resuelve server-side y no es un permiso que el catálogo declare.
+        permission=None,
+        write=False,
+        epic="E01",
+        operacion="Ver qué respuestas se han dado a un radicado",
+        params=(_P_DOCUMENT_ID,),
+    ),
+    Tool(
+        name="crear_respuesta_vinculada",
+        description=(
+            "Crea una Salida en respuesta a un radicado de Entrada y la deja vinculada a "
+            "él como antecedente. CONSUME un número de radicado, que es inmutable. "
+            "Hereda el asunto del antecedente si no se indica otro."
+        ),
+        method="POST",
+        path="/api/v1/documents/{document_id}/respuesta",
+        path_params=("document_id",),
+        permission="PERM_RESPUESTA_VINCULADA",
+        min_crud=1,
+        write=True,
+        # Igual que `radicar_documento`: no borra nada y aun así no se deshace,
+        # porque el número queda consumido. `destructiveHint` pregunta por lo
+        # irreversible, no por lo que destruye.
+        destructive=True,
+        epic="E01",
+        operacion="Responder un radicado con una Salida vinculada",
+        fallback=(
+            "Sin permiso de respuesta vinculada, la Salida puede prepararse como "
+            "borrador y pedir a la dependencia competente que la radique."
+        ),
+        # Subconjunto de `RespuestaRapidaCreate` (document-service). Se declaran
+        # todos sus campos: ninguno es obligatorio porque el asunto y la
+        # dependencia se heredan del antecedente cuando se omiten.
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="subject",
+                max_length=2000,
+                description="Asunto de la respuesta. Si se omite, hereda el del antecedente.",
+                label="Asunto",
+            ),
+            Param(
+                name="dest_dept",
+                max_length=100,
+                description="Dependencia destinataria.",
+                label="Destino",
+            ),
+            Param(
+                name="dest_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description="Código numérico de la dependencia destinataria.",
+                label="Código de destino",
+            ),
+            Param(
+                name="observations",
+                description="Cuerpo u observaciones de la respuesta.",
+                label="Observaciones",
+            ),
+            Param(
+                name="response_days",
+                type="integer",
+                minimum=1,
+                maximum=3650,
+                description="Días para responder, si esta Salida a su vez espera respuesta.",
+                label="Días de respuesta",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_plantillas",
+        description=(
+            "Plantillas de redacción disponibles, con su identificador. Es de donde sale "
+            "el 'plantilla_id' de 'crear_borrador': no lo inventes."
+        ),
+        method="GET",
+        path="/api/v1/plantillas",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar las plantillas de redacción",
+        params=(
+            Param(
+                name="activo",
+                type="boolean",
+                description="Solo plantillas activas (true) o solo retiradas (false).",
+                label="Activas",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_borradores",
+        description=(
+            "Borradores de Salida: los que están en redacción, los aprobados y los ya "
+            "radicados. Un borrador NO tiene número de radicado hasta que se radica."
+        ),
+        method="GET",
+        path="/api/v1/borradores",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Ver los borradores de salida",
+        params=(
+            Param(
+                name="estado",
+                enum=("borrador", "aprobado", "radicado"),
+                description="Filtra por estado del borrador.",
+                label="Estado",
+            ),
+        ),
+    ),
+    Tool(
+        name="crear_borrador",
+        description=(
+            "Crea un borrador de Salida o Interno: texto que todavía NO es un radicado y "
+            "NO consume número. Se puede editar cuantas veces haga falta y solo al "
+            "radicarlo se convierte en documento oficial."
+        ),
+        method="POST",
+        path="/api/v1/borradores",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        # Un borrador no es un acto de archivo: no tiene número, no entra en el
+        # índice y se edita o se abandona sin consecuencia. Es justamente la
+        # pieza que permite proponer sin comprometer.
+        destructive=False,
+        epic="E01",
+        operacion="Preparar un borrador de salida",
+        fallback=(
+            "Sin permiso de radicación, el texto puede entregarse a la dependencia "
+            "de correspondencia para que lo prepare."
+        ),
+        params=(
+            Param(
+                name="doc_type",
+                enum=("S", "I"),
+                description="S = Salida, I = Interno. Salida si se omite.",
+                label="Tipo",
+            ),
+            Param(
+                name="subject",
+                required=True,
+                min_length=1,
+                max_length=2000,
+                description="Asunto del borrador.",
+                label="Asunto",
+            ),
+            Param(
+                name="dest_dept",
+                max_length=100,
+                description="Dependencia destinataria.",
+                label="Destino",
+            ),
+            Param(
+                name="cuerpo",
+                description=(
+                    "Texto del documento. Si se omite y se indica una plantilla, el "
+                    "cuerpo sale de la plantilla."
+                ),
+                label="Cuerpo",
+            ),
+            Param(
+                name="plantilla_id",
+                format="uuid",
+                description="Plantilla de la que copiar el cuerpo (de 'listar_plantillas').",
+                label="Plantilla",
+            ),
+        ),
+    ),
+    Tool(
+        name="editar_borrador",
+        description=(
+            "Corrige el asunto, el destino o el cuerpo de un borrador. Deja de admitirse "
+            "una vez el borrador se ha radicado."
+        ),
+        method="PATCH",
+        path="/api/v1/borradores/{borrador_id}",
+        path_params=("borrador_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E01",
+        operacion="Corregir un borrador de salida",
+        fallback="Sin permiso de radicación, la corrección se pide a quien preparó el borrador.",
+        # Exactamente los tres campos de `BorradorUpdate`. `doc_type` y
+        # `plantilla_id` NO se editan allí: el tipo documental de una Salida se
+        # decide al crearla.
+        params=(
+            _P_BORRADOR_ID,
+            Param(
+                name="subject",
+                max_length=2000,
+                description="Asunto del borrador.",
+                label="Asunto",
+            ),
+            Param(
+                name="dest_dept",
+                max_length=100,
+                description="Dependencia destinataria.",
+                label="Destino",
+            ),
+            Param(name="cuerpo", description="Texto del documento.", label="Cuerpo"),
+        ),
+    ),
+    Tool(
+        name="aprobar_borrador",
+        description=(
+            "Marca el borrador como aprobado, el paso previo a radicarlo en el "
+            "procedimiento de la entidad. AVISO: hoy el sistema NO lo exige para radicar "
+            "— un borrador sin aprobar se radica igual —, así que no lo presentes como "
+            "un control que impide radicar."
+        ),
+        method="POST",
+        path="/api/v1/borradores/{borrador_id}/aprobar",
+        path_params=("borrador_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        # El borrador aprobado se sigue editando (`_require_editable` solo cierra
+        # el estado `radicado`), así que la marca se pone y se quita de hecho al
+        # seguir trabajando: no es un acto irreversible.
+        destructive=False,
+        epic="E01",
+        operacion="Aprobar un borrador de salida",
+        fallback="Sin permiso de radicación, la aprobación la da la dependencia competente.",
+        params=(_P_BORRADOR_ID,),
+    ),
+    Tool(
+        name="radicar_borrador",
+        description=(
+            "Convierte el borrador en un radicado real: le asigna número, que es "
+            "INMUTABLE y no se reutiliza. A partir de aquí el borrador ya no se edita. "
+            "Es el acto que cierra la redacción, no un guardado más."
+        ),
+        method="POST",
+        path="/api/v1/borradores/{borrador_id}/radicar",
+        path_params=("borrador_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=True,
+        epic="E01",
+        operacion="Radicar un borrador (le asigna número definitivo)",
+        fallback=(
+            "Sin permiso de radicación, el borrador queda preparado y lo radica la "
+            "dependencia de correspondencia."
+        ),
+        params=(_P_BORRADOR_ID,),
+    ),
+    Tool(
+        name="consultar_serie",
+        description=(
+            "Una serie o subserie de la TRD: su código, su nombre y los tiempos de "
+            "retención y disposición que gobiernan a todo lo que se clasifique en ella."
+        ),
+        method="GET",
+        path="/api/v1/trd/{serie_id}",
+        path_params=("serie_id",),
+        permission=None,
+        write=False,
+        epic="E04",
+        operacion="Consultar una serie de la TRD",
+        params=(_P_SERIE_ID,),
+    ),
+    Tool(
+        name="consultar_retencion",
+        description=(
+            "Calcula, para una serie de la TRD y una fecha de cierre, cuándo termina cada "
+            "fase del archivo y qué disposición final corresponde. Es un CÁLCULO: no "
+            "cambia nada y no sustituye a la disposición registrada del expediente."
+        ),
+        method="GET",
+        path="/api/v1/trd/{serie_id}/retention",
+        path_params=("serie_id",),
+        permission=None,
+        write=False,
+        epic="E04",
+        operacion="Calcular el calendario de retención de una serie",
+        params=(
+            _P_SERIE_ID,
+            Param(
+                name="closed_at",
+                required=True,
+                format="date",
+                description=(
+                    "Fecha de cierre del expediente (AAAA-MM-DD), desde la que cuenta el "
+                    "calendario. Es la fecha real de cierre, no la de hoy."
+                ),
+                label="Fecha de cierre",
+            ),
+        ),
+    ),
+    Tool(
+        name="ubicacion_expediente",
+        description=(
+            "DÓNDE está físicamente un expediente: sus unidades de conservación con la "
+            "signatura topográfica. Dice dónde está, no qué contiene."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/unidades",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Localizar físicamente un expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="listar_prestamos",
+        description=(
+            "Préstamos de unidades del archivo físico: qué está prestado, a quién y desde "
+            "cuándo. Con 'estado' se ven solo los vencidos, que es la consulta habitual."
+        ),
+        method="GET",
+        path="/api/v1/prestamos",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Consultar los préstamos del archivo físico",
+        params=(
+            Param(
+                name="estado",
+                enum=("prestado", "devuelto", "vencido"),
+                description="Filtra por estado del préstamo.",
+                label="Estado",
+            ),
+        ),
+    ),
+    Tool(
+        name="reporte_radicacion",
+        description=(
+            "Resumen ESTADÍSTICO de la radicación en un periodo: cuántos radicados por "
+            "tipo, estado, mes y dependencia. Son conteos, no un listado: para ver "
+            "radicados concretos está 'buscar_radicados'."
+        ),
+        method="GET",
+        path="/api/v1/reports/radicados",
+        # El endpoint no exige permiso atómico y devuelve SOLO agregados: ni
+        # número de radicado, ni asunto, ni remitente. Se expone tal cual y con
+        # esa advertencia en la descripción, para que el modelo no lo use como
+        # sustituto de una búsqueda y presente un conteo como si fuera un
+        # inventario.
+        permission=None,
+        write=False,
+        epic="E09",
+        operacion="Ver el resumen estadístico de radicación",
+        params=(
+            Param(
+                name="date_from",
+                format="date",
+                description="Radicados registrados desde esta fecha (AAAA-MM-DD).",
+                label="Desde",
+            ),
+            Param(
+                name="date_to",
+                format="date",
+                description="Radicados registrados hasta esta fecha (AAAA-MM-DD).",
+                label="Hasta",
+            ),
+        ),
+    ),
 )
 
 
@@ -1297,6 +1787,16 @@ def coerce_args(tool: Tool, raw: dict[str, Any]) -> dict[str, Any]:
                 raise ArgError("valor_invalido", f"'{p.name}' no puede ser mayor que {p.maximum}")
 
         limpio[p.name] = valor
+
+    for grupo in tool.exactly_one_of:
+        presentes = [n for n in grupo if n in limpio]
+        if len(presentes) != 1:
+            recibido = ", ".join(presentes) if presentes else "ninguno"
+            raise ArgError(
+                "parametros_excluyentes",
+                f"'{tool.name}' exige exactamente uno de: {', '.join(grupo)}. "
+                f"Se recibió: {recibido}",
+            )
     return limpio
 
 

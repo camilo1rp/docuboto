@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     # tenant se propagan al gateway, que resuelve autenticación/RBAC/tenant.
     mcp_bearer_token: str = ""  # token estático (sin refresco); precedencia
     mcp_tenant_slug: str = ""
-    mcp_user_permissions: str = ""  # CSV
-    mcp_user_roles: str = ""  # CSV (ROOT = ve/usa todo)
 
     # OAuth por sesión (stdio): el mcp-server obtiene y refresca el token Keycloak
     # vía auth-service (gateway), en vez de recibir un bearer estático.

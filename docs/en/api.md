@@ -829,15 +829,23 @@ Browser Binding (JSON). **Read-only** over the tenant's **public** radicados. **
 - `POST /api/v1/import` — **imports an interoperable package** of radicados. **Authenticated**; gate `USUA_PERM_EXPEDIENTE` + **clearance-based no write-up**. It receives the INT-01 ZIP as a **raw body** (`Content-Type: application/zip`, cap 512 MiB). **ALL-OR-NOTHING validation before ingesting**: it validates every radicado against the service's trusted JSON Schema and **verifies the SHA-256 of every binary**; if anything fails → `422 paquete_invalido` **leaving no partial state**. It re-ingests **preserving the radicado number** (a collision is **skipped**, never overwritten); it rebuilds the E↔S relationship (`responde_a`) by number; it uploads the binaries to storage; it audits `radicado.import`. Anti zip-slip/zip-bomb guards. Response `{import_uuid, importados, omitidos_existentes, omitidos_clearance, relaciones_reconstruidas}`. A radicado whose `nivel_seguridad` exceeds the importer's clearance is **skipped** (`omitidos_clearance`).
 
 ### MCP layer (E18, ADR-019) — mcp-server, port 8009
-A separate service (not behind the gateway): it exposes the API as *tools* to agents/LLMs, while itself being a client of the gateway. The **MCP protocol** is available over **stdio** (`python -m app.mcp_stdio`) and **streamable HTTP** (`POST /mcp`, context via the `Authorization`/`X-Tenant-Slug`/`X-User-Permissions`/`X-User-Roles` headers). Simple HTTP catalog API:
-- `GET /api/v1/mcp/tools` — catalog of tools visible to the user (filters by `X-User-Permissions`; `X-User-Roles` with `ROOT` sees all).
+It exposes the API as *tools* to agents/LLMs, while itself being a client of the gateway. The **MCP protocol** is available over **stdio** (`python -m app.mcp_stdio`) and **streamable HTTP**.
+
+**It is now routed through the gateway** (`/api/v1/mcp/` → mcp-server), which it was not before: catalogue and protocol were left outside, so an external MCP client had no way in except talking to the service behind the gateway's back, with no JWT validation and no `X-Tenant-Slug`. Exposing it is safe because the write gate no longer depends on the client (signed proposal, see above). The streamable transport is mounted at `POST /api/v1/mcp/stream` in addition to `/mcp`.
+
+The session context is **two headers**: `Authorization` and `X-Tenant-Slug`. `X-User-Permissions` and `X-User-Roles` are **no longer read** — nobody produced the former and the gateway drops it as forgeable, so it always arrived empty and every permissioned tool was invisible over that transport; permissions come from `GET /api/v1/auth/me` with the caller's token, and with them the **CRUD level**. The equivalent environment settings (`MCP_USER_PERMISSIONS`, `MCP_USER_ROLES`) have been removed.
+
+**Scope framework**: the `mi_alcance` tool and the `orfeo://alcance` resource return what the person can execute, what they can read, and what they **cannot** with its reason and its **alternative route**. It is always offered, even to someone who reaches no write at all.
+
+Simple HTTP catalog API:
+- `GET /api/v1/mcp/tools` — catalogue of the tools THIS caller can use, resolved against `/auth/me` (permission **and** level).
 - `POST /api/v1/mcp/tools/{name}/invoke` `{...args}` — invokes the tool: propagates `Authorization` + `X-Tenant-Slug` to the gateway. Identity and permissions are resolved against `GET /api/v1/auth/me` using the caller's token (permission **and** CRUD level; `403` if insufficient). Tools: `radicar_documento`, `consultar_radicado`, `buscar_radicados`, `consultar_expediente`, `indice_expediente`, `listar_trd`, `bandeja_tramite`, `consultar_fuid`, `buscar_conocimiento` (E21 semantic search; POST `/api/v1/knowledge/search`, read-only, server-side ACL).
   **Write operations are NOT executed here: they return a proposal.** `X-Confirm-Write` is **no longer read** — it was a boolean any client could set, and it bound the confirmation to no particular act (it confirmed "something", not "this"). The response is `{kind:"proposal", ejecutado:false, proposal:{id, tool, operacion, campos, expira_en, token}, aviso}`: `campos` are the human-readable fields of the act — worded by the **catalog**, never by the model — and `token` is an opaque HMAC-SHA256-signed value carrying the tool and its already-validated arguments. It expires after 120 s and is bound to the user and tenant that requested it.
 - `POST /api/v1/mcp/proposals/execute` `{token}` — executes the act signed inside the token. **The body carries only the token**: the arguments come from it, so what runs is exactly what was described. It **re-authorizes** on confirmation (the permission may have been revoked between proposing and confirming: a proposal attests *what* was approved, not that whoever presents it may still do it) and **consumes** the proposal before dispatching. Errors: `400 propuesta_invalida`, `403 propuesta_ajena` / `permiso_insuficiente`, `409 propuesta_consumida`, `410 propuesta_expirada`.
   The same act over the **MCP protocol**: writes return the proposal as structured content and are confirmed with the `confirmar_accion(token)` tool; where the transport has a return channel (**stdio**) the user is asked in-band via **elicitation**, using those same fields. Over streamable HTTP (`stateless`) there is no session to ask and only the two-tool path remains — a declared limit. Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`) as **hints**, so the client can add its own friction: the guarantee still lives in the signed proposal, not in them.
   *Declared limit*: the consumption registry lives in process memory — it covers double-clicks and retries, not multi-replica. `Idempotency-Key: <jti>` is emitted to the gateway as a hook for each epic to implement, not as a guarantee.
 
-The current catalogue (30 tools, 11 of them writes). Every write returns a signed proposal and requires explicit confirmation (see above):
+The current catalogue (45 tools, 16 of them writes). Every write returns a signed proposal and requires explicit confirmation (see above):
 
 | Tool | Endpoint | Permission (crud) | |
 |---|---|---|---|
@@ -871,6 +879,25 @@ The current catalogue (30 tools, 11 of them writes). Every write returns a signe
 | `ejecutar_transaccion` | `POST /workflows/{id}/transactions` | por tipo, suelo `PERM_TRAMITAR` | **W** |
 | `consultar_fuid` | `GET /transferencias/{id}/fuid` | `USUA_PERM_EXPEDIENTE` (1) | R |
 | `buscar_conocimiento` | `POST /knowledge/search` | *clearance* | R |
+| `buscar_antecedentes` | `POST /knowledge/antecedentes` | *clearance* | R **query XOR radicado_ref** |
+| `redactar_con_antecedentes` | `POST /knowledge/rag` | *clearance* | R returns text **with citations**, writes nothing |
+| `listar_respuestas` | `GET /documents/{id}/respuestas` | *clearance* | R |
+| `crear_respuesta_vinculada` | `POST /documents/{id}/respuesta` | `PERM_RESPUESTA_VINCULADA` (1) | **W** consumes an immutable number |
+| `listar_plantillas` | `GET /plantillas` | `PERM_RADI` (1) | R |
+| `listar_borradores` | `GET /borradores` | `PERM_RADI` (1) | R |
+| `crear_borrador` | `POST /borradores` | `PERM_RADI` (1) | **W** no number yet; not an archival act |
+| `editar_borrador` | `PATCH /borradores/{id}` | `PERM_RADI` (1) | **W** |
+| `aprobar_borrador` | `POST /borradores/{id}/aprobar` | `PERM_RADI` (1) | **W** *not* required before radicar |
+| `radicar_borrador` | `POST /borradores/{id}/radicar` | `PERM_RADI` (1) | **W** consumes an immutable number |
+| `consultar_serie` | `GET /trd/{id}` | *no permission* | R |
+| `consultar_retencion` | `GET /trd/{id}/retention` | *no permission* | R a computation, not the recorded disposition |
+| `ubicacion_expediente` | `GET /expedientes/{id}/unidades` | `USUA_PERM_EXPEDIENTE` (1) | R where it is, not what it holds |
+| `listar_prestamos` | `GET /prestamos` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `reporte_radicacion` | `GET /reports/radicados` | *no permission* | R aggregates only |
+
+**Mutual exclusion declared, not discovered through a 422.** `buscar_antecedentes` takes either the subject (`query`) or the reference tracking number (`radicado_ref`), never both and never neither — enforced by `AntecedentesRequest` with a `model_validator`, and JSON Schema cannot express it with the catalogue's building blocks. The catalogue declares it via `exactly_one_of` and `coerce_args` answers `parametros_excluyentes` **before** the request leaves: the backend's 422 says the same thing, only after making the person wait.
+
+**Note on `aprobar_borrador`**: the documented draft cycle is create → edit → approve → register, but `POST /borradores/{id}/radicar` does **not** check that the draft was approved — only that it has not already been registered. Approval is today a procedural marker, not a control that blocks registration, and the tool description says so, so the assistant does not present it as a barrier that does not exist.
 
 **Left out by decision, not by oversight**: annulling and approving annulments, marking for destruction, setting the disposition, reclassifying the security level, publishing, unlinking a radicado (it breaks the foliation), transferring, repealing TRD/TVD, signing, and the whole tenant administration surface. **Bulk linking** (`/radicados/batch`, up to 500) stays out for as long as its confirmation card cannot be read: a card that says "500 radicados" does not let anyone confirm knowingly, which is the only reason the card exists.
 

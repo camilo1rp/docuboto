@@ -839,15 +839,23 @@ Browser Binding (JSON). **Solo lectura** sobre los radicados **públicos** del t
 - `POST /api/v1/import` — **importa un paquete interoperable** de radicados. **Autenticado**; gate `USUA_PERM_EXPEDIENTE` + **no-write-up por clearance**. Recibe el ZIP de INT-01 como **cuerpo crudo** (`Content-Type: application/zip`, tope 512 MiB). **Validación TODO-o-NADA antes de ingerir**: valida cada radicado contra el JSON Schema de confianza del servicio y **verifica el SHA-256 de cada binario**; si algo falla → `422 paquete_invalido` **sin dejar estado parcial**. Reingiere **preservando el número de radicado** (una colisión se **omite**, no se sobreescribe); reconstruye la relación E↔S (`responde_a`) por número; sube los binarios a storage; audita `radicado.import`. Guardas anti zip-slip/zip-bomb. Respuesta `{import_uuid, importados, omitidos_existentes, omitidos_clearance, relaciones_reconstruidas}`. Un radicado con `nivel_seguridad` > clearance del importador se **omite** (`omitidos_clearance`).
 
 ### Capa MCP (E18, ADR-019) — mcp-server, puerto 8009
-Servicio separado (no detrás del gateway): expone la API como *tools* a agentes/LLM, siendo él mismo cliente del gateway. **Protocolo MCP** disponible por **stdio** (`python -m app.mcp_stdio`) y **HTTP streamable** (`POST /mcp`, contexto por cabeceras `Authorization`/`X-Tenant-Slug`/`X-User-Permissions`/`X-User-Roles`). API HTTP simple del catálogo:
-- `GET /api/v1/mcp/tools` — catálogo de tools visibles para el usuario (filtra por `X-User-Permissions`; `X-User-Roles` con `ROOT` ve todas).
+Expone la API como *tools* a agentes/LLM, siendo él mismo cliente del gateway. **Protocolo MCP** disponible por **stdio** (`python -m app.mcp_stdio`) y **HTTP streamable**.
+
+**Se enruta por el gateway** (`/api/v1/mcp/` → mcp-server), lo que antes no ocurría: el catálogo y el protocolo quedaban fuera, de modo que un cliente MCP externo no tenía por dónde entrar salvo hablando con el servicio a espaldas del gateway, sin validación JWT ni `X-Tenant-Slug`. Se puede exponer porque el gate de escritura ya no depende del cliente (propuesta firmada, ver arriba). El transporte streamable se monta en `POST /api/v1/mcp/stream` además de en `/mcp`.
+
+El contexto de sesión son **dos cabeceras**: `Authorization` y `X-Tenant-Slug`. `X-User-Permissions` y `X-User-Roles` **ya no se leen** — la primera no la producía nadie y el gateway la descarta por forjable, así que llegaba vacía y toda tool con permiso quedaba invisible por ese transporte; los permisos salen de `GET /api/v1/auth/me` con el token del llamante, y con ellos el **nivel CRUD**. Los ajustes de entorno equivalentes (`MCP_USER_PERMISSIONS`, `MCP_USER_ROLES`) se han retirado.
+
+**Marco de alcance**: la tool `mi_alcance` y el resource `orfeo://alcance` devuelven lo que la persona puede ejecutar, lo que puede consultar y lo que **no** puede con su motivo y su **vía alternativa**. Se ofrece siempre, aunque no alcance ninguna escritura: el conjunto de tools dice qué se puede hacer y calla lo demás, y callar es cómo un límite acaba descubriéndose fallando.
+
+API HTTP simple del catálogo:
+- `GET /api/v1/mcp/tools` — catálogo de tools que ESTE llamante puede usar, resuelto contra `/auth/me` (permiso **y** nivel).
 - `POST /api/v1/mcp/tools/{name}/invoke` `{...args}` — invoca la tool: propaga `Authorization` + `X-Tenant-Slug` al gateway. La identidad y los permisos se resuelven contra `GET /api/v1/auth/me` con el token del llamante (permiso **y** nivel CRUD; `403` si no alcanza). Tools: `radicar_documento`, `consultar_radicado`, `buscar_radicados`, `consultar_expediente`, `indice_expediente`, `listar_trd`, `bandeja_tramite`, `consultar_fuid`, `buscar_conocimiento` (búsqueda semántica E21; POST `/api/v1/knowledge/search`, solo lectura, ACL server-side).
   **Las operaciones de escritura NO se ejecutan aquí: devuelven una propuesta.** `X-Confirm-Write` ya **no se lee** — era un booleano que cualquier cliente podía poner y que no ataba la confirmación a ningún acto concreto (confirmaba «algo», no «esto»). La respuesta es `{kind:"proposal", ejecutado:false, proposal:{id, tool, operacion, campos, expira_en, token}, aviso}`: `campos` son las etiquetas legibles del acto —redactadas por el **catálogo**, nunca por el modelo— y `token` es un valor opaco firmado con HMAC-SHA256 que lleva dentro la tool y los argumentos ya validados. Vence a los 120 s y está atado al usuario y a la entidad que lo pidieron.
 - `POST /api/v1/mcp/proposals/execute` `{token}` — ejecuta el acto que va firmado en el token. **El cuerpo lleva solo el token**: los argumentos salen de él, así que lo ejecutado es exactamente lo descrito. Se **reautoriza** al confirmar (entre proponer y confirmar pueden haberle retirado el permiso: la propuesta acredita *qué* se aprobó, no que quien la presenta siga pudiendo hacerlo) y se **consume** antes de despachar. Errores: `400 propuesta_invalida`, `403 propuesta_ajena` / `permiso_insuficiente`, `409 propuesta_consumida`, `410 propuesta_expirada`.
   El mismo acto por el **protocolo MCP**: las escrituras devuelven la propuesta como resultado estructurado y se confirman con la tool `confirmar_accion(token)`; donde el transporte tiene canal de vuelta (**stdio**) se pregunta en banda por **elicitación** con esos mismos campos. En HTTP streamable (`stateless`) no hay sesión que preguntar y queda el camino de dos tools — límite declarado. Las tools llevan `annotations` MCP (`readOnlyHint`, `destructiveHint`) como **pistas** para que el cliente ponga su propia fricción: la garantía sigue viviendo en la propuesta firmada, no en ellas.
   *Límite declarado*: el registro de consumo vive en memoria del proceso — cubre el doble clic y el reintento, no el multi-réplica. `Idempotency-Key: <jti>` se emite hacia el gateway como gancho para que cada épica lo implemente, no como garantía.
 
-El catálogo actual (30 tools, 11 de escritura). Toda escritura devuelve una propuesta firmada y exige confirmación explícita (ver más arriba):
+El catálogo actual (45 tools, 16 de escritura). Toda escritura devuelve una propuesta firmada y exige confirmación explícita (ver más arriba):
 
 | Tool | Endpoint | Permiso (crud) | |
 |---|---|---|---|
@@ -881,6 +889,25 @@ El catálogo actual (30 tools, 11 de escritura). Toda escritura devuelve una pro
 | `ejecutar_transaccion` | `POST /workflows/{id}/transactions` | por tipo, suelo `PERM_TRAMITAR` | **W** |
 | `consultar_fuid` | `GET /transferencias/{id}/fuid` | `USUA_PERM_EXPEDIENTE` (1) | R |
 | `buscar_conocimiento` | `POST /knowledge/search` | *clearance* | R |
+| `buscar_antecedentes` | `POST /knowledge/antecedentes` | *clearance* | R **query XOR radicado_ref** |
+| `redactar_con_antecedentes` | `POST /knowledge/rag` | *clearance* | R devuelve texto **con citas**, no escribe |
+| `listar_respuestas` | `GET /documents/{id}/respuestas` | *clearance* | R |
+| `crear_respuesta_vinculada` | `POST /documents/{id}/respuesta` | `PERM_RESPUESTA_VINCULADA` (1) | **W** consume número inmutable |
+| `listar_plantillas` | `GET /plantillas` | `PERM_RADI` (1) | R |
+| `listar_borradores` | `GET /borradores` | `PERM_RADI` (1) | R |
+| `crear_borrador` | `POST /borradores` | `PERM_RADI` (1) | **W** sin número; no es acto de archivo |
+| `editar_borrador` | `PATCH /borradores/{id}` | `PERM_RADI` (1) | **W** |
+| `aprobar_borrador` | `POST /borradores/{id}/aprobar` | `PERM_RADI` (1) | **W** *no* es requisito para radicar |
+| `radicar_borrador` | `POST /borradores/{id}/radicar` | `PERM_RADI` (1) | **W** consume número inmutable |
+| `consultar_serie` | `GET /trd/{id}` | *sin permiso* | R |
+| `consultar_retencion` | `GET /trd/{id}/retention` | *sin permiso* | R cálculo, no la disposición registrada |
+| `ubicacion_expediente` | `GET /expedientes/{id}/unidades` | `USUA_PERM_EXPEDIENTE` (1) | R dónde está, no qué contiene |
+| `listar_prestamos` | `GET /prestamos` | `USUA_PERM_EXPEDIENTE` (1) | R |
+| `reporte_radicacion` | `GET /reports/radicados` | *sin permiso* | R solo agregados |
+
+**Exclusión mutua declarada, no descubierta con un 422.** `buscar_antecedentes` acepta el asunto (`query`) o el radicado de referencia (`radicado_ref`), nunca ambos ni ninguno — lo impone `AntecedentesRequest` con un `model_validator`, y JSON Schema no lo expresa con las piezas del catálogo. El catálogo lo declara con `exactly_one_of` y `coerce_args` responde `parametros_excluyentes` **antes** de que salga la petición: el 422 del backend dice lo mismo, pero solo después de hacer esperar a la persona.
+
+**Aviso sobre `aprobar_borrador`**: el ciclo documentado del borrador es crear → editar → aprobar → radicar, pero `POST /borradores/{id}/radicar` **no comprueba** que el borrador esté aprobado — solo que no esté ya radicado. La aprobación es hoy una marca de procedimiento, no un control que impida radicar, y así lo dice la descripción de la tool para que el asistente no la presente como una barrera que no existe.
 
 **Fuera del catálogo por decisión, no por olvido**: anular y aprobar anulaciones, marcar para eliminación, fijar la disposición, reclasificar el nivel de seguridad, publicar, desvincular un radicado (rompe la foliación), transferir, derogar TRD/TVD, firmar, y toda la administración de la entidad. Y la vinculación **masiva** (`/radicados/batch`, hasta 500) queda fuera mientras su tarjeta de confirmación no pueda leerse: una tarjeta que dice «500 radicados» no permite confirmar con conocimiento de causa, que es justo para lo que existe.
 

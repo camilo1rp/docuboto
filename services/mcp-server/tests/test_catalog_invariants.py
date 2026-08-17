@@ -252,3 +252,33 @@ def test_toda_escritura_declara_si_es_irreversible() -> None:
             assert t.destructive is None, (
                 f"{t.name} no es de escritura; `destructive` no aplica y confunde"
             )
+
+
+def test_los_grupos_excluyentes_nombran_parametros_reales_y_opcionales() -> None:
+    """`exactly_one_of` es una declaración, y una declaración se puede corromper.
+
+    Dos formas de romperla, las dos silenciosas:
+
+    - **Nombrar un parámetro que no existe** (una `k` de más, un renombrado a
+      medias): el grupo nunca encuentra a nadie presente y `coerce_args` rechaza
+      TODA llamada a esa tool, con un mensaje que habla de un argumento que el
+      modelo no puede enviar. La tool queda muerta sin que nada chille.
+    - **Meter en el grupo un parámetro `required`**: se exige enviarlo siempre
+      y a la vez se prohíbe enviarlo junto al otro. No hay llamada válida.
+
+    Ninguna de las dos la caza el test de comportamiento de `coerce_args`, que
+    solo prueba los grupos tal y como están declarados hoy.
+    """
+    for t in CATALOG:
+        declarados = t.params_by_name
+        for grupo in t.exactly_one_of:
+            assert len(grupo) >= 2, f"{t.name}: un grupo excluyente de menos de dos no excluye nada"
+            for nombre in grupo:
+                assert nombre in declarados, (
+                    f"{t.name}: el grupo excluyente nombra '{nombre}', que no es un "
+                    "parámetro declarado — la tool quedaría imposible de llamar"
+                )
+                assert not declarados[nombre].required, (
+                    f"{t.name}: '{nombre}' es obligatorio Y excluyente a la vez; "
+                    "no existe ninguna llamada que satisfaga las dos cosas"
+                )

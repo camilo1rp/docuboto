@@ -107,9 +107,26 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/notification/admin/", app_state.notification_service_url),
         # signature-service
         ("/api/v1/signature/", app_state.signature_service_url),
-        # mcp-server — asistente conversacional (E18/ADR-019). El catálogo/protocolo
-        # MCP (/api/v1/mcp, /mcp) NO se expone al exterior por el gateway a propósito.
+        # mcp-server — asistente conversacional (E18/ADR-019).
         ("/api/v1/assistant/", app_state.mcp_service_url),
+        # Catálogo y protocolo MCP para clientes EXTERNOS. Antes no se enrutaba,
+        # y eso dejaba el diseño a medias: la decisión era «un solo catálogo y un
+        # solo gate para el asistente integrado y para clientes MCP externos», y
+        # los externos no tenían por dónde entrar salvo hablando con el servicio
+        # a espaldas del gateway — es decir, sin su validación JWT ni la
+        # inyección de `X-Tenant-Slug`.
+        #
+        # Cubre `/api/v1/mcp/tools`, `/tools/{name}/invoke`,
+        # `/proposals/execute` y `/api/v1/mcp/stream` (el transporte streamable,
+        # montado también bajo este prefijo justo para no tener que abrirle al
+        # proxy una forma de ruta fuera de `/api/v1/...`).
+        #
+        # Se puede exponer porque el gate de escritura ya no depende del cliente:
+        # invocar una escritura por aquí devuelve una PROPUESTA firmada y no
+        # ejecuta nada; ejecutarla exige el token firmado, atado a ese usuario y
+        # a esa ventana. Con `X-Confirm-Write` —un booleano que cualquiera
+        # fabricaba— enrutar esto habría sido abrir la escritura al exterior.
+        ("/api/v1/mcp/", app_state.mcp_service_url),
         # knowledge-service (E21) — SOLO /search, /antecedentes (Inc.2, Patrón A —
         # recuperación anclada/citada, sin LLM) y /rag (Inc.3, Patrón B — RAG
         # generativo con citas) se exponen; /ingest es interno (X-Internal-Token)

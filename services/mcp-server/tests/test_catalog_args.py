@@ -167,3 +167,84 @@ def test_tipificar_viaja_como_PATCH_con_el_tipo_en_el_cuerpo() -> None:
     assert preparada.path == "/api/v1/documents/11111111-1111-1111-1111-111111111111"
     assert preparada.body == {"doc_class": "Contratos", "metadata": {"numero_contrato": "C-1"}}
     assert preparada.query == {}
+
+
+def test_los_dos_lados_del_xor_de_antecedentes_se_rechazan_antes_de_salir() -> None:
+    """Ni ambos ni ninguno — y el error se da aquí, no lo devuelve el backend.
+
+    `buscar_antecedentes` acepta el asunto o el radicado de referencia, nunca
+    los dos: lo impone `AntecedentesRequest` con un `model_validator`. Con los
+    dos parámetros anunciados como simplemente opcionales, el modelo manda ambos
+    —que es lo natural cuando tiene los dos datos a mano— y recibe un 422 del
+    backend después de haber hecho esperar a la persona. Ese es el límite
+    descubierto fallando, en pequeño.
+
+    Se comprueban los DOS lados porque son dos errores distintos del modelo:
+    mandar de más (tiene ambos datos) y mandar de menos (no tiene ninguno).
+    """
+    from app.tools.catalog import coerce_args, get_tool
+
+    tool = get_tool("buscar_antecedentes")
+    assert tool is not None
+
+    with pytest.raises(ArgError) as ambos:
+        coerce_args(tool, {"query": "derecho de petición", "radicado_ref": "2026-X-E-000001"})
+    assert ambos.value.code == "parametros_excluyentes"
+
+    with pytest.raises(ArgError) as ninguno:
+        coerce_args(tool, {"top_k": 3})
+    assert ninguno.value.code == "parametros_excluyentes"
+
+    # Control positivo: cada lado por separado pasa entero. Sin esto, un
+    # `exactly_one_of` que rechazara SIEMPRE dejaría los dos asertos de arriba
+    # verdes y la tool muerta.
+    assert coerce_args(tool, {"query": "derecho de petición"}) == {"query": "derecho de petición"}
+    assert coerce_args(tool, {"radicado_ref": "2026-X-E-000001"}) == {
+        "radicado_ref": "2026-X-E-000001"
+    }
+
+
+def test_un_grupo_excluyente_no_cuenta_los_nulos_como_presentes() -> None:
+    """`{"query": None}` es «no lo mando», no «lo mando vacío».
+
+    El modelo rellena huecos con `null` con toda naturalidad. Si el grupo
+    contara la CLAVE en vez del valor efectivo, mandar `radicado_ref` con
+    `query: null` —perfectamente válido— sería rechazado, y el mensaje diría
+    que se enviaron los dos cuando el usuario solo pidió uno.
+    """
+    from app.tools.catalog import coerce_args, get_tool
+
+    tool = get_tool("buscar_antecedentes")
+    assert tool is not None
+    assert coerce_args(tool, {"query": None, "radicado_ref": "2026-X-E-000001"}) == {
+        "radicado_ref": "2026-X-E-000001"
+    }
+
+
+def test_la_retencion_lleva_la_serie_en_la_ruta_y_la_fecha_en_la_query() -> None:
+    """Primera tool con un argumento OBLIGATORIO que no es de ruta ni de cuerpo.
+
+    `GET /trd/{serie_id}/retention` exige `closed_at` como query. El reparto por
+    `location="auto"` lo resuelve —ruta si está en la plantilla, query en un
+    GET—, pero hasta ahora ningún GET tenía un obligatorio fuera de la ruta, así
+    que la regla no estaba ejercida en ese caso. Si la fecha acabara en el
+    cuerpo, el backend devolvería 422 por un argumento que el usuario sí dio.
+
+    Un GET no lleva cuerpo: se comprueba explícitamente, porque un cuerpo vacío
+    y un cuerpo con la fecha dentro se distinguen solo aquí.
+    """
+    from app.services.dispatcher import build_request
+    from app.tools.catalog import coerce_args, get_tool
+
+    tool = get_tool("consultar_retencion")
+    assert tool is not None
+    args = coerce_args(
+        tool,
+        {"serie_id": "22222222-2222-2222-2222-222222222222", "closed_at": "2026-03-01"},
+    )
+    preparada = build_request(tool, args)
+
+    assert preparada.method == "GET"
+    assert preparada.path == "/api/v1/trd/22222222-2222-2222-2222-222222222222/retention"
+    assert preparada.query == {"closed_at": "2026-03-01"}
+    assert not preparada.body

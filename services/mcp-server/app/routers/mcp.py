@@ -30,23 +30,36 @@ from app.tools.catalog import get_tool, visible_tools
 router = APIRouter(prefix="/api/v1/mcp", tags=["mcp"])
 
 
-def _perms(x_user_permissions: str | None) -> set[str]:
-    if not x_user_permissions:
-        return set()
-    return {p.strip() for p in x_user_permissions.split(",") if p.strip()}
-
-
-def _is_root(x_user_roles: str | None) -> bool:
-    roles = {r.strip() for r in (x_user_roles or "").split(",")}
-    return "ROOT" in roles
-
-
 @router.get("/tools", summary="List MCP tools visible to the caller (RF-MCP-01)")
 async def list_tools(
-    x_user_permissions: str | None = Header(default=None),
-    x_user_roles: str | None = Header(default=None),
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_tenant_slug: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    tools = visible_tools(_perms(x_user_permissions), is_root=_is_root(x_user_roles))
+    """El catálogo que ESTE llamante puede usar, resuelto contra `/auth/me`.
+
+    Antes se componía a partir de `X-User-Permissions`, una cabecera que **nadie
+    produce**: el gateway inyecta `X-User-Id`, `X-Username`, `X-Tenant-Slug`,
+    `X-User-Roles`, `X-Canal` y `X-Real-Ip`, y descarta esta si la manda un
+    cliente (bien: sería forjable). Llegaba siempre vacía, así que este endpoint
+    —el que existe precisamente para decirle a alguien qué puede hacer— le
+    contestaba a todo el mundo con las tools sin permiso y nada más.
+    Y `X-User-Roles` sí llega, de modo que un ROOT lo veía todo: el defecto
+    quedaba escondido justo para quien podía detectarlo.
+    """
+    client: httpx.AsyncClient = request.app.state.gateway_client
+    try:
+        identidad = await resolve_identity(
+            client, authorization=authorization or "", tenant_slug=x_tenant_slug or ""
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        )
+    tools = visible_tools(
+        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+    )
     return {"tools": [t.to_schema() for t in tools]}
 
 
@@ -106,10 +119,14 @@ async def invoke_tool(
     args: dict[str, Any] = Body(default_factory=dict),
     authorization: str | None = Header(default=None),
     x_tenant_slug: str | None = Header(default=None),
-    x_user_permissions: str | None = Header(default=None),
-    x_user_roles: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Invoca una tool. Las de ESCRITURA devuelven una propuesta, no un efecto.
+
+    Ya no declara `X-User-Permissions` ni `X-User-Roles`: los leía como
+    parámetros y no los usaba para nada —la autorización sale de `/auth/me`
+    desde el bloque 0—, pero seguían apareciendo en el OpenAPI como si fueran
+    parte del contrato. Una cabecera documentada que nadie honra es una
+    invitación a que el siguiente la use creyendo que sirve.
 
     `X-Confirm-Write` ya no se lee. Era un booleano que cualquiera podía poner y
     que no ataba la confirmación a ningún acto concreto: confirmaba «algo», no

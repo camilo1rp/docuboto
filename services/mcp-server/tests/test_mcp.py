@@ -41,11 +41,46 @@ def test_visible_tools_filters_by_permission() -> None:
 
 @pytest.mark.asyncio
 async def test_list_tools_endpoint(client_with_gateway) -> None:
+    """El catálogo del llamante sale de `/auth/me`, no de una cabecera.
+
+    Se llama **sin** `X-User-Permissions` a propósito: era la cabecera que este
+    endpoint leía, y no la produce nadie —el gateway la descarta por forjable—,
+    de modo que el endpoint que existe para decirle a alguien qué puede hacer le
+    contestaba a todo el mundo con las tools sin permiso. Que la respuesta sea
+    correcta sin mandarla es justo lo que hay que fijar; que lo siguiera siendo
+    mandándola no probaría nada.
+    """
     client, _ = client_with_gateway
-    resp = await client.get("/api/v1/mcp/tools", headers={"X-User-Permissions": "PERM_RADI"})
+    resp = await client.get("/api/v1/mcp/tools")
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()["tools"]}
     assert "radicar_documento" in names and "listar_trd" in names
+
+
+@pytest.mark.asyncio
+async def test_el_permiso_forjado_sin_su_nivel_no_alcanza_ninguna_tool(client_with_gateway) -> None:
+    """Enviarla no añade ni quita — y este test NO prueba que no se lea.
+
+    Prueba la defensa compuesta: aunque alguien volviera a leer la cabecera, el
+    permiso forjado llega **sin su nivel**, y `visible_tools` exige también
+    nivel (`levels.get(p, 0)`), que solo sale de `/auth/me`. Eso es defensa en
+    profundidad y merece un test.
+
+    Lo que NO prueba es lo que su nombre sugiere. Se vio por mutación: volver a
+    leer la cabecera dejaba esta comprobación en verde. Que no se lea lo fija
+    `test_la_cabecera_fantasma_no_se_lee_en_ninguna_parte_del_codigo`, que es
+    una afirmación sobre la declaración y no sobre el resultado.
+    """
+    client, _ = client_with_gateway
+    limpio = await client.get("/api/v1/mcp/tools")
+    forjado = await client.get(
+        "/api/v1/mcp/tools",
+        headers={"X-User-Permissions": "USUA_PERM_TRD,PERM_TRAMITAR", "X-User-Roles": "ROOT"},
+    )
+    assert forjado.status_code == 200
+    assert {t["name"] for t in forjado.json()["tools"]} == {
+        t["name"] for t in limpio.json()["tools"]
+    }
 
 
 @pytest.mark.asyncio
@@ -331,3 +366,65 @@ async def test_si_le_retiran_el_permiso_entre_proponer_y_confirmar_no_se_ejecuta
 
     assert resp.status_code == 403
     gateway.request.assert_not_called()
+
+
+def test_la_cabecera_fantasma_no_se_lee_en_ninguna_parte_del_codigo() -> None:
+    """El control ESTRUCTURAL, porque el de comportamiento no discriminaba.
+
+    Se comprobó por mutación: volver a leer `X-User-Permissions` en
+    `list_tools` —sumando lo que traiga al conjunto real— dejaba la suite entera
+    en verde. El test de comportamiento pasaba, pero **por otra razón**: el
+    permiso forjado llega sin su nivel, y `visible_tools` compara también el
+    nivel (`levels.get(p, 0)`), así que el permiso colado no alcanzaba ninguna
+    tool. Defensa en profundidad real, y a la vez un test que afirmaba una cosa
+    y estaba comprobando otra. Los dos defectos se habrían compuesto en cuanto
+    alguien tocara `levels`.
+
+    Lo que hay que fijar es que la cabecera **no se lea**, y eso es una
+    afirmación sobre la declaración, no sobre el resultado. Se inspecciona el
+    AST y no el texto: este archivo y los módulos que audita están llenos de
+    comentarios que la nombran para explicar por qué se retiró, y un `grep`
+    encontraría esas explicaciones y daría el hallazgo por bueno — el mismo
+    tropiezo que ya se cazó una vez buscando una cadena en el propio docstring.
+    """
+    import ast
+    from pathlib import Path
+
+    prohibidos = {
+        "x_user_permissions",
+        "x-user-permissions",
+        "mcp_user_permissions",
+        "mcp_user_roles",
+    }
+    raiz = Path(__file__).resolve().parents[1] / "app"
+    hallazgos: list[str] = []
+
+    for fichero in sorted(raiz.rglob("*.py")):
+        arbol = ast.parse(fichero.read_text(encoding="utf-8"))
+        # Los docstrings son `Expr(Constant)`: se descartan para no confundir una
+        # explicación con un uso.
+        docstrings = {
+            id(n.value)
+            for n in ast.walk(arbol)
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+        }
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.arg) and nodo.arg in prohibidos:
+                hallazgos.append(f"{fichero.name}: parámetro '{nodo.arg}'")
+            elif isinstance(nodo, ast.Attribute) and nodo.attr in prohibidos:
+                hallazgos.append(f"{fichero.name}: atributo '{nodo.attr}'")
+            elif isinstance(nodo, ast.Name) and nodo.id in prohibidos:
+                hallazgos.append(f"{fichero.name}: nombre '{nodo.id}'")
+            elif (
+                isinstance(nodo, ast.Constant)
+                and isinstance(nodo.value, str)
+                and nodo.value.lower() in prohibidos
+                and id(nodo) not in docstrings
+            ):
+                hallazgos.append(f"{fichero.name}: literal '{nodo.value}'")
+
+    assert not hallazgos, (
+        "la identidad volvió a leerse de una cabecera o de un ajuste de entorno "
+        "que el backend no consulta; sale de `/auth/me` y de ningún otro sitio: "
+        f"{hallazgos}"
+    )

@@ -12,14 +12,15 @@ Servidor MCP de OrpycaMCP (E18, ADR-019) — binding del SDK oficial.
 
 Envuelve el catálogo de tools declarativo y el dispatcher (cliente del gateway)
 con el protocolo MCP, en dos transportes:
-- **stdio** (clientes locales): el contexto de sesión (token/tenant/permisos) llega
-  por variables de entorno (settings).
-- **HTTP streamable** (clientes remotos): el contexto llega por cabeceras HTTP de
-  cada petición y se inyecta vía un ContextVar.
+- **stdio** (clientes locales): el bearer lo resuelve el TokenManager (OAuth por
+  sesión) y el tenant sale del entorno.
+- **HTTP streamable** (clientes remotos): el bearer y el tenant llegan por
+  cabeceras HTTP de cada petición y se inyectan vía un ContextVar.
 
 La autenticación, el RBAC y el aislamiento por tenant los resuelve la BD vía el
-gateway: aquí solo se propaga `Authorization` + `X-Tenant-Slug` y se filtra la
-visibilidad/scope de las tools por los permisos del usuario.
+gateway: aquí solo se propaga `Authorization` + `X-Tenant-Slug`. **Los permisos
+no viajan por el transporte**: se resuelven contra `/auth/me` con el token del
+llamante, igual en los tres caminos.
 """
 
 from __future__ import annotations
@@ -34,25 +35,38 @@ from mcp.server import Server
 from app.core.config import settings
 from app.services import dispatcher, proposals, write_gate
 from app.services.identity import IdentityError, resolve_identity
+from app.services.scope import build_scope
 from app.tools import catalog
 
 server: Server = Server("orpycamcp")
 
 # Contexto de sesión por petición (HTTP streamable). Si está vacío, se usa el
-# entorno (stdio). Estructura: {authorization, tenant, permissions:set, is_root:bool}.
+# entorno (stdio). Estructura: {authorization, tenant, from_header}.
+#
+# **Ya no lleva permisos.** Los llevaba, y venían de `X-User-Permissions`: una
+# cabecera que NADIE produce. El gateway inyecta `X-User-Id`, `X-Username`,
+# `X-Tenant-Slug`, `X-User-Roles`, `X-Canal` y `X-Real-Ip`, y descarta esa si la
+# manda un cliente —bien, sería forjable—, así que llegaba siempre vacía y toda
+# tool con permiso quedaba invisible por este transporte. Solo aparecía poblada
+# en los tests, que la fabricaban a mano: por eso nadie lo notó.
+#
+# El equivalente por stdio eran `MCP_USER_PERMISSIONS` y `MCP_USER_ROLES`, que
+# era peor: ahí sí se podían poner valores, así que quien los configuraba creía
+# estar concediendo algo. Lo único que lograba era ver ofrecidas tools que el
+# backend le negaría al usarlas — el defecto de anunciar lo inutilizable, esta
+# vez servido por la propia configuración. Los dos ajustes se retiran.
+#
+# La identidad sale ahora de `/auth/me` con el token del llamante, igual que en
+# los otros dos transportes: una sola resolución para los tres.
 _ctx: ContextVar[dict | None] = ContextVar("mcp_session_ctx", default=None)
 
 
-def set_context(
-    *, authorization: str | None, tenant: str | None, permissions: set[str], is_root: bool
-):
+def set_context(*, authorization: str | None, tenant: str | None):
     """Fija el contexto de sesión para la petición HTTP actual. Devuelve el token de reset."""
     return _ctx.set(
         {
             "authorization": authorization,
             "tenant": tenant,
-            "permissions": permissions,
-            "is_root": is_root,
             "from_header": True,  # HTTP: el cliente ya aporta su bearer
         }
     )
@@ -66,14 +80,10 @@ def _session() -> dict:
     ctx = _ctx.get()
     if ctx is not None:
         return ctx
-    # Fallback stdio: contexto desde el entorno.
-    perms = {p.strip() for p in settings.mcp_user_permissions.split(",") if p.strip()}
-    roles = {r.strip() for r in settings.mcp_user_roles.split(",")}
+    # Fallback stdio: el bearer lo resuelve el TokenManager (OAuth por sesión).
     return {
-        "authorization": None,  # stdio: lo resuelve el TokenManager (OAuth por sesión)
+        "authorization": None,
         "tenant": settings.mcp_tenant_slug or None,
-        "permissions": perms,
-        "is_root": "ROOT" in roles,
         "from_header": False,
     }
 
@@ -95,6 +105,21 @@ def _session() -> dict:
 # el catálogo declara traducciones tool → API, y esto es protocolo. Meterlo allí
 # habría obligado a inventarle una ruta falsa.
 CONFIRMAR = "confirmar_accion"
+
+# El marco de alcance como tool. Va aquí y no en `CATALOG` por la misma razón que
+# `confirmar_accion`: no traduce a un endpoint del gateway, sino que compone tres
+# lecturas (`/auth/me`, `/auth/clearance`, `/auth/context`) con el propio
+# catálogo. Meterla en `CATALOG` habría exigido inventarle una ruta.
+#
+# **Se ofrece SIEMPRE, y esa es la mitad que faltaba.** Hasta ahora los permisos
+# solo escondían tools, así que quien pedía algo fuera de su alcance lo
+# descubría fallando — o esperando algo que nunca iba a ocurrir. El conjunto de
+# tools dice qué se puede hacer; esto dice qué NO se puede, por qué, y por dónde
+# sí. Sin ella, un cliente MCP externo ve un catálogo recortado y ninguna pista
+# de que le falte nada.
+MI_ALCANCE = "mi_alcance"
+
+_ALCANCE_SCHEMA: dict = {"type": "object", "properties": {}, "additionalProperties": False}
 
 _CONFIRMAR_SCHEMA = {
     "type": "object",
@@ -132,9 +157,23 @@ def _annotations(t: catalog.Tool) -> types.ToolAnnotations:
     )
 
 
-def build_tools() -> list[types.Tool]:
+async def build_tools(client: httpx.AsyncClient) -> list[types.Tool]:
+    """El catálogo que ESTE llamante puede usar, más el marco que lo explica.
+
+    Es `async` desde que la identidad se resuelve contra `/auth/me` en vez de
+    leerse de una cabecera. El coste es un viaje por `list_tools`; el beneficio
+    es que este transporte deja de ofrecer un catálogo que no corresponde a
+    nadie. Y ahora pasa `levels`, que antes no pasaba: sin él, tener `PERM_RADI`
+    para *leer* mostraba las escrituras que exigen crear, y el 403 aparecía al
+    ejecutar.
+    """
     s = _session()
-    visibles = catalog.visible_tools(s["permissions"], is_root=s["is_root"])
+    identidad = await resolve_identity(
+        client, authorization=await _authorization(s, client), tenant_slug=s["tenant"] or ""
+    )
+    visibles = catalog.visible_tools(
+        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+    )
     tools = [
         types.Tool(
             name=t.name,
@@ -144,6 +183,25 @@ def build_tools() -> list[types.Tool]:
         )
         for t in visibles
     ]
+    tools.append(
+        types.Tool(
+            name=MI_ALCANCE,
+            description=(
+                "Qué puede hacer, qué puede consultar y qué NO puede esta persona, con el "
+                "motivo y la vía alternativa de cada cosa que no está a su alcance. "
+                "Consúltala ANTES de planificar un trabajo: si lo que se pide no está en "
+                "el marco, dilo de inmediato con su vía alternativa y no inicies la acción."
+            ),
+            inputSchema=_ALCANCE_SCHEMA,
+            annotations=types.ToolAnnotations(
+                title="Qué puedo hacer aquí",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+    )
     # Solo se ofrece si hay algo que confirmar: a quien no alcanza ninguna
     # escritura, una tool de confirmar le sobra y le sugiere un poder que no
     # tiene.
@@ -240,6 +298,18 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
     s = _session()
     authorization = await _authorization(s, client)
 
+    if name == MI_ALCANCE:
+        identidad = await resolve_identity(
+            client, authorization=authorization, tenant_slug=s["tenant"] or ""
+        )
+        marco = await build_scope(
+            client,
+            identidad,
+            authorization=authorization,
+            tenant_slug=identidad.tenant_slug,
+        )
+        return json.dumps(marco, ensure_ascii=False)
+
     if name == CONFIRMAR:
         token = arguments.get("token")
         if not isinstance(token, str) or not token:
@@ -266,17 +336,29 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
     # garantía en una suposición sobre software ajeno: un cliente que no
     # preguntara nada ejecutaba igual. Ahora una escritura devuelve la propuesta
     # firmada y la ejecución exige una segunda llamada con ese token.
-    dispatcher.authorize(tool, permissions=s["permissions"], is_root=s["is_root"])
+    #
+    # La autorización se comprueba contra `/auth/me`, no contra el diccionario de
+    # sesión: ese llevaba los permisos de la cabecera fantasma y del entorno, así
+    # que por stdio autorizaba con lo que dijera un fichero de configuración
+    # local. Y ahora incluye `levels`, sin el cual «tiene PERM_RADI» bastaba para
+    # pasar un gate que exige nivel de creación.
+    identidad = await resolve_identity(
+        client, authorization=authorization, tenant_slug=s["tenant"] or ""
+    )
+    dispatcher.authorize(
+        tool,
+        permissions=identidad.permissions,
+        is_root=identidad.is_root,
+        levels=identidad.levels,
+    )
     if tool.write:
         # La identidad de la propuesta se resuelve contra `/auth/me`, NO contra el
         # diccionario de sesión. La primera versión firmaba con `s.get("sub")`,
         # clave que nunca existió en ese diccionario: emitía tokens con `sub=""`
         # que la verificación rechazaba después como ajenos. Salía una propuesta
         # de aspecto impecable e inconfirmable — un fallo que solo aparece al
-        # pulsar el botón, no al emitirla.
-        identidad = await resolve_identity(
-            client, authorization=authorization, tenant_slug=s["tenant"] or ""
-        )
+        # pulsar el botón, no al emitirla. Hoy esa identidad es la misma que
+        # acaba de autorizar la llamada, resuelta una sola vez.
         propuesta = write_gate.preparar(
             tool, arguments, sub=identidad.user_id, ten=identidad.tenant_slug
         )
@@ -319,7 +401,10 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
 
 @server.list_tools()
 async def _list_tools() -> list[types.Tool]:
-    return build_tools()
+    async with httpx.AsyncClient(
+        base_url=settings.gateway_url, timeout=settings.request_timeout
+    ) as client:
+        return await build_tools(client)
 
 
 @server.call_tool()

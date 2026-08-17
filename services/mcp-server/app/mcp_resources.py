@@ -26,7 +26,7 @@ import httpx
 import mcp.types as types
 
 from app.core.config import settings
-from app.mcp_app import call, server
+from app.mcp_app import MI_ALCANCE, call, server
 
 _NORMATIVA = (
     "Marco normativo del SGDEA (Colombia): Ley 594/2000 (Ley General de Archivos), "
@@ -51,7 +51,21 @@ async def _list_resources() -> list[types.Resource]:
             name="Marco normativo",
             description="Normas archivísticas colombianas aplicables al SGDEA.",
             mimeType="text/plain",
-        )
+        ),
+        # El mismo marco que la tool `mi_alcance`, por la vía de los resources.
+        # No es duplicación: un cliente MCP que sabe de resources lo carga como
+        # contexto al abrir la conversación, sin gastar un turno de tool ni
+        # depender de que el modelo se acuerde de preguntarlo. Y sale de la misma
+        # función (`build_scope`), así que no hay dos versiones del alcance.
+        types.Resource(
+            uri="orfeo://alcance",
+            name="Qué puedo hacer aquí",
+            description=(
+                "Marco de alcance del usuario actual: lo que puede ejecutar, lo que "
+                "puede consultar, y lo que no puede con su motivo y su vía alternativa."
+            ),
+            mimeType="application/json",
+        ),
     ]
 
 
@@ -84,6 +98,11 @@ async def _read_resource(uri) -> str:
     u = str(uri)
     if u == "orfeo://normativa":
         return _NORMATIVA
+    if u == "orfeo://alcance":
+        async with httpx.AsyncClient(
+            base_url=settings.gateway_url, timeout=settings.request_timeout
+        ) as client:
+            return await call(MI_ALCANCE, {}, client)
     rest = u.removeprefix("orfeo://")
     parts = rest.split("/")
     async with httpx.AsyncClient(

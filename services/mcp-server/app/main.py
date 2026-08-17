@@ -51,14 +51,18 @@ def _header(scope, name: bytes) -> str | None:
 
 
 async def _handle_mcp(scope, receive, send) -> None:
-    """Endpoint MCP streamable: inyecta el contexto de sesión desde las cabeceras."""
-    perms = _header(scope, b"x-user-permissions") or ""
-    roles = _header(scope, b"x-user-roles") or ""
+    """Endpoint MCP streamable: inyecta el contexto de sesión desde las cabeceras.
+
+    Ya NO lee `X-User-Permissions` ni `X-User-Roles`. La primera no la produce
+    nadie —el gateway la descarta por forjable— así que llegaba siempre vacía y
+    este transporte ofrecía únicamente las tools sin permiso. La segunda sí
+    llega, de modo que un ROOT lo veía todo y el defecto quedaba invisible justo
+    para quien podía detectarlo. Lo único que se propaga es lo que identifica al
+    llamante; qué puede hacer se resuelve contra `/auth/me` con su token.
+    """
     token = mcp_app.set_context(
         authorization=_header(scope, b"authorization"),
         tenant=_header(scope, b"x-tenant-slug"),
-        permissions={p.strip() for p in perms.split(",") if p.strip()},
-        is_root="ROOT" in {r.strip() for r in roles.split(",")},
     )
     try:
         await _session_manager.handle_request(scope, receive, send)
@@ -127,5 +131,19 @@ app = FastAPI(
 app.include_router(mcp_router)  # API HTTP simple del catálogo (/api/v1/mcp/...)
 app.include_router(assistant_router)  # asistente conversacional (E18, /api/v1/assistant/...)
 app.include_router(health_router)
-# Protocolo MCP streamable (clientes remotos).
+# Protocolo MCP streamable (clientes remotos), montado en DOS rutas:
+#
+# - `/mcp` — acceso directo al servicio dentro de la red Docker (compatibilidad
+#   con lo que ya existía y con el despliegue local por stdio/túnel).
+# - `/api/v1/mcp/stream` — la MISMA aplicación bajo el prefijo que el gateway sí
+#   enruta. Es lo que permite cumplir «un solo catálogo y un solo gate para el
+#   asistente integrado y para clientes MCP externos» sin abrirle al proxy una
+#   forma de ruta distinta de `/api/v1/...`: el cliente externo apunta aquí con
+#   su bearer y hereda la validación JWT y la inyección de cabeceras del gateway,
+#   en vez de hablar con el servicio a sus espaldas.
+#
+# El transporte es `stateless=True, json_response=True`, así que cada POST es una
+# petición-respuesta corriente y el proxy del gateway la reenvía sin más. Con
+# sesiones o SSE haría falta soporte de streaming en el proxy, y no lo hay.
 app.mount("/mcp", _handle_mcp)
+app.mount("/api/v1/mcp/stream", _handle_mcp)

@@ -549,6 +549,18 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/workflow/rules/eval": "http://workflow:8006",
         # E18: el asistente conversacional enruta al mcp-server.
         "/api/v1/assistant/message": "http://mcp:8009",
+        # E18 (bloque 9 del plan MCP funcional): el catálogo y el protocolo MCP
+        # SÍ se exponen ahora a clientes externos. Antes no, y eso dejaba a
+        # medias la decisión de «un solo catálogo y un solo gate»: un cliente MCP
+        # de terceros no tenía por dónde entrar salvo hablando con el servicio a
+        # espaldas del gateway, sin validación JWT ni `X-Tenant-Slug`.
+        "/api/v1/mcp/tools": "http://mcp:8009",
+        "/api/v1/mcp/tools/radicar_documento/invoke": "http://mcp:8009",
+        "/api/v1/mcp/proposals/execute": "http://mcp:8009",
+        # El transporte streamable se monta TAMBIÉN bajo este prefijo (además de
+        # `/mcp`) justo para que quepa por esta tabla, en vez de abrirle al proxy
+        # una forma de ruta fuera de `/api/v1/...`.
+        "/api/v1/mcp/stream": "http://mcp:8009",
         # E21: solo /search del knowledge-service se expone vía gateway.
         "/api/v1/knowledge/search": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
@@ -587,8 +599,6 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/tenants/", state) is None
     assert _route_to_upstream("/api/v1/tenants/by-slug/icetex", state) is None
     assert _route_to_upstream("/api/v1/unknown", state) is None
-    # El catálogo/protocolo MCP NO se expone por el gateway (solo /assistant/).
-    assert _route_to_upstream("/api/v1/mcp/tools", state) is None
     # /ingest es interno (X-Internal-Token) y NUNCA debe enrutarse desde el exterior.
     assert _route_to_upstream("/api/v1/knowledge/ingest", state) is None
     assert _route_to_upstream("/api/v1/knowledge", state) is None

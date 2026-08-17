@@ -67,7 +67,6 @@ Common principle: the contract (function signatures / REST endpoints) **does not
 ```bash
 GATEWAY_URL=http://localhost:19080 \
 MCP_TENANT_SLUG=icetex \
-MCP_USER_PERMISSIONS=PERM_RADI,... \
 # (a) static token (no refresh):   MCP_BEARER_TOKEN=<jwt>
 # (b) per-session refresh:         MCP_REFRESH_TOKEN=<refresh-token>
 # (c) ROPC (username/password):    MCP_AUTH_USERNAME=ana MCP_AUTH_PASSWORD=...
@@ -76,7 +75,11 @@ python -m app.mcp_stdio
 
 With (b)/(c) the mcp-server **obtains and refreshes** the Keycloak access token via `auth-service` (`/api/v1/auth/token` and `/api/v1/auth/refresh`, public in the gateway) and caches it until expiry.
 
-**HTTP streamable transport (remote clients):** the client connects to the **`POST http://mcp-server:8009/mcp`** endpoint; the session context arrives via per-request **headers**: `Authorization: Bearer <jwt>`, `X-Tenant-Slug`, `X-User-Permissions`, `X-User-Roles`.
+**HTTP streamable transport (remote clients):** **`POST https://<host>/api/v1/mcp/stream`** through the api-gateway, which validates the JWT and injects `X-Tenant-Slug`. (`POST http://mcp-server:8009/mcp` still exists for access inside the Docker network.) The session context arrives via two headers and nothing else: `Authorization: Bearer <jwt>` and `X-Tenant-Slug`.
+
+> **`X-User-Permissions` and `X-User-Roles` are no longer read, and `MCP_USER_PERMISSIONS`/`MCP_USER_ROLES` have been removed.** No component produced the former — the gateway drops it as forgeable — so it always arrived empty and every permissioned tool was invisible over this transport. The environment variables were worse: they *could* be set, so whoever configured them believed they were granting something, when all they achieved was seeing tools offered that the backend would deny on use. **Permissions are resolved against `GET /api/v1/auth/me` with the caller's token**, one resolution for all three transports.
+
+The scope framework is offered two equivalent ways: the **`mi_alcance`** tool and the **`orfeo://alcance`** resource — what the person can execute, what they can read, and what they **cannot** with its reason and its **alternative route**.
 
 In both cases the server propagates `Authorization` + `X-Tenant-Slug` to the gateway (which resolves authentication/RBAC/tenant) and filters the visible tools by the user's permissions (ROOT sees all). Write operations remain subject to the MCP client's tool approval (human-in-the-loop) plus the permission scope.
 

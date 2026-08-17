@@ -116,3 +116,49 @@ def test_el_control_distingue_lo_que_no_esta_enrutado(ruta: str) -> None:
     siempre y sin avisar. Las tres primeras rutas NO están enrutadas **a
     propósito**, y eso las convierte en el mejor control disponible."""
     assert not _enruta(ruta, _prefijos_del_gateway())
+
+
+# Prefijos del propio mcp-server, ahora que el gateway SÍ los enruta.
+_SUPERFICIE_PROPIA = ("/api/v1/mcp", "/api/v1/assistant")
+
+
+def test_ninguna_tool_apunta_a_la_superficie_del_propio_mcp() -> None:
+    """El catálogo no puede llamarse a sí mismo.
+
+    Hasta ahora esto no podía ocurrir por accidente: el gateway **no enrutaba**
+    `/api/v1/mcp`, así que una tool que apuntara ahí habría muerto en un 404. Al
+    exponer el protocolo a clientes externos esa protección de hecho desaparece,
+    y lo que quedaba implícito hay que escribirlo.
+
+    Dos cosas rompe una tool así, y ninguna es teórica:
+
+    - **Recursión.** `invoke` despacha una tool que invoca `invoke`, con el token
+      del usuario en cada salto y sin nada que corte la profundidad.
+    - **Salto del gate de escritura.** El gate vive en `invoke`/`call`: una
+      escritura devuelve una propuesta y no ejecuta. Una tool que llamara a
+      `/api/v1/mcp/proposals/execute` ejecutaría una propuesta como si fuera una
+      lectura cualquiera del catálogo — la confirmación seguiría existiendo, y ya
+      no significaría nada.
+
+    Y el asistente por la misma razón: `/api/v1/assistant/confirmar` es el otro
+    extremo del mismo gate.
+    """
+    infractoras = [
+        (n, r)
+        for n, r in _rutas_del_catalogo()
+        if any(r.startswith(p) for p in _SUPERFICIE_PROPIA)
+    ]
+    assert not infractoras, (
+        "estas tools apuntan a la superficie del propio mcp-server: abren recursión "
+        f"y saltan el gate de escritura: {infractoras}"
+    )
+
+
+def test_el_control_reconoce_una_ruta_de_la_superficie_propia() -> None:
+    """Sin esto, un `_SUPERFICIE_PROPIA` mal escrito dejaría el test de arriba
+    verde para siempre — el mismo modo de fallo que los tests que filtran antes
+    de afirmar."""
+    assert any(
+        "/api/v1/mcp/proposals/execute".startswith(p) for p in _SUPERFICIE_PROPIA
+    )
+    assert not any("/api/v1/documents/".startswith(p) for p in _SUPERFICIE_PROPIA)
