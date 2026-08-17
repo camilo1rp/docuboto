@@ -1,0 +1,259 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+/**
+ * VoiceInput — dictado del asistente (E18/ADR-020, bloque 11).
+ *
+ * Lo que estos tests blindan no es que el micrófono funcione: es que **el botón
+ * no aparezca cuando dictar significaría mandar la voz de un funcionario a un
+ * tercero**. El plan justificaba el reconocimiento del navegador con que «el
+ * audio no sale del equipo», y eso es falso en Chrome y Edge, cuya Web Speech
+ * API clásica envía el audio a un servicio de Google. ADR-020 decidió lo
+ * contrario por escrito («STT en servidor con Whisper; el audio no sale a
+ * terceros»).
+ *
+ * El caso peligroso no es el fallo ruidoso: es el que funciona perfectamente y
+ * nadie mira. Por eso el control importante aquí es el NEGATIVO — sin
+ * `availableOnDevice`, no hay botón.
+ */
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/svelte";
+import { tick } from "svelte";
+import VoiceInput from "./VoiceInput.svelte";
+
+/** Doble del reconocedor. `instancias` deja ver qué se le pidió. */
+function fabricarSR({ availableOnDevice } = {}) {
+  const instancias = [];
+  class SR {
+    constructor() {
+      this.lang = "";
+      this.continuous = false;
+      this.interimResults = false;
+      this.processLocally = false;
+      this.iniciado = false;
+      this.parado = false;
+      instancias.push(this);
+    }
+    start() {
+      this.iniciado = true;
+    }
+    stop() {
+      this.parado = true;
+    }
+  }
+  if (availableOnDevice !== undefined) {
+    SR.availableOnDevice = availableOnDevice;
+  }
+  return { SR, instancias };
+}
+
+function instalar(SR) {
+  vi.stubGlobal("SpeechRecognition", SR);
+  if (SR === undefined) {
+    // `stubGlobal(undefined)` deja la propiedad definida a undefined, que es
+    // exactamente lo que queremos comprobar: la API ausente.
+    vi.stubGlobal("webkitSpeechRecognition", undefined);
+  }
+}
+
+/** Deja pasar el `onMount` asíncrono que resuelve la disponibilidad. */
+async function asentar() {
+  await tick();
+  await Promise.resolve();
+  await tick();
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("VoiceInput — el botón solo existe si el reconocimiento es LOCAL", () => {
+  it("sin Web Speech API no hay botón (degradación honesta)", async () => {
+    instalar(undefined);
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+
+  it("con la API pero SIN `availableOnDevice` NO hay botón", async () => {
+    // Este es el caso de Chrome/Edge clásicos: `SpeechRecognition` existe y
+    // funciona — mandando el audio a un servidor de Google. Ofrecer el botón
+    // aquí sería la fuga silenciosa que este componente existe para impedir.
+    const { SR } = fabricarSR(); // sin availableOnDevice
+    instalar(SR);
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+
+  it("si el modelo está «downloadable» todavía NO hay botón", async () => {
+    // Hasta que el modelo esté en el dispositivo, el navegador puede recurrir
+    // al servicio remoto sin decir nada. "Casi local" no es local.
+    const { SR } = fabricarSR({ availableOnDevice: async () => "downloadable" });
+    instalar(SR);
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+
+  it("si `availableOnDevice` revienta, NO hay botón (fail-closed)", async () => {
+    const { SR } = fabricarSR({
+      availableOnDevice: async () => {
+        throw new Error("boom");
+      },
+    });
+    instalar(SR);
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+
+  it("control positivo: con el modelo en el dispositivo SÍ aparece", async () => {
+    // Sin este control, una comprobación que dijera «no» a todo dejaría los
+    // cuatro tests de arriba verdes y el dictado muerto para siempre.
+    const { SR } = fabricarSR({ availableOnDevice: async () => "available" });
+    instalar(SR);
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.getByTestId("voice-toggle")).toBeInTheDocument();
+  });
+
+  it("pregunta la disponibilidad PARA EL IDIOMA que va a dictar", async () => {
+    const espia = vi.fn(async () => "available");
+    const { SR } = fabricarSR({ availableOnDevice: espia });
+    instalar(SR);
+    render(VoiceInput, { props: { lang: "es-CO" } });
+    await asentar();
+
+    expect(espia).toHaveBeenCalledWith("es-CO");
+  });
+});
+
+describe("VoiceInput — al dictar se exige proceso local otra vez", () => {
+  async function montarConDictado() {
+    const { SR, instancias } = fabricarSR({ availableOnDevice: async () => "available" });
+    instalar(SR);
+    const util = render(VoiceInput, { props: { lang: "es-CO" } });
+    await asentar();
+    return { ...util, instancias };
+  }
+
+  it("la instancia se configura en es-CO y con `processLocally`", async () => {
+    const { instancias } = await montarConDictado();
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+
+    expect(instancias).toHaveLength(1);
+    expect(instancias[0].lang).toBe("es-CO");
+    expect(instancias[0].processLocally).toBe(true);
+    expect(instancias[0].iniciado).toBe(true);
+  });
+
+  it("un resultado definitivo se emite hacia el compositor, marcado como tal", async () => {
+    const { component, instancias } = await montarConDictado();
+    const oido = vi.fn();
+    component.$on("texto", (e) => oido(e.detail));
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+
+    instancias[0].onresult({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "radica esta tutela" } }],
+    });
+
+    expect(oido).toHaveBeenCalledWith({ texto: "radica esta tutela", definitivo: true });
+  });
+
+  it("lo parcial viaja marcado como NO definitivo", async () => {
+    const { component, instancias } = await montarConDictado();
+    const oido = vi.fn();
+    component.$on("texto", (e) => oido(e.detail));
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+
+    instancias[0].onresult({
+      resultIndex: 0,
+      results: [{ isFinal: false, 0: { transcript: "radica esta" } }],
+    });
+
+    expect(oido).toHaveBeenCalledWith({ texto: "radica esta", definitivo: false });
+  });
+
+  it("el dictado NUNCA envía ni confirma: solo emite texto", async () => {
+    // La garantía del punto 11.3. Una acción con consecuencias sobre un
+    // registro oficial no puede dispararse por lo que el reconocedor creyó oír.
+    const { component, instancias } = await montarConDictado();
+    const eventos = [];
+    for (const nombre of ["texto", "submit", "confirmar", "enviar"]) {
+      component.$on(nombre, () => eventos.push(nombre));
+    }
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+    instancias[0].onresult({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "confirma la radicación" } }],
+    });
+
+    expect(eventos).toEqual(["texto"]);
+  });
+
+  it("volver a pulsar detiene el reconocedor", async () => {
+    const { instancias } = await montarConDictado();
+
+    const btn = screen.getByTestId("voice-toggle");
+    await fireEvent.click(btn);
+    await tick();
+    await fireEvent.click(btn);
+    await tick();
+
+    expect(instancias[0].parado).toBe(true);
+  });
+});
+
+describe("VoiceInput — los fallos dicen lo que son", () => {
+  async function montar() {
+    const { SR, instancias } = fabricarSR({ availableOnDevice: async () => "available" });
+    instalar(SR);
+    render(VoiceInput);
+    await asentar();
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+    return instancias;
+  }
+
+  it("permiso denegado se distingue de un micrófono ausente", async () => {
+    const instancias = await montar();
+
+    instancias[0].onerror({ error: "not-allowed" });
+    await tick();
+
+    // "No se pudo dictar" dejaría a la persona sin saber si el problema es el
+    // permiso, el micrófono o el idioma — y por tanto sin saber qué hacer.
+    expect(screen.getByTestId("voice-aviso")).toHaveTextContent(/permiso/i);
+  });
+
+  it("un idioma no soportado en el dispositivo RETIRA el botón", async () => {
+    const instancias = await montar();
+
+    instancias[0].onerror({ error: "language-not-supported" });
+    await tick();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+    expect(screen.getByTestId("voice-aviso")).toHaveTextContent(/dispositivo/i);
+  });
+});

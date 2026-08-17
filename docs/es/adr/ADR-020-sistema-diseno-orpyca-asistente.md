@@ -64,6 +64,21 @@ La pregunta de esta ADR: **qué sistema de diseño adopta el frontend y cómo se
 - **Inferencia local y *pluggable*** (soberanía del dato, alineado con [ADR-006](ADR-006-proveedor-ia-configurable.md)):
   - **LLM local** (Ollama / llama.cpp) por defecto; proveedor configurable, sin API externa obligatoria.
   - **STT en servidor con Whisper** (proveedor *pluggable*, `stub` por defecto); el audio no sale a terceros.
+
+> **Implementado (2026-08, bloque 11): dictado en el navegador, y SOLO en el dispositivo.**
+> `POST /api/v1/assistant/transcribe` sigue **sin construir**. Lo que hay es el dictado del
+> navegador (`VoiceInput.svelte`), y se implementó con una restricción que esta ADR obliga a
+> añadir: el botón **solo se ofrece si el navegador reconoce en el dispositivo**
+> (`SpeechRecognition.availableOnDevice` + `processLocally`), comprobado y confirmado por la
+> propia API. En Chrome y Edge la Web Speech API clásica **envía el audio a un servicio de
+> Google**, así que ofrecerlo por el mero hecho de que la API exista habría contradicho de
+> plano la decisión de soberanía de arriba — mandando la voz de un funcionario público a un
+> tercero, en un sistema que gestiona radicados reservados. Donde no hay reconocimiento local,
+> **no hay botón**: la degradación honesta aplicada a la soberanía y no solo al soporte.
+>
+> El camino soberano completo para todos los navegadores sigue siendo el `transcribe` con
+> Whisper de esta ADR. Queda como pendiente declarado, no como algo ya resuelto por la vía del
+> navegador.
 - **Opt-in por perfiles de Compose**: los servicios pesados de IA (Ollama, Whisper) y de edición en línea (OnlyOffice, ver E07 §9) se declaran con `profiles: ["assistant"]` / `["editor"]` y **arrancan desactivados**. Una instalación mínima corre sin GPU ni contenedores de inferencia; quien quiera el asistente activa el perfil.
 
 ### 4. Entrega gradual (5 fases de E22)

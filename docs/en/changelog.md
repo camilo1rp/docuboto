@@ -102,6 +102,14 @@ eleven services, and per-request tracing propagated from the edge.
 
 ### Added
 
+- `feat(frontend)`: **voice dictation — and the button does not appear if dictating would send the voice to a third party**
+  `VoiceInput.svelte` in the assistant composer: `es-CO` recognition, interim results painted over a base so the phrase does not repeat word by word, and errors that say what they are (permission, microphone, language).
+  **The plan's premise was false, so the design changed.** It justified browser recognition with "the audio never leaves the device" and claimed this served sovereignty *better* than ADR-020's Whisper `transcribe` endpoint. In Chrome and Edge the classic Web Speech API **sends the audio to a Google recognition service**. ADR-020 had decided the opposite in writing. Shipping it as planned would have sent a public servant's voice to a third party, in a system holding reserved records, under a written justification asserting the reverse.
+  So the button is not offered because the API exists: only when the browser can recognise **on device** and says so itself (`availableOnDevice` for that language, plus `processLocally`). A `downloadable` model does not count. The check is fail-closed by construction — no availability API, or a throw, means no button. Worst case is no dictation; never dictation leaving the device unnoticed.
+  Dictation never sends nor confirms: it fills the composer and stops there. A write proposal is approved by hand, on its card.
+  ADR-020 is annotated with what was built and its limit: the Whisper `transcribe` endpoint remains **unbuilt** and is the only sovereign path for every browser.
+  *Why*: last item of the plan, and its written justification did not hold — *Impact*: dictation where the browser recognises locally, invisible where it does not; 1488 vitest tests, `svelte-check` 0/0.
+
 - `feat(mcp,frontend)`: **the assistant promised a confirmation in writing that did not exist — the card is now built**
   The assistant panel stated that "every write action will ask for explicit confirmation" over an interface **that was never built**: no proposal rendering, no dialog, no buttons. The backend solved it from the other side by forbidding all writes (v1 read-only). Both halves were consistent with each other and neither delivered the promise.
   Backend: the assistant no longer excludes write tools from what the model sees. A `tool_use` on one **never reaches the dispatcher**: it becomes a signed proposal carried in `AssistantMessageResponse.propuestas` (additive field, no coordinated deploy). The `tool_result` returned to the model states `ejecutado: false` and "NOTHING HAS BEEN EXECUTED… do not chain actions that depend on its result" — without that anchor the model reads its own `tool_use` as having taken effect and writes "I registered the document", a false claim about an official record. The proposal token is never put in the model's context.

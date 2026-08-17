@@ -24,9 +24,13 @@
   `assistant_unavailable` (backend ausente/501), se muestra un estado
   HONESTO — nunca una respuesta simulada.
 
-  Diferidos explícitos de este slice: VoiceInput, subida de anexos,
-  streaming (SSE), persistencia de historial entre recargas (el hilo vive
-  solo en memoria del store; "Nueva conversación" lo limpia).
+  El dictado (VoiceInput) rellena el compositor y NUNCA envía ni confirma; solo
+  se ofrece si el navegador reconoce EN EL DISPOSITIVO — ver la cabecera de ese
+  componente, donde está el motivo.
+
+  Diferidos explícitos de este slice: subida de anexos, streaming (SSE),
+  persistencia de historial entre recargas (el hilo vive solo en memoria del
+  store; "Nueva conversación" lo limpia).
 -->
 <script>
   import { onMount, tick } from "svelte";
@@ -40,12 +44,35 @@
   import Button from "$lib/components/ui/Button.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import ProposalCard from "./ProposalCard.svelte";
+  import VoiceInput from "$lib/components/ui/VoiceInput.svelte";
 
   /** Controla si el dock está visible */
   export let open = false;
 
   /** Manejador de cierre (padre lo gestiona) */
   export let onClose = () => {};
+
+  // Base del compositor sobre la que se pinta lo que el reconocedor aún está
+  // decidiendo. Sin ella, cada resultado parcial se acumularía y la persona
+  // vería la frase repetida palabra a palabra.
+  let baseDictado = "";
+
+  /**
+   * Texto dictado → compositor. Lo definitivo se fija y pasa a ser la nueva
+   * base; lo parcial se muestra encima y se reemplaza en la siguiente vuelta.
+   *
+   * @param {{texto: string, definitivo: boolean}} detalle
+   */
+  function recibirDictado({ texto, definitivo }) {
+    if (definitivo) {
+      baseDictado =
+        `${baseDictado}${baseDictado && !baseDictado.endsWith(" ") ? " " : ""}${texto}`.trimStart();
+      draft = baseDictado;
+    } else {
+      draft =
+        `${baseDictado}${baseDictado && !baseDictado.endsWith(" ") ? " " : ""}${texto}`.trimStart();
+    }
+  }
 
   // Marco de alcance (bloque A). Se carga al abrir el panel, no al montarlo: no
   // tiene sentido consultar permisos de un panel que nadie ha abierto.
@@ -164,6 +191,8 @@
     const texto = draft.trim();
     if (!texto || $assistantState.estado === "sending") return;
     draft = "";
+    // Sin esto, el siguiente dictado se pegaría detrás del mensaje ya enviado.
+    baseDictado = "";
     sendAssistant(texto);
   }
 
@@ -212,7 +241,10 @@
           disabled={$assistantState.messages.length === 0}
           aria-label="Iniciar una nueva conversación"
           title="Nueva conversación"
-          on:click={() => resetAssistant()}
+          on:click={() => {
+            baseDictado = "";
+            resetAssistant();
+          }}
         >
           <i class="fas fa-rotate-left" aria-hidden="true"></i>
         </button>
@@ -357,6 +389,16 @@
         placeholder="Escribe tu mensaje…"
         disabled={$assistantState.estado === "sending"}
       ></textarea>
+      <!--
+        El dictado RELLENA el compositor y ahí se acaba: nunca envía, y nunca
+        confirma una propuesta. Una acción con consecuencias sobre un registro
+        oficial no puede dispararse por lo que el reconocedor creyó oír; la
+        tarjeta se pulsa con la mano.
+      -->
+      <VoiceInput
+        disabled={$assistantState.estado === "sending"}
+        on:texto={(e) => recibirDictado(e.detail)}
+      />
       <Button
         type="submit"
         variant="primary"

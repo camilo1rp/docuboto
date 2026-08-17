@@ -164,3 +164,91 @@ describe("AssistantDock — envío de mensajes", () => {
     expect(within(log).queryAllByText(/asistente/i)).toHaveLength(0);
   });
 });
+
+describe("AssistantDock — el dictado rellena el compositor y NUNCA envía", () => {
+  /** Reconocedor local disponible: es la única condición en que hay botón. */
+  function instalarReconocedorLocal() {
+    const instancias = [];
+    class SR {
+      constructor() {
+        instancias.push(this);
+      }
+      start() {}
+      stop() {}
+    }
+    SR.availableOnDevice = async () => "available";
+    vi.stubGlobal("SpeechRecognition", SR);
+    return instancias;
+  }
+
+  async function abrirConDictado() {
+    const instancias = instalarReconocedorLocal();
+    render(AssistantDock, { props: { open: true } });
+    await tick();
+    await Promise.resolve();
+    await tick();
+    return instancias;
+  }
+
+  it("lo dictado aparece en el compositor sin mandar nada", async () => {
+    // La garantía del punto 11.3: una acción con consecuencias sobre un
+    // registro oficial no puede dispararse por lo que el reconocedor creyó oír.
+    // El compositor se rellena, la persona lee, y envía con la mano.
+    const instancias = await abrirConDictado();
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+
+    instancias[0].onresult({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "radica esta tutela" } }],
+    });
+    await tick();
+
+    const compositor = screen.getByLabelText("Mensaje para el asistente");
+    expect(compositor).toHaveValue("radica esta tutela");
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("lo parcial se reemplaza, no se acumula", async () => {
+    // Sin una base sobre la que pintar, cada resultado intermedio se pegaría
+    // detrás del anterior y la persona vería la frase repetida palabra a
+    // palabra — un compositor ilegible justo cuando hay que revisarlo.
+    const instancias = await abrirConDictado();
+
+    await fireEvent.click(screen.getByTestId("voice-toggle"));
+    await tick();
+
+    const emitir = (transcript, isFinal) =>
+      instancias[0].onresult({
+        resultIndex: 0,
+        results: [{ isFinal, 0: { transcript } }],
+      });
+
+    emitir("radica", false);
+    await tick();
+    emitir("radica esta", false);
+    await tick();
+    emitir("radica esta tutela", true);
+    await tick();
+
+    expect(screen.getByLabelText("Mensaje para el asistente")).toHaveValue("radica esta tutela");
+  });
+
+  it("sin reconocimiento en el dispositivo, el compositor no ofrece dictado", async () => {
+    // Chrome/Edge clásicos: la API existe y manda el audio a un servidor de
+    // Google. El botón no aparece — ver la cabecera de VoiceInput.
+    class SR {
+      start() {}
+      stop() {}
+    }
+    vi.stubGlobal("SpeechRecognition", SR); // sin availableOnDevice
+    render(AssistantDock, { props: { open: true } });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Mensaje para el asistente")).toBeInTheDocument();
+  });
+});
