@@ -201,7 +201,7 @@ class PersonalSigningService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "object_not_found",
-                    "detail": f"Object {payload.objeto_tipo}:{payload.objeto_id} not found",
+                    "detail": f"No existe el objeto de tipo «{payload.objeto_tipo}» indicado",
                     "status": 404,
                 },
             )
@@ -212,7 +212,7 @@ class PersonalSigningService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "firmante_no_coincide",
-                    "detail": "firmante_id must match the authenticated actor (X-User-Id/JWT)",
+                    "detail": "firmante_id debe coincidir con el actor autenticado (X-User-Id/JWT)",
                     "status": 403,
                 },
             )
@@ -235,8 +235,8 @@ class PersonalSigningService:
                 detail={
                     "error": "sin_certificado_activo",
                     "detail": (
-                        "Caller has no active personal signing certificate — complete "
-                        "the offline enrollment/issuance before signing personally"
+                        "No tiene un certificado de firma personal activo: complete la "
+                        "inscripción y expedición fuera de línea antes de firmar en persona"
                     ),
                     "status": 422,
                 },

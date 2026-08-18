@@ -56,7 +56,7 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_tenant",
-                "detail": "X-Tenant-Slug header is required",
+                "detail": "Falta la cabecera X-Tenant-Slug",
                 "status": 400,
             },
         )
@@ -274,7 +274,11 @@ async def get_aip(
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "aip_not_found", "detail": expediente_id, "status": 404},
+            detail={
+                "error": "aip_not_found",
+                "detail": "No existe ningún AIP para el expediente solicitado",
+                "status": 404,
+            },
         )
     return AipResponse(**dict(row))
 

@@ -235,7 +235,7 @@ async def get_actor(request: Request) -> uuid.UUID:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "error": "unauthorized",
-                "detail": "X-User-Id header missing",
+                "detail": "Falta la cabecera X-User-Id",
                 "status": 401,
             },
             headers={"WWW-Authenticate": "Bearer"},
@@ -247,7 +247,7 @@ async def get_actor(request: Request) -> uuid.UUID:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "error": "unauthorized",
-                "detail": "X-User-Id must be a valid UUID (internal auth_users.id)",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido (auth_users.id interno)",
                 "status": 401,
             },
             headers={"WWW-Authenticate": "Bearer"},
@@ -435,7 +435,7 @@ async def assert_can_read_deadletter(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "not_found",
-                "detail": "Dead-letter event not found or not accessible",
+                "detail": "El evento en cola de fallos no existe o no es accesible",
                 "status": 404,
             },
         )

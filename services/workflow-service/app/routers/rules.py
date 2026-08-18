@@ -36,7 +36,7 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_tenant",
-                "detail": "X-Tenant-Slug header is required",
+                "detail": "Falta la cabecera X-Tenant-Slug",
                 "status": 400,
             },
         )
@@ -56,7 +56,7 @@ def _user(x_user_id: str | None = Header(default=None)) -> UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_user",
-                "detail": "X-User-Id header is required",
+                "detail": "Falta la cabecera X-User-Id",
                 "status": 400,
             },
         )
@@ -67,7 +67,7 @@ def _user(x_user_id: str | None = Header(default=None)) -> UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "invalid_user_id",
-                "detail": "X-User-Id must be a valid UUID",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido",
                 "status": 400,
             },
         )
@@ -180,7 +180,7 @@ async def get_rule(
     svc = WorkflowRulesService(conn, tenant_slug)
     rule = await svc.get_rule(rule_id)
     if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail="No existe la regla")
     return rule
 
 
@@ -199,7 +199,7 @@ async def update_rule(
     svc = WorkflowRulesService(conn, tenant_slug)
     rule = await svc.update_rule(rule_id, payload)
     if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail="No existe la regla")
     return rule
 
 
@@ -217,5 +217,5 @@ async def delete_rule(
     svc = WorkflowRulesService(conn, tenant_slug)
     deleted = await svc.delete_rule(rule_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail="No existe la regla")
     return Response(status_code=204)

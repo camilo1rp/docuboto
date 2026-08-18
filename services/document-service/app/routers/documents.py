@@ -252,7 +252,7 @@ async def get_document_by_tracking(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "document_not_found",
-                "detail": f"Document with tracking number '{tracking_number}' not found",
+                "detail": f"No existe ningún radicado con el número «{tracking_number}»",
                 "status": 404,
             },
         )
@@ -280,7 +280,7 @@ async def get_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "document_not_found",
-                "detail": f"Document '{document_id}' not found",
+                "detail": "No existe el radicado solicitado",
                 "status": 404,
             },
         )
@@ -354,7 +354,7 @@ async def download_anexo(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "document_not_found",
-                "detail": f"Document '{document_id}' not found",
+                "detail": "No existe el radicado solicitado",
                 "status": 404,
             },
         )
@@ -379,7 +379,7 @@ async def download_anexo(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "document_not_found",
-                "detail": f"Document '{document_id}' not found",
+                "detail": "No existe el radicado solicitado",
                 "status": 404,
             },
         )
@@ -574,7 +574,7 @@ async def reclassify_security_level(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "document_not_found",
-                "detail": f"Document '{document_id}' not found",
+                "detail": "No existe el radicado solicitado",
                 "status": 404,
             },
         )
@@ -583,7 +583,7 @@ async def reclassify_security_level(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "error": "reclassify_forbidden",
-                "detail": "Cannot reclassify above your own clearance level",
+                "detail": "No puede clasificar por encima de su propio nivel de acceso",
                 "status": 403,
             },
         )
@@ -665,7 +665,7 @@ async def update_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "document_not_found",
-                "detail": f"Document '{document_id}' not found",
+                "detail": "No existe el radicado solicitado",
                 "status": 404,
             },
         )

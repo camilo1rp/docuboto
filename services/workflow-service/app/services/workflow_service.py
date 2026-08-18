@@ -132,7 +132,7 @@ def _no_active_step_error(radicado_id: uuid.UUID) -> HTTPException:
         status_code=status.HTTP_404_NOT_FOUND,
         detail={
             "error": "no_active_step",
-            "detail": f"No active flow step found for radicado {radicado_id}",
+            "detail": "El radicado no tiene ningún paso de flujo activo",
             "status": 404,
         },
     )
@@ -157,7 +157,7 @@ class WorkflowService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error": "missing_from_dept",
-                    "detail": "from_dept is required for transfer/return actions",
+                    "detail": "from_dept es obligatorio para traslados y devoluciones",
                     "status": 422,
                 },
             )
@@ -640,7 +640,7 @@ class WorkflowService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={
                         "error": "step_not_found",
-                        "detail": f"Flow step {step_id} not found",
+                        "detail": "No existe el paso de flujo indicado",
                         "status": 404,
                     },
                 )
@@ -851,7 +851,7 @@ class WorkflowService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "radicado_not_found",
-                    "detail": f"Radicado {payload.radicado_id} not found",
+                    "detail": "No existe el radicado indicado",
                     "status": 404,
                 },
             )

@@ -76,7 +76,7 @@ def _step_up_invalido() -> HTTPException:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail={
             "error": "step_up_invalido",
-            "detail": "Invalid or missing step-up TOTP code",
+            "detail": "Falta el código TOTP de reautenticación o es incorrecto",
             "status": 401,
         },
     )
@@ -155,7 +155,7 @@ class TotpService:
                 status_code=status.HTTP_423_LOCKED,
                 detail={
                     "error": "totp_bloqueado",
-                    "detail": "TOTP is locked after too many failed attempts",
+                    "detail": "El TOTP quedó bloqueado tras demasiados intentos fallidos",
                     "locked_until": row["locked_until"].isoformat(),
                     "status": 423,
                 },
@@ -230,7 +230,7 @@ class TotpService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": "totp_ya_activo",
-                        "detail": "TOTP already active — step-up code required to re-enroll",
+                        "detail": "El TOTP ya está activo: para volver a inscribirlo hace falta un código de reautenticación",
                         "status": 409,
                     },
                 )
@@ -310,7 +310,7 @@ class TotpService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "totp_no_pendiente",
-                    "detail": "No pending TOTP enrollment for this user",
+                    "detail": "Este usuario no tiene ninguna inscripción de TOTP pendiente",
                     "status": 409,
                 },
             )
@@ -329,7 +329,7 @@ class TotpService:
             await self._bump_failure(row)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={"error": "codigo_invalido", "detail": "Invalid TOTP code", "status": 401},
+                detail={"error": "codigo_invalido", "detail": "Código TOTP incorrecto", "status": 401},
             )
 
         async with self._conn.transaction():

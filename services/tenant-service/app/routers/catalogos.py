@@ -39,7 +39,7 @@ def _resolve(catalogo: str) -> str:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "unknown_catalog",
-                "detail": f"Unknown catalog '{catalogo}'. Available: {sorted(CATALOGS)}",
+                "detail": f"No existe el catálogo «{catalogo}». Disponibles: {sorted(CATALOGS)}",
                 "status": 404,
             },
         )
@@ -122,7 +122,7 @@ async def create_item(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "conflict",
-                "detail": f"codigo {payload.codigo} already exists",
+                "detail": f"Ya existe un registro con el código «{payload.codigo}»",
                 "status": 409,
             },
         )
@@ -150,7 +150,7 @@ async def update_item(
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": "not_found", "detail": "Item not found", "status": 404},
+                detail={"error": "not_found", "detail": "No existe el elemento", "status": 404},
             )
         await audit_core.append(
             conn,
@@ -180,7 +180,7 @@ async def delete_item(
         if not await repo.delete(item_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": "not_found", "detail": "Item not found", "status": 404},
+                detail={"error": "not_found", "detail": "No existe el elemento", "status": 404},
             )
         await audit_core.append(
             conn,

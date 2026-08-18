@@ -499,7 +499,7 @@ async def test_serie_con_codigo_duplicado_es_409_y_no_500(client_with_conn) -> N
 
     `POST /api/v1/trd` con un código ya existente violaba
     `trd_series_code_version_key` y el `UniqueViolationError` subía sin capturar:
-    la respuesta era un **500** «An unexpected error occurred», que no dice qué
+    la respuesta era un **500** «Ocurrió un error inesperado», que no dice qué
     pasó ni qué hacer. Su gemelo `tipos_documentales.py::create_tipo` sí lo
     traduce a 409, sobre el mismo tipo de conflicto y en el mismo servicio — es
     omisión, no diseño.

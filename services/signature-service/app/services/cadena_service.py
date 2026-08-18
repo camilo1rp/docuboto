@@ -176,7 +176,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "solicitud_not_found",
-                    "detail": f"Signature request {solicitud_id} not found",
+                    "detail": "No existe la solicitud de firma indicada",
                     "status": 404,
                 },
             )
@@ -197,7 +197,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "solicitud_not_found",
-                    "detail": "Signature request not found",
+                    "detail": "No existe la solicitud de firma",
                     "status": 404,
                 },
             )
@@ -243,7 +243,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "solicitud_not_found",
-                    "detail": "Signature request not found",
+                    "detail": "No existe la solicitud de firma",
                     "status": 404,
                 },
             )
@@ -262,7 +262,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "solicitud_not_found",
-                    "detail": "Signature request not found",
+                    "detail": "No existe la solicitud de firma",
                     "status": 404,
                 },
             )
@@ -273,8 +273,8 @@ class CadenaFirmaService:
                 detail={
                     "error": "cadena_existente",
                     "detail": (
-                        f"Object {payload.objeto_tipo}:{payload.objeto_id} "
-                        "already has an open signature chain"
+                        f"El objeto de tipo «{payload.objeto_tipo}» ya tiene una "
+                        "cadena de firma abierta"
                     ),
                     "status": 409,
                 },
@@ -328,7 +328,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "cadena_not_found",
-                    "detail": f"No open signature chain for {objeto_tipo}:{objeto_id}",
+                    "detail": f"No hay ninguna cadena de firma abierta para el objeto de tipo «{objeto_tipo}»",
                     "status": 404,
                 },
             )
@@ -398,7 +398,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={
                         "error": "solicitud_no_encontrada",
-                        "detail": "Signature request not found",
+                        "detail": "No existe la solicitud de firma",
                         "status": 404,
                     },
                 )
@@ -410,7 +410,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={
                         "error": "solicitud_no_encontrada",
-                        "detail": "Signature request not found",
+                        "detail": "No existe la solicitud de firma",
                         "status": 404,
                     },
                 )
@@ -428,7 +428,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": "solicitud_no_pendiente",
-                        "detail": f"Signature request {solicitud_id} is already '{sol['estado']}'",
+                        "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
                         "status": 409,
                     },
                 )
@@ -439,7 +439,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={
                         "error": "no_es_su_turno",
-                        "detail": "It is not this actor's turn in the signature chain (RF-FIR-04)",
+                        "detail": "No es el turno de este actor en la cadena de firma (RF-FIR-04)",
                         "status": 403,
                     },
                 )
@@ -451,8 +451,8 @@ class CadenaFirmaService:
                     detail={
                         "error": "payload_no_fijado",
                         "detail": (
-                            "firma_solicitud.payload_sha256 must be set before a 2FA "
-                            "challenge can be issued (RF-FIR-13)"
+                            "firma_solicitud.payload_sha256 debe fijarse antes de emitir "
+                            "un desafío de doble factor (RF-FIR-13)"
                         ),
                         "status": 422,
                     },
@@ -470,7 +470,7 @@ class CadenaFirmaService:
                         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                         detail={
                             "error": "challenge_cooldown",
-                            "detail": "A challenge was issued too recently; wait before retrying",
+                            "detail": "Se emitió un desafío hace muy poco; espere antes de volver a intentarlo",
                             "status": 429,
                         },
                     )
@@ -485,7 +485,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail={
                         "error": "canal_2fa_no_disponible",
-                        "detail": "Could not resolve the signer's email (auth-service)",
+                        "detail": "No se pudo resolver el correo del firmante (auth-service)",
                         "status": 503,
                     },
                 ) from None
@@ -520,7 +520,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail={
                         "error": "canal_2fa_no_disponible",
-                        "detail": "Could not deliver the OTP email (notification-service)",
+                        "detail": "No se pudo enviar el correo con el código (notification-service)",
                         "status": 503,
                     },
                 ) from None
@@ -632,7 +632,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "solicitud_no_pendiente",
-                    "detail": f"Signature request {solicitud_id} is already '{sol['estado']}'",
+                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
                     "status": 409,
                 },
             )
@@ -642,7 +642,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "no_es_firmante",
-                    "detail": "Actor is not a member of this signature chain",
+                    "detail": "El actor no pertenece a esta cadena de firma",
                     "status": 403,
                 },
             )
@@ -655,7 +655,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "solicitud_no_pendiente",
-                    "detail": "No active turn found; signature chain may already be complete",
+                    "detail": "No hay ningún turno activo; puede que la cadena de firma ya esté completa",
                     "status": 409,
                 },
             )
@@ -664,7 +664,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "no_es_su_turno",
-                    "detail": "It is not this actor's turn in the signature chain (RF-FIR-04)",
+                    "detail": "No es el turno de este actor en la cadena de firma (RF-FIR-04)",
                     "status": 403,
                 },
             )
@@ -682,7 +682,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": "solicitud_no_pendiente",
-                        "detail": "The active turn changed before the signature was committed",
+                        "detail": "El turno activo cambió antes de registrar la firma",
                         "status": 409,
                     },
                 )
@@ -733,7 +733,7 @@ class CadenaFirmaService:
                         status_code=status.HTTP_409_CONFLICT,
                         detail={
                             "error": "2fa_requerido",
-                            "detail": "totp_code is required for personal signing (RF-FIR-13)",
+                            "detail": "totp_code es obligatorio para la firma personal (RF-FIR-13)",
                             "status": 409,
                         },
                     )
@@ -792,10 +792,10 @@ class CadenaFirmaService:
                         detail={
                             "error": "firma_xades_requerida",
                             "detail": (
-                                "This act requires a personal XAdES certificate under "
-                                "the current gate (firma_personal_require_xades); the "
-                                "caller has no active certificate. Complete the offline "
-                                "personal certificate enrollment/issuance to sign this act."
+                                "Este acto exige un certificado XAdES personal según la "
+                                "política vigente (firma_personal_require_xades) y usted no "
+                                "tiene ninguno activo. Complete la inscripción y expedición "
+                                "del certificado personal para poder firmar este acto."
                             ),
                             "status": 422,
                         },
@@ -806,9 +806,9 @@ class CadenaFirmaService:
                         detail={
                             "error": "canal_firma_personal_no_disponible",
                             "detail": (
-                                "Could not verify the caller's personal signing-key "
-                                "status (auth-service); the XAdES gate for this act "
-                                "requires this check to succeed (fail-closed)."
+                                "No se pudo verificar el estado de la credencial de firma "
+                                "personal (auth-service); la política de XAdES para este acto "
+                                "exige que esa comprobación tenga éxito (falla cerrado)."
                             ),
                             "status": 503,
                         },
@@ -913,7 +913,7 @@ class CadenaFirmaService:
                         status_code=status.HTTP_409_CONFLICT,
                         detail={
                             "error": "solicitud_no_pendiente",
-                            "detail": "This turn was already resolved by another request",
+                            "detail": "Otra petición ya resolvió este turno",
                             "status": 409,
                         },
                     )
@@ -1138,7 +1138,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "2fa_requerido",
-                    "detail": "challenge_id and otp are required (RF-FIR-13)",
+                    "detail": "challenge_id y otp son obligatorios (RF-FIR-13)",
                     "status": 409,
                 },
             ), None
@@ -1155,7 +1155,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_invalido",
-                    "detail": "Challenge not found",
+                    "detail": "El desafío no existe",
                     "status": 409,
                 },
             ), None
@@ -1164,7 +1164,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "challenge_ajeno",
-                    "detail": "Challenge does not belong to this actor",
+                    "detail": "El desafío pertenece a otro actor",
                     "status": 403,
                 },
             ), None
@@ -1182,7 +1182,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_acto_distinto",
-                    "detail": "Challenge was issued for a different signature request",
+                    "detail": "El desafío se emitió para otra solicitud de firma",
                     "status": 409,
                 },
             ), None
@@ -1191,7 +1191,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_documento_distinto",
-                    "detail": "Challenge was issued for a different document",
+                    "detail": "El desafío se emitió para otro documento",
                     "status": 409,
                 },
             ), None
@@ -1200,7 +1200,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_consumido",
-                    "detail": "Challenge was already used",
+                    "detail": "El desafío ya se usó",
                     "status": 409,
                 },
             ), None
@@ -1209,7 +1209,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_bloqueado",
-                    "detail": "Challenge is blocked (too many failed attempts)",
+                    "detail": "El desafío quedó bloqueado tras demasiados intentos fallidos",
                     "status": 409,
                 },
             ), None
@@ -1221,7 +1221,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_expirado",
-                    "detail": "Challenge has expired",
+                    "detail": "El desafío expiró",
                     "status": 409,
                 },
             ), None
@@ -1231,7 +1231,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "challenge_bloqueado",
-                    "detail": "Challenge is blocked (too many failed attempts)",
+                    "detail": "El desafío quedó bloqueado tras demasiados intentos fallidos",
                     "status": 409,
                 },
             ), None
@@ -1265,7 +1265,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
                     "error": "otp_incorrecto",
-                    "detail": "The provided OTP is incorrect",
+                    "detail": "El código indicado es incorrecto",
                     "intentos_restantes": intentos_restantes,
                     "status": 401,
                 },
@@ -1314,7 +1314,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
                     "error": "canal_2fa_no_disponible",
-                    "detail": "Could not verify the TOTP code (auth-service)",
+                    "detail": "No se pudo verificar el código TOTP (auth-service)",
                     "status": 503,
                 },
             ), None
@@ -1339,7 +1339,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error": "totp_no_activo",
-                    "detail": "Caller has no active TOTP credential (RF-FIR-13)",
+                    "detail": "No tiene un segundo factor (TOTP) activo (RF-FIR-13)",
                     "status": 422,
                 },
             )
@@ -1348,7 +1348,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_423_LOCKED,
                 detail={
                     "error": "totp_bloqueado",
-                    "detail": "TOTP is locked after too many failed attempts",
+                    "detail": "El TOTP quedó bloqueado tras demasiados intentos fallidos",
                     "locked_until": locked_until,
                     "status": 423,
                 },
@@ -1358,7 +1358,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
                     "error": "totp_incorrecto",
-                    "detail": "The provided TOTP code is incorrect",
+                    "detail": "El código TOTP indicado es incorrecto",
                     "intentos_restantes": intentos_restantes,
                     "status": 401,
                 },
@@ -1403,7 +1403,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "solicitud_no_pendiente",
-                    "detail": f"Signature request {solicitud_id} is already '{sol['estado']}'",
+                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
                     "status": 409,
                 },
             )
@@ -1413,7 +1413,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "no_es_firmante",
-                    "detail": "Actor is not a member of this signature chain",
+                    "detail": "El actor no pertenece a esta cadena de firma",
                     "status": 403,
                 },
             )
@@ -1425,7 +1425,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "solicitud_no_pendiente",
-                    "detail": "No active turn found",
+                    "detail": "No hay ningún turno activo",
                     "status": 409,
                 },
             )
@@ -1434,7 +1434,7 @@ class CadenaFirmaService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "no_es_su_turno",
-                    "detail": "It is not this actor's turn in the signature chain (RF-FIR-04)",
+                    "detail": "No es el turno de este actor en la cadena de firma (RF-FIR-04)",
                     "status": 403,
                 },
             )
@@ -1447,7 +1447,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": "solicitud_no_pendiente",
-                        "detail": "The active turn changed before the rejection was committed",
+                        "detail": "El turno activo cambió antes de registrar el rechazo",
                         "status": 409,
                     },
                 )
@@ -1459,7 +1459,7 @@ class CadenaFirmaService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": "solicitud_no_pendiente",
-                        "detail": "This turn was already resolved by another request",
+                        "detail": "Otra petición ya resolvió este turno",
                         "status": 409,
                     },
                 )

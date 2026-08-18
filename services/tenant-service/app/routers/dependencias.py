@@ -44,14 +44,14 @@ def _conflict(detail: str) -> HTTPException:
 def _not_found() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": "not_found", "detail": "Dependencia not found", "status": 404},
+        detail={"error": "not_found", "detail": "No existe la dependencia", "status": 404},
     )
 
 
 def _bad_parent() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail={"error": "invalid_parent", "detail": "parent_id does not exist", "status": 400},
+        detail={"error": "invalid_parent", "detail": "La dependencia padre indicada no existe", "status": 400},
     )
 
 
@@ -142,7 +142,7 @@ async def create_dependencia(
                 payload={"codigo": row["codigo"], "sigla": row["sigla"], "nombre": row["nombre"]},
             )
     except asyncpg.UniqueViolationError:
-        raise _conflict(f"codigo {payload.codigo} already exists")
+        raise _conflict(f"Ya existe una dependencia con el código «{payload.codigo}»")
     except asyncpg.ForeignKeyViolationError:
         raise _bad_parent()
     return DependenciaResponse(**dict(row))
@@ -164,7 +164,7 @@ async def update_dependencia(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "invalid_parent",
-                "detail": "dependencia cannot be its own parent",
+                "detail": "Una dependencia no puede ser su propia dependencia padre",
                 "status": 400,
             },
         )
@@ -185,7 +185,7 @@ async def update_dependencia(
                 payload={"fields": fields},
             )
     except asyncpg.UniqueViolationError:
-        raise _conflict("codigo already exists")
+        raise _conflict("Ya existe un registro con ese código")
     except asyncpg.ForeignKeyViolationError:
         raise _bad_parent()
     return DependenciaResponse(**dict(row))
@@ -203,7 +203,7 @@ async def delete_dependencia(
 ) -> None:
     repo = DependenciaRepository(conn)
     if await repo.has_children(dependencia_id):
-        raise _conflict("dependencia has children; reassign or delete them first")
+        raise _conflict("La dependencia tiene dependencias hijas: reasígnelas o elimínelas primero")
     try:
         async with conn.transaction():
             deleted = await repo.delete(dependencia_id)
@@ -218,4 +218,4 @@ async def delete_dependencia(
                 actor=audit_core.actor_from(request),
             )
     except asyncpg.ForeignKeyViolationError:
-        raise _conflict("dependencia is referenced by other records")
+        raise _conflict("Otros registros hacen referencia a la dependencia")

@@ -101,7 +101,7 @@ async def create_user(
             caller_is_root=caller.is_root,
         )
     except asyncpg.UniqueViolationError:
-        raise _conflict(f"User '{payload.username}' already exists")
+        raise _conflict(f"Ya existe un usuario con el nombre «{payload.username}»")
     return UserResponse(**dict(row))
 
 
@@ -124,7 +124,7 @@ async def user_permissions(
 ) -> EffectivePermissions:
     repo = RBACRepository(conn)
     if await repo.get_user(user_id) is None:
-        raise _not_found(f"User {user_id} not found")
+        raise _not_found("No existe el usuario")
     service = RBACService(conn)
     perms = await service.resolve_effective_permissions(user_id)
     return EffectivePermissions(
@@ -151,7 +151,7 @@ async def create_group(
             actor=str(caller.user_id),
         )
     except asyncpg.UniqueViolationError:
-        raise _conflict(f"Group '{payload.name}' already exists")
+        raise _conflict(f"Ya existe un grupo con el nombre «{payload.name}»")
     return GroupResponse(**dict(row))
 
 
@@ -195,7 +195,7 @@ async def add_member(
             actor=str(caller.user_id),
         )
     except asyncpg.ForeignKeyViolationError:
-        raise _not_found("User or group not found")
+        raise _not_found("No existe el usuario o el grupo")
     return {"status": "ok"}
 
 
@@ -231,7 +231,7 @@ async def list_group_members(
     """
     repo = RBACRepository(conn)
     if await repo.get_group(group_id) is None:
-        raise _not_found(f"Group {group_id} not found")
+        raise _not_found("No existe el grupo")
     rows, total = await repo.list_group_members(group_id, limit=size, offset=(page - 1) * size)
     response.headers["X-Total-Count"] = str(total)
     return [UserResponse(**dict(r)) for r in rows]
@@ -245,7 +245,7 @@ async def list_group_permissions(
     """Permisos asignados al grupo. Espejo de lectura de `PUT .../permissions/{permission_id}`."""
     repo = RBACRepository(conn)
     if await repo.get_group(group_id) is None:
-        raise _not_found(f"Group {group_id} not found")
+        raise _not_found("No existe el grupo")
     rows = await repo.list_group_permissions(group_id)
     return [GroupPermissionItem(**dict(r)) for r in rows]
 
@@ -270,5 +270,5 @@ async def set_group_permission(
             caller_is_root=caller.is_root,
         )
     except asyncpg.ForeignKeyViolationError:
-        raise _not_found("Group or permission not found")
+        raise _not_found("No existe el grupo o el permiso")
     return {"status": "ok", "crud": payload.crud}

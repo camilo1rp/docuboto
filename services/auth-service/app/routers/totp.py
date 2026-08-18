@@ -220,7 +220,7 @@ async def internal_verify_totp(
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "missing_token", "detail": "Authorization header required", "status": 401},
+            detail={"error": "missing_token", "detail": "Falta la cabecera Authorization", "status": 401},
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
@@ -228,7 +228,7 @@ async def internal_verify_totp(
     except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "detail": "Bearer token is invalid or expired", "status": 401},
+            detail={"error": "invalid_token", "detail": "El token es inválido o expiró", "status": 401},
         )
 
     tenant_slug = claims.get("tenant_slug")

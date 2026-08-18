@@ -39,7 +39,7 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_tenant",
-                "detail": "X-Tenant-Slug header is required",
+                "detail": "Falta la cabecera X-Tenant-Slug",
                 "status": 400,
             },
         )
@@ -52,7 +52,7 @@ def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_user",
-                "detail": "X-User-Id header is required",
+                "detail": "Falta la cabecera X-User-Id",
                 "status": 400,
             },
         )
@@ -63,7 +63,7 @@ def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "invalid_user_id",
-                "detail": "X-User-Id must be a valid UUID",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido",
                 "status": 400,
             },
         )
@@ -139,6 +139,6 @@ async def get_batch_status(
     job = await service.get_job_status(job_id)
 
     if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        raise HTTPException(status_code=404, detail="No existe el trabajo solicitado")
 
     return BatchJobStatusResponse(**job)

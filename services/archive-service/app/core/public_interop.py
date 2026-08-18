@@ -40,5 +40,5 @@ def require_public_interop() -> None:
     if not settings.public_interop_enabled:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "not_found", "detail": "Not Found", "status": 404},
+            detail={"error": "not_found", "detail": "No encontrado", "status": 404},
         )

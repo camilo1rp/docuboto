@@ -57,7 +57,7 @@ async def create_tenant(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "duplicate_slug",
-                "detail": f"A tenant with slug '{payload.slug}' already exists",
+                "detail": f"Ya existe una entidad con el slug «{payload.slug}»",
                 "status": 409,
             },
         )
@@ -66,7 +66,7 @@ async def create_tenant(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "duplicate_code",
-                "detail": f"A tenant with code '{payload.code}' already exists",
+                "detail": f"Ya existe una entidad con el código «{payload.code}»",
                 "status": 409,
             },
         )
@@ -111,7 +111,7 @@ async def get_tenant_by_slug(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "tenant_not_found",
-                "detail": f"Tenant with slug '{slug}' not found",
+                "detail": f"No existe ninguna entidad con el slug «{slug}»",
                 "status": 404,
             },
         )
@@ -134,7 +134,7 @@ async def get_tenant(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "tenant_not_found",
-                "detail": f"Tenant with id '{tenant_id}' not found",
+                "detail": "No existe la entidad solicitada",
                 "status": 404,
             },
         )
@@ -158,7 +158,7 @@ async def update_tenant(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "tenant_not_found",
-                "detail": f"Tenant with id '{tenant_id}' not found",
+                "detail": "No existe la entidad solicitada",
                 "status": 404,
             },
         )

@@ -138,7 +138,11 @@ async def invoke_tool(
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "tool_not_found", "detail": name, "status": 404},
+            detail={
+                "error": "tool_not_found",
+                "detail": f"No existe la herramienta «{name}»",
+                "status": 404,
+            },
         )
     client: httpx.AsyncClient = request.app.state.gateway_client
     try:

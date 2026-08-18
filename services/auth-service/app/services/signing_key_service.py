@@ -186,7 +186,7 @@ class SigningKeyService:
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail={"error": "forbidden", "detail": "Caller is not provisioned", "status": 403},
+                detail={"error": "forbidden", "detail": "El usuario no está aprovisionado en el sistema", "status": 403},
             )
 
         reenrolling_active = existing is not None and existing["estado"] == "activo"
@@ -196,8 +196,8 @@ class SigningKeyService:
                 detail={
                     "error": "signing_key_activa_requiere_step_up",
                     "detail": (
-                        "An active signing key exists — step-up TOTP code "
-                        "required to re-enroll"
+                        "Ya existe una credencial de firma activa: para volver a "
+                        "inscribirla hace falta un código TOTP de reautenticación"
                     ),
                     "status": 409,
                 },
@@ -306,7 +306,7 @@ class SigningKeyService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "signing_key_no_pendiente",
-                    "detail": "No pending signing-key enrollment for this user",
+                    "detail": "Este usuario no tiene ninguna inscripción de credencial de firma pendiente",
                     "status": 409,
                 },
             )
@@ -471,7 +471,7 @@ class SigningKeyService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail={
                         "error": "signing_key_no_activa",
-                        "detail": "Caller has no active personal signing key",
+                        "detail": "No tiene una credencial de firma personal activa",
                         "status": 422,
                     },
                 )
@@ -484,7 +484,7 @@ class SigningKeyService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail={
                         "error": "signing_key_no_activa",
-                        "detail": "Caller has no active personal signing key",
+                        "detail": "No tiene una credencial de firma personal activa",
                         "status": 422,
                     },
                 )
@@ -645,7 +645,7 @@ class SigningKeyService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "no_signing_key",
-                    "detail": "No signing-key credential to revoke for this user",
+                    "detail": "Este usuario no tiene credencial de firma que revocar",
                     "status": 404,
                 },
             )
@@ -710,7 +710,7 @@ def _map_totp_failure(totp_result: Any) -> HTTPException:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "error": "totp_no_activo",
-                "detail": "Caller has no active TOTP credential",
+                "detail": "No tiene un segundo factor (TOTP) activo",
                 "status": 422,
             },
         )
@@ -719,7 +719,7 @@ def _map_totp_failure(totp_result: Any) -> HTTPException:
             status_code=status.HTTP_423_LOCKED,
             detail={
                 "error": "totp_bloqueado",
-                "detail": "TOTP is locked after too many failed attempts",
+                "detail": "El TOTP quedó bloqueado tras demasiados intentos fallidos",
                 "locked_until": (
                     totp_result.locked_until.isoformat() if totp_result.locked_until else None
                 ),
@@ -730,7 +730,7 @@ def _map_totp_failure(totp_result: Any) -> HTTPException:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail={
             "error": "totp_incorrecto",
-            "detail": "The provided TOTP code is incorrect",
+            "detail": "El código TOTP indicado es incorrecto",
             "intentos_restantes": totp_result.intentos_restantes,
             "status": 401,
         },

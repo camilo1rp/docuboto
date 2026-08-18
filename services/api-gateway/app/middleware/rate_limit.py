@@ -80,7 +80,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     status_code=429,
                     content={
                         "error": "rate_limit_exceeded",
-                        "detail": "Too many requests, please slow down",
+                        "detail": "Demasiadas peticiones; espere un momento antes de reintentar",
                         "status": 429,
                     },
                     headers={"Retry-After": "60"},

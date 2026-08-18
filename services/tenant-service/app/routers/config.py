@@ -81,7 +81,7 @@ async def create_holiday(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "conflict",
-                "detail": f"{payload.fecha} already exists",
+                "detail": f"Ya existe un día no hábil registrado para el {payload.fecha}",
                 "status": 409,
             },
         )
@@ -103,7 +103,7 @@ async def delete_holiday(
         if not await repo.delete_holiday(holiday_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": "not_found", "detail": "Holiday not found", "status": 404},
+                detail={"error": "not_found", "detail": "No existe el día no hábil", "status": 404},
             )
         await audit_core.append(
             conn,
@@ -178,7 +178,7 @@ async def get_param(key: str, conn: asyncpg.Connection = Depends(get_tenant_conn
     if value is None and key not in await repo.get_params():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "not_found", "detail": f"Param '{key}' not found", "status": 404},
+            detail={"error": "not_found", "detail": f"No existe el parámetro «{key}»", "status": 404},
         )
     return ParamResponse(key=key, value=value)
 

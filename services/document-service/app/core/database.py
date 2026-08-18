@@ -74,7 +74,7 @@ def tenant_schema(slug: str) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "invalid_tenant",
-                "detail": "X-Tenant-Slug header missing or invalid",
+                "detail": "La cabecera X-Tenant-Slug falta o no es válida",
                 "status": 400,
             },
         )

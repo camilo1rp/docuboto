@@ -115,7 +115,7 @@ async def _resolve_bearer_user(
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "missing_token", "detail": "Authorization header required", "status": 401},
+            detail={"error": "missing_token", "detail": "Falta la cabecera Authorization", "status": 401},
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
@@ -123,7 +123,7 @@ async def _resolve_bearer_user(
     except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "detail": "Bearer token is invalid or expired", "status": 401},
+            detail={"error": "invalid_token", "detail": "El token es inválido o expiró", "status": 401},
         )
 
     tenant_slug = claims.get("tenant_slug")
@@ -132,7 +132,7 @@ async def _resolve_bearer_user(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "error": "signing_key_no_activa",
-                "detail": "Caller has no tenant context",
+                "detail": "La sesión no tiene entidad asociada",
                 "status": 422,
             },
         )
@@ -146,7 +146,7 @@ async def _resolve_bearer_user(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "error": "signing_key_no_activa",
-                "detail": "Caller is not provisioned in this tenant",
+                "detail": "El usuario no está aprovisionado en esta entidad",
                 "status": 422,
             },
         )
@@ -282,7 +282,7 @@ async def internal_sign_digest(
         except Exception:  # noqa: BLE001 — base64 corrupto, 422 explícito
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"error": "digest_invalido", "detail": "digest_b64 is not valid base64", "status": 422},
+                detail={"error": "digest_invalido", "detail": "digest_b64 no es base64 válido", "status": 422},
             ) from None
 
         (

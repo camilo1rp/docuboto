@@ -51,7 +51,7 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_tenant",
-                "detail": "X-Tenant-Slug header is required",
+                "detail": "Falta la cabecera X-Tenant-Slug",
                 "status": 400,
             },
         )
@@ -265,7 +265,7 @@ async def replace_file(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "file_not_found",
-                "detail": f"File {file_id} not found",
+                "detail": "No existe el archivo solicitado",
                 "status": 404,
             },
         )
@@ -298,7 +298,7 @@ async def list_file_versions(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "file_not_found",
-                "detail": f"File {file_id} not found",
+                "detail": "No existe el archivo solicitado",
                 "status": 404,
             },
         )
@@ -323,7 +323,7 @@ async def get_file_metadata(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "file_not_found",
-                "detail": f"File {file_id} not found",
+                "detail": "No existe el archivo solicitado",
                 "status": 404,
             },
         )
@@ -348,7 +348,7 @@ async def get_presigned_url(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "file_not_found",
-                "detail": f"File {file_id} not found",
+                "detail": "No existe el archivo solicitado",
                 "status": 404,
             },
         )
@@ -378,7 +378,7 @@ async def get_file_content(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "file_not_found",
-                "detail": f"File {file_id} not found",
+                "detail": "No existe el archivo solicitado",
                 "status": 404,
             },
         )
@@ -431,7 +431,7 @@ async def delete_file(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "file_not_found",
-                "detail": f"File {file_id} not found",
+                "detail": "No existe el archivo solicitado",
                 "status": 404,
             },
         )

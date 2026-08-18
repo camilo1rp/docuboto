@@ -268,7 +268,7 @@ async def replay_dead_letter(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error": "tenant_mismatch",
-                    "detail": "Event tenant does not match caller tenant",
+                    "detail": "El evento pertenece a otra entidad",
                     "status": 422,
                 },
             )
@@ -308,7 +308,7 @@ async def replay_dead_letter(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "already_resolved",
-                    "detail": "Event was already resolved by another admin",
+                    "detail": "Otro administrador ya resolvió el evento",
                     "status": 409,
                 },
             )
@@ -376,7 +376,7 @@ async def discard_dead_letter(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "already_resolved",
-                    "detail": "Event is not pending",
+                    "detail": "El evento ya no está pendiente",
                     "status": 409,
                 },
             )

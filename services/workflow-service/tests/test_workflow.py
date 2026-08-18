@@ -1146,7 +1146,7 @@ async def test_devolver_not_current_holder_is_neutral_404(
     assert resp.json()["detail"]["error"] == "no_active_step"
     # Mismo cuerpo exacto que "sin paso activo" (no-oráculo: byte-a-byte igual).
     no_step_body = resp.json()
-    assert no_step_body["detail"]["detail"] == f"No active flow step found for radicado {RADICADO_ID}"
+    assert no_step_body["detail"]["detail"] == "El radicado no tiene ningún paso de flujo activo"
 
 
 ROLLBACK_MOTIVO = "Se asignó a la dependencia incorrecta por error de digitación."

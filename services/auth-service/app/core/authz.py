@@ -75,7 +75,7 @@ async def get_caller(
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "unauthorized", "detail": "X-User-Id header missing", "status": 401},
+            detail={"error": "unauthorized", "detail": "Falta la cabecera X-User-Id", "status": 401},
         )
     try:
         user_id = UUID(raw)
@@ -84,7 +84,7 @@ async def get_caller(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "error": "unauthorized",
-                "detail": "X-User-Id must be a valid UUID (internal auth_users.id)",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido (auth_users.id interno)",
                 "status": 401,
             },
         )
@@ -111,7 +111,7 @@ async def get_caller(
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning("audit.append_denial failed", exc_info=True)
-        raise _forbidden("Caller is not provisioned in this tenant")
+        raise _forbidden("El usuario no está aprovisionado en esta entidad")
     service = RBACService(conn)
     perms = await service.resolve_effective_permissions(user["id"])
     return Caller(
@@ -147,7 +147,7 @@ def require_permission(name: str, min_crud: int = 1) -> Callable[..., Coroutine[
                     )
                 except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                     logger.warning("audit.append_denial failed", exc_info=True)
-            raise _forbidden(f"Requires permission '{name}' (crud>={min_crud})")
+            raise _forbidden(f"Se requiere el permiso {name} (crud>={min_crud})")
         return caller
 
     return dependency

@@ -59,7 +59,7 @@ def _parse_user_id(x_user_id: str) -> uuid.UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "invalid_user_id",
-                "detail": "X-User-Id must be a valid UUID",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido",
                 "status": 400,
             },
         )
@@ -80,7 +80,7 @@ async def require_actor(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_user_id",
-                "detail": "X-User-Id is required to identify the actor of this action",
+                "detail": "Falta la cabecera X-User-Id: sin ella no se puede identificar quién ejecuta el acto",
                 "status": 400,
             },
         )

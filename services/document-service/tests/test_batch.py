@@ -172,7 +172,7 @@ async def test_get_batch_status_not_found_404(client_with_conn) -> None:
     mock_conn.fetchrow.return_value = None  # job ausente
     resp = await client.get(f"/api/v1/batch/documents/{JOB_ID}/status", headers=TENANT_HEADERS)
     assert resp.status_code == 404
-    assert "not found" in resp.json()["detail"].lower()
+    assert "no existe" in resp.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

@@ -201,7 +201,7 @@ async def get_dead_letter(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "not_found",
-                "detail": "Dead-letter event not found or not accessible",
+                "detail": "El evento en cola de fallos no existe o no es accesible",
                 "status": 404,
             },
         )
@@ -274,7 +274,7 @@ async def replay_dead_letter(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "not_found",
-                    "detail": "Dead-letter event not found or not accessible",
+                    "detail": "El evento en cola de fallos no existe o no es accesible",
                     "status": 404,
                 },
             )
@@ -286,7 +286,7 @@ async def replay_dead_letter(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error": "tenant_mismatch",
-                    "detail": "Event tenant does not match caller tenant",
+                    "detail": "El evento pertenece a otra entidad",
                     "status": 422,
                 },
             )
@@ -386,7 +386,7 @@ async def replay_dead_letter(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "already_resolved",
-                    "detail": "Event was already resolved by another admin",
+                    "detail": "Otro administrador ya resolvió el evento",
                     "status": 409,
                 },
             )
@@ -445,7 +445,7 @@ async def discard_dead_letter(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "not_found",
-                    "detail": "Dead-letter event not found or not accessible",
+                    "detail": "El evento en cola de fallos no existe o no es accesible",
                     "status": 404,
                 },
             )
@@ -477,7 +477,7 @@ async def discard_dead_letter(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "already_resolved",
-                    "detail": "Event is not pending",
+                    "detail": "El evento ya no está pendiente",
                     "status": 409,
                 },
             )

@@ -1105,7 +1105,7 @@ class TransferenciaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1156,7 +1156,7 @@ class TransferenciaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1379,7 +1379,7 @@ class TransferenciaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1601,7 +1601,7 @@ class TransferenciaService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {row['expediente_id']} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )

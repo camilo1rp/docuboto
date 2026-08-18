@@ -144,7 +144,7 @@ describe("HojaRuta", () => {
           {
             detail: {
               error: "no_active_step",
-              detail: `No active flow step found for radicado ${RAD_ID}`,
+              detail: "El radicado no tiene ningún paso de flujo activo",
               status: 404,
             },
           },

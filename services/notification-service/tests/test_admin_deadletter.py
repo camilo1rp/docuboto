@@ -54,7 +54,7 @@ OTHER_GROUP = "signature-service"  # another consumer sharing evento_dead_letter
 # reuses this constant so a future edit that de-syncs the two literals fails.
 _NOT_FOUND_BODY = {
     "error": "not_found",
-    "detail": "Dead-letter event not found or not accessible",
+    "detail": "El evento en cola de fallos no existe o no es accesible",
     "status": 404,
 }
 

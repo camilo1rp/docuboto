@@ -176,7 +176,7 @@ async def validate(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "error": "missing_token",
-                "detail": "Authorization header required",
+                "detail": "Falta la cabecera Authorization",
                 "status": 401,
             },
             headers={"WWW-Authenticate": "Bearer"},
@@ -244,7 +244,7 @@ async def me(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "error": "missing_token",
-                "detail": "Authorization header required",
+                "detail": "Falta la cabecera Authorization",
                 "status": 401,
             },
             headers={"WWW-Authenticate": "Bearer"},

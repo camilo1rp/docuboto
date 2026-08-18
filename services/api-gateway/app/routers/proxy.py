@@ -150,7 +150,7 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             status_code=404,
             content={
                 "error": "route_not_found",
-                "detail": f"No upstream service registered for path /{path}",
+                "detail": f"Ninguna ruta del sistema corresponde a /{path}",
                 "status": 404,
             },
         )
@@ -183,7 +183,7 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             status_code=503,
             content={
                 "error": "upstream_timeout",
-                "detail": "Upstream service did not respond in time",
+                "detail": "El servicio no respondió a tiempo",
                 "status": 503,
             },
         )
@@ -192,7 +192,7 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             status_code=503,
             content={
                 "error": "upstream_unavailable",
-                "detail": "Upstream service is not reachable",
+                "detail": "No se pudo contactar el servicio",
                 "status": 503,
             },
         )

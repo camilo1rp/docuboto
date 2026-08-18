@@ -40,7 +40,7 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_tenant",
-                "detail": "X-Tenant-Slug header is required",
+                "detail": "Falta la cabecera X-Tenant-Slug",
                 "status": 400,
             },
         )

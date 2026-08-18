@@ -49,7 +49,7 @@ async def create_batch_documents(
     user_id = request.headers.get("X-User-Id", "")
 
     if not tenant_slug or not user_id:
-        raise HTTPException(status_code=400, detail="Missing tenant or user context")
+        raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
 
     import asyncio
 
@@ -93,12 +93,12 @@ async def get_batch_status(
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
 
     if not tenant_slug:
-        raise HTTPException(status_code=400, detail="Missing tenant context")
+        raise HTTPException(status_code=400, detail="Falta el contexto de entidad")
 
     service = BatchService(conn, tenant_slug)
     job = await service.get_job_status(job_id)
 
     if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        raise HTTPException(status_code=404, detail="No existe el trabajo solicitado")
 
     return BatchJobStatusResponse(**job)

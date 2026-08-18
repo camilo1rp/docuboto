@@ -89,7 +89,7 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
                 status_code=401,
                 content={
                     "error": "unauthorized",
-                    "detail": "Authorization Bearer token required",
+                    "detail": "Falta la cabecera Authorization con el token Bearer",
                     "status": 401,
                 },
                 headers={"WWW-Authenticate": "Bearer"},
@@ -132,7 +132,7 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
                 status_code=503,
                 content={
                     "error": "auth_service_unavailable",
-                    "detail": "Authentication service is not reachable",
+                    "detail": "No se pudo contactar el servicio de autenticación",
                     "status": 503,
                 },
             )
@@ -142,7 +142,7 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
                 status_code=503,
                 content={
                     "error": "auth_service_error",
-                    "detail": "Unexpected response from authentication service",
+                    "detail": "Respuesta inesperada del servicio de autenticación",
                     "status": 503,
                 },
             )
@@ -166,7 +166,7 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
                 status_code=401,
                 content={
                     "error": "unauthorized",
-                    "detail": "Invalid or expired token",
+                    "detail": "El token es inválido o expiró",
                     "status": 401,
                 },
                 headers={"WWW-Authenticate": "Bearer"},

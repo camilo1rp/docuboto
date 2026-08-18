@@ -106,7 +106,7 @@ def _expediente_not_found(expediente_id: uuid.UUID) -> HTTPException:
         status_code=status.HTTP_404_NOT_FOUND,
         detail={
             "error": "expediente_not_found",
-            "detail": f"Expediente {expediente_id} not found",
+            "detail": "No existe el expediente solicitado",
             "status": 404,
         },
     )
@@ -478,7 +478,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -513,7 +513,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -967,7 +967,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1158,7 +1158,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1170,7 +1170,7 @@ class ArchiveService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "invalid_status_transition",
-                    "detail": f"Cannot transition from '{current}' to '{target}'",
+                    "detail": f"No se puede pasar de «{current}» a «{target}»",
                     "status": 409,
                 },
             )
@@ -1271,7 +1271,7 @@ class ArchiveService:
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail={
                             "error": "trd_serie_not_found",
-                            "detail": f"TRD serie {exp.trd_serie_id} not found",
+                            "detail": "No existe la serie TRD indicada",
                             "status": 404,
                         },
                     )
@@ -1680,7 +1680,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1721,7 +1721,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1747,7 +1747,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1816,7 +1816,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -1835,7 +1835,7 @@ class ArchiveService:
                     detail={
                         "error": "radicado_already_linked",
                         "detail": (
-                            f"Radicado {payload.radicado_id} is already linked to expediente {expediente_id}"
+                            "El radicado ya está vinculado a este expediente"
                         ),
                         "status": 409,
                     },
@@ -2055,7 +2055,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "expediente_not_found",
-                    "detail": f"Expediente {expediente_id} not found",
+                    "detail": "No existe el expediente solicitado",
                     "status": 404,
                 },
             )
@@ -2084,7 +2084,7 @@ class ArchiveService:
                         detail={
                             "error": "radicado_link_not_found",
                             "detail": (
-                                f"Radicado {radicado_id} is not linked to expediente {expediente_id}"
+                                "El radicado no está vinculado a este expediente"
                             ),
                             "status": 404,
                         },
@@ -2223,7 +2223,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "trd_serie_not_found",
-                    "detail": f"TRD serie {serie_id} not found",
+                    "detail": "No existe la serie TRD indicada",
                     "status": 404,
                 },
             )
@@ -2281,7 +2281,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "trd_serie_not_found",
-                    "detail": f"TRD serie {serie_id} not found",
+                    "detail": "No existe la serie TRD indicada",
                     "status": 404,
                 },
             )
@@ -2327,7 +2327,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "trd_serie_not_found",
-                    "detail": f"TRD serie {serie_id} not found",
+                    "detail": "No existe la serie TRD indicada",
                     "status": 404,
                 },
             )
@@ -2340,8 +2340,8 @@ class ArchiveService:
                 detail={
                     "error": "trd_version_inmutable",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
-                        f"esta en estado '{existing.estado}': su contenido es "
+                        f"La versión {existing.version} del código «{existing.code}» "
+                        f"está en estado «{existing.estado}»: su contenido es "
                         "append-only (Ac. AGN 001/2024, que compila el 004/2019, ADR-025). Use "
                         f"POST /api/v1/trd/{existing.code}/versiones para crear "
                         "una version nueva."
@@ -3179,7 +3179,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "tvd_agrupacion_not_found",
-                    "detail": f"TVD agrupacion {agrupacion_id} not found",
+                    "detail": "No existe la agrupación TVD indicada",
                     "status": 404,
                 },
             )
@@ -3203,7 +3203,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "tvd_agrupacion_not_found",
-                    "detail": f"TVD agrupacion {agrupacion_id} not found",
+                    "detail": "No existe la agrupación TVD indicada",
                     "status": 404,
                 },
             )
@@ -3226,8 +3226,8 @@ class ArchiveService:
                 detail={
                     "error": "trd_version_inmutable",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
-                        f"esta en estado '{existing.estado}': su contenido es "
+                        f"La versión {existing.version} del código «{existing.code}» "
+                        f"está en estado «{existing.estado}»: su contenido es "
                         "append-only (Ac. AGN 001/2024, que compila el 004/2019, ADR-026). Use "
                         f"POST /api/v1/tvd/{existing.code}/versiones para crear "
                         "una version nueva."

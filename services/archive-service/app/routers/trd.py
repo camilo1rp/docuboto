@@ -42,7 +42,7 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "missing_tenant",
-                "detail": "X-Tenant-Slug header is required",
+                "detail": "Falta la cabecera X-Tenant-Slug",
                 "status": 400,
             },
         )
@@ -65,7 +65,7 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "invalid_user_id",
-                "detail": "X-User-Id must be a valid UUID",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido",
                 "status": 400,
             },
         )
@@ -98,7 +98,7 @@ async def create_trd_serie(
         return await service.create_trd_serie(payload, actor.id)
     except asyncpg.UniqueViolationError:
         # `trd_series_code_version_key`: el código ya existe. Sin esto salía un
-        # **500** —«An unexpected error occurred»— por un dato que la persona
+        # **500** —«Ocurrió un error inesperado»— por un dato que la persona
         # puede corregir sola, y sin decirle cuál era el problema.
         #
         # Su gemelo `tipos_documentales.py::create_tipo` sí lo traduce, sobre el

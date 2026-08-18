@@ -82,7 +82,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500,
         content={
             "error": "internal_error",
-            "detail": "An unexpected error occurred",
+            "detail": "Ocurrió un error inesperado",
             "status": 500,
         },
     )
