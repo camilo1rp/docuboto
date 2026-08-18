@@ -54,6 +54,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -214,7 +215,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo guardar la regla.");
+        notifyError(mensajeError(resData, "No se pudo guardar la regla."));
         return;
       }
       if (editingId) {
@@ -321,7 +322,7 @@
         deletingRule = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar la regla.");
+        notifyError(mensajeError(err, "No se pudo eliminar la regla."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

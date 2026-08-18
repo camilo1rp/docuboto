@@ -44,6 +44,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {{id: string; code: string; publicable?: boolean; publicado_at?: string | null; nivel_seguridad?: number} | null} */
@@ -105,7 +106,7 @@
       } else if (err?.status === 403) {
         notifyError("No tiene el permiso necesario para decidir sobre la publicación.");
       } else {
-        notifyError(err?.detail ?? "No se pudo ejecutar el acto de publicación.");
+        notifyError(mensajeError(err, "No se pudo ejecutar el acto de publicación."));
       }
     } finally {
       saving = false;

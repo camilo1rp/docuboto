@@ -65,6 +65,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -176,7 +177,7 @@
       const vres = await fetch("/admin/preservacion/api/plan/versions");
       if (vres.ok) versionsLocal = await vres.json().catch(() => versionsEfectivas);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo actualizar el plan de preservación.");
+      notifyError(mensajeError(err, "No se pudo actualizar el plan de preservación."));
     } finally {
       savingPlan = false;
     }
@@ -202,7 +203,7 @@
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(result?.detail ?? "No se pudo reintentar el sellado del índice.");
+        notifyError(mensajeError(result, "No se pudo reintentar el sellado del índice."));
         return;
       }
       notifySuccess("Reintento de sellado del índice enviado correctamente.");
@@ -300,7 +301,7 @@
             <EmptyState
               icon="fas fa-exclamation-triangle"
               title="No se pudo cargar el plan"
-              description={planError.detail ?? "Intenta recargar la página."}
+              description={mensajeError(planError, "Intenta recargar la página.")}
             />
           {:else if planNoDisponible && !planEfectivo}
             <EmptyState
@@ -354,7 +355,7 @@
             <EmptyState
               icon="fas fa-exclamation-circle"
               title="No se pudo cargar el historial"
-              description={versionsError.detail ?? "Intenta recargar la página."}
+              description={mensajeError(versionsError, "Intenta recargar la página.")}
             />
           {:else if versionsEfectivas.length === 0}
             <EmptyState
@@ -454,7 +455,7 @@
           <EmptyState
             icon="fas fa-exclamation-triangle"
             title="No se pudo cargar el listado"
-            description={pendientesFirmaError.detail ?? "Intenta recargar la página."}
+            description={mensajeError(pendientesFirmaError, "Intenta recargar la página.")}
           />
         {:else if pendientesFirmaEfectivas.length === 0}
           <EmptyState
@@ -547,7 +548,7 @@
           <EmptyState
             icon="fas fa-exclamation-triangle"
             title="No se pudo cargar el listado"
-            description={pendientesRenovacionError.detail ?? "Intenta recargar la página."}
+            description={mensajeError(pendientesRenovacionError, "Intenta recargar la página.")}
           />
         {:else if pendientesRenovacion.length === 0}
           <EmptyState

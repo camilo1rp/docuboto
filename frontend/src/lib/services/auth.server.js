@@ -80,6 +80,9 @@ export async function exchangeCode(code, codeVerifier, redirectUri) {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    // sobre-ajeno: esto NO es el sobre de error del gateway sino el de OAuth2
+    // (RFC 6749 §5.2) que devuelve Keycloak — `{error, error_description}`,
+    // plano por especificación. `codigoError`/`mensajeError` leerían otra cosa.
     throw new Error(
       `Token exchange failed: ${err.error_description ?? err.error ?? `HTTP ${res.status}`}`,
     );

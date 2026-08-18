@@ -40,6 +40,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -95,7 +96,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el usuario.");
+        notifyError(mensajeError(resData, "No se pudo crear el usuario."));
         return;
       }
       users = [resData, ...users];
@@ -200,7 +201,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo asignar la URD.");
+        notifyError(mensajeError(resData, "No se pudo asignar la URD."));
         return;
       }
       urdList = [...urdList, resData];
@@ -234,7 +235,7 @@
         notifySuccess("URD eliminada.");
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar la URD.");
+        notifyError(mensajeError(err, "No se pudo eliminar la URD."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

@@ -43,6 +43,7 @@
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
   import RagSuggestButton from "$lib/components/features/rag/RagSuggestButton.svelte";
   import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -122,7 +123,7 @@
         borradores = await res.json();
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "Error al cargar borradores.");
+        notifyError(mensajeError(err, "Error al cargar borradores."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -205,7 +206,7 @@
 
       const data = await res.json();
       if (!res.ok) {
-        notifyError(data.detail ?? "Error al guardar el borrador.");
+        notifyError(mensajeError(data, "Error al guardar el borrador."));
         return;
       }
 
@@ -236,7 +237,7 @@
       });
       const data = await res.json();
       if (!res.ok) {
-        notifyError(data.detail ?? "No se pudo aprobar el borrador.");
+        notifyError(mensajeError(data, "No se pudo aprobar el borrador."));
         return;
       }
       borradores = borradores.map((b) => (b.id === data.id ? data : b));
@@ -266,7 +267,7 @@
       });
       const data = await res.json();
       if (!res.ok) {
-        notifyError(data.detail ?? "No se pudo radicar el borrador.");
+        notifyError(mensajeError(data, "No se pudo radicar el borrador."));
         return;
       }
       // data es DocumentResponse con tracking_number

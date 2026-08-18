@@ -43,6 +43,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   // Circuito de convalidación (ADR-025/ADR-026): mismos estados/chips que
   // /admin/tvd -- componente compartido `InstrumentLifecycleActions`.
@@ -266,7 +267,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear la serie.");
+        notifyError(mensajeError(resData, "No se pudo crear la serie."));
         return;
       }
       series = [...series, resData];
@@ -318,7 +319,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo actualizar la serie.");
+        notifyError(mensajeError(resData, "No se pudo actualizar la serie."));
         return;
       }
       series = series.map((s) => (s.id === resData.id ? resData : s));
@@ -390,7 +391,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el tipo documental.");
+        notifyError(mensajeError(resData, "No se pudo crear el tipo documental."));
         return;
       }
       tipos = [resData, ...tipos];
@@ -436,7 +437,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo actualizar el tipo documental.");
+        notifyError(mensajeError(resData, "No se pudo actualizar el tipo documental."));
         return;
       }
       tipos = tipos.map((t) => (t.id === resData.id ? resData : t));
@@ -462,7 +463,7 @@
         tipoDeleteTarget = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar el tipo documental.");
+        notifyError(mensajeError(err, "No se pudo eliminar el tipo documental."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -578,7 +579,17 @@
            canWriteLevel3=false la columna de acciones queda presente pero vacía;
            es preferible a duplicar el CatalogCrudPanel por permiso. -->
       <svelte:fragment slot="row-actions" let:item>
-        {#if canWriteLevel3}
+        <!-- El estado manda, no solo el permiso. `update_trd_serie` es
+        append-only y solo acepta 'borrador' (su propio resumen lo dice:
+        "only 'borrador'; use /versiones otherwise"), así que ofrecer
+        «Editar» sobre una serie aprobada o convalidada abría un formulario
+        de cuatro campos que terminaba en 409. Rompía la regla dura del
+        proyecto —la UI nunca ofrece una transición que el backend
+        rechazaría— que el propio InstrumentLifecycleActions sí cumple para
+        sus botones: el gate por `estado` faltaba solo aquí, en el botón
+        del componente padre. Para cambiar un instrumento ya aprobado el
+        camino es «Nueva versión», no editar en sitio. -->
+        {#if canWriteLevel3 && item.estado === "borrador"}
           <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openSerieEdit(item)}
             >Editar</Button
           >

@@ -215,3 +215,96 @@ async def test_delete_item_not_found(client_conn: tuple[AsyncClient, AsyncMock])
     resp = await client.delete(f"/api/v1/catalogos/tipos-anexo/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 404
     client.audit_append.assert_not_awaited()
+
+
+# --- ámbito de las causales (migración tenant 008) ----------------------------
+#
+# El acto al que pertenece una causal estaba escrito dos veces (prefijo del código
+# y prefijo del nombre) y declarado ninguna, así que ninguna pantalla podía
+# filtrarlo sin adivinar. Estas pruebas fijan que el eje sea de verdad un campo:
+# que se pueda pedir, que se pueda escribir, y —lo importante— que pedirlo donde
+# no existe FALLE en vez de devolver la lista entera como si viniera filtrada.
+
+
+def _causal(codigo: str = "DEV-INC", ambito: str = "devolucion") -> dict:
+    return {
+        "id": uuid.uuid4(),
+        "codigo": codigo,
+        "nombre": "Información incompleta",
+        "activo": True,
+        "ambito": ambito,
+    }
+
+
+@pytest.mark.asyncio
+async def test_causales_expone_ambito(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, conn = client_conn
+    conn.fetch.return_value = [_causal()]
+    resp = await client.get("/api/v1/catalogos/causales")
+    assert resp.status_code == 200
+    assert resp.json()[0]["ambito"] == "devolucion"
+
+
+@pytest.mark.asyncio
+async def test_causales_filtra_por_ambito(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, conn = client_conn
+    conn.fetch.return_value = [_causal()]
+    resp = await client.get("/api/v1/catalogos/causales?ambito=devolucion&activo=true")
+    assert resp.status_code == 200
+    # El filtro llega al SQL, no se aplica después: la consulta lleva su predicado
+    # y el parámetro. Comprobar solo la respuesta pasaría con un filtro inexistente.
+    sql = conn.fetch.await_args.args[0]
+    assert "ambito = $" in sql
+    assert "devolucion" in conn.fetch.await_args.args[1:]
+
+
+@pytest.mark.asyncio
+async def test_ambito_en_otro_catalogo_422(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    """Pedir ámbito donde no existe se RECHAZA; ignorarlo devolvería todo."""
+    client, conn = client_conn
+    conn.fetch.return_value = [_item()]
+    resp = await client.get("/api/v1/catalogos/medios-recepcion?ambito=devolucion")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "ambito_no_aplica"
+    conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_crear_causal_con_ambito(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, conn = client_conn
+    conn.fetchrow.return_value = _causal(codigo="DEV-XXX")
+    resp = await client.post(
+        "/api/v1/catalogos/causales",
+        json={"codigo": "DEV-XXX", "nombre": "Otra", "ambito": "devolucion"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["ambito"] == "devolucion"
+    assert "ambito" in conn.fetchrow.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_crear_con_ambito_en_otro_catalogo_422(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    resp = await client.post(
+        "/api/v1/catalogos/medios-recepcion",
+        json={"codigo": "COR", "nombre": "Correo", "ambito": "devolucion"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "ambito_no_aplica"
+    conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ambito_invalido_422(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    """El conjunto de valores lo fija el esquema, no la buena voluntad del cliente."""
+    client, _ = client_conn
+    resp = await client.post(
+        "/api/v1/catalogos/causales",
+        json={"codigo": "X", "nombre": "Y", "ambito": "inventado"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 422

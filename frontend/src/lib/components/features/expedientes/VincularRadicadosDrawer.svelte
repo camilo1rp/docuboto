@@ -62,6 +62,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   export let expedienteId = "";
@@ -140,7 +141,7 @@
       // Nótese: `selectedMap` NO se toca aquí — buscar de nuevo (o cambiar de
       // página) nunca descarta la selección ya hecha (Crítico 2).
     } catch (err) {
-      searchError = err?.detail ?? "No se pudo buscar radicados.";
+      searchError = mensajeError(err, "No se pudo buscar radicados.");
       results = [];
       total = 0;
     } finally {
@@ -211,7 +212,7 @@
       dispatch("linked");
       handleClose();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo vincular los radicados seleccionados.");
+      notifyError(mensajeError(err, "No se pudo vincular los radicados seleccionados."));
     } finally {
       linking = false;
     }

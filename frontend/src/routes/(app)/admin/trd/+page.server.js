@@ -30,6 +30,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -51,7 +52,7 @@ export async function load({ cookies, parent, fetch }) {
       series = await res.json().catch(() => []);
     } else {
       const body = await res.json().catch(() => ({}));
-      seriesError = body.detail ?? `Error ${res.status}`;
+      seriesError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     seriesError = "No se pudo conectar al servidor de TRD.";
@@ -65,7 +66,7 @@ export async function load({ cookies, parent, fetch }) {
       tipos = await res.json().catch(() => []);
     } else {
       const body = await res.json().catch(() => ({}));
-      tiposError = body.detail ?? `Error ${res.status}`;
+      tiposError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     tiposError = "No se pudo conectar al servidor de tipos documentales.";
@@ -82,7 +83,7 @@ export async function load({ cookies, parent, fetch }) {
       revision = await res.json().catch(() => []);
     } else {
       const body = await res.json().catch(() => ({}));
-      revisionError = body.detail ?? `Error ${res.status}`;
+      revisionError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     revisionError = "No se pudo conectar al servidor para consultar la cola de revisión.";

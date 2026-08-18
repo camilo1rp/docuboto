@@ -34,6 +34,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 const PAGE_SIZE = 20;
 
@@ -64,7 +65,7 @@ export async function load({ cookies, parent, fetch }) {
       totalCount = Number(res.headers.get("X-Total-Count") ?? entries.length);
     } else {
       const body = await res.json().catch(() => ({}));
-      loadError = body.detail ?? `Error ${res.status}`;
+      loadError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     loadError = "No se pudo conectar al servidor de auditoría.";
@@ -91,7 +92,7 @@ export async function load({ cookies, parent, fetch }) {
       }
     } else {
       const body = await verifyRes.json().catch(() => ({}));
-      verifyError = body.detail ?? `Error ${verifyRes.status}`;
+      verifyError = mensajeError(body, `Error ${verifyRes.status}`);
     }
   } catch {
     verifyError = "No se pudo conectar al servidor para verificar la cadena.";

@@ -62,6 +62,7 @@
 -->
 <script>
   import { onMount, createEventDispatcher } from "svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** Idioma del reconocimiento. Colombia por defecto. */
   export let lang = "es-CO";
@@ -216,7 +217,7 @@
           // El detalle del backend es la explicación buena —dice qué falta
           // configurar— y sustituirlo por un genérico dejaría a la persona sin
           // saber qué hacer.
-          aviso = d?.detail ?? "No se pudo transcribir el dictado.";
+          aviso = mensajeError(d, "No se pudo transcribir el dictado.");
           return;
         }
         const texto = (d?.texto ?? "").trim();

@@ -37,6 +37,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -79,7 +80,7 @@
         items = Array.isArray(raw) ? raw : [];
       } else {
         const body = await res.json().catch(() => ({}));
-        itemsError = body.detail ?? `Error ${res.status}`;
+        itemsError = mensajeError(body, `Error ${res.status}`);
       }
     } catch {
       itemsError = "No se pudo conectar al servidor de catálogos.";
@@ -104,12 +105,32 @@
 
   let fCodigo = "";
   let fNombre = "";
+  let fAmbito = "general";
   let fCodigoError = "";
   let fNombreError = "";
+
+  /**
+   * Ámbito = a qué acto pertenece una causal (migración tenant 008). Solo el
+   * catálogo `causales` lo tiene: pedirlo en cualquier otro devuelve 422
+   * `ambito_no_aplica`, así que el campo solo se muestra donde existe.
+   *
+   * Las etiquetas son las del acto tal como lo ve quien administra, no el valor
+   * crudo; el valor crudo es el que viaja al backend.
+   */
+  const AMBITOS = [
+    { value: "general", label: "General (aparece en todos los actos)" },
+    { value: "devolucion", label: "Devolución de un radicado" },
+    { value: "anulacion", label: "Anulación de un radicado" },
+    { value: "reasignacion", label: "Reasignación" },
+    { value: "devolucion_postal", label: "Devolución postal (envíos)" },
+  ];
+  const AMBITO_LABEL = Object.fromEntries(AMBITOS.map((a) => [a.value, a.label]));
+  $: usaAmbito = selected === "causales";
 
   function openCreate() {
     fCodigo = "";
     fNombre = "";
+    fAmbito = "general";
     fCodigoError = "";
     fNombreError = "";
     createOpen = true;
@@ -131,11 +152,17 @@
       const res = await fetch(`/admin/catalogos/api/${encodeURIComponent(selected)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codigo: fCodigo.trim(), nombre: fNombre.trim(), activo: true }),
+        body: JSON.stringify({
+          codigo: fCodigo.trim(),
+          nombre: fNombre.trim(),
+          activo: true,
+          // Solo donde el catálogo lo admite: enviarlo en otro es un 422.
+          ...(usaAmbito ? { ambito: fAmbito } : {}),
+        }),
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el item.");
+        notifyError(mensajeError(resData, "No se pudo crear el item."));
         return;
       }
       items = [...items, resData];
@@ -150,11 +177,13 @@
 
   let eNombre = "";
   let eActivo = true;
+  let eAmbito = "general";
 
   function openEdit(item) {
     editTarget = item;
     eNombre = item.nombre ?? "";
     eActivo = item.activo !== false;
+    eAmbito = item.ambito ?? "general";
     editOpen = true;
   }
 
@@ -167,12 +196,16 @@
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nombre: eNombre.trim(), activo: eActivo }),
+          body: JSON.stringify({
+            nombre: eNombre.trim(),
+            activo: eActivo,
+            ...(usaAmbito ? { ambito: eAmbito } : {}),
+          }),
         },
       );
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo actualizar el item.");
+        notifyError(mensajeError(resData, "No se pudo actualizar el item."));
         return;
       }
       items = items.map((i) => (i.id === resData.id ? resData : i));
@@ -200,7 +233,7 @@
         deleteTarget = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar el item.");
+        notifyError(mensajeError(err, "No se pudo eliminar el item."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -296,7 +329,13 @@
 
               <svelte:fragment slot="row" let:item>
                 <td><code>{item.codigo}</code></td>
-                <td>{item.nombre}</td>
+                <td>
+                  {item.nombre}
+                  {#if usaAmbito}
+                    <span class="cat-ambito">{AMBITO_LABEL[item.ambito] ?? item.ambito ?? "—"}</span
+                    >
+                  {/if}
+                </td>
                 <td
                   ><StatusChip
                     status={item.activo ? "success" : "neutral"}
@@ -345,6 +384,16 @@
                     bind:value={fNombre}
                     error={fNombreError}
                   />
+                  {#if usaAmbito}
+                    <FormField
+                      id="item-ambito"
+                      label="Ámbito"
+                      type="select"
+                      bind:value={fAmbito}
+                      options={AMBITOS}
+                      hint="Acto en el que se ofrecerá esta causal. «General» la ofrece en todos."
+                    />
+                  {/if}
                 </form>
               </svelte:fragment>
               <svelte:fragment slot="create-footer">
@@ -358,6 +407,16 @@
                 <form class="cat-form" on:submit|preventDefault={guardarItem} novalidate>
                   <p class="cat-form__hint">Código <code>{item.codigo}</code> — inmutable.</p>
                   <FormField id="item-edit-nombre" label="Nombre" required bind:value={eNombre} />
+                  {#if usaAmbito}
+                    <FormField
+                      id="item-edit-ambito"
+                      label="Ámbito"
+                      type="select"
+                      bind:value={eAmbito}
+                      options={AMBITOS}
+                      hint="Acto en el que se ofrecerá esta causal. «General» la ofrece en todos."
+                    />
+                  {/if}
                   <label class="cat-form__check">
                     <input type="checkbox" bind:checked={eActivo} />
                     Activo
@@ -501,6 +560,14 @@
       padding: var(--op-space-2) 0;
       margin-bottom: var(--op-space-3);
     }
+  }
+
+  // Ámbito bajo el nombre en la tabla: la causal y el acto al que pertenece se
+  // leen juntos, que es como se decide si está bien clasificada.
+  .cat-ambito {
+    display: block;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
   }
 
   .cat-form {

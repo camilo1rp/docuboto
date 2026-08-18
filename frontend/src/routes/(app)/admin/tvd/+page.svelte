@@ -51,6 +51,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -229,7 +230,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear la agrupación TVD.");
+        notifyError(mensajeError(resData, "No se pudo crear la agrupación TVD."));
         return;
       }
       agrupaciones = [...agrupaciones, resData];
@@ -303,7 +304,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo actualizar la agrupación TVD.");
+        notifyError(mensajeError(resData, "No se pudo actualizar la agrupación TVD."));
         return;
       }
       agrupaciones = agrupaciones.map((s) => (s.id === resData.id ? resData : s));
@@ -396,7 +397,17 @@
     </svelte:fragment>
 
     <svelte:fragment slot="row-actions" let:item>
-      {#if canWriteLevel3}
+      <!-- El estado manda, no solo el permiso. `update_trd_serie` es
+      append-only y solo acepta 'borrador' (su propio resumen lo dice:
+      "only 'borrador'; use /versiones otherwise"), así que ofrecer
+      «Editar» sobre una serie aprobada o convalidada abría un formulario
+      de cuatro campos que terminaba en 409. Rompía la regla dura del
+      proyecto —la UI nunca ofrece una transición que el backend
+      rechazaría— que el propio InstrumentLifecycleActions sí cumple para
+      sus botones: el gate por `estado` faltaba solo aquí, en el botón
+      del componente padre. Para cambiar un instrumento ya aprobado el
+      camino es «Nueva versión», no editar en sitio. -->
+      {#if canWriteLevel3 && item.estado === "borrador"}
         <Button variant="ghost" size="sm" icon="fas fa-pen" on:click={() => openEdit(item)}
           >Editar</Button
         >

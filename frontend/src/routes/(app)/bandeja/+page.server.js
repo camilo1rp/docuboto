@@ -36,6 +36,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { attachSafeBody } from "$lib/server/sanitizeHtml.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 const VALID_VISTAS = new Set(["tablero", "lista", "pendientes"]);
 
@@ -87,7 +88,7 @@ export async function load({ cookies, parent, url, fetch }) {
       if (Array.isArray(documents)) documents.forEach(attachSafeBody);
     } else {
       const body = await res.json().catch(() => ({}));
-      loadError = body.detail ?? `Error ${res.status}`;
+      loadError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     loadError = "No se pudo conectar al servidor de documentos.";
@@ -104,12 +105,25 @@ export async function load({ cookies, parent, url, fetch }) {
     dependencias = [];
   }
 
+  // Causales activas (catálogo del tenant, migración tenant 008). Devolver y
+  // anular exigen una: se sirven aquí para que el modal ofrezca el catálogo real
+  // en vez de pedir el código de memoria. Un fallo de carga NO rompe la bandeja
+  // —degrada a lista vacía— y el modal lo dice en vez de fingir que no hay.
+  let causales = [];
+  try {
+    const causRes = await fetch(`${API_V1}/catalogos/causales?activo=true`, { headers });
+    if (causRes.ok) causales = await causRes.json().catch(() => []);
+  } catch {
+    causales = [];
+  }
+
   return {
     documents,
     total,
     loadError,
     vista,
     dependencias,
+    causales,
     // Filtros activos al cargar (para deep-link)
     initialFilters: { docType, status, page },
     // token y tenant NO se exponen: las llamadas cliente usan /bandeja/api (D-05)

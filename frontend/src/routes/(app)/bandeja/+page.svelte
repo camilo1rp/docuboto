@@ -30,6 +30,11 @@
     - TODO T-08b: anular, devolver, responder, VoBo.
 -->
 <script>
+  import {
+    RADICADO_TIPO_LABEL,
+    RADICADO_ESTADO_LABEL,
+    RADICADO_ESTADO_CHIP,
+  } from "$lib/utils/radicado.js";
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
@@ -53,6 +58,8 @@
   import PublicacionRadicadoDrawer from "$lib/components/features/publicacion/PublicacionRadicadoDrawer.svelte";
   import { NIVEL_OPTIONS, getNivelChip } from "$lib/utils/nivelSeguridad.js";
   import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
+  import { causalesDe } from "$lib/utils/causal.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -80,6 +87,13 @@
     value: d.nombre,
     label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
   }));
+
+  // Causales del catálogo del tenant, separadas por el acto al que pertenecen
+  // (`ambito`, migración tenant 008). El filtro vive en `$lib/utils/causal.js`
+  // porque su fallo es silencioso: si deja de filtrar, este modal ofrece una
+  // causal de anulación como causal de devolución sin que nada lo delate.
+  $: causalesDevolucion = causalesDe(data.causales, "devolucion");
+  $: causalesAnulacion = causalesDe(data.causales, "anulacion");
 
   /**
    * href de las pestañas del conmutador de vista: preserva doc_type/status/
@@ -243,19 +257,11 @@
   // ---------------------------------------------------------------------------
   // Helpers de presentación
   // ---------------------------------------------------------------------------
-  const DOC_TYPE_LABELS = { E: "Entrada", S: "Salida", I: "Interno" };
-  const STATUS_LABELS = {
-    registered: "Radicado",
-    distributed: "Distribuido",
-    in_progress: "En trámite",
-    closed: "Cerrado",
-  };
-  const STATUS_CHIP_MAP = {
-    registered: "info",
-    distributed: "pending",
-    in_progress: "active",
-    closed: "closed",
-  };
+  // Fuente única en `$lib/utils/radicado.js`: estos mapas vivían solo aquí, y
+  // por eso la pantalla de éxito de /radicar enseñaba «registered» sin traducir.
+  const DOC_TYPE_LABELS = RADICADO_TIPO_LABEL;
+  const STATUS_LABELS = RADICADO_ESTADO_LABEL;
+  const STATUS_CHIP_MAP = RADICADO_ESTADO_CHIP;
 
   /**
    * Formatea una fecha ISO 8601 como fecha legible en español.
@@ -297,7 +303,7 @@
       documents = result.documents;
       total = result.total;
     } catch (err) {
-      notifyError(err.detail ?? "Error al cargar los radicados.");
+      notifyError(mensajeError(err, "Error al cargar los radicados."));
     } finally {
       loading = false;
     }
@@ -364,7 +370,7 @@
       if (!res.ok) throw result;
       selectedDoc = result;
     } catch (err) {
-      notifyError(err.detail ?? "No se pudo cargar el detalle del radicado.");
+      notifyError(mensajeError(err, "No se pudo cargar el detalle del radicado."));
     } finally {
       detailLoading = false;
     }
@@ -567,7 +573,7 @@
       await loadDocuments();
       if (drawerOpen) closeDrawer();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo registrar la solicitud de anulación.");
+      notifyError(mensajeError(err, "No se pudo registrar la solicitud de anulación."));
     } finally {
       actionLoading = false;
     }
@@ -619,7 +625,7 @@
       await loadDocuments();
       if (drawerOpen) closeDrawer();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo devolver el radicado.");
+      notifyError(mensajeError(err, "No se pudo devolver el radicado."));
     } finally {
       actionLoading = false;
     }
@@ -658,7 +664,7 @@
       await loadDocuments();
       if (drawerOpen) closeDrawer();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo crear el radicado de respuesta.");
+      notifyError(mensajeError(err, "No se pudo crear el radicado de respuesta."));
     } finally {
       actionLoading = false;
     }
@@ -694,7 +700,7 @@
       await loadDocuments();
       if (drawerOpen) closeDrawer();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo registrar la decisión del visto bueno.");
+      notifyError(mensajeError(err, "No se pudo registrar la decisión del visto bueno."));
     } finally {
       actionLoading = false;
     }
@@ -721,7 +727,7 @@
       }
     } catch (err) {
       cadenaUsers = [];
-      cadenaUsersError = err?.detail ?? "No se pudo cargar la lista de usuarios.";
+      cadenaUsersError = mensajeError(err, "No se pudo cargar la lista de usuarios.");
     } finally {
       cadenaUsersLoading = false;
     }
@@ -757,7 +763,7 @@
     } catch (err) {
       // Errores de envío → toast (coherente con las otras acciones de operador).
       // cadenaUsersError se reserva para validación local / carga de usuarios.
-      notifyError(err?.detail ?? "No se pudo crear la cadena de visto bueno.");
+      notifyError(mensajeError(err, "No se pudo crear la cadena de visto bueno."));
     } finally {
       actionLoading = false;
     }
@@ -898,16 +904,18 @@
         cerrarModalReclasificar();
       } else if (res.status === 403) {
         notifyError(
-          result.detail ?? "No tiene el nivel de acceso para asignar ese nivel de seguridad.",
+          mensajeError(result, "No tiene el nivel de acceso para asignar ese nivel de seguridad."),
         );
         cerrarModalReclasificar();
       } else if (res.status === 404) {
         notifyError(
-          result.detail ?? "No fue posible reclasificar el radicado o no tiene acceso a él.",
+          mensajeError(result, "No fue posible reclasificar el radicado o no tiene acceso a él."),
         );
         cerrarModalReclasificar();
       } else {
-        notifyError(result.detail ?? `Error ${res.status} al reclasificar el nivel de seguridad.`);
+        notifyError(
+          mensajeError(result, `Error ${res.status} al reclasificar el nivel de seguridad.`),
+        );
       }
     } catch {
       notifyError("No se pudo conectar al servidor de documentos.");
@@ -946,7 +954,7 @@
       }
       notifySuccess(`Estado actualizado a "${STATUS_LABELS[newStatus] ?? newStatus}".`);
     } catch (err) {
-      notifyError(err.detail ?? "No se pudo actualizar el estado.");
+      notifyError(mensajeError(err, "No se pudo actualizar el estado."));
     } finally {
       actionLoading = false;
     }
@@ -1676,16 +1684,29 @@
     posterior por un supervisor.
   </p>
   <div class="modal-form">
-    <FormField
-      id="anul-causal"
-      label="Causal"
-      type="text"
-      bind:value={anulCausal}
-      required={true}
-      placeholder="Ej. DUPLICADO"
-      hint="Código de causal, máx. 15 caracteres."
-      error={anulCausalError}
-    />
+    {#if causalesAnulacion.length}
+      <FormField
+        id="anul-causal"
+        label="Causal"
+        type="select"
+        bind:value={anulCausal}
+        required={true}
+        options={causalesAnulacion}
+        placeholder="Seleccione la causal de anulación…"
+        error={anulCausalError}
+      />
+    {:else}
+      <FormField
+        id="anul-causal"
+        label="Causal"
+        type="text"
+        bind:value={anulCausal}
+        required={true}
+        placeholder="Código de causal"
+        hint="No se pudo cargar el catálogo de causales; escriba el código."
+        error={anulCausalError}
+      />
+    {/if}
     <FormField
       id="anul-motivo"
       label="Motivo (opcional)"
@@ -1722,26 +1743,47 @@
     <strong>{selectedDoc?.tracking_number ?? ""}</strong> a otra dependencia dentro del flujo.
   </p>
   <div class="modal-form">
+    <!-- Selector, no texto libre: `to_dept` se correlaciona por NOMBRE EXACTO
+      contra el catálogo de dependencias (el backend responde 422
+      `dependencia_desconocida`, y el alcance de la bandeja compara por nombre),
+      así que una errata al teclear no solo falla: es la única forma de fallar.
+      Distribuir y Trasladar ya usan este mismo `dependenciaOptions`; pedir aquí
+      el mismo dato de otra manera era la asimetría, no una decisión. -->
     <FormField
       id="dev-to-dept"
       label="Dependencia destino"
-      type="text"
+      type="select"
       bind:value={devToDept}
       required={true}
-      placeholder="Nombre o código de la dependencia"
-      hint="Máx. 100 caracteres."
+      options={dependenciaOptions}
+      placeholder="Seleccione la dependencia destino…"
       error={devToDeptError}
     />
-    <FormField
-      id="dev-causal"
-      label="Causal"
-      type="text"
-      bind:value={devCausal}
-      required={true}
-      placeholder="Ej. INCOMPLETO"
-      hint="Código de causal, máx. 15 caracteres."
-      error={devCausalError}
-    />
+    {#if causalesDevolucion.length}
+      <FormField
+        id="dev-causal"
+        label="Causal"
+        type="select"
+        bind:value={devCausal}
+        required={true}
+        options={causalesDevolucion}
+        placeholder="Seleccione la causal de devolución…"
+        error={devCausalError}
+      />
+    {:else}
+      <!-- Sin catálogo cargado se dice, no se finge: el campo sigue siendo
+        obligatorio y escribirlo a ciegas es peor que saber que falta. -->
+      <FormField
+        id="dev-causal"
+        label="Causal"
+        type="text"
+        bind:value={devCausal}
+        required={true}
+        placeholder="Código de causal"
+        hint="No se pudo cargar el catálogo de causales; escriba el código."
+        error={devCausalError}
+      />
+    {/if}
     <FormField
       id="dev-comentario"
       label="Comentario (opcional)"

@@ -1,4 +1,5 @@
 <script>
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { createEventDispatcher } from "svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -79,10 +80,10 @@
   }
 
   function friendlyError(err, fallback) {
-    if (err?.error === "forbidden") {
+    if (codigoError(err) === "forbidden") {
       return "No tiene el nivel de permiso necesario para esta acción.";
     }
-    return err?.detail ?? fallback;
+    return mensajeError(err, fallback);
   }
 
   async function handleAprobar() {

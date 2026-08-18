@@ -41,6 +41,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {import('$lib/types/api.js').FlowStepResponse | null} */
@@ -106,11 +107,11 @@
       dispatch("success", result);
     } catch (err) {
       if (err?.status === 409) {
-        notifyError(err?.detail ?? "No se puede revertir este radicado en su estado actual.");
+        notifyError(mensajeError(err, "No se puede revertir este radicado en su estado actual."));
       } else if (err?.status === 422) {
-        notifyError(err?.detail ?? "El motivo de la reversión no es válido.");
+        notifyError(mensajeError(err, "El motivo de la reversión no es válido."));
       } else {
-        notifyError(err?.detail ?? "No se pudo revertir la asignación.");
+        notifyError(mensajeError(err, "No se pudo revertir la asignación."));
       }
     } finally {
       loading = false;

@@ -48,6 +48,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {import('$lib/types/api.js').FlowStepResponse | null} */
@@ -98,7 +99,7 @@
       }
     } catch (err) {
       catalog = [];
-      catalogError = err?.detail ?? "No se pudo cargar el catálogo de trámites.";
+      catalogError = mensajeError(err, "No se pudo cargar el catálogo de trámites.");
     } finally {
       catalogLoading = false;
     }
@@ -167,7 +168,7 @@
       if (err?.status === 403) {
         notifyError("No tiene permiso para ejecutar este trámite.");
       } else {
-        notifyError(err?.detail ?? "No se pudo ejecutar el trámite.");
+        notifyError(mensajeError(err, "No se pudo ejecutar el trámite."));
       }
     } finally {
       loading = false;

@@ -27,6 +27,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { attachSafeCuerpo } from "$lib/server/sanitizeHtml.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, url, fetch }) {
@@ -65,7 +66,7 @@ export async function load({ cookies, parent, url, fetch }) {
     }
   } else if (borradoresRes.status === "fulfilled") {
     const body = await borradoresRes.value.json().catch(() => ({}));
-    loadError = body.detail ?? `Error ${borradoresRes.value.status}`;
+    loadError = mensajeError(body, `Error ${borradoresRes.value.status}`);
   } else {
     loadError = "No se pudo conectar al servidor de borradores.";
   }

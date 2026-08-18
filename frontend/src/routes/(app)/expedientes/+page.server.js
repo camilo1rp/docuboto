@@ -54,6 +54,7 @@ import { fail, redirect } from "@sveltejs/kit";
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { coerceSchemaValue } from "$lib/utils/schemaField.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 const STATUS_ALLOWLIST = ["open", "closed", "transferred"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -176,10 +177,7 @@ export async function load({ cookies, parent, url, fetch }) {
       // El detail de un 422 de FastAPI puede venir como lista de dicts
       // (RequestValidationError) en vez de string — no se propaga tal cual
       // a un {@html}/interpolación de texto (M-3).
-      loadError =
-        typeof body.detail === "string"
-          ? body.detail
-          : `Error ${res.status} al cargar los expedientes.`;
+      loadError = mensajeError(body, `Error ${res.status} al cargar los expedientes.`);
     }
   } catch {
     loadError = "No se pudo conectar al servidor de expedientes.";
@@ -204,33 +202,24 @@ export async function load({ cookies, parent, url, fetch }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Extrae `{error, detail}` de una respuesta de error del backend.
+ * Extrae `{error, detail}` de una respuesta de error del backend delegando en
+ * `codigoError`/`mensajeError`, que son la ÚNICA lectura del sobre en el front.
  *
- * Soporta dos formas: la plana observada normalmente en este front
- * (`{error, detail: <string>}`) y la forma ANIDADA que produce FastAPI al
- * serializar `HTTPException(detail={...})` tal como lo hace archive-service
- * en `create_expediente` para `metadata_validation_failed`
- * (`{detail: {error, detail: <string>, status}}` — expedientes.py:104-112,
- * metadata_service.py:46, contrato orfeo-architect §"Hecho verificado"). Un
- * 422 de FastAPI sin handler propio (RequestValidationError) trae `detail`
- * como LISTA de dicts, no string ni objeto con `.detail` — cae al mensaje
- * genérico en vez de interpolar "[object Object]" (M-3).
+ * Aquí vivía una copia de esa lógica escrita a mano. Cubría bien los tres
+ * casos —la forma plana que fabrican los proxies BFF, la ANIDADA que produce
+ * FastAPI al serializar `HTTPException(detail={...})` (archive-service
+ * `create_expediente` → `metadata_validation_failed`), y el `detail` como
+ * LISTA de dicts de un `RequestValidationError` sin handler propio, que no se
+ * puede interpolar sin sacar «[object Object]»— y precisamente por eso era
+ * peligrosa: una lectura correcta y aislada no impide que las otras 230 del
+ * front sigan siendo incorrectas, y no avisa cuando lo son.
  * @param {any} body
  * @param {Response} res
  */
 function extractErrorDetail(body, res) {
-  if (typeof body.detail === "string") {
-    return { error: body.error ?? "upstream_error", detail: body.detail };
-  }
-  if (body.detail && typeof body.detail === "object" && !Array.isArray(body.detail)) {
-    const nestedDetail = body.detail.detail;
-    if (typeof nestedDetail === "string") {
-      return { error: body.detail.error ?? body.error ?? "upstream_error", detail: nestedDetail };
-    }
-  }
   return {
-    error: body.error ?? "upstream_error",
-    detail: `Error ${res.status} al crear el expediente.`,
+    error: codigoError(body) ?? "upstream_error",
+    detail: mensajeError(body, `Error ${res.status} al crear el expediente.`),
   };
 }
 
@@ -267,7 +256,11 @@ export const actions = {
   create: async ({ request, cookies, locals }) => {
     const token = locals.accessToken ?? cookies.get(COOKIE_ACCESS_TOKEN) ?? "";
     if (!token) {
-      return fail(401, { error: "unauthenticated", detail: "Sesión no válida." });
+      // `values: null` y no ausente: es la ÚNICA rama de fallo que no repuebla el
+      // formulario (aquí todavía no se ha leído el FormData), y omitir la clave
+      // dejaba a `form.values` sin existir en ese miembro de la unión — la página
+      // la lee tras un `if (form.values)` que TypeScript no podía comprobar.
+      return fail(401, { error: "unauthenticated", detail: "Sesión no válida.", values: null });
     }
     const tenant = locals.user?.tenant_slug ?? "";
 

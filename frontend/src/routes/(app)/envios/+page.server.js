@@ -22,6 +22,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, url }) {
@@ -57,16 +58,36 @@ export async function load({ cookies, parent, url }) {
       if (Array.isArray(data)) shipments = data;
     } else {
       const body = await res.json().catch(() => ({}));
-      loadError = body.detail ?? `Error ${res.status}`;
+      loadError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     loadError = "No se pudo conectar al servidor de envíos.";
+  }
+
+  // Causales de devolución postal (catálogo del tenant, ámbito
+  // `devolucion_postal`, migración tenant 008). Antes vivían escritas a mano en
+  // el componente bajo un comentario que las daba por «roadmap del backend».
+  let causales = [];
+  try {
+    const causRes = await fetch(
+      `${API_V1}/catalogos/causales?activo=true&ambito=devolucion_postal`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Tenant-Slug": tenant,
+        },
+      },
+    );
+    if (causRes.ok) causales = await causRes.json().catch(() => []);
+  } catch {
+    causales = [];
   }
 
   return {
     shipments,
     total,
     loadError,
+    causales,
     initialFilters: { estado, page },
     // token y tenant NO se exponen: las llamadas cliente usan /envios/api (D-05)
   };

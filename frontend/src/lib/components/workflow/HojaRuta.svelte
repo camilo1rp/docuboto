@@ -35,6 +35,8 @@
   otras — se muestra qué parte no se pudo cargar en vez de fingir que está vacía.
 -->
 <script>
+  import { PASO_ESTADO_CHIP, etiquetaPaso, etiquetaEventoFlujo } from "$lib/utils/flujo.js";
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { onMount } from "svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -56,33 +58,6 @@
   // de base de datos (marcar_leido, validate_trd_send, nrr…). Los 12 códigos
   // vienen de workflow-service/migrations/tenant/007_transaction_types.sql;
   // fallback al valor crudo si el catálogo incorpora un código nuevo.
-  const TIPO_TX_LABELS = {
-    informar: "Informar (copia)",
-    borrar_informado: "Borrar informado",
-    nrr: "No requiere respuesta",
-    agendar: "Agendar",
-    no_agendar: "Quitar de agenda",
-    change_folder: "Cambiar de carpeta",
-    marcar_leido: "Marcar como leído",
-    validate_trd_send: "Validar TRD para envío",
-    solicitar_firma: "Solicitar firma",
-    vobo: "Visto bueno",
-    cerrar_exp: "Cerrar expediente",
-    anular: "Anular",
-  };
-
-  const STEP_STATUS_CHIP = {
-    active: "info",
-    completed: "success",
-    cancelled: "error",
-  };
-
-  const STEP_STATUS_LABEL = {
-    active: "Activo",
-    completed: "Completado",
-    cancelled: "Cancelado",
-  };
-
   let loading = true;
   let mounted = false;
 
@@ -101,7 +76,7 @@
   // 404 no_active_step es un resultado legítimo (fulfilled, pero con cuerpo de
   // error en vez de un paso real) — no es un paso activo ni una falla de carga.
   $: currentStep =
-    currentResult?.status === "fulfilled" && !currentResult.value?.error
+    currentResult?.status === "fulfilled" && !codigoError(currentResult.value)
       ? currentResult.value
       : null;
   $: currentHasError = currentResult?.status === "rejected";
@@ -145,8 +120,8 @@
   async function fetchOrThrow(path) {
     const res = await fetch(path);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok && data?.error !== "no_active_step") {
-      throw new Error(data?.detail || data?.error || `Error ${res.status}`);
+    if (!res.ok && codigoError(data) !== "no_active_step") {
+      throw new Error(mensajeError(data, `Error ${res.status}`));
     }
     return data;
   }
@@ -211,8 +186,8 @@
           <i class="fas fa-location-dot" aria-hidden="true"></i>
           <span class="op-hoja-ruta__current-dept">{currentStep.to_dept}</span>
           <StatusChip
-            status={STEP_STATUS_CHIP[currentStep.status] ?? "neutral"}
-            label={STEP_STATUS_LABEL[currentStep.status] ?? currentStep.status}
+            status={PASO_ESTADO_CHIP[currentStep.status] ?? "neutral"}
+            label={etiquetaPaso(currentStep.status)}
             dot
           />
         </div>
@@ -267,8 +242,8 @@
                       {ACTION_LABELS[item.data.action] ?? item.data.action}
                     </span>
                     <StatusChip
-                      status={STEP_STATUS_CHIP[item.data.status] ?? "neutral"}
-                      label={STEP_STATUS_LABEL[item.data.status] ?? item.data.status}
+                      status={PASO_ESTADO_CHIP[item.data.status] ?? "neutral"}
+                      label={etiquetaPaso(item.data.status)}
                       dot
                     />
                     {#if item.isCurrent}
@@ -279,7 +254,7 @@
                     {/if}
                   {:else}
                     <span class="op-hoja-ruta__action">
-                      {TIPO_TX_LABELS[item.data.tipo_tx] ?? item.data.tipo_tx}
+                      {etiquetaEventoFlujo(item.data.tipo_tx)}
                     </span>
                   {/if}
                 </div>

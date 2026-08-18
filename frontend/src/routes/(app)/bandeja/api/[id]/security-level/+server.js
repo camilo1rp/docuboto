@@ -23,6 +23,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, params, request }) {
@@ -150,9 +151,10 @@ export async function POST({ locals, params, request }) {
       return json(
         {
           error: "clearance_insuficiente",
-          detail:
-            data.detail ??
+          detail: mensajeError(
+            data,
             "No tiene el nivel de acceso necesario para asignar ese nivel de seguridad.",
+          ),
         },
         { status: 403 },
       );

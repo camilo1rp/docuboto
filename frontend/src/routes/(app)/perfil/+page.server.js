@@ -30,6 +30,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 /**
  * @param {string} path
@@ -49,8 +50,8 @@ async function gatewayGet(path, token, tenant, extraHeaders, fetchFn) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw {
-      code: body.error ?? "upstream_error",
-      detail: body.detail ?? `HTTP ${res.status}`,
+      code: codigoError(body) ?? "upstream_error",
+      detail: mensajeError(body, `HTTP ${res.status}`),
       status: res.status,
     };
   }
@@ -75,15 +76,17 @@ export async function load({ cookies, parent, fetch }) {
     totpResult.status === "fulfilled" ? totpResult.value : { estado: "no_configurado" };
   const totpError =
     totpResult.status === "rejected"
-      ? (totpResult.reason?.detail ?? "No se pudo consultar el estado del segundo factor.")
+      ? mensajeError(totpResult.reason, "No se pudo consultar el estado del segundo factor.")
       : null;
 
   const signingKeyStatus =
     signingKeyResult.status === "fulfilled" ? signingKeyResult.value : { estado: "no_configurado" };
   const signingKeyError =
     signingKeyResult.status === "rejected"
-      ? (signingKeyResult.reason?.detail ??
-        "No se pudo consultar el estado de la credencial de firma.")
+      ? mensajeError(
+          signingKeyResult.reason,
+          "No se pudo consultar el estado de la credencial de firma.",
+        )
       : null;
 
   return { totpStatus, totpError, signingKeyStatus, signingKeyError };

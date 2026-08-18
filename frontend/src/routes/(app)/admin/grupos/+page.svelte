@@ -45,6 +45,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -86,7 +87,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el grupo.");
+        notifyError(mensajeError(resData, "No se pudo crear el grupo."));
         return;
       }
       groups = [...groups, resData];
@@ -164,7 +165,7 @@
         notifySuccess(`${user.username} agregado al grupo.`);
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo agregar al miembro.");
+        notifyError(mensajeError(err, "No se pudo agregar al miembro."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -185,7 +186,7 @@
         notifySuccess(`${user.username} quitado del grupo.`);
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo quitar al miembro.");
+        notifyError(mensajeError(err, "No se pudo quitar al miembro."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -226,7 +227,7 @@
       );
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo actualizar el permiso.");
+        notifyError(mensajeError(resData, "No se pudo actualizar el permiso."));
         return;
       }
       notifySuccess(`Permiso "${permission.nombre}" fijado en crud=${crud}.`);
@@ -256,7 +257,7 @@
         notifySuccess("Clearance del grupo actualizada.");
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo actualizar la clearance.");
+        notifyError(mensajeError(err, "No se pudo actualizar la clearance."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

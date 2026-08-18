@@ -197,12 +197,90 @@ async def test_decidir_aprueba_su_turno(
     }
     mock_conn.fetch.return_value = [_row(1, REV1, "aprobado"), _row(2, REV2)]
 
-    resp = await client.post(
-        f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
-        json={"aprobar": True, "comentario": "Ok"},
-        headers={**TENANT_HEADERS, "X-User-Id": str(REV1)},
-    )
+    with patch(
+        "app.services.visto_bueno_service.audit.append", new_callable=AsyncMock
+    ) as mock_audit:
+        resp = await client.post(
+            f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
+            json={"aprobar": True, "comentario": "Ok"},
+            headers={**TENANT_HEADERS, "X-User-Id": str(REV1)},
+        )
     assert resp.status_code == 200
     body = resp.json()
     assert body["estado"] == "en_revision"  # falta REV2
     assert body["items"][0]["estado"] == "aprobado"
+    # La DECISIÓN también deja traza forense, no solo la conformación de la cadena:
+    # sin ella `audit_log` sabría a quién se le pidió el visto bueno pero no quién lo
+    # dio, cuándo ni por qué.
+    mock_audit.assert_awaited_once()
+    kwargs = mock_audit.await_args.kwargs
+    assert kwargs["action"] == "vobo.decidido"
+    assert kwargs["object_type"] == "radicado"
+    assert kwargs["object_ref"] == str(RAD)
+    assert kwargs["actor"] == str(REV1)
+    assert kwargs["payload"] == {"orden": 1, "estado": "aprobado", "comentario": "Ok"}
+
+
+@pytest.mark.asyncio
+async def test_decidir_rechazo_auditado(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un rechazo detiene la cadena — y es justo la decisión que más importa trazar."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchrow.return_value = {
+        "id": uuid.uuid4(),
+        "orden": 2,
+        "revisor_id": REV2,
+        "estado": "pendiente",
+    }
+    mock_conn.fetch.return_value = [_row(1, REV1, "aprobado"), _row(2, REV2, "rechazado")]
+
+    with patch(
+        "app.services.visto_bueno_service.audit.append", new_callable=AsyncMock
+    ) as mock_audit:
+        resp = await client.post(
+            f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
+            json={"aprobar": False, "comentario": "Falta el anexo de cédula"},
+            headers={**TENANT_HEADERS, "X-User-Id": str(REV2)},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "rechazado"
+    kwargs = mock_audit.await_args.kwargs
+    assert kwargs["payload"] == {
+        "orden": 2,
+        "estado": "rechazado",
+        "comentario": "Falta el anexo de cédula",
+    }
+
+
+@pytest.mark.asyncio
+async def test_decidir_sin_traza_no_decide(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Atomicidad: decisión y traza commitean juntas (mismo criterio que `crear`).
+
+    `AsyncClient(transport=ASGITransport(...))` re-lanza las excepciones no manejadas
+    por la app en vez de convertirlas en un 500 HTTP: se comprueba que la excepción
+    llega hasta aquí, es decir, que ninguna respuesta 200 confirma al revisor un visto
+    bueno que quedó sin asiento.
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchrow.return_value = {
+        "id": uuid.uuid4(),
+        "orden": 1,
+        "revisor_id": REV1,
+        "estado": "pendiente",
+    }
+
+    with (
+        patch(
+            "app.services.visto_bueno_service.audit.append",
+            new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
+        ),
+        pytest.raises(RuntimeError, match="audit_log no disponible"),
+    ):
+        await client.post(
+            f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
+            json={"aprobar": True, "comentario": "Ok"},
+            headers={**TENANT_HEADERS, "X-User-Id": str(REV1)},
+        )

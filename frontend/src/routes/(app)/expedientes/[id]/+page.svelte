@@ -30,6 +30,7 @@
     - El backend re-valida; la UI no es la única línea de defensa (ADR-013)
 -->
 <script>
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
 
@@ -116,10 +117,10 @@
   // ---------------------------------------------------------------------------
   /** @param {any} err @param {string} fallback */
   function friendlyActionError(err, fallback) {
-    if (err?.error === "forbidden") {
+    if (codigoError(err) === "forbidden") {
       return "No tiene el nivel de permiso necesario para esta acción; consulte con el administrador de su entidad.";
     }
-    return err?.detail ?? fallback;
+    return mensajeError(err, fallback);
   }
 
   // ---------------------------------------------------------------------------
@@ -360,7 +361,7 @@
       const blob = await res.blob();
       triggerBlobDownload(blob, `expediente_${expediente.code}.zip`);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo exportar el expediente.");
+      notifyError(mensajeError(err, "No se pudo exportar el expediente."));
     } finally {
       exporting = false;
     }
@@ -397,7 +398,7 @@
         status: "error",
         items: [],
         total: 0,
-        errorMsg: err?.detail ?? "No se pudieron cargar las versiones del índice.",
+        errorMsg: mensajeError(err, "No se pudieron cargar las versiones del índice."),
       };
     }
   }
@@ -414,7 +415,7 @@
       indiceVerifyState = {
         status: "error",
         data: null,
-        errorMsg: err?.detail ?? "No se pudo verificar el índice.",
+        errorMsg: mensajeError(err, "No se pudo verificar el índice."),
       };
     }
   }
@@ -445,7 +446,7 @@
       await tick();
       document.getElementById("indice-electronico-heading")?.focus();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo firmar el índice.");
+      notifyError(mensajeError(err, "No se pudo firmar el índice."));
     } finally {
       firmarLoading = false;
     }
@@ -468,7 +469,7 @@
       foliadoState = {
         status: "error",
         data: null,
-        errorMsg: err?.detail ?? "No se pudo cargar la foliación.",
+        errorMsg: mensajeError(err, "No se pudo cargar la foliación."),
       };
     }
   }
@@ -528,8 +529,10 @@
             : {
                 status: "error",
                 data: null,
-                errorMsg:
-                  aipRes.reason?.detail ?? "No se pudo cargar el paquete de preservación (AIP).",
+                errorMsg: mensajeError(
+                  aipRes.reason,
+                  "No se pudo cargar el paquete de preservación (AIP).",
+                ),
               },
       eventos:
         eventosRes.status === "fulfilled"
@@ -541,8 +544,10 @@
           : {
               status: "error",
               items: [],
-              errorMsg:
-                eventosRes.reason?.detail ?? "No se pudieron cargar los eventos de preservación.",
+              errorMsg: mensajeError(
+                eventosRes.reason,
+                "No se pudieron cargar los eventos de preservación.",
+              ),
             },
     };
   }
@@ -592,7 +597,10 @@
               status: "error",
               items: [],
               total: 0,
-              errorMsg: historialRes.reason?.detail ?? "No se pudo cargar el historial de acceso.",
+              errorMsg: mensajeError(
+                historialRes.reason,
+                "No se pudo cargar el historial de acceso.",
+              ),
             },
       roles:
         rolesRes.status === "fulfilled"
@@ -604,8 +612,10 @@
           : {
               status: "error",
               items: [],
-              errorMsg:
-                rolesRes.reason?.detail ?? "No se pudo cargar la matriz de grupos autorizados.",
+              errorMsg: mensajeError(
+                rolesRes.reason,
+                "No se pudo cargar la matriz de grupos autorizados.",
+              ),
             },
     };
   }
@@ -639,7 +649,7 @@
       const blob = await res.blob();
       triggerBlobDownload(blob, filename);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo descargar el anexo.");
+      notifyError(mensajeError(err, "No se pudo descargar el anexo."));
     }
   }
 
@@ -660,7 +670,7 @@
       const blob = await res.blob();
       triggerBlobDownload(blob, `indice_${expediente.code}.xml`);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo obtener el XML del índice.");
+      notifyError(mensajeError(err, "No se pudo obtener el XML del índice."));
     } finally {
       xmlDownloading = false;
     }
@@ -804,7 +814,7 @@
           [documentId]: {
             status: "error",
             items: [],
-            errorMsg: err?.detail ?? "No se pudieron cargar los anexos.",
+            errorMsg: mensajeError(err, "No se pudieron cargar los anexos."),
           },
         };
         return;

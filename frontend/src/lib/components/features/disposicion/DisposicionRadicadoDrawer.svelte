@@ -40,6 +40,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {{id: string; tracking_number: string} | null} */
@@ -92,7 +93,7 @@
       const res = await fetch(`/bandeja/api/${encodeURIComponent(radicado.id)}/disposition`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        loadError = body.detail ?? `Error ${res.status} al cargar la disposición.`;
+        loadError = mensajeError(body, `Error ${res.status} al cargar la disposición.`);
         return;
       }
       const body = await res.json();
@@ -137,9 +138,9 @@
       if (err?.status === 404) {
         notifyError("No fue posible guardar: el radicado no existe o no tiene acceso a él.");
       } else if (err?.status === 422) {
-        notifyError(err?.detail ?? "Los datos de disposición no son válidos.");
+        notifyError(mensajeError(err, "Los datos de disposición no son válidos."));
       } else {
-        notifyError(err?.detail ?? "No se pudo guardar la disposición.");
+        notifyError(mensajeError(err, "No se pudo guardar la disposición."));
       }
     } finally {
       saving = false;

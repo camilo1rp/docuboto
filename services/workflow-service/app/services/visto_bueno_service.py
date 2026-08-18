@@ -121,7 +121,34 @@ class VistoBuenoService:
                 },
             )
         estado = "aprobado" if payload.aprobar else "rechazado"
-        await self._repo.decide(active["id"], estado, payload.comentario)
+        # Misma atomicidad que `crear`, y por una razón más fuerte: aprobar o rechazar
+        # ES el acto de gestión sobre el radicado —el que decide si el trámite sigue o
+        # se detiene—, mientras que conformar la cadena solo dice quién lo hará. Que la
+        # constitución de la cadena dejara traza y la decisión no significaba que
+        # `audit_log` pudiera decir a quién se le pidió el visto bueno, pero no quién lo
+        # dio, cuándo, ni por qué (Ley 594/2000, art. 22: trazabilidad del trámite).
+        #
+        # `object_ref` es el UUID del radicado, igual que en `vobo.cadena_creada`: el
+        # recorte por clearance de /admin/auditoria resuelve el nivel por id además de
+        # por identidad natural, así que la fila queda protegida como el radicado que
+        # describe — y por eso el comentario del revisor puede viajar en el payload,
+        # como ya hace `workflow.devolver` con el suyo.
+        async with self._conn.transaction():
+            await self._repo.decide(active["id"], estado, payload.comentario)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="workflow-service",
+                action="vobo.decidido",
+                object_type="radicado",
+                object_ref=str(radicado_id),
+                actor=str(actor),
+                payload={
+                    "orden": active["orden"],
+                    "estado": estado,
+                    "comentario": payload.comentario,
+                },
+            )
         return await self.get(radicado_id)
 
     async def get(self, radicado_id: uuid.UUID) -> CadenaResponse:

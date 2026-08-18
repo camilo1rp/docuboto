@@ -43,6 +43,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {string|null} */
@@ -81,7 +82,7 @@
       } else if (res.status === 404) {
         loadError = "No se encontró información de esta firma.";
       } else {
-        loadError = data?.detail ?? `No se pudo cargar el certificado (error ${res.status}).`;
+        loadError = mensajeError(data, `No se pudo cargar el certificado (error ${res.status}).`);
       }
     } catch {
       loadError = "No se pudo conectar al servidor de firmas.";
@@ -141,7 +142,7 @@
       if (res.ok) {
         verifyResult = data;
       } else {
-        verifyError = data?.detail ?? `No se pudo verificar (error ${res.status}).`;
+        verifyError = mensajeError(data, `No se pudo verificar (error ${res.status}).`);
       }
     } catch {
       verifyError = "No se pudo conectar al servidor de firmas para verificar.";

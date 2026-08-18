@@ -29,6 +29,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 const HISTORY_LIMIT = 50;
 
@@ -59,7 +60,7 @@ export async function load({ cookies, parent, fetch }) {
     history = Array.isArray(raw) ? raw : [];
   } else if (historyResult.status === "fulfilled") {
     const body = await historyResult.value.json().catch(() => ({}));
-    historyError = body.detail ?? `Error ${historyResult.value.status}`;
+    historyError = mensajeError(body, `Error ${historyResult.value.status}`);
   } else {
     historyError = "No se pudo conectar al servidor de notificaciones.";
   }
@@ -71,7 +72,7 @@ export async function load({ cookies, parent, fetch }) {
     webhooks = Array.isArray(raw) ? raw : [];
   } else if (webhooksResult.status === "fulfilled") {
     const body = await webhooksResult.value.json().catch(() => ({}));
-    webhooksError = body.detail ?? `Error ${webhooksResult.value.status}`;
+    webhooksError = mensajeError(body, `Error ${webhooksResult.value.status}`);
   } else {
     webhooksError = "No se pudo conectar al servidor de webhooks.";
   }

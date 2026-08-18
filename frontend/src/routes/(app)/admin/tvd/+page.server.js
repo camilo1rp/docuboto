@@ -25,6 +25,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -46,7 +47,7 @@ export async function load({ cookies, parent, fetch }) {
       agrupaciones = await res.json().catch(() => []);
     } else {
       const body = await res.json().catch(() => ({}));
-      agrupacionesError = body.detail ?? `Error ${res.status}`;
+      agrupacionesError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     agrupacionesError = "No se pudo conectar al servidor de TVD.";

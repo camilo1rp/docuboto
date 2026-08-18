@@ -40,6 +40,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -97,7 +98,7 @@
 
       const dataRes = await res.json();
       if (!res.ok) {
-        notifyError(dataRes.detail ?? "Error al crear la plantilla.");
+        notifyError(mensajeError(dataRes, "Error al crear la plantilla."));
         return;
       }
 
@@ -138,7 +139,7 @@
         deletingPlantilla = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar la plantilla.");
+        notifyError(mensajeError(err, "No se pudo eliminar la plantilla."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

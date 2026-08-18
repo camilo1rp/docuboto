@@ -52,6 +52,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   // ---------------------------------------------------------------------------
   // Permisos (espejo del RBAC del backend)
@@ -177,8 +178,8 @@
       searchTotal = 0;
       // C3: la búsqueda no pudo resolverse — esto NO es "sin resultados".
       searchFailed = true;
-      searchError = err?.detail ?? "No se pudo consultar el servidor de búsqueda.";
-      notifyError(err?.detail ?? "No se pudo buscar radicados.");
+      searchError = mensajeError(err, "No se pudo consultar el servidor de búsqueda.");
+      notifyError(mensajeError(err, "No se pudo buscar radicados."));
     } finally {
       searchLoading = false;
     }
@@ -222,7 +223,7 @@
       anulacion = result;
     } catch (/** @type {any} */ err) {
       drawerOpen = false;
-      notifyError(err?.detail ?? "No se pudo consultar el estado de la anulación.");
+      notifyError(mensajeError(err, "No se pudo consultar el estado de la anulación."));
     } finally {
       detailLoading = false;
     }
@@ -329,8 +330,10 @@
       anulacion = null;
     } catch (/** @type {any} */ err) {
       notifyError(
-        err?.detail ??
+        mensajeError(
+          err,
           `No se pudo ${decisionAccion === "aprobar" ? "aprobar" : "rechazar"} la anulación.`,
+        ),
       );
     } finally {
       decisionLoading = false;

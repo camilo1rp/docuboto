@@ -32,6 +32,8 @@
   import { dndzone } from "svelte-dnd-action";
   import { permissions } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
+  import { RADICADO_TIPO_LABEL, etiquetaEstadoRadicado } from "$lib/utils/radicado.js";
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import Stepper from "$lib/components/ui/Stepper.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -134,11 +136,18 @@
 
   // Tipos documentales filtrados por tipo de radicado (E/S/I)
   // El backend no filtra por doc_type aquí; mostramos todos los activos
+  // OJO con el nombre del campo: los tipos documentales lo traen como `nombre`
+  // y las series TRD como `name` (dos routers distintos de archive-service que
+  // no comparten convención). Esto leía `t.name` y el desplegable pintaba
+  // literalmente «undefined» para cada tipo — en la pantalla más usada del
+  // sistema, sin forma de saber qué se estaba eligiendo. Se lee el campo real y
+  // sin `?? t.name` de cortesía: un valor por defecto convertiría el próximo
+  // cambio de contrato en otro «undefined» silencioso en vez de un fallo.
   $: tiposOptions = [
     { value: "", label: "— sin clasificar —" },
     ...data.tiposDocumentales.map((t) => ({
       value: t.code ?? t.id,
-      label: t.name,
+      label: t.nombre,
     })),
   ];
 
@@ -254,7 +263,7 @@
               : a,
           );
         } catch (err) {
-          const detail = err?.detail ?? "Error al subir el archivo";
+          const detail = mensajeError(err, "Error al subir el archivo");
           anexos = anexos.map((a) =>
             a.id === item.id ? { ...a, uploading: false, error: detail } : a,
           );
@@ -283,12 +292,43 @@
   // ---------------------------------------------------------------------------
   let selectedSerieId = "";
 
+  // Estado del instrumento en la etiqueta, y las vigentes primero.
+  //
+  // Una serie puede tener VARIAS versiones a la vez (el circuito de
+  // convalidación abre una v2 en borrador mientras la v1 convalidada sigue
+  // rigiendo), y este desplegable las pintaba todas como `código — nombre`:
+  // dos opciones idénticas, imposibles de distinguir, una de ellas un borrador
+  // que todavía no rige. Quien clasifica elegía a ciegas entre la vigente y una
+  // que no lo es.
+  //
+  // NO se filtran las no convalidadas: en una entidad recién provisionada todas
+  // las series están en borrador, y esconderlas dejaría la radicación sin nada
+  // que clasificar — un remedio peor que el defecto. Se muestran todas, se dice
+  // cuál es cuál, y las convalidadas salen arriba.
+  const ORDEN_ESTADO = { convalidada: 0, aprobada: 1, borrador: 2, migrada: 3, derogada: 4 };
+  const ESTADO_TEXTO = {
+    convalidada: "vigente",
+    aprobada: "aprobada, sin convalidar",
+    borrador: "borrador",
+    migrada: "migrada",
+    derogada: "derogada",
+  };
+
   $: trdSerieOptions = [
     { value: "", label: "— sin clasificar por ahora —" },
-    ...data.trdSeries.map((s) => ({
-      value: s.id,
-      label: `${s.code} — ${s.name}`,
-    })),
+    ...[...data.trdSeries]
+      .sort(
+        (a, b) =>
+          (ORDEN_ESTADO[a.estado] ?? 9) - (ORDEN_ESTADO[b.estado] ?? 9) ||
+          String(a.code).localeCompare(String(b.code)) ||
+          (a.version ?? 0) - (b.version ?? 0),
+      )
+      .map((s) => ({
+        value: s.id,
+        label:
+          `${s.code}${s.version ? ` v${s.version}` : ""} — ${s.name}` +
+          (ESTADO_TEXTO[s.estado] ? ` (${ESTADO_TEXTO[s.estado]})` : ""),
+      })),
   ];
 
   // ---------------------------------------------------------------------------
@@ -386,12 +426,17 @@
       showConfirmModal = false;
       notify({ type: "success", message: `Radicado creado: ${doc.tracking_number}` });
     } catch (err) {
-      const detail = err?.detail ?? "Error al crear el radicado";
+      // `mensajeError`/`codigoError` y no `err.detail`/`err.error`: el backend
+      // envuelve su `{error, detail, status}` dentro del `detail` de FastAPI, de
+      // modo que `err.detail` es un OBJETO —el aviso salía como
+      // «[object Object]»— y `err.error` no existe, así que el error nunca se
+      // mapeaba al campo que lo causó.
+      const detail = mensajeError(err, "Error al crear el radicado");
       notify({ type: "error", message: detail });
-      // Mapear error de campo si el backend lo indica
-      if (err?.error === "metadata_validation_failed") {
+      const codigo = codigoError(err);
+      if (codigo === "metadata_validation_failed") {
         errors = { ...errors, extraMetadata: detail };
-      } else if (err?.error === "invalid_dependencia") {
+      } else if (codigo === "invalid_dependencia") {
         errors = { ...errors, destDeptCode: detail };
       }
     } finally {
@@ -524,16 +569,13 @@
       <dl class="radicar-success__meta">
         <div>
           <dt>Tipo</dt>
-          <dd>
-            {#if createdDocument.doc_type === "E"}Entrada
-            {:else if createdDocument.doc_type === "S"}Salida
-            {:else}Interno
-            {/if}
-          </dd>
+          <dd>{RADICADO_TIPO_LABEL[createdDocument.doc_type] ?? createdDocument.doc_type}</dd>
         </div>
         <div>
           <dt>Estado</dt>
-          <dd>{createdDocument.status}</dd>
+          <!-- Mostraba el valor crudo del backend («registered», en inglés)
+               justo al lado de un «Entrada» sí traducido. -->
+          <dd>{etiquetaEstadoRadicado(createdDocument.status)}</dd>
         </div>
         <div>
           <dt>Registrado</dt>

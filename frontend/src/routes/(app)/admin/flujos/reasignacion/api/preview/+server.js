@@ -38,6 +38,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -87,8 +88,8 @@ export async function GET({ locals, url }) {
       const err = await res.json().catch(() => ({}));
       return json(
         {
-          error: err.error ?? "upstream_error",
-          detail: err.detail ?? "No se pudo estimar el impacto.",
+          error: codigoError(err) ?? "upstream_error",
+          detail: mensajeError(err, "No se pudo estimar el impacto."),
         },
         { status: res.status },
       );

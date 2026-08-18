@@ -43,6 +43,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {{id: string; tracking_number: string} | null} */
@@ -83,7 +84,10 @@
       const res = await fetch(`/bandeja/api/${encodeURIComponent(radicado.id)}/publicacion`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        loadError = body.detail ?? `Error ${res.status} al consultar el estado de publicación.`;
+        loadError = mensajeError(
+          body,
+          `Error ${res.status} al consultar el estado de publicación.`,
+        );
         return;
       }
       estado = await res.json();
@@ -134,7 +138,7 @@
       } else if (err?.status === 403) {
         notifyError("No tiene el permiso necesario para decidir sobre la publicación.");
       } else {
-        notifyError(err?.detail ?? "No se pudo ejecutar el acto de publicación.");
+        notifyError(mensajeError(err, "No se pudo ejecutar el acto de publicación."));
       }
     } finally {
       saving = false;

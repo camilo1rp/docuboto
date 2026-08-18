@@ -28,6 +28,7 @@
     on:success  — el traslado se ejecutó; detail = FlowStepResponse del nuevo paso
 -->
 <script>
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { createEventDispatcher, tick } from "svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -139,10 +140,10 @@
       notifySuccess(`Radicado ${step.tracking_number} trasladado a ${toDept.trim()}.`);
       dispatch("success", result);
     } catch (err) {
-      if (err?.error === "missing_from_dept") {
+      if (codigoError(err) === "missing_from_dept") {
         notifyError("No se pudo determinar la dependencia de origen. Recargue e intente de nuevo.");
       } else {
-        notifyError(err?.detail ?? "No se pudo trasladar el radicado.");
+        notifyError(mensajeError(err, "No se pudo trasladar el radicado."));
       }
     } finally {
       loading = false;

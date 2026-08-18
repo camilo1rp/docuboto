@@ -45,6 +45,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 const VALID_TABS = new Set(["exacta", "semantica", "antecedentes"]);
 
@@ -70,7 +71,7 @@ async function loadSemantica({ token, tenant, userId, query, topK }) {
       return { results: Array.isArray(data) ? data : [], error: null };
     }
     const body = await res.json().catch(() => ({}));
-    return { results: null, error: body.detail ?? `Error ${res.status}` };
+    return { results: null, error: mensajeError(body, `Error ${res.status}`) };
   } catch {
     return { results: null, error: "No se pudo conectar al servicio de conocimiento." };
   }
@@ -99,7 +100,7 @@ async function loadAntecedentes({ token, tenant, userId, query, radicadoRef, top
       return { data: await res.json(), error: null };
     }
     const body = await res.json().catch(() => ({}));
-    return { data: null, error: body.detail ?? `Error ${res.status}` };
+    return { data: null, error: mensajeError(body, `Error ${res.status}`) };
   } catch {
     return { data: null, error: "No se pudo conectar al servicio de conocimiento." };
   }
@@ -200,7 +201,7 @@ export async function load({ cookies, parent, url }) {
         }
       } else {
         const body = await res.json().catch(() => ({}));
-        loadError = body.detail ?? `Error ${res.status}`;
+        loadError = mensajeError(body, `Error ${res.status}`);
       }
     } catch {
       loadError = "No se pudo conectar al servidor de búsqueda.";

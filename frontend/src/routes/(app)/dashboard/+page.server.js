@@ -34,6 +34,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 // Estados que representan un radicado "abierto" (no cerrado) — requieren acción.
 const OPEN_STATUSES = ["distributed", "in_progress"];
@@ -57,7 +58,7 @@ async function fetchDocuments(fetchFn, token, tenant, params) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail ?? `Error ${res.status}`);
+    throw new Error(mensajeError(body, `Error ${res.status}`));
   }
 
   const total = Number(res.headers.get("X-Total-Count") ?? 0);
@@ -111,7 +112,7 @@ export async function load({ cookies, parent, fetch }) {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail ?? `Error ${res.status}`);
+      throw new Error(mensajeError(body, `Error ${res.status}`));
     }
     return res.json();
   })();

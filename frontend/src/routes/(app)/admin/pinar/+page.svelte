@@ -31,6 +31,7 @@
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -115,7 +116,7 @@
       // (aprobar/ejecutar/cerrar) se gestiona ahí, no en este listado.
       await goto(`/admin/pinar/${result.id}`);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo crear el plan PINAR.");
+      notifyError(mensajeError(err, "No se pudo crear el plan PINAR."));
     } finally {
       actionLoading = false;
     }

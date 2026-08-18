@@ -75,6 +75,7 @@
   import RevertirModal from "./RevertirModal.svelte";
   import WorkflowCard from "./WorkflowCard.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {'inbox'|'pending'} */
   export let source = "inbox";
@@ -150,7 +151,7 @@
       total = result.total ?? items.length;
     } catch (err) {
       items = [];
-      loadError = err?.detail ?? "No se pudo cargar el tablero de distribución.";
+      loadError = mensajeError(err, "No se pudo cargar el tablero de distribución.");
     } finally {
       loading = false;
     }
@@ -248,7 +249,7 @@
       announce(`Radicado ${step.tracking_number} marcado como completado.`);
       await refreshAndFocus(step.radicado_id);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo completar el paso.");
+      notifyError(mensajeError(err, "No se pudo completar el paso."));
     } finally {
       busyStepId = "";
     }
@@ -276,7 +277,7 @@
       if (err?.status === 403) {
         notifyError("No tiene permiso para marcar este radicado en trámite.");
       } else {
-        notifyError(err?.detail ?? "No se pudo mover el radicado a En trámite.");
+        notifyError(mensajeError(err, "No se pudo mover el radicado a En trámite."));
       }
     } finally {
       busyStepId = "";

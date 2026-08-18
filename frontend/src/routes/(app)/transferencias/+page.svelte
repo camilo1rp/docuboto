@@ -40,6 +40,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Card from "$lib/components/ui/Card.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -96,7 +97,7 @@
       if (!res.ok) throw responseData;
       transferencias = Array.isArray(responseData) ? responseData : (responseData.items ?? []);
     } catch (err) {
-      cargaError = { detail: err?.detail ?? "No se pudieron cargar las transferencias." };
+      cargaError = { detail: mensajeError(err, "No se pudieron cargar las transferencias.") };
       transferencias = [];
     } finally {
       loading = false;
@@ -147,7 +148,7 @@
       };
       await cargarTransferencias();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo crear la transferencia.");
+      notifyError(mensajeError(err, "No se pudo crear la transferencia."));
     } finally {
       nuevaLoading = false;
     }
@@ -191,7 +192,7 @@
         const res = await fetch(`/transferencias/api/${id}/enviar`, { method: "POST" });
         const result = await res.json().catch(() => ({ ok: true }));
         if (!res.ok) {
-          notifyError(result?.detail ?? "No se pudo enviar la transferencia.");
+          notifyError(mensajeError(result, "No se pudo enviar la transferencia."));
           return;
         }
         notifySuccess("Transferencia enviada correctamente.");
@@ -206,7 +207,7 @@
       const res = await fetch(`/transferencias/api/${id}/recibir`, { method: "POST" });
       const result = await res.json().catch(() => ({ ok: true }));
       if (!res.ok) {
-        notifyError(result?.detail ?? "No se pudo recibir la transferencia.");
+        notifyError(mensajeError(result, "No se pudo recibir la transferencia."));
         return;
       }
       notifySuccess("Transferencia recibida correctamente.");
@@ -241,7 +242,7 @@
       showRechazarModal = false;
       await cargarTransferencias();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo rechazar la transferencia.");
+      notifyError(mensajeError(err, "No se pudo rechazar la transferencia."));
     } finally {
       rechazarLoading = false;
     }
@@ -265,7 +266,7 @@
       if (!res.ok) throw data;
       fuidData = Array.isArray(data) ? data : (data.items ?? data.rows ?? [data]);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo obtener el FUID.");
+      notifyError(mensajeError(err, "No se pudo obtener el FUID."));
       showFuidModal = false;
     } finally {
       fuidLoading = false;
@@ -365,7 +366,7 @@
         <EmptyState
           icon="fas fa-exclamation-triangle"
           title="Error al cargar"
-          description={cargaError.detail ?? "Intenta recargar la página."}
+          description={mensajeError(cargaError, "Intenta recargar la página.")}
         />
       {:else if transferencias.length === 0}
         <EmptyState

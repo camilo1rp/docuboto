@@ -10,19 +10,32 @@
 """Schemas de catálogos de referencia por tenant (E14)."""
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# Ámbito = a qué acto pertenece una causal. Solo `causales` lo tiene (ver
+# CON_AMBITO en el repositorio); en el resto de catálogos viaja como None.
+Ambito = Literal[
+    "devolucion",
+    "anulacion",
+    "reasignacion",
+    "devolucion_postal",
+    "general",
+]
 
 
 class CatalogoItemCreate(BaseModel):
     codigo: str = Field(..., min_length=1, max_length=10)
     nombre: str = Field(..., min_length=1, max_length=100)
     activo: bool = True
+    ambito: Ambito | None = None
 
 
 class CatalogoItemUpdate(BaseModel):
     nombre: str | None = Field(None, min_length=1, max_length=100)
     activo: bool | None = None
+    ambito: Ambito | None = None
 
 
 class CatalogoItemResponse(BaseModel):
@@ -30,3 +43,6 @@ class CatalogoItemResponse(BaseModel):
     codigo: str
     nombre: str
     activo: bool
+    # None en los catálogos que no distinguen acto — el campo existe siempre en
+    # la respuesta para que el cliente no tenga que saber cuál es cuál.
+    ambito: Ambito | None = None

@@ -46,6 +46,7 @@
   import Modal from "$lib/components/ui/Modal.svelte";
   import Stepper from "$lib/components/ui/Stepper.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   export let solicitudId = "";
@@ -118,7 +119,7 @@
    * @param {{error?: string; detail?: string; intentos_restantes?: number}} result
    */
   function classifyError(status_, result) {
-    const code = result?.error ?? "";
+    const code = codigoError(result) ?? "";
 
     if (status_ === 409 && code === "2fa_requerido") {
       return { kind: "need_2fa" };
@@ -182,7 +183,7 @@
     }
     return {
       kind: "fatal",
-      message: result?.detail ?? `No se pudo firmar (error ${status_}).`,
+      message: mensajeError(result, `No se pudo firmar (error ${status_}).`),
     };
   }
 
@@ -265,8 +266,10 @@
           "Ya se envió un código recientemente. Espera un momento antes de solicitar otro.";
         step = 1;
       } else {
-        confirmError =
-          result?.detail ?? "No se pudo emitir el código de verificación. Inténtalo de nuevo.";
+        confirmError = mensajeError(
+          result,
+          "No se pudo emitir el código de verificación. Inténtalo de nuevo.",
+        );
         step = 0;
       }
     } catch {

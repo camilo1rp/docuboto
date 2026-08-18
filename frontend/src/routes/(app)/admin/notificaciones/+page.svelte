@@ -40,6 +40,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -71,7 +72,7 @@
       if (res.ok) {
         history = Array.isArray(body) ? body : [];
       } else {
-        historyError = body?.detail ?? `Error ${res.status}`;
+        historyError = mensajeError(body, `Error ${res.status}`);
         notifyError(historyError);
       }
     } catch {
@@ -149,7 +150,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el webhook.");
+        notifyError(mensajeError(resData, "No se pudo crear el webhook."));
         return;
       }
       webhooks = [...webhooks, resData];
@@ -185,7 +186,7 @@
         deletingWebhook = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar el webhook.");
+        notifyError(mensajeError(err, "No se pudo eliminar el webhook."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

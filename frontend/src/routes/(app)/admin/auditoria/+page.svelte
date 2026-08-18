@@ -50,6 +50,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -75,7 +76,7 @@
         lastVerifiedAt = new Date();
       } else {
         verifyState = "error";
-        verifyDetail = body?.detail ?? `Error ${res.status}`;
+        verifyDetail = mensajeError(body, `Error ${res.status}`);
       }
     } catch {
       verifyState = "error";
@@ -115,7 +116,7 @@
         totalCount = Number(res.headers.get("X-Total-Count") ?? entries.length);
         page = targetPage;
       } else {
-        listError = body?.detail ?? `Error ${res.status}`;
+        listError = mensajeError(body, `Error ${res.status}`);
         notifyError(listError);
       }
     } catch {

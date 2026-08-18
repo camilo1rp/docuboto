@@ -45,6 +45,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -92,7 +93,7 @@
         truncated = res.headers.get("X-Truncated") === "true";
         page = targetPage;
       } else {
-        listError = body?.detail ?? `Error ${res.status}`;
+        listError = mensajeError(body, `Error ${res.status}`);
         notifyError(listError);
       }
     } catch {
@@ -155,7 +156,7 @@
         detailError =
           res.status === 404
             ? "No se encontró el evento, o tu clearance no permite verlo."
-            : (body?.detail ?? `Error ${res.status}`);
+            : mensajeError(body, `Error ${res.status}`);
       }
     } catch {
       detailError = "No se pudo conectar al servidor de colas de errores.";
@@ -189,7 +190,7 @@
         detailDrawerOpen = false;
         fetchList(page);
       } else {
-        notifyError(body?.detail ?? `El reprocesamiento falló (error ${res.status}).`);
+        notifyError(mensajeError(body, `El reprocesamiento falló (error ${res.status}).`));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -236,7 +237,7 @@
         detailDrawerOpen = false;
         fetchList(page);
       } else {
-        notifyError(body?.detail ?? `El descarte falló (error ${res.status}).`);
+        notifyError(mensajeError(body, `El descarte falló (error ${res.status}).`));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

@@ -63,6 +63,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import DependencySwitcher from "$lib/components/features/perfil/DependencySwitcher.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   // Tipado manual (no `import('./$types').PageData`): `data.user` viene del
   // `load` de `(app)/+layout.server.js` (un ancestro), no del propio
@@ -123,7 +124,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        recoveryStepUpError = resData.detail ?? "No se pudieron regenerar los códigos.";
+        recoveryStepUpError = mensajeError(resData, "No se pudieron regenerar los códigos.");
         return;
       }
       recoveryCodes = resData.recovery_codes ?? [];
@@ -187,7 +188,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const detail = resData.detail ?? "No se pudo generar el segundo factor.";
+        const detail = mensajeError(resData, "No se pudo generar el segundo factor.");
         if (totpActive) {
           totpReenrollError = detail;
         } else {
@@ -223,7 +224,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        totpActivateError = resData.detail ?? "Código incorrecto o vencido.";
+        totpActivateError = mensajeError(resData, "Código incorrecto o vencido.");
         return;
       }
       totp = {
@@ -261,7 +262,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const detail = resData.detail ?? "No se pudo revocar el segundo factor.";
+        const detail = mensajeError(resData, "No se pudo revocar el segundo factor.");
         if (totpActive) {
           totpRevokeError = detail;
         } else {
@@ -340,7 +341,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const detail = resData.detail ?? "No se pudo generar la solicitud de credencial.";
+        const detail = mensajeError(resData, "No se pudo generar la solicitud de credencial.");
         if (signingActive) {
           signingReenrollStepUpError = detail;
         } else {
@@ -380,7 +381,10 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        signingRevokeStepUpError = resData.detail ?? "No se pudo revocar la credencial de firma.";
+        signingRevokeStepUpError = mensajeError(
+          resData,
+          "No se pudo revocar la credencial de firma.",
+        );
         return;
       }
       signingKey = { estado: "revocado" };

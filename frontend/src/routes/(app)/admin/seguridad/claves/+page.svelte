@@ -43,6 +43,7 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -94,10 +95,10 @@
       if (!res.ok) {
         if (res.status === 404) {
           notifyInfo(
-            resData.detail ?? "Ese usuario no tiene una credencial de firma para revocar.",
+            mensajeError(resData, "Ese usuario no tiene una credencial de firma para revocar."),
           );
         } else {
-          notifyError(resData.detail ?? "No se pudo revocar la credencial.");
+          notifyError(mensajeError(resData, "No se pudo revocar la credencial."));
         }
         return;
       }

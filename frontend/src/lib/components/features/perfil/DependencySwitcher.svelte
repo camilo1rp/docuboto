@@ -37,6 +37,7 @@
     - Estado "cambiando…" anunciado vía aria-busy + live region
 -->
 <script context="module">
+  import { mensajeError } from "$lib/utils/apiError.js";
   // Contador de instancias: el `id` del <select> tiene que ser ÚNICO en el
   // documento porque una <label for> lo referencia. En `/perfil` conviven DOS
   // instancias de este componente —la de la barra superior (`compact`) y la de
@@ -90,7 +91,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(data.detail ?? "No se pudo cambiar la dependencia activa.");
+        notifyError(mensajeError(data, "No se pudo cambiar la dependencia activa."));
         selected = activeDepeId; // revertir el <select> visualmente
         return;
       }

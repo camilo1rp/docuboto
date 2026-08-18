@@ -44,6 +44,7 @@
   import DataTable from "$lib/components/ui/DataTable.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import { getNivelChip } from "$lib/utils/nivelSeguridad.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -110,7 +111,7 @@
       const res = await fetch("/reportes/api/indice-reservado");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        indiceError = body.detail ?? `Error ${res.status} al cargar el índice.`;
+        indiceError = mensajeError(body, `Error ${res.status} al cargar el índice.`);
         return;
       }
       const body = await res.json();
@@ -182,7 +183,7 @@
       const res = await fetch("/reportes/api/indice-reservado/csv");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        notifyError(body.detail ?? "Error al descargar el índice en CSV.");
+        notifyError(mensajeError(body, "Error al descargar el índice en CSV."));
         return;
       }
       const blob = await res.blob();
@@ -401,7 +402,7 @@
       const res = await fetch(buildCsvUrl());
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        notifyError(body.detail ?? "Error al descargar el reporte CSV.");
+        notifyError(mensajeError(body, "Error al descargar el reporte CSV."));
         return;
       }
       const blob = await res.blob();

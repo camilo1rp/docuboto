@@ -46,6 +46,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -149,7 +150,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo guardar la dependencia.");
+        notifyError(mensajeError(resData, "No se pudo guardar la dependencia."));
         return false;
       }
       notifySuccess("Dependencia actualizada.");
@@ -173,7 +174,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear la dependencia.");
+        notifyError(mensajeError(resData, "No se pudo crear la dependencia."));
         return;
       }
       notifySuccess("Dependencia creada.");

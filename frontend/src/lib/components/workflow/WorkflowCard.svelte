@@ -48,6 +48,7 @@
   step.status==='pending').
 -->
 <script>
+  import { PASO_ESTADO_CHIP, PASO_ESTADO_LABEL } from "$lib/utils/flujo.js";
   import { createEventDispatcher } from "svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
 
@@ -66,18 +67,11 @@
   $: actionsDisabled = busy || boardBusy;
 
   const DOC_TYPE_LABELS = { E: "Entrada", S: "Salida", I: "Interno" };
-  const STATUS_CHIP = {
-    pending: "warning",
-    in_progress: "info",
-    completed: "success",
-    cancelled: "error",
-  };
-  const STATUS_LABEL = {
-    pending: "Pendiente",
-    in_progress: "En trámite",
-    completed: "Completado",
-    cancelled: "Cancelado",
-  };
+  // Fuente única en `$lib/utils/flujo.js`. Este mapa era el CORRECTO de los dos
+  // que había; el de HojaRuta tenía un `active` inexistente y le faltaba
+  // `pending`, el valor por defecto — y era el que se veía en la hoja de ruta.
+  const STATUS_CHIP = PASO_ESTADO_CHIP;
+  const STATUS_LABEL = PASO_ESTADO_LABEL;
   const SEMAFORO_LABEL = {
     verde: "A tiempo",
     amarillo: "Por vencer",

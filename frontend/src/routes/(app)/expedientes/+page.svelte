@@ -56,6 +56,7 @@
   import Modal from "$lib/components/ui/Modal.svelte";
   import SchemaField from "$lib/components/ui/SchemaField.svelte";
   import { resolveSchemaControl } from "$lib/utils/schemaField.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -353,7 +354,7 @@
   // inválido. Otros errores (upstream_error, connection_error,
   // metadata_validation_failed, unauthenticated) no son atribuibles a un
   // campo concreto y solo aparecen en el aviso general.
-  $: createNameError = form?.error === "validation_error" ? (form.detail ?? "") : "";
+  $: createNameError = form?.error === "validation_error" ? mensajeError(form, "") : "";
 </script>
 
 <svelte:head>

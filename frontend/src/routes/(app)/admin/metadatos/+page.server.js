@@ -44,6 +44,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -62,7 +63,7 @@ export async function load({ cookies, parent, fetch }) {
       const res = await fetch(`${API_V1}${path}`, { headers });
       if (res.ok) return { items: await res.json().catch(() => []), error: null };
       const body = await res.json().catch(() => ({}));
-      return { items: [], error: body.detail ?? `Error ${res.status}` };
+      return { items: [], error: mensajeError(body, `Error ${res.status}`) };
     } catch {
       return { items: [], error: "No se pudo conectar al servidor." };
     }

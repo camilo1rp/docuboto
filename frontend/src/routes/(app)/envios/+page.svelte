@@ -47,6 +47,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -205,7 +206,7 @@
       if (!res.ok) {
         // Distinguir "no se pudo consultar" de "sin novedades": nunca se
         // pinta un resultado sintético cuando la consulta falló.
-        trackingError = result?.detail ?? "No se pudo consultar el rastreo.";
+        trackingError = mensajeError(result, "No se pudo consultar el rastreo.");
         trackingResult = null;
         return;
       }
@@ -256,7 +257,7 @@
       });
       const responseData = await res.json();
       if (!res.ok) {
-        notifyError(responseData.detail ?? "No se pudo cambiar el estado.");
+        notifyError(mensajeError(responseData, "No se pudo cambiar el estado."));
         return;
       }
       // Actualizar en la lista y el drawer
@@ -274,15 +275,20 @@
   // ---------------------------------------------------------------------------
   // Modal: devolución con causal
   // ---------------------------------------------------------------------------
-  const CAUSALES_DEVOLUCION = [
+  // Reserva para cuando el catálogo no cargue: la lista que hasta ahora estaba
+  // escrita a mano aquí. Sigue siendo peor que el catálogo (no la administra la
+  // entidad), pero deja el modal utilizable en vez de vacío.
+  const CAUSALES_RESERVA = [
     "Dirección incorrecta",
     "Destinatario desconocido",
     "Rehusado",
     "No reclamado",
     "Otro",
   ];
-  // Nota: la causal estructurada con catálogo propio es roadmap del backend.
-  // Por ahora la causal se envía en el campo `descripcion` con prefijo "Causal: <x> — <nota>".
+  // La causal se sigue enviando dentro de `descripcion` con el prefijo
+  // "Causal: <x> — <nota>": el backend de envíos no tiene campo propio para ella.
+  // Lo que cambia es de DÓNDE sale el vocabulario — del catálogo del tenant
+  // (`causales`, ámbito `devolucion_postal`), no de una constante del frontend.
 
   let modalDevolucion = false;
   let fDevCausal = "";
@@ -320,7 +326,7 @@
       });
       const responseData = await res.json();
       if (!res.ok) {
-        notifyError(responseData.detail ?? "No se pudo registrar la devolución.");
+        notifyError(mensajeError(responseData, "No se pudo registrar la devolución."));
         return;
       }
       shipments = shipments.map((s) => (s.id === selectedShipment.id ? responseData : s));
@@ -385,7 +391,7 @@
       });
       const responseData = await res.json();
       if (!res.ok) {
-        notifyError(responseData.detail ?? "No se pudo crear el envío.");
+        notifyError(mensajeError(responseData, "No se pudo crear el envío."));
         return;
       }
       // Insertar al inicio de la lista (el más reciente primero)
@@ -421,7 +427,7 @@
       // Limpiar selección al cambiar de página/filtro
       selectedIds = new Set();
     } catch (/** @type {any} */ err) {
-      notifyError(err?.detail ?? "Error al cargar los envíos.");
+      notifyError(mensajeError(err, "Error al cargar los envíos."));
     } finally {
       loading = false;
     }
@@ -488,7 +494,17 @@
     { value: "otro", label: "Otro" },
   ];
 
-  const CAUSALES_OPTIONS = CAUSALES_DEVOLUCION.map((c) => ({ value: c, label: c }));
+  // El servidor ya pide `?ambito=devolucion_postal`, así que aquí solo queda
+  // darle forma de opción. `value` es el NOMBRE y no el código porque la causal
+  // viaja DENTRO de `descripcion` como texto («Causal: <x> — <nota>»): lo que se
+  // guarda tiene que poder leerse. El código sirve para agrupar, y aquí no hay
+  // campo donde guardarlo — eso sí es roadmap del backend de envíos.
+  $: causalesCatalogo = (data.causales ?? [])
+    .filter((c) => c?.nombre)
+    .map((c) => ({ value: c.nombre, label: c.nombre }));
+  $: CAUSALES_OPTIONS = causalesCatalogo.length
+    ? causalesCatalogo
+    : CAUSALES_RESERVA.map((c) => ({ value: c, label: c }));
 
   function formatDate(/** @type {string} */ iso) {
     if (!iso) return "—";
@@ -888,10 +904,9 @@
   on:close={() => (modalDevolucion = false)}
 >
   <div class="envio-modal-form">
-    <!--
-      La causal se envía en `descripcion` con el prefijo "Causal: <x> — <nota>".
-      La causal estructurada como catálogo independiente es roadmap del backend.
-    -->
+    <!-- Vocabulario del catálogo del tenant (ámbito `devolucion_postal`); la
+      causal viaja dentro de `descripcion` porque el backend de envíos no tiene
+      campo propio para ella. -->
     <FormField
       id="envio-dev-causal"
       label="Causal de devolución"

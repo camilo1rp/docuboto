@@ -65,6 +65,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import DataTable from "$lib/components/ui/DataTable.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -285,7 +286,7 @@
       results = result.results;
       total = result.total;
     } catch (err) {
-      notifyError(err?.detail ?? "Error al cargar los resultados.");
+      notifyError(mensajeError(err, "Error al cargar los resultados."));
     } finally {
       loading = false;
     }
@@ -340,7 +341,7 @@
       const body = await res.json();
       if (!res.ok) {
         semanticaResults = null;
-        semanticaError = body?.detail ?? "No se pudo completar la búsqueda semántica.";
+        semanticaError = mensajeError(body, "No se pudo completar la búsqueda semántica.");
       } else {
         semanticaResults = body.results ?? [];
         semanticaError = null;
@@ -414,7 +415,7 @@
         pivotError =
           res.status === 404
             ? "No se encontró ese radicado."
-            : (body?.detail ?? "No se pudo verificar el radicado.");
+            : mensajeError(body, "No se pudo verificar el radicado.");
       } else {
         pivotPreview = body;
       }
@@ -452,7 +453,7 @@
         antecedentesError =
           res.status === 404
             ? "No se encontró un antecedente indexado para ese radicado."
-            : (body?.detail ?? "No se pudo completar la búsqueda de antecedentes.");
+            : mensajeError(body, "No se pudo completar la búsqueda de antecedentes.");
       } else {
         antecedentesData = body;
         antecedentesError = null;

@@ -48,7 +48,13 @@ function baseData(overrides = {}) {
     user: sessionWith({ permissions: ["PERM_RADI_ENTRADA"] }),
     dependencias: [],
     trdSeries: [],
-    tiposDocumentales: [{ code: "RES", name: "Resolución" }],
+    // `nombre`, NO `name`: es lo que devuelve de verdad
+    // `archive-service/routers/tipos_documentales.py`. Este fixture decía
+    // `name` —la misma creencia equivocada que el componente— y por eso ningún
+    // test podía cazar que el desplegable pintara «undefined». Un fixture
+    // inventado a la vez que el código bajo prueba no prueba nada: confirma la
+    // suposición. (Las series TRD sí usan `name`; son routers distintos.)
+    tiposDocumentales: [{ code: "RES", nombre: "Resolución" }],
     ...overrides,
   };
 }
@@ -263,5 +269,103 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
     expect(typeof capturedBody.metadata.urgente).toBe("boolean");
     expect(capturedBody.metadata.fecha_limite).toBeUndefined();
     expect(capturedBody.metadata.detalle).toBeUndefined();
+  });
+});
+
+describe("/radicar — el desplegable de tipo documental dice QUÉ tipo es", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI_ENTRADA"] }));
+  });
+  afterEach(() => clearSession());
+
+  it("muestra el nombre del tipo, no «undefined»", async () => {
+    // Encontrado navegando: el único tipo documental del tenant aparecía como
+    // «undefined» en el paso 2. El componente leía `t.name` y el backend manda
+    // `t.nombre`. En la pantalla más usada del sistema, eso deja a quien radica
+    // eligiendo a ciegas entre opciones sin etiqueta.
+    render(RadicarPage, {
+      props: {
+        data: baseData({
+          tiposDocumentales: [
+            { code: "DEM-PET", nombre: "Petición ciudadana" },
+            { code: "RES", nombre: "Resolución" },
+          ],
+        }),
+      },
+    });
+    await goToMetadataStep();
+
+    expect(screen.getByRole("option", { name: "Petición ciudadana" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Resolución" })).toBeTruthy();
+    // La aserción que discrimina: ninguna opción se llama «undefined».
+    expect(screen.queryByRole("option", { name: /undefined/i })).toBeNull();
+  });
+});
+
+describe("/radicar — dos versiones de la misma serie TRD son distinguibles", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI_ENTRADA"] }));
+  });
+  afterEach(() => clearSession());
+
+  const DOS_VERSIONES = [
+    { id: "v2", code: "DEM-100", name: "Derechos de Petición", version: 2, estado: "borrador" },
+    { id: "v1", code: "DEM-100", name: "Derechos de Petición", version: 1, estado: "convalidada" },
+  ];
+
+  async function irAClasificacion() {
+    await goToMetadataStep();
+    for (const _ of [1, 2]) {
+      await fireEvent.click(screen.getByRole("button", { name: /siguiente/i }));
+    }
+  }
+
+  it("la etiqueta lleva versión y estado, y no hay dos opciones iguales", async () => {
+    // El circuito de convalidación abre una v2 en borrador mientras la v1
+    // convalidada sigue rigiendo. El desplegable pintaba ambas como
+    // «DEM-100 — Derechos de Petición»: quien clasifica elegía a ciegas entre
+    // la vigente y una que todavía no rige.
+    render(RadicarPage, { props: { data: baseData({ trdSeries: DOS_VERSIONES }) } });
+    await irAClasificacion();
+
+    const select = screen.getByLabelText("Serie TRD", { exact: false });
+    const etiquetas = Array.from(select.options)
+      .map((o) => o.textContent.trim())
+      .filter((t) => t.includes("DEM-100"));
+
+    expect(etiquetas).toHaveLength(2);
+    expect(new Set(etiquetas).size).toBe(2); // la aserción que discrimina
+    expect(etiquetas.some((t) => /v1.*vigente/.test(t))).toBe(true);
+    expect(etiquetas.some((t) => /v2.*borrador/.test(t))).toBe(true);
+  });
+
+  it("la vigente aparece antes que el borrador", async () => {
+    // El fixture las entrega al revés a propósito: sin ordenación, este test
+    // pasaría por casualidad.
+    render(RadicarPage, { props: { data: baseData({ trdSeries: DOS_VERSIONES }) } });
+    await irAClasificacion();
+
+    const select = screen.getByLabelText("Serie TRD", { exact: false });
+    const conSerie = Array.from(select.options)
+      .map((o) => o.textContent.trim())
+      .filter((t) => t.includes("DEM-100"));
+    expect(conSerie[0]).toMatch(/vigente/);
+  });
+
+  it("una serie sin estado no pierde su opción", async () => {
+    // Fail-safe: si el backend dejara de mandar `estado`, la serie debe seguir
+    // siendo clasificable — sin sufijo, pero presente. Esconderla dejaría la
+    // radicación sin nada que clasificar.
+    render(RadicarPage, {
+      props: { data: baseData({ trdSeries: [{ id: "x", code: "DEM-200", name: "Contratos" }] }) },
+    });
+    await irAClasificacion();
+
+    const select = screen.getByLabelText("Serie TRD", { exact: false });
+    expect(Array.from(select.options).some((o) => /DEM-200 — Contratos/.test(o.textContent))).toBe(
+      true,
+    );
   });
 });

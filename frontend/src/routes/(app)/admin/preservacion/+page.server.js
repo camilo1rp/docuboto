@@ -30,6 +30,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 /** @param {PromiseSettledResult<any>} result */
 function settle(result) {
@@ -40,7 +41,7 @@ function settle(result) {
     data: null,
     error: {
       code: result.reason?.code ?? "unknown_error",
-      detail: result.reason?.detail ?? "Error desconocido",
+      detail: mensajeError(result.reason, "Error desconocido"),
       status: result.reason?.status ?? 500,
     },
   };
@@ -59,8 +60,8 @@ async function fetchJson(doFetch, path) {
       status: res.status,
     }));
     throw {
-      code: body.error ?? "upstream_error",
-      detail: body.detail ?? `HTTP ${res.status}`,
+      code: codigoError(body) ?? "upstream_error",
+      detail: mensajeError(body, `HTTP ${res.status}`),
       status: res.status,
     };
   }

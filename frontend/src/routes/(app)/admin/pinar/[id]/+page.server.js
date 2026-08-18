@@ -30,6 +30,7 @@
 import { error } from "@sveltejs/kit";
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 /**
  * @param {string} path
@@ -53,8 +54,8 @@ async function gatewayGet(path, token, tenant, extraHeaders = {}) {
       status: res.status,
     }));
     throw {
-      code: body.error ?? body.detail?.error ?? "upstream_error",
-      detail: body.detail?.detail ?? body.detail ?? `HTTP ${res.status}`,
+      code: codigoError(body) ?? "upstream_error",
+      detail: mensajeError(body.detail, mensajeError(body, `HTTP ${res.status}`)),
       status: res.status,
     };
   }
@@ -87,7 +88,7 @@ export async function load({ params, cookies, parent }) {
     if (err?.status === 403) {
       error(403, { message: "Sin permisos para ver este plan PINAR" });
     }
-    error(500, { message: err?.detail ?? "Error al cargar el plan PINAR" });
+    error(500, { message: mensajeError(err, "Error al cargar el plan PINAR") });
   }
 
   const tablero =
@@ -97,7 +98,7 @@ export async function load({ params, cookies, parent }) {
           data: null,
           error: {
             code: tableroResult.reason?.code ?? "unknown_error",
-            detail: tableroResult.reason?.detail ?? "No se pudo cargar el tablero.",
+            detail: mensajeError(tableroResult.reason, "No se pudo cargar el tablero."),
             status: tableroResult.reason?.status ?? 500,
           },
         };

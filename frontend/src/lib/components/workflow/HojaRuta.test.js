@@ -120,6 +120,51 @@ describe("HojaRuta", () => {
     }
   });
 
+  it("no_active_step ANIDADO bajo `detail` también es «Sin paso activo», no un fallo", async () => {
+    // Esta es la forma REAL que devuelve la API. El formato de error del
+    // proyecto es `{error, detail, status}`, pero cuando lo levanta un
+    // `HTTPException` de FastAPI llega envuelto una vez más, bajo `detail`.
+    //
+    // El test de arriba usaba la forma PLANA, que es la que el componente
+    // esperaba: mockeaba la suposición en vez de la respuesta, así que pasaba
+    // en verde mientras un radicado recién radicado —sin flujo todavía, algo
+    // perfectamente normal— mostraba «No se pudo cargar el paso actual» en la
+    // bandeja. Encontrado navegando, no aquí.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/history")) {
+        return jsonResponse({ radicado_id: RAD_ID, tracking_number: "", steps: [] });
+      }
+      if (path.endsWith("/events")) {
+        return jsonResponse([]);
+      }
+      if (path.endsWith("/current")) {
+        return jsonResponse(
+          {
+            detail: {
+              error: "no_active_step",
+              detail: `No active flow step found for radicado ${RAD_ID}`,
+              status: 404,
+            },
+          },
+          404,
+        );
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+
+    try {
+      render(HojaRuta, { props: { radicadoId: RAD_ID } });
+
+      await waitFor(() => screen.getByText("Sin paso activo"));
+      // La aserción que discrimina: NO se avisa de un fallo que no hubo.
+      expect(screen.queryByText(/No se pudo cargar el paso actual/i)).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("un endpoint caído (events falla) no tumba el resto: history se muestra igual y se avisa del error", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input) => {

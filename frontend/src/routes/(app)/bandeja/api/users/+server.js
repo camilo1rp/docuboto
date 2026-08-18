@@ -27,6 +27,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function GET({ locals, url }) {
@@ -55,8 +56,8 @@ export async function GET({ locals, url }) {
       const err = await res.json().catch(() => ({}));
       return json(
         {
-          error: err.error ?? "upstream_error",
-          detail: err.detail ?? "No se pudo cargar la lista de usuarios.",
+          error: codigoError(err) ?? "upstream_error",
+          detail: mensajeError(err, "No se pudo cargar la lista de usuarios."),
         },
         { status: res.status },
       );

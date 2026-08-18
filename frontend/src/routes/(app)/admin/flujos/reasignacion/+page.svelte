@@ -53,6 +53,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -124,7 +125,7 @@
       const res = await fetch(`/admin/flujos/reasignacion/api/preview?${params}`);
       const resData = await res.json();
       if (!res.ok) {
-        previewError = resData.detail ?? "No se pudo estimar el impacto.";
+        previewError = mensajeError(resData, "No se pudo estimar el impacto.");
         previewCount = null;
         return;
       }
@@ -158,7 +159,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo ejecutar la reasignación.");
+        notifyError(mensajeError(resData, "No se pudo ejecutar la reasignación."));
         return;
       }
       resultMessage = `Se reasignaron ${resData.reassigned} paso(s) pendiente(s).`;

@@ -41,6 +41,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -109,7 +110,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo guardar el parámetro.");
+        notifyError(mensajeError(resData, "No se pudo guardar el parámetro."));
         return;
       }
       paramEntries = paramEntries.some(([k]) => k === key)
@@ -190,7 +191,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el festivo.");
+        notifyError(mensajeError(resData, "No se pudo crear el festivo."));
         return;
       }
       holidays = [...holidays, resData].sort((a, b) => a.fecha.localeCompare(b.fecha));
@@ -213,7 +214,7 @@
         notifySuccess("Festivo eliminado.");
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar el festivo.");
+        notifyError(mensajeError(err, "No se pudo eliminar el festivo."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");
@@ -236,7 +237,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo precargar festivos.");
+        notifyError(mensajeError(resData, "No se pudo precargar festivos."));
         return;
       }
       // `invalidateAll()` en vez de pedirle a la persona que recargue: la tabla
@@ -311,7 +312,7 @@
       const res = await fetch(`/admin/parametros/api/business-days?${params}`);
       const resData = await res.json();
       if (!res.ok) {
-        calcError = resData.detail ?? "No se pudo calcular la fecha de vencimiento.";
+        calcError = mensajeError(resData, "No se pudo calcular la fecha de vencimiento.");
         return;
       }
       calcResult = resData;

@@ -48,6 +48,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -177,7 +178,7 @@
       const res = await fetch(`/transferencias/api/${transferencia.id}/acta?verify=true`);
       const result = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(result?.detail ?? "No se pudo verificar el sello del acta.");
+        notifyError(mensajeError(result, "No se pudo verificar el sello del acta."));
         return;
       }
       actaLocal = result;
@@ -205,7 +206,7 @@
     try {
       await refrescarActaYVerificacion();
       if (verificacionLocalError && verificacionLocalError.status !== 404) {
-        notifyError(verificacionLocalError?.detail ?? "No se pudo verificar el acta.");
+        notifyError(mensajeError(verificacionLocalError, "No se pudo verificar el acta."));
       } else {
         notifySuccess("Verificación de firmas actualizada.");
       }
@@ -227,7 +228,7 @@
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(result?.detail ?? "No se pudo reintentar el sellado del acta.");
+        notifyError(mensajeError(result, "No se pudo reintentar el sellado del acta."));
         return;
       }
       notifySuccess("Reintento de sellado del acta enviado.");
@@ -282,7 +283,7 @@
       showFirmarModal = false;
       await refrescarActaYVerificacion();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo registrar la firma personal.");
+      notifyError(mensajeError(err, "No se pudo registrar la firma personal."));
     } finally {
       firmarLoading = false;
     }
@@ -334,7 +335,7 @@
       <EmptyState
         icon="fas fa-exclamation-triangle"
         title="No se pudo cargar la transferencia"
-        description={transferenciaError.detail ?? "Intenta recargar la página."}
+        description={mensajeError(transferenciaError, "Intenta recargar la página.")}
       />
     </Card>
   {:else if !transferencia}
@@ -422,8 +423,8 @@
           icon="fas fa-exclamation-triangle"
           title="No se pudo consultar el acta"
           description={actaLocal
-            ? (actaLocalError?.detail ?? "Intenta de nuevo.")
-            : (actaError?.detail ?? "Intenta de nuevo.")}
+            ? mensajeError(actaLocalError, "Intenta de nuevo.")
+            : mensajeError(actaError, "Intenta de nuevo.")}
         />
       {:else if !actaEfectiva}
         <!-- 404 neutro (RF-SEG-08): puede ser que la transferencia aún no se
@@ -513,8 +514,8 @@
                 icon="fas fa-exclamation-circle"
                 title="No se pudo consultar el estado de las firmas"
                 description={verificacionLocal
-                  ? (verificacionLocalError?.detail ?? "Intenta de nuevo.")
-                  : (verificacionError?.detail ?? "Intenta de nuevo.")}
+                  ? mensajeError(verificacionLocalError, "Intenta de nuevo.")
+                  : mensajeError(verificacionError, "Intenta de nuevo.")}
               />
             {:else}
               <ul class="trd-roles-list">

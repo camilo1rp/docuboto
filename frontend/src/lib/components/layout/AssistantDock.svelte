@@ -45,6 +45,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import ProposalCard from "./ProposalCard.svelte";
   import VoiceInput from "$lib/components/ui/VoiceInput.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** Controla si el dock está visible */
   export let open = false;
@@ -94,7 +95,7 @@
       const res = await fetch("/asistente/api/alcance");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        alcanceError = body.detail ?? "No se pudo consultar qué acciones tiene disponibles.";
+        alcanceError = mensajeError(body, "No se pudo consultar qué acciones tiene disponibles.");
         return;
       }
       alcance = await res.json();

@@ -52,14 +52,37 @@ async def list_catalogos() -> list[str]:
     return sorted(CATALOGS)
 
 
+def _exigir_ambito_soportado(repo: CatalogoRepository, catalogo: str) -> None:
+    """422 si se pide `ambito` sobre un catálogo que no distingue acto.
+
+    Ignorarlo en silencio sería peor que fallar: el llamante recibiría la lista
+    ENTERA creyendo que viene filtrada, y ofrecería causales de anulación como
+    causales de devolución sin que nada lo delate.
+    """
+    if not repo.soporta_ambito:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "ambito_no_aplica",
+                "detail": f"El catálogo «{catalogo}» no distingue ámbito",
+                "status": 422,
+            },
+        )
+
+
 @router.get("/{catalogo}", response_model=list[CatalogoItemResponse])
 async def list_items(
     catalogo: str = Path(...),
     activo: bool | None = Query(None),
+    ambito: str | None = Query(None),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[CatalogoItemResponse]:
     repo = CatalogoRepository(conn, _resolve(catalogo))
-    return [CatalogoItemResponse(**dict(r)) for r in await repo.list(activo=activo)]
+    if ambito is not None:
+        _exigir_ambito_soportado(repo, catalogo)
+    return [
+        CatalogoItemResponse(**dict(r)) for r in await repo.list(activo=activo, ambito=ambito)
+    ]
 
 
 @router.post(
@@ -75,10 +98,15 @@ async def create_item(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> CatalogoItemResponse:
     repo = CatalogoRepository(conn, _resolve(catalogo))
+    if payload.ambito is not None:
+        _exigir_ambito_soportado(repo, catalogo)
     try:
         async with conn.transaction():
             row = await repo.insert(
-                codigo=payload.codigo, nombre=payload.nombre, activo=payload.activo
+                codigo=payload.codigo,
+                nombre=payload.nombre,
+                activo=payload.activo,
+                ambito=payload.ambito,
             )
             await audit_core.append(
                 conn,
@@ -114,8 +142,11 @@ async def update_item(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> CatalogoItemResponse:
     repo = CatalogoRepository(conn, _resolve(catalogo))
+    campos = payload.model_dump(exclude_unset=True)
+    if "ambito" in campos:
+        _exigir_ambito_soportado(repo, catalogo)
     async with conn.transaction():
-        row = await repo.update(item_id, fields=payload.model_dump(exclude_unset=True))
+        row = await repo.update(item_id, fields=campos)
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -128,7 +159,7 @@ async def update_item(
             object_type="catalogo_item",
             object_ref=f"{catalogo}:{item_id}",
             actor=audit_core.actor_from(request),
-            payload={"catalogo": catalogo, "fields": payload.model_dump(exclude_unset=True)},
+            payload={"catalogo": catalogo, "fields": campos},
         )
     return CatalogoItemResponse(**dict(row))
 

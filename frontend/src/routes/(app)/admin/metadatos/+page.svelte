@@ -55,6 +55,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -173,7 +174,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear la plantilla de expediente.");
+        notifyError(mensajeError(resData, "No se pudo crear la plantilla de expediente."));
         return;
       }
       expedienteTemplates = [resData, ...expedienteTemplates];
@@ -231,7 +232,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear la plantilla de documento.");
+        notifyError(mensajeError(resData, "No se pudo crear la plantilla de documento."));
         return;
       }
       documentTemplates = [resData, ...documentTemplates];
@@ -307,7 +308,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo crear el elemento de metadato.");
+        notifyError(mensajeError(resData, "No se pudo crear el elemento de metadato."));
         return;
       }
       elements = [resData, ...elements];
@@ -353,7 +354,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(resData.detail ?? "No se pudo actualizar el elemento de metadato.");
+        notifyError(mensajeError(resData, "No se pudo actualizar el elemento de metadato."));
         return;
       }
       elements = elements.map((e) => (e.id === resData.id ? resData : e));
@@ -379,7 +380,7 @@
         elDeleteTarget = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(err.detail ?? "No se pudo eliminar el elemento de metadato.");
+        notifyError(mensajeError(err, "No se pudo eliminar el elemento de metadato."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

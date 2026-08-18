@@ -37,6 +37,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   /** @type {{id: string; tracking_number: string; doc_type?: string} | null} */
@@ -144,7 +145,7 @@
       notifySuccess(`Radicado ${radicado.tracking_number} asignado a ${toDept.trim()}.`);
       dispatch("success", result);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo asignar el radicado al flujo.");
+      notifyError(mensajeError(err, "No se pudo asignar el radicado al flujo."));
     } finally {
       loading = false;
     }
@@ -153,9 +154,18 @@
 
 <Modal {open} title="Asignar radicado a flujo" size="md" on:close={close}>
   {#if radicado}
+    <!--
+      «sin paso de flujo» y NO «no ha sido distribuido»: son dos cosas distintas
+      y este texto confundía una con otra. El ESTADO del documento
+      (`distributed`) y la existencia de un PASO de flujo son independientes —
+      se puede distribuir un radicado y seguir sin paso—, así que el modal
+      afirmaba «aún no ha sido distribuido» justo debajo de una etiqueta que
+      decía «Distribuido». Se usa el mismo lenguaje que la hoja de ruta, que ya
+      dice «Sin paso activo».
+    -->
     <p class="modal-desc">
       Crea el primer paso de flujo para el radicado
-      <strong>{radicado.tracking_number}</strong>, que aún no ha sido distribuido.
+      <strong>{radicado.tracking_number}</strong>, que todavía no tiene ninguno.
     </p>
   {/if}
   <div class="modal-form">

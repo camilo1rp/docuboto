@@ -1,4 +1,5 @@
 <script>
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
 
@@ -49,10 +50,10 @@
 
   /** @param {any} err @param {string} fallback */
   function friendlyActionError(err, fallback) {
-    if (err?.error === "forbidden") {
+    if (codigoError(err) === "forbidden") {
       return "No tiene el nivel de permiso necesario para esta acción; consulte con el administrador de su entidad.";
     }
-    return err?.detail ?? fallback;
+    return mensajeError(err, fallback);
   }
 
   /** @param {string|null|undefined} iso */
@@ -116,7 +117,7 @@
     } catch (err) {
       tablero = {
         data: null,
-        error: { detail: err?.detail ?? "No se pudo actualizar el tablero." },
+        error: { detail: mensajeError(err, "No se pudo actualizar el tablero.") },
       };
     } finally {
       tableroRefreshing = false;

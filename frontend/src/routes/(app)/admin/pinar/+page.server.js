@@ -24,6 +24,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { mensajeError } from "$lib/utils/apiError.js";
 
 const ESTADOS = new Set(["borrador", "aprobado", "en_ejecucion", "cerrado"]);
 
@@ -52,7 +53,7 @@ export async function load({ cookies, parent, fetch, url }) {
       planes = await res.json().catch(() => []);
     } else {
       const body = await res.json().catch(() => ({}));
-      loadError = body.detail ?? `Error ${res.status}`;
+      loadError = mensajeError(body, `Error ${res.status}`);
     }
   } catch {
     loadError = "No se pudo conectar al servidor del PINAR.";

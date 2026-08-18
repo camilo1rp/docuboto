@@ -45,6 +45,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import SignAssistant from "$lib/components/features/firmas/SignAssistant.svelte";
   import CertificadoDrawer from "$lib/components/features/firmas/CertificadoDrawer.svelte";
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -132,7 +133,7 @@
       const result = await res.json();
 
       if (!res.ok) {
-        notifyError(result.detail ?? "Error al procesar la firma en lote.");
+        notifyError(mensajeError(result, "Error al procesar la firma en lote."));
         return;
       }
 
@@ -193,7 +194,7 @@
       if (res.ok) {
         selectedDetail = detail;
       } else {
-        notifyError(detail?.detail ?? "No se pudo cargar el detalle de la solicitud.");
+        notifyError(mensajeError(detail, "No se pudo cargar el detalle de la solicitud."));
         drawerOpen = false;
       }
     } catch {
@@ -336,7 +337,7 @@
    * @param {{ error?: string; detail?: string }} result
    */
   async function handleSignError(status, result) {
-    const code = result?.error ?? "";
+    const code = codigoError(result) ?? "";
     const isTurnError = status === 403 && (code === "no_es_su_turno" || code === "no_es_firmante");
     const isPendingError = status === 409 && code === "solicitud_no_pendiente";
 
@@ -349,7 +350,7 @@
       // Refrescar bandeja para reflejar el estado real
       await loadPendientes();
     } else {
-      notifyError(result?.detail ?? `Error ${status} al procesar la firma.`);
+      notifyError(mensajeError(result, `Error ${status} al procesar la firma.`));
     }
   }
 
@@ -373,7 +374,7 @@
       // Limpiar selección al cambiar de página o refrescar
       selectedIds = new Set();
     } catch (/** @type {any} */ err) {
-      notifyError(err?.detail ?? "Error al cargar la bandeja de firmas.");
+      notifyError(mensajeError(err, "Error al cargar la bandeja de firmas."));
     } finally {
       loading = false;
     }

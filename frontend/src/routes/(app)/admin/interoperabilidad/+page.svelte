@@ -59,6 +59,7 @@
   import Stepper from "$lib/components/ui/Stepper.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   // Gate real por pestaña — ver comentario de cabecera. "Carga masiva de
   // documentos" exige PERM_RADI (document-service); las otras tres exigen
@@ -128,7 +129,7 @@
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
-        expError = errBody.detail ?? `No se pudo exportar (HTTP ${res.status}).`;
+        expError = mensajeError(errBody, `No se pudo exportar (HTTP ${res.status}).`);
         return;
       }
 
@@ -244,9 +245,9 @@
       if (res.status === 422) {
         // Todo-o-nada: se muestra el detalle EXACTO (qué archivo/checksum
         // falló) — nunca un mensaje genérico de "importación fallida".
-        importFailureDetail = data.detail ?? "El paquete no pasó la validación.";
+        importFailureDetail = mensajeError(data, "El paquete no pasó la validación.");
       } else if (!res.ok) {
-        importConnectionError = data.detail ?? `No se pudo importar (HTTP ${res.status}).`;
+        importConnectionError = mensajeError(data, `No se pudo importar (HTTP ${res.status}).`);
       } else {
         importResult = data;
         notifySuccess(`Importación completada: ${data.importados} radicado(s) ingresado(s).`);
@@ -278,7 +279,7 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         return {
-          pollError: data.detail ?? `No se pudo consultar el estado (HTTP ${res.status}).`,
+          pollError: mensajeError(data, `No se pudo consultar el estado (HTTP ${res.status}).`),
           status: undefined,
         };
       }
@@ -430,7 +431,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(data.detail ?? `No se pudo crear el lote (HTTP ${res.status}).`);
+        notifyError(mensajeError(data, `No se pudo crear el lote (HTTP ${res.status}).`));
         return;
       }
       notifySuccess(`Lote creado: ${documents.length} documento(s) en proceso.`);
@@ -494,7 +495,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(data.detail ?? `No se pudo crear el lote (HTTP ${res.status}).`);
+        notifyError(mensajeError(data, `No se pudo crear el lote (HTTP ${res.status}).`));
         return;
       }
       notifySuccess(`Lote creado: ${expedientes.length} expediente(s) en proceso.`);

@@ -42,6 +42,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   export let open = false;
   export let expediente = /** @type {any} */ (null);
@@ -128,7 +129,7 @@
       dispatch("saved");
       handleClose();
     } catch (err) {
-      formError = err?.detail ?? "No se pudieron guardar los cambios.";
+      formError = mensajeError(err, "No se pudieron guardar los cambios.");
       notifyError(formError);
     } finally {
       saving = false;

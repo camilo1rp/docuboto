@@ -43,6 +43,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Card from "$lib/components/ui/Card.svelte";
+  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -155,7 +156,7 @@
       ubicacionChildren[parentId] = Array.isArray(data) ? data : (data.items ?? []);
       ubicacionExpanded[parentId] = true;
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudieron cargar los hijos de la ubicación.");
+      notifyError(mensajeError(err, "No se pudieron cargar los hijos de la ubicación."));
     } finally {
       ubicacionChildrenLoading[parentId] = false;
     }
@@ -207,7 +208,7 @@
       const reloadData = await reloadRes.json();
       ubicaciones = Array.isArray(reloadData) ? reloadData : (reloadData.items ?? []);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo crear la ubicación.");
+      notifyError(mensajeError(err, "No se pudo crear la ubicación."));
     } finally {
       ubicacionFormLoading = false;
       ubicacionesLoading = false;
@@ -239,7 +240,7 @@
       if (!res.ok) throw data;
       unidades = Array.isArray(data) ? data : (data.items ?? []);
     } catch (err) {
-      unidadesError = err?.detail ?? "No se pudieron cargar las unidades.";
+      unidadesError = mensajeError(err, "No se pudieron cargar las unidades.");
       unidades = [];
     } finally {
       unidadesLoading = false;
@@ -279,7 +280,7 @@
         await buscarUnidades();
       }
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo crear la unidad.");
+      notifyError(mensajeError(err, "No se pudo crear la unidad."));
     } finally {
       nuevaUnidadLoading = false;
     }
@@ -323,7 +324,7 @@
         await buscarUnidades();
       }
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo vincular el expediente.");
+      notifyError(mensajeError(err, "No se pudo vincular el expediente."));
     } finally {
       vincularLoading = false;
     }
@@ -355,7 +356,7 @@
       if (!res.ok) throw data;
       localizarResultados = Array.isArray(data) ? data : (data.items ?? []);
     } catch (err) {
-      localizarError = err?.detail ?? "No se pudo localizar el expediente.";
+      localizarError = mensajeError(err, "No se pudo localizar el expediente.");
       localizarResultados = [];
     } finally {
       localizarLoading = false;
@@ -395,7 +396,7 @@
       else if (prestamosEstado === "vencido") prestamosVencidos = lista;
       else prestamosDevueltos = lista;
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudieron cargar los préstamos.");
+      notifyError(mensajeError(err, "No se pudieron cargar los préstamos."));
     } finally {
       prestamosLoading = false;
     }
@@ -434,7 +435,7 @@
       prestamoForm = { unidad_id: "", prestado_a: "", fecha_devolucion_esperada: "" };
       await cargarPrestamos();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo registrar el préstamo.");
+      notifyError(mensajeError(err, "No se pudo registrar el préstamo."));
     } finally {
       prestamoLoading = false;
     }
@@ -465,7 +466,7 @@
       showDevolverModal = false;
       await cargarPrestamos();
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo registrar la devolución.");
+      notifyError(mensajeError(err, "No se pudo registrar la devolución."));
     } finally {
       devolverLoading = false;
     }
@@ -491,7 +492,7 @@
       if (!res.ok) throw data;
       movimientos = Array.isArray(data) ? data : (data.items ?? []);
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo obtener el historial de movimientos.");
+      notifyError(mensajeError(err, "No se pudo obtener el historial de movimientos."));
       showMovimientosModal = false;
     } finally {
       movimientosLoading = false;
@@ -523,7 +524,7 @@
       if (!res.ok) throw data;
       fuidRows = Array.isArray(data) ? data : (data.items ?? data.rows ?? []);
     } catch (err) {
-      fuidError = err?.detail ?? "No se pudo consultar el FUID.";
+      fuidError = mensajeError(err, "No se pudo consultar el FUID.");
       fuidRows = [];
     } finally {
       fuidLoading = false;
@@ -553,7 +554,7 @@
       URL.revokeObjectURL(url);
       notifySuccess("FUID XML descargado correctamente.");
     } catch (err) {
-      notifyError(err?.detail ?? "No se pudo descargar el FUID XML.");
+      notifyError(mensajeError(err, "No se pudo descargar el FUID XML."));
     } finally {
       fuidXmlLoading = false;
     }
@@ -654,7 +655,7 @@
           <EmptyState
             icon="fas fa-exclamation-triangle"
             title="Error al cargar ubicaciones"
-            description={ubicacionesError.detail ?? "Intenta recargar la página."}
+            description={mensajeError(ubicacionesError, "Intenta recargar la página.")}
           />
         {:else if ubicaciones.length === 0}
           <EmptyState
