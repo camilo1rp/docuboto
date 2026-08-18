@@ -200,20 +200,41 @@
   parametrizado por instrumento, no dos veces").
 
   Máquina de estados (idéntica para TRD y TVD, Ac. AGN 001/2024 que compila
-  el 004/2019 — ADR-025/ADR-026):
+  el 004/2019 — ADR-025/ADR-026). Las flechas van con «→» A PROPÓSITO: escritas
+  como guion-guion-mayor cierran el comentario HTML en el primer uso, y todo lo
+  que sigue —este texto entero— se renderiza como contenido de la página. Pasó
+  de verdad: la columna de acciones de /admin/trd mostraba estas notas internas
+  al usuario, y ni prettier, ni eslint, ni svelte-check, ni los 1504 tests
+  unitarios lo detectaron (prettier incluso reflotó el texto filtrado como si
+  fuera prosa).
 
-    borrador --aprobar-->
-aprobada --convalidar--> convalidada --derogar--> derogada ^_______devolver_______| | registrar-rusd (fill-once)
-migrada --convalidar (ratificación)--> convalidada (solo TRD legacy; TVD nunca la usa) La UI NUNCA ofrece
-una transición que el backend rechazaría (regla dura del proyecto): cada botón se gatea por `item.estado`
-Y por `canWrite`. Los actos irreversibles (convalidar, derogar) muestran la advertencia DENTRO del Modal
-de confirmación, ANTES del botón de confirmar — no como tooltip ni después de un 409. Props: item objeto
-de la fila (code, version, estado, rusd_radicado, fecha_publicacion, ...) — TrdSerieResponse/TvdSerieResponse.
-basePath string — "/admin/trd/api" | "/admin/tvd/api" (proxies SSR, D-05; este componente NUNCA llama
-al gateway directo). canWrite boolean — permiso real (USUA_PERM_TRD en ambos instrumentos, ADR-026: "se
-reutiliza USUA_PERM_TRD"). instrumentLabel string — "TRD" | "TVD", solo para los textos de la UI. Eventos:
-changed {item} — la fila cambió de estado; el padre reemplaza el item en su lista (no vuelve a pedir todo
-el listado). -->
+    borrador  →(aprobar)→  aprobada  →(convalidar)→  convalidada  →(derogar)→  derogada
+                              ↑                          |
+                              └────────(devolver)────────┘
+                                                         └→ registrar-rusd (fill-once)
+
+    migrada  →(convalidar / ratificación)→  convalidada
+      (solo TRD legacy; TVD nunca la usa)
+
+  La UI NUNCA ofrece una transición que el backend rechazaría (regla dura del
+  proyecto): cada botón se gatea por `item.estado` Y por `canWrite`. Los actos
+  irreversibles (convalidar, derogar) muestran la advertencia DENTRO del Modal
+  de confirmación, ANTES del botón de confirmar — no como tooltip ni después de
+  un 409.
+
+  Props:
+    item            objeto de la fila (code, version, estado, rusd_radicado,
+                    fecha_publicacion, …) — TrdSerieResponse/TvdSerieResponse.
+    basePath        "/admin/trd/api" | "/admin/tvd/api" (proxies SSR, D-05;
+                    este componente NUNCA llama al gateway directo).
+    canWrite        permiso real (USUA_PERM_TRD en ambos instrumentos,
+                    ADR-026: "se reutiliza USUA_PERM_TRD").
+    instrumentLabel "TRD" | "TVD", solo para los textos de la UI.
+
+  Eventos:
+    changed  la fila cambió de estado; el padre reemplaza el item en su lista
+             (no vuelve a pedir todo el listado).
+-->
 
 {#if canAprobar}
   <Button variant="ghost" size="sm" icon="fas fa-stamp" on:click={() => open("aprobar")}

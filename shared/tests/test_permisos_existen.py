@@ -226,3 +226,86 @@ def test_la_lista_de_permisos_inertes_esta_al_dia() -> None:
         "creyendo que restringen algo. Decláralos aquí y di en su descripción "
         f"que no restringen, o cabléalos a su gate: {faltan}"
     )
+
+
+# ---------------------------------------------------------------------------
+# El demo: un grupo que dice «todos los permisos» tiene que concederlos todos
+# ---------------------------------------------------------------------------
+
+
+def _constantes_del_seed() -> dict[str, object]:
+    """Lee `scripts/seed_demo.py` por su AST, sin importarlo.
+
+    Importarlo arrastraría `asyncpg` y `httpx` a un test que solo quiere mirar
+    tres tuplas de texto, y ataría este guardián a que el seed sea importable
+    —que es justo lo que no se puede dar por supuesto en el carril de CI.
+    """
+    arbol = ast.parse((_RAIZ / "scripts" / "seed_demo.py").read_text(encoding="utf-8"))
+    valores: dict[str, object] = {}
+    for nodo in arbol.body:
+        if isinstance(nodo, ast.Assign) and isinstance(nodo.targets[0], ast.Name):
+            try:
+                valores[nodo.targets[0].id] = ast.literal_eval(nodo.value)
+            except ValueError:
+                continue
+    return valores
+
+
+# ROOT no es «un permiso más»: salta comprobaciones en vez de habilitar una
+# función. Un demo que enseñara el sistema desde ROOT no enseñaría el sistema,
+# enseñaría el sistema sin sus controles. Se excluye por escrito, que es la
+# diferencia entre una decisión y un olvido.
+_FUERA_DEL_DEMO = {"USUA_PERM_ROOT"}
+
+
+def test_el_demo_concede_todos_los_permisos_que_su_nombre_promete() -> None:
+    """El grupo del demo se llama «Demostración (todos los permisos)».
+
+    Durante toda la vida del script concedió **8 de 26**, y la diferencia no se
+    veía por ninguna parte: `/envios`, `/admin/colas`, `/anulaciones`, la
+    publicación de oficio y el índice de clasificados aparecían **vacíos**, que
+    es indistinguible de una función que no existe. Quien estrenaba el sistema
+    concluía que esas partes no estaban hechas.
+
+    Este control es sobre todo para el FUTURO: el modo natural de que vuelva a
+    pasar es que alguien añada un permiso a las migraciones y nadie se acuerde
+    del demo. Entonces el guardián se pone rojo y obliga a elegir — concederlo,
+    o declararlo excluido en `_FUERA_DEL_DEMO` con su motivo.
+    """
+    reales = permisos_sembrados()
+    concedidos = set(_constantes_del_seed()["PERMISOS_DEMO"])  # type: ignore[arg-type]
+
+    olvidados = reales - concedidos - _FUERA_DEL_DEMO
+    assert not olvidados, (
+        f"El grupo «todos los permisos» del demo NO concede: {sorted(olvidados)}. "
+        "Añádelos a PERMISOS_DEMO en scripts/seed_demo.py, o si hay una razón para "
+        "dejarlos fuera, escríbela en _FUERA_DEL_DEMO. Un demo silenciosamente "
+        "parcial enseña menos sistema del que hay."
+    )
+
+    inventados = concedidos - reales
+    assert not inventados, (
+        f"PERMISOS_DEMO nombra permisos que no existen: {sorted(inventados)}. "
+        "El seed abortaría a media ejecución."
+    )
+
+
+def test_el_usuario_pobre_del_demo_sigue_siendo_pobre() -> None:
+    """Control negativo, y no es simetría gratuita.
+
+    `consulta` existe para que se pueda VER que los controles funcionan: sin un
+    usuario al que le falten permisos, «el botón no aparece» y «no hay control»
+    son la misma pantalla. Si alguien le concediera de más —por ejemplo
+    aplicándole `PERMISOS_DEMO` por comodidad— el barrido negativo entero
+    seguiría pasando y ya no probaría nada.
+    """
+    seed = _constantes_del_seed()
+    pobres = set(seed["PERMISOS_CONSULTA"])  # type: ignore[arg-type]
+    ricos = set(seed["PERMISOS_DEMO"])  # type: ignore[arg-type]
+
+    assert pobres < ricos, "el usuario de consulta debe tener un subconjunto ESTRICTO"
+    assert seed["CRUD_CONSULTA"] == 1, "con CRUD 3 no se puede ver desaparecer ningún botón"
+    assert seed["CLEARANCE_CONSULTA"] == 1, "con clearance alto no se puede probar el no-read-up"
+    assert seed["CLEARANCE_DEMO"] > seed["CLEARANCE_CONSULTA"], (  # type: ignore[operator]
+        "los dos clearances iguales dejan el eje de reserva sin probar"
+    )

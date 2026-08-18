@@ -160,6 +160,70 @@ async def test_context_switch_no_urd_is_400(client: AsyncClient) -> None:
     assert resp.json()["detail"]["error"] == "no_urd_for_dependency"
 
 
+# --- contexto por defecto: la dependencia PRINCIPAL --------------------------
+#
+# `auth_users.active_depe_id` solo se escribe al conmutar. Quien nunca conmutó
+# lo tenía en NULL aunque tuviera una URD `es_principal` — el campo que existe
+# justo para decir cuál es su dependencia. En la interfaz eso se veía como un
+# conmutador EN BLANCO en la barra superior de todas las pantallas, con una
+# única opción disponible en la que la persona ya parecía estar.
+
+
+@pytest.mark.asyncio
+async def test_contexto_cae_en_la_dependencia_principal(client: AsyncClient) -> None:
+    conn = _conn()
+    conn.fetchval.return_value = None  # nunca conmutó: active_depe_id NULL
+    conn.fetch.return_value = [
+        _urd_row(depe_id=902, es_principal=False),
+        _urd_row(depe_id=901, es_principal=True),
+    ]
+    _override(conn)
+
+    resp = await client.get("/api/v1/auth/context", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    # 901 y no 902: se elige la PRINCIPAL, no la primera de la lista. El orden
+    # invertido del fixture es deliberado — con `available[0]` este test pasaría
+    # por casualidad y la regla real quedaría sin probar.
+    assert resp.json()["active_depe_id"] == 901
+
+
+@pytest.mark.asyncio
+async def test_una_eleccion_explicita_gana_a_la_principal(client: AsyncClient) -> None:
+    """Control positivo: el valor por defecto NO puede pisar lo que se eligió."""
+    conn = _conn()
+    conn.fetchval.return_value = 902  # conmutó a 902 en su día
+    conn.fetch.return_value = [_urd_row(depe_id=901, es_principal=True)]
+    _override(conn)
+
+    resp = await client.get("/api/v1/auth/context", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["active_depe_id"] == 902
+
+
+@pytest.mark.asyncio
+async def test_sin_principal_no_se_inventa_una(client: AsyncClient) -> None:
+    """Elegir «la primera» sería fabricar una decisión que nadie tomó.
+
+    Y una URD principal RETIRADA (`is_active=False`) tampoco vale: si contara,
+    el sistema seguiría situando a la persona en una unidad de la que ya se la
+    apartó.
+    """
+    conn = _conn()
+    conn.fetchval.return_value = None
+    conn.fetch.return_value = [
+        _urd_row(depe_id=903, es_principal=False),
+        _urd_row(depe_id=904, es_principal=True, is_active=False),
+    ]
+    _override(conn)
+
+    resp = await client.get("/api/v1/auth/context", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["active_depe_id"] is None
+
+
 # --- Canal A: auditoría inmutable de escrituras de URD ----------------------
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_append = AsyncMock(return_value="fake-hash")

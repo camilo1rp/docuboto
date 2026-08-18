@@ -385,12 +385,21 @@ services:
       - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
       - KEYCLOAK_CLIENT_ID=auth-service
       - KEYCLOAK_CLIENT_SECRET=change-me-in-production
+      # Segundo factor (E06/F4) — clave AES-256 (base64, 32 bytes exactos) que
+      # cifra en reposo el secreto TOTP de cada usuario. Estuvo AUSENTE de este
+      # archivo mientras varios comentarios la nombraban como si estuviera
+      # configurada: daba igual lo que se pusiera en `.env`, la variable nunca
+      # entraba al contenedor y `/me/totp/enroll` devolvía un 500 opaco. Y como
+      # la credencial de firma personal EXIGE un TOTP activo, con ella caía
+      # también toda esa cadena. Vacía por defecto: falla cerrado, nunca deriva
+      # una clave implícita. Generar con `./scripts/dev-secrets.sh`.
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
       # Firma personal PKI por-usuario (E17/F4, Incremento 1) — clave AES-256
       # (base64) que cifra en reposo la clave privada de cada usuario
-      # (app/core/signing_keys.py), SEPARADA de TOTP_ENCRYPTION_KEY y del
-      # SIGNATURE_SECRET de signature-service. Vacía por defecto (igual que
-      # TOTP_ENCRYPTION_KEY): /me/signing-key/enroll falla cerrado (500)
-      # hasta configurarla — ver services/auth-service/.env.example.
+      # (app/core/signing_keys.py), SEPARADA de TOTP_ENCRYPTION_KEY (arriba) y
+      # del SIGNATURE_SECRET de signature-service. Vacía por defecto:
+      # /me/signing-key/enroll falla cerrado (500) hasta configurarla — ver
+      # services/auth-service/.env.example.
       - SIGNING_KEY_ENCRYPTION_KEY=${SIGNING_KEY_ENCRYPTION_KEY:-}
       # D-02: secreto compartido con signature-service (mismo patrón que
       # SIGNATURE_INTERNAL_TOKEN) — protege POST /internal/signing-key/*.

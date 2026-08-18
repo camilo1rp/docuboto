@@ -61,8 +61,15 @@ ENV INTERNAL_KEYCLOAK_URL=http://keycloak:8080
 
 EXPOSE 3000
 
+# `127.0.0.1` y NO `localhost`: dentro del contenedor `localhost` resuelve
+# primero a `::1`, y adapter-node escucha solo en IPv4 — así que la sonda daba
+# «Connection refused» siempre y el contenedor quedaba **unhealthy de forma
+# permanente** aunque la aplicación sirviera perfectamente. En desarrollo no se
+# nota porque nadie depende de su salud; en un despliegue que sí la mire
+# (readiness de Kubernetes, `depends_on: condition: service_healthy`, un
+# balanceador) el frontend nunca recibiría tráfico.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:3000/ || exit 1
 
 # No ejecutar como root para evitar artefactos root en volúmenes y reducir superficie de ataque.
 USER node

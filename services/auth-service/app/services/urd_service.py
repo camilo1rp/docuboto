@@ -145,8 +145,32 @@ class URDService:
         return deleted
 
     async def context(self, user_id: uuid.UUID) -> ContextResponse:
+        """Contexto activo, con la dependencia PRINCIPAL como valor por defecto.
+
+        `auth_users.active_depe_id` solo se escribe al conmutar explícitamente
+        (:meth:`switch`), así que quien nunca ha conmutado lo tenía en NULL —
+        **aunque tuviera una URD marcada `es_principal`**, que es precisamente
+        el campo que existe para decir «esta es su dependencia». El efecto
+        visible era un conmutador en blanco en la barra superior de todas las
+        pantallas, con una sola opción disponible en la que la persona parecía
+        ya estar; y aguas abajo, un contexto nulo para quien sí tenía unidad
+        asignada.
+
+        Se resuelve en LECTURA y no escribiendo un valor al crear la URD: así
+        vale para los datos que ya existen sin ninguna migración, y no depende
+        del orden en que se hayan hecho las escrituras. La elección es
+        determinista — `ux_urd_principal` es un índice único parcial por
+        usuario, de modo que principal solo puede haber una.
+
+        Sin principal se devuelve NULL a propósito: elegir «la primera» sería
+        inventar una decisión organizacional que nadie tomó.
+        """
         active = await self._repo.get_active_depe(user_id)
         available = [_to_urd(r) for r in await self._repo.list_by_user(user_id)]
+        if active is None:
+            active = next(
+                (u.depe_id for u in available if u.es_principal and u.is_active), None
+            )
         return ContextResponse(user_id=user_id, active_depe_id=active, available_depts=available)
 
     async def switch(

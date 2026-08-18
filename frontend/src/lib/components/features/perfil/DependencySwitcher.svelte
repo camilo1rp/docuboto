@@ -36,9 +36,22 @@
     - label asociado (visible en la variante completa, sr-only en compact)
     - Estado "cambiando…" anunciado vía aria-busy + live region
 -->
+<script context="module">
+  // Contador de instancias: el `id` del <select> tiene que ser ÚNICO en el
+  // documento porque una <label for> lo referencia. En `/perfil` conviven DOS
+  // instancias de este componente —la de la barra superior (`compact`) y la de
+  // la sección «Dependencia activa»— y ambas emitían `id="dep-switcher-select"`.
+  // Con ids repetidos las dos etiquetas apuntan al PRIMER select: quien navega
+  // por teclado o con lector de pantalla activa el conmutador de la barra
+  // superior creyendo que toca el de la sección que está leyendo.
+  let _instancias = 0;
+</script>
+
 <script>
   import { invalidateAll } from "$app/navigation";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
+
+  const selectId = `dep-switcher-select-${(_instancias += 1)}`;
 
   /** @type {number|null} */
   export let activeDepeId = null;
@@ -97,7 +110,7 @@
 
 {#if activeDepts.length > 0}
   <div class="dep-switcher" class:dep-switcher--compact={compact} aria-busy={switching}>
-    <label for="dep-switcher-select" class="dep-switcher__label" class:sr-only={compact}>
+    <label for={selectId} class="dep-switcher__label" class:sr-only={compact}>
       Dependencia activa
     </label>
     <div class="dep-switcher__control">
@@ -105,7 +118,7 @@
         <i class="fas fa-building dep-switcher__icon" aria-hidden="true"></i>
       {/if}
       <select
-        id="dep-switcher-select"
+        id={selectId}
         class="dep-switcher__select"
         bind:value={selected}
         disabled={switching || activeDepts.length <= 1}
@@ -129,6 +142,23 @@
       <p class="dep-switcher__hint">Solo tiene una dependencia asignada.</p>
     {/if}
   </div>
+{:else if !compact}
+  <!--
+    CERO dependencias asignadas. Sin esta rama la sección entera se quedaba
+    en un encabezado, un párrafo que promete un control, y silencio — que se
+    lee como una pantalla rota. Y la persona no tiene forma de adivinar que
+    lo que falta es una asignación usuario–rol–dependencia hecha por un
+    administrador, no un fallo del sistema.
+
+    En la variante `compact` (barra superior) se sigue sin pintar nada: ahí un
+    aviso no cabe y no hay nada que conmutar. El sitio donde esto se explica
+    es la pantalla de perfil, que es donde la persona vino a mirarlo.
+  -->
+  <p class="dep-switcher__empty">
+    No tiene ninguna dependencia asignada, así que aún no puede radicar ni tramitar desde una unidad
+    organizacional. Un administrador debe asignársela en
+    <strong>Administración → Usuarios</strong>.
+  </p>
 {/if}
 
 <style lang="scss">
@@ -138,6 +168,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--op-space-1);
+
+    &__empty {
+      margin: 0;
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+    }
 
     &__label {
       font-size: var(--op-font-xs);

@@ -115,3 +115,85 @@ describe("/admin/usuarios — el formulario de alta reabre limpio", () => {
     expect(screen.queryByText(/nombre de usuario es obligatorio/i)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// El detalle no puede AFIRMAR lo que no llegó a leer
+// ---------------------------------------------------------------------------
+//
+// `openDetail` lanza dos peticiones en paralelo (permisos efectivos y URD) y
+// compartían una sola variable de error con un `else if (!detailError)`: si la
+// primera fallaba, el fallo de la segunda se descartaba, `urdList` se quedaba
+// en `[]` y la sección pintaba «Sin dependencias asignadas» — una afirmación
+// FALSA sobre datos que nunca se leyeron.
+//
+// Visto en vivo con un 429 del limitador del gateway: el panel decía que
+// `operador` no tenía ninguna dependencia asignada mientras la base tenía su
+// URD 901 marcada como principal. Un administrador que se lo crea le asigna
+// otra encima. Es el mismo defecto que `/anulaciones` ya corrigió en su estado
+// vacío de búsqueda (caso A4 de este mismo repositorio).
+
+function respuesta(ok, cuerpo) {
+  return Promise.resolve({ ok, status: ok ? 200 : 429, json: async () => cuerpo });
+}
+
+async function abrirDetalle() {
+  await fireEvent.click(screen.getByRole("button", { name: /ver detalle/i }));
+  await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+}
+
+describe("/admin/usuarios — el detalle distingue «vacío» de «no se pudo leer»", () => {
+  it("con la URD caída NO dice que el usuario no tenga dependencias", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) =>
+        String(url).includes("/urd")
+          ? respuesta(false, {})
+          : respuesta(true, { is_root: false, permissions: { PERM_RADI: 3 } }),
+      ),
+    );
+    render(UsuariosPage, { props: { data: baseData() } });
+    await abrirDetalle();
+
+    await waitFor(() =>
+      expect(screen.getByText(/no se pudieron cargar las dependencias/i)).toBeTruthy(),
+    );
+    // La aserción que importa: la frase falsa NO aparece.
+    expect(screen.queryByText(/sin dependencias asignadas/i)).toBeNull();
+  });
+
+  it("el fallo de la URD sobrevive aunque los permisos TAMBIÉN fallen", async () => {
+    // Este es el caso exacto que se dio: los dos 429 a la vez. Con la variable
+    // compartida, el segundo mensaje se perdía por completo.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => respuesta(false, {})),
+    );
+    render(UsuariosPage, { props: { data: baseData() } });
+    await abrirDetalle();
+
+    await waitFor(() =>
+      expect(screen.getByText(/no se pudieron cargar las dependencias/i)).toBeTruthy(),
+    );
+    expect(screen.getByText(/no se pudieron cargar los permisos efectivos/i)).toBeTruthy();
+    expect(screen.queryByText(/sin dependencias asignadas/i)).toBeNull();
+  });
+
+  it("cuando la URD SÍ carga y viene vacía, entonces sí lo dice", async () => {
+    // Control positivo: sin él, un componente que nunca mostrara el estado
+    // vacío dejaría los dos tests de arriba en verde y la pantalla sin informar
+    // de que a esa persona no le han asignado unidad.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) =>
+        String(url).includes("/urd")
+          ? respuesta(true, [])
+          : respuesta(true, { is_root: false, permissions: {} }),
+      ),
+    );
+    render(UsuariosPage, { props: { data: baseData() } });
+    await abrirDetalle();
+
+    await waitFor(() => expect(screen.getByText(/sin dependencias asignadas/i)).toBeTruthy());
+    expect(screen.queryByText(/no se pudieron cargar las dependencias/i)).toBeNull();
+  });
+});

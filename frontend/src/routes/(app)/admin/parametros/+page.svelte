@@ -32,6 +32,7 @@
 -->
 <script>
   import { onMount } from "svelte";
+  import { invalidateAll } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
@@ -149,7 +150,16 @@
   // ---------------------------------------------------------------------------
   // Festivos
   // ---------------------------------------------------------------------------
-  let holidays = data.holidays ?? [];
+  // REACTIVO, no una copia única. Con `let holidays = data.holidays ?? []` la
+  // lista se congelaba en el valor del primer render: `invalidateAll()` volvía a
+  // ejecutar el `load` y actualizaba `data`, pero la tabla seguía pintando el
+  // array viejo. Se veía al precargar el calendario — 36 festivos escritos en la
+  // base y la pantalla insistiendo en «Sin festivos registrados».
+  //
+  // Las altas y bajas de abajo siguen actualizando `holidays` de forma optimista
+  // y además persisten; cuando `data` se refresca, el servidor manda y esto
+  // reconcilia con la verdad.
+  $: holidays = data.holidays ?? [];
   let hFecha = "";
   let hDescripcion = "";
   let hFechaError = "";
@@ -229,9 +239,13 @@
         notifyError(resData.detail ?? "No se pudo precargar festivos.");
         return;
       }
-      notifySuccess(
-        `${resData.created ?? 0} festivos precargados. Recarga la página para verlos en la tabla.`,
-      );
+      // `invalidateAll()` en vez de pedirle a la persona que recargue: la tabla
+      // seguía diciendo «Sin festivos registrados» justo después de sembrar 36,
+      // que es indistinguible de que la precarga no hubiera hecho nada. El resto
+      // de la aplicación ya refresca sola tras una escritura (ver
+      // DependencySwitcher, donde está documentado como norma).
+      await invalidateAll();
+      notifySuccess(`${resData.created ?? 0} festivos precargados.`);
     } catch {
       notifyError("No se pudo conectar al servidor.");
     } finally {

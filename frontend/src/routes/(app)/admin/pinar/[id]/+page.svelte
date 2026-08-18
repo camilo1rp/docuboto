@@ -217,14 +217,23 @@
   Fase 7 cierre de desfase API↔UI).
 
   Ciclo de vida (Stepper puramente informativo — NO navegable por clic, las
-  transiciones son actos administrativos con botones + confirmación propios):
-    borrador --aprobar-->
-aprobado --ejecutar--> en_ejecucion --cerrar--> cerrado Honestidad de la interfaz: "aprobar" congela el
-contenido estructural del plan (audit_log inmutable) y NO tiene vuelta atrás — el Modal de confirmación
-lo dice ANTES de ejecutar, no después de un error 409. Lo mismo para "ejecutar" (no hay transición de
-retorno) y "cerrar" (estado terminal). Reformular = crear una versión nueva desde el listado. Pestañas
-(tablist ARIA, mismo patrón que expedientes/[id]): 0 — Resumen → metadatos del plan 1 — Tablero → avance
-por objetivo / por eje (RF-ADM-08 §mapa de ruta) -->
+  transiciones son actos administrativos con botones + confirmación propios).
+  Flechas con «→» a propósito: guion-guion-mayor cierra el comentario HTML y
+  vuelca el resto del texto en la página (ver InstrumentLifecycleActions.svelte,
+  donde el mismo diagrama llegó a mostrarse al usuario en /admin/trd).
+
+    borrador  →(aprobar)→  aprobado  →(ejecutar)→  en_ejecucion  →(cerrar)→  cerrado
+
+  Honestidad de la interfaz: "aprobar" congela el contenido estructural del plan
+  (audit_log inmutable) y NO tiene vuelta atrás — el Modal de confirmación lo
+  dice ANTES de ejecutar, no después de un error 409. Lo mismo para "ejecutar"
+  (no hay transición de retorno) y "cerrar" (estado terminal). Reformular = crear
+  una versión nueva desde el listado.
+
+  Pestañas (tablist ARIA, mismo patrón que expedientes/[id]):
+    0 — Resumen  → metadatos del plan
+    1 — Tablero  → avance por objetivo / por eje (RF-ADM-08 §mapa de ruta)
+-->
 
 <svelte:head>
   <title>Plan PINAR v{plan?.version} — Administración — OrpycaMCP</title>

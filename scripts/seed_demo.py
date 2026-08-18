@@ -103,16 +103,68 @@ DEPENDENCIAS = (
 # script a la entidad de un cliente convertiría a alguien en administrador de
 # archivo sin que nadie lo hubiera decidido.
 GRUPO_DEMO = "Demostración (todos los permisos)"
+
+# El nombre del grupo dice «todos los permisos», así que los concede todos: la
+# lista es el catálogo real de `auth_permissions` **menos `USUA_PERM_ROOT`**.
+# Antes eran ocho, y el nombre mentía — con la consecuencia práctica de que
+# `/envios`, `/admin/colas`, `/anulaciones`, la publicación de oficio y el
+# índice de clasificados quedaban fuera del demo sin que nada lo dijera: la
+# pantalla simplemente aparecía vacía, indistinguible de una función que no
+# existe.
+#
+# ROOT queda fuera a propósito. No es un permiso más: salta comprobaciones en
+# vez de habilitar una función, y un demo que enseña el sistema desde ROOT no
+# enseña el sistema — enseña el sistema sin sus controles.
 PERMISOS_DEMO = (
-    "USUA_PERM_ADMIN",          # dependencias, plantillas de respuesta
-    "USUA_PERM_TRD",            # series TRD y tipos documentales
+    # Radicación y producción documental
     "PERM_RADI",                # radicar, anexos, borradores
-    "USUA_PERM_EXPEDIENTE",     # expedientes, vinculación, foliación
+    "PERM_RADI_ENTRADA",        # (declarado; hoy ningún gate lo usa — ver docs)
+    "PERM_RADI_SALIDA",         # envíos postales
+    "PERM_RADI_INTERNO",        # (declarado; hoy ningún gate lo usa — ver docs)
+    "PERM_TIPIF_ANEXO",         # tipificar anexos
+    "PERM_BORRAR_ANEXO",        # retirar un anexo
+    # Trámite
     "PERM_TRAMITAR",            # asignar y trasladar
+    "PERM_VOBO",                # vistos buenos
     "PERM_RESPUESTA_VINCULADA", # responder un radicado con una Salida
+    "PERM_INFORMAR",            # informar a terceros
+    "PERM_AGENDAR",             # agenda de vencimientos
+    "PERM_NRR",                 # radicado sin registro previo
+    # Anulación (las tres piezas del circuito: solicitar, aprobar, decidir)
+    "PERM_SOL_ANULAR",
+    "PERM_ANULAR",
+    "PERM_APRO_ANULAR",
+    "PERM_PANU_CODI",
+    # Expedientes y archivo
+    "USUA_PERM_EXPEDIENTE",     # expedientes, vinculación, foliación
+    "PERM_CERRAR_EXP",          # cierre de expediente
+    "PERM_DESCARGAEXP",         # exportación del expediente
+    "USUA_PERM_TRD",            # series TRD/TVD y tipos documentales
+    # Clasificación de seguridad (Ley 1712)
+    "PERM_RECLASIFICAR",        # reclasificar y publicar de oficio
+    # Firma
     "PERM_FIRMA",               # cadenas de firma
-    "SGD_PERM_ESTADISTICA",     # reportes
+    # Administración y observabilidad
+    "USUA_PERM_ADMIN",          # dependencias, usuarios, grupos, auditoría
+    "PERM_DLQ_ADMIN",           # colas de eventos fallidos
+    "SGD_PERM_ESTADISTICA",     # reportes y tablero
 )
+
+# El clearance NO se hereda de los permisos: es un eje aparte (RF-SEG-08) y su
+# default es fail-closed a 1 (Pública). Sin esta línea el demo puede *conceder*
+# `PERM_RECLASIFICAR` y aun así no ver nunca un documento reservado — y el
+# recorrido de clasificación quedaría enseñando una pantalla vacía.
+CLEARANCE_DEMO = 3  # 1=Pública 2=Reservada 3=Clasificada
+
+# Segundo usuario, deliberadamente pobre. No es un adorno del demo: es el único
+# modo de VER que los controles existen. Con un solo usuario que lo puede todo,
+# un botón que debería desaparecer y un backend que debería negarse son
+# indistinguibles de que no haya control ninguno.
+USUARIO_CONSULTA = "consulta"
+GRUPO_CONSULTA = "Consulta (solo lectura, nivel 1)"
+PERMISOS_CONSULTA = ("PERM_RADI", "USUA_PERM_EXPEDIENTE")
+CRUD_CONSULTA = 1
+CLEARANCE_CONSULTA = 1
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +429,86 @@ async def _asegurar_usuario(api_base: str, username: str) -> None:
             raise Fallo(f"«{username}» entró pero /auth/me devolvió {me.status_code}")
 
 
+async def _montar_grupo(
+    conn: Any,
+    *,
+    nombre: str,
+    permisos: tuple[str, ...],
+    crud: int,
+    clearance: int,
+    miembros: tuple[str, ...],
+) -> int:
+    """Crea (o converge) un grupo con sus permisos, su clearance y su gente.
+
+    Los tres ejes se fijan JUNTOS a propósito, porque son independientes y
+    olvidar uno no se nota: el permiso dice *qué función*, el `crud` dice *hasta
+    qué acto* dentro de ella, y el clearance dice *hasta qué nivel de reserva*.
+    Un grupo con `PERM_RECLASIFICAR` y clearance 1 puede pulsar el botón de
+    reclasificar y no ver jamás un documento reservado — el default de
+    `role_clearance` es fail-closed y no hay fila, así que la omisión es
+    silenciosa y se lee como «la pantalla no funciona».
+    """
+    faltan = [
+        p
+        for p in permisos
+        if not await conn.fetchval("SELECT 1 FROM auth_permissions WHERE nombre = $1", p)
+    ]
+    if faltan:
+        # No se sigue: sin estos permisos el recorrido aborta más adelante y con
+        # un mensaje peor. Si faltan, es que hay migraciones sin aplicar.
+        raise Fallo(
+            f"Estos permisos no existen en el tenant: {faltan}. "
+            "Corre las migraciones de auth-service en este tenant."
+        )
+
+    grupo_id = await conn.fetchval(
+        "INSERT INTO auth_groups (name) VALUES ($1) "
+        "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+        nombre,
+    )
+    concedidos = await conn.fetchval(
+        """
+        WITH p AS (SELECT id FROM auth_permissions WHERE nombre = ANY($2::text[]))
+        INSERT INTO auth_group_permissions (group_id, permission_id, crud)
+        SELECT $1, p.id, $3 FROM p
+        ON CONFLICT (group_id, permission_id) DO UPDATE SET crud = EXCLUDED.crud
+        RETURNING (SELECT count(*) FROM p)
+        """,
+        grupo_id,
+        list(permisos),
+        crud,
+    )
+    await conn.execute(
+        "INSERT INTO role_clearance (group_id, max_level) VALUES ($1, $2) "
+        "ON CONFLICT (group_id) DO UPDATE SET max_level = EXCLUDED.max_level",
+        grupo_id,
+        clearance,
+    )
+    filas = await conn.fetch(
+        "SELECT id, username FROM auth_users WHERE upper(username) = ANY($1::text[])",
+        [u.upper() for u in miembros],
+    )
+    # Un grupo montado con CERO miembros es el fallo silencioso de este script:
+    # el SQL funciona, el grupo existe con todos sus permisos, y no se lo aplica
+    # a nadie. Se nota sobre todo en `consulta`, cuyo trabajo entero es ser el
+    # control negativo: sin membresía no tendría permiso NINGUNO, el barrido
+    # vería desaparecer todos los botones, y pasaría en verde sin haber probado
+    # el control que dice probar.
+    encontrados = {str(f["username"]).upper() for f in filas}
+    ausentes = sorted(u for u in miembros if u.upper() not in encontrados)
+    if ausentes:
+        raise Fallo(
+            f"No están en auth_users y por tanto se quedarían fuera de «{nombre}»: "
+            f"{ausentes}. Deberían haberse aprovisionado al pedir su token; si esto "
+            "salta, el aprovisionamiento previo no hizo lo que dice."
+        )
+    await conn.executemany(
+        "INSERT INTO auth_memberships (user_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [(fila["id"], grupo_id) for fila in filas],
+    )
+    return int(concedidos or 0)
+
+
 async def aprovisionar(api_base: str) -> None:
     """Grupos, permisos y membresía: la ÚNICA parte que va por SQL.
 
@@ -392,9 +524,12 @@ async def aprovisionar(api_base: str) -> None:
     paso("Aprovisionando usuarios y permisos (única parte por SQL: es administración)")
     # Antes que el SQL: que existan. Cada uno entra una vez y el auth-service
     # crea su fila con el id que le corresponde.
-    for quien in (USUARIO, *FIRMANTES):
+    for quien in (USUARIO, *FIRMANTES, USUARIO_CONSULTA):
         await _asegurar_usuario(api_base, quien)
-    ok(f"{1 + len(FIRMANTES)} usuarios aprovisionados: {USUARIO}, {', '.join(FIRMANTES)}")
+    ok(
+        f"{2 + len(FIRMANTES)} usuarios aprovisionados: {USUARIO}, "
+        f"{', '.join(FIRMANTES)}, {USUARIO_CONSULTA}"
+    )
 
     conn = await asyncpg.connect(_dsn())
     try:
@@ -416,50 +551,41 @@ async def aprovisionar(api_base: str) -> None:
                 "coincide con el de Keycloak."
             )
 
-        grupo_id = await conn.fetchval(
-            "INSERT INTO auth_groups (name) VALUES ($1) "
-            "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
-            GRUPO_DEMO,
+        # Los dos grupos se montan con el MISMO código. Que el grupo pobre no
+        # sea un caso especial es justamente lo que lo hace creíble: si se
+        # provisionara por otra vía, un fallo del provisionamiento podría
+        # dejarlo sin permisos y el barrido negativo saldría verde por la razón
+        # equivocada — «el botón no está» porque no hay usuario, no porque el
+        # control funcione.
+        n_demo = await _montar_grupo(
+            conn,
+            nombre=GRUPO_DEMO,
+            permisos=PERMISOS_DEMO,
+            crud=3,
+            clearance=CLEARANCE_DEMO,
+            # Todos los firmantes al mismo grupo: este demo enseña QUÉ hace el
+            # sistema, no cómo repartir competencias entre cargos. Un reparto de
+            # roles realista es otra demostración, y probablemente otra decisión
+            # de cada entidad.
+            miembros=(USUARIO, *FIRMANTES),
         )
-        concedidos = await conn.fetchval(
-            """
-            WITH p AS (SELECT id FROM auth_permissions WHERE nombre = ANY($2::text[]))
-            INSERT INTO auth_group_permissions (group_id, permission_id, crud)
-            SELECT $1, p.id, 3 FROM p
-            ON CONFLICT (group_id, permission_id) DO UPDATE SET crud = 3
-            RETURNING (SELECT count(*) FROM p)
-            """,
-            grupo_id,
-            list(PERMISOS_DEMO),
+        ok(
+            f"«{GRUPO_DEMO}» con {n_demo} permisos, nivel CRUD 3, "
+            f"clearance {CLEARANCE_DEMO}; «{USUARIO}» dentro"
         )
-        # Todos los firmantes al mismo grupo: este demo enseña QUÉ hace el
-        # sistema, no cómo repartir competencias entre cargos. Un reparto de
-        # roles realista es otra demostración, y probablemente otra decisión de
-        # cada entidad.
-        await conn.executemany(
-            "INSERT INTO auth_memberships (user_id, group_id) VALUES ($1, $2) "
-            "ON CONFLICT DO NOTHING",
-            [
-                (fila["id"], grupo_id)
-                for fila in await conn.fetch(
-                    "SELECT id FROM auth_users WHERE upper(username) = ANY($1::text[])",
-                    [u.upper() for u in (USUARIO, *FIRMANTES)],
-                )
-            ],
+
+        n_cons = await _montar_grupo(
+            conn,
+            nombre=GRUPO_CONSULTA,
+            permisos=PERMISOS_CONSULTA,
+            crud=CRUD_CONSULTA,
+            clearance=CLEARANCE_CONSULTA,
+            miembros=(USUARIO_CONSULTA,),
         )
-        faltan = [
-            p
-            for p in PERMISOS_DEMO
-            if not await conn.fetchval("SELECT 1 FROM auth_permissions WHERE nombre = $1", p)
-        ]
-        if faltan:
-            # No se sigue: sin estos permisos el recorrido aborta más adelante y
-            # con un mensaje peor. Si faltan, es que hay migraciones sin aplicar.
-            raise Fallo(
-                f"Estos permisos no existen en {esquema}: {faltan}. "
-                "Corre las migraciones de auth-service en este tenant."
-            )
-        ok(f"«{GRUPO_DEMO}» con {concedidos} permisos, nivel 3; «{USUARIO}» dentro")
+        ok(
+            f"«{GRUPO_CONSULTA}» con {n_cons} permisos, nivel CRUD {CRUD_CONSULTA}, "
+            f"clearance {CLEARANCE_CONSULTA}; «{USUARIO_CONSULTA}» dentro"
+        )
     finally:
         await conn.close()
 
@@ -586,6 +712,49 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
         creado["dependencias"].append(d)
     ok(f"{len(creado['dependencias'])} dependencias (ventanilla, jurídica, archivo)")
 
+    # ── URD: quién trabaja DESDE dónde ──
+    #
+    # `urd_usuaroldep` (usuario–rol–dependencia) es el concepto de Orfeo que
+    # dice desde qué unidad radica y tramita cada persona. Sin una fila aquí el
+    # sistema funciona a medias y **de forma silenciosa**: la tarjeta
+    # «Dependencia activa» del perfil sale vacía, y sobre todo la bandeja de
+    # trámite aparece en «vas al día» aunque haya radicados asignados — porque
+    # se filtra por la dependencia de quien mira, y esa persona no tiene
+    # ninguna. Se lee como «el sistema no reparte trabajo», que es justo lo
+    # contrario de lo que el demo quiere enseñar.
+    #
+    # El reparto es lo que hace visible el flujo ENTRE dependencias: quien
+    # radica está en ventanilla y quien recibe está en jurídica, así que el
+    # traslado del paso 6 va de verdad de una unidad a otra.
+    reparto = (
+        (USUARIO, 901, GRUPO_DEMO),        # ventanilla: radica
+        ("jefe", 902, GRUPO_DEMO),         # jurídica: recibe y da visto bueno
+        ("secretaria", 902, GRUPO_DEMO),   # jurídica: proyecta la respuesta
+        ("archivista", 903, GRUPO_DEMO),   # archivo: expedientes y transferencias
+        (USUARIO_CONSULTA, 902, GRUPO_CONSULTA),
+    )
+    grupos = await api.get("/api/v1/auth/groups", params={"size": 200})
+    por_nombre = {
+        g["name"]: g["id"] for g in (grupos if isinstance(grupos, list) else grupos.get("items", []))
+    }
+    nombres = tuple(n for n, _, _ in reparto)
+    ids = await ids_de(api, nombres)
+    for (_quien, depe, grupo), user_id in zip(reparto, ids, strict=True):
+        if grupo not in por_nombre:
+            raise Fallo(f"el grupo «{grupo}» no aparece en /auth/groups; ¿falló el aprovisionamiento?")
+        await api.post(
+            f"/api/v1/auth/users/{user_id}/urd",
+            json={"depe_id": depe, "rol_id": por_nombre[grupo], "es_principal": True},
+            # 409: ya estaba asignado de una ejecución anterior. Es convergencia,
+            # no un fallo — la restricción única (user_id, depe_id) la garantiza
+            # la base, no una comprobación previa que podría competir consigo misma.
+            esperado=(201, 409),
+        )
+    ok(
+        f"{len(reparto)} asignaciones usuario–dependencia: ventanilla {USUARIO}; "
+        f"jurídica jefe/secretaria/{USUARIO_CONSULTA}; archivo archivista"
+    )
+
     serie = await crear_o_recuperar(
         api,
         "/api/v1/trd",
@@ -653,7 +822,16 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
         files={"file": ("peticion.pdf", pdf_minimo("Peticion ciudadana - documento de ejemplo"), "application/pdf")},
     )
     creado["anexo"] = anexo
-    ok(f"anexo peticion.pdf subido ({anexo.get('size_bytes', '?')} bytes, SHA-256 calculado)")
+    # Sin `.get(..., "?")`: el campo se llama `file_size` y el mensaje llevaba
+    # tiempo imprimiendo «? bytes» porque adivinaba `size_bytes`. Un valor por
+    # defecto convierte un contrato roto en un detalle cosmético — y el mismo
+    # descuido en el `sha256` habría dejado la frase «SHA-256 calculado»
+    # afirmando algo que nadie comprobó. Se leen directos: si el contrato
+    # cambia, esto revienta aquí y no en la primera descarga que no cuadre.
+    ok(
+        f"anexo peticion.pdf subido ({anexo['file_size']} bytes, "
+        f"SHA-256 {anexo['sha256'][:12]}…)"
+    )
 
     # ── Expediente: agrupar el asunto ──
     paso("Expediente: agrupar el asunto y foliar")
@@ -944,7 +1122,23 @@ async def purgar() -> int:
             "DELETE FROM dependencias WHERE codigo = ANY($1::int[])",
             [c for c, _, _ in DEPENDENCIAS],
         )
-        await borrar("grupo de permisos", "DELETE FROM auth_groups WHERE name = $1", GRUPO_DEMO)
+        # Los dos grupos, no solo el rico. `role_clearance` y
+        # `auth_group_permissions` cuelgan de `auth_groups` con ON DELETE
+        # CASCADE, así que se van con él; las membresías también.
+        # ANTES que los grupos: `urd_usuaroldep.rol_id` referencia `auth_groups`
+        # y esa clave foránea **no** lleva ON DELETE CASCADE (a diferencia de
+        # las membresías y los permisos). Borrar el grupo primero reventaría la
+        # purga con una violación de integridad a media faena.
+        await borrar(
+            "asignaciones usuario–dependencia",
+            "DELETE FROM urd_usuaroldep WHERE depe_id = ANY($1::int[])",
+            [c for c, _, _ in DEPENDENCIAS],
+        )
+        await borrar(
+            "grupos de permisos",
+            "DELETE FROM auth_groups WHERE name = ANY($1::text[])",
+            [GRUPO_DEMO, GRUPO_CONSULTA],
+        )
 
         if borrados:
             ok("borrado: " + ", ".join(borrados))

@@ -120,11 +120,16 @@
   let effectivePermissions = null;
   /** @type {Array<Record<string, any>>} */
   let urdList = [];
+  // Fallo de la carga de URD, SEPARADO del de permisos. Compartir una sola
+  // variable hacía que el segundo fallo se perdiera —y con él la única señal
+  // de que la lista está vacía porque no se pudo leer, no porque no haya nada.
+  let urdError = "";
 
   async function openDetail(user) {
     selectedUser = user;
     drawerOpen = true;
     detailError = "";
+    urdError = "";
     effectivePermissions = null;
     urdList = [];
     detailLoading = true;
@@ -141,11 +146,18 @@
       if (urdRes.ok) {
         const raw = await urdRes.json();
         urdList = Array.isArray(raw) ? raw : [];
-      } else if (!detailError) {
-        detailError = "No se pudo cargar la URD.";
+      } else {
+        // Antes era `else if (!detailError)`: si los permisos ya habían
+        // fallado, el fallo de la URD se descartaba, `urdList` se quedaba en
+        // `[]` y la sección afirmaba «Sin dependencias asignadas» — una
+        // AFIRMACIÓN FALSA sobre datos que nunca se leyeron. Un administrador
+        // podía concluir que a esa persona no le habían asignado unidad y
+        // asignarle otra encima.
+        urdError = "No se pudieron cargar las dependencias de este usuario.";
       }
     } catch {
       detailError = "No se pudo conectar al servidor.";
+      urdError = "No se pudieron cargar las dependencias de este usuario.";
     } finally {
       detailLoading = false;
     }
@@ -367,7 +379,9 @@
     <section class="usuarios-drawer__section" aria-labelledby="urd-heading">
       <h3 id="urd-heading" class="usuarios-drawer__heading">URD — Usuario-Rol-Dependencia</h3>
 
-      {#if urdList.length === 0}
+      {#if urdError}
+        <p class="usuarios-drawer__error" role="alert">{urdError}</p>
+      {:else if urdList.length === 0}
         <p class="usuarios-drawer__hint">Sin dependencias asignadas.</p>
       {:else}
         <ul class="usuarios-drawer__urd-list">
