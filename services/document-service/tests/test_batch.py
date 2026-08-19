@@ -33,8 +33,10 @@ Mock call sequence — GET /api/v1/batch/documents/{job_id}/status (happy path):
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -393,3 +395,89 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
     assert len(audit_calls) == 1
     payload = json.loads(audit_calls[0][8])
     assert payload["id"] == str(radicado_ids[0])
+
+
+class TestLaTareaDeFondoNoUsaLaConexionDelRequest:
+    """El lote se procesa en su PROPIA conexión, y su fallo queda en el job.
+
+    Estos tests existen porque el defecto que cierran vivía en el router y era
+    invisible desde el servicio: `create_batch_documents` encolaba el job y
+    lanzaba `asyncio.create_task(service.process_batch_documents(job_id))` con
+    el mismo `service` —y por tanto la misma conexión— que servía la petición.
+    Con Postgres real esa tarea moría en el acto (`InterfaceError: another
+    operation is in progress`) y, al no recogerla nadie, el lote se quedaba en
+    «Pendiente 0/N» para siempre. Con conexiones simuladas no se notaba nada:
+    un mock atiende dos operaciones a la vez sin protestar.
+
+    El tier de integración comprueba que el lote TERMINA; lo que se comprueba
+    aquí es lo otro, que solo se ve desde el router: de dónde sale la conexión
+    con la que se procesa, y qué queda escrito cuando la tarea revienta.
+    """
+
+    async def test_procesar_lote_abre_su_propia_conexion_del_pool(self, monkeypatch):
+        """`_procesar_lote` pide conexión al pool por tenant, no la recibe."""
+        from app.routers import batch as batch_router
+
+        conexion_del_pool = AsyncMock()
+        slugs_pedidos: list[str] = []
+
+        @asynccontextmanager
+        async def falso_acquire(slug: str):
+            slugs_pedidos.append(slug)
+            yield conexion_del_pool
+
+        usados: list[object] = []
+
+        class ServicioEspia:
+            def __init__(self, conn, slug):
+                usados.append(conn)
+
+            async def process_batch_documents(self, job_id):
+                return None
+
+        monkeypatch.setattr(batch_router, "acquire_tenant", falso_acquire)
+        monkeypatch.setattr(batch_router, "BatchService", ServicioEspia)
+
+        await batch_router._procesar_lote("demo", uuid4())
+
+        assert slugs_pedidos == ["demo"], (
+            "la tarea de fondo debe adquirir su conexión por tenant; si no pide "
+            "ninguna, está reutilizando la del request"
+        )
+        assert usados == [conexion_del_pool]
+
+    async def test_si_la_tarea_revienta_el_job_queda_failed_con_su_motivo(self, monkeypatch):
+        """Un fallo fuera del ciclo petición/respuesta se ESCRIBE en el job.
+
+        Sin esto, el log lo ve quien administra el servidor y la persona que
+        lanzó el lote se queda mirando un «pendiente» que no va a cambiar
+        nunca: un job reventado y uno trabajando eran indistinguibles.
+        """
+        from app.routers import batch as batch_router
+
+        conexion = AsyncMock()
+
+        @asynccontextmanager
+        async def falso_acquire(slug: str):
+            yield conexion
+
+        class ServicioQueRevienta:
+            def __init__(self, conn, slug):
+                pass
+
+            async def process_batch_documents(self, job_id):
+                raise RuntimeError("la conexión se cerró a media escritura")
+
+        monkeypatch.setattr(batch_router, "acquire_tenant", falso_acquire)
+        monkeypatch.setattr(batch_router, "BatchService", ServicioQueRevienta)
+
+        job_id = uuid4()
+        await batch_router._procesar_lote("demo", job_id)
+
+        escrituras = [str(c) for c in conexion.execute.await_args_list]
+        assert any("status = 'failed'" in e for e in escrituras), (
+            f"el job debía quedar marcado como fallido; escrituras: {escrituras}"
+        )
+        assert any("la conexión se cerró a media escritura" in e for e in escrituras), (
+            "el motivo del fallo tiene que llegar al job, no solo al log"
+        )

@@ -310,8 +310,10 @@
       {:else if previewCount !== null}
         <p class="reasig-preview-result" aria-live="polite">
           <i class="fas fa-circle-info" aria-hidden="true"></i>
-          Se estima que se verían afectados <strong>{previewCount}</strong> paso(s) pendiente(s) (estimado,
-          no el conteo exacto).
+          <span>
+            Se estima que se verían afectados <strong>{previewCount}</strong> paso(s) pendiente(s) (estimado,
+            no el conteo exacto).
+          </span>
         </p>
       {/if}
     </section>

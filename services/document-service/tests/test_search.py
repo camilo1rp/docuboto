@@ -103,3 +103,42 @@ async def test_search_empty(client_with_conn) -> None:
     resp = await client.get("/api/v1/search?q=inexistente", headers=TENANT_HEADERS)
     assert resp.status_code == 200
     assert resp.json() == {"query": "inexistente", "total": 0, "hits": [], "page": 1, "size": 20}
+
+
+# ---------------------------------------------------------------------------
+# Acentos (ADR-014) — revisión por navegador, B9
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_la_busqueda_ignora_los_acentos(client_with_conn) -> None:
+    """Consulta e índice tienen que usar LA MISMA configuración de texto.
+
+    Buscar «certificacion» devolvía cero radicados mientras «certificación»
+    devolvía tres: el `search_vector` se construía con `spanish` y la consulta
+    también, y esa configuración distingue acentos. En un sistema que usan
+    funcionarios escribiendo deprisa eso no es un caso exótico, y falla en
+    silencio — «Sin resultados» es indistinguible de «no existe».
+
+    Se comprueba sobre el SQL ENVIADO: que el resultado venga de una fila
+    simulada no diría nada sobre qué configuración pide la consulta.
+    """
+    client, mock_conn = client_with_conn
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return []
+
+    mock_conn.fetch.side_effect = fake_fetch
+    mock_conn.fetchval.return_value = 0
+
+    resp = await client.get("/api/v1/search?q=certificacion", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    sql = next(q for q in consultas if "search_vector" in q)
+    assert "'public.spanish_unaccent'::regconfig" in sql
+    # Gemelo: dejar `'spanish'` en una de las dos llamadas —el filtro o el
+    # ranking— pasaría desapercibido y ordenaría por una relevancia calculada
+    # con otro diccionario.
+    assert "websearch_to_tsquery('spanish'" not in sql

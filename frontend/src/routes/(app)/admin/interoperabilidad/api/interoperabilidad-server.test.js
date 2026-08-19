@@ -296,15 +296,23 @@ describe("lotes/expedientes (crear)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("allowlist: descarta radicado_ids/trd_serie_id no-UUID en vez de reenviarlos", async () => {
-    let capturedBody;
-    globalThis.fetch = vi.fn(async (_url, init) => {
-      capturedBody = JSON.parse(init.body);
+  it("allowlist: `trd_serie_id` no-UUID se descarta; una referencia ilegible CORTA el lote", async () => {
+    // Este test cambió de expectativa a propósito. Antes comprobaba que una
+    // referencia de radicado ilegible se **descartaba en silencio** y el lote
+    // seguía: el expediente se creaba sin ese documento y la pantalla decía
+    // «Completado · 0 con error». Descartar en silencio era la mitad callada
+    // del defecto que se corrigió aquí — una referencia que no se puede
+    // resolver detiene el lote y se nombra en la respuesta.
+    //
+    // `trd_serie_id` sigue descartándose: es un campo opcional de
+    // clasificación, no una pieza del contenido del expediente.
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes("/by-tracking/")) {
+        return new Response(JSON.stringify({}), { status: 404 });
+      }
       return new Response(
         JSON.stringify({ job_id: JOB_ID, job_type: "expedientes", status: "pending" }),
-        {
-          status: 202,
-        },
+        { status: 202 },
       );
     });
     const res = await crearLoteExps({
@@ -315,19 +323,39 @@ describe("lotes/expedientes (crear)", () => {
             {
               name: "Expediente 1",
               trd_serie_id: "no-es-uuid",
-              radicado_ids: ["no-es-uuid", JOB_ID],
-              tracking_numbers: ["2024-ICETEX-E-000001"],
+              radicado_ids: ["no-es-uuid"],
             },
           ],
         }),
       },
     });
-    expect(res.status).toBe(202);
-    expect(capturedBody.expedientes[0]).toEqual({
-      name: "Expediente 1",
-      radicado_ids: [JOB_ID],
-      tracking_numbers: ["2024-ICETEX-E-000001"],
+    expect(res.status).toBe(400);
+    const cuerpo = await res.json();
+    expect(cuerpo.error).toBe("radicado_no_resuelto");
+  });
+
+  it("un UUID válido de radicado se reenvía sin consultar la API", async () => {
+    // Control positivo del camino que ya funcionaba: quien manda el UUID
+    // directamente (integraciones, MCP) no paga una resolución de más.
+    let capturedBody;
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (String(url).includes("/by-tracking/")) throw new Error("no debía resolverse un UUID");
+      capturedBody = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({ job_id: JOB_ID, job_type: "expedientes", status: "pending" }),
+        { status: 202 },
+      );
     });
+    const res = await crearLoteExps({
+      locals: SESSION_LOCALS,
+      request: {
+        json: async () => ({
+          expedientes: [{ name: "Expediente 1", radicado_ids: [JOB_ID] }],
+        }),
+      },
+    });
+    expect(res.status).toBe(202);
+    expect(capturedBody.expedientes[0].radicado_ids).toEqual([JOB_ID]);
   });
 });
 
@@ -410,5 +438,88 @@ describe("contrato de URL upstream — sondeo de lotes", () => {
       request: { json: async () => ({ expedientes: [{ name: "Expediente 1" }] }) },
     });
     expect(capturedUrl).toMatch(/\/api\/v1\/batch\/expedientes$/);
+  });
+});
+
+describe("lote de expedientes — los números de radicado SÍ vinculan", () => {
+  /**
+   * El proxy manda `radicado_ids`, no solo `tracking_numbers`.
+   *
+   * Con la versión anterior, un lote con «2026-DEMO-E-000017» en el campo
+   * «Números de radicado a vincular» creaba el expediente **vacío** y el panel
+   * decía «Completado · 0 con error»: archive-service vincula por
+   * `radicado_ids` y trata `tracking_numbers` como etiquetas paralelas.
+   */
+  const UUID_R = "11111111-2222-4333-8444-555555555555";
+
+  function stubBackend() {
+    return vi.fn(async (url, opciones) => {
+      const u = String(url);
+      if (u.includes("/by-tracking/")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: UUID_R, tracking_number: "2026-DEMO-E-000017" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ job_id: "job-1", enviado: JSON.parse(opciones.body) }),
+      };
+    });
+  }
+
+  it("un número de radicado llega al backend como radicado_ids", async () => {
+    const fn = stubBackend();
+    vi.stubGlobal("fetch", fn);
+    const { POST } = await import("./lotes/expedientes/+server.js");
+
+    await POST({
+      locals: { accessToken: "t", user: { tenant_slug: "demo", sub: "u1" } },
+      request: new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({
+          expedientes: [{ name: "Expediente X", tracking_numbers: ["2026-DEMO-E-000017"] }],
+        }),
+      }),
+    });
+
+    const llamadaAlLote = fn.mock.calls.find(([u]) => String(u).includes("/batch/expedientes"));
+    expect(llamadaAlLote, "no se llamó al endpoint del lote").toBeTruthy();
+    const enviado = JSON.parse(llamadaAlLote[1].body);
+    expect(enviado.expedientes[0].radicado_ids).toEqual([UUID_R]);
+    expect(enviado.expedientes[0].tracking_numbers).toEqual(["2026-DEMO-E-000017"]);
+  });
+
+  it("un número que no resuelve corta el lote con un error legible", async () => {
+    // Gemelo: la corrección no puede consistir en vincular lo que se pueda y
+    // callar el resto — un expediente al que le falta un documento es uno
+    // equivocado, y «0 con error» lo daba por bueno.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url) => {
+        if (String(url).includes("/by-tracking/"))
+          return { ok: false, status: 404, json: async () => ({}) };
+        throw new Error("no debería llegar al backend del lote");
+      }),
+    );
+    const { POST } = await import("./lotes/expedientes/+server.js");
+
+    const res = await POST({
+      locals: { accessToken: "t", user: { tenant_slug: "demo", sub: "u1" } },
+      request: new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({
+          expedientes: [{ name: "Expediente X", tracking_numbers: ["2026-DEMO-E-999999"] }],
+        }),
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const cuerpo = await res.json();
+    expect(cuerpo.error).toBe("radicado_no_resuelto");
+    expect(cuerpo.detail).toContain("2026-DEMO-E-999999");
   });
 });

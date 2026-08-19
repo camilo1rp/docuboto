@@ -304,6 +304,34 @@ describe("VoiceInput — segundo camino: transcripción en el servidor de la ent
     expect(screen.getByTestId("voice-toggle")).toBeInTheDocument();
   });
 
+  it("SIN Web Speech API en el navegador, Whisper de la entidad SÍ da botón", async () => {
+    // Firefox no trae `SpeechRecognition`, y Chrome puede retirarla. Ese
+    // navegador es justamente el que NO tiene forma de mandar la voz a un
+    // tercero, así que negarle el dictado deja la única vía soberana —el
+    // servidor de la propia entidad— reservada a quien ya tenía la que sí
+    // manda el audio fuera. La versión anterior salía en cuanto faltaba la API
+    // del navegador y no llegaba a preguntar por el servidor.
+    vi.stubGlobal("SpeechRecognition", undefined);
+    vi.stubGlobal("webkitSpeechRecognition", undefined);
+    stubFetch({ disponible: true, proveedor: "whisper", procesa_en: "la propia entidad" });
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.getByTestId("voice-toggle")).toBeInTheDocument();
+  });
+
+  it("SIN Web Speech API y SIN Whisper sigue sin haber botón (fail-closed)", async () => {
+    // Gemelo del anterior: lo que abre la puerta es que la instalación tenga
+    // transcripción propia, no el hecho de que el navegador carezca de API.
+    vi.stubGlobal("SpeechRecognition", undefined);
+    vi.stubGlobal("webkitSpeechRecognition", undefined);
+    stubFetch({ disponible: false, proveedor: "disabled", procesa_en: "ningún sitio" });
+    render(VoiceInput);
+    await asentar();
+
+    expect(screen.queryByTestId("voice-toggle")).not.toBeInTheDocument();
+  });
+
   it("la etiqueta DICE que se transcribe en el servidor de la entidad", async () => {
     // Quien dicta tiene derecho a saber por dónde pasa su voz, y los dos
     // caminos no son equivalentes en eso.

@@ -9,12 +9,15 @@
 
 """Batch API endpoints for bulk document operations."""
 
+import asyncio
+import logging
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.clearance import require_permission
+from app.core.database import acquire_tenant
 from app.core.database import get_tenant_conn as get_db
 from app.schemas.batch import (
     BatchDocumentsRequest,
@@ -23,7 +26,63 @@ from app.schemas.batch import (
 )
 from app.services.batch_service import BatchService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/batch", tags=["batch"])
+
+# `asyncio.create_task` NO retiene su tarea: el event loop solo guarda una
+# referencia débil, así que el recolector puede llevarse un job a medio procesar
+# sin que nada lo registre. Se mantienen aquí hasta que terminan.
+_tareas_en_curso: set[asyncio.Task] = set()
+
+
+async def _procesar_lote(tenant_slug: str, job_id: UUID) -> None:
+    """Tarea detached: conexión PROPIA, y el fallo se escribe en el job.
+
+    Dos cosas que la primera versión no hacía, y que juntas explicaban lo que se
+    veía en pantalla — «Pendiente 0/2 procesados» para siempre:
+
+    1. Corría sobre la conexión del request (`Depends(get_db)`). Esa conexión
+       sigue ocupada sirviendo lo que queda del handler y se devuelve al pool al
+       responder, así que la tarea moría con `InterfaceError: cannot perform
+       operation: another operation is in progress`. El gemelo de
+       `archive-service` ya adquiría la suya, con la advertencia escrita.
+    2. Nadie recogía esa excepción. `create_task` la deja en la tarea y, si
+       nadie la consulta, asyncio la vuelca al log y sigue: para quien mira la
+       pantalla, el trabajo simplemente no ocurre nunca.
+
+    Un job que no puede procesarse queda marcado `failed` con su motivo. Es lo
+    que separa «falló» de «sigue en ello», y sin esa distinción la pantalla no
+    tiene nada honesto que mostrar.
+    """
+    try:
+        async with acquire_tenant(tenant_slug) as conn:
+            service = BatchService(conn, tenant_slug)
+            await service.process_batch_documents(job_id)
+    except Exception as exc:  # noqa: BLE001 — nadie más puede recoger esto
+        logger.exception("El lote %s falló fuera del ciclo petición/respuesta", job_id)
+        await _marcar_job_fallido(tenant_slug, job_id, str(exc))
+
+
+async def _marcar_job_fallido(tenant_slug: str, job_id: UUID, motivo: str) -> None:
+    """Deja constancia del fallo en `batch_jobs`, en su propia conexión.
+
+    Se usa una conexión nueva a propósito: si se llega aquí, la anterior es
+    justamente la que pudo haber reventado.
+    """
+    try:
+        async with acquire_tenant(tenant_slug) as conn:
+            await conn.execute(
+                """
+                UPDATE batch_jobs
+                SET status = 'failed', completed_at = now(), error_message = $2
+                WHERE id = $1
+                """,
+                job_id,
+                motivo[:1000],
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo marcar como fallido el lote %s", job_id)
 
 
 @router.post(
@@ -51,11 +110,12 @@ async def create_batch_documents(
     if not tenant_slug or not user_id:
         raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
 
-    import asyncio
-
     service = BatchService(conn, tenant_slug)
     job_id = await service.create_batch_documents(payload, UUID(user_id))
-    asyncio.create_task(service.process_batch_documents(job_id))
+
+    tarea = asyncio.create_task(_procesar_lote(tenant_slug, job_id))
+    _tareas_en_curso.add(tarea)
+    tarea.add_done_callback(_tareas_en_curso.discard)
 
     created_at = await conn.fetchval("SELECT created_at FROM batch_jobs WHERE id=$1", job_id)
 

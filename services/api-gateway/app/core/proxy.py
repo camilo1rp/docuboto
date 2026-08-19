@@ -77,6 +77,18 @@ FORWARDED_RESPONSE_HEADERS = {
     "content-disposition",
     "accept-ranges",
     "content-range",
+    # Contadores del paquete interoperable (E11 INT-01, `document-service`
+    # `routers/export.py`). El ZIP viaja como cuerpo, así que lo único que dice
+    # CUÁNTO se exportó —y cuántos radicados quedaron fuera por no-read-up— son
+    # estas cabeceras. Sin ellas la pantalla de interoperabilidad pintaba
+    # «— radicado(s) exportado(s)» sobre un paquete de seis, y el conteo de
+    # excluidos (Ley 1712/2014 arts. 18-19) desaparecía sin dejar rastro: quien
+    # exporta no llegaba a enterarse de que su clearance recortó el paquete.
+    "x-export-count",
+    "x-export-excluded",
+    # El UUID identifica el paquete en el asiento de auditoría de la
+    # exportación: es lo que permite casar el fichero descargado con el acto.
+    "x-export-uuid",
 }
 
 

@@ -98,8 +98,14 @@ async def search_documents(
         params.append(q)
         q_idx = idx
         idx += 1
+        # La configuración de texto va CUALIFICADA y es LA MISMA que construye el
+        # `search_vector` (tenant/020_search_unaccent.sql). Consulta e índice
+        # tienen que hablar el mismo idioma: con `'spanish'` a secas, buscar
+        # «certificacion» devolvía CERO radicados mientras «certificación»
+        # devolvía tres, y la pantalla decía «Sin resultados» — indistinguible
+        # de «no existe». Ver ADR-014.
         conds.append(
-            f"(search_vector @@ websearch_to_tsquery('spanish', ${q_idx}) "
+            f"(search_vector @@ websearch_to_tsquery('public.spanish_unaccent'::regconfig, ${q_idx}) "
             f"OR tracking_number ILIKE '%' || ${q_idx} || '%' "
             f"OR sender_name ILIKE '%' || ${q_idx} || '%')"
         )
@@ -135,7 +141,7 @@ async def search_documents(
 
     where = " AND ".join(conds) if conds else "TRUE"
     rank_expr = (
-        f"ts_rank(search_vector, websearch_to_tsquery('spanish', ${q_idx}))" if q_idx else "0"
+        f"ts_rank(search_vector, websearch_to_tsquery('public.spanish_unaccent'::regconfig, ${q_idx}))" if q_idx else "0"
     )
     order_by = "rank DESC, registered_at DESC" if q_idx else "registered_at DESC"
 

@@ -85,3 +85,29 @@ export function downloadCsv(csvContent, filename) {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+/**
+ * Nombre del fichero del resumen de radicación de `/reportes`.
+ *
+ * Se llamaba `radicados.csv`, y eso prometía un listado de radicados: quien lo
+ * abría encontraba `seccion,clave,valor` —el resumen estadístico, que es lo que
+ * ese endpoint produce— y tenía que deducir por su cuenta que el archivo no era
+ * el que su nombre anunciaba. Un fichero que sale del sistema y acaba en el
+ * escritorio de otra persona no puede depender de esa deducción.
+ *
+ * El rango de fechas entra en el nombre cuando el filtro está puesto, porque
+ * dos resúmenes del mismo tenant solo se distinguen por él.
+ *
+ * @param {string} [desde] ISO `AAAA-MM-DD` o cadena vacía
+ * @param {string} [hasta] ISO `AAAA-MM-DD` o cadena vacía
+ * @returns {string}
+ */
+export function nombreResumenRadicacion(desde, hasta) {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  const d = typeof desde === "string" && iso.test(desde) ? desde : "";
+  const h = typeof hasta === "string" && iso.test(hasta) ? hasta : "";
+  if (d && h) return `resumen-radicacion-${d}_${h}.csv`;
+  if (d) return `resumen-radicacion-desde-${d}.csv`;
+  if (h) return `resumen-radicacion-hasta-${h}.csv`;
+  return "resumen-radicacion.csv";
+}

@@ -119,6 +119,8 @@
   let inputEl;
   /** @type {Element|null} */
   let previousFocus = null;
+  /** Estado anterior de `open` — booleano a propósito: ver el bloque de abajo. */
+  let dockAbiertoPrev = false;
 
   function getFocusable() {
     return dockEl ? Array.from(dockEl.querySelectorAll(FOCUSABLE)) : [];
@@ -154,24 +156,37 @@
   // también durante el render SSR — si `open` llega en true en el primer
   // render del servidor, acceder a `document` sin guardar revienta con
   // ReferenceError y devuelve 500 en toda ruta que monte AssistantDock.
-  $: if (typeof document !== "undefined" && open) {
-    previousFocus = document.activeElement;
-    tick().then(() => {
-      // Foco al campo de mensaje al abrir: es un dock de chat, el usuario debe
-      // poder escribir de inmediato. `closeBtnEl` como respaldo si el textarea
-      // aún no está montado (ambos dentro del focus-trap, así que el trap se
-      // mantiene en cualquier caso).
-      (inputEl ?? closeBtnEl)?.focus?.();
-    });
-  } else if (previousFocus) {
-    // Copia local + limpieza inmediata (no dentro del `.then`): evita que un
-    // cierre/apertura rápidos del dock pisen la referencia en vuelo de un
-    // `tick()` anterior o la dejen en null antes de tiempo.
-    const elementToRefocus = /** @type {HTMLElement} */ (previousFocus);
-    previousFocus = null;
-    tick().then(() => {
-      elementToRefocus?.focus?.();
-    });
+  // El gate compara `open` con el estado ANTERIOR, y ese estado es un BOOLEANO.
+  //
+  // La versión previa gobernaba la condición con `previousFocus`: lo asignaba en
+  // una rama y lo leía en la otra. Un bloque reactivo depende de todo lo que
+  // lee, así que cada asignación lo reprograma; y `document.activeElement` es un
+  // objeto, que `safe_not_equal` da por distinto **siempre**, aunque sea el
+  // mismo elemento. No es el bloque que tumbaba la pestaña —ese era el del
+  // autoscroll, más abajo—, pero es el mismo antipatrón y estaba a un cambio de
+  // comportarse igual. Con un booleano el ciclo converge: tras la primera
+  // pasada `open` y `dockAbiertoPrev` coinciden y no se vuelve a entrar.
+  $: if (typeof document !== "undefined" && open !== dockAbiertoPrev) {
+    dockAbiertoPrev = open;
+    if (open) {
+      previousFocus = document.activeElement;
+      tick().then(() => {
+        // Foco al campo de mensaje al abrir: es un dock de chat, el usuario debe
+        // poder escribir de inmediato. `closeBtnEl` como respaldo si el textarea
+        // aún no está montado (ambos dentro del focus-trap, así que el trap se
+        // mantiene en cualquier caso).
+        (inputEl ?? closeBtnEl)?.focus?.();
+      });
+    } else if (previousFocus) {
+      // Copia local + limpieza inmediata (no dentro del `.then`): evita que un
+      // cierre/apertura rápidos del dock pisen la referencia en vuelo de un
+      // `tick()` anterior o la dejen en null antes de tiempo.
+      const elementToRefocus = /** @type {HTMLElement} */ (previousFocus);
+      previousFocus = null;
+      tick().then(() => {
+        elementToRefocus?.focus?.();
+      });
+    }
   }
 
   // La limpieza va como retorno de onMount (solo cliente): onDestroy se ejecuta
@@ -208,10 +223,23 @@
   // Autoscroll al último turno — guardado (D-16): solo corre en el navegador,
   // `messagesEl` es `undefined` durante SSR y el acceso a `window`/DOM ahí
   // rompería el render del layout.
+  //
+  // La lectura de `messagesEl` va en una FUNCIÓN APARTE, y eso no es estilo:
+  // Svelte calcula las dependencias de un bloque reactivo con las variables que
+  // aparecen en su cuerpo, **incluidas las que se leen dentro de un callback**.
+  // Con `messagesEl` escrito aquí dentro, el bloque dependía de él; y como
+  // `bind:this` lo asigna al montar el elemento, cada asignación reprogramaba el
+  // bloque, que volvía a agendar un `tick()`, que volvía a asignar… El
+  // renderizador se quedaba sin memoria y **Chrome mataba la pestaña al abrir el
+  // asistente**: no un aviso, no una pantalla en blanco — la ventana entera
+  // inservible. Sacando la lectura del statement, `messagesEl` deja de ser
+  // dependencia y el ciclo desaparece; el comportamiento visible es idéntico.
+  function irAlUltimoTurno() {
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
   $: if (typeof window !== "undefined" && $assistantState.messages) {
-    tick().then(() => {
-      if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
-    });
+    tick().then(irAlUltimoTurno);
   }
 </script>
 

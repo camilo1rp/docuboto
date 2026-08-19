@@ -189,13 +189,15 @@
     {#if !actoDisponible}
       <p class="pub-blocked" role="note">
         <i class="fas fa-ban" aria-hidden="true"></i>
-        {#if esReservado}
-          Este radicado está <strong>clasificado o reservado</strong>: el esquema de publicación no
-          se aplica sobre él. Si procede difundirlo, primero hay que desclasificarlo mediante el
-          acto motivado correspondiente.
-        {:else}
-          Este radicado está <strong>anulado</strong> y no admite actos de publicación.
-        {/if}
+        <span>
+          {#if esReservado}
+            Este radicado está <strong>clasificado o reservado</strong>: el esquema de publicación
+            no se aplica sobre él. Si procede difundirlo, primero hay que desclasificarlo mediante
+            el acto motivado correspondiente.
+          {:else}
+            Este radicado está <strong>anulado</strong> y no admite actos de publicación.
+          {/if}
+        </span>
       </p>
     {:else}
       <form class="pub-form" on:submit|preventDefault={submit}>

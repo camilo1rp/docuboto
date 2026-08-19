@@ -153,8 +153,10 @@ class BatchService:
                         """
                         INSERT INTO radicados
                         (tracking_number, doc_type, subject, doc_class, dest_dept,
-                         sender_name, sender_entity, pages, observations, status, year, sequence)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered', $10, $11)
+                         sender_name, sender_entity, pages, observations, status,
+                         year, sequence, tenant_code, registered_by)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered',
+                                $10, $11, $12, $13)
                         RETURNING id, nivel_seguridad
                         """,
                         tracking_number,
@@ -164,10 +166,28 @@ class BatchService:
                         doc_data.dest_dept,
                         doc_data.sender_name,
                         doc_data.sender_entity,
-                        doc_data.pages,
+                        # `radicados.pages` es NOT NULL DEFAULT 0, y el camino
+                        # síncrono lo respeta porque `DocumentCreate` declara
+                        # `pages: int = 0`. El esquema del lote lo declaró
+                        # `int | None = None` —el formulario lo ofrece como
+                        # «(opcional)»— y el INSERT mandaba ese `None` a la
+                        # columna: TODO ítem sin páginas violaba la restricción
+                        # y el lote entero fallaba. Se normaliza aquí, al borde
+                        # de la escritura, para no romper el contrato con un
+                        # cliente que ya manda `null`.
+                        doc_data.pages if doc_data.pages is not None else 0,
                         doc_data.observations,
                         year,
                         sequence,
+                        # `tenant_code` y `registered_by` son NOT NULL y el
+                        # camino síncrono (`DocumentRepository.create`) los
+                        # escribe siempre. Este INSERT los omitía: el gemelo
+                        # divergía en las dos columnas que identifican de quién
+                        # es el radicado y quién lo produjo, que en un documento
+                        # oficial no son campos accesorios. `tenant_code` ya
+                        # estaba leído arriba para componer el número.
+                        tenant_code,
+                        created_by,
                     )
                     radicado_id = radicado["id"]
 

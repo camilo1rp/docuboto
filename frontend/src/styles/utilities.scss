@@ -768,3 +768,28 @@
     border-radius: 50%;
   }
 }
+
+// =============================================================================
+// `hidden` significa oculto — y en este proyecto no lo significaba
+// =============================================================================
+//
+// El atributo HTML `hidden` lo oculta la hoja de estilos del NAVEGADOR, con
+// `display: none` y especificidad de selector de elemento. Cualquier regla de
+// clase que declare `display` —`display: flex` en un panel, por ejemplo— gana
+// esa cascada y el elemento se sigue viendo, con el atributo puesto.
+//
+// El resultado no es cosmético. En `/busqueda`, `/reportes` y
+// `/admin/preservacion` las pestañas se pintaban TODAS A LA VEZ, apiladas: la
+// navegación por pestañas era pura decoración. Y para quien usa un lector de
+// pantalla era peor que eso, porque `aria-selected` y `tabindex` sí decían la
+// verdad —una sola pestaña activa— mientras el contenido de todas seguía en el
+// árbol de accesibilidad.
+//
+// Se arregla una vez, aquí, y no panel por panel: la próxima pestaña que
+// alguien escriba con `display: flex` nace funcionando. El `!important` es
+// deliberado y es el único del proyecto — `hidden` no admite matices, y sin él
+// esta regla perdería contra exactamente las mismas clases que causaron el
+// defecto.
+[hidden] {
+  display: none !important;
+}

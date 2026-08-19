@@ -45,6 +45,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { enteroDeLaUrl } from "$lib/utils/urlParams.js";
 import { mensajeError } from "$lib/utils/apiError.js";
 
 const VALID_TABS = new Set(["exacta", "semantica", "antecedentes"]);
@@ -122,8 +123,7 @@ export async function load({ cookies, parent, url }) {
   // Pestaña Semántica — solo se resuelve si es la pestaña activa.
   // ---------------------------------------------------------------------
   const sq = url.searchParams.get("sq") ?? "";
-  const rawStopk = Number(url.searchParams.get("stopk"));
-  const stopk = Number.isFinite(rawStopk) ? Math.min(50, Math.max(1, Math.floor(rawStopk))) : 5;
+  const stopk = enteroDeLaUrl(url, "stopk", { min: 1, max: 50, porDefecto: 5 });
   let semantica = { results: null, error: null };
   if (tab === "semantica") {
     semantica = await loadSemantica({ token, tenant, userId, query: sq.trim(), topK: stopk });
@@ -134,8 +134,7 @@ export async function load({ cookies, parent, url }) {
   // ---------------------------------------------------------------------
   const aq = url.searchParams.get("aq") ?? "";
   const atr = url.searchParams.get("atr") ?? "";
-  const rawAtopk = Number(url.searchParams.get("atopk"));
-  const atopk = Number.isFinite(rawAtopk) ? Math.min(20, Math.max(1, Math.floor(rawAtopk))) : 5;
+  const atopk = enteroDeLaUrl(url, "atopk", { min: 1, max: 20, porDefecto: 5 });
   let antecedentes = { data: null, error: null };
   if (tab === "antecedentes") {
     antecedentes = await loadAntecedentes({

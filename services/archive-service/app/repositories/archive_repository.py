@@ -1605,7 +1605,11 @@ class ArchiveRepository:
             q_idx = idx
             idx += 1
             conds.append(
-                f"(search_vector @@ websearch_to_tsquery('spanish', ${q_idx}) "
+                # Misma configuración que el `search_vector` de la migración
+                # tenant/043: consulta e índice tienen que hablar el mismo
+                # idioma. Y la MISMA que usa la búsqueda de radicados, para que
+                # el mismo texto no dé resultados distintos según la pantalla.
+                f"(search_vector @@ websearch_to_tsquery('public.spanish_unaccent'::regconfig, ${q_idx}) "
                 f"OR code ILIKE '%' || ${q_idx} || '%')"
             )
         if status:
@@ -1627,7 +1631,7 @@ class ArchiveRepository:
 
         where = " AND ".join(conds) if conds else "TRUE"
         rank_expr = (
-            f"ts_rank(search_vector, websearch_to_tsquery('spanish', ${q_idx}))" if q_idx else "0"
+            f"ts_rank(search_vector, websearch_to_tsquery('public.spanish_unaccent'::regconfig, ${q_idx}))" if q_idx else "0"
         )
         order_by = "rank DESC, opened_at DESC" if q_idx else "opened_at DESC"
 

@@ -277,10 +277,13 @@
 >
   <p class="ila-warning">
     <i class="fas fa-circle-info" aria-hidden="true"></i>
-    Registra la aprobación del Comité Institucional de Gestión y Desempeño (primer acto del circuito).
-    Mientras esté <strong>aprobada</strong>, el contenido queda bloqueado para edición directa; solo
-    <strong>devolver</strong>
-    o <strong>convalidar</strong> lo desbloquean.
+    <span>
+      Registra la aprobación del Comité Institucional de Gestión y Desempeño (primer acto del
+      circuito). Mientras esté <strong>aprobada</strong>, el contenido queda bloqueado para edición
+      directa; solo
+      <strong>devolver</strong>
+      o <strong>convalidar</strong> lo desbloquean.
+    </span>
   </p>
   <FormField id="ila-acta-comite" label="Acta del Comité" required bind:value={fActaComite} />
   <FormField
@@ -311,8 +314,10 @@
 >
   <p class="ila-warning">
     <i class="fas fa-circle-info" aria-hidden="true"></i>
-    Vuelve la versión a <strong>borrador</strong> para ajustes. La aprobación del Comité queda sin efecto:
-    hará falta una aprobación nueva antes de poder convalidar.
+    <span>
+      Vuelve la versión a <strong>borrador</strong> para ajustes. La aprobación del Comité queda sin efecto:
+      hará falta una aprobación nueva antes de poder convalidar.
+    </span>
   </p>
   <FormField
     id="ila-motivo"
@@ -342,9 +347,12 @@
 >
   <p class="ila-warning ila-warning--danger">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-    Esta acción es <strong>irreversible</strong>: registra el acto administrativo de convalidación,
-    queda escrito en la auditoría inmutable y deja esta versión como <strong>vigente</strong>
-    (derogando la anterior, si existía). No hay vuelta a "aprobada".
+    <span>
+      Esta acción es <strong>irreversible</strong>: registra el acto administrativo de
+      convalidación, queda escrito en la auditoría inmutable y deja esta versión como
+      <strong>vigente</strong>
+      (derogando la anterior, si existía). No hay vuelta a "aprobada".
+    </span>
   </p>
   <FormField
     id="ila-acto-administrativo"
@@ -401,8 +409,10 @@
 >
   <p class="ila-warning">
     <i class="fas fa-circle-info" aria-hidden="true"></i>
-    El Registro Único de Series Documentales y la fecha de publicación solo pueden completarse
-    <strong>una vez</strong> cada uno: una vez registrados no podrán corregirse desde aquí.
+    <span>
+      El Registro Único de Series Documentales y la fecha de publicación solo pueden completarse
+      <strong>una vez</strong> cada uno: una vez registrados no podrán corregirse desde aquí.
+    </span>
   </p>
   <FormField
     id="ila-rusd"
@@ -438,9 +448,11 @@
 >
   <p class="ila-warning ila-warning--danger">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-    Esta acción es <strong>irreversible</strong>: da de baja el instrumento. Los expedientes ya
-    cerrados bajo esta versión conservan su cálculo de retención congelado (no hay efecto
-    retroactivo), pero ningún expediente nuevo podrá clasificarse aquí.
+    <span>
+      Esta acción es <strong>irreversible</strong>: da de baja el instrumento. Los expedientes ya
+      cerrados bajo esta versión conservan su cálculo de retención congelado (no hay efecto
+      retroactivo), pero ningún expediente nuevo podrá clasificarse aquí.
+    </span>
   </p>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={close} disabled={actionLoading}>Cancelar</Button>
@@ -459,9 +471,11 @@
 >
   <p class="ila-warning">
     <i class="fas fa-circle-info" aria-hidden="true"></i>
-    Abre una versión <strong>{(item?.version ?? 0) + 1}</strong> en borrador, con el mismo contenido de
-    la versión actual. Edítela en su ficha antes de aprobarla; la versión vigente sigue rigiendo hasta
-    que esta se convalide.
+    <span>
+      Abre una versión <strong>{(item?.version ?? 0) + 1}</strong> en borrador, con el mismo contenido
+      de la versión actual. Edítela en su ficha antes de aprobarla; la versión vigente sigue rigiendo
+      hasta que esta se convalide.
+    </span>
   </p>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={close} disabled={actionLoading}>Cancelar</Button>

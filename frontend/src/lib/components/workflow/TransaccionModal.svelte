@@ -201,8 +201,10 @@
         {#if cancelsStep}
           <p class="modal-warning" role="alert">
             <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-            Este trámite <strong>cancelará el paso activo</strong> de {step.tracking_number}.
-            Describa el motivo antes de continuar.
+            <span>
+              Este trámite <strong>cancelará el paso activo</strong> de {step.tracking_number}.
+              Describa el motivo antes de continuar.
+            </span>
           </p>
         {/if}
         <FormField

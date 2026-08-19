@@ -8,7 +8,12 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 import { describe, it, expect } from "vitest";
-import { escapeCsvFormulaInjection, csvCell, buildCsv } from "./csvExport.js";
+import {
+  escapeCsvFormulaInjection,
+  csvCell,
+  buildCsv,
+  nombreResumenRadicacion,
+} from "./csvExport.js";
 
 describe("escapeCsvFormulaInjection — neutraliza fórmulas CSV (espejo de _csv_safe del backend)", () => {
   it.each([
@@ -77,5 +82,36 @@ describe("buildCsv", () => {
   it("antepone BOM UTF-8 para que Excel detecte el encoding", () => {
     const csv = buildCsv(columns, []);
     expect(csv.charCodeAt(0)).toBe(0xfeff);
+  });
+});
+
+describe("nombreResumenRadicacion — el nombre dice lo que trae el fichero", () => {
+  it("sin filtros, nombra el RESUMEN, no un listado de radicados", () => {
+    // El endpoint produce `seccion,clave,valor`. Llamarlo `radicados.csv`
+    // anunciaba un listado que ese fichero no contiene.
+    expect(nombreResumenRadicacion("", "")).toBe("resumen-radicacion.csv");
+    expect(nombreResumenRadicacion(undefined, undefined)).toBe("resumen-radicacion.csv");
+  });
+
+  it("con rango completo, el rango entra en el nombre", () => {
+    expect(nombreResumenRadicacion("2026-01-01", "2026-03-31")).toBe(
+      "resumen-radicacion-2026-01-01_2026-03-31.csv",
+    );
+  });
+
+  it("con un solo extremo, dice cuál es", () => {
+    expect(nombreResumenRadicacion("2026-01-01", "")).toBe(
+      "resumen-radicacion-desde-2026-01-01.csv",
+    );
+    expect(nombreResumenRadicacion("", "2026-03-31")).toBe(
+      "resumen-radicacion-hasta-2026-03-31.csv",
+    );
+  });
+
+  it("una fecha con formato inválido NO entra en el nombre del archivo", () => {
+    // El nombre acaba en el sistema de ficheros de una persona: no se compone
+    // con texto que no se ha validado.
+    expect(nombreResumenRadicacion("2026/01/01", "../../etc")).toBe("resumen-radicacion.csv");
+    expect(nombreResumenRadicacion(42, {})).toBe("resumen-radicacion.csv");
   });
 });

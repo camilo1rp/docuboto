@@ -9,6 +9,7 @@
 
 import re
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -102,6 +103,32 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
     schema = tenant_schema(request.headers.get("X-Tenant-Slug", ""))
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
+        await conn.execute(f'SET search_path = "{schema}", public')
+        try:
+            yield conn
+        finally:
+            await conn.execute("SET search_path = public")
+
+
+@asynccontextmanager
+async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión PROPIA con `search_path` al tenant, para tareas detached.
+
+    Gemelo exacto de `archive-service/app/core/database.py::acquire_tenant`, que
+    ya existía con esta misma advertencia mientras este servicio lanzaba su job
+    de lote sobre la conexión del request. El resultado se veía en pantalla: el
+    lote se quedaba «Pendiente 0/N» para siempre, porque la tarea moría con
+    `InterfaceError: cannot perform operation: another operation is in progress`
+    y `asyncio.create_task` no tiene a quién devolverle esa excepción.
+
+    NUNCA reutilizar la conexión request-scoped de `get_tenant_conn` en una
+    tarea que sigue viva tras responder: su `finally` resetea `search_path` a
+    `public` y devuelve la conexión al pool en cuanto se envía la respuesta, y
+    el pool puede reasignarla a un request de OTRO tenant mientras la tarea de
+    fondo aún escribe — contaminación cross-tenant además del uso concurrente.
+    """
+    schema = tenant_schema(tenant_slug)
+    async with get_pool().acquire() as conn:
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
             yield conn

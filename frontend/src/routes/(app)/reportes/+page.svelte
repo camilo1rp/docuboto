@@ -34,6 +34,7 @@
 -->
 <script>
   import { onMount, tick } from "svelte";
+  import { nombreResumenRadicacion } from "$lib/utils/csvExport.js";
   import { goto } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
@@ -252,17 +253,35 @@
     return `${Math.round((value / max) * 100)}%`;
   }
 
-  /** Total de radicados del período */
-  $: grandTotal = (() => {
-    const types = data.summary?.by_type ?? [];
-    return types.reduce((acc, row) => acc + (row.count ?? 0), 0);
-  })();
+  /**
+   * El contrato real de `ReportSummary` (document-service, `schemas/report.py`).
+   *
+   * Esta pantalla leía `by_type`, `by_dept` y trataba `by_status` como una
+   * LISTA. El resumen no tiene ninguno de esos nombres, y `by_status` es un
+   * **diccionario**: `{}.map` no es una función, así que `/reportes` respondía
+   * **500** — no una tabla vacía, la pantalla entera caída. Solo «funcionaba»
+   * cuando el resumen no se podía cargar y `summary` era `null`, porque
+   * entonces el `?? []` sí devolvía una lista.
+   *
+   * Los conteos por tipo, estado y dependencia llegan como mapas
+   * `{clave: cantidad}`; solo `by_month` es una lista de `{month, count}`.
+   */
+  /**
+   * @param {Record<string, number>|null|undefined} mapa
+   * @returns {Array<{clave: string, count: number}>}
+   */
+  function filasDeMapa(mapa) {
+    return Object.entries(mapa ?? {}).map(([clave, cantidad]) => ({
+      clave,
+      count: Number(cantidad) || 0,
+    }));
+  }
+
+  /** Total de radicados del período — el backend ya lo trae contado. */
+  $: grandTotal = data.summary?.total ?? 0;
 
   /** Máximo de los conteos de dependencia (para las barras) */
-  $: maxDeptCount = (() => {
-    const depts = data.summary?.by_dept ?? [];
-    return Math.max(...depts.map((d) => d.count ?? 0), 0);
-  })();
+  $: maxDeptCount = Math.max(...filasDeMapa(data.summary?.by_dependencia).map((d) => d.count), 0);
 
   /** Máximo de los conteos por mes (para las barras) */
   $: maxMonthCount = (() => {
@@ -277,24 +296,24 @@
   // etiqueta legible y el % ya calculado que el usuario ve en pantalla).
   // ---------------------------------------------------------------------------
 
-  $: typeRows = (data.summary?.by_type ?? []).map((row) => {
+  $: typeRows = filasDeMapa(data.summary?.by_doc_type).map((row) => {
     const count = row.count ?? 0;
     const pct = grandTotal > 0 ? Math.round((count / grandTotal) * 100) : 0;
     return {
-      doc_type: row.doc_type,
-      type_label: DOC_TYPE_LABELS[row.doc_type] ?? row.doc_type,
+      doc_type: row.clave,
+      type_label: DOC_TYPE_LABELS[row.clave] ?? row.clave,
       count,
       pct,
       pct_label: `${pct}%`,
     };
   });
 
-  $: statusRows = (data.summary?.by_status ?? []).map((row) => {
+  $: statusRows = filasDeMapa(data.summary?.by_status).map((row) => {
     const count = row.count ?? 0;
     const pct = grandTotal > 0 ? Math.round((count / grandTotal) * 100) : 0;
     return {
-      status: row.status,
-      status_label: STATUS_LABELS[row.status] ?? row.status,
+      status: row.clave,
+      status_label: STATUS_LABELS[row.clave] ?? row.clave,
       count,
       pct,
       pct_label: `${pct}%`,
@@ -312,12 +331,12 @@
     };
   });
 
-  $: deptRows = (data.summary?.by_dept ?? []).map((row) => {
+  $: deptRows = filasDeMapa(data.summary?.by_dependencia).map((row) => {
     const count = row.count ?? 0;
     const share = maxDeptCount > 0 ? Math.round((count / maxDeptCount) * 100) : 0;
     return {
-      dept: row.dept ?? row.dest_dept ?? null,
-      dept_label: row.dept ?? row.dest_dept ?? "Sin dependencia",
+      dept: row.clave || null,
+      dept_label: row.clave || "Sin dependencia",
       count,
       share_label: `${share}%`,
     };
@@ -411,7 +430,7 @@
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = "radicados.csv";
+      anchor.download = nombreResumenRadicacion(dateFrom, dateTo);
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);

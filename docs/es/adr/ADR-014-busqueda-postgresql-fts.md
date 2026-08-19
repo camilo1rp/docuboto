@@ -18,7 +18,8 @@ La pregunta es si introducir **Elasticsearch/OpenSearch** como motor de búsqued
 
 **Implementar la búsqueda de OrpycaMCP sobre PostgreSQL nativo (FTS `tsvector` + `pg_trgm` + filtros `JSONB`/GIN), sin un motor de búsqueda externo en F2.**
 
-- **Texto completo**: `to_tsvector('spanish', …)` con pesos (`A`=número de radicado, `B`=asunto, …), consulta con `websearch_to_tsquery`, ranking con `ts_rank`/`ts_rank_cd`, índice GIN sobre `search_vector`.
+- **Texto completo**: `to_tsvector('public.spanish_unaccent', …)` con pesos (`A`=número de radicado, `B`=asunto, …), consulta con `websearch_to_tsquery` sobre **la misma** configuración, ranking con `ts_rank`/`ts_rank_cd`, índice GIN sobre `search_vector`.
+  > `spanish_unaccent` es `spanish` con el diccionario `unaccent` delante del stemmer (`document-service/migrations/global/002`). Durante un tiempo esta decisión estuvo escrita aquí y **no implementada**: el índice y la consulta usaban `spanish` a secas, así que buscar «certificacion» devolvía cero y «certificación» devolvía tres. Índice y consulta tienen que usar la misma configuración — cambiar una sola de las dos no arregla nada.
 - **Difuso/prefijo**: `pg_trgm` (índices GIN `gin_trgm_ops`) y `unaccent` para normalizar acentos.
 - **Filtros estructurados y por metadato**: `WHERE` sobre columnas + contención `metadata @> $jsonb` (índice GIN), rangos de fecha, estado, dependencia, tipo.
 - **Reportes/estadísticas**: agregaciones SQL (`GROUP BY`, `COUNT`, ventanas) sobre el schema del tenant.

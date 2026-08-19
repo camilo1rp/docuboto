@@ -135,11 +135,15 @@
 
     (async () => {
       const SR = Reconocedor();
-      if (!SR) {
-        if (vivo) soportado = false;
-        return;
-      }
-      const local = await reconoceEnElDispositivo(SR);
+      // La ausencia de `SpeechRecognition` NO cierra el dictado: solo descarta
+      // el camino del dispositivo. La transcripción soberana de la entidad
+      // (ADR-020) no depende de ninguna API del navegador —graba con
+      // `MediaRecorder` y manda el audio al propio servidor—, así que un
+      // navegador sin Web Speech API (Firefox, o Chrome con la API retirada)
+      // tiene que llegar igual a esa rama. La primera versión salía aquí con
+      // `soportado = false`, y el efecto era que la única vía que NO manda el
+      // audio fuera se ofrecía solamente a quien ya tenía la que sí.
+      const local = SR ? await reconoceEnElDispositivo(SR) : false;
       if (!vivo) return;
       if (local) {
         modo = "dispositivo";
@@ -148,8 +152,10 @@
       }
       // Sin reconocimiento local, queda el servidor de la entidad — si esta
       // instalación lo tiene activado. Se PREGUNTA, no se supone.
-      soportado = await hayTranscripcionEnServidor();
+      const enServidor = await hayTranscripcionEnServidor();
+      if (!vivo) return;
       modo = "servidor";
+      soportado = enServidor;
     })();
 
     return () => {

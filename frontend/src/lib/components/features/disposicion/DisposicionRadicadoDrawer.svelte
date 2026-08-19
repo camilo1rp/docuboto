@@ -209,9 +209,11 @@
         <div class="disp-danger">
           <p class="disp-danger__text">
             <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-            La acción <strong>eliminar</strong> / el marcado para eliminación decide sobre
-            patrimonio documental de forma <strong>irreversible</strong>. La purga física no ocurre
-            aquí, pero esta marca es el primer paso del proceso.
+            <span>
+              La acción <strong>eliminar</strong> / el marcado para eliminación decide sobre
+              patrimonio documental de forma <strong>irreversible</strong>. La purga física no
+              ocurre aquí, pero esta marca es el primer paso del proceso.
+            </span>
           </p>
           <label class="disp-check disp-check--danger">
             <input type="checkbox" bind:checked={destructiveAck} />

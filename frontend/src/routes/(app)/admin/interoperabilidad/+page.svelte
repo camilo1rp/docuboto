@@ -49,6 +49,7 @@
 -->
 <script>
   import { onMount, onDestroy } from "svelte";
+  import { presentacionDelItem, detalleDelItem } from "$lib/utils/loteJob.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
@@ -700,10 +701,20 @@
             <h2 class="interop-step__title">Confirmar importación</h2>
             <p class="interop-alert interop-alert--warning" role="alert">
               <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-              Esta acción es una escritura oficial: reingresará en este tenant los radicados contenidos
-              en <strong>{importFile?.name}</strong>, preservando su número original. Un radicado
-              que ya exista (mismo número) se omite sin sobreescribir; uno por encima de su nivel de
-              autorización se omite sin ingerir.
+              <!--
+                El texto va envuelto en UN span a propósito. `.interop-alert` es
+                `display: flex`, así que cada nodo suelto —los dos trozos de
+                frase y el `<strong>` del nombre del fichero— se convertía en
+                una columna: el aviso de una escritura oficial se leía partido
+                en tres bloques desalineados, con el nombre del paquete en
+                medio. Envuelto, el icono y el párrafo son los dos únicos ítems.
+              -->
+              <span>
+                Esta acción es una escritura oficial: reingresará en este tenant los radicados
+                contenidos en <strong>{importFile?.name}</strong>, preservando su número original.
+                Un radicado que ya exista (mismo número) se omite sin sobreescribir; uno por encima
+                de su nivel de autorización se omite sin ingerir.
+              </span>
             </p>
             <label class="interop-checkbox">
               <input type="checkbox" bind:checked={importConfirmChecked} />
@@ -917,16 +928,14 @@
               {#if s.items?.length > 0}
                 <ul class="interop-job__items" role="list">
                   {#each s.items as item (item.item_index)}
+                    {@const p = presentacionDelItem(item.status)}
                     <li class="interop-job__item" role="listitem">
-                      <StatusChip
-                        status={item.status === "success" ? "success" : "error"}
-                        label={item.status === "success" ? "OK" : "Error"}
-                      />
+                      <StatusChip status={p.chip} label={p.etiqueta} />
                       <span>#{item.item_index + 1}</span>
                       {#if item.status === "success"}
                         <code>{item.result_id}</code>
                       {:else}
-                        <span class="interop-job__item-error">{item.error_message}</span>
+                        <span class="interop-job__item-error">{detalleDelItem(item)}</span>
                       {/if}
                     </li>
                   {/each}
@@ -1055,16 +1064,14 @@
               {#if s.items?.length > 0}
                 <ul class="interop-job__items" role="list">
                   {#each s.items as item (item.item_index)}
+                    {@const p = presentacionDelItem(item.status)}
                     <li class="interop-job__item" role="listitem">
-                      <StatusChip
-                        status={item.status === "success" ? "success" : "error"}
-                        label={item.status === "success" ? "OK" : "Error"}
-                      />
+                      <StatusChip status={p.chip} label={p.etiqueta} />
                       <span>#{item.item_index + 1}</span>
                       {#if item.status === "success"}
                         <code>{item.expediente_code ?? item.result_id}</code>
                       {:else}
-                        <span class="interop-job__item-error">{item.error_message}</span>
+                        <span class="interop-job__item-error">{detalleDelItem(item)}</span>
                       {/if}
                     </li>
                   {/each}

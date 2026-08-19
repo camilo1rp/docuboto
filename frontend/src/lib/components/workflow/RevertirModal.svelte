@@ -123,9 +123,11 @@
   {#if step}
     <p class="modal-desc modal-desc--danger">
       <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-      Vas a revertir la última asignación del radicado
-      <strong>{step.tracking_number}</strong> (actualmente en {step.to_dept}). Esta acción
-      <strong>no se puede deshacer</strong>.
+      <span>
+        Vas a revertir la última asignación del radicado
+        <strong>{step.tracking_number}</strong> (actualmente en {step.to_dept}). Esta acción
+        <strong>no se puede deshacer</strong>.
+      </span>
     </p>
     <div class="modal-form">
       <FormField

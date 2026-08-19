@@ -69,6 +69,9 @@ def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
         )
 
 
+_tareas_en_curso: set[asyncio.Task] = set()
+
+
 async def _run_batch_job(tenant_slug: str, job_id: uuid.UUID) -> None:
     """Detached background task: owns its own connection, independent of the
     request's — see `app.core.database.acquire_tenant` for why the request-scoped
@@ -78,8 +81,35 @@ async def _run_batch_job(tenant_slug: str, job_id: uuid.UUID) -> None:
         async with acquire_tenant(tenant_slug) as conn:
             service = BatchArchiveService(conn, tenant_slug)
             await service.process_batch_expedientes(job_id)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — nadie más puede recoger esto
         logger.exception("Batch job %s failed outside the request/response cycle", job_id)
+        # El log solo lo ve quien administra el servidor. Quien lanzó el lote
+        # mira una pantalla que sondea `batch_jobs`, y ahí un job que reventó y
+        # uno que sigue trabajando eran indistinguibles: los dos se quedaban en
+        # «pendiente» sin fecha de fin. Dejar constancia del fallo en el propio
+        # job es lo que convierte esa espera indefinida en una respuesta.
+        await _marcar_job_fallido(tenant_slug, job_id, str(exc))
+
+
+async def _marcar_job_fallido(tenant_slug: str, job_id: uuid.UUID, motivo: str) -> None:
+    """Marca el job como fallido, en una conexión nueva.
+
+    Nueva a propósito: si se llega hasta aquí, la anterior es justamente la que
+    pudo haber quedado inservible.
+    """
+    try:
+        async with acquire_tenant(tenant_slug) as conn:
+            await conn.execute(
+                """
+                UPDATE batch_jobs
+                SET status = 'failed', completed_at = now(), error_message = $2
+                WHERE id = $1
+                """,
+                job_id,
+                motivo[:1000],
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo marcar como fallido el lote %s", job_id)
 
 
 @router.post(
@@ -103,7 +133,11 @@ async def create_batch_expedientes(
     service = BatchArchiveService(conn, tenant_slug)
     job_id = await service.create_batch_expedientes(payload, user_id)
 
-    asyncio.create_task(_run_batch_job(tenant_slug, job_id))
+    # La referencia se retiene: el event loop solo guarda una débil, así que sin
+    # esto el recolector puede llevarse un lote a medio procesar en silencio.
+    tarea = asyncio.create_task(_run_batch_job(tenant_slug, job_id))
+    _tareas_en_curso.add(tarea)
+    tarea.add_done_callback(_tareas_en_curso.discard)
 
     # Fetch created_at from DB
     created_at = await conn.fetchval("SELECT created_at FROM batch_jobs WHERE id=$1", job_id)

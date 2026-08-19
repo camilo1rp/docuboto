@@ -149,9 +149,11 @@
     {#if !actoDisponible}
       <p class="pub-blocked" role="note">
         <i class="fas fa-ban" aria-hidden="true"></i>
-        Este expediente está <strong>clasificado o reservado</strong>: el esquema de publicación no
-        se aplica sobre él. Si procede difundirlo, primero hay que desclasificarlo mediante el acto
-        motivado correspondiente.
+        <span>
+          Este expediente está <strong>clasificado o reservado</strong>: el esquema de publicación
+          no se aplica sobre él. Si procede difundirlo, primero hay que desclasificarlo mediante el
+          acto motivado correspondiente.
+        </span>
       </p>
     {:else}
       <form class="pub-form" on:submit|preventDefault={submit}>

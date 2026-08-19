@@ -130,9 +130,25 @@
   // ---------------------------------------------------------------------------
 
   /** @type {any[]} */
-  let results = data.results ?? [];
-  let total = data.total ?? 0;
+  let results = [];
+  let total = 0;
   let loading = false;
+
+  // REACTIVO, no una asignación de una sola vez. Buscar navega con `goto()` a la
+  // misma ruta con otros parámetros: SvelteKit reutiliza el componente y solo
+  // sustituye `data`. Con `let results = data.results` —que es lo que había— el
+  // valor quedaba congelado en el del primer render, así que quien entraba por
+  // el menú y buscaba veía SIEMPRE «Sin resultados», con el servidor
+  // devolviendo las coincidencias correctas. La búsqueda solo funcionaba
+  // recargando la página entera con la consulta ya en la URL, que no es como
+  // nadie la usa.
+  //
+  // Depende solo de `data`, así que paginar (`loadPage`, que muta `results` sin
+  // navegar) no lo dispara y no pisa la página cargada.
+  $: {
+    results = data.results ?? [];
+    total = data.total ?? 0;
+  }
   let qError = "";
   let dateRangeError = "";
 
@@ -863,8 +879,10 @@
       {:else}
         <p class="busqueda__advisory">
           <i class="fas fa-circle-info" aria-hidden="true"></i>
-          Estos son documentos <strong>parecidos</strong> por significado, no coincidencias exactas de
-          texto. Verifica cada uno contra el radicado original antes de darlo por válido.
+          <span>
+            Estos son documentos <strong>parecidos</strong> por significado, no coincidencias exactas
+            de texto. Verifica cada uno contra el radicado original antes de darlo por válido.
+          </span>
         </p>
         <ul class="result-cards">
           {#each semanticaResults as hit (hit.id)}
