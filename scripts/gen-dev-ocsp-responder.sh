@@ -83,7 +83,20 @@ echo "Generando responder OCSP DELEGADO de DESARROLLO (NO ACREDITADO) para $SLUG
 echo ""
 
 openssl genrsa -out "$RESPONDER_KEY" 2048 2>/dev/null
-chmod 600 "$RESPONDER_KEY"
+# Permisos de la clave privada — mismo criterio que `gen-dev-signing-cert.sh`.
+#
+# El contenedor de `signature-service` corre como uid 999 y este guion escribe
+# con el uid de quien lo ejecuta: con la clave en 600 el servicio no puede
+# leerla, y el fallo aparece mucho después, al firmar, como un 503 sin causa
+# visible. El par `_dev/` es auto-firmado y de pruebas por definición: se deja
+# legible para que el entorno funcione sin `sudo`. El de un tenant concreto se
+# queda en 600 — si el contenedor no lo puede leer, lo correcto es ajustar la
+# propiedad del fichero, no abrir la clave.
+if [ "$SLUG" = "_dev" ]; then
+    chmod 644 "$RESPONDER_KEY"
+else
+    chmod 600 "$RESPONDER_KEY"
+fi
 
 openssl req -new -key "$RESPONDER_KEY" -out "$RESPONDER_CSR" \
     -subj "/CN=OrpycaMCP DEV OCSP Responder (NO ACREDITADO)/O=$SLUG"

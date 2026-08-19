@@ -40,6 +40,7 @@
 <script>
   import { createEventDispatcher } from "svelte";
   import Drawer from "$lib/components/ui/Drawer.svelte";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import Loader from "$lib/components/ui/Loader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -104,14 +105,7 @@
 
   function formatDateTime(/** @type {string|null|undefined} */ iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   // ---------------------------------------------------------------------------

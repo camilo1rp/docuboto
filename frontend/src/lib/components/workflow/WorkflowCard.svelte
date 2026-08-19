@@ -49,6 +49,7 @@
 -->
 <script>
   import { PASO_ESTADO_CHIP, PASO_ESTADO_LABEL } from "$lib/utils/flujo.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { createEventDispatcher } from "svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
 
@@ -80,14 +81,9 @@
   };
   const SEMAFORO_CHIP = { verde: "success", amarillo: "warning", rojo: "error", vencido: "error" };
 
-  /** @param {string} iso */
+  /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    return formatearFecha(iso);
   }
 </script>
 

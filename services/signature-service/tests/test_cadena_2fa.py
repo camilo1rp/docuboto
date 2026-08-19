@@ -150,7 +150,7 @@ async def test_create_challenge_happy_path(monkeypatch: pytest.MonkeyPatch) -> N
     turno = _turno_row(firmante_id=USER)
     challenge_row = _challenge_row()
 
-    conn.fetchval.side_effect = [True]  # check_permission only (audit is mocked)
+    conn.fetchval.side_effect = [True, 1]  # check_permission only (audit is mocked)  # check_permission | es_firmante
     conn.fetchrow.side_effect = [
         sol,            # get_solicitud_for_update
         {},             # resolve_caller_clearance
@@ -206,7 +206,10 @@ async def test_create_challenge_wrong_turn_returns_403(monkeypatch: pytest.Monke
     sol = _sol_row()
     turno_other = _turno_row(firmante_id=FIRMANTE2)
 
-    conn.fetchval.side_effect = [True]
+    # `fetchval`: 1) clearance del llamante, 2) es_firmante → SÍ pertenece a la
+    # cadena. Esa segunda comprobación es la que distingue este caso —«estás en
+    # la cadena, pero el turno es de otro»— del de quien no pertenece.
+    conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [sol, {}, turno_other]
 
     _override(conn)
@@ -223,6 +226,40 @@ async def test_create_challenge_wrong_turn_returns_403(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
+async def test_challenge_a_quien_no_esta_en_la_cadena_no_le_dice_que_espere_turno() -> None:
+    """Pedir el código de firma sin pertenecer a la cadena.
+
+    El guard respondía «no es el turno de este actor», y a quien no está en la
+    cadena eso le afirma algo falso: no espera turno, es que nunca le va a
+    llegar. Se queda esperando un aviso que no existe — el mismo daño que un
+    filtro silencioso.
+
+    El colapso tampoco protegía nada: `POST /sign` sobre esa misma solicitud ya
+    distingue los dos casos y responde `no_es_firmante`. Un colapso que solo
+    existe en uno de los dos caminos no es una defensa, es una incoherencia.
+    """
+    conn = _make_conn()
+    sol = _sol_row()
+
+    # 1) clearance OK, 2) es_firmante → None: el actor NO está en la cadena.
+    conn.fetchval.side_effect = [True, None]
+    conn.fetchrow.side_effect = [sol, {}]
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/challenge",
+                headers=TENANT_HEADERS,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "no_es_firmante"
+        assert "no pertenece" in resp.json()["detail"]["detail"]
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
 async def test_create_challenge_payload_no_fijado_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_audit(monkeypatch)
     _patch_email(monkeypatch)
@@ -230,7 +267,7 @@ async def test_create_challenge_payload_no_fijado_returns_422(monkeypatch: pytes
     sol = _sol_row(payload_sha256=None)
     turno = _turno_row(firmante_id=USER)
 
-    conn.fetchval.side_effect = [True]
+    conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
     conn.fetchrow.side_effect = [sol, {}, turno]
 
     _override(conn)
@@ -256,7 +293,7 @@ async def test_create_challenge_cooldown_returns_429(monkeypatch: pytest.MonkeyP
     # Issued 5s ago — well inside the 30s default cooldown, no sleep() needed.
     activo = _challenge_row(creado_at=NOW - timedelta(seconds=5))
 
-    conn.fetchval.side_effect = [True]
+    conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
     conn.fetchrow.side_effect = [sol, {}, turno, activo]
 
     _override(conn)
@@ -287,7 +324,7 @@ async def test_create_challenge_replaces_expired_cooldown_active(
     )
     new_challenge = _challenge_row()
 
-    conn.fetchval.side_effect = [True]
+    conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
     conn.fetchrow.side_effect = [sol, {}, turno, stale_active, new_challenge]
 
     _override(conn)
@@ -318,7 +355,7 @@ async def test_create_challenge_email_unavailable_returns_503(
     sol = _sol_row()
     turno = _turno_row(firmante_id=USER)
 
-    conn.fetchval.side_effect = [True]
+    conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
     conn.fetchrow.side_effect = [sol, {}, turno, None]
 
     _override(conn)
@@ -350,7 +387,7 @@ async def test_create_challenge_notification_unavailable_returns_503(
     turno = _turno_row(firmante_id=USER)
     challenge_row = _challenge_row()
 
-    conn.fetchval.side_effect = [True]
+    conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
     conn.fetchrow.side_effect = [sol, {}, turno, None, challenge_row]
 
     _override(conn)

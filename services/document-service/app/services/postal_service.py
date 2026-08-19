@@ -164,7 +164,12 @@ class PostalService:
                     "status": 409,
                 },
             )
-        row = await self._repo.update_estado(shipment_id, payload.estado, payload.descripcion)
+        row = await self._repo.update_estado(
+            shipment_id,
+            payload.estado,
+            payload.descripcion,
+            motivo_devolucion=payload.motivo,
+        )
         return await self._response(row)
 
     async def tracking(self, shipment_id: uuid.UUID, clearance: int = 3) -> TrackingResponse:

@@ -101,6 +101,54 @@ def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | 
 
 
 @router.post(
+    "/internal/artefacto",
+    response_model=FileResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a system-produced artifact (internal only)",
+    # Los artefactos que produce el SISTEMA no son anexos que sube una persona,
+    # y hasta ahora compartían camino: el índice electrónico firmado viajaba por
+    # `/upload` y storage lo rechazaba con 415 «Formato no admitido:
+    # application/xml». La firma XAdES se producía entera —sello de tiempo
+    # incluido— y se perdía al guardarla; el índice quedaba `pendiente_firma`
+    # para siempre y ningún expediente podía cerrarse con índice firmado.
+    #
+    # La salida no era ensanchar la lista de anexos, que es un control sobre lo
+    # que entra desde fuera (RF-DIG-04): habría permitido a cualquiera subir XML
+    # como anexo para resolver un problema que no es de los anexos. Este
+    # endpoint tiene su propia lista (`allowed_system_mime_types`) y está
+    # sellado con `X-Internal-Token` (D-02) — el gateway no lo enruta, así que
+    # solo lo alcanzan los servicios de la red interna.
+    dependencies=[Depends(_require_internal_token)],
+)
+async def upload_system_artifact(
+    file: UploadFile,
+    tenant_slug: str = Depends(_require_tenant),
+    uploaded_by: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> JSONResponse:
+    _reject_if_too_large(file)
+    content = await file.read()
+    service = StorageService(conn, tenant_slug)
+    try:
+        response, created, _ = await service.upload(
+            filename=file.filename or "unknown",
+            mime_type=file.content_type,
+            content=content,
+            uploaded_by=uploaded_by,
+            formatos_admitidos=settings.allowed_system_mime_set,
+        )
+    except UnsupportedFormatError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail={"error": "unsupported_media_type", "detail": str(exc), "status": 415},
+        )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        content=response.model_dump(mode="json"),
+    )
+
+
+@router.post(
     "/upload",
     response_model=FileResponse,
     status_code=status.HTTP_201_CREATED,

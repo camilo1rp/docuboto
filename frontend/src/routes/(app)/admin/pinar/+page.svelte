@@ -25,6 +25,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
@@ -73,12 +74,7 @@
 
   /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    return formatearFecha(iso, { estilo: "medio" });
   }
 
   // ---------------------------------------------------------------------------

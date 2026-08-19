@@ -141,6 +141,8 @@ async def test_link_and_locate_expediente(client_with_conn) -> None:
     mock_conn.fetch.return_value = [
         {
             "unidad_id": unidad_id,
+            "tipo": "caja",
+            "codigo": "C0124",
             "signatura": "DEP01-C0124",
             "ubicacion_id": uuid.uuid4(),
             "folio_inicio": 1,
@@ -150,6 +152,38 @@ async def test_link_and_locate_expediente(client_with_conn) -> None:
     where = await client.get(f"/api/v1/expedientes/{exp_id}/unidades", headers=TENANT_HEADERS)
     assert where.status_code == 200
     assert where.json()[0]["signatura"] == "DEP01-C0124"
+    # La signatura dice en qué entrepaño mirar; lo que se saca del estante es
+    # «la caja C0124». Sin estos dos campos la pantalla pintaba guiones.
+    assert where.json()[0]["tipo"] == "caja"
+    assert where.json()[0]["codigo"] == "C0124"
+
+
+@pytest.mark.asyncio
+async def test_localizar_trae_la_identidad_de_la_unidad_desde_la_consulta(
+    client_with_conn,
+) -> None:
+    """Sobre el SQL ENVIADO, no sobre la fila simulada.
+
+    Las dos aserciones de arriba leen un diccionario escrito a mano: comprueban
+    que el esquema ACEPTA `tipo` y `codigo`, no que la consulta los TRAIGA.
+    Quitarlos del SELECT dejaba los tests en verde — verificado por mutación,
+    y es la segunda vez que este mismo descuido aparece en esta revisión.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return []
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    await client.get(f"/api/v1/expedientes/{uuid.uuid4()}/unidades", headers=TENANT_HEADERS)
+
+    sql = next(q for q in consultas if "expediente_unidad" in q)
+    assert "u.tipo" in sql
+    assert "u.codigo" in sql
 
 
 @pytest.mark.asyncio
@@ -246,6 +280,10 @@ def _prestamo_row(**kw) -> dict:
         "fecha_devolucion_real": None,
         "estado": "prestado",
         "created_at": NOW,
+        # Un préstamo dice QUÉ falta del estante: las cuatro rutas hacen JOIN
+        # con la unidad y traen su código y su signatura, no solo el UUID.
+        "unidad_codigo": "C0124",
+        "unidad_signatura": "DEP01-C0124",
     }
     base.update(kw)
     return base
@@ -314,6 +352,7 @@ def _fuid_inv_row(**kw) -> dict:
         "serie_name": "Contratos",
         "signatura": "DEP01-C0124",
         "unidad_tipo": "caja",
+        "unidad_codigo": "C0124",
         "soporte": "papel",
         "num_folios": 200,
         "folio_inicio": 1,
@@ -936,3 +975,138 @@ async def test_la_frecuencia_de_consulta_se_deriva_de_la_pista_de_acceso(
     assert "public.audit_log" in inventario
     assert "al.tenant_slug" in inventario
     assert "12 months" in inventario
+
+
+# ---------------------------------------------------------------------------
+# El árbol de ubicaciones tiene que ser un árbol (revisión por navegador, B8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_solo_raiz_pide_el_primer_nivel(client_with_conn) -> None:
+    """`solo_raiz=true` filtra `parent_id IS NULL` en la CONSULTA.
+
+    La pantalla de archivo físico pinta el primer nivel del árbol y luego
+    despliega hijos. Pedía `?activo=true` a secas creyendo —lo decía su
+    comentario— que sin `parent_id` el backend devuelve las raíces. No: sin
+    `parent_id` no filtra por padre, que es lo natural en un listado. El
+    resultado era que cada depósito, estante y gaveta aparecía también como
+    raíz y el árbol dejaba de ser un árbol.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return []
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    resp = await client.get("/api/v1/ubicaciones?solo_raiz=true", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+
+    # La aserción mira la cláusula WHERE DEL LISTADO, aislada: el CTE que
+    # resuelve la ruta lleva su propio `a.parent_id IS NULL` y buscar la cadena
+    # en el SQL entero daba verde aunque `solo_raiz` no hiciera nada. Lo cazó
+    # el gemelo de abajo, no yo.
+    sql = next(q for q in consultas if "FROM ubicacion" in q)
+    assert "parent_id IS NULL" in _where_del_listado(sql)
+
+
+def _where_del_listado(sql: str) -> str:
+    """La cola de la consulta desde el `FROM ubicacion` de más afuera."""
+    return sql.rsplit("FROM ubicacion", 1)[-1]
+
+
+@pytest.mark.asyncio
+async def test_sin_filtros_sigue_devolviendo_todas(client_with_conn) -> None:
+    """Gemelo: el atajo perezoso era hacer que «sin parent_id» significara raíces.
+
+    Habría arreglado la pantalla del árbol y roto en silencio a todo el que
+    lista ubicaciones para elegir una — que es justo lo que hacen los
+    desplegables que sustituyen a los campos de UUID.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return []
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    await client.get("/api/v1/ubicaciones", headers=TENANT_HEADERS)
+
+    sql = next(q for q in consultas if "FROM ubicacion" in q)
+    assert "WHERE" not in _where_del_listado(sql)
+
+
+@pytest.mark.asyncio
+async def test_solo_raiz_y_parent_id_no_se_combinan(client_with_conn) -> None:
+    """O el primer nivel, o los hijos de una ubicación: pedir las dos cosas es
+    una petición sin significado, y responder «las raíces» en silencio sería
+    ignorar la mitad de lo que se pidió."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+
+    resp = await client.get(
+        f"/api/v1/ubicaciones?solo_raiz=true&parent_id={uuid.uuid4()}",
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "filtros_incompatibles"
+
+
+@pytest.mark.asyncio
+async def test_el_listado_lleva_la_ruta_de_cada_ubicacion(client_with_conn) -> None:
+    """Un código suelto (`EST-003`) no dice dónde está. La ruta completa se
+    resuelve para todas las filas con un CTE, no una consulta por fila."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return [_ubicacion_row(ruta="SED-001 / DEP-001")]
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    resp = await client.get("/api/v1/ubicaciones", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()[0]["ruta"] == "SED-001 / DEP-001"
+
+    sql = next(q for q in consultas if "FROM ubicacion" in q)
+    assert "RECURSIVE" in sql
+    # Una consulta por fila sería N+1 sobre el inventario entero.
+    assert len([q for q in consultas if "FROM ubicacion" in q]) == 1
+
+
+@pytest.mark.asyncio
+async def test_el_prestamo_dice_que_unidad_falta_del_estante(client_with_conn) -> None:
+    """El listado de préstamos traía solo `unidad_id`.
+
+    Nadie busca un UUID en un depósito. Se comprueba sobre el SQL ENVIADO, no
+    sobre el esquema: que `PrestamoResponse` acepte el campo no prueba que la
+    consulta lo traiga — esa confusión ya dejó pasar un test en esta revisión.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    consultas: list[str] = []
+
+    async def fake_fetch(query, *params):
+        consultas.append(query)
+        return [_prestamo_row()]
+
+    mock_conn.fetch.side_effect = fake_fetch
+
+    resp = await client.get("/api/v1/prestamos?estado=prestado", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()[0]["unidad_codigo"] == "C0124"
+
+    sql = next(q for q in consultas if "FROM prestamo" in q)
+    assert "JOIN unidad_conservacion" in sql
+    # El JOIN introduce dos columnas `estado`/`unidad_id` homónimas: sin
+    # prefijar, Postgres aborta con «column reference is ambiguous».
+    assert "p.estado" in sql

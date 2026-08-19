@@ -16,6 +16,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { resolverExpediente } from "$lib/server/expedienteRef.js";
 
 export async function GET({ locals, params }) {
   const token = locals.accessToken ?? "";
@@ -23,7 +24,19 @@ export async function GET({ locals, params }) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
   }
   const tenant = locals.user?.tenant_slug ?? "";
-  const { id } = params;
+  // `id` puede ser el UUID o el CÓDIGO del expediente — es lo que la persona
+  // tiene delante y lo único que la interfaz muestra.
+  const id = await resolverExpediente(params.id, token, tenant);
+  if (!id) {
+    return json(
+      {
+        error: "expediente_no_encontrado",
+        detail:
+          "No se encontró un expediente con ese número. Revisa el código (ej. EXP-2026-0020).",
+      },
+      { status: 404 },
+    );
+  }
 
   try {
     const res = await fetch(`${API_V1}/expedientes/${id}/unidades`, {

@@ -35,6 +35,7 @@
   import { browser } from "$app/environment";
   import { navigating } from "$app/stores";
   import { sessionUser, tenantSlug, permissions, roles } from "$lib/stores/auth.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { favoriteHrefs, initFavorites, pickFavoriteNavItems } from "$lib/stores/favorites.js";
   import { NAV_ITEMS, filterVisibleNavItems } from "$lib/utils/navItems.js";
@@ -79,18 +80,9 @@
     closed: "closed",
   };
 
-  /** @param {string|null} iso */
+  /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "";
-    try {
-      return new Date(iso).toLocaleDateString("es-CO", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
-    } catch {
-      return iso;
-    }
+    return formatearFecha(iso, { estilo: "medio" });
   }
 
   // ---------------------------------------------------------------------------

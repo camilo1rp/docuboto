@@ -653,3 +653,101 @@ async def test_upload_exige_permiso_de_radicacion(
     assert response.status_code == 403
     assert response.json()["detail"]["detail"] == "Se requiere el permiso PERM_RADI"
     mock_minio.put_object.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/storage/internal/artefacto — artefactos que produce el SISTEMA
+# ---------------------------------------------------------------------------
+#
+# El índice electrónico firmado es XML y viajaba por `/upload`, el endpoint de
+# los anexos que sube una persona, cuya lista blanca (RF-DIG-04) no admite XML.
+# Storage respondía 415 y la firma XAdES —producida entera, sello de tiempo
+# incluido— se perdía al guardarla: el índice quedaba `pendiente_firma` para
+# siempre y ningún expediente podía cerrarse con índice firmado.
+#
+# Lo que estos casos fijan es la SEPARACIÓN, no el formato concreto: lo que el
+# sistema produce y lo que sube un funcionario son dos cosas con dos listas y
+# dos puertas. Ensanchar la de los anexos habría desbloqueado el índice
+# abriendo XML a cualquiera que suba un archivo.
+
+
+@pytest.mark.asyncio
+async def test_artefacto_del_sistema_admite_xml(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    client, mock_conn, mock_minio = client_with_conn
+    record = make_file_record(file_id=FILE_ID)
+    mock_conn.fetchrow.side_effect = [None, record]
+
+    response = await client.post(
+        "/api/v1/storage/internal/artefacto",
+        files={"file": ("indice-firmado.xml", b"<indice/>", "application/xml")},
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert response.status_code == 201
+    mock_minio.put_object.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_el_endpoint_de_anexos_sigue_rechazando_xml(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """El gemelo: la puerta de los anexos NO se ensanchó.
+
+    Sin este caso, «arreglar» el índice añadiendo `application/xml` a la lista
+    de RF-DIG-04 pasaría en verde — y habría abierto a cualquiera la subida de
+    XML como anexo, que es superficie nueva para un problema que no era suyo.
+    """
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": ("indice-firmado.xml", b"<indice/>", "application/xml")},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 415
+    assert response.json()["detail"]["error"] == "unsupported_media_type"
+    mock_minio.put_object.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artefacto_del_sistema_exige_token_interno(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Sin el token, la ruta no existe para quien llame desde fuera.
+
+    El gateway no la enruta, pero eso es topología, no un control: el sello es
+    lo que impide que la lista de formatos del sistema sea alcanzable con una
+    sesión de usuario.
+    """
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+
+    response = await client.post(
+        "/api/v1/storage/internal/artefacto",
+        files={"file": ("indice-firmado.xml", b"<indice/>", "application/xml")},
+        headers=TENANT_HEADERS,  # sin X-Internal-Token
+    )
+
+    assert response.status_code in (401, 403)
+    mock_minio.put_object.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artefacto_del_sistema_no_es_puerta_franca(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Tiene su propia lista, no «todo vale»: un ejecutable sigue siendo 415."""
+    client, mock_conn, mock_minio = client_with_conn
+
+    response = await client.post(
+        "/api/v1/storage/internal/artefacto",
+        files={"file": ("malware.exe", b"MZ...", "application/x-msdownload")},
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert response.status_code == 415
+    mock_minio.put_object.assert_not_awaited()

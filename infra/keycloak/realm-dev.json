@@ -4,7 +4,6 @@
   "enabled": true,
   "sslRequired": "none",
 
-  "_comentario_sesiones": "SOLO DESARROLLO. Keycloak trae 30 min de inactividad y 5 min de access token; en una demostración o en una sesión de pruebas larga eso echa a la persona a mitad de camino y parece una avería. Se sube la INACTIVIDAD a 8 h y se deja el access token en su valor por defecto: la renovación transparente de hooks.server.js lo repone sola, así que alargarlo no aporta nada y sí ampliaría la ventana de un token robado. En producción NO se copia este bloque: este realm es el de dev (sslRequired=none ya lo delata).",
   "ssoSessionIdleTimeout": 28800,
   "ssoSessionMaxLifespan": 36000,
   "registrationAllowed": false,

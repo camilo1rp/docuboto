@@ -37,6 +37,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -134,7 +135,10 @@
 
     const rows = selectedShipments.map((s, i) => [
       String(i + 1),
-      escapeCell(s.radicado_id),
+      // La planilla se imprime y se entrega al operador postal: ahí el UUID no
+      // le sirve a nadie. Va el número de radicado, con el identificador
+      // interno como último recurso.
+      escapeCell(s.tracking_number ?? s.radicado_id),
       escapeCell(OPERADOR_LABELS[s.operador] ?? s.operador),
       escapeCell(s.guia),
       escapeCell(ESTADO_LABEL[s.estado] ?? s.estado),
@@ -322,7 +326,11 @@
       const res = await fetch(`/envios/api/${selectedShipment.id}/estado`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ estado: "devuelto", descripcion }),
+        // La causal va también en su propio campo, no solo dentro del texto:
+        // así queda consultable y el envío devuelto se puede reportar por
+        // motivo, igual que cuando la devolución llega por el webhook del
+        // operador postal.
+        body: JSON.stringify({ estado: "devuelto", descripcion, motivo: fDevCausal }),
       });
       const responseData = await res.json();
       if (!res.ok) {
@@ -368,7 +376,7 @@
     let valid = true;
 
     if (!fRadicadoId.trim()) {
-      fRadicadoIdError = "El ID del radicado es obligatorio.";
+      fRadicadoIdError = "Indique el radicado de salida.";
       valid = false;
     }
     if (!fOperador) {
@@ -506,24 +514,14 @@
     ? causalesCatalogo
     : CAUSALES_RESERVA.map((c) => ({ value: c, label: c }));
 
-  function formatDate(/** @type {string} */ iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+  /** @param {string|null|undefined} iso */
+  function formatDate(iso) {
+    return formatearFecha(iso);
   }
 
   function formatDateTime(/** @type {string} */ iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   // SUGERENCIA #5: las columnas sin texto visible llevan label sr-only para que los
@@ -716,7 +714,15 @@
       </div>
       <div class="envio-detail__row">
         <dt>Radicado</dt>
-        <dd class="envio-detail__mono">{selectedShipment.radicado_id}</dd>
+        <!--
+          El NÚMERO, que es como se nombra un documento en la entidad y lo que
+          quien despacha la correspondencia puede cotejar con el papel que tiene
+          delante. Antes solo estaba el UUID. Se cae al identificador interno si
+          el número no viene: es feo, pero es cierto.
+        -->
+        <dd class="envio-detail__mono">
+          {selectedShipment.tracking_number ?? selectedShipment.radicado_id}
+        </dd>
       </div>
       <div class="envio-detail__row">
         <dt>Destinatario</dt>
@@ -946,13 +952,13 @@
     -->
     <FormField
       id="envio-radicado-id"
-      label="ID del radicado de salida"
+      label="Radicado de salida"
       type="text"
       bind:value={fRadicadoId}
-      placeholder="UUID del radicado de salida (p.ej. a1b2c3d4-…)"
+      placeholder="Número de radicado (p. ej. 2026-DEMO-S-000013)"
       required
       error={fRadicadoIdError}
-      hint="Disponible en el detalle del radicado en la Bandeja."
+      hint="El número que aparece en la Bandeja. También se admite el identificador interno."
     />
     <FormField
       id="envio-operador"

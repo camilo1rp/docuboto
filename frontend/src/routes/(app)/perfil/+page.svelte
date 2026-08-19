@@ -54,6 +54,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { can, sessionUser } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
   import { isReenrollConfirmed, REENROLL_CONFIRM_PHRASE } from "$lib/utils/signingKeyConfirm.js";
@@ -419,7 +420,7 @@
   function formatDate(iso) {
     if (!iso) return "—";
     try {
-      return new Date(iso).toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" });
+      return formatearFechaHora(iso);
     } catch {
       return iso;
     }

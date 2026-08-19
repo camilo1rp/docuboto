@@ -144,7 +144,23 @@ async def sign_xml(
                     acreditado=bool(data.get("acreditado", False)),
                     certificado_fingerprint=data.get("certificado_fingerprint"),
                 )
-            logger.warning("signature-service → HTTP %s al firmar índice", resp.status_code)
+            # El MOTIVO, no solo el código. Con «HTTP 503» a secas, quien
+            # atiende el incidente no puede distinguir «falta aprovisionar el
+            # sello del tenant» de «la TSA no responde» ni de «el servicio está
+            # caído»: tres causas con tres remedios distintos, y el índice queda
+            # `pendiente_firma` en las tres. El cuerpo ya viene con el sobre de
+            # error del proyecto; descartarlo era tirar el diagnóstico.
+            motivo = ""
+            try:
+                cuerpo = resp.json()
+                detalle = cuerpo.get("detail", cuerpo)
+                if isinstance(detalle, dict):
+                    motivo = f" [{detalle.get('error')}: {detalle.get('detail')}]"
+            except Exception:  # noqa: BLE001 — el log nunca puede tumbar la firma.
+                motivo = ""
+            logger.warning(
+                "signature-service → HTTP %s al firmar índice%s", resp.status_code, motivo
+            )
     except httpx.RequestError as exc:
         logger.warning("signature-service inalcanzable al firmar índice: %s", exc)
     return None

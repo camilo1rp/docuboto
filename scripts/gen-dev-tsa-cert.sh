@@ -65,7 +65,20 @@ openssl req \
     -addext "extendedKeyUsage=critical,timeStamping" \
     -addext "basicConstraints=critical,CA:FALSE"
 
-chmod 600 "$KEY_PATH"
+# Permisos de la clave privada — mismo criterio que `gen-dev-signing-cert.sh`.
+#
+# El contenedor de `signature-service` corre como uid 999 y este guion escribe
+# con el uid de quien lo ejecuta: con la clave en 600 el servicio no puede
+# leerla, y el fallo aparece mucho después, al firmar, como un 503 sin causa
+# visible. El par `_dev/` es auto-firmado y de pruebas por definición: se deja
+# legible para que el entorno funcione sin `sudo`. El de un tenant concreto se
+# queda en 600 — si el contenedor no lo puede leer, lo correcto es ajustar la
+# propiedad del fichero, no abrir la clave.
+if [ "$SUBDIR" = "_dev" ]; then
+    chmod 644 "$KEY_PATH"
+else
+    chmod 600 "$KEY_PATH"
+fi
 chmod 644 "$CERT_PATH"
 
 echo "  OK  $CERT_PATH"

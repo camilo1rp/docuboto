@@ -32,6 +32,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions, sessionUser } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess, notifyWarning } from "$lib/stores/notifications.js";
 
@@ -414,24 +415,14 @@
     rechazado: "error",
   });
 
-  function formatDate(/** @type {string} */ iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+  /** @param {string|null|undefined} iso */
+  function formatDate(iso) {
+    return formatearFecha(iso);
   }
 
   function formatDateTime(/** @type {string} */ iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   /**

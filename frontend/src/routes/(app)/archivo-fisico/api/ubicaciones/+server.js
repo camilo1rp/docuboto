@@ -33,8 +33,12 @@ export async function GET({ locals, url }) {
   const parentId = url.searchParams.get("parent_id") ?? "";
   const activo = url.searchParams.get("activo") ?? "";
 
+  const soloRaiz = url.searchParams.get("solo_raiz") ?? "";
+
   if (parentId && UUID_RE.test(parentId)) params.set("parent_id", parentId);
   if (activo === "true" || activo === "false") params.set("activo", activo);
+  // `solo_raiz` NO es equivalente a omitir `parent_id`: eso es "no filtres".
+  if (soloRaiz === "true") params.set("solo_raiz", "true");
 
   const qs = params.toString();
 

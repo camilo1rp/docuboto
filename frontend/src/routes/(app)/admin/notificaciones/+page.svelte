@@ -31,6 +31,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -100,7 +101,7 @@
   $: webhookRows = webhooks.map((w) => ({
     ...w,
     event_types: w.event_types?.length ? w.event_types.join(", ") : "Todos",
-    created_at: w.created_at ? new Date(w.created_at).toLocaleString("es-CO") : "—",
+    created_at: w.created_at ? formatearFechaHora(w.created_at) : "—",
   }));
 
   let modalCreate = false;

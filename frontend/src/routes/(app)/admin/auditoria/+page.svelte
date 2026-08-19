@@ -40,6 +40,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError } from "$lib/stores/notifications.js";
 
@@ -161,7 +162,7 @@
     { key: "actor", label: "Actor" },
   ];
 
-  $: tableRows = entries.map((e) => ({ ...e, ts: new Date(e.ts).toLocaleString("es-CO") }));
+  $: tableRows = entries.map((e) => ({ ...e, ts: formatearFechaHora(e.ts) }));
 
   onMount(() => {
     setBreadcrumbs([{ label: "Administración", href: "/admin" }, { label: "Auditoría" }]);
@@ -326,7 +327,7 @@
   {#if detailEntry}
     <dl class="detail-list">
       <dt>Fecha</dt>
-      <dd>{new Date(detailEntry.ts).toLocaleString("es-CO")}</dd>
+      <dd>{formatearFechaHora(detailEntry.ts)}</dd>
       <dt>Servicio</dt>
       <dd>{detailEntry.service}</dd>
       <dt>Canal</dt>

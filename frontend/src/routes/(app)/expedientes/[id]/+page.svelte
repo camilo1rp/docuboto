@@ -31,6 +31,7 @@
 -->
 <script>
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { nombreSerieTrd } from "$lib/utils/trd.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
@@ -687,24 +688,13 @@
   // ---------------------------------------------------------------------------
   /** @param {string|null|undefined} iso */
   function fmtDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
+    return formatearFecha(iso);
   }
 
   /** @param {string|null|undefined} iso */
   function fmtDatetime(iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   /** @param {number|null|undefined} bytes */

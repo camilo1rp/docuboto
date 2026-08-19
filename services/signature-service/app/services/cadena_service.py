@@ -377,7 +377,10 @@ class CadenaFirmaService:
         concurrent challenge/sign cannot race this check):
         1. 404 solicitud_no_encontrada — solicitud missing OR below the actor's
            clearance (no-read-up, RF-SEG-08 — same neutral 404 as get_solicitud).
-        2. 403 no_es_su_turno — no active turn, or it belongs to someone else.
+        2. 403 no_es_firmante — actor is not in the chain at all (checked BEFORE
+           the turn, so the message never tells a non-member to wait their turn).
+        2b. 403 no_es_su_turno — actor IS in the chain but the active turn is
+           someone else's, or there is no active turn.
         3. 422 payload_no_fijado — payload_sha256 must be fixed before a 2FA
            challenge can be issued (Q1): the challenge is bound to a stable hash.
 
@@ -430,6 +433,24 @@ class CadenaFirmaService:
                         "error": "solicitud_no_pendiente",
                         "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
                         "status": 409,
+                    },
+                )
+
+            # Pertenencia ANTES que turno, igual que `firmar`. Este guard decía
+            # «no es el turno de este actor» también a quien NO está en la
+            # cadena, y a ese le afirmaba algo falso: no espera turno, es que
+            # nunca le va a llegar. Quien lo lea se quedará esperando —el mismo
+            # daño que un filtro silencioso—, y el colapso no protegía nada,
+            # porque `firmar` sobre esa misma solicitud ya distingue los dos
+            # casos y responde `no_es_firmante`. Un colapso que solo existe en
+            # uno de dos caminos no es una defensa: es una incoherencia.
+            if not await self._repo.es_firmante(solicitud_id, actor):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "error": "no_es_firmante",
+                        "detail": "El actor no pertenece a esta cadena de firma",
+                        "status": 403,
                     },
                 )
 

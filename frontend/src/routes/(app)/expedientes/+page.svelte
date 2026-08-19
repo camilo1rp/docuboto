@@ -46,6 +46,7 @@
   import { enhance } from "$app/forms";
   import { navigating } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
 
   import DataTable from "$lib/components/ui/DataTable.svelte";
@@ -125,12 +126,7 @@
 
   /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    return formatearFecha(iso);
   }
 
   // ---------------------------------------------------------------------------

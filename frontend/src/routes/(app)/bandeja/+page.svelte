@@ -39,6 +39,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
@@ -263,17 +264,9 @@
   const STATUS_LABELS = RADICADO_ESTADO_LABEL;
   const STATUS_CHIP_MAP = RADICADO_ESTADO_CHIP;
 
-  /**
-   * Formatea una fecha ISO 8601 como fecha legible en español.
-   * @param {string} iso
-   */
+  /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    return formatearFecha(iso);
   }
 
   // ---------------------------------------------------------------------------

@@ -214,6 +214,26 @@ class Settings(BaseSettings):
         "text/plain,text/csv,application/zip"
     )
 
+    # Formatos de los ARTEFACTOS QUE PRODUCE EL SISTEMA, no de los anexos que
+    # sube una persona. Son dos listas porque son dos cosas distintas: la de
+    # arriba acota lo que entra desde fuera (RF-DIG-04) y esta describe lo que
+    # el propio sistema genera y necesita guardar — hoy, el XML del índice
+    # electrónico firmado.
+    #
+    # Estaban fundidas en una sola, y el efecto era que el índice firmado NO SE
+    # PODÍA ALMACENAR: `signature-service` lo subía por el endpoint de anexos y
+    # storage lo rechazaba con 415 «Formato no admitido: application/xml». La
+    # firma XAdES se producía entera —con su sello de tiempo— y se perdía al
+    # guardarla; el índice quedaba `pendiente_firma` para siempre y ningún
+    # expediente podía cerrarse con índice firmado.
+    #
+    # La salida NO es añadir `application/xml` a la lista de anexos: eso
+    # permitiría a cualquiera subir XML como anexo y abriría una superficie
+    # (entidades externas, XXE en cualquier consumidor futuro) que hoy no
+    # existe, para resolver un problema que no es de los anexos. Esta lista solo
+    # la alcanza el endpoint sellado con `X-Internal-Token`.
+    allowed_system_mime_types: str = "application/xml"
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
@@ -221,6 +241,12 @@ class Settings(BaseSettings):
     @property
     def allowed_mime_set(self) -> frozenset[str]:
         return frozenset(m.strip() for m in self.allowed_mime_types.split(",") if m.strip())
+
+    @property
+    def allowed_system_mime_set(self) -> frozenset[str]:
+        return frozenset(
+            m.strip() for m in self.allowed_system_mime_types.split(",") if m.strip()
+        )
 
 
 settings = Settings()

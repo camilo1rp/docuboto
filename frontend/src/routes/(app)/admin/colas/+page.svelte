@@ -35,6 +35,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -129,9 +130,7 @@
 
   $: tableRows = items.map((i) => ({
     ...i,
-    dead_lettered_at: i.dead_lettered_at
-      ? new Date(i.dead_lettered_at).toLocaleString("es-CO")
-      : "—",
+    dead_lettered_at: i.dead_lettered_at ? formatearFechaHora(i.dead_lettered_at) : "—",
   }));
 
   // --- Detalle ---------------------------------------------------------------
@@ -398,10 +397,10 @@
       <dd>{detail.origin_stream ?? "—"}</dd>
       <dt>Fecha de fallo</dt>
       <dd>
-        {detail.dead_lettered_at ? new Date(detail.dead_lettered_at).toLocaleString("es-CO") : "—"}
+        {detail.dead_lettered_at ? formatearFechaHora(detail.dead_lettered_at) : "—"}
       </dd>
       <dt>Fecha de resolución</dt>
-      <dd>{detail.resolved_at ? new Date(detail.resolved_at).toLocaleString("es-CO") : "—"}</dd>
+      <dd>{detail.resolved_at ? formatearFechaHora(detail.resolved_at) : "—"}</dd>
       <dt>Motivo del fallo</dt>
       <dd>
         <pre class="detail-list__payload">{JSON.stringify(detail.failure, null, 2)}</pre>

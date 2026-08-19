@@ -92,7 +92,9 @@ describe("opcionesSerieTrd", () => {
   });
 
   it("no esconde las que no rigen: una entidad nueva solo tiene borradores", () => {
-    const soloBorradores = [{ id: "x", code: "A-1", name: "Serie", version: 1, estado: "borrador" }];
+    const soloBorradores = [
+      { id: "x", code: "A-1", name: "Serie", version: 1, estado: "borrador" },
+    ];
     expect(opcionesSerieTrd(soloBorradores)).toHaveLength(1);
   });
 

@@ -38,6 +38,7 @@
 <script>
   import { createEventDispatcher } from "svelte";
   import Drawer from "$lib/components/ui/Drawer.svelte";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
@@ -103,9 +104,7 @@
   }
 
   function formatoFecha(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("es-CO");
+    return formatearFechaHora(iso);
   }
 
   async function submit() {

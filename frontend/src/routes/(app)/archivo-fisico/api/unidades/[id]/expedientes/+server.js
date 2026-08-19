@@ -16,8 +16,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { resolverExpediente } from "$lib/server/expedienteRef.js";
 
 export async function GET({ locals, params }) {
   const token = locals.accessToken ?? "";
@@ -61,18 +60,33 @@ export async function POST({ locals, params, request }) {
 
   const { expediente_id, folio_inicio, folio_fin } = body ?? {};
 
-  if (!expediente_id || typeof expediente_id !== "string" || !UUID_RE.test(expediente_id.trim())) {
+  if (!expediente_id || typeof expediente_id !== "string" || !expediente_id.trim()) {
     return json(
       {
         error: "validation_error",
-        detail: "El campo 'expediente_id' es obligatorio y debe ser un UUID válido.",
+        detail: "El campo 'expediente_id' es obligatorio.",
       },
       { status: 422 },
     );
   }
 
+  // Se admite el CÓDIGO del expediente además del UUID: ese identificador no
+  // aparece en ninguna pantalla, y vincular una carpeta a una caja no puede
+  // exigir abrir la base de datos. La coincidencia es exacta.
+  const expedienteUuid = await resolverExpediente(expediente_id, token, tenant);
+  if (!expedienteUuid) {
+    return json(
+      {
+        error: "expediente_no_encontrado",
+        detail:
+          "No se encontró un expediente con ese número. Revisa el código (ej. EXP-2026-0020).",
+      },
+      { status: 404 },
+    );
+  }
+
   /** @type {Record<string, unknown>} */
-  const payload = { expediente_id: expediente_id.trim() };
+  const payload = { expediente_id: expedienteUuid };
   if (
     folio_inicio !== undefined &&
     folio_inicio !== null &&

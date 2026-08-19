@@ -30,6 +30,7 @@
 <script>
   import { goto } from "$app/navigation";
   import { opcionesSerieTrd } from "$lib/utils/trd.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { dndzone } from "svelte-dnd-action";
   import { permissions } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
@@ -562,7 +563,7 @@
         </div>
         <div>
           <dt>Registrado</dt>
-          <dd>{new Date(createdDocument.registered_at).toLocaleString("es-CO")}</dd>
+          <dd>{formatearFechaHora(createdDocument.registered_at)}</dd>
         </div>
         {#if createdDocument.due_date}
           <div>

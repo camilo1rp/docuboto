@@ -168,6 +168,7 @@
  * @typedef {object} ShipmentResponse
  * @property {string}                                         id
  * @property {string}                                         radicado_id
+ * @property {string|null}                                    [tracking_number]
  * @property {'4-72'|'servientrega'|'otro'}                   operador
  * @property {string|null}                                    guia
  * @property {'registrado'|'en_transito'|'entregado'|'devuelto'|'fallido'} estado

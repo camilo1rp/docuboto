@@ -82,9 +82,17 @@ class ExpedienteUnidadLink(BaseModel):
 
 
 class UnidadDeExpediente(BaseModel):
-    """Dónde está el expediente: unidad + signatura + rango."""
+    """Dónde está el expediente: unidad + signatura + rango.
+
+    `tipo` y `codigo` NO son adorno: la signatura topográfica dice en qué
+    entrepaño mirar, pero lo que el operario tiene que sacar del estante es
+    «la caja CAJ-001». Sin ellos la pantalla de localización mostraba dos
+    columnas de guiones sobre un dato que la consulta ya traía por el JOIN.
+    """
 
     unidad_id: uuid.UUID
+    tipo: str
+    codigo: str
     signatura: str | None
     ubicacion_id: uuid.UUID | None
     folio_inicio: int | None
@@ -108,6 +116,11 @@ class PrestamoCreate(BaseModel):
 class PrestamoResponse(BaseModel):
     id: uuid.UUID
     unidad_id: uuid.UUID
+    # Un listado de préstamos sin identificar la unidad no dice lo único que
+    # hace falta saber: QUÉ falta del estante. El UUID no vale — nadie lo
+    # busca en un depósito.
+    unidad_codigo: str | None = None
+    unidad_signatura: str | None = None
     prestado_a: str
     prestado_por: str | None
     fecha_prestamo: datetime
@@ -138,6 +151,9 @@ class FuidRow(BaseModel):
     serie_name: str | None
     signatura: str | None
     unidad_tipo: str
+    # El tipo dice «caja»; el código dice CUÁL caja. El inventario se coteja
+    # contra el depósito con el código en la mano.
+    unidad_codigo: str
     soporte: str | None
     num_folios: int | None
     folio_inicio: int | None

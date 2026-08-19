@@ -34,6 +34,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -959,7 +960,7 @@
                     label={motivoInfo(r.trd_revision_motivo).etiqueta}
                   />
                 </td>
-                <td>{r.closed_at ? new Date(r.closed_at).toLocaleDateString("es-CO") : "—"}</td>
+                <td>{formatearFecha(r.closed_at)}</td>
               </tr>
             {/each}
           </tbody>

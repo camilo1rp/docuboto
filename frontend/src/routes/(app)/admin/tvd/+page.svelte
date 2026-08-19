@@ -43,6 +43,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -133,12 +134,7 @@
 
   /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    return formatearFecha(iso);
   }
 
   // ---------------------------------------------------------------------------

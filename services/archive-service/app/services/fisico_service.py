@@ -137,9 +137,11 @@ class FisicoService:
         return await self._ubicacion_response(row)
 
     async def list_ubicaciones(
-        self, *, parent_id: uuid.UUID | None, activo: bool | None
+        self, *, parent_id: uuid.UUID | None, activo: bool | None, solo_raiz: bool = False
     ) -> list[UbicacionResponse]:
-        rows = await self._repo.list_ubicaciones(parent_id=parent_id, activo=activo)
+        rows = await self._repo.list_ubicaciones(
+            parent_id=parent_id, activo=activo, solo_raiz=solo_raiz
+        )
         return [UbicacionResponse(**dict(r)) for r in rows]
 
     async def _ubicacion_response(self, row) -> UbicacionResponse:
@@ -259,6 +261,8 @@ class FisicoService:
         return PrestamoResponse(
             id=row["id"],
             unidad_id=row["unidad_id"],
+            unidad_codigo=row["unidad_codigo"],
+            unidad_signatura=row["unidad_signatura"],
             prestado_a=row["prestado_a"],
             prestado_por=row["prestado_por"],
             fecha_prestamo=row["fecha_prestamo"],

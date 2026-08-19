@@ -109,11 +109,27 @@ async def create_ubicacion(
 async def list_ubicaciones(
     parent_id: uuid.UUID | None = Query(default=None),
     activo: bool | None = Query(default=None),
+    solo_raiz: bool = Query(
+        default=False,
+        description=(
+            "Devuelve solo las ubicaciones de primer nivel (sin padre). "
+            "Omitir `parent_id` NO significa eso: significa no filtrar."
+        ),
+    ),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[UbicacionResponse]:
+    if solo_raiz and parent_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "filtros_incompatibles",
+                "detail": "`solo_raiz` y `parent_id` se excluyen: o el primer nivel, o los hijos de una ubicación.",
+                "status": 422,
+            },
+        )
     return await FisicoService(conn, tenant_slug).list_ubicaciones(
-        parent_id=parent_id, activo=activo
+        parent_id=parent_id, activo=activo, solo_raiz=solo_raiz
     )
 
 

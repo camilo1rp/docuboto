@@ -82,11 +82,17 @@ def _bucket_name(tenant_slug: str) -> str:
     return f"{_BUCKET_PREFIX}-{tenant_slug}-documents"
 
 
-def _check_format(mime_type: str | None) -> None:
-    allowed = settings.allowed_mime_set
-    if "*" in allowed:
+def _check_format(mime_type: str | None, allowed: frozenset[str] | None = None) -> None:
+    """Valida el formato contra la lista que corresponda.
+
+    `allowed` explícito = artefacto del sistema (lista propia, solo alcanzable
+    desde el endpoint sellado con token interno). Sin él, la lista de anexos de
+    usuario (RF-DIG-04). Son dos listas a propósito: ver `config.py`.
+    """
+    permitidos = settings.allowed_mime_set if allowed is None else allowed
+    if "*" in permitidos:
         return
-    if mime_type not in allowed:
+    if mime_type not in permitidos:
         raise UnsupportedFormatError(f"Formato no admitido: {mime_type or 'desconocido'}")
 
 
@@ -103,6 +109,8 @@ class StorageService:
         mime_type: str | None,
         content: bytes,
         uploaded_by: uuid.UUID | None,
+        *,
+        formatos_admitidos: frozenset[str] | None = None,
     ) -> tuple[FileResponse, bool, bool]:
         """
         Upload a file, deduplicating by SHA-256 within the tenant.
@@ -136,7 +144,7 @@ class StorageService:
           para que el router encole el worker asíncrono best-effort. Nunca
           bloquea la respuesta al cliente.
         """
-        _check_format(mime_type)
+        _check_format(mime_type, formatos_admitidos)
         sha256 = hashlib.sha256(content).hexdigest()
 
         existing = await self._repo.find_by_sha256(sha256)

@@ -46,6 +46,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -488,7 +489,7 @@
                     dot
                   /></td
                 >
-                <td>{new Date(t.created_at).toLocaleDateString("es-CO")}</td>
+                <td>{formatearFecha(t.created_at)}</td>
               </tr>
             {/each}
           </tbody>
@@ -557,7 +558,7 @@
                     dot
                   /></td
                 >
-                <td>{new Date(t.created_at).toLocaleDateString("es-CO")}</td>
+                <td>{formatearFecha(t.created_at)}</td>
               </tr>
             {/each}
           </tbody>

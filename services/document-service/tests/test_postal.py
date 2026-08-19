@@ -24,6 +24,7 @@ def _ship_row(**kw) -> dict:
     base = {
         "id": uuid.uuid4(),
         "radicado_id": uuid.uuid4(),
+        "tracking_number": "2026-DEMO-S-000013",
         "operador": "4-72",
         "guia": "C472-ABCDEF0123",
         "estado": "registrado",
@@ -284,3 +285,112 @@ async def test_get_envio_no_read_up_404(client_with_conn) -> None:
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "envio_not_found"
+
+
+def test_la_consulta_de_envios_trae_el_numero_de_radicado() -> None:
+    """La pantalla de envíos mostraba «Radicado: 43632304-cdea-…».
+
+    Un envío postal lo despacha una persona que tiene el documento en la mano:
+    el UUID no lo puede cotejar con nada, y la planilla que se imprime para el
+    operador postal llevaba ese mismo identificador en la columna del radicado.
+    El dato estaba a un paso — las CUATRO consultas del repositorio ya hacen
+    JOIN a `radicados` por el no-read-up (RF-SEG-08) y no se llevaban la
+    columna.
+
+    Se comprueba el SQL QUE SE ENVÍA, no el esquema. La primera versión de este
+    test construía un `ShipmentResponse` a partir de un diccionario escrito a
+    mano: pasaba igual de verde con la columna quitada del SELECT, porque el
+    dato lo ponía el propio test. Quitar `r.tracking_number` del `_COLS_S` debe
+    poner esto en rojo, y es lo único que lo garantiza.
+    """
+    from app.repositories.postal_repository import _COLS_S
+
+    assert "r.tracking_number" in _COLS_S
+
+
+@pytest.mark.asyncio
+async def test_get_envio_devuelve_el_numero_que_dio_la_consulta(client_with_conn) -> None:
+    """Y el número que sale es el de la FILA, no uno inventado por el servicio.
+
+    Se mira además el SQL que recibió la conexión: es la consulta real la que
+    tiene que traer la columna, no el diccionario del test.
+    """
+    client, mock_conn = client_with_conn
+    sid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True},
+        _ship_row(id=sid, tracking_number="2026-DEMO-S-000013"),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.get(f"/api/v1/envios/{sid}", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["tracking_number"] == "2026-DEMO-S-000013"
+    sql = mock_conn.fetchrow.await_args.args[0]
+    assert "JOIN radicados r" in sql
+    assert "r.tracking_number" in sql
+
+
+@pytest.mark.asyncio
+async def test_la_devolucion_manual_guarda_la_causal_en_su_campo(client_with_conn) -> None:
+    """La causal iba solo dentro del texto libre de `descripcion`.
+
+    El webhook del operador postal SÍ alimentaba `motivo_devolucion`; la
+    devolución que registra una persona desde la pantalla, no. El mismo hecho
+    por dos caminos, con distinta calidad de dato — y el peor era el manual, que
+    es el habitual: sin causal en su campo no hay forma de reportar por qué se
+    devuelven los envíos, aunque el dato se haya elegido de una lista.
+    """
+    client, mock_conn = client_with_conn
+    sid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True},
+        _ship_row(id=sid, estado="en_transito"),
+        _ship_row(id=sid, estado="devuelto", motivo_devolucion="Postal: no reclamado"),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/envios/{sid}/estado",
+        json={
+            "estado": "devuelto",
+            "descripcion": "Causal: Postal: no reclamado — 30 días",
+            "motivo": "Postal: no reclamado",
+        },
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    # La causal viaja como PARÁMETRO del UPDATE, no solo dentro del texto.
+    llamadas = [c.args for c in mock_conn.fetchrow.await_args_list]
+    actualizacion = next(a for a in llamadas if "UPDATE postal_shipment" in str(a[0]))
+    assert "Postal: no reclamado" in actualizacion
+
+
+@pytest.mark.asyncio
+async def test_un_cambio_de_estado_sin_causal_no_borra_la_anterior(client_with_conn) -> None:
+    """Gemelo: `motivo` ausente no puede pisar con NULL una causal ya registrada.
+
+    Lo garantiza el COALESCE del repositorio; aquí se fija que el servicio sigue
+    pasando `None` en vez de inventarse una cadena vacía, que sí la borraría.
+    """
+    client, mock_conn = client_with_conn
+    sid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": True},
+        _ship_row(id=sid, estado="registrado"),
+        _ship_row(id=sid, estado="en_transito"),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/envios/{sid}/estado",
+        json={"estado": "en_transito"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    llamadas = [c.args for c in mock_conn.fetchrow.await_args_list]
+    actualizacion = next(a for a in llamadas if "UPDATE postal_shipment" in str(a[0]))
+    assert actualizacion[-1] is None

@@ -36,6 +36,7 @@
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { notifyError } from "$lib/stores/notifications.js";
   import Loader from "$lib/components/ui/Loader.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -129,15 +130,9 @@
     await loadIndiceClasificados();
   }
 
-  /**
-   * Formatea una fecha ISO (con o sin hora) a texto legible es-CO.
-   * @param {string|null|undefined} iso
-   */
+  /** @param {string|null|undefined} iso */
   function fmtIndiceDate(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleDateString("es-CO", { year: "numeric", month: "short", day: "2-digit" });
+    return formatearFecha(iso, { estilo: "medio" });
   }
 
   const TIPO_RADICADO_LABELS = { E: "Entrada", S: "Salida", I: "Interno" };
@@ -236,7 +231,14 @@
   function formatMonth(month) {
     if (!month) return "—";
     const [year, mon] = month.split("-");
+    // Construida desde componentes LOCALES (no desde una cadena ISO), así que
+    // no pasa por la interpretación UTC que desplazaba un día las fechas puras
+    // — ver `$lib/utils/fecha.js`. Aquí solo se pide mes y año, además.
     const date = new Date(Number(year), Number(mon) - 1, 1);
+    // fecha-formateo-propio: no hay fecha que desplazar. El Date se construye
+    // desde componentes LOCALES, no desde una cadena ISO, así que no pasa por
+    // la interpretación UTC que retrocedía un día las fechas puras
+    // (`$lib/utils/fecha.js`). Y lo que se pide es un mes y un año, no un día.
     return date.toLocaleDateString("es-CO", { year: "numeric", month: "long" });
   }
 

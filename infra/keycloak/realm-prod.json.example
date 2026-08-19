@@ -1,26 +1,4 @@
 {
-  "_comentario": [
-    "PLANTILLA de realm de PRODUCCIÓN. Cópiala a realm-prod.json, sustituye TODO",
-    "lo que aparece entre <>, y móntala en Keycloak (ver infra/docker-compose.prod.yml,",
-    "servicio keycloak, sección `volumes` comentada).",
-    "",
-    "Por qué existe este archivo. Hasta ahora solo había `realm-export.json`, y su",
-    "nombre no decía para qué entorno servía: trae dos usuarios con contraseña",
-    "publicada en el repositorio (`orpycamcp_dev`), secretos de cliente",
-    "`change-me-in-production`, `sslRequired: none` y redirectUris a localhost. Un",
-    "despliegue que lo importara tal cual quedaba con una cuenta `superadmin` de",
-    "contraseña conocida. El fichero de desarrollo pasa a llamarse `realm-dev.json`",
-    "—que dice lo que es— y producción parte de esta plantilla, que a propósito NO",
-    "es importable sin editarla.",
-    "",
-    "Los campos <...> no tienen valor por defecto: si se importa sin sustituirlos,",
-    "Keycloak falla. Es deliberado — un default funcional aquí es una puerta abierta.",
-    "",
-    "Este archivo no crea usuarios. Las cuentas de producción se dan de alta desde",
-    "la consola de administración o se federan contra el directorio de la entidad;",
-    "no se versionan en el repositorio."
-  ],
-
   "realm": "orpycamcp",
   "displayName": "<Nombre visible de la entidad>",
   "enabled": true,

@@ -36,6 +36,7 @@
 -->
 <script>
   import { PASO_ESTADO_CHIP, etiquetaPaso, etiquetaEventoFlujo } from "$lib/utils/flujo.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { onMount } from "svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
@@ -153,13 +154,7 @@
   /** @param {string} iso */
   function formatDateTime(iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 </script>
 

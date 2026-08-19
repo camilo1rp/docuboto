@@ -20,8 +20,13 @@ _COLS = (
     "motivo_devolucion, created_at, updated_at"
 )
 # Prefixed for JOIN queries to avoid column-name ambiguity with the radicados table.
+# `r.tracking_number` viaja con el resto: las CUATRO consultas ya hacen el JOIN
+# a `radicados` —lo exige el no-read-up (RF-SEG-08)— y no se llevaban el único
+# dato que identifica el envío para una persona. La pantalla de envíos mostraba
+# «Radicado: 43632304-cdea-47c2-…», un identificador interno que quien despacha
+# la correspondencia no puede cotejar con el papel que tiene en la mano.
 _COLS_S = (
-    "s.id, s.radicado_id, s.operador, s.guia, s.estado, "
+    "s.id, s.radicado_id, r.tracking_number, s.operador, s.guia, s.estado, "
     "s.destinatario, s.direccion, s.motivo_devolucion, s.created_at, s.updated_at"
 )
 

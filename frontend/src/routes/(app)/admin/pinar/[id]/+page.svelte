@@ -1,5 +1,6 @@
 <script>
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
 
@@ -58,24 +59,13 @@
 
   /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    return formatearFecha(iso, { estilo: "medio" });
   }
 
   /** @param {string|null|undefined} iso */
   function formatDateTime(iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   // ---------------------------------------------------------------------------

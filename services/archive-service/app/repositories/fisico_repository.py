@@ -58,21 +58,52 @@ class FisicoRepository:
         )
 
     async def list_ubicaciones(
-        self, *, parent_id: uuid.UUID | None, activo: bool | None
+        self, *, parent_id: uuid.UUID | None, activo: bool | None, solo_raiz: bool = False
     ) -> list[asyncpg.Record]:
+        """Ubicaciones del tenant.
+
+        `parent_id=None` significa **no filtrar por padre**, que es lo natural
+        en un listado — no «las raíces». La diferencia importa: quien pinta el
+        primer nivel de un árbol necesita pedir las raíces EXPLÍCITAMENTE con
+        `solo_raiz=True`, porque `parent_id IS NULL` no se puede expresar como
+        valor de un parámetro. Confundir las dos cosas hacía que la pantalla
+        listara el archivo entero —cada nodo también como raíz— y el árbol
+        dejaba de ser un árbol.
+        """
         await self._sp()
         conds: list[str] = []
         params: list[object] = []
-        if parent_id is not None:
+        if solo_raiz:
+            conds.append("parent_id IS NULL")
+        elif parent_id is not None:
             params.append(parent_id)
             conds.append(f"parent_id = ${len(params)}")
         if activo is not None:
             params.append(activo)
             conds.append(f"activo = ${len(params)}")
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        # La ruta (`SED-001 / DEP-001 / EST-003`) se resuelve para TODAS las filas
+        # con un solo CTE, no una consulta por fila: es lo que hace legible una
+        # ubicación fuera de su contexto — en un desplegable, un código suelto no
+        # dice dónde está.
         return list(
             await self._conn.fetch(
-                f"SELECT {_UB_COLS} FROM ubicacion {where} ORDER BY codigo", *params
+                f"""
+                WITH RECURSIVE ancestros AS (
+                    -- `::text` no sobra: sin él el término no recursivo tipa la
+                    -- columna como varchar(30) y el recursivo la concatena a
+                    -- varchar sin límite; Postgres rechaza el CTE entero.
+                    SELECT id, parent_id, codigo, codigo::text AS ruta FROM ubicacion
+                    UNION ALL
+                    SELECT a.id, u.parent_id, a.codigo, u.codigo || ' / ' || a.ruta
+                      FROM ancestros a JOIN ubicacion u ON u.id = a.parent_id
+                )
+                SELECT {_UB_COLS},
+                       (SELECT ruta FROM ancestros a
+                         WHERE a.id = ubicacion.id AND a.parent_id IS NULL) AS ruta
+                  FROM ubicacion {where} ORDER BY codigo
+                """,
+                *params,
             )
         )
 
@@ -159,7 +190,7 @@ class FisicoRepository:
         return list(
             await self._conn.fetch(
                 """
-                SELECT eu.unidad_id, u.signatura, u.ubicacion_id,
+                SELECT eu.unidad_id, u.tipo, u.codigo, u.signatura, u.ubicacion_id,
                        eu.folio_inicio, eu.folio_fin
                   FROM expediente_unidad eu
                   JOIN unidad_conservacion u ON u.id = eu.unidad_id
@@ -198,6 +229,15 @@ class FisicoRepository:
 
     # -- préstamos -----------------------------------------------------
 
+    # Un préstamo se lee para saber QUÉ falta del estante, así que las cuatro
+    # rutas devuelven el código y la signatura de la unidad, no solo su UUID.
+    # El JOIN obliga a prefijar las columnas de `prestamo` en los WHERE.
+    _PRES_SELECT = """
+        SELECT p.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
+          FROM prestamo p
+          JOIN unidad_conservacion u ON u.id = p.unidad_id
+    """
+
     async def active_loan(self, unidad_id: uuid.UUID) -> asyncpg.Record | None:
         await self._sp()
         return await self._conn.fetchrow(
@@ -215,9 +255,15 @@ class FisicoRepository:
     ) -> asyncpg.Record:
         await self._sp()
         row = await self._conn.fetchrow(
-            "INSERT INTO prestamo "
-            "(unidad_id, prestado_a, prestado_por, fecha_devolucion_esperada) "
-            "VALUES ($1, $2, $3, $4) RETURNING *",
+            """
+            WITH nuevo AS (
+                INSERT INTO prestamo
+                    (unidad_id, prestado_a, prestado_por, fecha_devolucion_esperada)
+                VALUES ($1, $2, $3, $4) RETURNING *
+            )
+            SELECT n.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
+              FROM nuevo n JOIN unidad_conservacion u ON u.id = n.unidad_id
+            """,
             unidad_id,
             prestado_a,
             prestado_por,
@@ -228,13 +274,19 @@ class FisicoRepository:
 
     async def get_prestamo(self, prestamo_id: uuid.UUID) -> asyncpg.Record | None:
         await self._sp()
-        return await self._conn.fetchrow("SELECT * FROM prestamo WHERE id = $1", prestamo_id)
+        return await self._conn.fetchrow(f"{self._PRES_SELECT} WHERE p.id = $1", prestamo_id)
 
     async def devolver_prestamo(self, prestamo_id: uuid.UUID) -> asyncpg.Record | None:
         await self._sp()
         return await self._conn.fetchrow(
-            "UPDATE prestamo SET estado = 'devuelto', fecha_devolucion_real = now() "
-            "WHERE id = $1 AND estado = 'prestado' RETURNING *",
+            """
+            WITH devuelto AS (
+                UPDATE prestamo SET estado = 'devuelto', fecha_devolucion_real = now()
+                 WHERE id = $1 AND estado = 'prestado' RETURNING *
+            )
+            SELECT d.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
+              FROM devuelto d JOIN unidad_conservacion u ON u.id = d.unidad_id
+            """,
             prestamo_id,
         )
 
@@ -246,16 +298,16 @@ class FisicoRepository:
         params: list[object] = []
         if unidad_id is not None:
             params.append(unidad_id)
-            conds.append(f"unidad_id = ${len(params)}")
+            conds.append(f"p.unidad_id = ${len(params)}")
         if estado == "vencido":
-            conds.append("estado = 'prestado' AND fecha_devolucion_esperada < CURRENT_DATE")
+            conds.append("p.estado = 'prestado' AND p.fecha_devolucion_esperada < CURRENT_DATE")
         elif estado in ("prestado", "devuelto"):
             params.append(estado)
-            conds.append(f"estado = ${len(params)}")
+            conds.append(f"p.estado = ${len(params)}")
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
         return list(
             await self._conn.fetch(
-                f"SELECT * FROM prestamo {where} ORDER BY fecha_prestamo DESC", *params
+                f"{self._PRES_SELECT} {where} ORDER BY p.fecha_prestamo DESC", *params
             )
         )
 
@@ -350,7 +402,8 @@ class FisicoRepository:
                        e.name AS asunto, e.opened_at AS fecha_inicial,
                        e.closed_at AS fecha_final,
                        s.code AS serie_code, s.name AS serie_name,
-                       u.signatura, u.tipo AS unidad_tipo, u.soporte, u.num_folios,
+                       u.signatura, u.tipo AS unidad_tipo, u.codigo AS unidad_codigo,
+                       u.soporte, u.num_folios,
                        eu.folio_inicio, eu.folio_fin,
                        CASE
                            WHEN COALESCE(c.consultas, 0) >= 12 THEN 'alta'

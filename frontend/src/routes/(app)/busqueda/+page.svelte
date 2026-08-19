@@ -58,6 +58,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { notifyError } from "$lib/stores/notifications.js";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -192,17 +193,9 @@
     ? TABLE_COLUMNS.filter((col) => col.key !== "dest_dept")
     : TABLE_COLUMNS;
 
-  /**
-   * Formatea una fecha ISO 8601 como fecha legible en español.
-   * @param {string} iso
-   */
+  /** @param {string|null|undefined} iso */
   function formatDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    return formatearFecha(iso);
   }
 
   // ---------------------------------------------------------------------------

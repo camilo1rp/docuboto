@@ -77,17 +77,36 @@ export async function load({ cookies, parent }) {
   const tenant = user?.tenant_slug ?? "";
 
   // Facetas en paralelo — allSettled: el fallo de una no tumba las demás
-  const [ubicacionesResult, prestamosActivosResult, prestamosVencidosResult] =
-    await Promise.allSettled([
-      // Faceta 1: Ubicaciones raíz (sin parent_id → el backend devuelve las de nivel raíz)
-      gatewayGet("/ubicaciones?activo=true", token, tenant),
+  const [
+    ubicacionesResult,
+    prestamosActivosResult,
+    prestamosVencidosResult,
+    catalogoUbicacionesResult,
+    catalogoSeriesResult,
+  ] = await Promise.allSettled([
+    // Faceta 1: primer nivel del árbol. `solo_raiz=true` es OBLIGATORIO:
+    // omitir `parent_id` significa "no filtres por padre", no "las raíces"
+    // — con la lectura contraria cada depósito y cada gaveta aparecía
+    // también como raíz y el árbol dejaba de ser un árbol.
+    gatewayGet("/ubicaciones?activo=true&solo_raiz=true", token, tenant),
 
-      // Faceta 2: Préstamos activos
-      gatewayGet("/prestamos?estado=prestado", token, tenant),
+    // Faceta 2: Préstamos activos
+    gatewayGet("/prestamos?estado=prestado", token, tenant),
 
-      // Faceta 3: Préstamos vencidos
-      gatewayGet("/prestamos?estado=vencido", token, tenant),
-    ]);
+    // Faceta 3: Préstamos vencidos
+    gatewayGet("/prestamos?estado=vencido", token, tenant),
+
+    // Faceta 4: CATÁLOGO de ubicaciones — el árbol entero, plano y con su
+    // ruta. No es una duplicación de la faceta 1: aquella pinta el primer
+    // nivel, esta puebla los desplegables donde antes había que escribir a
+    // mano el UUID de la ubicación (que ninguna pantalla del sistema
+    // muestra, así que el módulo era inoperable sin abrir la base de datos).
+    gatewayGet("/ubicaciones?activo=true", token, tenant),
+
+    // Faceta 5: series TRD, para el filtro del FUID. Mismo motivo que la
+    // anterior: el filtro pedía el UUID de la serie escrito a mano.
+    gatewayGet("/trd?is_active=true&size=200", token, tenant),
+  ]);
 
   // -------------------------------------------------------------------------
   // Serializar resultados — cada faceta expone { data, error }
@@ -113,6 +132,8 @@ export async function load({ cookies, parent }) {
       ubicaciones: settle(ubicacionesResult),
       prestamosActivos: settle(prestamosActivosResult),
       prestamosVencidos: settle(prestamosVencidosResult),
+      catalogoUbicaciones: settle(catalogoUbicacionesResult),
+      catalogoSeries: settle(catalogoSeriesResult),
     },
     // token, tenant y userId NO se exponen: las acciones cliente usan /archivo-fisico/api/* (D-05)
   };

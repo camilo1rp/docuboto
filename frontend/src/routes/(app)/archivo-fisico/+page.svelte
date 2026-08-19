@@ -33,6 +33,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
@@ -44,6 +45,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { opcionesSerieTrd } from "$lib/utils/trd.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -136,6 +138,36 @@
   // ---------------------------------------------------------------------------
   /** @type {any[]} */
   let ubicaciones = data.facetas?.ubicaciones?.data ?? [];
+
+  // Catálogo plano de ubicaciones — con él se poblan los desplegables que
+  // antes eran campos donde había que escribir un UUID que ninguna pantalla
+  // muestra. Es el árbol entero, no solo el primer nivel: se elige el
+  // entrepaño, no la sede.
+  /** @type {any[]} */
+  let catalogoUbicaciones = data.facetas?.catalogoUbicaciones?.data ?? [];
+
+  /** Etiqueta legible de una ubicación: ruta si la hay, si no código y nombre. */
+  function etiquetaUbicacion(u) {
+    const nombre = `${u.codigo} — ${u.nombre}`;
+    return u.ruta && u.ruta !== u.codigo ? `${u.ruta} · ${u.nombre}` : nombre;
+  }
+
+  // Series TRD, para el filtro del FUID. La etiqueta sale de `$lib/utils/trd.js`
+  // — el mismo criterio que usan el asistente de radicación y el modal de
+  // metadatos, para que una serie no se llame de tres formas distintas.
+  /** @type {any[]} */
+  const catalogoSeries = data.facetas?.catalogoSeries?.data ?? [];
+
+  async function recargarCatalogoUbicaciones() {
+    try {
+      const res = await fetch("/archivo-fisico/api/ubicaciones?activo=true");
+      const d = await res.json();
+      if (res.ok) catalogoUbicaciones = Array.isArray(d) ? d : (d.items ?? []);
+    } catch {
+      // El catálogo es una comodidad: si falla, los desplegables quedan con lo
+      // que ya tenían y la pantalla sigue siendo utilizable.
+    }
+  }
   let ubicacionesError = data.facetas?.ubicaciones?.error ?? null;
   let ubicacionesLoading = false;
 
@@ -204,9 +236,14 @@
       ubicacionForm = { nivel: "", codigo: "", nombre: "", parent_id: "", tipo_archivo: "" };
       // Recargar raíz
       ubicacionesLoading = true;
-      const reloadRes = await fetch("/archivo-fisico/api/ubicaciones?activo=true");
+      const reloadRes = await fetch("/archivo-fisico/api/ubicaciones?activo=true&solo_raiz=true");
       const reloadData = await reloadRes.json();
       ubicaciones = Array.isArray(reloadData) ? reloadData : (reloadData.items ?? []);
+      // Los hijos cargados dejan de ser válidos: la nueva ubicación puede
+      // colgar de cualquiera de ellos.
+      ubicacionChildren = {};
+      ubicacionExpanded = {};
+      await recargarCatalogoUbicaciones();
     } catch (err) {
       notifyError(mensajeError(err, "No se pudo crear la ubicación."));
     } finally {
@@ -406,13 +443,40 @@
   let prestamoForm = { unidad_id: "", prestado_a: "", fecha_devolucion_esperada: "" };
   let prestamoLoading = false;
 
+  // Qué unidades se pueden prestar. Se cargan al abrir el modal: el campo
+  // pedía el UUID de la unidad, y en un depósito nadie identifica una caja por
+  // su UUID — se identifica por su código y su signatura topográfica.
+  /** @type {any[]} */
+  let catalogoUnidades = [];
+  let catalogoUnidadesLoading = false;
+
+  function etiquetaUnidad(u) {
+    const base = `${u.codigo} (${u.tipo})`;
+    return u.signatura ? `${base} · ${u.signatura}` : base;
+  }
+
+  async function abrirModalPrestamo() {
+    showPrestamoModal = true;
+    catalogoUnidadesLoading = true;
+    try {
+      const res = await fetch("/archivo-fisico/api/unidades");
+      const d = await res.json();
+      if (res.ok) catalogoUnidades = Array.isArray(d) ? d : (d.items ?? []);
+    } catch {
+      // Sin catálogo el desplegable queda vacío y el aviso lo dice: es
+      // preferible a ofrecer un campo libre que nadie puede rellenar.
+    } finally {
+      catalogoUnidadesLoading = false;
+    }
+  }
+
   async function handleRegistrarPrestamo() {
     if (
       !prestamoForm.unidad_id.trim() ||
       !prestamoForm.prestado_a.trim() ||
       !prestamoForm.fecha_devolucion_esperada
     ) {
-      notifyError("Los campos Unidad ID, Prestado a y Fecha de devolución son obligatorios.");
+      notifyError("Los campos Unidad, Prestado a y Fecha de devolución son obligatorios.");
       return;
     }
     prestamoLoading = true;
@@ -565,12 +629,15 @@
   // ---------------------------------------------------------------------------
   /** @param {string|null|undefined} iso */
   function fmtDate(iso) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
+    return formatearFecha(iso);
+  }
+
+  /** Rango de folios del expediente dentro de la unidad, como lo pide el FUID. */
+  function rangoFolios(row) {
+    if (row?.folio_inicio != null && row?.folio_fin != null) {
+      return `${row.folio_inicio}–${row.folio_fin}`;
+    }
+    return row?.num_folios ?? "—";
   }
 
   const ESTADO_PRESTAMO_MAP = {
@@ -745,15 +812,15 @@
         <!-- Filtros de búsqueda -->
         <div class="af-filter-row" role="search" aria-label="Filtros de unidades">
           <div class="af-filter-row__field">
-            <label for="unidad-filtro-ubicacion" class="label">Ubicación ID</label>
-            <input
-              id="unidad-filtro-ubicacion"
-              class="input"
-              type="text"
-              placeholder="UUID de la ubicación"
-              bind:value={unidadFiltroUbicacionId}
-              aria-label="ID de ubicación"
-            />
+            <label for="unidad-filtro-ubicacion" class="label">Ubicación</label>
+            <div class="select is-fullwidth">
+              <select id="unidad-filtro-ubicacion" bind:value={unidadFiltroUbicacionId}>
+                <option value="">Todas</option>
+                {#each catalogoUbicaciones as u (u.id)}
+                  <option value={u.id}>{etiquetaUbicacion(u)}</option>
+                {/each}
+              </select>
+            </div>
           </div>
           <div class="af-filter-row__field">
             <label for="unidad-filtro-tipo" class="label">Tipo</label>
@@ -877,15 +944,15 @@
 
         <div class="af-filter-row" role="search" aria-label="Localizar expediente">
           <div class="af-filter-row__field">
-            <label for="localizar-id" class="label">ID de expediente</label>
+            <label for="localizar-id" class="label">Número de expediente</label>
             <input
               id="localizar-id"
               class="input"
               type="text"
-              placeholder="UUID del expediente"
+              placeholder="Ej. EXP-2026-0020"
               bind:value={localizarExpedienteId}
               on:keydown={(e) => e.key === "Enter" && handleLocalizar()}
-              aria-label="ID del expediente a localizar"
+              aria-label="Número del expediente a localizar"
             />
           </div>
           <Button variant="primary" on:click={handleLocalizar} disabled={localizarLoading}>
@@ -950,7 +1017,7 @@
             <EmptyState
               icon="fas fa-map-marker-alt"
               title="Busca un expediente"
-              description="Introduce el UUID del expediente y pulsa Localizar."
+              description="Introduce el número del expediente (ej. EXP-2026-0020) y pulsa Localizar."
             />
           {/if}
         </div>
@@ -974,7 +1041,7 @@
         <div slot="header" class="af-panel-header">
           <h2 class="op-card-title">Préstamos de unidades</h2>
           {#if canManage}
-            <Button variant="primary" size="sm" on:click={() => (showPrestamoModal = true)}>
+            <Button variant="primary" size="sm" on:click={abrirModalPrestamo}>
               <i class="fas fa-plus" aria-hidden="true"></i>
               Registrar préstamo
             </Button>
@@ -1037,7 +1104,12 @@
                     status: "neutral",
                   }}
                   <tr>
-                    <td><code>{p.unidad_codigo ?? p.unidad?.codigo ?? "—"}</code></td>
+                    <td>
+                      <code>{p.unidad_codigo ?? "—"}</code>
+                      {#if p.unidad_signatura}
+                        <span class="af-fuid-tipo">{p.unidad_signatura}</span>
+                      {/if}
+                    </td>
                     <td>{p.prestado_a ?? "—"}</td>
                     <td>{fmtDate(p.fecha_prestamo ?? p.created_at)}</td>
                     <td>{fmtDate(p.fecha_devolucion_esperada)}</td>
@@ -1096,26 +1168,26 @@
         <!-- Filtros -->
         <div class="af-filter-row" role="search" aria-label="Filtros FUID">
           <div class="af-filter-row__field">
-            <label for="fuid-ubicacion-id" class="label">Ubicación ID</label>
-            <input
-              id="fuid-ubicacion-id"
-              class="input"
-              type="text"
-              placeholder="UUID de ubicación (opcional)"
-              bind:value={fuidFiltroUbicacionId}
-              aria-label="UUID de ubicación para filtrar FUID"
-            />
+            <label for="fuid-ubicacion-id" class="label">Ubicación</label>
+            <div class="select is-fullwidth">
+              <select id="fuid-ubicacion-id" bind:value={fuidFiltroUbicacionId}>
+                <option value="">Todo el archivo</option>
+                {#each catalogoUbicaciones as u (u.id)}
+                  <option value={u.id}>{etiquetaUbicacion(u)}</option>
+                {/each}
+              </select>
+            </div>
           </div>
           <div class="af-filter-row__field">
-            <label for="fuid-trd-serie-id" class="label">Serie TRD ID</label>
-            <input
-              id="fuid-trd-serie-id"
-              class="input"
-              type="text"
-              placeholder="UUID de serie TRD (opcional)"
-              bind:value={fuidFiltroTrdSerieId}
-              aria-label="UUID de serie TRD para filtrar FUID"
-            />
+            <label for="fuid-trd-serie-id" class="label">Serie TRD</label>
+            <div class="select is-fullwidth">
+              <select id="fuid-trd-serie-id" bind:value={fuidFiltroTrdSerieId}>
+                <option value="">Todas las series</option>
+                {#each opcionesSerieTrd(catalogoSeries) as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
+            </div>
           </div>
           <div class="af-filter-row__actions">
             <Button variant="primary" on:click={consultarFuid} disabled={fuidLoading}>
@@ -1170,23 +1242,30 @@
                     <th scope="col">Código expediente</th>
                     <th scope="col">Asunto</th>
                     <th scope="col">Serie</th>
+                    <th scope="col">Fechas extremas</th>
                     <th scope="col">Signatura</th>
                     <th scope="col">Unidad</th>
                     <th scope="col">Soporte</th>
                     <th scope="col">Folios</th>
+                    <th scope="col">Frec. consulta</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {#each fuidRows as row, i (row.id ?? row.expediente_id ?? i)}
+                  {#each fuidRows as row (row.expediente_id)}
                     <tr>
-                      <td>{i + 1}</td>
-                      <td><code>{row.codigo_expediente ?? row.expediente?.code ?? "—"}</code></td>
-                      <td>{row.asunto ?? row.expediente?.name ?? "—"}</td>
-                      <td>{row.serie ?? row.trd_serie?.nombre ?? "—"}</td>
+                      <td>{row.orden}</td>
+                      <td><code>{row.expediente_code}</code></td>
+                      <td>{row.asunto}</td>
+                      <td>{[row.serie_code, row.serie_name].filter(Boolean).join(" — ") || "—"}</td>
+                      <td>{fmtDate(row.fecha_inicial)} – {fmtDate(row.fecha_final)}</td>
                       <td>{row.signatura ?? "—"}</td>
-                      <td>{row.unidad ?? row.unidad_codigo ?? "—"}</td>
+                      <td>
+                        <code>{row.unidad_codigo}</code>
+                        <span class="af-fuid-tipo">({row.unidad_tipo})</span>
+                      </td>
                       <td>{row.soporte ?? "—"}</td>
-                      <td>{row.num_folios ?? row.folios ?? "—"}</td>
+                      <td>{rangoFolios(row)}</td>
+                      <td>{row.frecuencia_consulta}</td>
                     </tr>
                   {/each}
                 </tbody>
@@ -1241,13 +1320,20 @@
       placeholder="Nombre descriptivo"
       bind:value={ubicacionForm.nombre}
     />
-    <FormField
-      id="ub-parent"
-      label="ID padre (vacío = raíz)"
-      type="text"
-      placeholder="UUID de la ubicación padre (opcional)"
-      bind:value={ubicacionForm.parent_id}
-    />
+    <div class="field">
+      <label class="label" for="ub-parent">Ubicación superior</label>
+      <div class="select is-fullwidth">
+        <select id="ub-parent" bind:value={ubicacionForm.parent_id}>
+          <option value="">— Ninguna (primer nivel) —</option>
+          {#each catalogoUbicaciones as u (u.id)}
+            <option value={u.id}>{etiquetaUbicacion(u)}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="help">
+        Dónde se encuentra: un depósito cuelga de una sede, un estante de un depósito.
+      </p>
+    </div>
     <FormField
       id="ub-tipo"
       label="Tipo de archivo"
@@ -1292,13 +1378,18 @@
       placeholder="Ej. CAJ-001"
       bind:value={nuevaUnidadForm.codigo}
     />
-    <FormField
-      id="nu-ubicacion"
-      label="ID de ubicación"
-      type="text"
-      placeholder="UUID de la ubicación (opcional)"
-      bind:value={nuevaUnidadForm.ubicacion_id}
-    />
+    <div class="field">
+      <label class="label" for="un-ubicacion">Ubicación</label>
+      <div class="select is-fullwidth">
+        <select id="un-ubicacion" bind:value={nuevaUnidadForm.ubicacion_id}>
+          <option value="">— Sin ubicar todavía —</option>
+          {#each catalogoUbicaciones as u (u.id)}
+            <option value={u.id}>{etiquetaUbicacion(u)}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="help">De ella sale la signatura topográfica de la unidad.</p>
+    </div>
     <FormField
       id="nu-soporte"
       label="Soporte"
@@ -1333,11 +1424,12 @@
 >
   <div class="af-form">
     <FormField
-      id="vin-expte"
-      label="ID del expediente *"
+      id="vinc-expediente"
+      label="Número de expediente *"
       type="text"
       required
-      placeholder="UUID del expediente"
+      placeholder="Ej. EXP-2026-0020"
+      hint="El número que aparece en la ficha y en el listado de expedientes."
       bind:value={vincularForm.expediente_id}
     />
     <FormField
@@ -1373,14 +1465,24 @@
   on:close={() => (showPrestamoModal = false)}
 >
   <div class="af-form">
-    <FormField
-      id="pr-unidad"
-      label="ID de la unidad *"
-      type="text"
-      required
-      placeholder="UUID de la unidad a prestar"
-      bind:value={prestamoForm.unidad_id}
-    />
+    <div class="field">
+      <label class="label" for="pr-unidad">Unidad a prestar *</label>
+      <div class="select is-fullwidth">
+        <select id="pr-unidad" bind:value={prestamoForm.unidad_id} required>
+          <option value="">— Selecciona la unidad —</option>
+          {#each catalogoUnidades as u (u.id)}
+            <option value={u.id}>{etiquetaUnidad(u)}</option>
+          {/each}
+        </select>
+      </div>
+      {#if catalogoUnidadesLoading}
+        <p class="help">Cargando unidades…</p>
+      {:else if catalogoUnidades.length === 0}
+        <p class="help is-danger">
+          No hay unidades de conservación registradas. Crea una antes de prestar.
+        </p>
+      {/if}
+    </div>
     <FormField
       id="pr-prestado-a"
       label="Prestado a *"
@@ -1478,6 +1580,14 @@
 </Modal>
 
 <style lang="scss">
+  /* Sufijo tenue: el tipo de unidad y la signatura acompañan al código sin
+     competir con él — el código es lo que se busca en el estante. */
+  .af-fuid-tipo {
+    color: var(--op-text-muted);
+    font-size: 0.85em;
+    margin-left: 0.35rem;
+  }
+
   .af-workspace {
     display: flex;
     flex-direction: column;

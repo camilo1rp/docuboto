@@ -40,6 +40,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
@@ -342,13 +343,7 @@
 
   function formatDateTime(/** @type {string} */ iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   onMount(() => {

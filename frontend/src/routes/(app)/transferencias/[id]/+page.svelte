@@ -38,6 +38,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissionLevels, sessionUser } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
@@ -295,13 +296,7 @@
   /** @param {string|null|undefined} iso */
   function fmtDatetime(iso) {
     if (!iso) return "—";
-    return new Date(iso).toLocaleString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return formatearFechaHora(iso);
   }
 
   const ESTADO_MAP = {

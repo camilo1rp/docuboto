@@ -44,6 +44,7 @@
 <script>
   import { createEventDispatcher } from "svelte";
   import Drawer from "$lib/components/ui/Drawer.svelte";
+  import { formatearFecha } from "$lib/utils/fecha.js";
   import Button from "$lib/components/ui/Button.svelte";
 
   export let open = false;
@@ -56,10 +57,7 @@
 
   /** @param {string|null|undefined} iso */
   function fmtDate(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleDateString("es-CO", { year: "numeric", month: "long", day: "2-digit" });
+    return formatearFecha(iso, { estilo: "largo" });
   }
 
   $: isClosedOrTransferred =

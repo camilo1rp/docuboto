@@ -64,9 +64,9 @@ async def upload_signed_xml(
     """
     headers = {
         "X-Tenant-Slug": tenant_slug,
-        # D-02: `/upload` no está gateado hoy (el frontend también sube
-        # directo), pero se envía de forma preventiva/uniforme con
-        # archive-service (ver `settings.storage_internal_token` docstring).
+        # El token ya no es preventivo: `/internal/artefacto` lo EXIGE. El
+        # comentario anterior decía que «`/upload` no está gateado hoy» y hacía
+        # tiempo que era falso — hoy pide `PERM_RADI`.
         "X-Internal-Token": settings.storage_internal_token,
     }
     if uploaded_by is not None:
@@ -76,7 +76,13 @@ async def upload_signed_xml(
         async with httpx.AsyncClient(
             base_url=settings.storage_service_url, timeout=10.0
         ) as client:
-            resp = await client.post("/api/v1/storage/upload", files=files, headers=headers)
+            # Ruta de ARTEFACTOS DEL SISTEMA, no la de anexos de usuario. El
+            # índice firmado es XML y `/upload` aplica la lista blanca de
+            # RF-DIG-04, que no lo admite: la firma se producía y se perdía al
+            # guardarla, con el índice en `pendiente_firma` para siempre.
+            resp = await client.post(
+                "/api/v1/storage/internal/artefacto", files=files, headers=headers
+            )
     except httpx.RequestError as exc:
         raise StorageUploadError(f"storage-service inalcanzable: {exc}") from exc
 

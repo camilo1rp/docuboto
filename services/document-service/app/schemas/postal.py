@@ -30,6 +30,14 @@ class ShipmentCreate(BaseModel):
 class ShipmentStatusUpdate(BaseModel):
     estado: _ESTADO
     descripcion: str | None = Field(default=None, max_length=500)
+    # La causal, en su campo. El webhook del operador ya alimentaba
+    # `motivo_devolucion` (ver `PostalCallbackPayload`), pero la devolución que
+    # registra una PERSONA desde la pantalla no tenía por dónde: la causal
+    # acababa embebida en el texto libre de `descripcion` y el campo quedaba
+    # NULL. El mismo hecho, registrado por dos caminos, con distinta calidad de
+    # dato — y el manual, que es el habitual, era el peor: sin causal
+    # consultable no hay forma de reportar por qué se devuelven los envíos.
+    motivo: str | None = Field(default=None, max_length=200)
 
 
 class ShipmentEvent(BaseModel):
@@ -41,6 +49,10 @@ class ShipmentEvent(BaseModel):
 class ShipmentResponse(BaseModel):
     id: uuid.UUID
     radicado_id: uuid.UUID
+    # El número de radicado, que es como se nombra un documento en la entidad.
+    # Opcional por compatibilidad: una fila servida por un camino que aún no lo
+    # traiga responde `null` en vez de romper la respuesta entera.
+    tracking_number: str | None = None
     operador: str
     guia: str
     estado: str

@@ -10,14 +10,18 @@
 /**
  * /envios/api/[id]/estado — Proxy SSR para cambiar el estado de un envío (D-05, T-12e).
  *
- * POST { estado, descripcion? }
+ * POST { estado, descripcion?, motivo? }
  *   → POST /api/v1/envios/{id}/estado
  *   → ShipmentResponse
  *
  * Allowlist explícita (ShipmentStatusUpdate).
  * Para la devolución con causal, `descripcion` lleva el prefijo
- * "Causal: <causal> — <nota>" formateado en el cliente.
- * La causal estructurada en catálogo backend es roadmap.
+ * "Causal: <causal> — <nota>" formateado en el cliente, y `motivo` lleva la
+ * causal SOLA, para que quede en `motivo_devolucion` y no únicamente dentro de
+ * un texto libre. Este comentario decía que la causal estructurada era
+ * «roadmap»: el campo existía desde el webhook del operador postal, que sí lo
+ * alimentaba — lo que faltaba era pasarlo por el camino manual, que es el que
+ * usan las personas.
  *
  * X-User-Id: actor traceability (D-05).
  */
@@ -44,7 +48,7 @@ export async function POST({ locals, params, request }) {
   }
 
   // Allowlist explícita (ShipmentStatusUpdate).
-  const { estado, descripcion } = body ?? {};
+  const { estado, descripcion, motivo } = body ?? {};
 
   if (!estado || !ESTADOS_VALIDOS.has(estado)) {
     return json(
@@ -59,6 +63,7 @@ export async function POST({ locals, params, request }) {
   const payload = {
     estado,
     descripcion: typeof descripcion === "string" && descripcion.trim() ? descripcion.trim() : null,
+    motivo: typeof motivo === "string" && motivo.trim() ? motivo.trim() : null,
   };
 
   /** @type {Record<string, string>} */
