@@ -38,6 +38,7 @@
 -->
 <script>
   import { createEventDispatcher } from "svelte";
+  import { opcionesSerieTrd } from "$lib/utils/trd.js";
   import Modal from "$lib/components/ui/Modal.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -75,7 +76,7 @@
 
   $: serieOptions = [
     { value: "", label: "— sin serie —" },
-    ...trdSeries.map((s) => ({ value: s.id, label: `${s.code} — ${s.name}` })),
+    ...opcionesSerieTrd(trdSeries),
     // Si la serie actual del expediente no está en el catálogo activo (p. ej.
     // se desactivó después de asignarla), se conserva como opción para no
     // forzar un cambio no solicitado por el usuario al abrir el modal.

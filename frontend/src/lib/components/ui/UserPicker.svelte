@@ -10,10 +10,21 @@
 -->
 
 <!--
-  UserPicker.svelte — Selector ordenado de usuarios (T-08c).
+  UserPicker.svelte — Selector de usuarios (T-08c).
 
-  Pensado para construir una cadena de revisión (vistos buenos), donde el
-  ORDEN importa: el primer revisor decide primero, luego el segundo, etc.
+  Nació para una cadena de revisión (vistos buenos), donde el ORDEN importa: el
+  primer revisor decide primero, luego el segundo. Pero se reutiliza en otros
+  cuatro sitios que NO son una cadena —el responsable de un traslado, el de una
+  asignación, y el usuario origen y destino de una reasignación—, y allí llevaba
+  el vocabulario del primer caso pegado: el botón anunciaba «Agregar a X a la
+  cadena», la columna se titulaba «Cadena de revisión», y al elegir al único
+  responsable posible el aviso «Máximo 1 revisores» BORRABA la ayuda que el
+  padre había escrito. Quien usa lector de pantalla oía un acto que no era.
+
+  Ahora el vocabulario se declara. Los valores por defecto son NEUTROS a
+  propósito: un uso nuevo que olvide declararlos dirá «usuario», que es cierto
+  en todos los casos, en vez de «revisor», que solo lo es en uno. El default
+  tiene que ser el que nunca miente.
 
   Props:
     id        string  — prefijo de id para asociar label/controles (a11y)
@@ -24,7 +35,14 @@
     disabled  boolean
     error     string  — mensaje de error
     hint      string  — texto de ayuda
-    max       number  — máximo de revisores (default 20, paridad backend CadenaCreate)
+    max       number  — máximo de selecciones (default 20, paridad backend CadenaCreate)
+    noun      string  — cómo se llama lo que se elige, en singular (default "usuario")
+    nounPlural string — su plural (default "usuarios")
+    listTitle string  — título de la columna de seleccionados (default "Seleccionados")
+    emptyText string  — texto cuando no hay ninguno (default: derivado de nounPlural)
+    ordered   boolean|null — ¿importa el orden? `null` (default) lo deriva de
+              `max > 1`: así, un selector de uno solo no ofrece flechas de
+              reordenar que no pueden hacer nada, y el olvido cae del lado bueno.
 
   El componente NO llama al gateway: recibe `users` ya resueltos por el padre
   (un proxy SSR que lee la cookie httpOnly — D-05). Solo gestiona la selección.
@@ -45,8 +63,20 @@
   export let error = "";
   export let hint = "";
   export let max = 20;
+  export let noun = "usuario";
+  export let nounPlural = "usuarios";
+  export let listTitle = "";
+  export let emptyText = "";
+  /** @type {boolean|null} */
+  export let ordered = null;
 
   let query = "";
+
+  // El orden solo importa si caben varios. Derivarlo evita que un selector de
+  // uno solo pinte dos flechas permanentemente deshabilitadas por fila.
+  $: isOrdered = ordered === null ? max > 1 : ordered;
+  $: titulo = listTitle || "Seleccionados";
+  $: vacio = emptyText || (isOrdered ? `Agregue ${nounPlural}.` : `Agregue un ${noun}.`);
 
   // Mapa id → usuario para resolver nombres en la cadena seleccionada.
   $: usersById = new Map(users.map((u) => [u.id, u]));
@@ -67,10 +97,13 @@
 
   // Live region: describe la cadena EN ORDEN para lectores de pantalla. Se recompone
   // tras cada cambio (agregar/quitar/subir/bajar) para que el reordenamiento se anuncie.
-  $: liveMessage =
-    chain.length === 0
-      ? "Sin revisores seleccionados."
-      : `Cadena de ${chain.length} revisor(es): ` +
+  $: liveMessage = !isOrdered
+    ? chain.length === 0
+      ? `Sin ${noun} seleccionado.`
+      : `${noun} seleccionado: ${chain[0].username}.`
+    : chain.length === 0
+      ? `Sin ${nounPlural} seleccionados.`
+      : `Cadena de ${chain.length} ${chain.length === 1 ? noun : nounPlural}: ` +
         chain.map((u, i) => `${i + 1}. ${u.username}`).join(", ") +
         ".";
 
@@ -147,7 +180,9 @@
                 class="op-userpicker__btn op-userpicker__btn--add"
                 on:click={() => add(u.id)}
                 disabled={disabled || atMax}
-                aria-label={`Agregar a ${u.username} a la cadena`}
+                aria-label={isOrdered
+                  ? `Agregar a ${u.username} a la cadena`
+                  : `Agregar a ${u.username} como ${noun}`}
               >
                 <i class="fas fa-plus" aria-hidden="true"></i>
               </button>
@@ -160,21 +195,27 @@
     <!-- Cadena seleccionada (ordenada) -->
     <div class="op-userpicker__panel">
       <p class="op-userpicker__panel-title" id="{id}-chain-title">
-        Cadena de revisión ({chain.length})
+        {titulo} ({chain.length})
       </p>
       {#if chain.length === 0}
-        <p class="op-userpicker__empty">Agregue revisores en el orden de revisión.</p>
+        <p class="op-userpicker__empty">{vacio}</p>
       {:else}
-        <ol
-          class="op-userpicker__list op-userpicker__list--ordered"
+        <svelte:element
+          this={isOrdered ? "ol" : "ul"}
+          class="op-userpicker__list"
+          class:op-userpicker__list--ordered={isOrdered}
           aria-labelledby="{id}-chain-title"
         >
           {#each chain as u, i (u.id)}
             <li class="op-userpicker__item">
-              <span class="op-userpicker__order" aria-hidden="true">{i + 1}</span>
+              {#if isOrdered}
+                <span class="op-userpicker__order" aria-hidden="true">{i + 1}</span>
+              {/if}
               <span class="op-userpicker__user">
                 <span class="op-userpicker__username">
-                  <span class="sr-only">Posición {i + 1} de {chain.length}: </span>
+                  {#if isOrdered}
+                    <span class="sr-only">Posición {i + 1} de {chain.length}: </span>
+                  {/if}
                   {u.username}
                 </span>
                 {#if u.email}
@@ -182,45 +223,56 @@
                 {/if}
               </span>
               <span class="op-userpicker__actions">
-                <button
-                  type="button"
-                  class="op-userpicker__btn"
-                  on:click={() => move(i, -1)}
-                  disabled={disabled || i === 0}
-                  aria-label={`Subir a ${u.username} a la posición ${i}`}
-                >
-                  <i class="fas fa-arrow-up" aria-hidden="true"></i>
-                </button>
-                <button
-                  type="button"
-                  class="op-userpicker__btn"
-                  on:click={() => move(i, 1)}
-                  disabled={disabled || i === chain.length - 1}
-                  aria-label={`Bajar a ${u.username} a la posición ${i + 2}`}
-                >
-                  <i class="fas fa-arrow-down" aria-hidden="true"></i>
-                </button>
+                {#if isOrdered}
+                  <button
+                    type="button"
+                    class="op-userpicker__btn"
+                    on:click={() => move(i, -1)}
+                    disabled={disabled || i === 0}
+                    aria-label={`Subir a ${u.username} a la posición ${i}`}
+                  >
+                    <i class="fas fa-arrow-up" aria-hidden="true"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="op-userpicker__btn"
+                    on:click={() => move(i, 1)}
+                    disabled={disabled || i === chain.length - 1}
+                    aria-label={`Bajar a ${u.username} a la posición ${i + 2}`}
+                  >
+                    <i class="fas fa-arrow-down" aria-hidden="true"></i>
+                  </button>
+                {/if}
                 <button
                   type="button"
                   class="op-userpicker__btn op-userpicker__btn--remove"
                   on:click={() => remove(u.id)}
                   {disabled}
-                  aria-label={`Quitar a ${u.username} de la cadena`}
+                  aria-label={isOrdered
+                    ? `Quitar a ${u.username} de la cadena`
+                    : `Quitar a ${u.username}`}
                 >
                   <i class="fas fa-times" aria-hidden="true"></i>
                 </button>
               </span>
             </li>
           {/each}
-        </ol>
+        </svelte:element>
       {/if}
     </div>
   </div>
 
-  {#if atMax}
-    <p id={hintId} class="op-userpicker__hint">Máximo {max} revisores.</p>
-  {:else if hint && !error}
+  <!--
+    La ayuda del padre gana. Antes, al llegar al máximo, «Máximo N revisores»
+    SUSTITUÍA al `hint`: en un selector de uno solo eso significaba que elegir al
+    responsable borraba de la pantalla la única frase que explicaba qué era ese
+    campo — y la sustituía por un plural agramatical. El aviso de tope solo tiene
+    sentido cuando caben varios y no hay nada mejor que decir.
+  -->
+  {#if hint && !error}
     <p id={hintId} class="op-userpicker__hint">{hint}</p>
+  {:else if atMax && isOrdered}
+    <p id={hintId} class="op-userpicker__hint">Máximo {max} {nounPlural}.</p>
   {/if}
 
   <p id={errorId} class="op-userpicker__error" aria-live="polite" aria-atomic="true">

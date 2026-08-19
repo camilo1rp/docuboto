@@ -31,6 +31,7 @@
 -->
 <script>
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import { nombreSerieTrd } from "$lib/utils/trd.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
 
@@ -59,6 +60,11 @@
   // Datos del servidor
   // ---------------------------------------------------------------------------
   $: expediente = data.expediente;
+
+  // Nombre legible de la serie TRD, del detalle que el `load` ya resuelve.
+  // `null` si no se pudo resolver: la ficha cae entonces al UUID, que es feo
+  // pero cierto, en vez de dejar el dato en blanco.
+  $: serieTrdNombre = nombreSerieTrd(data.trdSerieDetail);
   $: facetas = data.facetas;
 
   // ---------------------------------------------------------------------------
@@ -982,9 +988,29 @@
               <dd>{fmtDate(expediente?.updated_at)}</dd>
             </div>
             {#if expediente?.trd_serie_id}
+              <!--
+                La serie se nombra, no se identifica por su UUID. El servidor ya
+                resuelve la serie completa (faceta 6 del `load`, con su propia
+                llamada a `/trd/{id}`) y su comentario dice para qué: «no solo un
+                UUID crudo». Ese dato llegaba únicamente al drawer de Disposición
+                final, y la ficha —lo primero que se ve al abrir el expediente—
+                seguía pintando `83a44878-d169-…`, que quien clasifica no puede
+                buscar, ni citar, ni reconocer. El dato estaba cargado y el sitio
+                más visible no lo leía.
+
+                Si la resolución falla (serie inactiva, servicio caído) se
+                muestra el UUID: es feo, pero es el identificador real y permite
+                pedir ayuda con él. Callarlo sería peor.
+              -->
               <div class="exp-meta-list__item">
                 <dt>Serie TRD</dt>
-                <dd class="exp-meta-list__code">{expediente.trd_serie_id}</dd>
+                {#if serieTrdNombre}
+                  <dd>{serieTrdNombre}</dd>
+                {:else}
+                  <dd class="exp-meta-list__code" title="No se pudo resolver el nombre de la serie">
+                    {expediente.trd_serie_id}
+                  </dd>
+                {/if}
               </div>
             {/if}
             {#if expediente?.disposition}
@@ -1392,40 +1418,44 @@
               aria-label="Foliación del expediente"
               tabindex="0"
             >
+              <!--
+                Esta tabla leía el contrato EQUIVOCADO. `GET /expedientes/{id}/foliado`
+                responde `ExpedienteIndice` —`folio`, `radicado_id`,
+                `tracking_number`, `added_at`—, y aquí se leían los campos de
+                `IndiceItemResponse`, que es el ÍNDICE ELECTRÓNICO (E15, RT-15) y
+                tiene su propia pestaña: `orden`, `titulo`, `document_id`,
+                `tipologia`, `valor_huella`. Dos esquemas parecidos, contratos
+                distintos, y ninguno de los campos leídos existía en la respuesta.
+                En pantalla: «undefined» en Orden y Documento —la foliación, que
+                es el orden que da fe del expediente— y guiones en tres columnas
+                que este endpoint no puede llenar nunca. La clave del `{#each}`
+                era `item.document_id`, es decir `undefined` REPETIDO en todas las
+                filas, que es además una clave duplicada para Svelte.
+
+                Tipología y huella no se piden aquí: viven en el índice
+                electrónico. Una columna que solo puede mostrar «—» promete un
+                dato que este endpoint no tiene.
+              -->
               <table class="exp-table" aria-label="Foliación ordenada del expediente">
                 <thead>
                   <tr>
-                    <th scope="col">Orden</th>
-                    <th scope="col">Documento</th>
-                    <th scope="col">Tipología</th>
+                    <th scope="col">Folio</th>
+                    <th scope="col">Radicado</th>
                     <th scope="col">Incorporado</th>
-                    <th scope="col">Huella (SHA-256)</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {#each foliado.items as item (item.document_id)}
+                  {#each foliado.items as item (item.radicado_id)}
                     <tr>
-                      <td>{item.orden}</td>
+                      <td>{item.folio}</td>
                       <td>
-                        {#if item.titulo}
-                          {item.titulo}
+                        {#if item.tracking_number}
+                          <span class="exp-meta-list__code">{item.tracking_number}</span>
                         {:else}
-                          <span class="exp-uuid">{item.document_id}</span>
+                          <span class="exp-uuid">{item.radicado_id}</span>
                         {/if}
                       </td>
-                      <td>{item.tipologia ?? "—"}</td>
-                      <td>
-                        {item.fecha_incorporacion ? fmtDatetime(item.fecha_incorporacion) : "—"}
-                      </td>
-                      <td>
-                        {#if item.valor_huella}
-                          <code class="exp-hash" title={item.valor_huella}
-                            >{item.valor_huella.slice(0, 12)}…</code
-                          >
-                        {:else}
-                          —
-                        {/if}
-                      </td>
+                      <td>{item.added_at ? fmtDatetime(item.added_at) : "—"}</td>
                     </tr>
                   {/each}
                 </tbody>

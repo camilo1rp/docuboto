@@ -163,3 +163,45 @@ describe("VincularRadicadosDrawer — paginación real contra el total del backe
     expect(secondCallUrl).toContain("page=2");
   });
 });
+
+describe("VincularRadicadosDrawer — el estado se lee en español", () => {
+  beforeEach(() => {
+    global.fetch = vi.fn();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * La tabla pintaba `status` tal como lo nombra la API: quien buscaba un
+   * radicado para vincularlo leía «in_progress», mientras la bandeja —la misma
+   * información, dos clics más allá— dice «En trámite». `etiquetaEstadoRadicado`
+   * ya existía, con su propio test; lo que faltaba era leerla aquí. Es el mismo
+   * patrón que el UUID de la serie TRD en la ficha del expediente: el dato
+   * resuelto existe y el sitio visible no lo usa.
+   */
+  it("traduce el estado que devuelve la API", async () => {
+    global.fetch.mockResolvedValueOnce(
+      mockSearchResponse([hit("a", { status: "in_progress" })], 1),
+    );
+    render(VincularRadicadosDrawer, { props: { open: true, expedienteId: "exp-1" } });
+    await fireEvent.input(screen.getByRole("textbox", { name: "Buscar radicados" }), {
+      target: { value: "2024" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    await waitFor(() => expect(screen.getByText("En trámite")).toBeInTheDocument());
+    expect(screen.queryByText("in_progress")).toBeNull();
+  });
+
+  it("un estado que el mapa no conoce se muestra crudo, no en blanco", async () => {
+    global.fetch.mockResolvedValueOnce(
+      mockSearchResponse([hit("b", { status: "en_revision" })], 1),
+    );
+    render(VincularRadicadosDrawer, { props: { open: true, expedienteId: "exp-1" } });
+    await fireEvent.input(screen.getByRole("textbox", { name: "Buscar radicados" }), {
+      target: { value: "2024" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    await waitFor(() => expect(screen.getByText("en_revision")).toBeInTheDocument());
+  });
+});

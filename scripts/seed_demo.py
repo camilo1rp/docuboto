@@ -1097,9 +1097,18 @@ async def purgar() -> int:
         # ruta de un radicado es registro legal: que un guion de demostración
         # pudiera borrarla sería un defecto del sistema, no una comodidad. Sus
         # filas quedan, y `--purge` lo dice en vez de fingir un borrado completo.
+        # Los pasos se buscan por DOS caminos unidos, y el segundo es el que
+        # importa: `notes`, que lleva la marca del demo y NO depende de que el
+        # radicado siga existiendo. Con solo el subquery, un paso cuyo radicado
+        # ya se hubiera borrado quedaba huérfano PARA SIEMPRE —repetir --purge no
+        # lo alcanzaba, porque el subquery preguntaba justamente por lo que ya no
+        # está—, y la bandeja seguía pintándolo: cuatro tarjetas con cinco
+        # acciones cada una que solo podían devolver 404. Un borrado que depende
+        # de la existencia de lo que borra no es idempotente.
         await borrar("pasos de flujo",
             "DELETE FROM flow_steps WHERE radicado_id IN "
-            "(SELECT id FROM radicados WHERE subject LIKE $1)", f"%{MARCA}%")
+            "(SELECT id FROM radicados WHERE subject LIKE $1) "
+            "   OR notes LIKE $1", f"%{MARCA}%")
         # Cadenas de firma del demo, por su título. `firma` (la firma en sí) NO
         # se toca: si alguien llegó a firmar de verdad, esa firma es un hecho
         # criptográfico sobre un documento, no un dato de prueba.

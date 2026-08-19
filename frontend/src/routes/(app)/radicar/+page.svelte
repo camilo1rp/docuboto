@@ -29,6 +29,7 @@
 
 <script>
   import { goto } from "$app/navigation";
+  import { opcionesSerieTrd } from "$lib/utils/trd.js";
   import { dndzone } from "svelte-dnd-action";
   import { permissions } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
@@ -305,30 +306,12 @@
   // las series están en borrador, y esconderlas dejaría la radicación sin nada
   // que clasificar — un remedio peor que el defecto. Se muestran todas, se dice
   // cuál es cuál, y las convalidadas salen arriba.
-  const ORDEN_ESTADO = { convalidada: 0, aprobada: 1, borrador: 2, migrada: 3, derogada: 4 };
-  const ESTADO_TEXTO = {
-    convalidada: "vigente",
-    aprobada: "aprobada, sin convalidar",
-    borrador: "borrador",
-    migrada: "migrada",
-    derogada: "derogada",
-  };
-
+  // El criterio (versión + estado en la etiqueta, vigentes arriba) vive en
+  // `$lib/utils/trd.js`: estaba solo aquí, y el mismo desplegable del modal de
+  // metadatos del expediente seguía mostrando dos opciones idénticas.
   $: trdSerieOptions = [
     { value: "", label: "— sin clasificar por ahora —" },
-    ...[...data.trdSeries]
-      .sort(
-        (a, b) =>
-          (ORDEN_ESTADO[a.estado] ?? 9) - (ORDEN_ESTADO[b.estado] ?? 9) ||
-          String(a.code).localeCompare(String(b.code)) ||
-          (a.version ?? 0) - (b.version ?? 0),
-      )
-      .map((s) => ({
-        value: s.id,
-        label:
-          `${s.code}${s.version ? ` v${s.version}` : ""} — ${s.name}` +
-          (ESTADO_TEXTO[s.estado] ? ` (${ESTADO_TEXTO[s.estado]})` : ""),
-      })),
+    ...opcionesSerieTrd(data.trdSeries),
   ];
 
   // ---------------------------------------------------------------------------

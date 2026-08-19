@@ -76,6 +76,15 @@ def _csv_safe(value: object) -> object:
         return "'" + value
     return value
 
+# El LEEME del paquete de consulta lo lee una persona, no una máquina: los tres
+# estados del expediente van en la lengua de trabajo. Reserva honesta: un estado
+# nuevo se imprime crudo antes que dejar el renglón en blanco.
+_ESTADO_EXPEDIENTE_ES: dict[str, str] = {
+    "open": "abierto",
+    "closed": "cerrado",
+    "transferred": "transferido",
+}
+
 # Valid state transitions — re-opening a closed expediente is not permitted.
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     "open": {"closed"},
@@ -627,13 +636,32 @@ class ArchiveService:
         # Índice electrónico XML — best-effort: un expediente sin índice firmado
         # (aún abierto) se exporta igual, solo con el manifiesto + los anexos.
         indice_incluido = False
+        indice_firmado = False
         extra_files: list[dict] = []
         try:
             from app.services.index_service import IndexService
 
-            xml = await IndexService(self._conn, self._tenant_slug).get_xml(
+            _index = IndexService(self._conn, self._tenant_slug)
+            xml = await _index.get_xml(
                 expediente_id, version=None, user_id=user_id, canal=canal
             )
+            # Si el índice está FIRMADO es un dato distinto de si su XML viaja en
+            # el paquete, y hasta ahora el LEEME confundía los dos (ver abajo).
+            # Best-effort como el propio XML: un fallo aquí no impide exportar,
+            # solo hace que el paquete no afirme una firma que no puede comprobar.
+            try:
+                _indice = await _index.get_indice(
+                    expediente_id, version=None, user_id=user_id, canal=canal
+                )
+                indice_firmado = _indice.estado == "firmado"
+            except Exception:  # noqa: BLE001
+                # `except HTTPException` NO bastaba, y lo enseñó un test que ya
+                # existía: cualquier otro fallo aquí tumbaba el EXPORT ENTERO por
+                # un dato accesorio del LEEME. El índice es best-effort en este
+                # camino —el bloque de arriba lo trata igual—, así que ante la
+                # duda el paquete se entrega sin afirmar una firma que no pudo
+                # comprobar, que es la respuesta segura.
+                indice_firmado = False
             extra_files.append(
                 {
                     "arcname": "indice-electronico.xml",
@@ -650,8 +678,17 @@ class ArchiveService:
             "COPIA DE CONSULTA DE EXPEDIENTE - OrpycaMCP\n"
             "===========================================\n\n"
             f"Expediente: {expediente.code}\n"
-            f"Estado del expediente al exportar: {expediente.status}\n"
-            f"Indice electronico firmado incluido: {'si' if indice_incluido else 'no'}\n\n"
+            f"Estado del expediente al exportar: {_ESTADO_EXPEDIENTE_ES.get(expediente.status, expediente.status)}\n"
+            # Dos hechos distintos, y antes se afirmaban como uno solo: la línea
+            # decia «Indice electronico FIRMADO incluido: si» leyendo una variable
+            # que solo significa «el XML se pudo incluir». Un expediente abierto
+            # se exporta con su índice sin firmar —el comentario de arriba lo dice
+            # expresamente— y el paquete de entrega afirmaba que llevaba un índice
+            # firmado. Quien recibe esta copia lee esa línea como garantía de
+            # autenticidad; que sea falsa es un defecto probatorio, no de estilo.
+            f"Indice electronico incluido: {'si' if indice_incluido else 'no'}\n"
+            f"Indice electronico firmado: "
+            f"{'si' if indice_firmado else 'no (pendiente de firma)' if indice_incluido else 'no'}\n\n"
             "ALCANCE: este ZIP es una copia de CONSULTA/ENTREGA para un usuario. "
             "NO es un paquete de preservacion acreditado (AIP, E10) ni una "
             "transferencia documental formal con FUID (E12). Los radicados "

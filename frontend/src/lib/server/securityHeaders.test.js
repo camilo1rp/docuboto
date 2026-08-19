@@ -17,7 +17,7 @@
  * porque no se vuelve a pedir.
  */
 import { describe, it, expect } from "vitest";
-import { aplicarCabecerasDeSeguridad } from "./securityHeaders.js";
+import { aplicarCabecerasDeSeguridad, ampliarFormAction } from "./securityHeaders.js";
 
 /** @param {string} tipo @param {Record<string,string>} [extra] */
 function respuestaCon(tipo, extra = {}) {
@@ -65,5 +65,47 @@ describe("aplicarCabecerasDeSeguridad", () => {
     // clavado en HTTPS para ese host, sin nadie escuchando al otro lado.
     const r = aplicarCabecerasDeSeguridad(respuestaCon("text/html"));
     expect(r.headers.get("strict-transport-security")).toBeNull();
+  });
+});
+
+/**
+ * `form-action` y el botón de salir.
+ *
+ * La política declaraba `form-action 'self'` con el comentario «el logout y los
+ * formularios envían solo a este origen». Del logout era falso: termina en el
+ * `end_session_endpoint` de Keycloak, otro origen. Chrome aplica la directiva a
+ * toda la cadena de redirecciones del envío, así que bloqueaba el salto y **el
+ * botón de salir no hacía nada** — con el agravante de que el servidor ya había
+ * borrado las cookies: sesión local cerrada, la de Keycloak abierta, y la
+ * pantalla mostrando al usuario dentro.
+ */
+describe("form-action — el cierre de sesión sale a otro origen", () => {
+  const CSP =
+    "default-src 'self'; script-src 'self' 'nonce-abc=='; form-action 'self'; frame-ancestors 'none'";
+
+  it("añade el origen del proveedor de identidad, y solo el origen", () => {
+    const r = ampliarFormAction(CSP, "http://localhost:19180");
+    expect(r).toContain("form-action 'self' http://localhost:19180");
+  });
+
+  it("no toca el resto de la política, ni el nonce de SvelteKit", () => {
+    const r = ampliarFormAction(CSP, "http://localhost:19180");
+    expect(r).toContain("script-src 'self' 'nonce-abc=='");
+    expect(r).toContain("frame-ancestors 'none'");
+    expect(r.split(";").length).toBe(CSP.split(";").length);
+  });
+
+  it("es idempotente: no repite un origen ya presente", () => {
+    const una = ampliarFormAction(CSP, "http://localhost:19180");
+    expect(ampliarFormAction(una, "http://localhost:19180")).toBe(una);
+  });
+
+  it("sin origen configurado deja la política intacta", () => {
+    expect(ampliarFormAction(CSP, "")).toBe(CSP);
+  });
+
+  it("si la política NO declara form-action, no se la inventa", () => {
+    const sin = "default-src 'self'; frame-ancestors 'none'";
+    expect(ampliarFormAction(sin, "http://localhost:19180")).toBe(sin);
   });
 });

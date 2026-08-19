@@ -191,6 +191,9 @@
           {users}
           bind:value={assignedTo}
           max={1}
+          noun="responsable"
+          nounPlural="responsables"
+          listTitle="Responsable del traslado"
           disabled={loading}
           hint="Seleccione como máximo un responsable del traslado."
         />

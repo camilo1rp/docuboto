@@ -202,6 +202,9 @@
         {users}
         bind:value={assignedTo}
         max={1}
+        noun="responsable"
+        nounPlural="responsables"
+        listTitle="Responsable de la asignación"
         disabled={loading}
         hint="Seleccione como máximo un responsable de la asignación."
       />

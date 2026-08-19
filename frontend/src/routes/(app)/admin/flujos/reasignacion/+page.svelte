@@ -254,6 +254,7 @@
           {users}
           bind:value={fromUserIds}
           max={1}
+          listTitle="Usuario de origen"
           hint="Seleccione un único usuario de origen."
         />
       {:else}
@@ -277,6 +278,7 @@
         {users}
         bind:value={toUserIds}
         max={1}
+        listTitle="Usuario destino"
         hint="Seleccione un único usuario destino."
       />
       {#if sameOriginAndDestination}

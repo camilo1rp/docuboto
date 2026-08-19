@@ -63,6 +63,7 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { etiquetaEstadoRadicado } from "$lib/utils/radicado.js";
 
   export let open = false;
   export let expedienteId = "";
@@ -134,7 +135,13 @@
       const res = await fetch(`/busqueda/api?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw data;
-      results = (data.results ?? []).filter((r) => !linkedIds.has(r.id));
+      // El estado llega como lo nombra la API (`in_progress`) y esta tabla lo
+      // pintaba tal cual, mientras la bandeja —la misma información, dos clics
+      // más allá— dice «En trámite». `etiquetaEstadoRadicado` ya existía con su
+      // test; lo que faltaba era leerla aquí.
+      results = (data.results ?? [])
+        .filter((r) => !linkedIds.has(r.id))
+        .map((r) => ({ ...r, status: etiquetaEstadoRadicado(r.status) }));
       total = Number(data.total ?? results.length);
       page = targetPage;
       hasSearched = true;

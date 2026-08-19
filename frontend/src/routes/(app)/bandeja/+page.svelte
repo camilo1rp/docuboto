@@ -1942,6 +1942,10 @@
         error={cadenaUsersError}
         hint="Use la búsqueda para agregar revisores; ordénelos con las flechas."
         max={20}
+        noun="revisor"
+        nounPlural="revisores"
+        listTitle="Cadena de revisión"
+        emptyText="Agregue revisores en el orden de revisión."
       />
     </div>
   {/if}

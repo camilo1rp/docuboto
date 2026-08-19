@@ -12,6 +12,7 @@
 import base64
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -41,14 +42,14 @@ def _radicado(*, tracking: str, estado: str = "vinculado") -> ExpedienteRadicado
     )
 
 
-def _expediente(radicados: list[ExpedienteRadicado]) -> Expediente:
+def _expediente(radicados: list[ExpedienteRadicado], status: str = "closed") -> Expediente:
     return Expediente(
         id=uuid.uuid4(),
         code="EXP-2026-0001",
         name="exp",
         description=None,
         trd_serie_id=uuid.uuid4(),
-        status="closed",
+        status=status,
         opened_by=None,
         opened_at=NOW,
         closed_at=NOW,
@@ -208,3 +209,95 @@ async def test_export_includes_indice_when_present(monkeypatch) -> None:
         next(e["contenido_b64"] for e in captured["extra_files"] if e["arcname"] == "indice-electronico.xml")
     ).decode()
     assert xml == "<indice/>"
+
+
+@pytest.mark.asyncio
+async def test_leeme_no_afirma_una_firma_que_no_existe(monkeypatch) -> None:
+    """El LEEME decía «Indice electronico FIRMADO incluido: si» leyendo una
+    variable que solo significa «el XML se pudo incluir».
+
+    Un expediente abierto se exporta con su índice SIN firmar —el propio código
+    lo dice: «un expediente sin índice firmado (aún abierto) se exporta igual»—
+    y el paquete de entrega afirmaba lo contrario. Quien recibe esta copia lee
+    esa línea como garantía de autenticidad, así que la afirmación falsa es un
+    defecto probatorio, no de redacción. Ahora son dos hechos separados y cada
+    uno dice la verdad.
+    """
+    vinc = _radicado(tracking="2026-DEMO-E-000001", estado="vinculado")
+    svc = _service_with(_expediente([vinc], status="open"))
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_anexos_internal",
+        AsyncMock(return_value={str(vinc.radicado_id): []}),
+    )
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_radicado_metadata_internal",
+        AsyncMock(return_value={str(vinc.radicado_id): {"subject": "Asunto", "doc_type": "E"}}),
+    )
+    captured = {}
+
+    async def _fake_export(*, tenant_slug, items, extra_files):
+        captured["extra_files"] = extra_files
+        return b"ZIPBYTES"
+
+    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr(
+        "app.services.index_service.IndexService.get_xml",
+        AsyncMock(return_value="<indice/>"),
+    )
+    monkeypatch.setattr(
+        "app.services.index_service.IndexService.get_indice",
+        AsyncMock(return_value=SimpleNamespace(estado="pendiente_firma")),
+    )
+
+    await svc.export_expediente_zip(uuid.uuid4(), user_id=uuid.uuid4(), canal="api")
+
+    leeme = base64.b64decode(
+        next(e["contenido_b64"] for e in captured["extra_files"] if e["arcname"] == "LEEME.txt")
+    ).decode()
+    assert "Indice electronico incluido: si" in leeme
+    assert "Indice electronico firmado: no (pendiente de firma)" in leeme
+    # La frase vieja no puede reaparecer: es la que afirmaba la firma.
+    assert "Indice electronico firmado incluido: si" not in leeme
+    # El estado del expediente se lee en la lengua de trabajo.
+    assert "Estado del expediente al exportar: abierto" in leeme
+
+
+@pytest.mark.asyncio
+async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatch) -> None:
+    """El gemelo del caso anterior: si el índice está firmado, el LEEME lo dice.
+
+    Sin este test, un arreglo perezoso —escribir «no» siempre— pasaría en verde.
+    """
+    vinc = _radicado(tracking="2026-DEMO-E-000001", estado="vinculado")
+    svc = _service_with(_expediente([vinc], status="closed"))
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_anexos_internal",
+        AsyncMock(return_value={str(vinc.radicado_id): []}),
+    )
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_radicado_metadata_internal",
+        AsyncMock(return_value={str(vinc.radicado_id): {"subject": "Asunto", "doc_type": "E"}}),
+    )
+    captured = {}
+
+    async def _fake_export(*, tenant_slug, items, extra_files):
+        captured["extra_files"] = extra_files
+        return b"ZIPBYTES"
+
+    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr(
+        "app.services.index_service.IndexService.get_xml",
+        AsyncMock(return_value="<indice/>"),
+    )
+    monkeypatch.setattr(
+        "app.services.index_service.IndexService.get_indice",
+        AsyncMock(return_value=SimpleNamespace(estado="firmado")),
+    )
+
+    await svc.export_expediente_zip(uuid.uuid4(), user_id=uuid.uuid4(), canal="api")
+
+    leeme = base64.b64decode(
+        next(e["contenido_b64"] for e in captured["extra_files"] if e["arcname"] == "LEEME.txt")
+    ).decode()
+    assert "Indice electronico firmado: si" in leeme
+    assert "Estado del expediente al exportar: cerrado" in leeme
