@@ -213,6 +213,7 @@
   let reclasificarMotivoError = "";
   let reclasificarCausal = "";
   let reclasificarFundamento = "";
+  let reclasificarFundamentoError = "";
   let reclasificarPlazo = "";
   let reclasificarLoading = false;
   /** @type {HTMLElement | undefined} Título de la página: destino de foco estable. */
@@ -778,6 +779,7 @@
     reclasificarMotivoError = "";
     reclasificarCausal = "";
     reclasificarFundamento = "";
+    reclasificarFundamentoError = "";
     reclasificarPlazo = "";
     // Cerrar drawer ANTES de abrir modal — evitar apilar focus traps (A11y)
     drawerOpen = false;
@@ -854,6 +856,7 @@
     if (!selectedDoc || reclasificarLoading) return;
 
     reclasificarMotivoError = "";
+    reclasificarFundamentoError = "";
     const nivelInt = parseInt(reclasificarNivel, 10);
 
     if (!reclasificarNivel || ![1, 2, 3].includes(nivelInt)) {
@@ -862,6 +865,18 @@
     }
     if (!reclasificarMotivo.trim()) {
       reclasificarMotivoError = "El motivo de la reclasificación es obligatorio.";
+      return;
+    }
+    // El fundamento jurídico NO es opcional a partir de Reservada: el backend
+    // lo rechaza con 422 («fundamento_juridico es obligatorio al reclasificar a
+    // nivel_seguridad >= 2, Ley 1712/2014 art. 19/28») y la etiqueta decía
+    // «(opcional)». Quien seguía la pantalla al pie de la letra no podía
+    // clasificar un solo radicado — y el aviso genérico no dejaba ver por qué.
+    // La regla vive también aquí para que el error llegue antes de gastar una
+    // petición, pero la fuente de verdad sigue siendo el validador del esquema.
+    if (nivelInt >= 2 && !reclasificarFundamento.trim()) {
+      reclasificarFundamentoError =
+        "El fundamento jurídico es obligatorio para reservar o clasificar (Ley 1712/2014, art. 19).";
       return;
     }
 
@@ -996,6 +1011,32 @@
   // Pre-computed para evitar condiciones largas en template (printWidth)
   $: canDevolverInDrawer =
     canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
+  // `?radicado=<uuid>` abre su detalle. Es lo que permite que un resultado de
+  // búsqueda lleve REALMENTE al radicado: la bandeja lista lo que tramita la
+  // dependencia activa, así que lo buscado casi nunca está en ella, y el enlace
+  // anterior —`/bandeja` a secas— dejaba a la persona en una lista donde su
+  // documento no aparecía, sin decirle por qué.
+  //
+  // Va en un bloque REACTIVO y no en `onMount`: SvelteKit reutiliza el
+  // componente al navegar dentro de la misma ruta, así que con `onMount` el
+  // enlace solo funcionaba la primera vez — ir de un radicado a otro dejaba en
+  // pantalla el detalle del anterior, con la URL diciendo otra cosa. Es el
+  // mismo patrón que ya se corrigió en `/busqueda`.
+  //
+  // `ultimoRadicadoAbierto` evita reabrir el drawer en cada actualización del
+  // store (y por tanto releer el detalle) cuando el parámetro no ha cambiado.
+  let ultimoRadicadoAbierto = null;
+  $: {
+    const idPedido = $page.url.searchParams.get("radicado");
+    if (idPedido && idPedido !== ultimoRadicadoAbierto) {
+      ultimoRadicadoAbierto = idPedido;
+      // El drawer se alimenta de `/bandeja/api/{id}`, que resuelve cualquier
+      // radicado y aplica sus propias reglas de acceso: uno por encima del
+      // clearance responde 404 y se ve el error, no una pantalla en blanco.
+      openDrawer({ id: idPedido });
+    }
+  }
+
   $: canReclasificar = $permissions.includes("PERM_RECLASIFICAR");
   // Acto de publicación (Ley 1712 art. 12): el backend exige PERM_RECLASIFICAR
   // con nivel de ESCRITURA (min_crud=3) — publicar y clasificar son las dos
@@ -2025,11 +2066,13 @@
           />
           <FormField
             id="reclasificar-fundamento"
-            label="Fundamento jurídico (opcional)"
+            label="Fundamento jurídico"
             type="text"
+            required
             bind:value={reclasificarFundamento}
+            error={reclasificarFundamentoError}
             placeholder="Ej. Ley 1712/2014, art. 19"
-            hint="Máx. 300 caracteres."
+            hint="Obligatorio para reservar o clasificar: la reserva es un acto motivado en una norma concreta. Máx. 300 caracteres."
           />
           <FormField
             id="reclasificar-plazo"

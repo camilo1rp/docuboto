@@ -56,13 +56,30 @@ def _raw_fields(
     }
 
 
+#: Nombre REAL de una dependencia, con espacio y tilde. Las fixtures usaban
+#: identificadores ASCII (`"001"`, `"juridica"`) y por eso estos tests estuvieron
+#: en verde mientras producción fallaba el 100% de los envíos: elegían el único
+#: valor que no podía romperse. `to_dept` es el NOMBRE por convención del sistema.
+DEPENDENCIA = "Oficina Jurídica"
+CODIGO_DEPENDENCIA = 902
+
+
 def _make_conn(*, claim_result: bool = True) -> AsyncMock:
-    """Mock asyncpg connection whose fetchrow drives the claim() return value."""
+    """Mock asyncpg connection: reparte `fetchrow` según la consulta.
+
+    La misma conexión sirve a dos consultas distintas —el `claim` del evento y
+    la resolución del buzón de la dependencia—, así que un `return_value` único
+    daría una de las dos por la otra.
+    """
     conn = AsyncMock()
-    # ProcessedEventsRepository.claim uses conn.fetchrow:
-    #   returns a non-None record → claimed (True)
-    #   returns None             → conflict (False)
-    conn.fetchrow.return_value = {"event_id": "evt-0001"} if claim_result else None
+
+    async def _fetchrow(sql: str, *args):  # noqa: ARG001
+        if "dependencias" in sql:
+            return {"codigo": CODIGO_DEPENDENCIA}
+        # ProcessedEventsRepository.claim: registro no-None → claimed (True).
+        return {"event_id": "evt-0001"} if claim_result else None
+
+    conn.fetchrow.side_effect = _fetchrow
     return conn
 
 
@@ -89,7 +106,7 @@ async def test_process_event_claim_true_despacha_efectos() -> None:
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
         event_type="workflow.step.created",
-        payload={"action": "assign", "tracking_number": "2026-DEMO-E-000001", "to_dept": "001"},
+        payload={"action": "assign", "tracking_number": "2026-DEMO-E-000001", "to_dept": DEPENDENCIA},
     )
 
     with (
@@ -113,7 +130,7 @@ async def test_process_event_claim_false_skip_sin_efectos() -> None:
     conn = _make_conn(claim_result=False)
     raw = _raw_fields(
         event_type="workflow.step.created",
-        payload={"action": "assign", "tracking_number": "2026-DEMO-E-000001", "to_dept": "001"},
+        payload={"action": "assign", "tracking_number": "2026-DEMO-E-000001", "to_dept": DEPENDENCIA},
     )
 
     with (
@@ -182,7 +199,7 @@ async def test_process_event_overdue_claim_true() -> None:
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
         event_type="workflow.step.overdue",
-        payload={"tracking_number": "2026-DEMO-E-000002", "to_dept": "002", "due_at": "2026-06-01"},
+        payload={"tracking_number": "2026-DEMO-E-000002", "to_dept": DEPENDENCIA, "due_at": "2026-06-01"},
     )
 
     with (

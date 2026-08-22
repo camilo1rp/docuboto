@@ -25,6 +25,12 @@ from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
 _USER = str(uuid.uuid4())
+# Quien RESUELVE la anulación es siempre otra persona: solicitar y aprobar no
+# pueden ser el mismo acto (ver `TestControlDual` al final de este archivo).
+# Antes estos tests aprobaban con `_USER`, el mismo que figuraba como
+# solicitante en el fixture, así que la suite entera daba por buena una
+# aprobación que el sistema no debe aceptar.
+_SUPERVISOR = str(uuid.uuid4())
 
 
 def _clearance_row(max_level: int = 3, is_root: bool = False) -> dict:
@@ -105,7 +111,7 @@ async def test_aprobar_anula_el_radicado(client_with_conn) -> None:
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion/aprobar",
         json={"observacion": "Procede"},
-        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
     )
     assert resp.status_code == 200
     assert resp.json()["estado"] == "aprobada"
@@ -216,7 +222,7 @@ async def test_aprobar_emite_evento_annulled(client_with_redis) -> None:
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion/aprobar",
         json={"observacion": "Procede"},
-        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
     )
 
     assert resp.status_code == 200
@@ -295,7 +301,7 @@ async def test_aprobar_evento_best_effort_no_revierte_anulacion(client_with_redi
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion/aprobar",
         json={"observacion": "Procede"},
-        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
     )
 
     assert resp.status_code == 200  # la anulación se aplicó pese al fallo de Redis
@@ -394,3 +400,110 @@ async def test_una_salida_si_se_anula(client_with_conn) -> None:
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# Segregación de funciones: quien pide la anulación no la aprueba
+# ---------------------------------------------------------------------------
+#
+# Anular retira de la circulación un documento oficial y no se deshace (Ley
+# 594/2000). La pantalla que recoge la solicitud ya se lo dice a quien la hace
+# —«la anulación requiere aprobación posterior por un supervisor»— pero eso era
+# una promesa que nadie hacía cumplir: en la revisión por navegador, el mismo
+# usuario solicitó y aprobó seguido, y el radicado quedó `anulado` sin que
+# ningún tercero lo hubiera mirado. La comprobación no vivía en ningún sitio, y
+# los tres tests de aprobación de este archivo la daban por buena porque
+# resolvían con el mismo usuario que figuraba como solicitante.
+
+
+@pytest.mark.asyncio
+async def test_el_solicitante_no_puede_aprobar_su_propia_anulacion(client_with_conn) -> None:
+    """409 explícito, no 403: no es falta de permiso, es que el acto exige otro."""
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        _anulacion_row(radicado_id=rid, estado="solicitada", solicitado_por=uuid.UUID(_USER)),
+    ]
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/aprobar",
+        json={"observacion": "La apruebo yo mismo"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "aprobacion_del_propio_solicitante"
+
+
+@pytest.mark.asyncio
+async def test_el_mensaje_ofrece_la_via_alternativa(client_with_conn) -> None:
+    """Decir «no puede» sin decir «qué sí puede» deja el trámite parado.
+
+    Quien topa con este límite tiene dos salidas legítimas —pasarla a otro
+    funcionario, o desistir rechazándola— y el mensaje las nombra.
+    """
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        _anulacion_row(radicado_id=rid, estado="solicitada", solicitado_por=uuid.UUID(_USER)),
+    ]
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/aprobar",
+        json={},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    detalle = resp.json()["detail"]["detail"]
+    assert "rechazarla" in detalle
+    assert "otro funcionario" in detalle
+
+
+@pytest.mark.asyncio
+async def test_otra_persona_SI_puede_aprobarla(client_with_conn) -> None:
+    """Control positivo: la corrección no puede consistir en impedir el acto."""
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        _anulacion_row(radicado_id=rid, estado="solicitada", solicitado_por=uuid.UUID(_USER)),
+        _anulacion_row(
+            radicado_id=rid,
+            estado="aprobada",
+            decidido_por=uuid.UUID(_SUPERVISOR),
+            decidido_at=NOW,
+        ),
+    ]
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/aprobar",
+        json={"observacion": "Verificado el error de radicación"},
+        headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "aprobada"
+
+
+@pytest.mark.asyncio
+async def test_el_solicitante_SI_puede_rechazar_su_propia_solicitud(client_with_conn) -> None:
+    """Rechazar lo propio es desistir, no ejecutar el acto irreversible.
+
+    Bloquearlo también dejaría solicitudes vivas que su autor no puede retirar,
+    esperando a un tercero que quizá no llegue nunca.
+    """
+    client, mock_conn = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(),
+        _anulacion_row(radicado_id=rid, estado="solicitada", solicitado_por=uuid.UUID(_USER)),
+        _anulacion_row(
+            radicado_id=rid,
+            estado="rechazada",
+            decidido_por=uuid.UUID(_USER),
+            decidido_at=NOW,
+        ),
+    ]
+    resp = await client.post(
+        f"/api/v1/documents/{rid}/anulacion/rechazar",
+        json={"observacion": "Desisto: el destinatario sí era el correcto"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "rechazada"

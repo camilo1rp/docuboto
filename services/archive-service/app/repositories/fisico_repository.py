@@ -51,6 +51,22 @@ class FisicoRepository:
         assert row is not None
         return row
 
+    async def update_ubicacion(self, ubicacion_id: uuid.UUID, data: dict) -> asyncpg.Record | None:
+        """UPDATE parcial: solo las columnas que vienen en `data`.
+
+        `codigo` y `parent_id` no llegan nunca aquí —el esquema de entrada no
+        los admite—, así que la identidad de la ubicación y su sitio en el árbol
+        quedan fuera del alcance de esta corrección.
+        """
+        await self._sp()
+        cols = list(data.keys())
+        asignaciones = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(cols))
+        return await self._conn.fetchrow(
+            f"UPDATE ubicacion SET {asignaciones} WHERE id = $1 RETURNING {_UB_COLS}",
+            ubicacion_id,
+            *data.values(),
+        )
+
     async def get_ubicacion(self, ubicacion_id: uuid.UUID) -> asyncpg.Record | None:
         await self._sp()
         return await self._conn.fetchrow(

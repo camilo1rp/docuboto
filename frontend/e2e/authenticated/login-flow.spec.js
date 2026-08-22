@@ -8,16 +8,19 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * login-flow.spec.js — Login PKCE completo contra Keycloak real (SKIP).
+ * login-flow.spec.js — Login PKCE completo contra Keycloak real.
  *
- * Requiere `docker compose up -d` (Keycloak + api-gateway + Postgres) y un
- * usuario de prueba. Ver e2e/authenticated/README.md para cómo habilitarlo.
- * Doble barrera para no correr por accidente: `test.describe.skip` +
- * `playwright.config.js#testIgnore`.
+ * Corre SOLO con `--config=playwright.authenticated.config.js`, que es el que
+ * apunta a este directorio; el config de humo lo sigue excluyendo por
+ * `testIgnore` para no depender de la pila. La única barrera que queda es la
+ * legítima: sin `E2E_USERNAME`/`E2E_PASSWORD` el caso que necesita identidad
+ * se salta. El `describe.skip` que había encima se retira — un test apagado
+ * en su propio archivo no se enciende nunca, y este llevaba así desde que se
+ * escribió.
  */
 import { test, expect } from "@playwright/test";
 
-test.describe.skip("Login PKCE (requiere stack real — ver README.md)", () => {
+test.describe("Login PKCE (requiere la pila levantada — ver README.md)", () => {
   test("un usuario válido completa el login y llega a /dashboard con sesión", async ({ page }) => {
     const username = process.env.E2E_USERNAME;
     const password = process.env.E2E_PASSWORD;

@@ -651,7 +651,12 @@ async def test_upload_exige_permiso_de_radicacion(
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"]["detail"] == "Se requiere el permiso PERM_RADI"
+    # El mensaje nombra el NIVEL exigido: faltar el permiso y tenerlo con nivel
+    # insuficiente son dos problemas distintos, y el texto anterior los confundía.
+    assert (
+        response.json()["detail"]["detail"]
+        == "Se requiere el permiso PERM_RADI (nivel 1 o superior)"
+    )
     mock_minio.put_object.assert_not_called()
 
 

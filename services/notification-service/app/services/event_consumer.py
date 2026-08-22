@@ -57,13 +57,16 @@ from orpycamcp_common import events
 from app.core.database import acquire_tenant
 from app.repositories.processed_events_repository import ProcessedEventsRepository
 from app.schemas.notification import NotificationSend
+from app.services.buzones import buzon_de_codigo_o_ventanilla, resolver_buzon_dependencia
 from app.services.notification_service import send_notification
 from app.services.webhook_service import dispatch as dispatch_webhooks
 
 logger = logging.getLogger(__name__)
 
 
-def build_workflow_notifications(envelope: dict) -> list[NotificationSend]:
+def build_workflow_notifications(
+    envelope: dict, *, buzon_destino: str
+) -> list[NotificationSend]:
     """Pure builder: maps a workflow-stream envelope to its NotificationSend(s).
 
     Mirrors the routing rules previously inlined in ``process_event``:
@@ -71,6 +74,13 @@ def build_workflow_notifications(envelope: dict) -> list[NotificationSend]:
       - ``workflow.step.overdue`` → overdue-alert email.
       - anything else → no email (empty list); webhooks still fire independently
         in the caller, not here.
+
+    `buzon_destino` llega YA RESUELTO (ver `app/services/buzones.py`) para que
+    este constructor siga siendo puro. Es **keyword-only y sin valor por
+    defecto a propósito**: la versión anterior interpolaba `to_dept` —el
+    NOMBRE de la dependencia, texto libre con espacios y tildes— en la parte
+    local de la dirección, y fallaba el 100% de los envíos. Un default aquí
+    dejaría a cualquier llamante conservando ese defecto en silencio.
     """
     tenant_slug = envelope.get("tenant_slug")
     event_type = envelope.get("event_type")
@@ -81,7 +91,7 @@ def build_workflow_notifications(envelope: dict) -> list[NotificationSend]:
         to_dept = payload_data.get("to_dept", "unknown")
         return [
             NotificationSend(
-                recipient_email=f"{to_dept}@orpycamcp.local",
+                recipient_email=buzon_destino,
                 subject=f"[OrpycaMCP] Nuevo radicado asignado: {tracking_number}",
                 body=(
                     f"Se ha asignado un nuevo radicado a su dependencia.\n\n"
@@ -99,7 +109,7 @@ def build_workflow_notifications(envelope: dict) -> list[NotificationSend]:
         due_at = payload_data.get("due_at")
         return [
             NotificationSend(
-                recipient_email=f"{to_dept}@orpycamcp.local",
+                recipient_email=buzon_destino,
                 subject=f"[OrpycaMCP] Trámite VENCIDO: {tracking_number}",
                 body=(
                     f"El trámite del radicado {tracking_number} está vencido.\n\n"
@@ -129,11 +139,7 @@ def build_document_notifications(envelope: dict) -> list[NotificationSend]:
     tracking_number = payload_data.get("tracking_number", "N/A")
     dest_dept_code = payload_data.get("dest_dept_code")
 
-    recipient = (
-        f"dependencia-{dest_dept_code}@orpycamcp.local"
-        if dest_dept_code is not None
-        else "ventanilla@orpycamcp.local"
-    )
+    recipient = buzon_de_codigo_o_ventanilla(dest_dept_code)
 
     return [
         NotificationSend(
@@ -186,7 +192,10 @@ async def process_event(data: dict[str, str]) -> None:
     await dispatch_webhooks(envelope)
 
     event_type = envelope.get("event_type")
-    for send in build_workflow_notifications(envelope):
+    payload_data = envelope.get("payload") or {}
+    async with acquire_tenant(tenant_slug) as conn:
+        buzon_destino = await resolver_buzon_dependencia(conn, payload_data.get("to_dept"))
+    for send in build_workflow_notifications(envelope, buzon_destino=buzon_destino):
         await send_notification(send, event_type=event_type)
 
 

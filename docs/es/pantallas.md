@@ -14,6 +14,30 @@ usuario (`PERM_RADI`, `USUA_PERM_EXPEDIENTE`, `USUA_PERM_ADMIN`, `PERM_RADI_SALI
 profundidad en la UI — el backend siempre revalida el permiso y el nivel de
 clearance (RF-SEG-08) por request.
 
+## Qué de esto está verificado desde el navegador
+
+Este documento es un **inventario funcional**: dice qué hace cada pantalla, no qué se ha
+comprobado. La distinción importa, porque hasta agosto de 2026 la garantía del proyecto era de
+unidad y de contrato, no de uso: las 36 pantallas de `(app)/` tenían **cero cobertura de
+navegador**.
+
+En agosto de 2026 se ejecutó el recorrido completo —bloques B0 a B13, con los actos reales
+incluidos los irreversibles, contra `tenant_demo`—. El procedimiento, los casos y los puntos
+ciegos declarados están en el **[plan de pruebas](plan-pruebas.md)**; el detalle de cada defecto
+encontrado y de cómo se cerró, en el [changelog](changelog.md).
+
+El patrón dominante de aquella revisión merece leerse antes que la tabla que sigue: **el sistema
+ya tenía el dato bueno y la pantalla mostraba otro**. Ninguno de esos defectos era de cálculo ni
+de diseño, y ninguno lo detectaba un test de un solo lado — por eso hacía falta pulsar los
+botones.
+
+El barrido negativo con un usuario de permisos reducidos (B13) confirmó lo que más importaba:
+**los controles de acceso no viven solo en el navegador**. Todo lo que la interfaz esconde se
+invocó además por el proxy BFF, y el backend respondió 403 en todos los casos de escritura. Queda
+declarada una **decisión de producto abierta**: las lecturas de TRD y PINAR no exigen permiso,
+mientras la interfaz esconde esas pantallas — ver el
+[plan de pruebas](plan-pruebas.md#4bis-decisión-de-producto-abierta-resultado-de-b13).
+
 ## Pantallas públicas (`(public)/`)
 
 | Ruta | Propósito |

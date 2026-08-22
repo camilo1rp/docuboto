@@ -147,7 +147,17 @@ def require_permission(name: str, min_crud: int = 1) -> Callable[..., Coroutine[
                     )
                 except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                     logger.warning("audit.append_denial failed", exc_info=True)
-            raise _forbidden(f"Se requiere el permiso {name} (crud>={min_crud})")
+            # El mensaje distingue las dos causas: faltar el permiso y tenerlo con
+            # nivel insuficiente son dos problemas con dos soluciones distintas
+            # (conceder vs. SUBIR el nivel de uno ya concedido). Aquí no hace falta
+            # consulta extra: `caller.permissions` ya es {permiso: nivel}.
+            nivel = caller.permissions.get(name)
+            if nivel is None:
+                raise _forbidden(f"Se requiere el permiso {name} (nivel {min_crud} o superior)")
+            raise _forbidden(
+                f"Tiene el permiso {name} con nivel {nivel}, y esta acción requiere "
+                f"nivel {min_crud} o superior"
+            )
         return caller
 
     return dependency

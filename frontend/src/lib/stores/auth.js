@@ -61,6 +61,20 @@ export const permissionLevels = derived(sessionUser, ($u) => $u?.permission_leve
 /** Slug del tenant activo (del claim del JWT) */
 export const tenantSlug = derived(sessionUser, ($u) => $u?.tenant_slug ?? null);
 
+/**
+ * Identidad INTERNA de la persona en el tenant (`auth_users.id`).
+ *
+ * No es `sub`: el `sub` de Keycloak y el id interno son dos UUID distintos para
+ * la misma persona, y el backend escribe SIEMPRE el interno en las columnas de
+ * autoría (`creada_por`, `enviada_por`, `decidida_por`, `solicitado_por`,
+ * `firmante_id`…). Comparar `sub` contra esos campos da siempre falso, y en
+ * silencio: la pantalla no falla, simplemente deja de reconocer que algo es
+ * tuyo. Se usó `sub` en tres sitios y los tres estaban rotos.
+ *
+ * Para preguntar «¿esto lo hice yo?», este es el valor.
+ */
+export const userId = derived(sessionUser, ($u) => $u?.user_id ?? null);
+
 /** true si hay sesión activa */
 export const isAuthenticated = derived(sessionUser, ($u) => $u !== null);
 
@@ -156,6 +170,10 @@ export function clearSession() {
 /**
  * @typedef {object} SessionUser
  * @property {string} sub
+ *   Identificador de Keycloak. **No** es el de la persona dentro del tenant.
+ * @property {string} [user_id]
+ *   Identidad INTERNA (`auth_users.id`), la que el backend escribe en las
+ *   columnas de autoría. Ver la store `userId` para el porqué.
  * @property {string|null} email
  * @property {string} name
  * @property {string|null} preferred_username

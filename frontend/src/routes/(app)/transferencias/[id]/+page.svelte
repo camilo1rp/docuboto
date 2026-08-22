@@ -23,7 +23,7 @@
   ('entrega'), receptor ('recibe') — y el rol se DERIVA en el backend de la
   identidad congelada (`creada_por`/`enviada_por`/`decidida_por` de la
   transferencia), NUNCA lo elige el cliente. Esta pantalla espeja esa misma
-  derivación (comparando `$sessionUser.sub` contra esas tres columnas) para
+  derivación (comparando la identidad interna, `$userId`, contra esas tres columnas) para
   mostrar a CADA persona solo lo que a ELLA le corresponde firmar — nunca un
   botón "Firmar" genérico — pero el backend re-valida siempre y es la única
   fuente de verdad (si el espejo se equivoca, el backend responde 403).
@@ -39,7 +39,8 @@
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
-  import { permissionLevels, sessionUser } from "$lib/stores/auth.js";
+  import { permissionLevels, userId } from "$lib/stores/auth.js";
+  import { etiquetaUbicacion } from "$lib/utils/ubicacion.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   import Card from "$lib/components/ui/Card.svelte";
@@ -60,7 +61,11 @@
   // (transferencias.py líneas 186/203) — la docstring de este archivo ya lo
   // documentaba, pero el gate seguía usando solo presencia del permiso.
   $: canManageWrite = ($permissionLevels["USUA_PERM_EXPEDIENTE"] ?? 0) >= 3;
-  $: userSub = $sessionUser?.sub ?? "";
+  // Identidad INTERNA (`auth_users.id`), no el `sub` de Keycloak: las tres
+  // columnas de autoría de la transferencia guardan la primera. Comparando
+  // contra `sub` esto daba siempre `[]`, así que el botón «Firmar como …» no
+  // aparecía nunca — para nadie, ni siquiera para quien había hecho el acto.
+  $: userSub = $userId ?? "";
 
   onMount(() => {
     setBreadcrumbs([
@@ -74,6 +79,24 @@
   // Facetas (estado de carga/error INDEPENDIENTE cada una — nunca un global)
   // ---------------------------------------------------------------------------
   $: transferencia = data.transferencia?.data ?? null;
+
+  // Identidad legible. El acta de entrega es un documento con valor probatorio:
+  // mostraba tres UUID donde deben ir el código del expediente y los de las
+  // ubicaciones, que son los que están impresos en la carátula y en las
+  // signaturas. Si el catálogo no llegó, se cae al identificador — que es lo
+  // que había antes, no una regresión.
+  $: expedienteEtiqueta = data.expedienteCodigo
+    ? data.expedienteNombre
+      ? `${data.expedienteCodigo} — ${data.expedienteNombre}`
+      : data.expedienteCodigo
+    : (transferencia?.expediente_id ?? "—");
+
+  /** @param {string|null|undefined} id */
+  function ubicacionEtiqueta(id) {
+    if (!id) return "—";
+    const u = (data.ubicaciones ?? []).find((x) => x.id === id);
+    return u ? etiquetaUbicacion(u) : id;
+  }
   $: transferenciaError = data.transferencia?.error ?? null;
 
   $: acta = data.acta?.data ?? null;
@@ -95,16 +118,36 @@
   // `creada_por` en el momento de firmar.
   // ---------------------------------------------------------------------------
   /** @returns {string[]} */
-  function derivedRoles() {
-    if (!transferencia || !userSub) return [];
+  /**
+   * Roles que esta persona desempeñó en ESTA transferencia.
+   *
+   * Recibe sus dos entradas por parámetro y no las lee del ámbito. La razón es
+   * de robustez, no un fallo observado: `$: misRoles = derivedRoles()` deduce
+   * sus dependencias LEYENDO el statement, donde solo aparece el nombre de la
+   * función, así que lo que la función consultara por dentro no cuenta y el
+   * valor se congela tras el primer cálculo. Aquí no llegó a notarse porque
+   * `data` viene completo del `load` SSR —el defecto real que dejaba el botón
+   * invisible era otro: se comparaba el `sub` de Keycloak contra la identidad
+   * interna del tenant—, pero basta con que estos datos pasen a llegar más
+   * tarde (un `fetch` en cliente, una recarga parcial) para que reaparezca.
+   *
+   * Con los argumentos a la vista, Svelte ve `transferencia` y `usuario`. Es el
+   * mismo patrón que sí se manifestó en `/busqueda` y en `/bandeja`.
+   *
+   * @param {{enviada_por?: string, decidida_por?: string, creada_por?: string}|null} transf
+   * @param {string} usuario — identidad INTERNA del tenant (`auth_users.id`)
+   * @returns {string[]}
+   */
+  function derivedRoles(transf, usuario) {
+    if (!transf || !usuario) return [];
     /** @type {string[]} */
     const roles = [];
-    if (userSub === transferencia.enviada_por) roles.push("entrega");
-    if (userSub === transferencia.decidida_por) roles.push("recibe");
-    if (userSub === transferencia.creada_por) roles.push("elabora");
+    if (usuario === transf.enviada_por) roles.push("entrega");
+    if (usuario === transf.decidida_por) roles.push("recibe");
+    if (usuario === transf.creada_por) roles.push("elabora");
     return roles;
   }
-  $: misRoles = derivedRoles();
+  $: misRoles = derivedRoles(transferencia, userSub);
 
   const ROL_LABELS = {
     elabora: "Elaborador(a)",
@@ -300,7 +343,7 @@
   }
 
   const ESTADO_MAP = {
-    pendiente: { label: "Pendiente", status: "warning" },
+    preparada: { label: "Preparada", status: "warning" },
     enviada: { label: "Enviada", status: "info" },
     recibida: { label: "Recibida", status: "success" },
     rechazada: { label: "Rechazada", status: "danger" },
@@ -347,7 +390,7 @@
           Transferencia {TIPO_MAP[transferencia.tipo] ?? transferencia.tipo}
         </h1>
         <p class="trd-header__subtitle">
-          Expediente <code>{transferencia.expediente_id}</code>
+          Expediente <code>{expedienteEtiqueta}</code>
         </p>
       </div>
       <StatusChip status={estadoInfo.status} label={estadoInfo.label} dot />
@@ -448,13 +491,14 @@
           <div class="trd-certificate__body">
             <div class="trd-certificate__field">
               <span class="trd-certificate__label">Qué se transfiere</span>
-              <span>Expediente <code>{actaEfectiva.expediente_id}</code></span>
+              <span>Expediente <code>{expedienteEtiqueta}</code></span>
             </div>
             <div class="trd-certificate__field">
               <span class="trd-certificate__label">Entre dependencias</span>
               <span>
-                {transferencia.ubicacion_origen_id ?? "—"} → {transferencia.ubicacion_destino_id ??
-                  "—"}
+                {ubicacionEtiqueta(transferencia.ubicacion_origen_id)} → {ubicacionEtiqueta(
+                  transferencia.ubicacion_destino_id,
+                ) ?? "—"}
               </span>
             </div>
             <div class="trd-certificate__field">

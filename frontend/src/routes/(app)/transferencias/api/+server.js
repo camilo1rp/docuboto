@@ -18,9 +18,14 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { resolverExpediente } from "$lib/server/expedienteRef.js";
+import { anotarCodigoExpediente } from "$lib/server/transferenciaEtiquetas.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ESTADOS_VALIDOS = ["pendiente", "enviada", "recibida", "rechazada"];
+// Estados del ciclo real (`preparada → enviada → recibida | rechazada`). Antes
+// esta lista traía `pendiente`, que no existe, y le faltaba `preparada`: el
+// filtro que sí sirve —ver lo que está listo para enviar— se rechazaba con 422.
+const ESTADOS_VALIDOS = ["preparada", "enviada", "recibida", "rechazada"];
 const TIPOS_VALIDOS = ["primaria", "secundaria"];
 
 export async function GET({ locals, url }) {
@@ -47,7 +52,18 @@ export async function GET({ locals, url }) {
       },
     });
     const data = await res.json().catch(() => ({}));
-    return json(data, { status: res.status });
+    if (!res.ok) return json(data, { status: res.status });
+
+    // Etiqueta legible del expediente. Va aquí y no en el `load` de la página
+    // porque este proxy es por donde pasan TODOS los listados: la carga
+    // inicial, la recarga tras crear una transferencia y cada filtro.
+    const anotado = await anotarCodigoExpediente(data, async (id) => {
+      const r = await fetch(`${API_V1}/expedientes/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant },
+      });
+      return r.ok ? await r.json() : null;
+    });
+    return json(anotado, { status: res.status });
   } catch {
     return json(
       { error: "connection_error", detail: "No se pudo obtener las transferencias." },
@@ -71,8 +87,7 @@ export async function POST({ locals, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { tipo, expediente_id, ubicacion_origen_id, ubicacion_destino_id, observacion } =
-    body ?? {};
+  let { tipo, expediente_id, ubicacion_origen_id, ubicacion_destino_id, observacion } = body ?? {};
 
   if (!tipo || !TIPOS_VALIDOS.includes(tipo)) {
     return json(
@@ -83,6 +98,31 @@ export async function POST({ locals, request }) {
       { status: 422 },
     );
   }
+  // El formulario habla en CÓDIGOS de expediente (`EXP-2026-0020`), que es lo
+  // que está impreso en la carátula y lo único que el sistema muestra; el UUID
+  // no aparece en ninguna pantalla. Se resuelve aquí, igual que en la carga
+  // masiva de expedientes, y se sigue aceptando el UUID para las integraciones
+  // que ya lo mandan.
+  const referencia = typeof expediente_id === "string" ? expediente_id.trim() : "";
+  const expedienteResuelto = referencia
+    ? await resolverExpediente(referencia, token, tenant)
+    : null;
+  if (referencia && !UUID_RE.test(referencia)) {
+    if (!expedienteResuelto) {
+      return json(
+        {
+          error: "expediente_no_resuelto",
+          detail:
+            `No se encontró el expediente '${referencia}'. Compruebe el código, ` +
+            "o si tiene acceso a él.",
+          status: 404,
+        },
+        { status: 404 },
+      );
+    }
+    expediente_id = expedienteResuelto;
+  }
+
   if (!expediente_id || typeof expediente_id !== "string" || !UUID_RE.test(expediente_id.trim())) {
     return json(
       {

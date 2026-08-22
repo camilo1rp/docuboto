@@ -555,3 +555,56 @@
  */
 
 export {};
+
+/**
+ * Un documento dentro del índice electrónico (E15, `IndiceItemResponse` de
+ * archive-service).
+ *
+ * Declarado aquí porque su ausencia era el hueco por el que se colaron dos
+ * defectos del mismo tipo: sin `@typedef`, leer `item.fecha_archivado` —un
+ * campo que la respuesta no tiene— no produce ningún error, ni en
+ * `svelte-check` ni en tiempo de ejecución. La columna simplemente sale vacía,
+ * y el «—» de cortesía la hace pasar por un dato no declarado. Ya ocurrió con
+ * la foliación (que leía campos de este mismo esquema sobre otra respuesta) y
+ * volvió a ocurrir en la tabla del índice.
+ *
+ * Los nombres siguen al XML probatorio: `fecha_incorporacion` es
+ * `<fechaIncorporacion>` de RT-15 art. 4.3.2.3.
+ *
+ * @typedef {object} IndiceItem
+ * @property {string}      document_id
+ * @property {number}      orden
+ * @property {string|null} titulo
+ * @property {string|null} tipologia
+ * @property {string|null} fecha_incorporacion — NO `fecha_archivado`
+ * @property {string|null} valor_huella
+ * @property {string}      funcion_resumen
+ * @property {string|null} formato
+ * @property {number|null} tamano_bytes
+ * @property {number|null} folios
+ * @property {'vinculado'|'excluido'|null} estado — `excluido` es el hueco trazable
+ * @property {number|null} nivel_seguridad
+ * @property {number|null} dependencia_productora_codigo
+ * @property {string|null} dependencia_productora_nombre
+ */
+
+/**
+ * Índice electrónico de un expediente (GET /api/v1/expedientes/{id}/indice).
+ *
+ * `num_documentos` cuenta **solo los vigentes**; `items` incluye además los
+ * excluidos. Los dos números difieren a propósito y la pantalla tiene que
+ * explicarlo: enseñar solo el primero junto a una tabla más larga se lee como
+ * una contradicción.
+ *
+ * @typedef {object} IndiceElectronico
+ * @property {string}      id
+ * @property {string}      expediente_id
+ * @property {number}      version
+ * @property {string}      estado
+ * @property {number}      num_documentos — vigentes; `items.length` incluye excluidos
+ * @property {string}      xml_sha256
+ * @property {string}      algoritmo
+ * @property {string|null} firma_id
+ * @property {string}      generado_ts
+ * @property {IndiceItem[]} items
+ */

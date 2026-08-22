@@ -64,6 +64,7 @@ from app.schemas.dead_letter import (
     DeadLetterSummary,
     DiscardRequest,
 )
+from app.services.buzones import resolver_buzon_dependencia
 from app.services.event_consumer import (
     build_document_notifications,
     build_workflow_notifications,
@@ -88,10 +89,24 @@ _SERVICE = "notification-service"
 # uses — see app/services/event_consumer.py). A row whose origin_stream is
 # missing or does not match either known stream cannot be routed and fails
 # closed (422) rather than guessing which handler applies.
-_BUILDERS = {
-    WORKFLOW_STREAM: build_workflow_notifications,
-    DOCUMENT_STREAM: build_document_notifications,
-}
+_STREAMS_CONOCIDOS = frozenset({WORKFLOW_STREAM, DOCUMENT_STREAM})
+
+
+async def _construir_envios(conn, origin_stream: str, envelope: dict):
+    """Reconstruye los envíos de un evento muerto, por el MISMO camino que el vivo.
+
+    El reenvío del stream de flujos necesita resolver el buzón de la dependencia
+    igual que lo hace el consumidor —`to_dept` es el NOMBRE, no una dirección—.
+    Antes llamaba al constructor sin más y reproducía el defecto: reintentar un
+    aviso de asignación muerto lo mandaba otra vez a `Oficina Jurídica@…` y
+    volvía a fallar. Ese es el motivo de que `buzon_destino` sea obligatorio y
+    sin valor por defecto: convirtió un fallo silencioso en un error de firma.
+    """
+    if origin_stream == WORKFLOW_STREAM:
+        payload_data = envelope.get("payload") or {}
+        buzon = await resolver_buzon_dependencia(conn, payload_data.get("to_dept"))
+        return build_workflow_notifications(envelope, buzon_destino=buzon)
+    return build_document_notifications(envelope)
 
 router = APIRouter(
     prefix="/api/v1/notification/admin/deadletter",
@@ -316,8 +331,7 @@ async def replay_dead_letter(
         # Route to the same pure builder the live consumer uses for this
         # origin_stream. An unknown/missing origin_stream cannot be routed
         # safely — fail closed rather than guess (open_risk in the contract).
-        builder = _BUILDERS.get(row["origin_stream"])
-        if builder is None:
+        if row["origin_stream"] not in _STREAMS_CONOCIDOS:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
@@ -329,7 +343,7 @@ async def replay_dead_letter(
                     "status": 422,
                 },
             )
-        sends = builder(envelope)
+        sends = await _construir_envios(conn, row["origin_stream"], envelope)
 
         # Clear any stale dedup claim before resending (defensive: see the module
         # note in app/services/event_consumer.py on why most notification

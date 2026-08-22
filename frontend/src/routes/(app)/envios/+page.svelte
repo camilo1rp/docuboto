@@ -46,6 +46,7 @@
   import Modal from "$lib/components/ui/Modal.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
@@ -64,6 +65,9 @@
 
   /** @type {import('$lib/types/api.js').ShipmentResponse[]} */
   let shipments = data.shipments ?? [];
+  /** Error de la carga SSR: `{detail, status}` o `null`. Reactivo porque la
+   *  navegación entre filtros vuelve a ejecutar el `load`. */
+  $: loadError = data.loadError ?? null;
   let total = data.total ?? 0;
   let loading = false;
   let filterEstado = data.initialFilters?.estado ?? "";
@@ -586,101 +590,119 @@
     </div>
   {/if}
 
-  <!-- Tabla paginada -->
-  <div class="envios-table-wrap">
-    <!-- "Seleccionar todos en página" — cableado a toggleAll/allPageSelected (IMPORTANTE #2).
+  <!-- El error de carga SE LEE. Antes el `load` capturaba el 403 en `loadError`
+       y la pantalla no lo miraba: a quien no tiene `PERM_RADI_SALIDA` se le
+       decía «No hay registros que coincidan con los criterios seleccionados»,
+       afirmando que la entidad no tiene envíos postales cuando lo que pasa es
+       que no puede verlos. El mismo string tapaba también un servidor caído.
+       El idioma correcto ya estaba en `/admin/colas`: nombrar el permiso. -->
+  {#if loadError}
+    <EmptyState
+      icon={loadError.status === 403 ? "fas fa-lock" : "fas fa-triangle-exclamation"}
+      title={loadError.status === 403
+        ? "Sin permiso para ver los envíos postales"
+        : "No se pudo consultar el servidor de envíos"}
+      description={loadError.status === 403
+        ? "Tu usuario no tiene el permiso PERM_RADI_SALIDA necesario para esta pantalla. Esto no significa que no haya envíos registrados."
+        : loadError.detail}
+    />
+  {:else}
+    <!-- Tabla paginada -->
+    <div class="envios-table-wrap">
+      <!-- "Seleccionar todos en página" — cableado a toggleAll/allPageSelected (IMPORTANTE #2).
          La selección se resetea al paginar: decisión deliberada para evitar exportar filas
          no visibles; la acumulación cross-page queda como roadmap (#6). -->
-    {#if !loading && shipments.length > 0}
-      <div class="envios-selectall">
-        <label class="envios-selectall__label">
-          <input
-            type="checkbox"
-            class="envios-selectall__input"
-            checked={allPageSelected}
-            bind:indeterminate={allIndeterminate}
-            on:change={toggleAll}
-            aria-label="Seleccionar todos los envíos de la página"
-          />
-          <span class="envios-selectall__text">Seleccionar todos en esta página</span>
-        </label>
-      </div>
-    {/if}
-
-    <DataTable
-      columns={TABLE_COLUMNS}
-      rows={shipments}
-      totalCount={total}
-      bind:page={currentPage}
-      {pageSize}
-      {loading}
-      caption="Bandeja de envíos postales"
-      on:pageChange={onPageChange}
-    >
-      <svelte:fragment slot="row" let:row>
-        <!-- Checkbox de selección (planilla) -->
-        <td class="op-datatable__td envios-table__check">
-          <label class="envios-table__check-label">
+      {#if !loading && shipments.length > 0}
+        <div class="envios-selectall">
+          <label class="envios-selectall__label">
             <input
               type="checkbox"
-              class="envios-table__check-input"
-              checked={selectedIds.has(row.id)}
-              on:change={() => toggleRow(row.id)}
-              aria-label="Seleccionar envío {row.guia ?? row.id}"
+              class="envios-selectall__input"
+              checked={allPageSelected}
+              bind:indeterminate={allIndeterminate}
+              on:change={toggleAll}
+              aria-label="Seleccionar todos los envíos de la página"
             />
+            <span class="envios-selectall__text">Seleccionar todos en esta página</span>
           </label>
-        </td>
+        </div>
+      {/if}
 
-        <!-- Operador -->
-        <td class="op-datatable__td">
-          <span class="envios-table__operador">
-            {OPERADOR_LABELS[row.operador] ?? row.operador}
-          </span>
-        </td>
+      <DataTable
+        columns={TABLE_COLUMNS}
+        rows={shipments}
+        totalCount={total}
+        bind:page={currentPage}
+        {pageSize}
+        {loading}
+        caption="Bandeja de envíos postales"
+        on:pageChange={onPageChange}
+      >
+        <svelte:fragment slot="row" let:row>
+          <!-- Checkbox de selección (planilla) -->
+          <td class="op-datatable__td envios-table__check">
+            <label class="envios-table__check-label">
+              <input
+                type="checkbox"
+                class="envios-table__check-input"
+                checked={selectedIds.has(row.id)}
+                on:change={() => toggleRow(row.id)}
+                aria-label="Seleccionar envío {row.guia ?? row.id}"
+              />
+            </label>
+          </td>
 
-        <!-- Guía -->
-        <td class="op-datatable__td envios-table__guia">
-          {#if row.guia}
-            {row.guia}
-          {:else}
-            <span class="envios-table__na">Sin guía</span>
-          {/if}
-        </td>
+          <!-- Operador -->
+          <td class="op-datatable__td">
+            <span class="envios-table__operador">
+              {OPERADOR_LABELS[row.operador] ?? row.operador}
+            </span>
+          </td>
 
-        <!-- Estado -->
-        <td class="op-datatable__td">
-          <StatusChip
-            status={ESTADO_CHIP[row.estado] ?? "neutral"}
-            label={ESTADO_LABEL[row.estado] ?? row.estado}
-            dot
-          />
-        </td>
+          <!-- Guía -->
+          <td class="op-datatable__td envios-table__guia">
+            {#if row.guia}
+              {row.guia}
+            {:else}
+              <span class="envios-table__na">Sin guía</span>
+            {/if}
+          </td>
 
-        <!-- Destinatario -->
-        <td class="op-datatable__td envios-table__destinatario">
-          {row.destinatario ?? "—"}
-        </td>
+          <!-- Estado -->
+          <td class="op-datatable__td">
+            <StatusChip
+              status={ESTADO_CHIP[row.estado] ?? "neutral"}
+              label={ESTADO_LABEL[row.estado] ?? row.estado}
+              dot
+            />
+          </td>
 
-        <!-- Fecha -->
-        <td class="op-datatable__td envios-table__date">
-          {formatDate(row.created_at)}
-        </td>
+          <!-- Destinatario -->
+          <td class="op-datatable__td envios-table__destinatario">
+            {row.destinatario ?? "—"}
+          </td>
 
-        <!-- Acciones -->
-        <td class="op-datatable__td envios-table__actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="fas fa-eye"
-            on:click={() => openDetail(row)}
-            aria-label="Ver detalle del envío {row.guia ?? row.id}"
-          >
-            Ver
-          </Button>
-        </td>
-      </svelte:fragment>
-    </DataTable>
-  </div>
+          <!-- Fecha -->
+          <td class="op-datatable__td envios-table__date">
+            {formatDate(row.created_at)}
+          </td>
+
+          <!-- Acciones -->
+          <td class="op-datatable__td envios-table__actions">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="fas fa-eye"
+              on:click={() => openDetail(row)}
+              aria-label="Ver detalle del envío {row.guia ?? row.id}"
+            >
+              Ver
+            </Button>
+          </td>
+        </svelte:fragment>
+      </DataTable>
+    </div>
+  {/if}
 </div>
 
 <!-- =========================================================================

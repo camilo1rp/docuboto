@@ -296,6 +296,13 @@ export function clearPkceCookies(cookies) {
 /**
  * @typedef {object} SessionUser
  * @property {string} sub
+ *   Identificador de Keycloak. **No** es el de la persona dentro del tenant:
+ *   ver `user_id`. Confundirlos es lo que dejó sin funcionar tres pantallas.
+ * @property {string} [user_id]
+ *   Identidad INTERNA del tenant (`auth_users.id`), resuelta por `/auth/me`.
+ *   Es la que el backend escribe en las columnas de autoría (`creada_por`,
+ *   `solicitado_por`, `firmante_id`…), así que es la única con la que tiene
+ *   sentido preguntar «¿esto lo hice yo?».
  * @property {string|null} email
  * @property {string} name
  * @property {string|null} preferred_username

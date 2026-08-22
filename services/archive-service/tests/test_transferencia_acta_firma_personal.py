@@ -360,6 +360,64 @@ async def test_firmar_personal_channel_unavailable_returns_503() -> None:
 
 
 @pytest.mark.asyncio
+async def test_firmar_personal_fallo_remoto_nombra_la_causa_y_no_acusa_al_canal() -> None:
+    """Gemelo del anterior, y el que faltaba: signature-service RESPONDE y falla.
+
+    El defecto que corrige: el cliente colapsaba `RequestError` y cualquier 5xx
+    en un mismo `unavailable=True`, así que la pantalla decía «signature-service
+    no está disponible» las dos veces que ocurrió de verdad — y las dos veces
+    era falso: la causa estaba dos servicios más abajo (MinIO sin disco; y el
+    CHECK de `firma.nivel_conformidad` rechazando el valor que el propio
+    signature-service escribe). Quien leía el mensaje iba a mirar el servicio
+    sano.
+
+    Se exige lo que distingue una corrección de un cambio de texto: que el
+    `detail` CONTENGA la causa remota, y que NO diga que el canal está caído.
+    """
+    conn = _mock_conn()
+    tid = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _transfer_row(id=tid, expediente_id=exp_id, estado="recibida", decidida_por=str(USER_ID)),
+        None,
+        make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
+        _acta_row(transferencia_id=tid),
+        None,
+    ]
+    svc = _service(conn)
+    actor = Actor(id=USER_ID)
+
+    causa = "artefacto_no_almacenado: MinIO rechazó el objeto (XMinioStorageFull)"
+    with patch(
+        "app.clients.signature_client.sign_personal",
+        new=AsyncMock(
+            return_value=SignPersonalOutcome(signed=None, remote_failure=(500, causa))
+        ),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["error"] == "firma_personal_fallo_remoto"
+    detalle = exc_info.value.detail["detail"]
+    assert causa in detalle, "el mensaje debe llevar la causa remota, no resumirla"
+    assert "500" in detalle
+    assert "no está disponible" not in detalle
+    # Fail-closed: el acto no se registra. Se mira el SQL enviado y no el número
+    # de llamadas — la conexión simulada recibe además `SET search_path` y demás
+    # tráfico de infraestructura, así que `assert_not_awaited()` sería falso y,
+    # peor, `assert_awaited()` pasaría sin comprobar nada.
+    sentencias = [
+        str(c.args[0]).lower()
+        for c in conn.execute.await_args_list + conn.fetchrow.await_args_list
+        if c.args
+    ]
+    assert not [
+        q for q in sentencias if "insert" in q and "acta_firma_personal" in q
+    ], "no debe insertarse la firma cuando el servicio remoto falló"
+
+
+@pytest.mark.asyncio
 async def test_firmar_personal_non_receiver_returns_403_no_totp_burned() -> None:
     """Hallazgo Alta (auditoría de seguridad, generalizado a ambos roles en
     Inc.2): un actor con permiso/clearance suficientes pero que NO es ni

@@ -31,6 +31,8 @@
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
+  import { etiquetaUbicacion } from "$lib/utils/ubicacion.js";
+  import { ESTADO_TRANSFERENCIA_MAP, admiteTransicion } from "$lib/utils/transferencia.js";
   import { permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
@@ -117,10 +119,40 @@
     observacion: "",
   };
   let nuevaLoading = false;
+  let expedienteError = "";
+
+  /** Catálogo de ubicaciones del archivo físico (faceta no crítica del load). */
+  $: ubicaciones = data.ubicaciones ?? [];
+  // El tipo de archivo va en la etiqueta porque es lo que decide si la
+  // ubicación sirve para esta transferencia: una primaria exige origen de
+  // «gestión» y destino de «central» (Ley 594/2000 art. 23). Sin verlo, elegir
+  // es adivinar, y el error solo aparece al enviar.
+  $: opcionesUbicacion = ubicaciones.map((u) => ({
+    value: u.id,
+    label: u.tipo_archivo
+      ? `${etiquetaUbicacion(u)} — ${u.tipo_archivo}`
+      : `${etiquetaUbicacion(u)} — sin tipo de archivo`,
+  }));
+
+  // Etiquetas de la tabla. El identificador solo se muestra cuando NO se pudo
+  // resolver —catálogo caído, o un expediente que quien mira no tiene permiso
+  // de leer—, porque en ese caso callar sería peor: la fila existe y hay que
+  // poder referirse a ella. Nunca se muestra el UUID habiendo código.
+  $: mapaUbicaciones = new Map(ubicaciones.map((u) => [u.id, u]));
+
+  /** @param {string|null|undefined} id */
+  function etiquetaDeUbicacion(id) {
+    if (!id) return "—";
+    const u = mapaUbicaciones.get(id);
+    return u ? etiquetaUbicacion(u) : id;
+  }
 
   async function handleNuevaTransferencia() {
+    expedienteError = "";
     if (!nuevaForm.tipo || !nuevaForm.expediente_id.trim()) {
-      notifyError("Tipo y expediente_id son obligatorios.");
+      // El aviso nombraba el campo del API (`expediente_id`) en vez del que la
+      // persona ve en pantalla.
+      notifyError("Indique el tipo de transferencia y el expediente.");
       return;
     }
     nuevaLoading = true;
@@ -149,6 +181,12 @@
       };
       await cargarTransferencias();
     } catch (err) {
+      // Un expediente que no se resuelve es un error DEL CAMPO, no del acto:
+      // se señala donde se escribió, con la causa probable a la vista.
+      if (err?.status === 404 || err?.detail?.status === 404) {
+        expedienteError =
+          "No se encontró ese expediente. Compruebe el código, o si tiene acceso a él.";
+      }
       notifyError(mensajeError(err, "No se pudo crear la transferencia."));
     } finally {
       nuevaLoading = false;
@@ -221,21 +259,32 @@
   /** @type {string|null} */
   let rechazarId = null;
   let rechazarObservacion = "";
+  let rechazarError = "";
   let rechazarLoading = false;
 
   function openRechazarModal(id) {
     rechazarId = id;
     rechazarObservacion = "";
+    rechazarError = "";
     showRechazarModal = true;
   }
 
   async function handleRechazar() {
+    // El motivo es OBLIGATORIO en el backend y lo es por una razón: el rechazo
+    // es terminal, y su porqué es lo único que le dice a la oficina de origen
+    // qué tiene que subsanar. Se comprueba antes de llamar para señalar el
+    // campo en vez de devolver un error de validación del servidor.
+    rechazarError = "";
+    if (rechazarObservacion.trim().length < 3) {
+      rechazarError = "Indique el motivo del rechazo (mínimo 3 caracteres).";
+      return;
+    }
     rechazarLoading = true;
     try {
       const res = await fetch(`/transferencias/api/${rechazarId}/rechazar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ observacion: rechazarObservacion.trim() || undefined }),
+        body: JSON.stringify({ motivo: rechazarObservacion.trim() }),
       });
       const result = await res.json().catch(() => ({ ok: true }));
       if (!res.ok) throw result;
@@ -282,12 +331,9 @@
     return formatearFecha(iso);
   }
 
-  const ESTADO_MAP = {
-    pendiente: { label: "Pendiente", status: "warning" },
-    enviada: { label: "Enviada", status: "info" },
-    recibida: { label: "Recibida", status: "success" },
-    rechazada: { label: "Rechazada", status: "danger" },
-  };
+  // Los estados viven en `$lib/utils/transferencia.js`, derivados del ciclo
+  // del backend. Aquí había un mapa propio con un estado inventado.
+  const ESTADO_MAP = ESTADO_TRANSFERENCIA_MAP;
 
   const TIPO_MAP = {
     primaria: "Primaria",
@@ -325,7 +371,7 @@
         <div class="select">
           <select id="tr-filtro-estado" bind:value={filtroEstado} aria-label="Filtrar por estado">
             <option value="">Todos los estados</option>
-            <option value="pendiente">Pendiente</option>
+            <option value="preparada">Preparada</option>
             <option value="enviada">Enviada</option>
             <option value="recibida">Recibida</option>
             <option value="rechazada">Rechazada</option>
@@ -403,14 +449,15 @@
                     </span>
                   </td>
                   <td>
-                    <code class="tr-expte-code">{t.expediente_id ?? t.expediente?.code ?? "—"}</code
+                    <code class="tr-expte-code"
+                      >{t.expediente_codigo ?? t.expediente_id ?? "—"}</code
                     >
                   </td>
                   <td class="tr-cell-truncate">
-                    {t.ubicacion_origen?.nombre ?? t.ubicacion_origen_id ?? "—"}
+                    {etiquetaDeUbicacion(t.ubicacion_origen_id)}
                   </td>
                   <td class="tr-cell-truncate">
-                    {t.ubicacion_destino?.nombre ?? t.ubicacion_destino_id ?? "—"}
+                    {etiquetaDeUbicacion(t.ubicacion_destino_id)}
                   </td>
                   <td>
                     <StatusChip status={estadoInfo.status} label={estadoInfo.label} dot />
@@ -434,8 +481,8 @@
                     </button>
 
                     {#if canManage}
-                      <!-- Enviar: solo si pendiente -->
-                      {#if t.estado === "pendiente"}
+                      <!-- Enviar: solo desde `preparada`, el estado en que nace -->
+                      {#if admiteTransicion(t.estado, "enviada")}
                         <button
                           class="button is-small is-info is-light"
                           on:click={() => handleEnviar(t.id)}
@@ -446,8 +493,8 @@
                         </button>
                       {/if}
 
-                      <!-- Recibir: solo si enviada -->
-                      {#if t.estado === "enviada"}
+                      <!-- Recibir: solo desde `enviada` -->
+                      {#if admiteTransicion(t.estado, "recibida")}
                         <button
                           class="button is-small is-success is-light"
                           on:click={() => handleRecibir(t.id)}
@@ -458,8 +505,8 @@
                         </button>
                       {/if}
 
-                      <!-- Rechazar: si pendiente o enviada -->
-                      {#if t.estado === "pendiente" || t.estado === "enviada"}
+                      <!-- Rechazar: solo desde `enviada` (ver `_VALID` del servicio) -->
+                      {#if admiteTransicion(t.estado, "rechazada")}
                         <button
                           class="button is-small is-danger is-light"
                           on:click={() => openRechazarModal(t.id)}
@@ -492,37 +539,83 @@
   on:close={() => (showNuevaModal = false)}
 >
   <div class="tr-form">
+    <!--
+      Las etiquetas ya no llevan el asterisco escrito a mano: `FormField` añade
+      su propia marca de obligatorio, así que salían dos («Tipo * *»).
+    -->
     <FormField
       id="tr-tipo"
-      label="Tipo *"
+      label="Tipo"
       type="select"
       required
       placeholder="— Selecciona tipo —"
       bind:value={nuevaForm.tipo}
       options={TIPOS_TRANSFERENCIA_OPTIONS}
     />
+    <!--
+      El expediente se refiere por su CÓDIGO (`EXP-2026-0020`), que es lo que
+      está impreso en la carátula y lo que muestra el resto del sistema. Antes
+      se pedía el UUID: un identificador que ninguna pantalla enseña ni deja
+      copiar, así que registrar una transferencia exigía abrir la base de
+      datos. Mismo criterio —y mismo resolutor— que en `/archivo-fisico`.
+    -->
     <FormField
       id="tr-expte-id"
-      label="ID del expediente *"
+      label="Expediente"
       type="text"
       required
-      placeholder="UUID del expediente"
+      placeholder="Código del expediente, p. ej. EXP-2026-0020"
+      hint="Se acepta el código o el identificador interno. Debe estar cerrado para poder transferirse."
+      error={expedienteError}
       bind:value={nuevaForm.expediente_id}
     />
-    <FormField
-      id="tr-origen-id"
-      label="Ubicación origen"
-      type="text"
-      placeholder="UUID de la ubicación origen (opcional)"
-      bind:value={nuevaForm.ubicacion_origen_id}
-    />
-    <FormField
-      id="tr-destino-id"
-      label="Ubicación destino"
-      type="text"
-      placeholder="UUID de la ubicación destino (opcional)"
-      bind:value={nuevaForm.ubicacion_destino_id}
-    />
+    {#if ubicaciones.length > 0}
+      <FormField
+        id="tr-origen-id"
+        label="Ubicación origen"
+        type="select"
+        placeholder="— Sin especificar —"
+        bind:value={nuevaForm.ubicacion_origen_id}
+        options={opcionesUbicacion}
+        hint="Obligatoria si el expediente tiene una ubicación física registrada, y debe ser la ACTUAL (Ley 594/2000 arts. 15/26)."
+      />
+      <FormField
+        id="tr-destino-id"
+        label="Ubicación destino"
+        type="select"
+        placeholder="— Sin especificar —"
+        bind:value={nuevaForm.ubicacion_destino_id}
+        options={opcionesUbicacion}
+      />
+    {:else}
+      <!--
+        Sin catálogo (la entidad aún no cargó su topografía, o la consulta
+        falló) se degrada al campo libre en vez de dejar la transferencia sin
+        ubicación posible. El aviso dice por qué, para que no parezca un
+        formulario distinto según el día.
+      -->
+      <p class="tr-hint" role="note">
+        <i class="fas fa-circle-info" aria-hidden="true"></i>
+        <span>
+          No hay ubicaciones cargadas en el archivo físico, así que estos campos piden el
+          identificador. Puede dejarlos vacíos.
+        </span>
+      </p>
+      <FormField
+        id="tr-origen-id"
+        label="Ubicación origen"
+        type="text"
+        placeholder="Identificador de la ubicación origen (opcional)"
+        bind:value={nuevaForm.ubicacion_origen_id}
+      />
+      <FormField
+        id="tr-destino-id"
+        label="Ubicación destino"
+        type="text"
+        placeholder="Identificador de la ubicación destino (opcional)"
+        bind:value={nuevaForm.ubicacion_destino_id}
+      />
+    {/if}
     <FormField
       id="tr-observacion"
       label="Observación"
@@ -575,8 +668,11 @@
       id="rechazo-obs"
       label="Motivo del rechazo"
       type="textarea"
-      placeholder="Observación sobre el rechazo (opcional)"
+      required
+      placeholder="Ej.: falta la unidad de conservación asignada"
+      hint="La oficina de origen solo puede subsanar lo que este motivo le diga."
       rows={3}
+      error={rechazarError}
       bind:value={rechazarObservacion}
     />
   </div>
@@ -765,5 +861,23 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--op-space-2);
+  }
+
+  .tr-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    margin: 0;
+    padding: var(--op-space-3);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    background: var(--op-bg);
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+
+    i {
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
   }
 </style>

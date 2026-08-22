@@ -38,6 +38,7 @@ from app.schemas.fisico import (
     PrestamoResponse,
     UbicacionCreate,
     UbicacionResponse,
+    UbicacionUpdate,
     UnidadCreate,
     UnidadDeExpediente,
     UnidadResponse,
@@ -130,6 +131,36 @@ async def list_ubicaciones(
         )
     return await FisicoService(conn, tenant_slug).list_ubicaciones(
         parent_id=parent_id, activo=activo, solo_raiz=solo_raiz
+    )
+
+
+@router.patch(
+    "/ubicaciones/{ubicacion_id}",
+    response_model=UbicacionResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+    summary="Corrige nombre, tipo de archivo, capacidad o estado de una ubicación",
+)
+async def update_ubicacion(
+    ubicacion_id: uuid.UUID,
+    payload: UbicacionUpdate,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> UbicacionResponse:
+    """Corrección de una ubicación ya creada.
+
+    Faltaba por completo, y el hueco no era teórico: `tipo_archivo` es opcional
+    al crear y decide qué transferencias admite la ubicación (Ley 594/2000
+    art. 23). Una topografía cargada sin ese dato dejaba el archivo físico sin
+    poder transferir **y sin forma de arreglarlo desde el sistema**.
+
+    `codigo` y `parent_id` quedan fuera a propósito: el primero es la
+    referencia que las signaturas topográficas ya llevan impresas, y el segundo
+    movería de golpe todo lo que cuelga de la ubicación. Exige `crud >= 3`
+    porque corregir la topografía del depósito no es una escritura ordinaria.
+    """
+    return await FisicoService(conn, tenant_slug).update_ubicacion(
+        ubicacion_id, payload, actor=actor
     )
 
 

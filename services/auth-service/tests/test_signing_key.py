@@ -539,10 +539,22 @@ async def test_activate_rejects_leaf_not_issued_by_mounted_sub_ca(
 
 
 @pytest.mark.asyncio
-async def test_activate_fails_closed_without_sub_ca_configured(client: AsyncClient) -> None:
-    """Sin ``signing_key_ca_users_cert_path`` configurada (default de
-    prueba, sin el fixture ``sub_ca``), la activación falla cerrado (503) —
-    NUNCA activa una credencial sin poder verificar contra qué CA."""
+async def test_activate_fails_closed_without_sub_ca_configured(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sin ``signing_key_ca_users_cert_path`` configurada, la activación falla
+    cerrado (503) — NUNCA activa una credencial sin poder verificar contra qué CA.
+
+    La ausencia se fija AQUÍ en vez de confiarla al default: el test decía
+    «sin el fixture ``sub_ca``» y daba por hecho que nadie más había puesto la
+    ruta, pero `settings` la lee del entorno. En cuanto la máquina de turno
+    montó su sub-CA de desarrollo (`scripts/gen-user-cert.sh`), el ajuste dejó
+    de estar vacío, la activación llegó a la rama de anclaje y devolvió 422
+    `certificado_no_emitido_por_sub_ca` en vez de 503 — el test se puso rojo
+    sin que nada del código cambiara. Un test que depende del ambiente no
+    prueba el código: prueba la máquina.
+    """
+    monkeypatch.setattr(settings, "signing_key_ca_users_cert_path", "")
     conn = _make_conn()
     private_key = generate_keypair()
     pending = _key_row(estado="pendiente_emision", private_key=private_key)

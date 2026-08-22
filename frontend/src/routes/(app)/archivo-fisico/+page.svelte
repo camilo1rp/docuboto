@@ -204,6 +204,61 @@
 
   // Modal crear ubicación
   let showUbicacionModal = false;
+
+  // --- Corrección de una ubicación ya creada -------------------------------
+  // No existía. `tipo_archivo` es opcional al crear y decide qué
+  // transferencias admite la ubicación (Ley 594/2000 art. 23): una topografía
+  // cargada sin él dejaba el archivo físico sin poder transferir, y el
+  // descuido no se podía arreglar desde ninguna pantalla.
+  let showCorreccionModal = false;
+  let correccionUbicacion = null;
+  let correccionForm = { nombre: "", tipo_archivo: "", capacidad_ml: "" };
+  let correccionLoading = false;
+
+  function abrirCorreccionUbicacion(ub) {
+    correccionUbicacion = ub;
+    correccionForm = {
+      nombre: ub.nombre ?? "",
+      tipo_archivo: ub.tipo_archivo ?? "",
+      capacidad_ml: ub.capacidad_ml ?? "",
+    };
+    showCorreccionModal = true;
+  }
+
+  async function handleCorregirUbicacion() {
+    if (!correccionUbicacion) return;
+    correccionLoading = true;
+    try {
+      const res = await fetch(
+        `/archivo-fisico/api/ubicaciones/${encodeURIComponent(correccionUbicacion.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            nombre: correccionForm.nombre.trim() || undefined,
+            tipo_archivo: correccionForm.tipo_archivo || undefined,
+            capacidad_ml:
+              correccionForm.capacidad_ml === "" ? undefined : correccionForm.capacidad_ml,
+          }),
+        },
+      );
+      const result = await res.json();
+      if (!res.ok) throw result;
+      notifySuccess(`Ubicación ${result.codigo ?? ""} corregida.`);
+      showCorreccionModal = false;
+      correccionUbicacion = null;
+      const reloadRes = await fetch("/archivo-fisico/api/ubicaciones?activo=true&solo_raiz=true");
+      const reloadData = await reloadRes.json();
+      ubicaciones = Array.isArray(reloadData) ? reloadData : (reloadData.items ?? []);
+      // Los hijos ya cargados también quedan obsoletos tras corregir uno.
+      ubicacionChildren = {};
+      ubicacionExpanded = {};
+    } catch (err) {
+      notifyError(mensajeError(err, "No se pudo corregir la ubicación."));
+    } finally {
+      correccionLoading = false;
+    }
+  }
   let ubicacionForm = { nivel: "", codigo: "", nombre: "", parent_id: "", tipo_archivo: "" };
   let ubicacionFormLoading = false;
 
@@ -771,6 +826,21 @@
                         {/if}
                         <span class="is-sr-only">Ver hijos</span>
                       </button>
+                      <!--
+                        Corregir una ubicación faltaba por completo. `tipo_archivo`
+                        se deja vacío con toda naturalidad al cargar la topografía
+                        —el desplegable ofrece «Sin tipo»— y sin él la ubicación no
+                        admite ninguna transferencia (Ley 594/2000 art. 23). Sin
+                        esta puerta, ese descuido era permanente.
+                      -->
+                      <button
+                        class="button is-small is-light"
+                        aria-label="Corregir la ubicación {ub.nombre}"
+                        on:click={() => abrirCorreccionUbicacion(ub)}
+                      >
+                        <i class="fas fa-pen" aria-hidden="true"></i>
+                        <span class="is-sr-only">Corregir</span>
+                      </button>
                     </td>
                   </tr>
                   {#if ubicacionExpanded[ub.id] && ubicacionChildren[ub.id]}
@@ -781,7 +851,16 @@
                         <td>{child.nombre ?? "—"}</td>
                         <td>{child.tipo_archivo ?? "—"}</td>
                         <td>{child.capacidad_ml ?? "—"}</td>
-                        <td></td>
+                        <td class="af-actions-cell">
+                          <button
+                            class="button is-small is-light"
+                            aria-label="Corregir la ubicación {child.nombre}"
+                            on:click={() => abrirCorreccionUbicacion(child)}
+                          >
+                            <i class="fas fa-pen" aria-hidden="true"></i>
+                            <span class="is-sr-only">Corregir</span>
+                          </button>
+                        </td>
                       </tr>
                     {/each}
                   {/if}
@@ -1289,6 +1368,46 @@
      ========================================================================= -->
 
 <!-- Modal: crear ubicación -->
+<!-- Modal: corregir una ubicación existente -->
+<Modal
+  open={showCorreccionModal}
+  title={correccionUbicacion ? `Corregir ${correccionUbicacion.codigo}` : "Corregir ubicación"}
+  on:close={() => (showCorreccionModal = false)}
+>
+  <div class="af-form">
+    <p class="help">
+      El código y el sitio en el árbol no se cambian: el código es la referencia que ya llevan
+      impresas las signaturas de las unidades, y mover el padre arrastraría todo lo que cuelga de
+      aquí. Para eso se crea otra ubicación y se trasladan las unidades.
+    </p>
+    <FormField id="ub-corr-nombre" label="Nombre" type="text" bind:value={correccionForm.nombre} />
+    <FormField
+      id="ub-corr-tipo"
+      label="Tipo de archivo"
+      type="select"
+      placeholder="— Sin tipo —"
+      bind:value={correccionForm.tipo_archivo}
+      options={TIPOS_ARCHIVO_OPTIONS}
+      hint="Decide qué transferencias admite: una primaria va de «gestión» a «central»; una secundaria, de «central» a «histórico». Sin tipo, la ubicación no puede ser origen ni destino de ninguna."
+    />
+    <FormField
+      id="ub-corr-capacidad"
+      label="Capacidad (ml)"
+      type="number"
+      bind:value={correccionForm.capacidad_ml}
+    />
+  </div>
+  <div slot="footer" class="af-modal-footer">
+    <Button variant="secondary" on:click={() => (showCorreccionModal = false)}>Cancelar</Button>
+    <Button variant="primary" on:click={handleCorregirUbicacion} disabled={correccionLoading}>
+      {#if correccionLoading}
+        <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+      {/if}
+      Guardar corrección
+    </Button>
+  </div>
+</Modal>
+
 <Modal
   open={showUbicacionModal}
   title="Nueva ubicación de archivo"
@@ -1334,6 +1453,18 @@
         Dónde se encuentra: un depósito cuelga de una sede, un estante de un depósito.
       </p>
     </div>
+    <!--
+      El tipo de archivo NO es una etiqueta descriptiva: es lo que decide si
+      esta ubicación puede ser origen o destino de una transferencia. Una
+      primaria va de `gestión` a `central` y una secundaria de `central` a
+      `histórico` (Ley 594/2000 art. 23, ciclo vital del documento), así que una
+      ubicación sin tipo queda fuera de las dos. Se dejaba vacío con toda
+      naturalidad —el desplegable ofrece «Sin tipo» y nada advertía— y el
+      resultado se descubría mucho después, al intentar transferir: 422
+      `ubicacion_incoherente_con_tipo` sobre un depósito recién creado. Peor
+      aún, hoy no hay forma de corregirlo desde el sistema (no existe edición
+      de ubicaciones), así que el descuido es permanente.
+    -->
     <FormField
       id="ub-tipo"
       label="Tipo de archivo"
@@ -1341,6 +1472,7 @@
       placeholder="— Sin tipo —"
       bind:value={ubicacionForm.tipo_archivo}
       options={TIPOS_ARCHIVO_OPTIONS}
+      hint="Decide qué transferencias admite esta ubicación: una primaria va de «gestión» a «central»; una secundaria, de «central» a «histórico». Sin tipo, la ubicación no puede ser origen ni destino de ninguna — y por ahora no se puede cambiar después."
     />
   </div>
   <div slot="footer" class="af-modal-footer">

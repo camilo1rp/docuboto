@@ -40,6 +40,35 @@ class UbicacionCreate(BaseModel):
     capacidad_ml: float | None = Field(default=None, ge=0)
 
 
+class UbicacionUpdate(BaseModel):
+    """Corrección de una ubicación ya creada.
+
+    Existe por un caso concreto: `tipo_archivo` es opcional al crear —el
+    formulario ofrece «Sin tipo»— y sin embargo decide si la ubicación puede
+    ser origen o destino de una transferencia (Ley 594/2000 art. 23, ciclo
+    vital). Una topografía cargada sin ese dato dejaba el archivo físico
+    **incapaz de transferir y sin forma de arreglarlo**: no había ninguna ruta
+    de edición, así que el descuido era permanente y solo se descubría mucho
+    después, al intentar la primera transferencia.
+
+    Lo que se puede corregir es la DESCRIPCIÓN de la ubicación, nunca su
+    identidad ni su sitio en el árbol: `codigo` es la referencia que la
+    signatura topográfica de las unidades ya tiene impresa, y `parent_id`
+    movería de golpe todo lo que cuelga de ella. Ninguno de los dos se toca
+    aquí; para eso se crea otra ubicación y se trasladan las unidades, que es
+    un acto físico y deja su propio rastro.
+
+    Todos los campos son opcionales: se aplica solo lo que venga, y un cuerpo
+    vacío se rechaza en el servicio en vez de producir un asiento de auditoría
+    que no describe ningún cambio.
+    """
+
+    nombre: str | None = Field(default=None, min_length=1)
+    tipo_archivo: Literal["gestion", "central", "historico"] | None = None
+    capacidad_ml: float | None = Field(default=None, ge=0)
+    activo: bool | None = None
+
+
 class UbicacionResponse(BaseModel):
     id: uuid.UUID
     parent_id: uuid.UUID | None

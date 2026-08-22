@@ -41,7 +41,7 @@
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, userId } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import DataTable from "$lib/components/ui/DataTable.svelte";
@@ -58,6 +58,20 @@
   // ---------------------------------------------------------------------------
   // Permisos (espejo del RBAC del backend)
   // ---------------------------------------------------------------------------
+  // `sub` del token frente a quien figura como solicitante. Si por lo que sea
+  // no hay identidad en sesión, NO se asume que somos otro: se prefiere ocultar
+  // el botón y que el acto lo haga alguien con sesión válida.
+  // `solicitado_por` es la identidad INTERNA del tenant, no el `sub` de
+  // Keycloak: comparar contra `sub` daba siempre falso y este aviso no se
+  // mostraba nunca (el backend sí bloqueaba, con un 409 que la persona se
+  // encontraba de golpe tras rellenar el motivo).
+  // Sin identidad en sesión NO se oculta «Aprobar»: el backend rechaza la
+  // aprobación propia con 409 y su motivo, así que ocultarlo «por si acaso»
+  // convertiría un caso raro (sesión sin `user_id`) en un bloqueo total de una
+  // acción legítima. El aviso se muestra cuando SE SABE que es de uno mismo.
+  $: esMiPropiaSolicitud =
+    anulacion?.estado === "solicitada" && Boolean($userId) && anulacion?.solicitado_por === $userId;
+
   $: canDecidir = $permissions.includes("PERM_PANU_CODI");
 
   const DOC_TYPE_LABELS = /** @type {Record<string,string>} */ ({
@@ -564,15 +578,32 @@
         <i class="fas fa-times-circle" aria-hidden="true"></i>
         Rechazar
       </Button>
-      <Button
-        variant="danger"
-        size="sm"
-        disabled={decisionLoading}
-        on:click={() => abrirDecision("aprobar")}
-      >
-        <i class="fas fa-ban" aria-hidden="true"></i>
-        Aprobar
-      </Button>
+      <!--
+        Quien pidió la anulación no la aprueba: la decide otra persona (el
+        backend responde 409 `aprobacion_del_propio_solicitante`). El límite se
+        DECLARA aquí en vez de dejar que se descubra fallando, y se nombra la
+        vía que sí queda abierta —rechazarla, que es desistir— porque un «no
+        puede» sin alternativa deja el trámite parado sin decir cómo seguir.
+      -->
+      {#if esMiPropiaSolicitud}
+        <p class="anulacion-dual" role="note">
+          <i class="fas fa-user-shield" aria-hidden="true"></i>
+          <span>
+            Usted solicitó esta anulación, así que <strong>debe aprobarla otra persona</strong> con permiso
+            para resolver anulaciones. Si desea desistir, puede rechazarla usted mismo.
+          </span>
+        </p>
+      {:else}
+        <Button
+          variant="danger"
+          size="sm"
+          disabled={decisionLoading}
+          on:click={() => abrirDecision("aprobar")}
+        >
+          <i class="fas fa-ban" aria-hidden="true"></i>
+          Aprobar
+        </Button>
+      {/if}
     {:else}
       <Button variant="ghost" size="sm" on:click={closeDrawer}>Cerrar</Button>
     {/if}
@@ -772,6 +803,25 @@
       border-radius: var(--op-radius-sm);
       padding: var(--op-space-3);
       margin: 0;
+    }
+  }
+
+  .anulacion-dual {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    margin: 0;
+    padding: var(--op-space-3);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    background: var(--op-bg);
+    font-size: var(--op-font-sm);
+    color: var(--op-text);
+
+    i {
+      color: var(--op-text-secondary);
+      margin-top: 2px;
+      flex-shrink: 0;
     }
   }
 </style>

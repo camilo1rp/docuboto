@@ -197,3 +197,85 @@ describe("/admin/usuarios — el detalle distingue «vacío» de «no se pudo le
     expect(screen.queryByText(/no se pudieron cargar las dependencias/i)).toBeNull();
   });
 });
+
+describe("/admin/usuarios — restablecimiento del segundo factor", () => {
+  /**
+   * El acto que cierra el encierro de quien pierde el autenticador. Lo que se
+   * comprueba aquí es lo que hace que sea seguro ofrecerlo: que exija un motivo
+   * antes de llamar a nada, y que NO se ofrezca sobre uno mismo.
+   *
+   * Ese último punto es donde el defecto es silencioso: el `sub` de Keycloak y
+   * el `auth_users.id` interno son dos UUID distintos para la misma persona.
+   * Comparar contra el `sub` —que es lo que hacía el frontend antes de la
+   * corrección de identidad— daría siempre falso, y la pantalla ofrecería a un
+   * administrador restablecerse a sí mismo para acabar en un 409 del backend.
+   */
+  function sesion({ userIdInterno }) {
+    initSession({
+      sub: "kc-sub-ajeno-al-tenant",
+      user_id: userIdInterno,
+      email: "admin@orpyca.com",
+      name: "Administradora",
+      preferred_username: "administradora",
+      roles: [],
+      tenant_slug: "icetex",
+      permissions: ["USUA_PERM_ADMIN"],
+      permission_levels: { USUA_PERM_ADMIN: 3 },
+    });
+  }
+
+  function detalleCargado() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) =>
+        String(url).includes("/urd")
+          ? respuesta(true, [])
+          : respuesta(true, { is_root: false, permissions: {} }),
+      ),
+    );
+  }
+
+  it("ofrece el restablecimiento sobre OTRA persona", async () => {
+    sesion({ userIdInterno: "otra-identidad-interna" });
+    detalleCargado();
+    render(UsuariosPage, { props: { data: baseData() } });
+    await abrirDetalle();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /restablecer segundo factor/i })).toBeTruthy(),
+    );
+  });
+
+  it("NO lo ofrece sobre uno mismo, comparando la identidad interna y no el sub", async () => {
+    // `u-1` es el id del usuario del listado; el `sub` de la sesión es otro a
+    // propósito. Si la pantalla comparara contra el `sub`, este test fallaría.
+    sesion({ userIdInterno: "u-1" });
+    detalleCargado();
+    render(UsuariosPage, { props: { data: baseData() } });
+    await abrirDetalle();
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: /^segundo factor$/i })).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: /restablecer segundo factor/i })).toBeNull();
+    expect(screen.getByText(/para el suyo use «mi perfil»/i)).toBeTruthy();
+  });
+
+  it("exige un motivo antes de llamar al servidor", async () => {
+    sesion({ userIdInterno: "otra-identidad-interna" });
+    detalleCargado();
+    render(UsuariosPage, { props: { data: baseData() } });
+    await abrirDetalle();
+
+    await fireEvent.click(
+      await screen.findByRole("button", { name: /restablecer segundo factor/i }),
+    );
+    await fireEvent.click(
+      await screen.findByRole("button", { name: /confirmar restablecimiento/i }),
+    );
+
+    await waitFor(() => expect(screen.getByText(/explique el motivo/i)).toBeTruthy());
+    const llamadas = globalThis.fetch.mock.calls.map((c) => String(c[0]));
+    expect(llamadas.some((u) => u.includes("/totp"))).toBe(false);
+  });
+});

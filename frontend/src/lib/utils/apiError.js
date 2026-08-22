@@ -35,7 +35,59 @@
  * (errores que fabrica el propio proxy BFF, p. ej. `connection_error`) y la
  * anidada es la que produce el backend. Elegir una sola volvería a partir el
  * manejo de errores por la mitad.
+ *
+ * ## Y una tercera: la validación de Pydantic
+ *
+ * Cuando el que rechaza es un validador del esquema, FastAPI no usa el sobre
+ * del proyecto: responde 422 con una LISTA.
+ *
+ *     {"detail": [{"type": "value_error", "loc": ["body"],
+ *                  "msg": "Value error, fundamento_juridico es obligatorio…"}]}
+ *
+ * Ninguna de las dos ramas anteriores la reconocía, así que el aviso caía al
+ * texto por defecto. Medido en la reclasificación de un radicado: el backend
+ * decía exactamente qué faltaba y por qué —«fundamento_juridico es obligatorio
+ * al reclasificar a nivel_seguridad >= 2 (Ley 1712/2014 art. 19/28)»— y la
+ * pantalla mostraba «Error 422 al reclasificar el nivel de seguridad». La
+ * persona veía que no se podía, sin ninguna vía para averiguar qué le faltaba.
+ * Afecta a TODA validación de esquema del sistema, no a esa pantalla.
  */
+
+/**
+ * Prefijo que Pydantic antepone a los `ValueError` que lanza un validador
+ * ESCRITO POR NOSOTROS. Es lo que separa las dos clases de error de validación,
+ * y la distinción importa:
+ *
+ *  - Con prefijo: el mensaje lo redactó este proyecto, en español y pensado
+ *    para quien está delante («fundamento_juridico es obligatorio al
+ *    reclasificar a nivel_seguridad >= 2, Ley 1712/2014 art. 19/28»). Mostrarlo
+ *    es justo lo que falta cuando el aviso genérico deja a la persona sin saber
+ *    qué corregir.
+ *  - Sin prefijo: lo generó Pydantic solo, por tipo o formato («invalid uuid»,
+ *    «field required»). Está en inglés, nombra el campo interno y no dice nada
+ *    accionable: para eso es mejor el texto por defecto de la pantalla, que al
+ *    menos explica qué operación falló.
+ */
+const PREFIJO_VALIDADOR_PROPIO = /^Value error,\s*/;
+
+/**
+ * Mensajes de una lista de errores de validación de FastAPI/Pydantic,
+ * quedándose SOLO con los que escribió este proyecto.
+ * @param {any} detail
+ * @returns {string|null}
+ */
+function mensajeDeValidacion(detail) {
+  if (!Array.isArray(detail) || detail.length === 0) return null;
+  const mensajes = detail
+    .map((e) => (typeof e?.msg === "string" ? e.msg : ""))
+    .filter((m) => PREFIJO_VALIDADOR_PROPIO.test(m))
+    .map((m) => m.replace(PREFIJO_VALIDADOR_PROPIO, "").trim())
+    .filter(Boolean);
+  if (mensajes.length === 0) return null;
+  // Varios campos inválidos a la vez se enumeran: quedarse con el primero
+  // dejaría a la persona corrigiendo de uno en uno sin saber cuántos faltan.
+  return mensajes.join(" · ");
+}
 
 /**
  * Código de error (`error`) de un cuerpo de respuesta, plano o anidado.
@@ -63,6 +115,8 @@ export function mensajeError(data, porDefecto) {
   if (typeof data === "string" && data.trim()) return data;
   if (data && typeof data === "object") {
     if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
+    const validacion = mensajeDeValidacion(data.detail);
+    if (validacion) return validacion;
     if (data.detail && typeof data.detail === "object" && typeof data.detail.detail === "string") {
       return data.detail.detail;
     }

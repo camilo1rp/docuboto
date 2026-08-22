@@ -108,6 +108,18 @@ export async function load({ cookies, url, fetch }) {
       // `require_permission(perm, min_crud=N)` del backend sin ofrecer
       // acciones que la API rechazaría.
       user.permission_levels = me.permission_levels ?? {};
+      // Identidad INTERNA del tenant (`auth_users.id`), que es con la que el
+      // backend escribe `creada_por`, `solicitado_por`, `firmante_id`… y NO es
+      // el `sub` de Keycloak: son dos UUID distintos para la misma persona.
+      // `/auth/me` ya resuelve el interno («Replace keycloak sub with the
+      // internal id for coherence with X-User-Id») y el frontend lo tiraba, así
+      // que toda comparación «¿esto es mío?» hecha contra `sub` daba SIEMPRE
+      // falso: el botón de firmar el acta de una transferencia no aparecía
+      // nunca, ningún turno de una cadena de firma se reconocía como propio, y
+      // el aviso de que uno no puede aprobar su propia anulación no se
+      // mostraba jamás. Fail-closed al `sub` solo si el backend no lo trae:
+      // preferimos no reconocer un rol a atribuir uno ajeno.
+      user.user_id = me.user_id ?? user.sub;
       // Si el backend enriquece el nombre/email, actualizar
       if (me.name) user.name = me.name;
       if (me.email) user.email = me.email;

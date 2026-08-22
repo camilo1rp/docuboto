@@ -32,7 +32,10 @@ const { initSession, clearSession } = await import("$lib/stores/auth.js");
 
 function sessionWith({ permissions = [] } = {}) {
   return {
-    sub: "u-1",
+    sub: "keycloak-sub-1",
+    // Identidad INTERNA del tenant: es la que el backend escribe en
+    // `solicitado_por`, y con la que se compara. No es el `sub`.
+    user_id: "u-1",
     email: "aprobador@orpyca.com",
     name: "Aprobadora",
     preferred_username: "aprobadora",
@@ -519,5 +522,119 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
         document.activeElement,
       ),
     );
+  });
+});
+
+describe("/anulaciones — quien la pidió no la aprueba", () => {
+  /**
+   * Segregación de funciones. La pantalla de solicitud ya promete «aprobación
+   * posterior por un supervisor», pero en la revisión por navegador el mismo
+   * usuario solicitó y aprobó seguido, y el radicado quedó `anulado` sin que
+   * nadie más lo mirara. El backend ahora responde 409
+   * `aprobacion_del_propio_solicitante`; aquí se comprueba la otra mitad: que
+   * el límite se DECLARE antes, en vez de descubrirse fallando.
+   */
+  const originalFetch = globalThis.fetch;
+
+  /** Búsqueda con una solicitud pendiente cuyo solicitante se controla. */
+  function backendCon(solicitadoPor) {
+    globalThis.fetch = vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/anulaciones/api/buscar")) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: [
+              {
+                id: "rad-1",
+                tracking_number: "2026-DEMO-S-000012",
+                doc_type: "S",
+                subject: "Respuesta a solicitud",
+                anulacion: { estado: "solicitada" },
+              },
+            ],
+            total: 1,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          id: "anu-1",
+          radicado_id: "rad-1",
+          estado: "solicitada",
+          causal: "ANU-ERR",
+          motivo: "Error de radicación",
+          solicitado_por: solicitadoPor,
+          solicitado_at: "2026-08-19T20:03:59Z",
+          decidido_por: null,
+          decidido_at: null,
+          observacion: null,
+        }),
+      };
+    });
+  }
+
+  /** Abre el detalle de la anulación encontrada. */
+  async function abrirDetalle() {
+    render(AnulacionesPage);
+    await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
+      target: { value: "2026-DEMO-S-000012" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    const ver = await screen.findByRole("button", { name: /ver anulación/i });
+    await fireEvent.click(ver);
+  }
+
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_PANU_CODI"] }));
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("si la pedí yo, no se ofrece Aprobar y se explica quién debe hacerlo", async () => {
+    backendCon("u-1"); // el mismo `sub` de la sesión
+    await abrirDetalle();
+
+    await waitFor(() => expect(screen.getByText(/debe aprobarla otra persona/i)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /^aprobar$/i })).toBeNull();
+  });
+
+  it("y se dice la vía que SÍ queda abierta: rechazarla es desistir", async () => {
+    // Un «no puede» sin alternativa deja el trámite parado sin decir cómo seguir.
+    backendCon("u-1");
+    await abrirDetalle();
+
+    await waitFor(() => expect(screen.getByText(/puede rechazarla usted mismo/i)).toBeTruthy());
+    expect(screen.getByRole("button", { name: /rechazar/i })).toBeTruthy();
+  });
+
+  it("si la pidió OTRA persona, Aprobar sigue estando", async () => {
+    // Control positivo: la corrección no puede consistir en retirar el acto.
+    backendCon("otro-usuario");
+    await abrirDetalle();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^aprobar$/i })).toBeTruthy());
+    expect(screen.queryByText(/debe aprobarla otra persona/i)).toBeNull();
+  });
+
+  it("sin identidad en sesión, «Aprobar» NO se oculta", async () => {
+    // El backend rechaza la aprobación propia con 409 y su motivo. Ocultar el
+    // botón cuando no se sabe quién es uno convertiría un caso raro —sesión
+    // sin `user_id`— en un bloqueo total de una acción legítima: nadie podría
+    // resolver ninguna anulación.
+    clearSession();
+    const sesion = sessionWith({ permissions: ["PERM_PANU_CODI"] });
+    delete sesion.user_id;
+    initSession(sesion);
+    backendCon("u-1");
+    await abrirDetalle();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^aprobar$/i })).toBeTruthy());
+    expect(screen.queryByText(/debe aprobarla otra persona/i)).toBeNull();
   });
 });

@@ -45,6 +45,11 @@ from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
 _USER = str(uuid.uuid4())
+# Quien RESUELVE es siempre otra persona: solicitar y aprobar una anulación no
+# pueden ser el mismo acto (segregación de funciones, ver `test_anulacion.py`).
+# Estos tests aprobaban con `_USER` —el mismo del fixture como solicitante—, así
+# que auditaban un acto que el sistema no debe aceptar.
+_SUPERVISOR = str(uuid.uuid4())
 
 
 def _clearance_row(max_level: int = 3, is_root: bool = False) -> dict:
@@ -155,7 +160,7 @@ async def test_aprobar_audita_con_accion_propia(client_with_conn) -> None:
         _clearance_row(),  # resolve_caller_clearance
         _anulacion_row(radicado_id=rid, estado="solicitada"),  # get_active
         _anulacion_row(
-            radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
+            radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_SUPERVISOR), decidido_at=NOW
         ),  # decide
     ]
     mock_conn.fetchval.return_value = tracking  # get_tracking_number
@@ -163,14 +168,14 @@ async def test_aprobar_audita_con_accion_propia(client_with_conn) -> None:
     resp = await client.post(
         f"/api/v1/documents/{rid}/anulacion/aprobar",
         json={"observacion": "Procede"},
-        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
     )
 
     assert resp.status_code == 200
     inserts = _audit_insert_calls(mock_conn)
     assert len(inserts) == 1
     args = inserts[0].args
-    assert args[3] == _USER
+    assert args[3] == _SUPERVISOR
     assert args[5] == "document.anulacion_aprobada"
     assert args[6] == "radicado"
     assert args[7] == tracking
@@ -254,7 +259,7 @@ async def test_aprobar_no_sobrevive_a_fallo_de_auditoria(client_with_conn) -> No
         _clearance_row(),  # resolve_caller_clearance
         _anulacion_row(radicado_id=rid, estado="solicitada"),  # get_active
         _anulacion_row(
-            radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_USER), decidido_at=NOW
+            radicado_id=rid, estado="aprobada", decidido_por=uuid.UUID(_SUPERVISOR), decidido_at=NOW
         ),  # decide
     ]
     mock_conn.fetchval.return_value = "2026-DEMO-E-000051"
@@ -267,7 +272,7 @@ async def test_aprobar_no_sobrevive_a_fallo_de_auditoria(client_with_conn) -> No
             resp = await client.post(
                 f"/api/v1/documents/{rid}/anulacion/aprobar",
                 json={"observacion": "Procede"},
-                headers={**TENANT_HEADERS, "X-User-Id": _USER},
+                headers={**TENANT_HEADERS, "X-User-Id": _SUPERVISOR},
             )
 
     assert resp.status_code == 500

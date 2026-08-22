@@ -19,6 +19,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+import { anotarCodigoExpediente } from "$lib/server/transferenciaEtiquetas.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent }) {
@@ -41,7 +42,24 @@ export async function load({ cookies, parent }) {
     };
   }
 
-  const [transferenciasResult] = await Promise.allSettled([
+  /** GET simple al gateway; devuelve `null` si falla (faceta no crítica). */
+  async function opcional(ruta) {
+    try {
+      const res = await fetch(`${API_V1}${ruta}`, {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-Tenant-Slug": tenant,
+        },
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  const [transferenciasResult, ubicacionesResult] = await Promise.allSettled([
     (async () => {
       const res = await fetch(`${API_V1}/transferencias`, {
         headers: {
@@ -64,10 +82,39 @@ export async function load({ cookies, parent }) {
       }
       return res.json();
     })(),
+    // Catálogo de ubicaciones para los desplegables de origen/destino. El
+    // formulario pedía el UUID escrito a mano —un identificador que ninguna
+    // pantalla del sistema muestra—, así que registrar una transferencia
+    // obligaba a abrir la base de datos. Mismo defecto que se corrigió en
+    // `/archivo-fisico`, que había quedado aquí sin corregir.
+    // No es crítica: si falla, el modal degrada a campo de texto.
+    opcional("/ubicaciones?activo=true&size=200"),
   ]);
 
+  const ubicacionesCrudas =
+    ubicacionesResult.status === "fulfilled" ? ubicacionesResult.value : null;
+  // El listado puede venir envuelto (`{items: […]}`) o como lista pelada según
+  // el endpoint; se aceptan las dos formas en vez de suponer una.
+  const ubicaciones = Array.isArray(ubicacionesCrudas?.items)
+    ? ubicacionesCrudas.items
+    : Array.isArray(ubicacionesCrudas)
+      ? ubicacionesCrudas
+      : [];
+
+  // Misma anotación que hace el proxy `/transferencias/api` — la carga inicial
+  // NO pasa por él (va directa al gateway), así que sin esto la primera pintada
+  // saldría con UUID y solo se arreglaría al recargar la lista. Se comparte el
+  // helper para que las dos rutas no puedan divergir.
+  const transferencias = settle(transferenciasResult);
+  if (transferencias.data) {
+    transferencias.data = await anotarCodigoExpediente(transferencias.data, (id) =>
+      opcional(`/expedientes/${encodeURIComponent(id)}`),
+    );
+  }
+
   return {
-    transferencias: settle(transferenciasResult),
+    transferencias,
+    ubicaciones,
     // token y tenant NO se exponen: las acciones usan /transferencias/api/* (D-05)
   };
 }

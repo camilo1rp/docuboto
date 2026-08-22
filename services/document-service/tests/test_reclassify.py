@@ -71,10 +71,15 @@ async def test_reclassify_forbidden_without_permission(client_with_conn) -> None
 
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
-    # check_permission consumió 1 fetchval; el usuario está IDENTIFICADO, así que
-    # la traza best-effort del acceso denegado (RF-SEG/MoReq) consume una segunda
-    # (prev_hash de audit_log) — nunca llega a la lógica de negocio del endpoint.
-    assert mock_conn.fetchval.call_count == 2
+    # Tres `fetchval`, todas en la rama de denegación y ninguna en la lógica de
+    # negocio del endpoint (que no llega a ejecutarse):
+    #   1. `check_permission`;
+    #   2. la traza best-effort del acceso denegado (RF-SEG/MoReq), que lee el
+    #      `prev_hash` de `audit_log`;
+    #   3. `nivel_efectivo`, que averigua si al llamante le falta el permiso o
+    #      solo el NIVEL — son dos problemas con dos soluciones distintas, y el
+    #      mensaje anterior los confundía. Solo se paga al denegar.
+    assert mock_conn.fetchval.call_count == 3
 
 
 # ---------------------------------------------------------------------------

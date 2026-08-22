@@ -205,6 +205,27 @@
     flex-direction: column;
     overflow: hidden;
 
+    /* Un modal es una superficie propia: NO hereda el contexto tipográfico del
+       sitio del árbol donde casualmente se montó. Sin esto, el diálogo que
+       confirma la derogación de una TRD salía dentro de
+       `.catalog-crud__actions` —que declara `white-space: nowrap` para que no
+       se partan los botones de una fila— y heredaba el `nowrap`: el aviso que
+       explica un acto IRREVERSIBLE se extendía 1361 px en un modal de 400 y
+       había que arrastrar una barra horizontal para leerlo. Quien confirma sin
+       arrastrarla decide sin haber leído la consecuencia.
+
+       Se corrige aquí y no en el contenedor culpable porque el problema es de
+       clase, no de sitio: cualquier estilo de texto declarado en un ancestro
+       se colaría igual en el siguiente modal.
+
+       Estos comentarios usan la sintaxis de CSS y no la de Sass a propósito:
+       el control de SSR (`ssrSafety.test.js`) compila este componente SIN el
+       preprocesador, y ahí la forma de una sola línea no es válida. */
+    white-space: normal;
+    text-align: left;
+    text-transform: none;
+    letter-spacing: normal;
+
     &--sm {
       max-width: 400px;
     }

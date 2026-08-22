@@ -326,10 +326,18 @@
         {#if plan.estado === "borrador"}
           <p class="pinar-workspace__hint">
             <i class="fas fa-circle-info" aria-hidden="true"></i>
-            Mientras el plan esté en <strong>borrador</strong> puede completarse su contenido. Al
-            <strong>aprobarlo</strong>, el contenido estructural queda congelado de forma permanente
-            (el asiento se registra en la auditoría inmutable) — no podrá volver a editarse; para
-            cambios posteriores se crea una versión nueva desde el listado.
+            <!-- El <span> NO es decorativo: `__hint` es `display: flex`, así que cada
+                 hijo directo pasa a ser una columna. Sin él, el icono, los tres trozos
+                 de texto y los dos <strong> se repartían en SEIS columnas y la frase
+                 quedaba ilegible — justo la que advierte de que aprobar congela el plan
+                 de forma permanente. Es el idioma que ya usan `disp-danger__text` y
+                 `cert-drawer__legal-banner`; aquí faltaba. -->
+            <span>
+              Mientras el plan esté en <strong>borrador</strong> puede completarse su contenido. Al
+              <strong>aprobarlo</strong>, el contenido estructural queda congelado de forma
+              permanente (el asiento se registra en la auditoría inmutable) — no podrá volver a
+              editarse; para cambios posteriores se crea una versión nueva desde el listado.
+            </span>
           </p>
         {/if}
       </Card>
@@ -438,10 +446,12 @@
 >
   <p class="pinar-workspace__warning">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-    Esta acción es <strong>irreversible</strong>: al aprobar, el contenido estructural del plan
-    (visión, vigencia, aspectos, objetivos) queda <strong>congelado de forma permanente</strong> y el
-    acto queda registrado en la auditoría inmutable. No podrá deshacerse ni volver a "borrador" — para
-    cambios posteriores deberá crear una versión nueva.
+    <span>
+      Esta acción es <strong>irreversible</strong>: al aprobar, el contenido estructural del plan
+      (visión, vigencia, aspectos, objetivos) queda <strong>congelado de forma permanente</strong> y el
+      acto queda registrado en la auditoría inmutable. No podrá deshacerse ni volver a "borrador" — para
+      cambios posteriores deberá crear una versión nueva.</span
+    >
   </p>
   <FormField
     id="pinar-acto-administrativo"
@@ -473,9 +483,11 @@
 >
   <p class="pinar-workspace__warning">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-    Esta transición es <strong>irreversible</strong> (no existe un paso atrás a "aprobado"). Solo
-    puede haber un plan PINAR <strong>en ejecución</strong> por entidad — si ya existe otro, la operación
-    se rechazará.
+    <span>
+      Esta transición es <strong>irreversible</strong> (no existe un paso atrás a "aprobado"). Solo
+      puede haber un plan PINAR <strong>en ejecución</strong> por entidad — si ya existe otro, la operación
+      se rechazará.</span
+    >
   </p>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (showEjecutarModal = false)} disabled={actionLoading}
@@ -496,8 +508,10 @@
 >
   <p class="pinar-workspace__warning">
     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-    <strong>Cerrado es un estado terminal</strong>: no existe una transición para reabrir este plan.
-    Para continuar la gestión archivística deberá crear una versión nueva.
+    <span>
+      <strong>Cerrado es un estado terminal</strong>: no existe una transición para reabrir este
+      plan. Para continuar la gestión archivística deberá crear una versión nueva.</span
+    >
   </p>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (showCerrarModal = false)} disabled={actionLoading}

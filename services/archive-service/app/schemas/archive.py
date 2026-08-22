@@ -674,6 +674,15 @@ class IndiceVerifyDoc(BaseModel):
     huella_indice: str | None
     huella_actual: str | None
     coincide: bool
+    # Un radicado sin contenido binario (registro de metadatos, lo normal en
+    # ventanilla) no tiene huella que resumir: ni en el índice ni ahora. Eso
+    # NO es una discrepancia de integridad — no hay nada que haya cambiado—,
+    # y contarlo como fallo bloqueaba la recepción de cualquier transferencia
+    # cuyos radicados no llevaran adjuntos, con un mensaje que a un archivista
+    # le suena a corrupción del acervo. Se separa y se DECLARA: la fixity se
+    # predica de lo que tiene huella, y lo que falta se dice, no se esconde
+    # (ISO 16363; Ley 594/2000 art. 16).
+    sin_huella_declarada: bool = False
 
 
 class IndiceFixityResult(BaseModel):
@@ -691,7 +700,11 @@ class IndiceFixityResult(BaseModel):
 
     version: int
     documentos: list[IndiceVerifyDoc]
+    # `documentos_ok` = ninguna huella DECLARADA discrepa. Los documentos sin
+    # huella no lo tumban; se cuentan aparte, en `documentos_sin_huella`, para
+    # que quien recibe sepa exactamente de qué se le está dando fe.
     documentos_ok: bool
+    documentos_sin_huella: int = 0
     huella_indice_ok: bool
 
 

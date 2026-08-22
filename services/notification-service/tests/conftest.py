@@ -200,6 +200,17 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
         yield conn
 
     app.dependency_overrides[get_tenant_conn] = _conn_dep
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac, conn
+    # La resolución del buzón de la dependencia se aísla a propósito: estos
+    # tests controlan `conn.fetchrow` directamente para la fila de la cola, y
+    # la resolución usa esa MISMA conexión. Mezclarlas haría que cada test
+    # tuviera que devolver dos cosas por el mismo mock. El comportamiento del
+    # buzón tiene sus propios tests (`test_buzones.py`), y que el reenvío
+    # RESUELVA —en vez de inventar la dirección— lo comprueba
+    # `test_replay_workflow_resuelve_el_buzon_de_la_dependencia`.
+    with patch(
+        "app.routers.admin_deadletter.resolver_buzon_dependencia",
+        AsyncMock(return_value="dependencia-902@orpycamcp.local"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            yield ac, conn
     app.dependency_overrides.clear()

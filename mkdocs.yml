@@ -145,6 +145,7 @@ nav:
     - ADR-025 TRD como instrumento convalidado: adr/ADR-025-trd-instrumento-convalidado-versionado.md
     - ADR-026 TVD de fondo acumulado: adr/ADR-026-tvd-fondo-acumulado.md
   - Pantallas del sistema: pantallas.md
+  - Plan de pruebas: plan-pruebas.md
   - Referencia API: api.md
   - Despliegue: deployment.md
   - Integraciones externas: integraciones-externas.md

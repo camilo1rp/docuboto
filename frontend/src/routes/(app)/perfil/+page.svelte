@@ -648,8 +648,10 @@
       <details class="perfil-danger" bind:open={totpRevokeOpen}>
         <summary>Revocar el segundo factor</summary>
         <p class="perfil-danger__warning">
-          <strong>Sin 2FA no podrá revocar ni renovar su credencial de firma</strong> hasta configurar
-          uno nuevo — el backend exige siempre este código para esas acciones.
+          <span>
+            <strong>Sin 2FA no podrá revocar ni renovar su credencial de firma</strong> hasta configurar
+            uno nuevo — el backend exige siempre este código para esas acciones.
+          </span>
         </p>
         <form class="perfil-inline-form" on:submit|preventDefault={revokeTotp}>
           <FormField

@@ -31,13 +31,14 @@ Dos routers con visibilidad MUY distinta:
 from __future__ import annotations
 
 import logging
+import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWTError
 
-from app.core.authz import Caller, get_caller
+from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_db_conn, get_tenant_conn, tenant_schema
 from app.core.security import validate_token
 from app.repositories.rbac_repository import RBACRepository
@@ -46,6 +47,8 @@ from app.schemas.totp import (
     InternalTotpVerifyResponse,
     TotpActivateRequest,
     TotpActivateResponse,
+    TotpAdminRevokeRequest,
+    TotpAdminRevokeResponse,
     TotpEnrollRequest,
     TotpEnrollResponse,
     TotpRecoveryRegenerateRequest,
@@ -60,6 +63,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/auth/me/totp", tags=["totp"])
 internal_router = APIRouter(prefix="/internal/totp", tags=["totp-internal"])
+
+# Restablecimiento ADMINISTRATIVO del segundo factor de OTRA persona.
+# Gate a nivel de router, igual que `rbac.py`: en este servicio
+# `USUA_PERM_ADMIN` con nivel 1 es la competencia administrativa, y todos
+# los actos de administración de usuarios (incluido dar de baja a un
+# miembro de un grupo) usan ese mismo umbral. Exigir aquí un nivel mayor
+# que en el resto dejaría el botón visible y la llamada denegada, que es el
+# defecto simétrico y falla en silencio.
+admin_router = APIRouter(
+    prefix="/api/v1/auth",
+    tags=["totp-admin"],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -89,6 +105,38 @@ async def _resolve_tenant_slug_for_aad(
     except PyJWTError:
         return header_slug
     return claims.get("tenant_slug") or header_slug
+
+
+# ---------------------------------------------------------------------------
+# Admin — /api/v1/auth/users/{user_id}/totp/revoke
+# ---------------------------------------------------------------------------
+
+
+@admin_router.post(
+    "/users/{user_id}/totp/revoke",
+    response_model=TotpAdminRevokeResponse,
+    summary="Restablece el segundo factor de otra persona (queda lista para re-enrolar)",
+)
+async def revoke_totp_as_admin(
+    user_id: uuid.UUID,
+    payload: TotpAdminRevokeRequest,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> TotpAdminRevokeResponse:
+    """Cierra el encierro de quien pierde el autenticador (ver `revoke_as_admin`).
+
+    NO devuelve ningún secreto ni enrola nada en nombre de nadie: deja a la
+    persona en «sin segundo factor» para que ella misma lo registre desde su
+    propia sesión en `/perfil`. Un administrador que pudiera enrolar por otro
+    tendría de hecho su firma personal.
+    """
+    return await TotpService(conn).revoke_as_admin(
+        target_user_id=user_id,
+        admin_user_id=caller.user_id,
+        tenant_slug=request.headers.get("X-Tenant-Slug", ""),
+        motivo=payload.motivo,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -94,6 +94,115 @@ async def test_create_ubicacion(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_corregir_el_tipo_de_archivo_de_una_ubicacion(client_with_conn) -> None:
+    """Una ubicación creada sin tipo de archivo SE PUEDE corregir.
+
+    `tipo_archivo` es opcional al crear —el formulario ofrece «Sin tipo»— y sin
+    embargo decide qué transferencias admite la ubicación: una primaria va de
+    `gestion` a `central`, una secundaria de `central` a `historico` (Ley
+    594/2000 art. 23). Cargar la topografía sin ese dato es lo natural cuando
+    nada advierte, y dejaba el archivo físico **incapaz de transferir**: el
+    error aparecía mucho después, como un 422 `ubicacion_incoherente_con_tipo`
+    sobre un depósito recién creado. No existía ninguna ruta de corrección —ni
+    endpoint ni pantalla—, así que el descuido era permanente.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _ubicacion_row(tipo_archivo=None),  # estado anterior
+        _ubicacion_row(tipo_archivo="gestion"),  # UPDATE ... RETURNING
+    ]
+    mock_conn.fetch.return_value = [{"codigo": "DEP01"}]
+
+    resp = await client.patch(
+        f"/api/v1/ubicaciones/{uuid.uuid4()}",
+        json={"tipo_archivo": "gestion"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["tipo_archivo"] == "gestion"
+
+
+@pytest.mark.asyncio
+async def test_la_correccion_deja_asiento_con_el_antes_y_el_despues(client_with_conn) -> None:
+    """La topografía es soporte de la cadena de custodia física (art. 26).
+
+    Un asiento que solo diga «se cambió» no permite reconstruir nada: hace
+    falta el valor anterior, que es justo lo que se pierde al sobrescribir.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _ubicacion_row(tipo_archivo=None),
+        _ubicacion_row(tipo_archivo="central"),
+    ]
+    mock_conn.fetch.return_value = [{"codigo": "DEP01"}]
+
+    await client.patch(
+        f"/api/v1/ubicaciones/{uuid.uuid4()}",
+        json={"tipo_archivo": "central"},
+        headers=TENANT_HEADERS,
+    )
+
+    inserts = [
+        c for c in mock_conn.execute.await_args_list if "audit_log" in str(c.args[0] if c.args else "")
+    ]
+    escrito = " ".join(str(c) for c in mock_conn.execute.await_args_list)
+    assert "archive.ubicacion_updated" in escrito or inserts, "la corrección no dejó asiento"
+    assert '"antes"' in escrito and '"despues"' in escrito, (
+        "el asiento debe guardar el valor anterior y el nuevo"
+    )
+
+
+@pytest.mark.asyncio
+async def test_un_cuerpo_vacio_no_produce_un_asiento_falso(client_with_conn) -> None:
+    """Gemelo: «corregir» sin cambiar nada no es un acto.
+
+    Aceptarlo escribiría en la cadena de auditoría un asiento que no describe
+    ningún cambio — ruido en el único registro que se consulta para saber qué
+    pasó con una ubicación.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+
+    resp = await client.patch(
+        f"/api/v1/ubicaciones/{uuid.uuid4()}",
+        json={},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "sin_cambios"
+
+
+@pytest.mark.asyncio
+async def test_el_codigo_no_se_puede_cambiar(client_with_conn) -> None:
+    """El código es la referencia impresa en la signatura de cada unidad.
+
+    Cambiarlo dejaría las etiquetas del depósito apuntando a una ubicación que
+    ya no se llama así. El esquema no lo admite, y lo que llegue se ignora en
+    vez de aplicarse a medias.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _ubicacion_row(codigo="DEP01"),
+        _ubicacion_row(codigo="DEP01", nombre="Depósito uno"),
+    ]
+    mock_conn.fetch.return_value = [{"codigo": "DEP01"}]
+
+    resp = await client.patch(
+        f"/api/v1/ubicaciones/{uuid.uuid4()}",
+        json={"codigo": "OTRO", "nombre": "Depósito uno"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["codigo"] == "DEP01"
+
+
+@pytest.mark.asyncio
 async def test_create_unidad_computes_signatura(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted

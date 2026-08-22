@@ -1142,7 +1142,16 @@
           description="El índice electrónico no ha sido generado para este expediente, o usted no tiene visibilidad sobre él."
         />
       {:else}
-        {@const indice = facetas.indice.data}
+        <!--
+          Anotado a propósito: `IndiceElectronico` (en `$lib/types/api.js`)
+          hace que `svelte-check` valide los campos que lee la tabla de abajo.
+          Sin el tipo, leer uno que no existe —`fecha_archivado` en vez de
+          `fecha_incorporacion`— no falla en ningún sitio: la columna sale
+          vacía y el «—» la disfraza de dato no declarado.
+        -->
+        {@const indice = /** @type {import('$lib/types/api.js').IndiceElectronico} */ (
+          facetas.indice.data
+        )}
         {@const indiceFirmado = indice.estado === "firmado"}
         <!-- "Apariencia de certificado" (Sistema de Diseño v1.0): el índice y su
              firma tienen valor legal (E06/E15) — se presentan con un marco propio
@@ -1152,7 +1161,15 @@
             <i class="fas fa-file-shield" aria-hidden="true"></i>
             Índice electrónico
             <span class="exp-indice-meta">
-              v{indice.version} · {indice.num_documentos} doc(s)
+              <!--
+                `num_documentos` cuenta SOLO los vigentes; `items` trae también
+                los excluidos, porque el índice tiene que dejar el hueco
+                trazable a la vista (E15 v3, RT-15). Mostrar solo el primero
+                junto a una tabla con más filas se lee como una contradicción de
+                la propia pantalla, así que el excluido se nombra.
+              -->
+              v{indice.version} · {indice.num_documentos} vigente(s){#if (indice.items?.length ?? 0) > indice.num_documentos}
+                · {(indice.items?.length ?? 0) - indice.num_documentos} excluido(s){/if}
               <StatusChip
                 status={indiceFirmado ? "success" : "warning"}
                 label={indiceFirmado ? "Firmado" : "Pendiente de firma"}
@@ -1341,9 +1358,30 @@
                         {:else}
                           <span class="exp-uuid">{item.document_id}</span>
                         {/if}
+                        <!--
+                          Un documento excluido sigue en el índice a propósito
+                          —es el hueco trazable: consta que estuvo y que se
+                          retiró— pero listado igual que uno vigente deja de
+                          serlo, porque quien lee la tabla no puede distinguir
+                          lo que compone el expediente de lo que se apartó de
+                          él. El backend proyecta `estado` desde v3 justo para
+                          esto y la tabla no lo usaba.
+                        -->
+                        {#if item.estado === "excluido"}
+                          <StatusChip status="warning" label="Excluido" />
+                        {/if}
                       </td>
                       <td>{item.tipologia ?? "—"}</td>
-                      <td>{item.fecha_archivado ? fmtDate(item.fecha_archivado) : "—"}</td>
+                      <!--
+                        `fecha_incorporacion` es el nombre del contrato
+                        (`IndiceItemResponse`), alineado con
+                        <fechaIncorporacion> del XML probatorio. Aquí se leía
+                        `fecha_archivado`, que no existe en la respuesta: la
+                        columna salía vacía en TODAS las filas y el «—» lo hacía
+                        pasar por un dato no declarado. Es el mismo cruce de
+                        esquemas parecidos que ya se corrigió en la foliación.
+                      -->
+                      <td>{item.fecha_incorporacion ? fmtDate(item.fecha_incorporacion) : "—"}</td>
                       <td>
                         {#if item.valor_huella}
                           <code class="exp-hash" title={item.valor_huella}

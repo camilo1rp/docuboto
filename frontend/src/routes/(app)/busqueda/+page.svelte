@@ -755,14 +755,23 @@
                 />
               </td>
               <td class="op-datatable__td search-table__td--actions">
+                <!--
+                  El enlace lleva el radicado consigo. Antes era `/bandeja` a
+                  secas: quien buscaba un documento y pulsaba aquí aterrizaba en
+                  la bandeja de SU dependencia, donde ese radicado casi nunca
+                  está —la bandeja lista lo que la dependencia tramita, no lo que
+                  se acaba de buscar— y sin ningún aviso de que el destino no era
+                  el prometido. El `aria-label` sí decía «ver radicado X», así
+                  que el enlace anunciaba una cosa y hacía otra.
+                -->
                 <a
-                  href="/bandeja"
+                  href="/bandeja?radicado={encodeURIComponent(row.id ?? '')}"
                   class="action-link"
                   aria-label="Ver radicado {row.tracking_number} en la bandeja"
-                  title="Ver en bandeja"
+                  title="Ver detalle del radicado"
                 >
                   <i class="fas fa-external-link-alt" aria-hidden="true"></i>
-                  Ver en bandeja
+                  Ver detalle
                 </a>
               </td>
             </svelte:fragment>

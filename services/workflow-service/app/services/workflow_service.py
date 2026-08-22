@@ -19,7 +19,12 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit, events
 
-from app.core.clearance import CLEARANCE_SIN_RESTRICCION, check_permission
+from app.core.clearance import (
+    CLEARANCE_SIN_RESTRICCION,
+    check_permission,
+    mensaje_denegacion,
+    nivel_efectivo,
+)
 from app.core.database import tenant_schema
 from app.core.redis_client import get_redis
 from app.models.flow import FlowStep
@@ -768,7 +773,13 @@ class WorkflowService:
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "error": "forbidden",
-                "detail": f"Se requiere el permiso {perm_name}",
+                # Mismo mensaje veraz que el gate de ruta: aquí el umbral es 1, así
+                # que la causa normal es la ausencia del permiso — pero un nivel 0
+                # explícito también existe, y decirlo es mejor que insinuar que
+                # falta una concesión que sí está.
+                "detail": mensaje_denegacion(
+                    perm_name, 1, await nivel_efectivo(self._conn, actor, perm_name)
+                ),
                 "status": 403,
             },
         )

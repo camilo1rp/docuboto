@@ -33,13 +33,27 @@ export async function POST({ locals, params, request }) {
     body = {};
   }
 
-  const { observacion } = body ?? {};
+  // El backend exige `motivo` (TransferenciaRechazo, min 3, obligatorio) y este
+  // proxy mandaba `observacion`, opcional. El desfase de nombre dejaba la rama
+  // ENTERA muerta: todo rechazo devolvía 422 y ninguno llegó nunca a ocurrir.
+  //
+  // El nombre no es un detalle: `motivo` es obligatorio a propósito, porque el
+  // rechazo es un estado TERMINAL y su porqué es el insumo de la subsanación
+  // para la oficina de origen. Un rechazo inmotivado deja a quien transfiere
+  // sin saber qué corregir.
+  const motivo = typeof body?.motivo === "string" ? body.motivo.trim() : "";
+  if (motivo.length < 3) {
+    return json(
+      {
+        error: "validation_error",
+        detail: "Indique el motivo del rechazo (mínimo 3 caracteres).",
+      },
+      { status: 400 },
+    );
+  }
 
   /** @type {Record<string, unknown>} */
-  const payload = {};
-  if (observacion && typeof observacion === "string" && observacion.trim()) {
-    payload.observacion = observacion.trim().slice(0, 2000);
-  }
+  const payload = { motivo: motivo.slice(0, 2000) };
 
   /** @type {Record<string, string>} */
   const headers = {

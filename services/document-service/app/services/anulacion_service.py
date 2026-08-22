@@ -176,6 +176,33 @@ class AnulacionService:
                     "status": 404,
                 },
             )
+        # ── Segregación de funciones ──────────────────────────────────────
+        # Quien pide la anulación no puede aprobarla. La pantalla de solicitud
+        # ya se lo dice a la persona —«requiere aprobación posterior por un
+        # supervisor»—, pero eso era una promesa que nadie hacía cumplir: el
+        # mismo usuario podía solicitar y aprobar seguido, y el radicado quedaba
+        # `anulado` sin que ningún tercero hubiera mirado. Anular es irreversible
+        # y borra de la circulación un documento oficial (Ley 594/2000): el
+        # control que lo justifica es precisamente que lo revise otro.
+        #
+        # El RECHAZO propio sí se permite, y a propósito: rechazar la solicitud
+        # que uno mismo hizo es desistir de ella, no ejecutar el acto. Bloquear
+        # también eso dejaría solicitudes vivas que nadie puede retirar.
+        if aprobar and decidido_por is not None and active["solicitado_por"] == decidido_por:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "aprobacion_del_propio_solicitante",
+                    "detail": (
+                        "Usted solicitó esta anulación y no puede aprobarla: la anulación de un "
+                        "radicado la decide una persona distinta de quien la pide. Pásela a otro "
+                        "funcionario con permiso para resolver anulaciones; si desea desistir, "
+                        "puede rechazarla usted mismo."
+                    ),
+                    "status": 409,
+                },
+            )
+
         actor = str(decidido_por) if decidido_por else None
         # object_ref = tracking_number, resuelto SERVER-SIDE desde la BD (nunca
         # de un campo del body). La decisión y su asiento de auditoría son

@@ -205,6 +205,7 @@ class IndexService:
         *,
         generado_por: str,
         assert_open: bool = True,
+        indice_firmado_previo: bool = False,
     ) -> RebuildResult:
         """Regenera (append-only) el índice si el conjunto documental cambió.
 
@@ -214,6 +215,21 @@ class IndexService:
         `close_expediente` pasa `assert_open=False`: ES la regeneración final
         legítima, invocada justo después de transicionar el expediente a
         'closed' (por eso su propio `exp.status` ya no es 'open' en ese punto).
+
+        `indice_firmado_previo` (por defecto False) es el SEGUNDO guard, y son
+        dos cosas distintas: un índice ya firmado no se regenera, porque una
+        versión firmada es inmutable. Pero firmar el índice de un expediente
+        abierto es un camino que la propia interfaz ofrece, y quien lo usaba se
+        quedaba con un expediente **imposible de cerrar**: el cierre llamaba
+        aquí, chocaba con este guard y revertía la transacción entera. El
+        expediente se quedaba `open` para siempre, con un asiento
+        `archive.expediente_close_failed` cuyo motivo —`expediente_closed`—
+        decía justo lo contrario de su estado real.
+        `close_expediente` es el ÚNICO llamante que lo pasa en True: el cierre
+        es, por definición, el momento en que se emite el índice definitivo del
+        conjunto documental (RF-EXP-06). El resultado sigue siendo append-only
+        —una versión nueva, la anterior firmada se conserva— y si el contenido
+        no cambió, el `content_hash` la deja intacta unos renglones más abajo.
 
         Pre-condición interna de existencia/estado, no una lectura expuesta al
         llamante — la mutación (regenerar el índice) es LEGÍTIMA sin
@@ -247,12 +263,16 @@ class IndexService:
                 },
             )
         current = await self._index.get_current(expediente_id)
-        if current is not None and current["estado"] == "firmado":
+        if current is not None and current["estado"] == "firmado" and not indice_firmado_previo:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
-                    "error": "expediente_closed",
-                    "detail": "Índice firmado e inmutable",
+                    "error": "indice_firmado_inmutable",
+                    "detail": (
+                        "El índice electrónico vigente ya está firmado y no se regenera: "
+                        "una versión firmada es inmutable. Si el conjunto documental cambió, "
+                        "el índice definitivo se emite al cerrar el expediente."
+                    ),
                     "status": 409,
                 },
             )
@@ -917,11 +937,32 @@ class IndexService:
         current = {str(r.radicado_id): r.content_hash for r in exp.radicados}
         docs: list[IndiceVerifyDoc] = []
         all_ok = True
+        sin_huella = 0
         for it in items:
             hi = it["valor_huella"]
             ha = current.get(str(it["document_id"]))
+            # Tres situaciones distintas, y antes las tres se resolvían en un
+            # solo booleano:
+            #
+            #  1. Las dos huellas existen y son iguales  → íntegro.
+            #  2. Las dos existen y difieren, o una falta y la otra no → el
+            #     contenido cambió, o el índice dejó de describirlo. Es una
+            #     discrepancia real y bloquea.
+            #  3. NINGUNA existe → el documento no tiene contenido binario que
+            #     resumir (un radicado de metadatos, sin anexos: el caso normal
+            #     en ventanilla). No hay integridad que verificar ni nada que
+            #     haya cambiado.
+            #
+            # El tercer caso contaba como fallo, así que un expediente de
+            # radicados sin adjuntos NO SE PODÍA TRANSFERIR NUNCA: la recepción
+            # respondía «la verificación de fixity del acervo falló», que
+            # describe una corrupción que no había ocurrido. Ahora sale del
+            # cómputo y se declara aparte.
+            ninguna_huella = hi is None and ha is None
             coincide = hi is not None and ha is not None and hi == ha
-            if not coincide:
+            if ninguna_huella:
+                sin_huella += 1
+            elif not coincide:
                 all_ok = False
             docs.append(
                 IndiceVerifyDoc(
@@ -929,6 +970,7 @@ class IndexService:
                     huella_indice=hi,
                     huella_actual=ha,
                     coincide=coincide,
+                    sin_huella_declarada=ninguna_huella,
                 )
             )
         huella_indice_ok = xml_sha256(row["xml"]) == row["xml_sha256"]
@@ -936,6 +978,7 @@ class IndexService:
             version=row["version"],
             documentos=docs,
             documentos_ok=all_ok,
+            documentos_sin_huella=sin_huella,
             huella_indice_ok=huella_indice_ok,
         )
 

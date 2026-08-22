@@ -90,6 +90,29 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
 Todos están registrados con su archivo y su motivo. Salvo el primer bloque, ninguno bloquea la línea base.
 
+**Revisión funcional completa desde el navegador (agosto 2026) ✅ — bloques B0 a B13**
+
+Hasta esta revisión la garantía del proyecto era **de unidad y de contrato, no de uso**: las 36
+pantallas de `(app)/` tenían cero cobertura de navegador. Se recorrió el sistema entero bloque por
+bloque contra `tenant_demo`, ejecutando los actos reales incluidos los irreversibles. El
+procedimiento, los casos y los puntos ciegos declarados quedan en
+**[`docs/es/plan-pruebas.md`](plan-pruebas.md)**; cada defecto y su corrección, en el
+[changelog](changelog.md).
+
+- [x] **B0–B11** — sesión, identidad, instrumentos, radicación, trámite, expedientes, firma,
+      envíos, archivo físico, consulta, interoperabilidad y los siete actos irreversibles.
+- [x] **B12 Observabilidad** — reverificación de la cadena de `audit_log` (**968 de 972 asientos
+      recomputan su hash, cero roturas genuinas**), notificaciones, colas, preservación y PINAR.
+- [x] **B13 Barrido negativo** — confirmado que **los controles de acceso no viven solo en el
+      navegador**: todo lo que la interfaz esconde se invocó por el proxy BFF y el backend
+      respondió 403.
+- [x] **Entregables** — plan de pruebas, `pantallas.md` con el estado verificado, y la suite
+      `frontend/e2e/authenticated/` reactivada (estaba apagada con triple freno).
+- [ ] **Decisión de producto abierta**: las lecturas de TRD (4 endpoints) y PINAR (11) no exigen
+      permiso mientras la interfaz esconde esas pantallas. Ambos son instrumentos de publicación
+      obligatoria (Ac. AGN 004/2019 y 003/2015), así que puede ser deliberado — pero hay que
+      elegir: gatear las lecturas o declararlas abiertas. Esconder algo y servirlo a la vez no.
+
 **Revisión de experiencia de uso del cierre del desfase API↔UI (2026-08-02)**
 
 Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se implementaron **sin pasar por el revisor de UX/accesibilidad**, que es el último eslabón de la cadena de agentes del proyecto. La revisión se hizo después, en dos pasadas paralelas (panel `/admin` y pantallas operativas). Resultado: base sólida —sin `{@html}` sin sanear, sin llamadas al gateway desde el cliente (regla D-05 intacta), `Modal`/`Drawer` con trampa y devolución de foco correctas, confirmación proporcional al daño en los actos irreversibles— con estos pendientes:

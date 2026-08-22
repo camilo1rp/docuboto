@@ -33,7 +33,7 @@
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
-  import { permissions, sessionUser } from "$lib/stores/auth.js";
+  import { permissions, userId } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess, notifyWarning } from "$lib/stores/notifications.js";
 
   import DataTable from "$lib/components/ui/DataTable.svelte";
@@ -434,10 +434,14 @@
    */
   function esTurnoActivo(turno) {
     if (turno.estado !== "pendiente") return false;
-    // Si el firmante_id coincide con el sub del JWT, es definitivamente el turno del usuario.
-    // Si no hay sub disponible (edge case), mostrar como activo igualmente (el backend re-valida).
-    const sub = $sessionUser?.sub;
-    return !sub || turno.firmante_id === sub;
+    // `firmante_id` es la identidad INTERNA del tenant (`auth_users.id`), NO el
+    // `sub` de Keycloak: son dos UUID distintos para la misma persona. Al
+    // comparar contra `sub`, ningún turno se reconocía como propio y la cadena
+    // de firmas se leía entera como «no te toca».
+    // Sin identidad en sesión se muestra como activo y el backend re-valida:
+    // es preferible ofrecer de más que ocultarle a alguien su propio turno.
+    const yo = $userId;
+    return !yo || turno.firmante_id === yo;
   }
 
   const TABLE_COLUMNS = [

@@ -58,10 +58,13 @@ export async function load({ cookies, parent, url }) {
       if (Array.isArray(data)) shipments = data;
     } else {
       const body = await res.json().catch(() => ({}));
-      loadError = mensajeError(body, `Error ${res.status}`);
+      // Se conserva el ESTADO además del texto: «no tiene permiso» (403) y «el
+      // servidor falló» (5xx) son dos cosas distintas para quien mira, y la
+      // pantalla no podía distinguirlas con un string suelto.
+      loadError = { detail: mensajeError(body, `Error ${res.status}`), status: res.status };
     }
   } catch {
-    loadError = "No se pudo conectar al servidor de envíos.";
+    loadError = { detail: "No se pudo conectar al servidor de envíos.", status: 0 };
   }
 
   // Causales de devolución postal (catálogo del tenant, ámbito

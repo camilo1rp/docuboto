@@ -31,6 +31,16 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
+# Hash con la FORMA que exige `chk_audit_log_hash_forma` (migración global 006):
+# SHA-256 en 64 hex. Estos tests insertan por SQL a propósito —comprueban el
+# enrutado a la partición y su inmutabilidad, no el encadenado—, pero un hash de
+# juguete ya no entra, y con razón: escribir basura en el registro legal es
+# justamente lo que esa restricción vino a impedir tras encontrarse 25 filas
+# contaminadas en los tenants `demo` y `otra-entidad`, imposibles de borrar
+# porque el registro es append-only.
+_HASH_VALIDO = "0" * 64
+
+
 def _mes_libre(offset_meses: int = 60) -> tuple[str, datetime]:
     """Un mes muy por delante, para no chocar con las particiones reales."""
     base = datetime.now(UTC).replace(day=1, hour=12, minute=0, second=0, microsecond=0)
@@ -64,9 +74,10 @@ async def test_el_asiento_aterriza_en_su_particion_mensual(
 
     await db_conn.execute(
         "INSERT INTO public.audit_log (tenant_slug, ts, service, action, object_type, hash) "
-        "VALUES ($1, $2, 'test', 'x', 'y', 'h')",
+        "VALUES ($1, $2, 'test', 'x', 'y', $3)",
         slug,
         momento,
+        _HASH_VALIDO,
     )
 
     destino = await db_conn.fetchval(
@@ -83,9 +94,10 @@ async def test_la_particion_nueva_es_append_only(
     slug = f"itest-immut-{momento:%Y%m}"
     await db_conn.execute(
         "INSERT INTO public.audit_log (tenant_slug, ts, service, action, object_type, hash) "
-        "VALUES ($1, $2, 'test', 'x', 'y', 'h')",
+        "VALUES ($1, $2, 'test', 'x', 'y', $3)",
         slug,
         momento,
+        _HASH_VALIDO,
     )
 
     for sentencia in (

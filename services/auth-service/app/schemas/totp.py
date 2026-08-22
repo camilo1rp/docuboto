@@ -109,6 +109,36 @@ class TotpRevokeResponse(BaseModel):
     estado: Literal["revocado"] = "revocado"
 
 
+class TotpAdminRevokeRequest(BaseModel):
+    """``POST /api/v1/auth/users/{user_id}/totp/revoke`` — restablecimiento ADMINISTRATIVO.
+
+    El ``motivo`` es OBLIGATORIO y no es burocracia: retirarle a alguien el
+    segundo factor es el único acto del sistema que reduce la protección de
+    otra persona, y el asiento tiene que poder responder «por qué» además de
+    «quién» y «cuándo» (Ley 594/2000, trazabilidad). Se guarda en el
+    ``payload`` de ``totp.restablecido_por_admin``.
+    """
+
+    motivo: str = Field(..., min_length=8, max_length=500)
+
+    @field_validator("motivo")
+    @classmethod
+    def _motivo_con_contenido(cls, v: str) -> str:
+        limpio = v.strip()
+        if len(limpio) < 8:
+            raise ValueError("El motivo debe explicar el restablecimiento (mínimo 8 caracteres)")
+        return limpio
+
+
+class TotpAdminRevokeResponse(BaseModel):
+    """Estado en el que queda la persona: sin segundo factor, listo para re-enrolar."""
+
+    estado: Literal["revocado"] = "revocado"
+    usuario_id: str
+    estado_previo: Literal["pendiente_activacion", "activo"]
+    codigos_recuperacion_eliminados: int
+
+
 class TotpRecoveryRegenerateRequest(BaseModel):
     """Body de ``POST /me/totp/recovery-codes``: regenera el lote.
 

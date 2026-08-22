@@ -596,8 +596,14 @@ class TransferenciaService:
                     # puede no tener clearance de LECTURA del expediente) solo
                     # se le devuelve un CONTEO opaco, sin enumerar qué radicados
                     # del expediente reservado se alteraron.
+                    # Solo cuentan las huellas DECLARADAS que discrepan. Un
+                    # documento sin huella —radicado de metadatos, sin anexos—
+                    # no tiene integridad que verificar, y contarlo aquí hacía
+                    # intransferible cualquier expediente de ventanilla.
                     fixity_fallidos = [
-                        str(d.document_id) for d in fx.documentos if not d.coincide
+                        str(d.document_id)
+                        for d in fx.documentos
+                        if not d.coincide and not d.sin_huella_declarada
                     ]
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -764,6 +770,16 @@ class TransferenciaService:
                             "documentos_ok": fx.documentos_ok,
                             "huella_indice_ok": fx.huella_indice_ok,
                             "num_documentos": len(fx.documentos),
+                            # De cuántos documentos NO se está dando fe de
+                            # integridad, porque no tienen huella que comparar
+                            # (registros de metadatos, sin contenido binario).
+                            # Va en el asiento porque una atestación que no
+                            # dice de qué NO responde no es una atestación:
+                            # `documentos_ok` sin este número se leería como
+                            # «se verificaron los N documentos», y no es cierto.
+                            "documentos_sin_huella": fx.documentos_sin_huella,
+                            "documentos_verificados": len(fx.documentos)
+                            - fx.documentos_sin_huella,
                             "algoritmo": "SHA-256",
                         },
                         # Ancla de la fixity del ACTA en la cadena de hash
@@ -1512,6 +1528,25 @@ class TransferenciaService:
                     "error": "canal_firma_personal_no_disponible",
                     "detail": "signature-service no está disponible para la firma personal",
                     "status": 503,
+                },
+            )
+        if outcome.remote_failure is not None:
+            # El servicio de firma SÍ respondió, y falló. Decir aquí «no está
+            # disponible» mandaba a diagnosticar el servicio equivocado: las dos
+            # veces que ocurrió de verdad la causa estaba dos servicios más
+            # abajo (MinIO sin disco; y un CHECK que no admitía el propio valor
+            # que escribe signature-service). Fail-closed igual — 502 y no 503
+            # porque la puerta contestó.
+            codigo_remoto, causa = outcome.remote_failure
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "error": "firma_personal_fallo_remoto",
+                    "detail": (
+                        f"El servicio de firma respondió HTTP {codigo_remoto} al firmar "
+                        f"el acta: {causa}. La firma NO se registró."
+                    ),
+                    "status": 502,
                 },
             )
         if outcome.rejected is not None:

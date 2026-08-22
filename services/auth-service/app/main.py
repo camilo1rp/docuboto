@@ -38,6 +38,7 @@ from app.routers.rbac import router as rbac_router
 from app.routers.signing_key import admin_router as signing_key_admin_router
 from app.routers.signing_key import internal_router as signing_key_internal_router
 from app.routers.signing_key import router as signing_key_router
+from app.routers.totp import admin_router as totp_admin_router
 from app.routers.totp import internal_router as totp_internal_router
 from app.routers.totp import router as totp_router
 from app.routers.urd import router as urd_router
@@ -107,6 +108,7 @@ app.include_router(urd_router)
 app.include_router(context_router)
 app.include_router(clearance_router)
 app.include_router(totp_router)  # /api/v1/auth/me/totp — público vía gateway
+app.include_router(totp_admin_router)  # /api/v1/auth/users/{id}/totp — gate USUA_PERM_ADMIN
 app.include_router(totp_internal_router)  # /internal/totp — NUNCA vía gateway
 app.include_router(signing_key_router)  # /api/v1/auth/me/signing-key — público vía gateway
 app.include_router(signing_key_admin_router)  # /api/v1/auth/admin/users/.../signing-key

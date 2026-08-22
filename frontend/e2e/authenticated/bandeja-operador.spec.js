@@ -15,7 +15,7 @@
  */
 import { test, expect } from "@playwright/test";
 
-test.describe.skip("Bandeja — vista consolidada de operador (requiere stack real)", () => {
+test.describe("Bandeja — vista consolidada de operador (requiere la pila levantada)", () => {
   test.beforeEach(async ({ page }) => {
     const username = process.env.E2E_USERNAME;
     const password = process.env.E2E_PASSWORD;

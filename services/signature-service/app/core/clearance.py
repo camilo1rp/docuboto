@@ -134,6 +134,56 @@ async def check_permission(
     return bool(allowed) if allowed is not None else False
 
 
+async def nivel_efectivo(
+    conn: asyncpg.Connection, user_id: uuid.UUID | None, perm_name: str
+) -> int | None:
+    """Nivel CRUD que el llamante tiene HOY sobre ``perm_name``, o ``None`` si no lo tiene.
+
+    Se usa SOLO en la rama de denegación, para poder decir la verdad. El mensaje
+    anterior era ``"Se requiere el permiso X"`` tanto si al usuario le faltaba el
+    permiso como si lo tenía con nivel insuficiente — y son dos problemas con dos
+    soluciones distintas: en el primer caso hay que concederlo, en el segundo hay
+    que **subir el nivel** de uno que ya está concedido. Un funcionario al que se
+    le dice que le falta un permiso que sí tiene manda a su administrador a buscar
+    una concesión que ya existe.
+
+    Un ROOT no llega aquí (pasa el gate), así que no hay que contemplarlo.
+    Fail-closed a ``None`` ante cualquier duda: es el mensaje más conservador.
+    """
+    if user_id is None:
+        return None
+    try:
+        nivel = await conn.fetchval(
+            """
+            SELECT max(gp.crud)
+            FROM auth_memberships m
+            JOIN auth_group_permissions gp ON gp.group_id = m.group_id
+            JOIN auth_permissions p ON p.id = gp.permission_id
+            WHERE m.user_id = $1 AND p.nombre = $2
+            """,
+            user_id,
+            perm_name,
+        )
+    except Exception:  # noqa: BLE001 — el mensaje nunca puede tumbar la respuesta.
+        return None
+    # Se exige un entero de verdad: `bool` es subclase de `int` en Python, y sin
+    # este filtro un `False` se cuela y la frase acaba diciendo «con nivel False»
+    # a un funcionario. Cualquier otra cosa cae al mensaje conservador.
+    if isinstance(nivel, bool) or not isinstance(nivel, int):
+        return None
+    return nivel
+
+
+def mensaje_denegacion(perm_name: str, min_crud: int, nivel: int | None) -> str:
+    """Texto del 403 que distingue «no lo tiene» de «lo tiene corto de nivel»."""
+    if nivel is None:
+        return f"Se requiere el permiso {perm_name} (nivel {min_crud} o superior)"
+    return (
+        f"Tiene el permiso {perm_name} con nivel {nivel}, y esta acción requiere "
+        f"nivel {min_crud} o superior"
+    )
+
+
 def require_permission(perm_name: str, min_crud: int = 1):
     """FastAPI dependency factory: raises 401/403 when caller lacks ``perm_name``.
 
@@ -179,7 +229,9 @@ def require_permission(perm_name: str, min_crud: int = 1):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "error": "forbidden",
-                    "detail": f"Se requiere el permiso {perm_name}",
+                    "detail": mensaje_denegacion(
+                        perm_name, min_crud, await nivel_efectivo(conn, actor, perm_name)
+                    ),
                     "status": 403,
                 },
             )

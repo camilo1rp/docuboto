@@ -369,6 +369,29 @@ class SignedPersonal:
     nivel_conformidad: str | None
 
 
+def _causa_remota(resp: httpx.Response) -> str:
+    """Texto legible de un 5xx de signature-service, para el mensaje al usuario.
+
+    El sobre de error del proyecto es `{"error", "detail", "status"}` anidado
+    bajo `detail` (ver API Conventions). Cuando el 5xx no lo trae —una
+    excepción no capturada la sirve FastAPI como `{"detail": "Internal Server
+    Error"}`, y un proxy puede devolver HTML— se cae al texto crudo acotado:
+    una causa pobre sigue siendo mejor que una causa falsa.
+    """
+    try:
+        cuerpo = resp.json()
+    except ValueError:
+        return (resp.text or "sin cuerpo").strip()[:300]
+    detalle = cuerpo.get("detail") if isinstance(cuerpo, dict) else None
+    if isinstance(detalle, dict):
+        error = detalle.get("error")
+        texto = detalle.get("detail") or ""
+        return f"{error}: {texto}".strip(": ") if error else str(texto)[:300]
+    if isinstance(detalle, str):
+        return detalle[:300]
+    return str(cuerpo)[:300]
+
+
 @dataclass(slots=True)
 class SignPersonalOutcome:
     """Resultado ESTRUCTURADO de `POST /sign-personal` (E17/F4 Incremento 1).
@@ -380,19 +403,34 @@ class SignPersonalOutcome:
     (`TransferenciaService.firmar_personal`) propaga el resultado al usuario
     tal cual.
 
-    Exactamente uno de los tres queda poblado:
+    Exactamente uno de los cuatro queda poblado:
     - `signed` -- éxito.
     - `rejected` -- respuesta de NEGOCIO de signature-service, `(status_code,
       detail)` reenviado VERBATIM (422 `sin_certificado_activo`, 401
       `totp_incorrecto`, 403 `firmante_no_coincide`, 409 `2fa_requerido`,
       404 `object_not_found`, ...) — mismo criterio que `SignDigestRemoteError`
       en signature-service.
-    - `unavailable=True` -- canal caído (red/timeout/5xx) — fail-closed 503.
+    - `unavailable=True` -- el canal NO respondió (red/timeout/DNS). Es lo
+      único que justifica decirle al usuario que el servicio de firma no está
+      disponible.
+    - `remote_failure` -- signature-service SÍ respondió, con un 5xx:
+      `(status_code, causa)`. Se separa de `unavailable` porque colapsar los
+      dos casos hacía MENTIR al mensaje de error. Ocurrió de verdad: una firma
+      personal falló porque MinIO se quedó sin disco y porque el `CHECK` de
+      `firma.nivel_conformidad` no admitía el valor que el propio código
+      escribe — dos causas a dos servicios de distancia—, y la pantalla decía
+      «signature-service no está disponible» mientras signature-service estaba
+      perfectamente. `causa` lleva el `detail` que mandó el servicio remoto,
+      que es donde vive la explicación real.
+
+    Ambos fallos son fail-closed por igual: no se firma. Lo que cambia es qué
+    se le dice a quien tiene que arreglarlo.
     """
 
     signed: SignedPersonal | None
     rejected: tuple[int, dict] | None = None
     unavailable: bool = False
+    remote_failure: tuple[int, str] | None = None
 
 
 async def sign_personal(
@@ -454,10 +492,19 @@ async def sign_personal(
             )
         )
     if resp.status_code >= 500:
+        # NO es `unavailable`: el servicio respondió. Se rescata su `detail`
+        # para que el mensaje nombre la causa real en vez de acusar al
+        # mensajero — ver el docstring de `SignPersonalOutcome.remote_failure`.
+        causa = _causa_remota(resp)
         logger.warning(
-            "signature-service → HTTP %s al firmar personalmente (%s)", resp.status_code, objeto_tipo
+            "signature-service → HTTP %s al firmar personalmente (%s): %s",
+            resp.status_code,
+            objeto_tipo,
+            causa,
         )
-        return SignPersonalOutcome(signed=None, unavailable=True)
+        return SignPersonalOutcome(
+            signed=None, remote_failure=(resp.status_code, causa)
+        )
     try:
         detail = resp.json().get("detail", {})
     except ValueError:

@@ -1132,3 +1132,46 @@ async def test_processed_events_delete_one_no_row_returns_zero() -> None:
     repo = ProcessedEventsRepository(conn)
     n = await repo.delete_one(EVT)
     assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_workflow_resuelve_el_buzon_de_la_dependencia(client_with_conn) -> None:
+    """El reenvío NO puede volver a inventar la dirección desde `to_dept`.
+
+    Regresión real: `to_dept` es el NOMBRE de la dependencia («Oficina
+    Jurídica»), y el reenvío llamaba al constructor sin resolver buzón — así que
+    reintentar un aviso muerto lo mandaba otra vez a `Oficina Jurídica@…` y
+    volvía a fallar: la cola de errores no podía vaciarse nunca por esa vía.
+
+    Se comprueba lo que importa: que el reenvío PREGUNTA por el nombre exacto
+    del sobre y usa la respuesta como destinatario, en vez de fabricarla.
+    """
+    client, conn = client_with_conn
+    conn.fetchrow.return_value = _full_row(
+        origin_stream=WORKFLOW_STREAM,
+        inner_payload={
+            "action": "assign",
+            "tracking_number": TRACKING,
+            "to_dept": "Oficina Jurídica",
+        },
+    )
+    conn.execute.return_value = "UPDATE 1"
+    mock_send = AsyncMock(return_value=_sent_notification("sent"))
+    mock_resolver = AsyncMock(return_value="dependencia-902@orpycamcp.local")
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
+        patch(
+            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
+        ),
+        patch("app.routers.admin_deadletter.resolver_buzon_dependencia", mock_resolver),
+        patch("app.routers.admin_deadletter.send_notification", mock_send),
+        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+    ):
+        resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    # Se resolvió por el NOMBRE que venía en el sobre...
+    mock_resolver.assert_awaited_once()
+    assert mock_resolver.await_args.args[1] == "Oficina Jurídica"
+    # ...y el destinatario es lo que devolvió el catálogo, no el nombre.
+    assert mock_send.call_args.args[0].recipient_email == "dependencia-902@orpycamcp.local"

@@ -37,6 +37,7 @@ from app.schemas.fisico import (
     PrestamoResponse,
     UbicacionCreate,
     UbicacionResponse,
+    UbicacionUpdate,
     UnidadCreate,
     UnidadDeExpediente,
     UnidadResponse,
@@ -78,6 +79,18 @@ def _fuid_to_xml(fuid: FuidResponse) -> str:
         )
         ET.SubElement(e, f"{{{_FUID_NS}}}frecuenciaConsulta").text = r.frecuencia_consulta
     return ET.canonicalize(ET.tostring(root, encoding="unicode"))
+
+
+def _jsonable(valor):
+    """Valor apto para el `payload` JSON del asiento.
+
+    `capacidad_ml` llega como `Decimal` desde asyncpg y `json.dumps` no sabe
+    serializarlo; un asiento que revienta al escribirse tumbaría la corrección
+    entera, que es lo contrario de lo que debe hacer una traza.
+    """
+    if valor is None or isinstance(valor, (str, int, float, bool)):
+        return valor
+    return str(valor)
 
 
 def _conflict(detail: str) -> HTTPException:
@@ -128,6 +141,53 @@ class FisicoService:
             raise _conflict(f"Ya existe una ubicación con código '{payload.codigo}'")
         except asyncpg.ForeignKeyViolationError:
             raise _not_found("Ubicación padre no encontrada")
+        return await self._ubicacion_response(row)
+
+    async def update_ubicacion(
+        self, ubicacion_id: uuid.UUID, payload: UbicacionUpdate, *, actor: uuid.UUID | None = None
+    ) -> UbicacionResponse:
+        """Corrige una ubicación existente, con su asiento (Ley 594/2000 art. 26).
+
+        La topografía del depósito es el soporte de la cadena de custodia
+        física: cambiarla es un acto y deja rastro, igual que crearla. El
+        asiento guarda el ANTES y el DESPUÉS de cada campo tocado — sin el
+        valor anterior, un asiento de corrección no permite reconstruir nada.
+        """
+        cambios = payload.model_dump(exclude_unset=True)
+        if not cambios:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "sin_cambios",
+                    "detail": "No se indicó ningún campo que corregir.",
+                    "status": 422,
+                },
+            )
+
+        anterior = await self._repo.get_ubicacion(ubicacion_id)
+        if anterior is None:
+            raise _not_found(f"Ubicación {ubicacion_id} no encontrada")
+
+        async with self._conn.transaction():
+            row = await self._repo.update_ubicacion(ubicacion_id, cambios)
+            if row is None:
+                raise _not_found(f"Ubicación {ubicacion_id} no encontrada")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.ubicacion_updated",
+                object_type="ubicacion",
+                object_ref=row["codigo"],
+                actor=str(actor) if actor else None,
+                payload={
+                    "id": str(row["id"]),
+                    "cambios": {
+                        campo: {"antes": _jsonable(anterior[campo]), "despues": _jsonable(valor)}
+                        for campo, valor in cambios.items()
+                    },
+                },
+            )
         return await self._ubicacion_response(row)
 
     async def get_ubicacion(self, ubicacion_id: uuid.UUID) -> UbicacionResponse:

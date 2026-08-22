@@ -1426,15 +1426,29 @@ class ArchiveService:
                     comentario=f"firmante={firmante}" if firmante else None,
                 )
                 # Índice electrónico: versión final del conjunto documental
-                # (RF-EXP-06). `assert_open=False`: el expediente YA transicionó
-                # arriba a 'closed' — esta ES la regeneración final legítima que
-                # el guard de `regenerate` rechazaría por defecto. Si el índice
-                # vigente ya estaba 'firmado' (p. ej. sellado manualmente antes
-                # del cierre), `regenerate` lanza 409 aquí y la tx revierte
-                # ÍNTEGRA (transición + evento incluidos) — el hueco que este
-                # parche cierra.
+                # (RF-EXP-06). Los dos guards de `regenerate` se levantan aquí, y
+                # cada uno por su motivo:
+                #
+                #  - `assert_open=False`: el expediente YA transicionó arriba a
+                #    'closed', así que su propio estado ya no pasaría el guard.
+                #  - `indice_firmado_previo=True`: si el índice vigente se firmó
+                #    con el expediente todavía abierto —un camino que la interfaz
+                #    ofrece—, el guard de inmutabilidad lo rechazaba y la
+                #    transacción revertía ÍNTEGRA. El expediente quedaba
+                #    **imposible de cerrar**, y el único rastro era un asiento
+                #    `archive.expediente_close_failed` con motivo
+                #    `expediente_closed` sobre un expediente en estado 'open'.
+                #    El comentario anterior decía que este parche cerraba ese
+                #    hueco; describía la intención, no lo que el código hacía.
+                #
+                # Esta es la regeneración final legítima: append-only, la versión
+                # firmada anterior se conserva, y si el conjunto documental no
+                # cambió `regenerate` devuelve la vigente sin crear otra.
                 rebuild_result = await index.regenerate(
-                    expediente_id, generado_por=firmante or "system", assert_open=False
+                    expediente_id,
+                    generado_por=firmante or "system",
+                    assert_open=False,
+                    indice_firmado_previo=True,
                 )
                 # `audit.append` LO ÚLTIMO dentro de la tx (además del que emite
                 # `regenerate` internamente vía 'archive.indice_regenerated', que

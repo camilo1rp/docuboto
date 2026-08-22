@@ -31,7 +31,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, userId } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
@@ -213,6 +213,68 @@
       notifyError("No se pudo conectar al servidor.");
     } finally {
       urdActionLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Segundo factor: restablecimiento administrativo
+  // ---------------------------------------------------------------------------
+  // Cierra el encierro de quien pierde el autenticador: re-enrolar y revocar
+  // exigen el código actual o uno de recuperación, y los de recuperación NO
+  // sirven para firmar. Sin esta acción la única salida era tocar la base de
+  // datos a mano.
+  //
+  // Deja a la persona SIN segundo factor para que lo registre ella misma desde
+  // «Mi perfil». Aquí no se enrola por nadie: quien pudiera hacerlo tendría de
+  // hecho su firma personal.
+  let totpMotivo = "";
+  let totpResetLoading = false;
+  let totpResetError = "";
+  let totpResetAbierto = false;
+
+  // Espejo del 409 `restablecimiento_propio_no_permitido` del backend: hacen
+  // falta dos personas. Se compara contra la identidad INTERNA (`auth_users.id`),
+  // NUNCA contra el `sub` de Keycloak — son dos UUID distintos para la misma
+  // persona y compararlos da siempre falso, en silencio.
+  $: esUnoMismo = Boolean($userId) && selectedUser?.id === $userId;
+
+  function alternarRestablecerTotp() {
+    totpResetAbierto = !totpResetAbierto;
+    totpMotivo = "";
+    totpResetError = "";
+  }
+
+  async function restablecerTotp() {
+    totpResetError = "";
+    if (!selectedUser) return;
+    const motivo = totpMotivo.trim();
+    if (motivo.length < 8) {
+      totpResetError = "Explique el motivo del restablecimiento (mínimo 8 caracteres).";
+      return;
+    }
+    totpResetLoading = true;
+    try {
+      const res = await fetch(`/admin/usuarios/api/${selectedUser.id}/totp`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ motivo }),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        totpResetError = mensajeError(resData, "No se pudo restablecer el segundo factor.");
+        return;
+      }
+      totpResetAbierto = false;
+      totpMotivo = "";
+      const codigos = resData?.codigos_recuperacion_eliminados ?? 0;
+      notifySuccess(
+        "Segundo factor restablecido. La persona debe registrarlo de nuevo desde «Mi perfil»" +
+          (codigos ? `; se anularon ${codigos} códigos de recuperación.` : "."),
+      );
+    } catch {
+      totpResetError = "No se pudo conectar al servidor.";
+    } finally {
+      totpResetLoading = false;
     }
   }
 
@@ -461,6 +523,62 @@
           >Asignar URD</Button
         >
       </form>
+    </section>
+
+    <section class="usuarios-drawer__section" aria-labelledby="totp-heading">
+      <h3 id="totp-heading" class="usuarios-drawer__heading">Segundo factor</h3>
+      {#if esUnoMismo}
+        <p class="usuarios-drawer__hint">
+          <span
+            >El restablecimiento administrativo repone el segundo factor de otra persona. Para el
+            suyo use «Mi perfil»; si también perdió los códigos de recuperación, pida a otro
+            administrador que se lo restablezca.</span
+          >
+        </p>
+      {:else}
+        <p class="usuarios-drawer__hint">
+          <span
+            >Retira el segundo factor de esta persona para que pueda volver a registrarlo desde «Mi
+            perfil». Se anulan también sus códigos de recuperación. No se le registra ningún factor
+            nuevo en su nombre.</span
+          >
+        </p>
+        {#if !totpResetAbierto}
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="fas fa-mobile-screen"
+            on:click={alternarRestablecerTotp}
+          >
+            Restablecer segundo factor
+          </Button>
+        {:else}
+          <form
+            class="usuarios-form usuarios-form--compact"
+            on:submit|preventDefault={restablecerTotp}
+          >
+            <FormField
+              id="totp-motivo"
+              label="Motivo del restablecimiento"
+              bind:value={totpMotivo}
+              placeholder="Ej.: perdió el teléfono; verificado en persona"
+              error={totpResetError}
+            />
+            <div class="usuarios-drawer__confirm">
+              <Button
+                size="sm"
+                variant="danger"
+                type="submit"
+                loading={totpResetLoading}
+                icon="fas fa-mobile-screen"
+              >
+                Confirmar restablecimiento
+              </Button>
+              <Button size="sm" variant="ghost" on:click={alternarRestablecerTotp}>Cancelar</Button>
+            </div>
+          </form>
+        {/if}
+      {/if}
     </section>
   {/if}
 </Drawer>

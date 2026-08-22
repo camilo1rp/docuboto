@@ -95,9 +95,37 @@ export async function load({ cookies, parent, params, fetch }) {
     fetchJson(doFetch, `/transferencias/${encodeURIComponent(id)}/acta/verificacion`),
   ]);
 
+  // Identidad LEGIBLE del expediente y de las ubicaciones. La pantalla —y el
+  // acta de entrega, que es un documento con valor probatorio— mostraban tres
+  // UUID crudos donde deben ir `EXP-2026-0020` y `DEP-001 → SED-001`. El UUID
+  // no aparece impreso en ninguna carátula ni en ninguna signatura topográfica:
+  // a quien firma el acta no le dice absolutamente nada.
+  //
+  // Facetas NO críticas: si fallan, la pantalla cae al identificador, que es lo
+  // que había antes. Se piden solo cuando hay transferencia que describir.
+  const datos = transferencia.data;
+  const [expedienteResult, ubicacionesResult] = await Promise.allSettled([
+    datos?.expediente_id
+      ? fetchJson(doFetch, `/expedientes/${encodeURIComponent(datos.expediente_id)}`)
+      : Promise.resolve(null),
+    fetchJson(doFetch, "/ubicaciones?activo=true&size=200"),
+  ]);
+
+  const expediente = expedienteResult.status === "fulfilled" ? expedienteResult.value : null;
+  const ubicacionesCrudas =
+    ubicacionesResult.status === "fulfilled" ? ubicacionesResult.value : null;
+  const ubicaciones = Array.isArray(ubicacionesCrudas?.items)
+    ? ubicacionesCrudas.items
+    : Array.isArray(ubicacionesCrudas)
+      ? ubicacionesCrudas
+      : [];
+
   return {
     transferencia,
     acta: settle(actaResult),
     verificacion: settle(verificacionResult),
+    expedienteCodigo: expediente?.code ?? null,
+    expedienteNombre: expediente?.name ?? null,
+    ubicaciones,
   };
 }

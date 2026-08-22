@@ -293,6 +293,19 @@ async def test_get_notification_not_found(client: AsyncClient, db_conn) -> None:
 
 
 # --- consumidores de eventos (sobre canónico) ------------------------------
+#: Nombre REAL de dependencia: con espacio y tilde. La fixture usaba
+#: `"juridica"` —un identificador ASCII— y por eso este test estuvo en verde
+#: mientras producción fallaba el 100%: elegía el único valor que no rompía.
+DEPENDENCIA = "Oficina Jurídica"
+
+
+async def _fetchrow_dedup_y_dependencia(sql: str, *args):  # noqa: ARG001
+    """La misma conexión sirve al `claim` del evento y al buzón de la dependencia."""
+    if "dependencias" in sql:
+        return {"codigo": 902}
+    return {"event_id": "claimed"}
+
+
 @pytest.mark.asyncio
 async def test_process_workflow_event() -> None:
     from orpycamcp_common import events
@@ -300,7 +313,7 @@ async def test_process_workflow_event() -> None:
     # conn_dedup: used by event_consumer.acquire_tenant for the dedup claim.
     # fetchrow must return a non-None record so claim() returns True (event is new).
     conn_dedup = AsyncMock()
-    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+    conn_dedup.fetchrow.side_effect = _fetchrow_dedup_y_dependencia
 
     # conn: used by notification_service.acquire_tenant for persistence.
     conn = make_db_conn()
@@ -323,13 +336,13 @@ async def test_process_workflow_event() -> None:
             payload={
                 "action": "assign",
                 "tracking_number": "2024-ICETEX-E-000001",
-                "to_dept": "juridica",
+                "to_dept": DEPENDENCIA,
             },
         )
         await process_event(events.to_fields(event))
 
     mock_send.assert_awaited_once()
-    assert mock_send.call_args[1]["to_addr"] == "juridica@orpycamcp.local"
+    assert mock_send.call_args[1]["to_addr"] == "dependencia-902@orpycamcp.local"
     conn.execute.assert_awaited_once()  # persistido en BD
 
 
@@ -338,7 +351,7 @@ async def test_process_workflow_overdue_event() -> None:
     from orpycamcp_common import events
 
     conn_dedup = AsyncMock()
-    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+    conn_dedup.fetchrow.side_effect = _fetchrow_dedup_y_dependencia
 
     conn = make_db_conn()
     with (
@@ -360,14 +373,14 @@ async def test_process_workflow_overdue_event() -> None:
             payload={
                 "radicado_id": "uuid-1",
                 "tracking_number": "2024-ICETEX-E-000099",
-                "to_dept": "juridica",
+                "to_dept": DEPENDENCIA,
                 "due_at": "2024-01-10T00:00:00+00:00",
             },
         )
         await process_event(events.to_fields(event))
 
     mock_send.assert_awaited_once()
-    assert mock_send.call_args[1]["to_addr"] == "juridica@orpycamcp.local"
+    assert mock_send.call_args[1]["to_addr"] == "dependencia-902@orpycamcp.local"
     assert "VENCIDO" in mock_send.call_args[1]["subject"]
 
 
@@ -376,7 +389,7 @@ async def test_process_document_event() -> None:
     from orpycamcp_common import events
 
     conn_dedup = AsyncMock()
-    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+    conn_dedup.fetchrow.side_effect = _fetchrow_dedup_y_dependencia
 
     conn = make_db_conn()
     with (
@@ -414,7 +427,7 @@ async def test_process_document_event_ignores_other_types() -> None:
     from orpycamcp_common import events
 
     conn_dedup = AsyncMock()
-    conn_dedup.fetchrow.return_value = {"event_id": "claimed"}
+    conn_dedup.fetchrow.side_effect = _fetchrow_dedup_y_dependencia
 
     with (
         patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,

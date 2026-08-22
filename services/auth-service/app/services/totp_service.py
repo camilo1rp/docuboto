@@ -53,6 +53,7 @@ from app.repositories.totp_repository import TotpRepository
 from app.schemas.totp import (
     InternalTotpVerifyResponse,
     TotpActivateResponse,
+    TotpAdminRevokeResponse,
     TotpEnrollResponse,
     TotpRecoveryRegenerateResponse,
     TotpStatusResponse,
@@ -130,8 +131,18 @@ class TotpService:
         tenant_slug: str,
         action: str,
         payload: dict | None = None,
+        actor: uuid.UUID | None = None,
     ) -> None:
-        """Best-effort audit — NEVER includes the secret, ciphertext, or nonce."""
+        """Best-effort audit — NEVER includes the secret, ciphertext, or nonce.
+
+        ``actor`` por defecto es el DUEÑO de la credencial, que es lo correcto
+        en todo el auto-servicio (enrolar, activar, revocar, regenerar códigos:
+        los hace uno sobre lo suyo). El restablecimiento administrativo es la
+        única excepción y por eso el parámetro existe: sin él, el asiento diría
+        que la persona se retiró el segundo factor a sí misma — una atribución
+        falsa en el único acto del sistema en que alguien reduce la protección
+        de otro. ``object_ref`` sigue siendo el usuario AFECTADO en ambos casos.
+        """
         if not _AUDIT_AVAILABLE:
             return
         try:
@@ -142,7 +153,7 @@ class TotpService:
                 action=action,
                 object_type="totp",
                 object_ref=str(user_id),
-                actor=str(user_id),
+                actor=str(actor or user_id),
                 payload=payload or {},
             )
         except Exception:  # noqa: BLE001 — best-effort, never fails the request.
@@ -480,6 +491,101 @@ class TotpService:
                 await self._repo.delete_recovery_codes(user_id)
 
         await self._audit_event(user_id=user_id, tenant_slug=tenant_slug, action=action)
+
+    # ------------------------------------------------------------------
+    # Revoke (restablecimiento ADMINISTRATIVO)
+    # ------------------------------------------------------------------
+
+    async def revoke_as_admin(
+        self,
+        *,
+        target_user_id: uuid.UUID,
+        admin_user_id: uuid.UUID,
+        tenant_slug: str,
+        motivo: str,
+    ) -> TotpAdminRevokeResponse:
+        """Retira el segundo factor de OTRA persona, para que pueda re-enrolarlo.
+
+        POR QUÉ EXISTE. Sin esto, quien perdía el autenticador quedaba
+        encerrado sin salida: `enroll` y `revoke_self` exigen el código actual
+        o uno de recuperación, los códigos de recuperación NO sirven para
+        firmar (`verify` solo clasifica un TOTP), y no había ninguna vía
+        administrativa. La única salida era un UPDATE a mano en la base — y eso
+        no es una salida para una entidad, es la ausencia de una.
+
+        POR QUÉ NO SE RESUELVE ADMITIENDO CÓDIGOS DE RECUPERACIÓN AL FIRMAR.
+        Un código de recuperación es un secreto de vida larga que se guarda en
+        papel o en un gestor; el TOTP es un secreto de 30 segundos ligado a un
+        dispositivo. Dejar que el primero firme rebajaría el segundo factor de
+        la firma al nivel del papel, justo en el acto que da fe. Se repone el
+        factor, no se degrada.
+
+        POR QUÉ NO SE PUEDE USAR SOBRE UNO MISMO. Un administrador que se
+        restableciera su propio factor podría retirárselo sin demostrar posesión
+        del dispositivo y enrolar otro acto seguido: quien robase su sesión
+        tendría el segundo factor de la firma personal. Aquí SIEMPRE hacen falta
+        dos personas — el propio administrador usa `/perfil` como todo el mundo,
+        y si también él se quedó fuera, lo repone otro. Es separación de
+        funciones, no una molestia.
+
+        El acto es único y atómico: revocar la credencial y destruir los códigos
+        de recuperación viejos van en la MISMA transacción. Dejar los códigos
+        vivos tras el restablecimiento sería peor que no restablecer — se
+        quedarían apuntando a una credencial muerta, con el `CASCADE` de la 015
+        sin disparar porque la fila se marca `revocado` en vez de borrarse.
+        """
+        if target_user_id == admin_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "restablecimiento_propio_no_permitido",
+                    "detail": (
+                        "El restablecimiento administrativo es para reponer el segundo "
+                        "factor de OTRA persona. Para el suyo use «Mi perfil» con su "
+                        "código actual o uno de recuperación; si también los perdió, "
+                        "pida a otro administrador que se lo restablezca."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        row = await self._repo.get_by_user(target_user_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "no_totp",
+                    "detail": "La persona no tiene segundo factor que restablecer",
+                    "status": 404,
+                },
+            )
+
+        estado_previo = row["estado"]
+        # Se cuenta ANTES de borrar: después el número sería siempre 0 y el
+        # asiento no diría cuántos códigos vivos se destruyeron con el acto.
+        codigos = await self._repo.count_available_recovery_codes(target_user_id)
+
+        async with self._conn.transaction():
+            await self._repo.revoke(row["id"])
+            await self._repo.delete_recovery_codes(target_user_id)
+
+        await self._audit_event(
+            user_id=target_user_id,
+            tenant_slug=tenant_slug,
+            action="totp.restablecido_por_admin",
+            actor=admin_user_id,
+            payload={
+                "motivo": motivo,
+                "estado_previo": estado_previo,
+                "codigos_recuperacion_eliminados": codigos,
+            },
+        )
+
+        return TotpAdminRevokeResponse(
+            usuario_id=str(target_user_id),
+            estado_previo=estado_previo,
+            codigos_recuperacion_eliminados=codigos,
+        )
 
     # ------------------------------------------------------------------
     # Internal verify (called by signature-service, service-to-service)
