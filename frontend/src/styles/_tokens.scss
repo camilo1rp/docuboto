@@ -92,6 +92,14 @@ $op-font-family:
   system-ui,
   -apple-system,
   sans-serif;
+// Familia MONOESPACIADA. No existía, y su ausencia se notaba: los números de
+// radicado se declaraban de tres formas distintas en 46 sitios —`monospace` a
+// secas (35), una pila completa (2) y `var(--op-font-mono, monospace)` (9), que
+// además es INERTE: `--op-font-mono` es un TAMAÑO (12px), así que el navegador
+// descarta `font-family: 12px` por inválida y el texto sale con la fuente
+// heredada. Funcionaba solo donde el elemento era `<code>`, que ya es
+// monoespaciado por defecto del navegador.
+$op-font-family-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 $op-font-display:
   "Space Grotesk",
   "Segoe UI",
@@ -112,7 +120,10 @@ $op-font-lg: 18px;
 $op-font-xl: 22px; // = H2 v1.0
 $op-font-2xl: 28px; // = H1 v1.0
 $op-font-size-display: 46px; // = Display v1.0 (cifras destacadas, hero)
-$op-font-mono: 12px; // = Mono v1.0 (números de radicado)
+// OJO: es un TAMAÑO, no una familia. Usar `--op-font-family-mono` para
+// `font-family`; esto va en `font-size`. La confusión dejó 9 declaraciones
+// inertes, y un guardián la vigila (`tokens-mono.test.js`).
+$op-font-mono: 12px; // = Mono v1.0 (números de radicado) — TAMAÑO
 
 // Pesos
 $op-weight-regular: 400;
@@ -213,6 +224,7 @@ $op-breadcrumb-height: 36px;
 
   // Tipografía
   --op-font-family: #{$op-font-family};
+  --op-font-family-mono: #{$op-font-family-mono};
   --op-font-display: #{$op-font-display};
   --op-font-size-base: #{$op-font-size-base};
   --op-line-height: #{$op-line-height};

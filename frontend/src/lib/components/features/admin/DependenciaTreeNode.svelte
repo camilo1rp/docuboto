@@ -189,7 +189,7 @@
     }
 
     &__codigo {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
       background: var(--op-bg);

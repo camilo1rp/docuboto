@@ -697,7 +697,7 @@
   .doc-list__tracking {
     // --op-font-mono es un TAMAÑO (12px), no una familia: usar el stack real
     // hasta que exista un token de familia monoespaciada en _tokens.scss.
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     color: var(--op-text-secondary);
   }
@@ -776,7 +776,7 @@
   .alert-list__tracking {
     // --op-font-mono es un TAMAÑO (12px), no una familia: usar el stack real
     // hasta que exista un token de familia monoespaciada en _tokens.scss.
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     color: var(--op-text-secondary);
   }

@@ -131,11 +131,11 @@
       <dl class="vent__acuse">
         <div>
           <dt>Número de radicado</dt>
-          <dd><code class="vent__dato">{acuse.tracking_number}</code></dd>
+          <dd><code class="op-dato">{acuse.tracking_number}</code></dd>
         </div>
         <div>
           <dt>Código de verificación</dt>
-          <dd><code class="vent__dato vent__dato--clave">{acuse.verification_code}</code></dd>
+          <dd><code class="op-dato vent__dato--clave">{acuse.verification_code}</code></dd>
         </div>
         {#if acuse.dependencia_destino}
           <div>
@@ -448,20 +448,12 @@
       }
     }
 
-    &__dato {
-      display: inline-block;
-      padding: var(--op-space-2) var(--op-space-3);
-      border-radius: var(--op-radius);
-      background: var(--op-primary-light);
-      color: var(--op-primary-dark);
-      font-family: var(--op-font-mono, monospace);
-      font-size: 1.05rem;
-      word-break: break-all;
-
-      &--clave {
-        font-size: 1.15rem;
-        font-weight: 700;
-      }
+    /* Solo el énfasis propio de ESTE acuse: el código de verificación es lo
+       único que se lleva quien radica, así que pesa más que el número. Lo
+       demás —fuente, fondo, color— lo pone `.op-dato`. */
+    &__dato--clave {
+      font-size: 1.15rem;
+      font-weight: 700;
     }
 
     &__aviso {

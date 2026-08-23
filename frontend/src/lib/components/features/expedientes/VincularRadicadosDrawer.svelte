@@ -403,7 +403,7 @@
     }
 
     &__number {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       color: var(--op-text);
     }
 

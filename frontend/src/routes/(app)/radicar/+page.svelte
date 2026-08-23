@@ -1698,7 +1698,7 @@
       font-size: 1.5rem;
       font-weight: var(--op-weight-bold);
       color: var(--op-primary);
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       letter-spacing: 0.05em;
       margin-bottom: var(--op-space-1);
       padding: var(--op-space-2) var(--op-space-4);

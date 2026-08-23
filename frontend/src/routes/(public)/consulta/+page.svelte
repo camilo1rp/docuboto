@@ -115,7 +115,7 @@
         <dl class="cons__dl">
           <div>
             <dt>Número de radicado</dt>
-            <dd><code class="cons__dato">{resultado.tracking_number}</code></dd>
+            <dd><code class="op-dato">{resultado.tracking_number}</code></dd>
           </div>
           <div>
             <dt>Tipo</dt>
@@ -196,7 +196,7 @@
       padding: var(--op-space-3);
       border: 1px solid var(--op-border);
       border-radius: var(--op-radius);
-      font-family: var(--op-font-mono, monospace);
+      font-family: var(--op-font-family-mono);
 
       &:focus-visible {
         outline: 2px solid var(--op-primary);
@@ -273,18 +273,6 @@
         margin: 0;
         color: var(--op-text);
       }
-    }
-
-    /* `<code>` hereda el estilo global de Bulma, que lo pinta en rojo — un color
-       que en esta pantalla significaría error justo sobre el dato bueno. */
-    &__dato {
-      display: inline-block;
-      padding: var(--op-space-2) var(--op-space-3);
-      border-radius: var(--op-radius);
-      background: var(--op-primary-light);
-      color: var(--op-primary-dark);
-      font-family: var(--op-font-mono, monospace);
-      font-size: 1.05rem;
     }
 
     &__nota {

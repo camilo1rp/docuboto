@@ -793,3 +793,28 @@
 [hidden] {
   display: none !important;
 }
+
+// -----------------------------------------------------------------------------
+// .op-dato — un identificador DESTACADO (número de radicado, código, guía)
+// -----------------------------------------------------------------------------
+//
+// El estilo base de `code` es plano a propósito: dentro de una tabla o una lista
+// un número no debe gritar. Pero hay sitios donde el dato ES el contenido —el
+// acuse de una radicación ciudadana, el código de verificación que hay que
+// copiar— y ahí sí se destaca.
+//
+// Vive aquí porque tres pantallas lo escribieron a mano con los mismos cinco
+// valores, y una cuarta se los inventó ligeramente distintos. Un `align-self`
+// explícito porque el caso habitual es ser hijo de un contenedor flex en
+// columna, donde por defecto se estiraría a todo el ancho y volvería a leerse
+// como un campo vacío.
+.op-dato {
+  display: inline-block;
+  align-self: flex-start;
+  padding: var(--op-space-2) var(--op-space-3);
+  border-radius: var(--op-radius);
+  background: var(--op-primary-light);
+  color: var(--op-primary-dark);
+  font-family: var(--op-font-family-mono);
+  word-break: break-all;
+}

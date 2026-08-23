@@ -2397,7 +2397,7 @@
     }
 
     &__code {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
       word-break: break-all;
@@ -2453,7 +2453,7 @@
     }
 
     &__number {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-sm);
       font-weight: var(--op-weight-bold);
       // A3: ver comentario en .exp-workspace__breadcrumb — mismo problema de
@@ -2520,7 +2520,7 @@
   }
 
   .exp-indice-hash {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     word-break: break-all;
   }
@@ -2573,14 +2573,14 @@
   }
 
   .exp-hash {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     color: var(--op-text-secondary);
     cursor: help;
   }
 
   .exp-uuid {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     color: var(--op-text-secondary);
   }
@@ -2764,7 +2764,7 @@
     }
 
     &__radicado {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-weight: var(--op-weight-bold);
     }
 

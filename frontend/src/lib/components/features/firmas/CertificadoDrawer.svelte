@@ -399,7 +399,7 @@
     }
 
     &__mono {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
     }
 

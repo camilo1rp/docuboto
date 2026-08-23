@@ -1130,7 +1130,7 @@
 
     &__text {
       width: 100%;
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
       color: var(--op-text);
       background: var(--op-bg);
@@ -1207,7 +1207,7 @@
       }
 
       code {
-        font-family: var(--op-font-mono, monospace);
+        font-family: var(--op-font-family-mono);
         font-size: var(--op-font-sm);
         letter-spacing: 0.04em;
       }

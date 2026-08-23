@@ -701,7 +701,7 @@
       margin-top: var(--op-space-1);
 
       code {
-        font-family: monospace;
+        font-family: var(--op-font-family-mono);
       }
     }
   }
@@ -802,7 +802,7 @@
     }
 
     &__hash {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
       word-break: break-all;
     }
@@ -870,7 +870,7 @@
 
     &__identity {
       font-size: var(--op-font-xs);
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       color: var(--op-text-secondary);
     }
 

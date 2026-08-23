@@ -162,6 +162,28 @@ $modal-card-foot-border-top: 1px solid $op-border;
 // Ajustes post-import con var(--op-*) para rebranding por tenant en runtime
 // -----------------------------------------------------------------------
 
+// Código en línea: un IDENTIFICADOR, no un error.
+//
+// Bulma pinta `code` con `background-color:#f5f5f5; color:#da1039` — gris y
+// ROJO. En esta aplicación casi todo `<code>` es un número de radicado, un
+// código de verificación o un identificador, y el rojo es el color del error:
+// el estilo por defecto contradecía el significado del dato, y encima con
+// fondo, así que dentro de un contenedor flex en columna se estiraba a todo el
+// ancho y se leía como un campo de formulario vacío.
+//
+// Se reparó tres veces pantalla por pantalla antes de mirar aquí. Esto es lo
+// que las pantallas deben HEREDAR; la que quiera destacar el dato como una
+// pastilla lo pide explícitamente (`.op-dato`, en utilities).
+code,
+kbd,
+samp {
+  background-color: transparent;
+  color: inherit;
+  padding: 0;
+  font-family: var(--op-font-family-mono);
+  font-size: inherit;
+}
+
 // Botón primario
 // Nota AA: el fondo usa --op-primary-dark (no --op-primary) porque el par
 // #2a8c3a/blanco mide 4.28:1 (no cumple 4.5:1 de texto normal); #1c6b33/blanco

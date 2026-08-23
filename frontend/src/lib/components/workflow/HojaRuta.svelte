@@ -430,7 +430,7 @@
 
   // Reutiliza el mismo patrón visual que el resto de la app para el tracking_number.
   .tracking-number {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     font-weight: var(--op-weight-medium);
     color: var(--op-primary-dark);

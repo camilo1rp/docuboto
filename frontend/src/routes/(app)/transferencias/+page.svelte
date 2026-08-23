@@ -842,7 +842,7 @@
   }
 
   .tr-expte-code {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     background: var(--op-bg);
     padding: 1px var(--op-space-1);

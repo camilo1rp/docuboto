@@ -73,7 +73,7 @@
   }
 
   .forbidden__code {
-    font-family: var(--op-font-mono, monospace);
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-sm);
     font-weight: var(--op-weight-bold);
     color: var(--op-warning);

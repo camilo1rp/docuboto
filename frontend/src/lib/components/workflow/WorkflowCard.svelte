@@ -313,7 +313,7 @@
   }
 
   .tracking-number {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     font-weight: var(--op-weight-medium);
     color: var(--op-primary-dark);

@@ -2342,7 +2342,7 @@
 
   // Número de radicado
   .tracking-number {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     font-weight: var(--op-weight-medium);
     color: var(--op-primary-dark);
@@ -2456,7 +2456,7 @@
     line-height: var(--op-line-height);
 
     strong {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-weight: var(--op-weight-bold);
       color: var(--op-primary-dark);
     }
@@ -2542,7 +2542,7 @@
   }
 
   .doc-detail__tracking {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-sm);
     font-weight: var(--op-weight-bold);
     color: var(--op-primary-dark);
@@ -2696,7 +2696,7 @@
   }
 
   .respuestas-list__tracking {
-    font-family: monospace;
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-xs);
     color: var(--op-text);
     font-weight: var(--op-weight-medium);

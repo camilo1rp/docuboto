@@ -1332,7 +1332,7 @@
     font-size: var(--op-font-xs);
 
     code {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
     }
   }
 
@@ -1415,7 +1415,7 @@
       border-bottom: 1px solid var(--op-border);
 
       code {
-        font-family: monospace;
+        font-family: var(--op-font-family-mono);
         color: var(--op-text-secondary);
       }
     }

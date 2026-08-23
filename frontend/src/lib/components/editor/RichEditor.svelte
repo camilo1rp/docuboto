@@ -506,7 +506,7 @@
           text-decoration: underline;
         }
         :global(code) {
-          font-family: monospace;
+          font-family: var(--op-font-family-mono);
           background: var(--op-bg);
           padding: 0 var(--op-space-1);
           border-radius: var(--op-radius-sm, var(--op-radius));

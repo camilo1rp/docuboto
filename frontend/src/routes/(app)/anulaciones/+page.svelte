@@ -855,7 +855,10 @@
     }
 
     &__tracking {
-      font-family: var(--op-font-mono, monospace);
+      /* Sin deshacer nada: el estilo base de `code` (custom-bulma) ya es plano
+         y monoespaciado. Aquí solo se ajusta el tamaño y el tono, que son
+         decisiones de ESTA lista. */
+      align-self: flex-start;
       font-size: var(--op-font-sm);
       color: var(--op-text-secondary);
     }
@@ -919,7 +922,7 @@
 
   .anulaciones-table {
     &__tracking {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       white-space: nowrap;
     }
 

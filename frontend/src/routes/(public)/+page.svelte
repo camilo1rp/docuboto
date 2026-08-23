@@ -463,7 +463,7 @@
     }
 
     &__number {
-      font-family: var(--op-font-mono, monospace);
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-lg);
       font-weight: var(--op-weight-bold);
       color: var(--op-primary-dark);

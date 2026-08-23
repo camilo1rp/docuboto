@@ -750,7 +750,7 @@
     &__actor {
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
     }
   }
 

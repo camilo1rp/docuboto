@@ -116,7 +116,7 @@
   }
 
   .error-page__code {
-    font-family: var(--op-font-mono, monospace);
+    font-family: var(--op-font-family-mono);
     font-size: var(--op-font-sm);
     font-weight: var(--op-weight-bold);
     color: var(--op-warning);
@@ -145,7 +145,7 @@
     margin: 0 0 var(--op-space-6);
 
     code {
-      font-family: var(--op-font-mono, monospace);
+      font-family: var(--op-font-family-mono);
       background: var(--op-bg);
       padding: 0 var(--op-space-1);
       border-radius: var(--op-radius);

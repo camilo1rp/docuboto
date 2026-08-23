@@ -972,7 +972,7 @@
 
     &__objeto-id {
       display: block;
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
       white-space: nowrap;
@@ -1056,7 +1056,7 @@
     }
 
     &__mono {
-      font-family: monospace;
+      font-family: var(--op-font-family-mono);
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
     }
