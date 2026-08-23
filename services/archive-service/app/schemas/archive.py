@@ -829,6 +829,13 @@ class TipoDocumentalCreate(BaseModel):
     obligatorio: bool = False
     metadata_template: str | None = Field(default=None, max_length=100)
     activo: bool = True
+    #: ¿Se ofrece este tipo en la VENTANILLA ÚNICA pública (radicación sin
+    #: autenticar)? Opt-in deliberado: un tipo interno —«Acta de comité»— no
+    #: debe aparecer en un formulario público solo porque exista en el catálogo.
+    #: Sin este campo en el contrato, la única forma de habilitarlo sería un
+    #: UPDATE a mano, y cerrar una puerta sin dejar la manija es media
+    #: corrección.
+    admite_ventanilla_publica: bool = False
 
 
 class TipoDocumentalUpdate(BaseModel):
@@ -837,6 +844,7 @@ class TipoDocumentalUpdate(BaseModel):
     obligatorio: bool | None = None
     metadata_template: str | None = None
     activo: bool | None = None
+    admite_ventanilla_publica: bool | None = None
 
 
 class TipoDocumentalResponse(BaseModel):
@@ -849,6 +857,7 @@ class TipoDocumentalResponse(BaseModel):
     obligatorio: bool
     metadata_template: str | None
     activo: bool
+    admite_ventanilla_publica: bool
     created_at: datetime
 
 

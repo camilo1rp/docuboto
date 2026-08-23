@@ -55,6 +55,37 @@
   import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
   import { mensajeError } from "$lib/utils/apiError.js";
 
+  /** @type {import('./$types').PageData} */
+  export let data;
+
+  // ---------------------------------------------------------------------------
+  // Cola de solicitudes pendientes — lo que esta pantalla NO podía mostrar
+  // ---------------------------------------------------------------------------
+  // Hasta que existió `GET /api/v1/anulaciones`, esta pantalla solo sabía
+  // consultar radicado por radicado y lo declaraba en un banner permanente: el
+  // aprobador únicamente se enteraba de que tenía trabajo si alguien se lo
+  // decía por otro canal. La cola se carga en SSR y se refresca tras cada
+  // decisión, porque una fila ya resuelta que sigue en pantalla hasta recargar
+  // a mano es lo que vuelve inútil una cola de trabajo.
+  let cola = data.cola?.items ?? [];
+  let colaTotal = data.cola?.total ?? 0;
+  $: colaError = data.colaError ?? null;
+  let colaCargando = false;
+
+  async function recargarCola() {
+    colaCargando = true;
+    try {
+      const res = await fetch("/anulaciones/api/cola");
+      const cuerpo = await res.json().catch(() => null);
+      if (res.ok && cuerpo) {
+        cola = cuerpo.items ?? [];
+        colaTotal = cuerpo.total ?? cola.length;
+      }
+    } finally {
+      colaCargando = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Permisos (espejo del RBAC del backend)
   // ---------------------------------------------------------------------------
@@ -244,6 +275,25 @@
     }
   }
 
+  /**
+   * Abre el detalle desde una fila de la COLA.
+   *
+   * No se pasa la fila tal cual: `verAnulacion` espera `id` = identificador del
+   * RADICADO, y en una fila de cola `id` es el de la SOLICITUD de anulación.
+   * Pasarla directa usaría el identificador equivocado sin que nada fallara a
+   * la vista — el proxy devolvería 404 y la pantalla diría «no tiene ninguna
+   * anulación registrada» sobre una solicitud que sí existe.
+   *
+   * @param {any} pendiente fila de `GET /api/v1/anulaciones`
+   */
+  function abrirDesdeCola(pendiente) {
+    return verAnulacion({
+      id: pendiente.radicado_id,
+      tracking_number: pendiente.tracking_number,
+      subject: pendiente.subject,
+    });
+  }
+
   function closeDrawer() {
     drawerOpen = false;
     selectedRow = null;
@@ -343,6 +393,13 @@
       cerrarDecision();
       selectedRow = null;
       anulacion = null;
+
+      // La cola se refresca tras decidir: la solicitud recién resuelta ya no
+      // está pendiente y dejarla en pantalla hasta recargar a mano es lo que
+      // vuelve inútil una cola de trabajo. Es un refresco, no una faceta
+      // crítica — si falla, la fila sigue ahí y el siguiente «Actualizar» la
+      // quita; no se convierte un acto que SÍ ocurrió en un error a la vista.
+      recargarCola();
     } catch (/** @type {any} */ err) {
       notifyError(
         mensajeError(
@@ -381,15 +438,69 @@
       description="Esta pantalla resuelve solicitudes de anulación de radicados. Tu usuario no tiene asignado el permiso de aprobación de anulaciones. Solicítalo a un administrador de la entidad."
     />
   {:else}
-    <!-- Banner: degradación declarada (backend sin listado de anulaciones pendientes) -->
-    <div class="anulaciones-banner" role="note">
-      <i class="fas fa-circle-info" aria-hidden="true"></i>
-      <p>
-        El backend todavía no expone un listado de anulaciones pendientes: esta pantalla no puede
-        mostrarte una cola, solo consultar radicado por radicado. Busca por número o texto del
-        asunto; si no lo tienes, pide al solicitante el número de radicado.
-      </p>
-    </div>
+    <!-- Cola de trabajo: lo pendiente de decidir, lo más antiguo primero.
+         Sustituye al banner que declaraba que el backend no exponía listado. -->
+    <section class="anulaciones-cola" aria-labelledby="cola-titulo">
+      <div class="anulaciones-cola__head">
+        <h2 class="anulaciones-cola__title" id="cola-titulo">
+          Pendientes de decidir
+          {#if !colaError}<span class="anulaciones-cola__count">{colaTotal}</span>{/if}
+        </h2>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="fas fa-rotate"
+          loading={colaCargando}
+          on:click={recargarCola}
+        >
+          Actualizar
+        </Button>
+      </div>
+
+      {#if colaError}
+        <!-- «No se pudo consultar» NO es «no hay nada»: son estados distintos y
+             confundirlos afirma que la entidad no tiene anulaciones pendientes. -->
+        <EmptyState
+          icon={colaError.status === 403 ? "fas fa-lock" : "fas fa-triangle-exclamation"}
+          title={colaError.status === 403
+            ? "Sin permiso para ver la cola"
+            : "No se pudo consultar la cola"}
+          description={colaError.status === 403
+            ? "Tu usuario no tiene el permiso de aprobación de anulaciones."
+            : `${colaError.detail} Esto no significa que no haya solicitudes pendientes.`}
+        />
+      {:else if cola.length === 0}
+        <EmptyState
+          icon="fas fa-check"
+          title="No hay anulaciones pendientes"
+          description="Cuando alguien solicite anular un radicado, aparecerá aquí."
+        />
+      {:else}
+        <ul class="anulaciones-cola__list" role="list">
+          {#each cola as p (p.id)}
+            <li class="anulaciones-cola__item">
+              <div class="anulaciones-cola__main">
+                <code class="anulaciones-cola__tracking">{p.tracking_number}</code>
+                <span class="anulaciones-cola__subject">{p.subject ?? "—"}</span>
+              </div>
+              <div class="anulaciones-cola__meta">
+                <StatusChip status="warning" label="Pendiente" dot />
+                <span class="anulaciones-cola__causal">{p.causal}</span>
+                <time datetime={p.solicitado_at}>{formatDateTime(p.solicitado_at)}</time>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="fas fa-gavel"
+                on:click={() => abrirDesdeCola(p)}
+              >
+                Resolver
+              </Button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
 
     <!-- Buscador -->
     <form class="anulaciones-search" on:submit|preventDefault={buscar} aria-label="Buscar radicado">
@@ -681,24 +792,100 @@
     }
   }
 
-  .anulaciones-banner {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--op-space-2);
-    padding: var(--op-space-3) var(--op-space-4);
-    background: var(--op-info-bg);
-    color: var(--op-info-fg);
-    border: 1px solid var(--op-info);
-    border-radius: var(--op-radius);
-    font-size: var(--op-font-sm);
-    margin-bottom: var(--op-space-4);
+  .anulaciones-cola {
+    margin-bottom: var(--op-space-5);
 
-    i {
-      margin-top: 2px;
+    &__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--op-space-3);
+      margin-bottom: var(--op-space-3);
     }
 
-    p {
+    &__title {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
       margin: 0;
+      font-size: var(--op-font-lg);
+      color: var(--op-text);
+    }
+
+    &__count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 1.75rem;
+      padding: 0 var(--op-space-2);
+      border-radius: 999px;
+      background: var(--op-primary-light);
+      color: var(--op-primary-dark);
+      font-size: var(--op-font-sm);
+      font-weight: 600;
+    }
+
+    &__list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      overflow: hidden;
+    }
+
+    &__item {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-3);
+      padding: var(--op-space-3) var(--op-space-4);
+      background: var(--op-surface, #fff);
+
+      & + & {
+        border-top: 1px solid var(--op-border);
+      }
+    }
+
+    &__main {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    &__tracking {
+      font-family: var(--op-font-mono, monospace);
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+    }
+
+    &__subject {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--op-text);
+    }
+
+    &__meta {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-3);
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+      flex: 0 0 auto;
+    }
+
+    /* En pantalla estrecha la fila se apila: los metadatos y el botón no caben
+       al lado del asunto sin recortarlo hasta hacerlo inútil. */
+    @media (max-width: 768px) {
+      &__item {
+        flex-wrap: wrap;
+      }
+
+      &__meta {
+        width: 100%;
+      }
     }
   }
 

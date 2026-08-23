@@ -100,6 +100,12 @@
       </a>
 
       <nav class="landing-nav__links" aria-label="Navegación principal">
+        <!-- Los dos trámites CIUDADANOS van primero y antes que «Iniciar
+             sesión»: quien llega aquí sin cuenta viene a radicar o a consultar,
+             no a entrar al sistema. Estuvieron construidos en el backend y sin
+             ninguna forma de llegar a ellos. -->
+        <a href="/radicacion">Radicar un documento</a>
+        <a href="/consulta">Consultar mi trámite</a>
         <a href="#caracteristicas">Características</a>
         <a href="#normativa">Normativa</a>
         <a href="#evolucion">Evolución</a>

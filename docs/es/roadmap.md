@@ -108,6 +108,17 @@ procedimiento, los casos y los puntos ciegos declarados quedan en
       respondió 403.
 - [x] **Entregables** — plan de pruebas, `pantallas.md` con el estado verificado, y la suite
       `frontend/e2e/authenticated/` reactivada (estaba apagada con triple freno).
+- [x] **Trámites ciudadanos con pantalla** (hueco de producto, cerrado 2026-08): `(public)/radicacion`
+      y `(public)/consulta`. La ventanilla en línea y el seguimiento por código existían en el
+      backend **sin ninguna forma de llegar a ellos**. Sin cuenta, enlazados desde la portada
+      antes que «Iniciar sesión». No sustituyen a `/radicar` (ventanilla de mostrador, de usuario
+      del sistema): son dos puertas al mismo trámite.
+      - [ ] **Ingesta IMAP** sigue sin pantalla — por naturaleza es un proceso de fondo, pero no
+            hay dónde ver su estado ni sus fallos.
+- [x] **Cola de anulaciones pendientes** (hueco de backend, cerrado 2026-08): `GET /api/v1/anulaciones`
+      — recurso propio, gate `PERM_PANU_CODI` (el mismo que decidir), orden FIFO y no-read-up
+      aplicado por igual a las filas y al recuento. `/anulaciones` deja de ser un buscador y pasa
+      a ser una bandeja de trabajo.
 - [ ] **Decisión de producto abierta**: las lecturas de TRD (4 endpoints) y PINAR (11) no exigen
       permiso mientras la interfaz esconde esas pantallas. Ambos son instrumentos de publicación
       obligatoria (Ac. AGN 004/2019 y 003/2015), así que puede ser deliberado — pero hay que

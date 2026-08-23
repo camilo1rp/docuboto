@@ -149,6 +149,71 @@ async def upload_system_artifact(
 
 
 @router.post(
+    "/internal/anexo-externo",
+    response_model=FileResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload an annex received through the public single window (internal only)",
+    # Un anexo que llega por la VENTANILLA PÚBLICA no tiene detrás un usuario
+    # autenticado, así que no puede pasar por `/upload` —que exige `PERM_RADI`—
+    # y **tampoco** por `/internal/artefacto`: ese endpoint aplica
+    # `allowed_system_mime_set`, la lista de lo que produce el propio sistema,
+    # que admite XML. Reutilizarlo dejaría que un desconocido subiera XML como
+    # anexo, que es exactamente el atajo contra el que advierte el comentario de
+    # aquel endpoint.
+    #
+    # Esta puerta aplica `allowed_mime_set` —la lista de anexos, RF-DIG-04, que
+    # es el control sobre lo que entra DESDE FUERA— y un tope propio muy por
+    # debajo del general: quien sube aquí no está identificado.
+    #
+    # Sellada con `X-Internal-Token` (D-02) y no enrutada por el gateway: solo
+    # la alcanza document-service, que ya validó el número de ficheros, su
+    # tamaño y su contenido antes de llegar hasta aquí. Las dos capas son
+    # deliberadas — la de document-service puede fallar y esta sigue siendo la
+    # que gobierna el almacén.
+    dependencies=[Depends(_require_internal_token)],
+)
+async def upload_public_annex(
+    file: UploadFile,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> JSONResponse:
+    if file.size is not None and file.size > settings.max_public_upload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error": "file_too_large",
+                "detail": (
+                    f"El archivo ({file.size} bytes) supera el máximo admitido en la "
+                    f"ventanilla pública ({settings.max_public_upload_bytes} bytes)."
+                ),
+                "status": 413,
+            },
+        )
+    content = await file.read()
+    service = StorageService(conn, tenant_slug)
+    try:
+        response, created, _ = await service.upload(
+            filename=file.filename or "anexo",
+            mime_type=file.content_type,
+            content=content,
+            # ANÓNIMO de verdad: no se inventa un actor. Quien radicó por la
+            # ventanilla no tiene identidad en el sistema, y atribuir el fichero
+            # a un usuario del sistema falsearía la traza.
+            uploaded_by=None,
+            formatos_admitidos=settings.allowed_mime_set,
+        )
+    except UnsupportedFormatError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail={"error": "unsupported_media_type", "detail": str(exc), "status": 415},
+        )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        content=response.model_dump(mode="json"),
+    )
+
+
+@router.post(
     "/upload",
     response_model=FileResponse,
     status_code=status.HTTP_201_CREATED,

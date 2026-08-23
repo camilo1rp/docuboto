@@ -73,6 +73,9 @@ export async function POST({ locals, request }) {
   }
 
   const { code, nombre, trd_serie_id, obligatorio, metadata_template, activo } = body ?? {};
+  // Allowlist: el campo que no se nombre aquí se descarta EN SILENCIO — la
+  // casilla parecería funcionar y no cambiaría nada.
+  const admiteVentanilla = body?.admite_ventanilla_publica;
 
   if (typeof code !== "string" || !code.trim()) {
     return json(
@@ -100,6 +103,7 @@ export async function POST({ locals, request }) {
     nombre: nombre.trim(),
     trd_serie_id: trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null,
     obligatorio: obligatorio === true,
+    admite_ventanilla_publica: admiteVentanilla === true,
     metadata_template:
       typeof metadata_template === "string" && metadata_template.trim()
         ? metadata_template.trim()

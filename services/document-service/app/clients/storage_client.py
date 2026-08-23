@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import httpx
 
@@ -38,6 +39,40 @@ _CHUNK_SIZE = 65536
 
 class StorageContentError(Exception):
     """storage-service no respondió (o respondió con error) al pedir los bytes."""
+
+
+@dataclass(frozen=True)
+class ArchivoSubido:
+    """Lo que devuelve storage al guardar un fichero, ya traducido.
+
+    Existe porque devolver el JSON crudo obligaba a cada llamante a adivinar el
+    nombre de la clave, y **dos adivinaron mal la misma**: el importador (E11
+    INT-05) y la ventanilla pública leían `result["file_id"]` cuando el contrato
+    (`FileResponse`) expone `id`. Los dos tests lo tapaban porque su mock
+    devolvía la clave inventada: comprobaban que el código coincide con la
+    creencia de quien lo escribió, no con el servicio.
+
+    Un único punto traduce el formato de cable, y si la clave cambia falla aquí
+    —en voz alta y una sola vez— en vez de en cada llamante y en producción.
+    """
+
+    file_id: uuid.UUID
+    sha256: str | None = None
+    file_size: int | None = None
+
+    @classmethod
+    def desde_respuesta(cls, cuerpo: dict) -> ArchivoSubido:
+        try:
+            crudo = cuerpo["id"]
+        except KeyError as exc:  # pragma: no cover — contrato roto, no dato de usuario
+            raise StorageContentError(
+                f"storage-service devolvió una respuesta sin 'id': {sorted(cuerpo)}"
+            ) from exc
+        return cls(
+            file_id=uuid.UUID(str(crudo)),
+            sha256=cuerpo.get("sha256"),
+            file_size=cuerpo.get("file_size"),
+        )
 
 
 class StorageContentStream:
@@ -77,7 +112,7 @@ async def upload_bytes(
     mime_type: str | None,
     data: bytes,
     uploaded_by: uuid.UUID | None = None,
-) -> dict:
+) -> ArchivoSubido:
     """Sube `data` a storage-service (`POST /upload`) y devuelve el registro del
     fichero (`file_id`, `sha256`, …). Lo usa la IMPORTACIÓN (E11/INT-05) para
     persistir los binarios del paquete. Va scoped al `tenant_slug` del llamante →
@@ -98,7 +133,7 @@ async def upload_bytes(
             f"storage-service → HTTP {resp.status_code} al subir '{filename}': "
             f"{resp.text[:300]!r}"
         )
-    return resp.json()
+    return ArchivoSubido.desde_respuesta(resp.json())
 
 
 async def open_content_stream(
@@ -140,3 +175,37 @@ async def open_content_stream(
         )
 
     return StorageContentStream(client, response)
+
+
+async def upload_anexo_externo(
+    *, tenant_slug: str, filename: str, mime_type: str | None, data: bytes
+) -> ArchivoSubido:
+    """Sube un anexo llegado por la VENTANILLA PÚBLICA, sin usuario detrás.
+
+    No usa `/upload` porque ese endpoint exige `PERM_RADI` y quien radica por la
+    ventanilla no tiene identidad en el sistema; ni `/internal/artefacto`, que
+    aplica la lista de formatos de los artefactos que produce el SISTEMA (admite
+    XML) y no la de anexos. Va a `/internal/anexo-externo`, sellado con
+    `X-Internal-Token` y con la lista de anexos (RF-DIG-04).
+
+    No se inventa un `uploaded_by`: atribuir el fichero a un usuario del sistema
+    falsearía la traza de quién lo aportó.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    files = {"file": (filename, data, mime_type or "application/octet-stream")}
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/storage/internal/anexo-externo", headers=headers, files=files
+            )
+        except httpx.RequestError as exc:
+            raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code not in (200, 201):
+        raise StorageContentError(
+            f"storage-service → HTTP {resp.status_code} al subir el anexo "
+            f"'{filename}': {resp.text[:300]!r}"
+        )
+    return ArchivoSubido.desde_respuesta(resp.json())

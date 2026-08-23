@@ -1324,7 +1324,7 @@ class ArchiveService:
                             "error": "trd_version_no_vigente",
                             "detail": (
                                 f"La serie TRD '{pinned.code}' no tiene ninguna "
-                                "version convalidada ni migrada vigente: no puede "
+                                "versión convalidada ni migrada vigente: no puede "
                                 "gobernar el cierre de un expediente bajo un "
                                 "instrumento no convalidado (Ac. AGN 001/2024, que compila el 004/2019, "
                                 "ADR-025)."
@@ -2395,7 +2395,7 @@ class ArchiveService:
                         f"está en estado «{existing.estado}»: su contenido es "
                         "append-only (Ac. AGN 001/2024, que compila el 004/2019, ADR-025). Use "
                         f"POST /api/v1/trd/{existing.code}/versiones para crear "
-                        "una version nueva."
+                        "una versión nueva."
                     ),
                     "status": 409,
                 },
@@ -2476,7 +2476,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "trd_code_not_found",
-                    "detail": f"No existe ninguna version para el codigo de serie '{code}'.",
+                    "detail": f"No existe ninguna versión para el código de serie '{code}'.",
                     "status": 404,
                 },
             )
@@ -2535,13 +2535,13 @@ class ArchiveService:
                     detail={
                         "error": "trd_version_en_tramite",
                         "detail": (
-                            f"Ya existe una version en tramite (borrador/aprobada) "
-                            f"para el codigo '{vigente.code}'; concluyala "
-                            "(aprobar + convalidar) o devuelvala a borrador "
+                            f"Ya existe una versión en trámite (borrador/aprobada) "
+                            f"para el código '{vigente.code}'; conclúyala "
+                            "(aprobar + convalidar) o devuélvala a borrador "
                             f"(POST /api/v1/trd/{vigente.code}/versiones/"
                             f"{{version}}/devolver) antes de abrir otra. "
-                            "'derogar' NO es una salida valida desde borrador/"
-                            "aprobada (ADR-025, Increment 2 / migracion 038)."
+                            "'derogar' NO es una salida válida desde borrador/"
+                            "aprobada (ADR-025, Increment 2 / migración 038)."
                         ),
                         "status": 409,
                     },
@@ -2591,7 +2591,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "trd_version_not_found",
-                    "detail": f"No existe la version {version} del codigo de serie '{code}'.",
+                    "detail": f"No existe la versión {version} del código de serie '{code}'.",
                     "status": 404,
                 },
             )
@@ -2604,9 +2604,9 @@ class ArchiveService:
                 detail={
                     "error": "trd_transicion_invalida",
                     "detail": (
-                        f"La version {serie.version} del codigo '{serie.code}' esta en "
-                        f"estado '{serie.estado}': '{action}' solo es valido desde "
-                        f"{sorted(valid_from)} (ADR-025, maquina de estados del instrumento)."
+                        f"La versión {serie.version} del código '{serie.code}' esta en "
+                        f"estado '{serie.estado}': '{action}' solo es válido desde "
+                        f"{sorted(valid_from)} (ADR-025, máquina de estados del instrumento)."
                     ),
                     "status": 409,
                 },
@@ -2623,7 +2623,7 @@ class ArchiveService:
             detail={
                 "error": "trd_transicion_invalida",
                 "detail": (
-                    f"'{action}' no se aplico: el estado de la version cambio "
+                    f"'{action}' no se aplicó: el estado de la versión cambió "
                     "concurrentemente (ADR-025)."
                 ),
                 "status": 409,
@@ -2781,11 +2781,11 @@ class ArchiveService:
                 detail={
                     "error": "trd_aprobacion_comite_requerida",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
-                        "esta 'aprobada' pero no tiene registrado el acto del Comite "
-                        "(acta_comite/fecha_aprobacion_comite): la convalidacion del "
+                        f"La versión {existing.version} del código '{existing.code}' "
+                        "está 'aprobada' pero no tiene registrado el acto del Comité "
+                        "(acta_comite/fecha_aprobacion_comite): la convalidación del "
                         "Consejo no puede afirmar un primer acto que el sistema no "
-                        "puede verificar (Ac. AGN 001/2024, ADR-025 D2, migracion 038)."
+                        "puede verificar (Ac. AGN 001/2024, ADR-025 D2, migración 038)."
                     ),
                     "status": 409,
                 },
@@ -2843,10 +2843,10 @@ class ArchiveService:
                                 "error": "trd_repoint_colision",
                                 "detail": (
                                     "No se pudo re-apuntar tipos_documentales/"
-                                    "expediente_metadata_templates de la version "
+                                    "expediente_metadata_templates de la versión "
                                     f"derogada ({derogada.code} v{derogada.version}) a la "
-                                    f"nueva vigente: colision de clave no cubierta por "
-                                    "el filtro de exclusion (ADR-025, migracion 038)."
+                                    f"nueva vigente: colisión de clave no cubierta por "
+                                    "el filtro de exclusión (ADR-025, migración 038)."
                                 ),
                                 "status": 409,
                             },
@@ -2994,11 +2994,11 @@ class ArchiveService:
                     "error": "trd_derogacion_bloqueada_expedientes_abiertos",
                     "detail": (
                         f"Hay {n_open} expediente(s) 'open' clasificados bajo el "
-                        f"codigo '{existing.code}': derogar esta version sin una "
-                        "sucesora los dejaria sin ningun instrumento vigente que "
-                        "gobierne su cierre. Convalide una version sucesora, o "
+                        f"código '{existing.code}': derogar esta versión sin una "
+                        "sucesora los dejaría sin ningún instrumento vigente que "
+                        "gobierne su cierre. Convalide una versión sucesora, o "
                         "reclasifique esos expedientes, antes de derogar "
-                        "(ADR-025, migracion 038)."
+                        "(ADR-025, migración 038)."
                     ),
                     "status": 409,
                 },
@@ -3049,10 +3049,10 @@ class ArchiveService:
                 detail={
                     "error": "trd_version_no_convalidada",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
-                        f"esta en estado '{existing.estado}': el RUSD y la "
-                        "publicacion solo se registran sobre una version "
-                        "'convalidada' (ADR-025, migracion 038)."
+                        f"La versión {existing.version} del código '{existing.code}' "
+                        f"está en estado '{existing.estado}': el RUSD y la "
+                        "publicación solo se registran sobre una versión "
+                        "'convalidada' (ADR-025, migración 038)."
                     ),
                     "status": 409,
                 },
@@ -3063,9 +3063,9 @@ class ArchiveService:
                 detail={
                     "error": "trd_rusd_ya_registrado",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"La versión {existing.version} del código '{existing.code}' "
                         "ya tiene un rusd_radicado registrado; es inmutable una "
-                        "vez puesto (ADR-025, migracion 038)."
+                        "vez puesto (ADR-025, migración 038)."
                     ),
                     "status": 409,
                 },
@@ -3076,9 +3076,9 @@ class ArchiveService:
                 detail={
                     "error": "trd_fecha_publicacion_ya_registrada",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"La versión {existing.version} del código '{existing.code}' "
                         "ya tiene fecha_publicacion registrada; es inmutable una "
-                        "vez puesta (ADR-025, migracion 038)."
+                        "vez puesta (ADR-025, migración 038)."
                     ),
                     "status": 409,
                 },
@@ -3147,10 +3147,10 @@ class ArchiveService:
             detail={
                 "error": "instrumento_code_en_uso",
                 "detail": (
-                    f"El codigo '{code}' ya esta en uso por un instrumento "
+                    f"El código '{code}' ya esta en uso por un instrumento "
                     f"de tipo '{ocupante_tipo or '(desconocido)'}'. TRD y TVD "
-                    "comparten el mismo espacio de codigos (ADR-026 Capa 1): "
-                    "una entidad no puede reutilizar el mismo codigo entre "
+                    "comparten el mismo espacio de códigos (ADR-026 Capa 1): "
+                    "una entidad no puede reutilizar el mismo código entre "
                     "instrumentos."
                 ),
                 "status": 409,
@@ -3281,7 +3281,7 @@ class ArchiveService:
                         f"está en estado «{existing.estado}»: su contenido es "
                         "append-only (Ac. AGN 001/2024, que compila el 004/2019, ADR-026). Use "
                         f"POST /api/v1/tvd/{existing.code}/versiones para crear "
-                        "una version nueva."
+                        "una versión nueva."
                     ),
                     "status": 409,
                 },
@@ -3339,7 +3339,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "tvd_code_not_found",
-                    "detail": f"No existe ninguna version para el codigo de agrupacion '{code}'.",
+                    "detail": f"No existe ninguna versión para el código de agrupación '{code}'.",
                     "status": 404,
                 },
             )
@@ -3380,7 +3380,7 @@ class ArchiveService:
                 detail={
                     "error": "tvd_forma_incompleta",
                     "detail": (
-                        "Una version de TVD exige fondo_nombre, fecha_extrema_inicial, "
+                        "Una versión de TVD exige fondo_nombre, fecha_extrema_inicial, "
                         "fecha_extrema_final y justificacion_valoracion (Ac. AGN 001/2024, "
                         "ADR-026)."
                     ),
@@ -3434,9 +3434,9 @@ class ArchiveService:
                     detail={
                         "error": "trd_version_en_tramite",
                         "detail": (
-                            f"Ya existe una version en tramite (borrador/aprobada) "
-                            f"para el codigo '{vigente.code}'; concluyala "
-                            "(aprobar + convalidar) o devuelvala a borrador "
+                            f"Ya existe una versión en trámite (borrador/aprobada) "
+                            f"para el código '{vigente.code}'; conclúyala "
+                            "(aprobar + convalidar) o devuélvala a borrador "
                             f"(POST /api/v1/tvd/{vigente.code}/versiones/"
                             f"{{version}}/devolver) antes de abrir otra "
                             "(ADR-026)."
@@ -3469,7 +3469,7 @@ class ArchiveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "tvd_version_not_found",
-                    "detail": f"No existe la version {version} del codigo de agrupacion '{code}'.",
+                    "detail": f"No existe la versión {version} del código de agrupación '{code}'.",
                     "status": 404,
                 },
             )
@@ -3570,9 +3570,9 @@ class ArchiveService:
                 detail={
                     "error": "trd_aprobacion_comite_requerida",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
-                        "esta 'aprobada' pero no tiene registrado el acto del Comite "
-                        "(acta_comite/fecha_aprobacion_comite): la convalidacion del "
+                        f"La versión {existing.version} del código '{existing.code}' "
+                        "está 'aprobada' pero no tiene registrado el acto del Comité "
+                        "(acta_comite/fecha_aprobacion_comite): la convalidación del "
                         "Consejo no puede afirmar un primer acto que el sistema no "
                         "puede verificar (Ac. AGN 001/2024, ADR-026)."
                     ),
@@ -3620,10 +3620,10 @@ class ArchiveService:
                             "error": "trd_repoint_colision",
                             "detail": (
                                 "No se pudo re-apuntar tipos_documentales/"
-                                "expediente_metadata_templates de la version "
+                                "expediente_metadata_templates de la versión "
                                 f"derogada ({derogada.code} v{derogada.version}) a la "
-                                f"nueva vigente: colision de clave no cubierta por "
-                                "el filtro de exclusion (ADR-026)."
+                                f"nueva vigente: colisión de clave no cubierta por "
+                                "el filtro de exclusión (ADR-026)."
                             ),
                             "status": 409,
                         },
@@ -3709,8 +3709,8 @@ class ArchiveService:
                     "error": "trd_derogacion_bloqueada_expedientes_abiertos",
                     "detail": (
                         f"Hay {n_open} expediente(s) 'open' clasificados bajo el "
-                        f"codigo '{existing.code}': derogar esta version sin una "
-                        "sucesora los dejaria sin ningun instrumento vigente que "
+                        f"código '{existing.code}': derogar esta versión sin una "
+                        "sucesora los dejaría sin ningún instrumento vigente que "
                         "gobierne su cierre (ADR-026)."
                     ),
                     "status": 409,
@@ -3754,9 +3754,9 @@ class ArchiveService:
                 detail={
                     "error": "trd_version_no_convalidada",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
-                        f"esta en estado '{existing.estado}': el RUSD y la "
-                        "publicacion solo se registran sobre una version "
+                        f"La versión {existing.version} del código '{existing.code}' "
+                        f"está en estado '{existing.estado}': el RUSD y la "
+                        "publicación solo se registran sobre una versión "
                         "'convalidada' (ADR-026)."
                     ),
                     "status": 409,
@@ -3768,7 +3768,7 @@ class ArchiveService:
                 detail={
                     "error": "trd_rusd_ya_registrado",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"La versión {existing.version} del código '{existing.code}' "
                         "ya tiene un rusd_radicado registrado; es inmutable una "
                         "vez puesto (ADR-026)."
                     ),
@@ -3781,7 +3781,7 @@ class ArchiveService:
                 detail={
                     "error": "trd_fecha_publicacion_ya_registrada",
                     "detail": (
-                        f"La version {existing.version} del codigo '{existing.code}' "
+                        f"La versión {existing.version} del código '{existing.code}' "
                         "ya tiene fecha_publicacion registrada; es inmutable una "
                         "vez puesta (ADR-026)."
                     ),

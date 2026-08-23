@@ -42,6 +42,7 @@ from app.core import reglas_tipo
 from app.repositories.anulacion_repository import AnulacionRepository
 from app.schemas.anulacion import (
     AnulacionDecision,
+    AnulacionPendiente,
     AnulacionResponse,
     AnulacionSolicitud,
 )
@@ -299,3 +300,20 @@ class AnulacionService:
                 },
             )
         return _resp(row)
+
+    async def listar_pendientes(
+        self, *, max_clearance: int, page: int, size: int
+    ) -> tuple[list[AnulacionPendiente], int]:
+        """Cola de solicitudes pendientes de decidir, recortada por clearance.
+
+        El recorte lo hace el repositorio, en la MISMA condición para las filas
+        y para el total: contar sin filtrar diría cuántas solicitudes hay sobre
+        radicados que el llamante no puede ver, que es justo lo que el
+        no-read-up impide (RF-SEG-08).
+        """
+        filas, total = await self._repo.list_pendientes(
+            max_clearance=max_clearance,
+            offset=(page - 1) * size,
+            limit=size,
+        )
+        return [AnulacionPendiente(**dict(f)) for f in filas], total

@@ -28,6 +28,23 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
 const { default: AnulacionesPage } = await import("./+page.svelte");
+
+/**
+ * Monta la pantalla con el `data` del `load`.
+ *
+ * El componente NO da un valor por defecto a `data` a propósito: en la
+ * aplicación siempre lo entrega SvelteKit, y un default aquí convertiría un
+ * fallo de cableado en una pantalla que se pinta vacía sin quejarse. Los tests
+ * lo pasan explícitamente, que además les deja declarar el estado de la cola.
+ */
+function renderPagina({ items = [], total = null, colaError = null } = {}) {
+  return render(AnulacionesPage, {
+    props: {
+      data: { cola: { items, total: total ?? items.length }, colaError },
+    },
+  });
+}
+
 const { initSession, clearSession } = await import("$lib/stores/auth.js");
 
 function sessionWith({ permissions = [] } = {}) {
@@ -52,13 +69,13 @@ describe("/anulaciones — sin PERM_PANU_CODI", () => {
   });
 
   it("muestra un EmptyState explicando la falta de permiso, sin buscador ni tabla", () => {
-    render(AnulacionesPage);
+    renderPagina();
     expect(screen.getByText(/sin permiso de aprobación de anulaciones/i)).toBeTruthy();
     expect(screen.queryByLabelText(/número de radicado o texto del asunto/i)).toBeNull();
   });
 
   it("M16: no expone el código de permiso interno al usuario final", () => {
-    render(AnulacionesPage);
+    renderPagina();
     expect(screen.queryByText(/PERM_PANU_CODI/)).toBeNull();
     expect(
       screen.getByText(/no tiene asignado el permiso de aprobación de anulaciones/i),
@@ -79,21 +96,96 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
     vi.restoreAllMocks();
   });
 
-  it("muestra el banner de degradación (sin listado del backend) y el buscador", () => {
-    render(AnulacionesPage);
-    expect(screen.getByRole("heading", { name: "Resolver anulaciones" })).toBeTruthy();
-    expect(
-      screen.getByText(/el backend todavía no expone un listado de anulaciones pendientes/i),
-    ).toBeTruthy();
-    // A5a: el banner también dice qué hacer, no solo por qué falta el listado.
-    expect(screen.getByText(/pide al solicitante el número de radicado/i)).toBeTruthy();
+  it("muestra la COLA de pendientes y conserva el buscador", async () => {
+    renderPagina({
+      items: [
+        {
+          id: "sol-1",
+          radicado_id: "rad-1",
+          estado: "solicitada",
+          causal: "error_digitacion",
+          motivo: "duplicado",
+          solicitado_por: "u-9",
+          solicitado_at: "2026-08-01T10:00:00Z",
+          tracking_number: "2026-DEMO-S-000012",
+          subject: "Respuesta a solicitud",
+          doc_type: "S",
+          radicado_status: "radicado",
+        },
+      ],
+      total: 1,
+    });
+
+    // La cola dice de QUÉ habla: sin número y asunto habría que abrir la ficha.
+    expect(screen.getByText("2026-DEMO-S-000012")).toBeTruthy();
+    expect(screen.getByText("Respuesta a solicitud")).toBeTruthy();
+    // Y el buscador NO se retira: sigue siendo la vía directa cuando alguien
+    // llega con un número de radicado en la mano.
     expect(screen.getByLabelText(/número de radicado o texto del asunto/i)).toBeTruthy();
+  });
+
+  it("«Resolver» consulta el id del RADICADO, no el de la solicitud", async () => {
+    // Trampa real de esta pantalla: una fila de la cola trae DOS identificadores
+    // —`id` (la solicitud) y `radicado_id`— y el detalle se consulta por el del
+    // radicado. Pasar la fila tal cual usaría el equivocado sin que nada fallara
+    // a la vista: el proxy devolvería 404 y la pantalla diría «no tiene ninguna
+    // anulación registrada» sobre una solicitud que sí existe.
+    const pedidas = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u) => {
+        pedidas.push(String(u));
+        return { ok: true, status: 200, json: async () => ({ estado: "solicitada" }) };
+      }),
+    );
+
+    renderPagina({
+      items: [
+        {
+          id: "SOLICITUD-999",
+          radicado_id: "RADICADO-111",
+          estado: "solicitada",
+          causal: "error_digitacion",
+          motivo: null,
+          solicitado_por: "u-9",
+          solicitado_at: "2026-08-01T10:00:00Z",
+          tracking_number: "2026-DEMO-S-000012",
+          subject: "Respuesta",
+          doc_type: "S",
+          radicado_status: "radicado",
+        },
+      ],
+      total: 1,
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: /resolver/i }));
+
+    await waitFor(() => expect(pedidas.length).toBeGreaterThan(0));
+    expect(pedidas.some((u) => u.includes("RADICADO-111"))).toBe(true);
+    expect(pedidas.some((u) => u.includes("SOLICITUD-999"))).toBe(false);
+  });
+
+  it("la cola vacía NO se confunde con no haber podido consultarla", async () => {
+    renderPagina({ items: [], total: 0 });
+    expect(screen.getByText(/no hay anulaciones pendientes/i)).toBeTruthy();
+  });
+
+  it("un fallo al consultar la cola lo dice, y aclara que no significa que no haya", async () => {
+    renderPagina({ colaError: { detail: "El servidor no respondió.", status: 502 } });
+    expect(screen.getByText(/no se pudo consultar la cola/i)).toBeTruthy();
+    expect(screen.getByText(/no significa que no haya solicitudes pendientes/i)).toBeTruthy();
+  });
+
+  it("sin permiso para la cola lo dice sin fingir que está vacía", async () => {
+    renderPagina({ colaError: { detail: "forbidden", status: 403 } });
+    expect(screen.getByText(/sin permiso para ver la cola/i)).toBeTruthy();
+    expect(screen.queryByText(/no hay anulaciones pendientes/i)).toBeNull();
   });
 
   it("buscar con menos de 2 caracteres no llama al proxy y muestra el error de validación", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "a" },
@@ -110,7 +202,7 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
       json: async () => ({ results: [], total: 0 }),
     }));
     globalThis.fetch = fetchMock;
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "sin coincidencias" },
@@ -139,7 +231,7 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
       json: async () => ({ error: "connection_error", detail: "Gateway no disponible." }),
     }));
     globalThis.fetch = fetchMock;
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "2026-ICETEX-E-000999" },
@@ -164,7 +256,7 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
       return { ok: true, json: async () => ({ results: [], total: 0 }) };
     });
     globalThis.fetch = fetchMock;
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "2026-ICETEX-E-000999" },
@@ -204,7 +296,7 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
       return { ok: false, status: 404, json: async () => ({ error: "not_found" }) };
     });
     globalThis.fetch = fetchMock;
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "contrato" },
@@ -269,11 +361,16 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
       if (u.startsWith(`/anulaciones/api/${ROW_SIN_SOLICITUD}`)) {
         return { ok: false, status: 404, json: async () => ({ error: "not_found" }) };
       }
+      // El refresco de la cola se dispara tras decidir; no es el objeto de
+      // estos tests, pero sin esta rama la guarda lo convierte en un fallo.
+      if (u.startsWith("/anulaciones/api/cola")) {
+        return { ok: true, status: 200, json: async () => ({ items: [], total: 0 }) };
+      }
       throw new Error(`fetch no esperado: ${u}`);
     });
     globalThis.fetch = fetchMock;
 
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "contrato" },
@@ -338,11 +435,16 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
           }),
         };
       }
+      // El refresco de la cola se dispara tras decidir; no es el objeto de
+      // estos tests, pero sin esta rama la guarda lo convierte en un fallo.
+      if (u.startsWith("/anulaciones/api/cola")) {
+        return { ok: true, status: 200, json: async () => ({ items: [], total: 0 }) };
+      }
       throw new Error(`fetch no esperado: ${u}`);
     });
     globalThis.fetch = fetchMock;
 
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "inestable" },
@@ -400,11 +502,16 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
           }),
         };
       }
+      // El refresco de la cola se dispara tras decidir; no es el objeto de
+      // estos tests, pero sin esta rama la guarda lo convierte en un fallo.
+      if (u.startsWith("/anulaciones/api/cola")) {
+        return { ok: true, status: 200, json: async () => ({ items: [], total: 0 }) };
+      }
       throw new Error(`fetch no esperado: ${u}`);
     });
     globalThis.fetch = fetchMock;
 
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "contrato" },
@@ -490,11 +597,16 @@ describe("/anulaciones — con PERM_PANU_CODI", () => {
           }),
         };
       }
+      // El refresco de la cola se dispara tras decidir; no es el objeto de
+      // estos tests, pero sin esta rama la guarda lo convierte en un fallo.
+      if (u.startsWith("/anulaciones/api/cola")) {
+        return { ok: true, status: 200, json: async () => ({ items: [], total: 0 }) };
+      }
       throw new Error(`fetch no esperado: ${u}`);
     });
     globalThis.fetch = fetchMock;
 
-    render(AnulacionesPage);
+    renderPagina();
 
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "contrato" },
@@ -577,7 +689,7 @@ describe("/anulaciones — quien la pidió no la aprueba", () => {
 
   /** Abre el detalle de la anulación encontrada. */
   async function abrirDetalle() {
-    render(AnulacionesPage);
+    renderPagina();
     await fireEvent.input(screen.getByLabelText(/número de radicado o texto del asunto/i), {
       target: { value: "2026-DEMO-S-000012" },
     });

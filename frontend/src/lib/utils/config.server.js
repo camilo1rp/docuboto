@@ -77,3 +77,26 @@ export const KEYCLOAK_LOGOUT_URL = `${KC_OIDC}/logout`;
  * Permite obtener claims adicionales del usuario desde el servidor SSR.
  */
 export const KEYCLOAK_USERINFO_URL = `${KC_OIDC}/userinfo`;
+
+// ---------------------------------------------------------------------------
+// Entidad de las pantallas PÚBLICAS (ventanilla y consulta ciudadana)
+// ---------------------------------------------------------------------------
+//
+// Las rutas públicas del backend cuelgan de `/public/{tenant}/…`, así que la
+// zona pública necesita saber a qué entidad pertenece. Se resuelve por
+// **configuración de despliegue**, no por un parámetro en la URL: un ciudadano
+// entra al sitio de SU entidad (`radicacion.entidad.gov.co`) y no hay por qué
+// explicarle qué es un inquilino, ni dejar que lo cambie escribiendo otro en la
+// barra de direcciones.
+//
+// **Sin valor por defecto**: si no está configurada, las pantallas públicas
+// dicen que la entidad no ha habilitado la radicación en línea, en vez de
+// apuntar a un inquilino inventado. Un default aquí mandaría las peticiones de
+// los ciudadanos a la entidad equivocada.
+// NO se llama `PUBLIC_…`: ese prefijo lo reserva SvelteKit para lo que puede
+// viajar al navegador, y `$env/dynamic/private` **excluye** esas variables. Con
+// el nombre anterior la variable existía en el contenedor y llegaba aquí como
+// `undefined`, así que las pantallas públicas se declaraban «no habilitadas»
+// con la configuración puesta — un fallo mudo. El slug no se necesita en el
+// cliente: el proxy lo usa server-side, y así no se expone nada de más.
+export const PUBLIC_TENANT = env.PORTAL_TENANT_SLUG ?? "";

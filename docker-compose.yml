@@ -111,6 +111,11 @@ services:
       # cualquier clave desconocida y el contenedor no arranca. La explicación
       # del realm vive en `infra/keycloak/README.md`.
       - ./infra/keycloak/realm-dev.json:/opt/keycloak/data/import/realm-dev.json:ro
+      # Tema propio de las pantallas de identidad. La de acceso es la ÚNICA del
+      # recorrido que no pasa por SvelteKit, así que sin esto sale con el tema
+      # por defecto —fondo gris, botón azul, textos en inglés— justo ANTES de la
+      # pantalla de Orpyca. Solo lectura: el contenedor no escribe aquí.
+      - ./infra/keycloak/themes:/opt/keycloak/themes:ro
     networks:
       - orpycamcp-net
     depends_on:
@@ -656,6 +661,11 @@ services:
       # Públicas — las construye y usa el JS del navegador (login PKCE, logout).
       - PUBLIC_API_URL=http://localhost:19080
       - PUBLIC_KEYCLOAK_URL=http://localhost:19180
+      # Entidad de las pantallas PÚBLICAS (ventanilla y consulta ciudadana).
+      # En producción cada entidad despliega su sitio con SU slug; sin esta
+      # variable las pantallas públicas se declaran no habilitadas en vez de
+      # apuntar a un inquilino inventado.
+      - PORTAL_TENANT_SLUG=demo
       # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
       # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
       - INTERNAL_API_URL=http://api-gateway:8080

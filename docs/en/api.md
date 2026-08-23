@@ -1044,6 +1044,14 @@ The law prohibits deleting radicados: they are annulled with supervisory approva
 - `POST /api/v1/documents/{id}/anulacion` `{causal, motivo?}` — requests (step 1). `409` if it is already annulled or there is a pending request.
 - `POST /api/v1/documents/{id}/anulacion/aprobar` `{observacion?}` — approves (step 2): the radicado moves to `anulado` (the number is kept).
 - `POST /api/v1/documents/{id}/anulacion/rechazar` `{observacion?}` — rejects. `GET /api/v1/documents/{id}/anulacion` — last request.
+- `GET /api/v1/anulaciones?page&size` — **approver queue**: requests in state `solicitada`, oldest first (FIFO — a pending annulment blocks the document's lifecycle). Requires `PERM_PANU_CODI`, the **same** permission as deciding. Each row carries the request plus the radicado's `tracking_number`, `subject`, `doc_type`, `radicado_status`. `X-Total-Count` header. **No-read-up (RF-SEG-08) applied to rows AND to the count**: an unfiltered count would reveal how many requests exist over radicados the caller cannot see.
+
+**Public single-window intake** (unauthenticated):
+
+- `GET /api/v1/public/{tenant}/ventanilla/tipos` — document types the entity declares it accepts (`tipos_documentales.admite_ventanilla_publica`, **opt-in**). Does not expose the internal catalogue.
+- `POST /api/v1/public/{tenant}/ventanilla` — external intake. The type must be declared admissible (**422 `tipo_no_admitido_en_ventanilla`** otherwise; never silently reclassified). Routed to the dependency flagged `depe_rad_tp2` ("web intake enabled"); if none is declared, **503 `ventanilla_no_habilitada`** — entering without a destination would leave the document in no one's inbox. The sender may be a person **or an organisation** (`sender_entity`). Identified senders must give a reply channel; **anonymous** intake is legitimate. Returns tracking number, verification code and destination dependency.
+  **Multipart**: fields go in the `datos` part (JSON), attachments in `anexos` parts. One door for both the simple case and a writ with its evidence. Limits: **5 files, 10 MB each, 25 MB total**; PDF, JPG, PNG and TIFF only, **verified by content** — not by extension or `Content-Type`, which the client writes — and the stored MIME is the sniffed one. **No antivirus.** Attachments are stored BEFORE a tracking number is assigned: if storage fails, **503 `anexo_no_almacenado`** and nothing is filed, because a tracking number is immutable and must not exist without its evidence. The file is stored with no actor (`uploaded_by = NULL`).
+- `POST /api/v1/public/{tenant}/pqrs` — **legacy**, kept because it is an already-published public surface; delegates to the single window and is not extended.
 
 ### Electronic signature (E06, ADR-016)
 - `POST /api/v1/documents/{id}/signatures` `{ "content_hash": "<sha256 hex>", "anexo_id"?, "reason"? }` — signs the radicado/anexo: records identity (gateway claims), `content_hash` and timestamp. `422` if the hash is not SHA-256.

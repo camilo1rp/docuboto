@@ -209,7 +209,11 @@ class ImportService:
                     data=blob,
                     uploaded_by=actor,
                 )
-                subidos.append((uuid.UUID(result["file_id"]), anexo))
+                # `result.file_id` y no `result["file_id"]`: la clave inventada
+                # nunca existió en el contrato de storage (`FileResponse.id`) y el
+                # test la tapaba porque su mock la devolvía. El cliente traduce
+                # ahora el formato de cable en un solo sitio.
+                subidos.append((result.file_id, anexo))
             subidos_por_entity[id(entity)] = subidos
 
         # Fase 2c: transacción de BD (rápida, sin HTTP). Un SAVEPOINT por-ítem absorbe

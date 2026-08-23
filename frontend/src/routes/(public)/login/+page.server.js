@@ -107,6 +107,14 @@ export async function load({ cookies, url }) {
   authUrl.searchParams.set("state", state);
   authUrl.searchParams.set("code_challenge", codeChallenge);
   authUrl.searchParams.set("code_challenge_method", "S256");
+  // `ui_locales` (OIDC Core §3.1.2.1): la aplicación DECLARA en qué lengua
+  // trabaja. Sin esto, Keycloak negocia con el `Accept-Language` del navegador
+  // y un funcionario con el navegador en inglés veía «Sign in to your account»
+  // seguido de una aplicación enteramente en español — la misma incoherencia,
+  // movida de sitio. `defaultLocale: es` en el realm NO basta: es un respaldo
+  // para cuando el navegador no expresa preferencia, y siempre la expresa.
+  // El selector de idioma del tema sigue ahí para quien necesite otra.
+  authUrl.searchParams.set("ui_locales", "es");
 
   redirect(302, authUrl.toString());
 }

@@ -29,6 +29,7 @@ from orpycamcp_common import request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.routers.anulacion import cola_router as anulacion_cola_router
 from app.routers.anulacion import router as anulacion_router
 from app.routers.batch import router as batch_router
 from app.routers.borradores import router as borradores_router
@@ -122,6 +123,7 @@ app.include_router(cmis_router)
 app.include_router(export_router)
 app.include_router(import_router)
 app.include_router(anulacion_router)
+app.include_router(anulacion_cola_router)
 app.include_router(respuesta_router)
 app.include_router(borradores_router)
 app.include_router(internal_router)

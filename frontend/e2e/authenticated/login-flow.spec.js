@@ -19,31 +19,35 @@
  * escribió.
  */
 import { test, expect } from "@playwright/test";
+import { hayCredenciales, iniciarSesion } from "./_sesion.js";
 
 test.describe("Login PKCE (requiere la pila levantada — ver README.md)", () => {
   test("un usuario válido completa el login y llega a /dashboard con sesión", async ({ page }) => {
-    const username = process.env.E2E_USERNAME;
-    const password = process.env.E2E_PASSWORD;
-    test.skip(!username || !password, "Faltan E2E_USERNAME/E2E_PASSWORD");
+    test.skip(!hayCredenciales(), "Faltan E2E_USERNAME/E2E_PASSWORD");
 
-    await page.goto("/login");
-    // Keycloak real: formulario de login del tema por defecto.
-    await page.getByLabel(/usuario|username/i).fill(username);
-    await page.getByLabel(/contraseña|password/i).fill(password);
-    await page.getByRole("button", { name: /iniciar sesión|sign in/i }).click();
+    await iniciarSesion(page);
 
-    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page).toHaveURL(/\/dashboard/);
     // La cookie de sesión es httpOnly: no debe ser legible desde document.cookie.
     const clientCookies = await page.evaluate(() => document.cookie);
     expect(clientCookies).not.toContain("access_token");
   });
 
-  test("credenciales inválidas vuelven a /login con error, sin fijar sesión", async ({ page }) => {
+  test("credenciales inválidas NO fijan sesión y no dejan pasar a /dashboard", async ({ page }) => {
+    // No necesita credenciales: precisamente prueba las que no valen.
     await page.goto("/login");
-    await page.getByLabel(/usuario|username/i).fill("usuario-invalido");
-    await page.getByLabel(/contraseña|password/i).fill("clave-incorrecta");
-    await page.getByRole("button", { name: /iniciar sesión|sign in/i }).click();
+    await page.fill("#username", "usuario-invalido");
+    await page.fill("#password", "clave-incorrecta");
+    await page.click("#kc-login");
 
-    await expect(page).toHaveURL(/\/login/);
+    // Keycloak reintenta en SU propia página, no en `/login` de la aplicación:
+    // comprobar `toHaveURL(/\/login/)` daba un falso verde porque la ruta de
+    // Keycloak contiene «login-actions». Lo que importa es que NO se entra.
+    await expect(page.locator("#kc-login")).toBeVisible();
+    await expect(page).not.toHaveURL(/\/dashboard/);
+
+    // Y que no queda sesión: la guarda SSR devuelve al login.
+    await page.goto("/dashboard");
+    await expect(page).not.toHaveURL(/\/dashboard$/);
   });
 });

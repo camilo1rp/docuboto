@@ -3,7 +3,6 @@
   "displayName": "OrpycaMCP",
   "enabled": true,
   "sslRequired": "none",
-
   "ssoSessionIdleTimeout": 28800,
   "ssoSessionMaxLifespan": 36000,
   "registrationAllowed": false,
@@ -217,5 +216,12 @@
         ]
       }
     }
-  ]
+  ],
+  "loginTheme": "orpyca",
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "es",
+    "en"
+  ],
+  "defaultLocale": "es"
 }

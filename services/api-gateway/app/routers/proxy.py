@@ -58,6 +58,10 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/public/", app_state.document_service_url),
         ("/api/v1/ingest/", app_state.document_service_url),
         ("/api/v1/envios/", app_state.document_service_url),
+        # Cola del aprobador de anulaciones (recurso propio, no una subruta
+        # de un documento). SIN barra final: la ruta es `/api/v1/anulaciones`
+        # exacta, y con barra el prefijo no casaría con ella.
+        ("/api/v1/anulaciones", app_state.document_service_url),
         ("/api/v1/plantillas/", app_state.document_service_url),
         ("/api/v1/borradores/", app_state.document_service_url),
         # Batch API (carga masiva): document-service y archive-service comparten

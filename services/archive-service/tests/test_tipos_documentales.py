@@ -27,6 +27,8 @@ def _tipo_row(tipo_id: uuid.UUID, **kw) -> dict:
         "obligatorio": True,
         "metadata_template": "Resolución",
         "activo": True,
+        # Opt-in: un tipo NO se ofrece en la ventanilla pública por existir.
+        "admite_ventanilla_publica": False,
         "created_at": datetime.now(tz=UTC),
     }
     base.update(kw)

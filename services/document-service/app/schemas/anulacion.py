@@ -37,3 +37,29 @@ class AnulacionResponse(BaseModel):
     decidido_por: uuid.UUID | None
     decidido_at: datetime | None
     observacion: str | None
+
+
+class AnulacionPendiente(BaseModel):
+    """Una fila de la cola del aprobador (`GET /api/v1/anulaciones`).
+
+    Lleva los datos del RADICADO —número, asunto, tipo— además de los de la
+    solicitud, porque una cola que solo dijera «hay 7 pendientes» con sus UUID
+    obligaría a abrir siete fichas para saber cuál es cuál. El recorte por
+    clearance del repositorio es lo que hace seguro traer el asunto.
+
+    `doc_type` viaja a propósito: sobre una Entrada la anulación **no existe**
+    como acto (`app/core/reglas_tipo.py`), así que la pantalla necesita poder
+    distinguirlo sin una segunda llamada por fila.
+    """
+
+    id: uuid.UUID
+    radicado_id: uuid.UUID
+    estado: str
+    causal: str
+    motivo: str | None
+    solicitado_por: uuid.UUID | None
+    solicitado_at: datetime
+    tracking_number: str
+    subject: str | None
+    doc_type: str
+    radicado_status: str

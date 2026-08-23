@@ -49,6 +49,7 @@ export async function PATCH({ locals, params, request }) {
   }
 
   const { nombre, trd_serie_id, obligatorio, metadata_template, activo } = body ?? {};
+  const admiteVentanilla = body?.admite_ventanilla_publica;
   if (
     trd_serie_id !== undefined &&
     trd_serie_id !== null &&
@@ -64,6 +65,7 @@ export async function PATCH({ locals, params, request }) {
   if (trd_serie_id !== undefined)
     payload.trd_serie_id = trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null;
   if (typeof obligatorio === "boolean") payload.obligatorio = obligatorio;
+  if (typeof admiteVentanilla === "boolean") payload.admite_ventanilla_publica = admiteVentanilla;
   if (metadata_template !== undefined) {
     payload.metadata_template =
       typeof metadata_template === "string" && metadata_template.trim()

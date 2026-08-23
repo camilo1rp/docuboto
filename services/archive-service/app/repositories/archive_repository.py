@@ -1508,7 +1508,8 @@ class ArchiveRepository:
     # ------------------------------------------------------------------
 
     _TD_COLS = (
-        "id, trd_serie_id, code, nombre, obligatorio, metadata_template, " "activo, created_at"
+        "id, trd_serie_id, code, nombre, obligatorio, metadata_template, "
+        "activo, admite_ventanilla_publica, created_at"
     )
 
     async def create_tipo_documental(self, data: dict) -> asyncpg.Record:

@@ -123,3 +123,62 @@ def test_el_barrido_mira_de_verdad() -> None:
     assert len(fuentes) > 300, f"solo {len(fuentes)} fuentes: ¿cambió el árbol de servicios?"
     total = sum(len(_mensajes(r)) for r in fuentes)
     assert total > 400, f"solo {total} mensajes hallados: el extractor dejó de encontrarlos"
+
+
+# ---------------------------------------------------------------------------
+# Segundo eje: escrito en español, pero SIN TILDES.
+#
+# Un mensaje puede pasar el guardián de arriba —no tiene una sola palabra en
+# inglés— y seguir estando mal escrito: «No existe la version del codigo de
+# serie». Es la lengua de trabajo del sistema y la lee un funcionario; las
+# tildes no son un adorno tipográfico, son ortografía.
+#
+# **Lista de ADMISIÓN de errores**: cada entrada es una forma que, escrita así,
+# está mal SIEMPRE. Se excluyen a propósito las ambiguas —`esta`/`está`,
+# `cambio`/`cambió`, `valido`/`válido`, `mas`/`más`—, que dependen del contexto
+# y sí necesitan que alguien las lea. Este guardián **no demuestra que el texto
+# esté bien escrito**: demuestra que no ha vuelto el subconjunto que se puede
+# comprobar a máquina, que es un objetivo más modesto y verdadero.
+#
+# `-ción`/`-sión`: toda palabra española con esa terminación lleva tilde, sin
+# excepción, así que la regla es de una precisión inusual.
+SIN_TILDE = re.compile(
+    r"\b(?:\w*ci[o]n|\w*si[o]n|numero|codigo|titulo|metodo|tramite|parametro|"
+    r"unico|unica|publico|publica|basico|basica|maximo|minimo|automatico|"
+    r"electronico|electronica|juridico|juridica|dias|aqui|asi|estan|segun|"
+    r"tambien|despues|ademas|invalido|invalida|analisis|pagina|telefono|"
+    r"ultimo|ultima|proximo|proxima|deberia|version)\b",
+    re.IGNORECASE,
+)
+
+
+def test_ningun_mensaje_de_error_sin_tildes() -> None:
+    culpables = []
+    for ruta in _fuentes():
+        for linea, texto in _mensajes(ruta):
+            limpio = PLACEHOLDER.sub(" ", texto)
+            # Un identificador snake_case NO es prosa: `fecha_publicacion` y
+            # `justificacion_valoracion` son NOMBRES DE CAMPO y no llevan tilde.
+            # Marcarlos entrenaría a ignorar el guardián.
+            palabras = sorted(
+                {m.group(0).lower() for m in SIN_TILDE.finditer(limpio) if "_" not in m.group(0)}
+            )
+            if palabras:
+                culpables.append(f"{ruta.relative_to(RAIZ)}:{linea} {palabras} → {texto[:80]!r}")
+    assert not culpables, (
+        "Mensajes de error en español pero sin tildes (los lee una persona):\n" + "\n".join(culpables)
+    )
+
+
+def test_el_barrido_de_tildes_ve_el_defecto_original() -> None:
+    """Control positivo: la frase real que tenía archive-service."""
+    muestra = "No existe la version  del codigo de serie ''."
+    hallados = {m.group(0).lower() for m in SIN_TILDE.finditer(muestra)}
+    assert {"version", "codigo"} <= hallados
+
+    # Y control NEGATIVO: la forma correcta no se marca, ni tampoco un nombre
+    # de campo, que es donde un guardián mal afinado produce ruido.
+    correcta = "No existe la versión del código de serie; falta fecha_publicacion."
+    assert not [
+        m.group(0) for m in SIN_TILDE.finditer(correcta) if "_" not in m.group(0)
+    ]

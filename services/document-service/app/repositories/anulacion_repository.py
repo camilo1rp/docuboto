@@ -33,6 +33,64 @@ class AnulacionRepository:
     # se puede ver sería una mutación del ciclo de vida sin autoridad (art. 28).
     _VISIBLE = "EXISTS (SELECT 1 FROM radicados r WHERE r.id = $1 AND r.nivel_seguridad <= $2)"
 
+    #: Condición de la COLA: solicitudes sin decidir, recortadas por clearance.
+    #: Una sola definición para las filas y para el total — si divergieran, la
+    #: diferencia entre lo contado y lo mostrado sería la existencia de las
+    #: solicitudes sobre radicados clasificados.
+    _VISIBLE_LISTA = "a.estado = 'solicitada' AND r.nivel_seguridad <= $1"
+
+
+    async def list_pendientes(
+        self, *, max_clearance: int, offset: int, limit: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Cola de solicitudes SIN DECIDIR, con el radicado al que se refieren.
+
+        Hasta ahora no existía: la pantalla del aprobador solo podía consultar
+        el estado *de un radicado concreto*, así que había que saber de antemano
+        cuál se quería revisar. Una cola de trabajo que obliga a adivinar su
+        propio contenido no es una cola.
+
+        **No-read-up (RF-SEG-08) en la MISMA condición para las filas y para el
+        total.** Es el punto delicado: filtrar solo las filas y contar sin
+        filtrar diría «hay 7 pendientes» mostrando 5, y esa diferencia es
+        precisamente la existencia de dos solicitudes sobre radicados
+        clasificados. La condición vive UNA vez (`_VISIBLE_LISTA`) y las dos
+        consultas la comparten para que no puedan divergir.
+
+        Orden FIFO por `solicitado_at`: una anulación pendiente bloquea el ciclo
+        de vida del documento (Ley 594/2000 art. 28), así que la más antigua es
+        la más urgente — no la más reciente.
+
+        Se traen `tracking_number`, `subject` y `doc_type` del radicado porque
+        sin ellos la cola no dice de qué habla; el gate de clearance de arriba
+        es justo lo que hace seguro traerlos.
+        """
+        filas = await self._conn.fetch(
+            f"""
+            SELECT a.id, a.radicado_id, a.estado, a.causal, a.motivo,
+                   a.solicitado_por, a.solicitado_at,
+                   r.tracking_number, r.subject, r.doc_type, r.status AS radicado_status
+            FROM radicado_anulacion a
+            JOIN radicados r ON r.id = a.radicado_id
+            WHERE {self._VISIBLE_LISTA}
+            ORDER BY a.solicitado_at ASC
+            OFFSET $2 LIMIT $3
+            """,
+            max_clearance,
+            offset,
+            limit,
+        )
+        total = await self._conn.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM radicado_anulacion a
+            JOIN radicados r ON r.id = a.radicado_id
+            WHERE {self._VISIBLE_LISTA}
+            """,
+            max_clearance,
+        )
+        return list(filas), int(total or 0)
+
     async def get_active(self, radicado_id: uuid.UUID, max_clearance: int) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
             f"SELECT {_COLS} FROM radicado_anulacion "

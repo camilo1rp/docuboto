@@ -350,6 +350,7 @@
   let tNombre = "";
   let tSerieId = "";
   let tObligatorio = false;
+  let tVentanilla = false;
   let tMetadataTemplate = "";
   let tCodeError = "";
   let tNombreError = "";
@@ -359,6 +360,7 @@
     tNombre = "";
     tSerieId = filtroSerie || "";
     tObligatorio = false;
+    tVentanilla = false;
     tMetadataTemplate = "";
     tCodeError = "";
     tNombreError = "";
@@ -386,6 +388,7 @@
           nombre: tNombre.trim(),
           trd_serie_id: tSerieId || null,
           obligatorio: tObligatorio,
+          admite_ventanilla_publica: tVentanilla,
           metadata_template: tMetadataTemplate.trim() || null,
           activo: true,
         }),
@@ -408,6 +411,7 @@
   let etNombre = "";
   let etSerieId = "";
   let etObligatorio = false;
+  let etVentanilla = false;
   let etMetadataTemplate = "";
   let etActivo = true;
 
@@ -416,6 +420,7 @@
     etNombre = tipo.nombre ?? "";
     etSerieId = tipo.trd_serie_id ?? "";
     etObligatorio = !!tipo.obligatorio;
+    etVentanilla = !!tipo.admite_ventanilla_publica;
     etMetadataTemplate = tipo.metadata_template ?? "";
     etActivo = tipo.activo !== false;
     tipoEditOpen = true;
@@ -432,6 +437,7 @@
           nombre: etNombre.trim(),
           trd_serie_id: etSerieId || null,
           obligatorio: etObligatorio,
+          admite_ventanilla_publica: etVentanilla,
           metadata_template: etMetadataTemplate.trim() || null,
           activo: etActivo,
         }),
@@ -787,6 +793,7 @@
         <th scope="col">Nombre</th>
         <th scope="col">Serie TRD</th>
         <th scope="col">Obligatorio</th>
+        <th scope="col">Ventanilla pública</th>
         <th scope="col">Estado</th>
       </svelte:fragment>
 
@@ -795,6 +802,7 @@
         <td>{item.nombre}</td>
         <td>{serieNombre(item.trd_serie_id) ?? "—"}</td>
         <td>{item.obligatorio ? "Sí" : "No"}</td>
+        <td>{item.admite_ventanilla_publica ? "Sí" : "No"}</td>
         <td>
           <StatusChip
             status={item.activo ? "success" : "neutral"}
@@ -847,6 +855,15 @@
             <input type="checkbox" bind:checked={tObligatorio} />
             Obligatorio en el expediente
           </label>
+          <label class="trd-form__check">
+            <input type="checkbox" bind:checked={tVentanilla} />
+            Se recibe por la ventanilla única pública
+          </label>
+          <p class="trd-form__hint">
+            Marcado, este tipo aparece en el formulario de radicación en línea, donde cualquiera
+            puede presentarlo sin identificarse en el sistema. Sin marcar no se ofrece: el silencio
+            no significa «todo».
+          </p>
           <FormField
             id="tipo-metadata-template"
             label="Plantilla de metadatos asociada (opcional)"
@@ -876,6 +893,15 @@
             <input type="checkbox" bind:checked={etObligatorio} />
             Obligatorio en el expediente
           </label>
+          <label class="trd-form__check">
+            <input type="checkbox" bind:checked={etVentanilla} />
+            Se recibe por la ventanilla única pública
+          </label>
+          <p class="trd-form__hint">
+            Marcado, este tipo aparece en el formulario de radicación en línea, donde cualquiera
+            puede presentarlo sin identificarse en el sistema. Sin marcar no se ofrece: el silencio
+            no significa «todo».
+          </p>
           <FormField
             id="tipo-edit-metadata-template"
             label="Plantilla de metadatos asociada"

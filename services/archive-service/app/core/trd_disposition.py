@@ -107,10 +107,10 @@ def assert_disposicion_final_autorizada(
                     f"El snapshot congelado de {ref} tiene serie_estado="
                     f"'{serie_estado}' (acto_administrativo="
                     f"{'presente' if acto_administrativo else 'ausente'}): la "
-                    "eliminacion efectiva (disposicion final) exige que el "
+                    "eliminación efectiva (disposición final) exige que el "
                     "instrumento haya sido convalidado -- vigente como "
-                    "'convalidada', o derogado DESPUES de haberlo sido -- sin "
-                    "excepcion para 'migrada' (Ac. AGN 001/2024, que compila "
+                    "'convalidada', o derogado DESPUÉS de haberlo sido -- sin "
+                    "excepción para 'migrada' (Ac. AGN 001/2024, que compila "
                     "el 004/2019, ADR-025 D5)."
                 ),
                 "status": 409,

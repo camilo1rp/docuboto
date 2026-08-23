@@ -15,12 +15,13 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_conn
 from app.schemas.anulacion import (
     AnulacionDecision,
+    AnulacionPendiente,
     AnulacionResponse,
     AnulacionSolicitud,
 )
@@ -116,3 +117,53 @@ async def rechazar_anulacion(
     clearance = await resolve_caller_clearance(conn, _actor(request))
     service = AnulacionService(conn, tenant_slug=_tenant_slug(request))
     return await service.rechazar(document_id, payload, _actor(request), clearance)
+
+
+# ---------------------------------------------------------------------------
+# Cola del aprobador — recurso propio, no una subruta de un documento
+# ---------------------------------------------------------------------------
+#
+# Todo lo de arriba cuelga de `/documents/{id}`: sirve para consultar o decidir
+# UNA anulación de la que ya se sabe el radicado. La pantalla del aprobador
+# necesitaba lo contrario —qué hay pendiente— y no existía, así que obligaba a
+# buscar radicado por radicado y declaraba la limitación en un banner
+# permanente. Una cola de trabajo que obliga a adivinar su contenido no es una
+# cola.
+#
+# Va bajo `/api/v1/anulaciones` y no bajo `/api/v1/documents/anulaciones`
+# porque no es un atributo de un documento: es el trabajo pendiente de un rol.
+# El prefijo propio además hace el ruteo del gateway determinista, sin depender
+# de que una ruta literal se declare antes que `/{document_id}`.
+cola_router = APIRouter(prefix="/api/v1/anulaciones", tags=["anulacion"])
+
+
+@cola_router.get(
+    "",
+    response_model=list[AnulacionPendiente],
+    summary="Cola de solicitudes de anulación pendientes de decidir",
+    dependencies=[Depends(require_permission("PERM_PANU_CODI"))],
+)
+async def listar_pendientes(
+    response: Response,
+    request: Request,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[AnulacionPendiente]:
+    """Solicitudes sin decidir, la más antigua primero.
+
+    Mismo gate que decidir (`PERM_PANU_CODI`): quien no puede aprobar ni
+    rechazar tampoco tiene por qué ver la cola — y al revés, ofrecer una cola
+    que luego rechaza cada acto sería el defecto que el barrido negativo del
+    plan de pruebas fue a buscar.
+
+    No-read-up (RF-SEG-08): el listado y el total salen de la misma condición
+    de clearance, así que el recuento no delata la existencia de solicitudes
+    sobre radicados clasificados.
+    """
+    clearance = await resolve_caller_clearance(conn, _actor(request))
+    items, total = await AnulacionService(conn).listar_pendientes(
+        max_clearance=clearance, page=page, size=size
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items

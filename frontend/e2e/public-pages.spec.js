@@ -37,6 +37,14 @@ test.describe("Páginas públicas", () => {
     expect(authUrl.searchParams.get("client_id")).toBe("orpycamcp-frontend");
     expect(authUrl.searchParams.get("response_type")).toBe("code");
     expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+
+    // La aplicación DECLARA su lengua de trabajo (OIDC Core §3.1.2.1). Sin este
+    // parámetro Keycloak negocia con el `Accept-Language` del navegador, y un
+    // funcionario con el navegador en inglés veía la pantalla de acceso en
+    // inglés seguida de una aplicación enteramente en español. Se comprueba
+    // aquí, en el contrato del redirect, porque es un parámetro que se pierde
+    // en un refactor sin que nada se rompa a la vista.
+    expect(authUrl.searchParams.get("ui_locales")).toBe("es");
     expect(authUrl.searchParams.get("code_challenge")).toBeTruthy();
     expect(authUrl.searchParams.get("state")).toBeTruthy();
     expect(authUrl.searchParams.get("redirect_uri")).toContain("/login/callback");

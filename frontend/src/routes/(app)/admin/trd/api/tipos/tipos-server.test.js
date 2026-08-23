@@ -92,6 +92,9 @@ describe("POST /admin/trd/api/tipos", () => {
       obligatorio: true,
       metadata_template: "oficio-v1",
       activo: true,
+      // Opt-in explícito: si el cuerpo no la pide, el tipo NO se ofrece en la
+      // ventanilla pública. El silencio no significa «todo».
+      admite_ventanilla_publica: false,
     });
   });
 });
@@ -138,5 +141,59 @@ describe("DELETE /admin/trd/api/tipos/[id]", () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const res = await deleteTipo({ locals: SESSION_LOCALS, params: { id: TIPO_ID } });
     expect(res.status).toBe(204);
+  });
+});
+
+describe("la marca de ventanilla pública LLEGA al gateway", () => {
+  // Los proxies construyen el payload campo a campo (allowlist anti
+  // mass-assignment): un campo que no se nombre se descarta EN SILENCIO. Sin
+  // estos dos tests, la casilla de la pantalla parecería funcionar y no
+  // cambiaría nada — el defecto de las dos mitades, cada una correcta y el par
+  // roto, que este proyecto ya ha pagado varias veces.
+
+  it("al CREAR un tipo documental", async () => {
+    let enviado;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviado = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: TIPO_ID }), { status: 201 });
+    });
+
+    const res = await createTipo({
+      locals: SESSION_LOCALS,
+      request: {
+        json: async () => ({
+          code: "DP-GEN",
+          nombre: "Derecho de petición",
+          admite_ventanilla_publica: true,
+        }),
+      },
+    });
+
+    expect(res.status).toBe(201);
+    expect(enviado.admite_ventanilla_publica).toBe(true);
+  });
+
+  it("al EDITAR un tipo documental, y sin inventarla cuando no viene", async () => {
+    let enviado;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviado = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: TIPO_ID }), { status: 200 });
+    });
+
+    await updateTipo({
+      locals: SESSION_LOCALS,
+      params: { id: TIPO_ID },
+      request: { json: async () => ({ admite_ventanilla_publica: true }) },
+    });
+    expect(enviado.admite_ventanilla_publica).toBe(true);
+
+    // Un PATCH que no la menciona NO debe fijarla: apagaría la ventanilla de
+    // un tipo al corregirle el nombre.
+    await updateTipo({
+      locals: SESSION_LOCALS,
+      params: { id: TIPO_ID },
+      request: { json: async () => ({ nombre: "Otro nombre" }) },
+    });
+    expect("admite_ventanilla_publica" in enviado).toBe(false);
   });
 });

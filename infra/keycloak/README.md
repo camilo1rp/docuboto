@@ -41,3 +41,47 @@ Keycloak falla. Es deliberado — un default funcional aquí es una puerta abier
 Este archivo **no crea usuarios**. Las cuentas de producción se dan de alta desde
 la consola de administración o se federan contra el directorio de la entidad; no
 se versionan en el repositorio.
+
+## Tema de las pantallas de identidad (`themes/orpyca/`)
+
+La pantalla de acceso es la **única del recorrido que no pasa por SvelteKit**, así que se quedó
+fuera de todo el trabajo de diseño: salía con el tema por defecto —fondo poligonal gris, botón
+azul PatternFly, «Sign in to your account» en inglés— justo **antes** de la pantalla de Orpyca,
+que sí está cuidada. Van seguidas, así que el contraste era máximo.
+
+El tema hereda de `keycloak` (`parent=keycloak`) y **no copia ninguna plantilla `.ftl`**: solo
+aporta tokens y superficies. Es deliberado — una plantilla copiada se queda congelada en la
+versión en que se copió y hay que re-auditarla en cada actualización, que es justo donde viven
+los arreglos de seguridad de las pantallas de identidad.
+
+### El idioma: dos mitades, y `defaultLocale` es solo una
+
+`internationalizationEnabled` + `defaultLocale: es` en el realm **no bastan**: `defaultLocale` es
+el respaldo para cuando el navegador no expresa preferencia, y siempre la expresa. Un funcionario
+con el navegador en inglés seguía viendo la pantalla de acceso en inglés seguida de una
+aplicación enteramente en español.
+
+La otra mitad la pone el frontend: `ui_locales=es` en la petición de autorización (OIDC Core
+§3.1.2.1), es decir, **la aplicación declara en qué lengua trabaja**. Está cubierto por un test
+de contrato en `frontend/e2e/public-pages.spec.js`, porque es un parámetro que se pierde en un
+refactor sin que nada se rompa a la vista. El selector de idioma del tema sigue disponible para
+quien necesite otra.
+
+### ⚠️ Cambiar `realm-dev.json` NO afecta a un despliegue existente
+
+`start-dev --import-realm` importa **solo si el realm no existe**. Sobre una instalación ya
+arrancada, editar el JSON no cambia nada: hay que aplicarlo por la API de administración. Es el
+modo de fallo clásico de «cambié la configuración y el sistema siguió igual».
+
+```bash
+TOK=$(curl -s -X POST http://localhost:19180/realms/master/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=admin-cli -d username=admin -d password=<clave> \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
+
+curl -X PUT -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" \
+  -d '{"realm":"orpycamcp","loginTheme":"orpyca","internationalizationEnabled":true,
+       "supportedLocales":["es","en"],"defaultLocale":"es"}' \
+  http://localhost:19180/admin/realms/orpycamcp
+```
+
+El JSON queda actualizado igualmente: es lo que recibe una instalación nueva.

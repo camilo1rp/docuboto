@@ -35,12 +35,31 @@ los casos que necesitan identidad se saltan solos —esa es la única barrera qu
 queda—, y los que no la necesitan (credenciales inválidas vuelven a `/login`)
 siguen corriendo.
 
-> **Histórico.** Estos tests estuvieron apagados con **triple freno**:
-> `testIgnore`, `test.describe.skip` en cada archivo y credenciales ausentes.
-> El propio README pedía «crea un segundo config sin esa exclusión», y nadie lo
-> creó. Un test que exige editar su propia configuración para ejecutarse **no
-> se ejecuta nunca**: los dos frenos redundantes se retiraron y quedó el que sí
-> significa algo.
+> **Histórico, y la mitad que faltaba.** Estos tests estuvieron apagados con
+> **triple freno**: `testIgnore`, `test.describe.skip` en cada archivo y
+> credenciales ausentes. El propio README pedía «crea un segundo config sin esa
+> exclusión», y nadie lo creó. Un test que exige editar su propia configuración
+> para ejecutarse **no se ejecuta nunca**: los dos frenos redundantes se
+> retiraron y quedó el que sí significa algo.
+>
+> Retirar los frenos **no bastó**. Al ejecutarlos por primera vez, **4 de 6
+> fallaron**: eran esqueletos escritos contra una interfaz imaginada. El
+> localizador de la contraseña casaba con dos elementos (el `<input>` y el
+> botón «Show password» de Keycloak, cuyo `aria-label` contiene la palabra), y
+> los de bandeja daban por supuesta una tabla cuando `/bandeja` abre en
+> **Tablero**. Reactivar una suite sin correrla es media corrección: hoy pasan
+> las seis, y el inicio de sesión vive en **un solo sitio** (`_sesion.js`) en
+> vez de copiado en tres.
+
+## Estado verificado (agosto 2026)
+
+```
+E2E_USERNAME=jefe E2E_PASSWORD='…' npx playwright test --config=playwright.authenticated.config.js
+  6 passed (14s)
+```
+
+Sin credenciales: **5 saltan y 1 corre** — la de credenciales inválidas, que no
+necesita identidad. Ese es el comportamiento correcto por defecto.
 
 ## Por qué no corre en CI/smoke
 

@@ -38,6 +38,66 @@ async def test_verify_found(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_verify_no_alcanza_a_un_radicado_CLASIFICADO(client_with_conn) -> None:
+    """Superficie ANÓNIMA: el llamante tiene, por definición, clearance 1.
+
+    `verification_code` lo tiene **todo** radicado (migración 010, `DEFAULT
+    gen_random_uuid()`), incluidos los internos y los clasificados que nunca
+    tuvieron un ciudadano detrás. Sin el filtro, quien tuviera el código de un
+    radicado RESERVADO obtenía sin autenticarse su número oficial, su tipo, su
+    estado y su fecha — y el resto del sistema trata la EXISTENCIA de un
+    reservado como protegida (el acceso directo devuelve 404, no 403,
+    precisamente para no confirmarla).
+
+    Se comprueba sobre el SQL enviado, no sobre el resultado del mock: con un
+    mock, el «no encontrado» lo decide el mock y no el `WHERE` — el fallo de
+    método que ya se pagó una vez en este proyecto.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = None
+
+    resp = await client.get("/api/v1/public/demo/verify/codigo-de-un-reservado")
+
+    assert resp.status_code == 404
+    sql = mock_conn.fetchrow.await_args.args[0]
+    assert "nivel_seguridad = 1" in sql, (
+        "la consulta pública no recorta por nivel de seguridad: con el código, "
+        "un anónimo leería metadatos de un radicado clasificado"
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_SIGUE_mostrando_un_radicado_anulado(client_with_conn) -> None:
+    """Anulado no es lo mismo que oculto.
+
+    El chokepoint de OAI/CMIS excluye los anulados —allí el documento se retira
+    de la circulación pública—, pero aquí ocultarlo haría creer al ciudadano
+    que su código es inválido, cuando lo que pasó es que su radicado se anuló:
+    justo lo que tiene derecho a saber. Por eso esta consulta NO reutiliza
+    `_PUBLIC`.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.return_value = {
+        "tracking_number": "2026-DEMO-E-000009",
+        "doc_type": "E",
+        "status": "anulado",
+        "registered_at": datetime.now(tz=UTC),
+        "dest_dept": None,
+    }
+
+    resp = await client.get("/api/v1/public/demo/verify/codigo")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "anulado"
+    sql = mock_conn.fetchrow.await_args.args[0]
+    assert "anulado" not in sql, "la consulta pública no debe excluir los anulados"
+    assert "publicable" not in sql, (
+        "exigir `publicable` rompería la consulta para toda PQRS ciudadana: "
+        "una petición de un ciudadano no es un documento publicado de oficio"
+    )
+
+
+@pytest.mark.asyncio
 async def test_verify_not_found(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.return_value = None

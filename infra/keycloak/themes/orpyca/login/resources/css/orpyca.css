@@ -1,0 +1,99 @@
+/* OrpycaMCP — piel de las pantallas de identidad.
+ *
+ * Solo tokens y superficies: ni una plantilla copiada. Los valores son los
+ * mismos del sistema de diseño del frontend (`src/styles/_tokens.scss`), para
+ * que la pantalla de acceso y la que viene detrás no parezcan dos productos.
+ */
+:root {
+  --op-primary: #2a8c3a;
+  --op-primary-dark: #1c6b33;
+  --op-brand-900: #0c1710;
+  --op-brand-700: #173a22;
+  --op-text: #232624;
+  --op-text-secondary: #6e7370;
+  --op-border: #e7eae2;
+  --op-bg: #fbfcf8;
+  --op-radius: 8px;
+}
+
+/* Fondo: el degradado de marca, no el mosaico poligonal gris de PatternFly. */
+body.login-pf,
+.login-pf body {
+  background: linear-gradient(160deg, var(--op-brand-900), var(--op-brand-700)) !important;
+  background-color: var(--op-brand-900) !important;
+  color: var(--op-text);
+}
+
+/* Cabecera: el ISOTIPO, no el logotipo completo.
+ * El reparto no es de gusto: lo imponen dos límites del activo — la marca
+ * denominativa está dibujada en negro degradado y desaparece sobre fondo
+ * oscuro, y la línea «orfeo pyme calidad» baja a la altura de un pelo. Aquí el
+ * fondo es oscuro, así que va el isotipo y el nombre como TEXTO. */
+#kc-header-wrapper {
+  padding: 24px 16px 8px;
+  font-size: 0;
+  line-height: 0;
+}
+#kc-header-wrapper::before {
+  content: "";
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 12px;
+  background: url("../img/orpyca-mark.png") center / contain no-repeat;
+}
+#kc-header-wrapper::after {
+  content: "OrpycaMCP";
+  display: block;
+  font-family: inherit;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  color: #fff;
+  text-align: center;
+}
+
+/* Tarjeta */
+.card-pf {
+  border-radius: var(--op-radius);
+  border: 1px solid var(--op-border);
+  box-shadow: 0 12px 32px rgba(12, 23, 16, 0.28);
+  border-top: 4px solid var(--op-primary);
+}
+
+/* Acción principal */
+.pf-c-button.pf-m-primary,
+input.pf-c-button.pf-m-primary,
+#kc-login {
+  background-color: var(--op-primary) !important;
+  border-color: var(--op-primary) !important;
+  border-radius: var(--op-radius);
+}
+.pf-c-button.pf-m-primary:hover,
+#kc-login:hover {
+  background-color: var(--op-primary-dark) !important;
+  border-color: var(--op-primary-dark) !important;
+}
+
+/* Foco visible: la accesibilidad no se hereda del color de marca. */
+.pf-c-form-control:focus,
+#kc-login:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* Enlaces */
+a,
+#kc-registration a,
+#kc-info-wrapper a {
+  color: var(--op-primary-dark);
+}
+
+/* Campos */
+.pf-c-form-control {
+  border-radius: var(--op-radius);
+  border-color: var(--op-border);
+}

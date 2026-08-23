@@ -199,6 +199,13 @@ class Settings(BaseSettings):
     # propio tope.
     max_upload_bytes: int = 100 * 1024 * 1024
 
+    #: Tope para lo que llega por la VENTANILLA PÚBLICA, muy por debajo del
+    #: general. Quien sube por ahí no está autenticado: el límite de 100 MB
+    #: pensado para un funcionario convierte a la entidad en almacenamiento
+    #: gratuito para cualquiera. 10 MB cubre un PDF escaneado de decenas de
+    #: páginas, que es el caso real (una tutela con sus soportes).
+    max_public_upload_bytes: int = 10 * 1024 * 1024
+
     # Formatos admitidos en la subida (RF-DIG-04). CSV de MIME types; "*" = todos.
     allowed_mime_types: str = (
         "application/pdf,"
