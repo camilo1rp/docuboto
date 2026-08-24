@@ -79,6 +79,22 @@ class Settings(BaseSettings):
     # de saber en qué entidad debe radicar.
     imap_tenant_slug: str = ""
 
+    # --- E19 Increment 1: cuentas de correo en base de datos ---
+    #
+    # Las variables `imap_*` de arriba configuran UNA sola cuenta para todo el
+    # despliegue. Eso no expresa lo que exige el Acuerdo AGN 060/2001 art. 13
+    # ("asignarán responsabilidades de acuerdo con la cantidad de cuentas
+    # habilitadas") y deja la contraseña en claro en el entorno. Quedan como
+    # ruta heredada mientras las entidades migran a `email_cuenta`.
+    #
+    # Clave maestra (AES-256 en base64) con la que se cifran en reposo las
+    # credenciales de las cuentas institucionales. Vacía por defecto y
+    # FAIL-CLOSED: crear una cuenta con contraseña falla explícitamente hasta
+    # configurarla — nunca se cae a una clave derivada, que daría la apariencia
+    # de custodia sin la custodia. Mismo criterio que
+    # `signing_key_encryption_key` y `totp_encryption_key` de auth-service.
+    email_encryption_key: str = ""
+
     # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
     # que el gateway declara público sin autenticación.
     #

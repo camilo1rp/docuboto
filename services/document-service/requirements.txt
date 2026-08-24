@@ -5,6 +5,9 @@ pydantic-settings>=2.2.0
 # petición. Suelo >=0.0.18 por seguridad (CLAUDE.md), no por capricho.
 python-multipart>=0.0.18
 asyncpg>=0.29.0
+# Custodia de credenciales de cuentas de correo (E19): AESGCM para cifrarlas en
+# reposo, mismo suelo que auth-service. Antes vivían en claro en el entorno.
+cryptography>=42.0.0
 jsonschema>=4.21.0
 httpx>=0.27.0
 redis>=5.0.0

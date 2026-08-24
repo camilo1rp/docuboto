@@ -57,6 +57,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/public/archive/", app_state.archive_service_url),
         ("/api/v1/public/", app_state.document_service_url),
         ("/api/v1/ingest/", app_state.document_service_url),
+        # Cuentas de correo (E19): configuración de buzones y de la aplicación
+        # OAuth que la entidad registró ante Google o Microsoft.
+        ("/api/v1/email/", app_state.document_service_url),
         ("/api/v1/envios/", app_state.document_service_url),
         # Cola del aprobador de anulaciones (recurso propio, no una subruta
         # de un documento). SIN barra final: la ruta es `/api/v1/anulaciones`

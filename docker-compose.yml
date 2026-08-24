@@ -485,6 +485,12 @@ services:
       - TENANT_SERVICE_URL=http://tenant-service:8002
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      # Custodia de las credenciales de las cuentas de correo (E19): la
+      # contraseña IMAP de una cuenta institucional y el «client secret» de la
+      # aplicación OAuth que la entidad registró ante Google o Microsoft. Las
+      # cuentas viven en `email_cuenta`, no aquí — las variables IMAP_* de
+      # arriba son la ruta heredada de una sola cuenta por despliegue.
+      - EMAIL_ENCRYPTION_KEY=${EMAIL_ENCRYPTION_KEY:-}
     networks:
       - orpycamcp-net
     depends_on:

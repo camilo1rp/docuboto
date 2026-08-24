@@ -47,15 +47,23 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from orpycamcp_common import audit
 
 from app.clients.imap_client import ImapClient
-from app.core.clearance import require_permission
+from app.core.clearance import check_permission, require_permission
 from app.core.config import settings
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
+from app.schemas.email_cuenta import (
+    AppOAuthCrear,
+    AppOAuthResponse,
+    CuentaCrear,
+    CuentaResponse,
+    PruebaConexion,
+)
 from app.schemas.ingest import EstadoIngesta, PollResult
 from app.services.document_service import DocumentService, InvalidTenantError
+from app.services.email_cuenta_service import EmailCuentaService, ErrorDeCuenta
 from app.services.email_ingest import EmailIngestor
 
 logger = logging.getLogger(__name__)
@@ -238,3 +246,215 @@ async def _auditar_poll(
         )
     except Exception:
         logger.warning("audit.append (ingest.email.poll) failed", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cuentas de correo (E19 Increment 1)
+#
+# Sustituyen a la cuenta única de las variables `IMAP_*`, que no podía expresar
+# lo que exige el Acuerdo AGN 060/2001 art. 13 —«asignarán responsabilidades de
+# acuerdo con la cantidad de cuentas habilitadas»— y guardaba la contraseña en
+# claro en el entorno.
+#
+# Gate: `USUA_PERM_ADMIN` para configurar. El recorte de QUÉ cuentas alcanza
+# cada quien no vive aquí sino en el `WHERE` del repositorio: una cuenta
+# personal es de su dueño, una institucional de sus funcionarios asignados, y
+# el administrador ve las institucionales pero **no** las personales de nadie.
+# ═══════════════════════════════════════════════════════════════════════════
+
+cuentas_router = APIRouter(prefix="/api/v1/email/cuentas", tags=["email-cuentas"])
+apps_router = APIRouter(prefix="/api/v1/email/apps-oauth", tags=["email-cuentas"])
+
+
+def _actor(request: Request) -> uuid.UUID:
+    crudo = request.headers.get("X-User-Id", "")
+    try:
+        return uuid.UUID(crudo)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "missing_user", "detail": "X-User-Id requerido", "status": 400},
+        )
+
+
+async def _es_admin(conn: asyncpg.Connection, actor: uuid.UUID) -> bool:
+    """Si el llamante tiene la competencia administrativa sobre correo.
+
+    Se resuelve **contra la base**, con el mismo `check_permission` que usan los
+    gates del servicio. La primera versión de esto leía una cabecera
+    `X-User-Permissions`, y eso estaba roto de un modo que no se ve: **esa
+    cabecera no la produce nadie**. El gateway no la emite —los tests de
+    mcp-server lo dejan escrito, «cabecera que nadie producía», porque allí ya
+    apareció el mismo defecto—, así que la función habría devuelto `False`
+    siempre y ningún administrador habría visto ni una cuenta institucional. La
+    pantalla saldría vacía, sin error, indistinguible de «no hay cuentas
+    configuradas».
+
+    No es una habilitación de seguridad por sí sola: gobierna qué cuentas
+    INSTITUCIONALES se ven, nunca las personales de otro (ver el `WHERE` del
+    repositorio).
+    """
+    return await check_permission(conn, actor, "USUA_PERM_ADMIN")
+
+
+def _traducir(exc: ErrorDeCuenta) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status,
+        detail={"error": exc.codigo, "detail": exc.detalle, "status": exc.status},
+    )
+
+
+@apps_router.post(
+    "", response_model=AppOAuthResponse, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def registrar_app_oauth(
+    request: Request,
+    datos: AppOAuthCrear,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> Any:
+    """Registra la aplicación que la ENTIDAD creó ante Google o Microsoft.
+
+    No se pide en el alta de la entidad a propósito: cuando se crea una
+    institución nadie sabe aún qué correo usará, quien la da de alta no suele
+    tener a mano los permisos de administrador de Azure o Google Cloud, y muchas
+    entidades trabajarán contra IMAP de hosting sin necesitar esto. Exigirlo
+    entonces bloquearía el alta por un dato que puede tardar semanas.
+    """
+    slug = _tenant_slug(request)
+    try:
+        return await EmailCuentaService(conn, slug).crear_app(datos, actor=_actor(request))
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+
+
+@apps_router.get(
+    "", response_model=list[AppOAuthResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def listar_apps_oauth(
+    request: Request, conn: asyncpg.Connection = Depends(get_tenant_conn)
+) -> Any:
+    return await EmailCuentaService(conn, _tenant_slug(request)).listar_apps()
+
+
+@cuentas_router.post(
+    "", response_model=CuentaResponse, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def crear_cuenta(
+    request: Request,
+    datos: CuentaCrear,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> Any:
+    slug = _tenant_slug(request)
+    try:
+        fila = await EmailCuentaService(conn, slug).crear_cuenta(datos, actor=_actor(request))
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+    return dict(fila) | {"funcionarios": []}
+
+
+@cuentas_router.get(
+    "", response_model=list[CuentaResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def listar_cuentas(
+    request: Request, conn: asyncpg.Connection = Depends(get_tenant_conn)
+) -> Any:
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    return await EmailCuentaService(conn, slug).listar(
+        actor=actor, es_admin=await _es_admin(conn, actor)
+    )
+
+
+@cuentas_router.post(
+    "/{cuenta_id}/probar", response_model=PruebaConexion,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def probar_cuenta(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    password: str | None = Body(default=None, embed=True),
+) -> Any:
+    """Comprueba la conexión y devuelve las carpetas del buzón. Sin efectos.
+
+    Las carpetas son la mitad del valor: la de filtrado se elige de esta lista
+    en vez de escribirse a mano. Una errata al teclearla se manifestaría como
+    «la ingesta no trae nada», indistinguible de «no ha llegado correo».
+
+    `password` solo para cuentas personales, cuya credencial no se guarda: viaja
+    en esta petición y muere con ella.
+    """
+    slug = _tenant_slug(request)
+    try:
+        actor = _actor(request)
+        ok, detalle, carpetas = await EmailCuentaService(conn, slug).probar(
+            cuenta_id,
+            actor=actor,
+            es_admin=await _es_admin(conn, actor),
+            password=password,
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+    return PruebaConexion(ok=ok, detalle=detalle, carpetas=carpetas)
+
+
+@cuentas_router.post(
+    "/{cuenta_id}/oauth/iniciar",
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def iniciar_autorizacion(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, str]:
+    """Devuelve la URL del proveedor a la que mandar al administrador.
+
+    El sistema **no** redirige por su cuenta ni abre la ventana: entrega la URL y
+    la interfaz decide. Así el flujo se puede completar desde la sesión del
+    navegador del administrador, que es quien tiene que autenticarse ante Google
+    o Microsoft — el servidor no tiene forma de hacerlo por él, ni debe.
+    """
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        url = await EmailCuentaService(conn, slug).iniciar_autorizacion(
+            cuenta_id, actor=actor, es_admin=await _es_admin(conn, actor)
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+    return {"authorization_url": url}
+
+
+@cuentas_router.post(
+    "/{cuenta_id}/oauth/canjear",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def canjear_autorizacion(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    code: str = Body(..., embed=True),
+    state: str = Body(..., embed=True),
+) -> None:
+    """Cierra el flujo: canjea el código por el token de refresco y lo guarda.
+
+    Lo llama la propia aplicación tras recibir la redirección del proveedor, con
+    la sesión del administrador ya establecida. Se hace así, y no con un endpoint
+    público que reciba la redirección directamente, para no abrir superficie sin
+    autenticar en el gateway: la redirección aterriza en la interfaz, que ya sabe
+    quién es el usuario.
+    """
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        await EmailCuentaService(conn, slug).canjear_autorizacion(
+            cuenta_id, code=code, state=state, actor=actor,
+            es_admin=await _es_admin(conn, actor),
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)

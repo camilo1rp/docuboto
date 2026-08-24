@@ -66,6 +66,12 @@ SECRETOS=(
   # no se puede enrolar, y como la credencial de firma EXIGE un TOTP activo,
   # faltaba aquí toda la cadena de firma personal.
   "TOTP_ENCRYPTION_KEY:aes256"
+  # Cifra en reposo las credenciales de las cuentas de correo (E19): la
+  # contraseña IMAP de una cuenta institucional y el `client secret` de la
+  # aplicación OAuth que la entidad registró ante Google o Microsoft. Sin ella
+  # no se puede dar de alta una cuenta con credencial — falla explícitamente,
+  # nunca cae a una clave derivada.
+  "EMAIL_ENCRYPTION_KEY:aes256"
 )
 
 aleatorio_hmac() {

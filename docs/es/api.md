@@ -1101,6 +1101,28 @@ La ley prohíbe borrar radicados: se anulan con aprobación supervisora.
 - `GET /api/v1/documents/{id}/envios` · `GET /api/v1/envios/{id}` — envíos del radicado / detalle con historial de eventos.
 - `POST /api/v1/envios/{id}/estado` `{estado, descripcion?}` — actualiza el estado de entrega (callback/sondeo del operador). Máquina de estados `registrado→en_transito→entregado|devuelto|fallido`; `409` si la transición es inválida.
 
+### Cuentas de correo (E19, `USUA_PERM_ADMIN`)
+
+Sustituyen a la cuenta única de las variables `IMAP_*`, que no podía expresar lo que exige el Acuerdo AGN 060/2001 art. 13 —«las entidades […] asignarán responsabilidades de acuerdo con la cantidad de cuentas habilitadas»— y guardaba la contraseña en claro en el entorno.
+
+- `POST|GET /api/v1/email/apps-oauth` — **aplicación OAuth que la ENTIDAD registró** en su propio Google Cloud o Azure AD. `{proveedor, client_id, client_secret, azure_directory_id?, redirect_uri, notas?}`; una fila por proveedor (`409 app_ya_registrada`), y la misma sirve para todas las cuentas de ese proveedor. Microsoft exige `azure_directory_id`; Google no lo usa (`422` en ambos sentidos). El `client_secret` se cifra en reposo y **nunca se devuelve**: la respuesta solo dice `tiene_secreto`.
+
+  > **Por qué la registra la entidad y no el despliegue.** Google exige verificación y una **evaluación de seguridad CASA anual** por un tercero acreditado a cualquier aplicación que pida el scope `https://mail.google.com/` (el que cubre IMAP), pero **exime a las internas**: «*the app is only used by people in your Google Workspace or Cloud Identity organization […] its OAuth Consent Screen must be configured for internal use*». Con una aplicación central de OrpycaMCP habría que sostener esa acreditación, y OrpycaMCP es software que cada institución despliega. **No se pide en el alta de la entidad**: al crearla nadie sabe aún qué correo usará, quien la da de alta rara vez tiene los permisos de Azure o Google Cloud a mano, y muchas entidades usarán IMAP de hosting sin necesitarlo.
+
+- `POST|GET /api/v1/email/cuentas` — buzones. Tres tipos: **institucional** compartida (con funcionarios asignados), **personal** del funcionario y varias de recepción a la vez. `carpeta_origen` es el **filtro humano** —la carpeta a la que alguien arrastra lo que sí se radica, dejando fuera publicidad y spam— y `carpeta_radicados` a dónde se mueve el correo tras radicarlo; no pueden ser la misma. `modo` es `asistida` (un funcionario revisa y radica, con lo que existe el «funcionario responsable del trámite» del art. 2) o `automatica`. `direccion` y `usuario_login` son campos distintos: el login puede ser `DOMINIO\usuario` o solo la parte local.
+
+  La **credencial de una cuenta personal no se guarda en absoluto** — se pide al entrar y vive en la sesión; custodiarla convertiría al sistema en titular del correo entero de un funcionario. Las institucionales se cifran con AESGCM y AAD `tenant|cuenta`. Crear una cuenta `gmail` o `microsoft` con contraseña se rechaza con la razón: esas plataformas ya no la aceptan por IMAP.
+
+  **Visibilidad**: una cuenta personal la ve solo su dueño —**ni el administrador**—, y una institucional, sus funcionarios asignados más el administrador. El recorte va en el `WHERE`, y `404` no distingue «no existe» de «no la alcanzas».
+
+- `POST /api/v1/email/cuentas/{id}/probar` `{password?}` — abre una sesión y **devuelve las carpetas del buzón**, sin tocar ningún correo. Las carpetas son la mitad del valor: la de filtrado se elige de esa lista en vez de escribirse a mano, y una errata se manifestaría como «la ingesta no trae nada», indistinguible de «no ha llegado correo». `password` solo para cuentas personales.
+
+- `POST /api/v1/email/cuentas/{id}/oauth/iniciar` — devuelve `{authorization_url}`, la URL del proveedor a la que mandar al administrador. Lleva **PKCE S256** (RFC 7636) y un `state` de un solo uso (RFC 6749 §10.12), y `login_hint` con la dirección del buzón: sin él, quien tenga varias cuentas abiertas autoriza con la que el proveedor elija y el token queda emitido para el buzón equivocado. Para Google añade `access_type=offline` y `prompt=consent`, sin los cuales **no** hay token de refresco y el acceso caducaría en una hora.
+
+- `POST /api/v1/email/cuentas/{id}/oauth/canjear` `{code, state}` — cierra el flujo y guarda el token de refresco cifrado. El `state` se valida y se marca usado **en el mismo `UPDATE`**, con cuatro condiciones (un solo uso, no caducado, misma cuenta, mismo iniciador), de modo que una redirección reproducida no encuentra fila. `400 state_invalido` no dice cuál de las cuatro falló. Lo invoca la propia aplicación tras recibir la redirección, con la sesión ya establecida, para no abrir superficie sin autenticar en el gateway.
+
+  Scopes: Google `https://mail.google.com/`; Microsoft `https://outlook.office.com/IMAP.AccessAsUser.All` **más** `offline_access` — no `outlook.office365.com`, que es el del flujo de credenciales de aplicación y produce un token que el servidor IMAP rechaza.
+
 ### `GET /api/v1/ingest/email/estado` (estado de la ingesta, E19)
 Informa si la entidad tiene ingesta de correo configurada **sin ejecutarla**. Respuesta `{ "habilitada": bool, "motivo": str|null, "servidor": str|null, "buzon": str|null, "cuenta": str|null }`. Exige **`USUA_PERM_ADMIN`**, el mismo gate que el poll.
 
