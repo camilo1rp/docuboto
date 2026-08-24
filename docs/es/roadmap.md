@@ -113,8 +113,14 @@ procedimiento, los casos y los puntos ciegos declarados quedan en
       backend **sin ninguna forma de llegar a ellos**. Sin cuenta, enlazados desde la portada
       antes que «Iniciar sesión». No sustituyen a `/radicar` (ventanilla de mostrador, de usuario
       del sistema): son dos puertas al mismo trámite.
-      - [ ] **Ingesta IMAP** sigue sin pantalla — por naturaleza es un proceso de fondo, pero no
-            hay dónde ver su estado ni sus fallos.
+      - [x] **Ingesta IMAP** (cerrado 2026-08-23): `/admin/correo`. El obstáculo no era dibujar la
+            pantalla, era que **no se podía construir**: el poll era la única puerta, y ejecutarlo
+            consume números de la secuencia oficial y marca los correos como leídos, así que
+            averiguar el estado costaba un acto irreversible. Nuevo `GET /ingest/email/estado`
+            (`USUA_PERM_ADMIN`, sin efectos, y sin describir el buzón a una entidad que no es su
+            dueña); ambas puertas comparten `diagnosticar_buzon` para que el estado no anuncie
+            disponible lo que el poll va a rechazar. La pantalla añade el acto con confirmación
+            —radicar, no «actualizar»— y el historial leído del `audit_log`.
 - [x] **Cola de anulaciones pendientes** (hueco de backend, cerrado 2026-08): `GET /api/v1/anulaciones`
       — recurso propio, gate `PERM_PANU_CODI` (el mismo que decidir), orden FIFO y no-read-up
       aplicado por igual a las filas y al recuento. `/anulaciones` deja de ser un buscador y pasa
@@ -164,7 +170,7 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 **Accesibilidad y consistencia (backlog Medio/Bajo de la auditoría)**
 
 - [ ] **Colores crudos `rgba(...)` fuera de tokens** en velos y superficies de marca: `Modal.svelte` (`rgba(33,36,33,.5)`) vs `Drawer.svelte` (`.35`) vs `AppLayout` (`.4`) vs `AssistantDock` (`.25`) — **cuatro opacidades para el mismo scrim**, y el color base ni siquiera coincide con `--op-text`. Más los blancos translúcidos del hero/CTA/footer de la landing. No son hex, pero son invisibles a un rebranding por tenant.
-- [ ] **Falta un token de FAMILIA monoespaciada**: `--op-font-mono` es un **tamaño** (12px), no una familia. Hay ~16 sitios con `font-family: monospace` a pelo, justo en el número de radicado, que es el dato más identificatorio del sistema. Añadir `--op-font-family-mono` a `_tokens.scss` y migrar los 16 sitios (uno de ellos, en `/dashboard`, quedó con un stack literal como parche).
+- [x] **Token de FAMILIA monoespaciada** (cerrado 2026-08-22): `--op-font-family-mono` en `_tokens.scss` y **46** declaraciones migradas en 27 archivos — eran más de los ~16 estimados, y en tres formas distintas. De paso aparecieron dos defectos que el apunte no preveía: nueve declaraciones hacían `font-family: var(--op-font-mono, monospace)`, **inválidas y descartadas por el navegador** (el respaldo no se aplica si la variable existe, y `--op-font-mono` existe: es el tamaño), y Bulma pintaba `code` en rojo `#da1039` sobre gris — el color del error sobre el número de radicado. Guardián `styles/tokens-mono.test.js`.
 - [ ] **`<a role="button">`**: `Button.svelte` con `href` renderiza un enlace anunciado como botón — no responde a la barra espaciadora. Afecta a los CTA de la landing, a `/403` y a los enlaces de acción de `EmptyState`.
 - [ ] **Tamaño del H1 inconsistente entre pantallas** (`--op-font-lg` en 5 vistas, `--op-font-xl` en 8; ninguna usa el H1 de v1.0, `--op-font-2xl`), y **objetivos táctiles <44px** aún en los botones de paginación de `DataTable` (28px), sus casillas de selección, el `summary` de "Columnas"/"Vistas guardadas" (36px) y los controles de `AssistantDock` (~30px).
 - [ ] **`EmptyState` reimplementa `.op-btn`** copiando los estilos de `Button.svelte` "por si Button no está importado": es una tercera definición del botón primario que se desincronizará. Se usa en 9 de 10 pantallas.

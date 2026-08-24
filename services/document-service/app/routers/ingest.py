@@ -8,11 +8,19 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Ingesta de correo: endpoint de poll (E19, F2).
+Ingesta de correo: estado y poll (E19, F2).
 
-Trae los correos no leídos de la bandeja configurada, crea un radicado de
-Entrada por cada uno y los marca como leídos. Si IMAP no está configurado,
+El poll trae los correos no leídos de la bandeja configurada, crea un radicado
+de Entrada por cada uno y los marca como leídos. Si IMAP no está configurado,
 responde 503.
+
+**El estado (`GET /email/estado`) es posterior y cierra un hueco de producto.**
+Durante toda la vida de E19 el poll fue la única puerta: para saber si la
+ingesta estaba configurada había que ejecutarla, y ejecutarla consume números de
+radicado y marca los correos como leídos — dos efectos que no se deshacen. Una
+capacidad cuya única forma de consultarse es usarla no se puede ofrecer en una
+pantalla. Las dos puertas comparten `diagnosticar_buzon`, para que el estado no
+pueda anunciar disponible lo que el poll va a rechazar.
 
 **Dos controles que faltaban (11.9).** El endpoint solo exigía un JWT válido, y
 eso no basta para lo que hace:
@@ -46,7 +54,7 @@ from app.clients.imap_client import ImapClient
 from app.core.clearance import require_permission
 from app.core.config import settings
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
-from app.schemas.ingest import PollResult
+from app.schemas.ingest import EstadoIngesta, PollResult
 from app.services.document_service import DocumentService, InvalidTenantError
 from app.services.email_ingest import EmailIngestor
 
@@ -70,38 +78,96 @@ def _tenant_slug(request: Request) -> str:
     return slug
 
 
-def _exigir_dueno_del_buzon(slug: str) -> None:
-    """El buzón es UNO y el tenant venía de la cabecera (ver módulo).
+MOTIVO_SIN_IMAP = "imap_no_configurado"
+MOTIVO_SIN_ENTIDAD = "entidad_no_declarada"
+MOTIVO_OTRA_ENTIDAD = "buzon_de_otra_entidad"
 
-    Sin `IMAP_TENANT_SLUG` se responde 503 aunque IMAP esté configurado: un
-    buzón sin dueño declarado no tiene forma de saber en qué entidad radicar, y
-    adivinarlo por la cabecera es exactamente el defecto. Fail-closed.
+
+def diagnosticar_buzon(slug: str, *, imap_configurado: bool) -> str | None:
+    """Único sitio que decide si la ingesta puede correr para `slug`.
+
+    Devuelve el motivo por el que NO puede, o `None` si puede. Lo consultan las
+    dos puertas —el poll, que levanta la excepción correspondiente, y el estado,
+    que lo informa— para que la pantalla no pueda anunciar "lista para traer
+    correo" sobre un buzón que el poll va a rechazar. Dos comprobaciones
+    paralelas de la misma condición divergen; esta es una.
+
+    `imap_configurado` es keyword-only y sin valor por defecto a propósito: el
+    día que aparezca una tercera puerta, olvidarlo es un error de firma y no una
+    ingesta que se declara disponible sin cliente IMAP detrás.
+
+    Sin `IMAP_TENANT_SLUG` la ingesta se considera no disponible aunque IMAP esté
+    configurado: un buzón sin dueño declarado no tiene forma de saber en qué
+    entidad radicar, y adivinarlo por la cabecera es exactamente el defecto que
+    esto cierra. Fail-closed.
     """
+    if not imap_configurado:
+        return MOTIVO_SIN_IMAP
     dueno = settings.imap_tenant_slug.strip()
     if not dueno:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error": "imap_tenant_not_configured",
-                "detail": (
-                    "La ingesta de correo no declara a qué entidad pertenece el buzón "
-                    "(IMAP_TENANT_SLUG)"
-                ),
-                "status": 503,
-            },
-        )
+        return MOTIVO_SIN_ENTIDAD
     if slug != dueno:
-        # No se dice de quién ES el buzón: el mensaje lo leería un usuario de
-        # otra entidad, y el nombre de las demás instituciones del despliegue no
-        # es asunto suyo.
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "imap_tenant_mismatch",
-                "detail": "El buzón de ingesta no pertenece a esta entidad",
-                "status": 403,
-            },
-        )
+        return MOTIVO_OTRA_ENTIDAD
+    return None
+
+
+_RESPUESTA_POR_MOTIVO = {
+    MOTIVO_SIN_IMAP: (
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "email_not_configured",
+        "La ingesta de correo no está habilitada (IMAP sin configurar)",
+    ),
+    MOTIVO_SIN_ENTIDAD: (
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "imap_tenant_not_configured",
+        (
+            "La ingesta de correo no declara a qué entidad pertenece el buzón "
+            "(IMAP_TENANT_SLUG)"
+        ),
+    ),
+    # No se dice de quién ES el buzón: el mensaje lo leería un usuario de otra
+    # entidad, y el nombre de las demás instituciones del despliegue no es
+    # asunto suyo.
+    MOTIVO_OTRA_ENTIDAD: (
+        status.HTTP_403_FORBIDDEN,
+        "imap_tenant_mismatch",
+        "El buzón de ingesta no pertenece a esta entidad",
+    ),
+}
+
+
+def _exigir_buzon_disponible(slug: str, *, imap_configurado: bool) -> None:
+    """Traduce el diagnóstico a la respuesta HTTP que ya devolvía el poll."""
+    motivo = diagnosticar_buzon(slug, imap_configurado=imap_configurado)
+    if motivo is None:
+        return
+    codigo, error, detalle = _RESPUESTA_POR_MOTIVO[motivo]
+    raise HTTPException(
+        status_code=codigo,
+        detail={"error": error, "detail": detalle, "status": codigo},
+    )
+
+
+@router.get(
+    "/email/estado",
+    response_model=EstadoIngesta,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def estado_email(
+    request: Request,
+    imap: ImapClient | None = Depends(get_imap_client),
+) -> EstadoIngesta:
+    """Estado de la ingesta sin efectos — ver `EstadoIngesta`."""
+    slug = _tenant_slug(request)
+    motivo = diagnosticar_buzon(slug, imap_configurado=imap is not None)
+    if motivo is not None:
+        return EstadoIngesta(habilitada=False, motivo=motivo)
+    return EstadoIngesta(
+        habilitada=True,
+        servidor=settings.imap_host,
+        buzon=settings.imap_mailbox,
+        cuenta=settings.imap_user,
+    )
 
 
 @router.post(
@@ -116,17 +182,9 @@ async def poll_email(
     redis: Any = Depends(get_redis),
     imap: ImapClient | None = Depends(get_imap_client),
 ) -> PollResult:
-    if imap is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error": "email_not_configured",
-                "detail": "La ingesta de correo no está habilitada (IMAP sin configurar)",
-                "status": 503,
-            },
-        )
     slug = _tenant_slug(request)
-    _exigir_dueno_del_buzon(slug)
+    _exigir_buzon_disponible(slug, imap_configurado=imap is not None)
+    assert imap is not None  # lo garantiza `_exigir_buzon_disponible`
     try:
         service = DocumentService(conn, slug, tenant_client, redis)
     except InvalidTenantError as exc:

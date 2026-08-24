@@ -2488,7 +2488,7 @@
     align-items: center;
     gap: var(--op-space-2);
     font-size: var(--op-font-xs);
-    font-weight: var(--op-weight-normal);
+    font-weight: var(--op-weight-regular);
     color: var(--op-text-secondary);
     margin-left: auto;
     flex-wrap: wrap;

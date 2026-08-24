@@ -1063,6 +1063,15 @@ The law prohibits deleting radicados: they are annulled with supervisory approva
 - `GET /api/v1/documents/{id}/envios` · `GET /api/v1/envios/{id}` — dispatches of the radicado / detail with event history.
 - `POST /api/v1/envios/{id}/estado` `{estado, descripcion?}` — updates the delivery status (operator callback/polling). State machine `registrado→en_transito→entregado|devuelto|fallido`; `409` if the transition is invalid.
 
+### `GET /api/v1/ingest/email/estado` (ingestion status, E19)
+Reports whether the institution has email ingestion configured **without running it**. Response `{ "habilitada": bool, "motivo": str|null, "servidor": str|null, "buzon": str|null, "cuenta": str|null }`. Requires **`USUA_PERM_ADMIN`**, the same gate as the poll.
+
+It answers **200 with `habilitada:false`** when ingestion is unavailable, not an error: "this institution has no email ingestion" is a correct answer to the question, not a fault. Reasons: `imap_no_configurado`, `entidad_no_declarada` (a mailbox exists but declares no `IMAP_TENANT_SLUG`), `buzon_de_otra_entidad`.
+
+`servidor`, `buzon` and `cuenta` are returned **only** to the institution that owns the mailbox: with `buzon_de_otra_entidad` they come back empty, for the same reason the poll's `403` does not disclose whose mailbox it is — another institution's correspondence address and mail server are none of the caller's business.
+
+It exists because the poll was the only door: finding out whether ingestion was configured meant triggering it, and triggering it **consumes numbers from the official sequence and marks the emails as read**. A capability whose only way of being consulted is to use it cannot be offered on a screen. Both endpoints share `diagnosticar_buzon`, so the status cannot advertise as available what the poll is about to reject.
+
 ### `POST /api/v1/ingest/email/poll` (email ingestion, E19)
 Fetches the unread emails from the configured IMAP mailbox, creates one Entrada (inbound) radicado per email (`metadata.source=email`, sender and attachments in `metadata`) and marks them as read. Response `{ "ingested": n, "tracking_numbers": [...] }`. `503` if IMAP is not configured (`IMAP_HOST` empty).
 

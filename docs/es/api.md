@@ -1101,6 +1101,15 @@ La ley prohíbe borrar radicados: se anulan con aprobación supervisora.
 - `GET /api/v1/documents/{id}/envios` · `GET /api/v1/envios/{id}` — envíos del radicado / detalle con historial de eventos.
 - `POST /api/v1/envios/{id}/estado` `{estado, descripcion?}` — actualiza el estado de entrega (callback/sondeo del operador). Máquina de estados `registrado→en_transito→entregado|devuelto|fallido`; `409` si la transición es inválida.
 
+### `GET /api/v1/ingest/email/estado` (estado de la ingesta, E19)
+Informa si la entidad tiene ingesta de correo configurada **sin ejecutarla**. Respuesta `{ "habilitada": bool, "motivo": str|null, "servidor": str|null, "buzon": str|null, "cuenta": str|null }`. Exige **`USUA_PERM_ADMIN`**, el mismo gate que el poll.
+
+Responde **200 con `habilitada:false`** cuando no hay ingesta, no un error: «esta entidad no tiene ingesta de correo» es una respuesta correcta a la pregunta, no una avería. Motivos: `imap_no_configurado`, `entidad_no_declarada` (hay buzón pero no declara `IMAP_TENANT_SLUG`), `buzon_de_otra_entidad`.
+
+`servidor`, `buzon` y `cuenta` van **solo** si quien pregunta es la entidad dueña del buzón: con `buzon_de_otra_entidad` se devuelven vacíos, por la misma razón por la que el `403` del poll no dice de quién es el buzón — la dirección de correspondencia y el servidor de correo de otra institución del despliegue no son asunto de quien pregunta.
+
+Existe porque el poll era la única puerta: para saber si la ingesta estaba configurada había que dispararla, y dispararla **consume números de la secuencia oficial y marca los correos como leídos**. Una capacidad cuya única forma de consultarse es usarla no se puede ofrecer en una pantalla. Ambos endpoints comparten `diagnosticar_buzon`, de modo que el estado no puede anunciar disponible lo que el poll va a rechazar.
+
 ### `POST /api/v1/ingest/email/poll` (ingesta de correo, E19)
 Trae los correos no leídos de la bandeja IMAP configurada, crea un radicado de Entrada por cada uno (`metadata.source=email`, remitente y anexos en `metadata`) y los marca como leídos. Respuesta `{ "ingested": n, "tracking_numbers": [...] }`. `503` si IMAP no está configurado (`IMAP_HOST` vacío).
 

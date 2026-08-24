@@ -641,7 +641,7 @@
     font-size: var(--op-font-xs);
     font-weight: var(--op-weight-bold);
     padding: 2px var(--op-space-2);
-    border-radius: var(--op-radius-pill, 999px);
+    border-radius: var(--op-radius-full, 999px);
   }
 
   .module-link {

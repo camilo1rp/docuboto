@@ -150,15 +150,15 @@
   .proposal-card {
     border: 1px solid var(--op-border);
     border-left: 3px solid var(--op-primary);
-    border-radius: var(--op-radius-md);
+    border-radius: var(--op-radius);
     background: var(--op-surface);
     padding: var(--op-space-3);
     margin: var(--op-space-2) 0;
-    font-size: var(--op-font-size-sm);
+    font-size: var(--op-font-sm);
   }
 
   .proposal-card--irreversible {
-    border-left-color: var(--op-danger);
+    border-left-color: var(--op-error);
   }
 
   .proposal-card__head {
@@ -179,8 +179,8 @@
   }
 
   .proposal-card__hint {
-    color: var(--op-text-muted);
-    font-size: var(--op-font-size-xs);
+    color: var(--op-text-secondary);
+    font-size: var(--op-font-xs);
   }
 
   .proposal-card__fields {
@@ -195,7 +195,7 @@
     gap: var(--op-space-2);
 
     dt {
-      color: var(--op-text-muted);
+      color: var(--op-text-secondary);
     }
 
     dd {
@@ -208,14 +208,14 @@
     display: flex;
     gap: var(--op-space-2);
     align-items: center;
-    color: var(--op-danger);
+    color: var(--op-error);
     margin-bottom: var(--op-space-2);
   }
 
   .proposal-card__phrase {
     display: block;
-    color: var(--op-text-muted);
-    font-size: var(--op-font-size-xs);
+    color: var(--op-text-secondary);
+    font-size: var(--op-font-xs);
     margin-bottom: var(--op-space-2);
 
     input {
@@ -226,7 +226,7 @@
       min-height: 2.75rem;
       border: 1px solid var(--op-border);
       border-radius: var(--op-radius-sm);
-      background: var(--op-surface-alt);
+      background: var(--op-bg);
       color: var(--op-text);
     }
   }
@@ -238,7 +238,7 @@
   }
 
   .proposal-card__error {
-    color: var(--op-danger);
+    color: var(--op-error);
     margin-bottom: var(--op-space-2);
   }
 
@@ -250,6 +250,6 @@
   }
 
   .proposal-card__done--muted {
-    color: var(--op-text-muted);
+    color: var(--op-text-secondary);
   }
 </style>

@@ -222,3 +222,119 @@ async def test_poll_deja_asiento_del_acto(client_with_conn, buzon_de_esta_entida
         assert "ingest.email.poll" in ejecutadas
     finally:
         app.dependency_overrides.pop(get_imap_client, None)
+
+
+# ── Estado de la ingesta (sin efectos) ────────────────────────────────────────
+#
+# El poll era la única puerta: para saber si la ingesta estaba configurada había
+# que ejecutarla, y ejecutarla crea radicados y marca correos como leídos. Estos
+# tests cubren la consulta que faltaba y, sobre todo, las dos cosas que puede
+# hacer mal: revelar el buzón de otra entidad, y desmentir al poll.
+
+ESTADO_URL = "/api/v1/ingest/email/estado"
+
+
+@pytest.mark.asyncio
+async def test_estado_sin_imap_no_es_un_error(client_with_conn) -> None:
+    """"No hay ingesta" es una respuesta, no una avería: 200, no 503."""
+    client, _ = client_with_conn
+    app.dependency_overrides[get_imap_client] = lambda: None
+    try:
+        resp = await client.get(ESTADO_URL, headers=TENANT_HEADERS)
+        assert resp.status_code == 200
+        cuerpo = resp.json()
+        assert cuerpo["habilitada"] is False
+        assert cuerpo["motivo"] == "imap_no_configurado"
+    finally:
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+@pytest.mark.asyncio
+async def test_estado_habilitado_describe_el_buzon(client_with_conn, buzon_de_esta_entidad) -> None:
+    client, _ = client_with_conn
+    app.dependency_overrides[get_imap_client] = lambda: SimpleNamespace()
+    previos = (settings.imap_host, settings.imap_mailbox, settings.imap_user)
+    settings.imap_host, settings.imap_mailbox, settings.imap_user = (
+        "imap.entidad.gov.co",
+        "CORRESPONDENCIA",
+        "correspondencia@entidad.gov.co",
+    )
+    try:
+        cuerpo = (await client.get(ESTADO_URL, headers=TENANT_HEADERS)).json()
+        assert cuerpo["habilitada"] is True
+        assert cuerpo["motivo"] is None
+        assert cuerpo["servidor"] == "imap.entidad.gov.co"
+        assert cuerpo["buzon"] == "CORRESPONDENCIA"
+        assert cuerpo["cuenta"] == "correspondencia@entidad.gov.co"
+    finally:
+        settings.imap_host, settings.imap_mailbox, settings.imap_user = previos
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+@pytest.mark.asyncio
+async def test_estado_de_otra_entidad_no_describe_el_buzon(client_with_conn) -> None:
+    """El punto delicado del endpoint.
+
+    El 403 del poll está redactado a propósito para no decir de quién ES el
+    buzón. Un estado que devolviera servidor y cuenta cuando el buzón es de otra
+    entidad tiraría ese cuidado por la ventana desde la puerta de al lado: la
+    dirección de correspondencia y el servidor de correo de otra institución del
+    despliegue no son asunto de quien pregunta.
+    """
+    client, _ = client_with_conn
+    app.dependency_overrides[get_imap_client] = lambda: SimpleNamespace()
+    previos = (settings.imap_tenant_slug, settings.imap_host, settings.imap_user)
+    settings.imap_tenant_slug = "otra-entidad"
+    settings.imap_host = "imap.otra-entidad.gov.co"
+    settings.imap_user = "correspondencia@otra-entidad.gov.co"
+    try:
+        cuerpo = (await client.get(ESTADO_URL, headers=TENANT_HEADERS)).json()
+        assert cuerpo["habilitada"] is False
+        assert cuerpo["motivo"] == "buzon_de_otra_entidad"
+        assert cuerpo["servidor"] is None
+        assert cuerpo["buzon"] is None
+        assert cuerpo["cuenta"] is None
+        # Ni el nombre de la entidad dueña se filtra por el motivo.
+        assert "otra-entidad" not in resp_texto(cuerpo)
+    finally:
+        (settings.imap_tenant_slug, settings.imap_host, settings.imap_user) = previos
+        app.dependency_overrides.pop(get_imap_client, None)
+
+
+def resp_texto(cuerpo: dict) -> str:
+    return " ".join(str(v) for v in cuerpo.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dueno, hay_imap",
+    [
+        ("", True),  # entidad no declarada
+        ("otra-entidad", True),  # buzón de otra entidad
+        (TENANT_HEADERS["X-Tenant-Slug"], False),  # sin cliente IMAP
+        (TENANT_HEADERS["X-Tenant-Slug"], True),  # disponible
+    ],
+)
+async def test_estado_y_poll_no_pueden_discrepar(client_with_conn, dueno, hay_imap) -> None:
+    """El estado promete exactamente lo que el poll cumple.
+
+    Una pantalla que anuncia "lista para traer correo" sobre un buzón que el
+    poll va a rechazar es peor que no tener pantalla. Ambas puertas consultan
+    `diagnosticar_buzon`; este test es el que se pondría rojo si alguien vuelve
+    a escribir la condición dos veces.
+    """
+    client, _ = client_with_conn
+    falso_imap = SimpleNamespace(fetch_unseen=AsyncMock(return_value=[]), mark_seen=AsyncMock())
+    app.dependency_overrides[get_imap_client] = lambda: (falso_imap if hay_imap else None)
+    anterior = settings.imap_tenant_slug
+    settings.imap_tenant_slug = dueno
+    try:
+        habilitada = (await client.get(ESTADO_URL, headers=TENANT_HEADERS)).json()["habilitada"]
+        poll = await client.post("/api/v1/ingest/email/poll", headers=TENANT_HEADERS)
+        acepto = poll.status_code == 200
+        assert habilitada == acepto, (
+            f"el estado dice habilitada={habilitada} y el poll respondió {poll.status_code}"
+        )
+    finally:
+        settings.imap_tenant_slug = anterior
+        app.dependency_overrides.pop(get_imap_client, None)

@@ -373,8 +373,8 @@
     min-height: 2.75rem;
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius-sm);
-    background: var(--op-surface-alt);
-    color: var(--op-text-muted);
+    background: var(--op-bg);
+    color: var(--op-text-secondary);
     cursor: pointer;
 
     &:hover:not(:disabled) {
@@ -393,13 +393,13 @@
   }
 
   .voice-input--on {
-    border-color: var(--op-danger);
-    color: var(--op-danger);
+    border-color: var(--op-error);
+    color: var(--op-error);
   }
 
   .voice-input__aviso {
     flex-basis: 100%;
-    color: var(--op-text-muted);
-    font-size: var(--op-font-size-xs);
+    color: var(--op-text-secondary);
+    font-size: var(--op-font-xs);
   }
 </style>

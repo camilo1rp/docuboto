@@ -153,15 +153,19 @@ Se declara como límite, no se disimula:
 - Alta de tenants y ciclo de vida de ficheros en storage (retirados del gateway a propósito,
   `X-Internal-Token`), y todos los endpoints `*-internal`.
 - Empaquetado AIP, protección WORM, barrido de vencidos y las 6 fases de reconciliación (cron).
-- **Ingesta IMAP** — gateada y enrutada, pero **sin ninguna pantalla**.
+- **Ingesta IMAP** — gateada y enrutada. **Ya tiene pantalla** (`/admin/correo`, 2026-08-23),
+  con el endpoint de estado que faltaba para poder ofrecerla sin ejecutarla; queda fuera del
+  barrido porque el despliegue de pruebas no tiene buzón IMAP configurado.
 - **OAI-PMH y CMIS** (`public_interop_enabled=False`, sin pantalla).
 - **PQRS ciudadana y verificación pública por código** — endpoints públicos **sin pantalla** en
   `(public)/`.
 - Callback postal HMAC, protocolo MCP externo, `indice/rebuild`, `/auth/clearance`.
 
-De esa lista, **tres merecen reportarse como hallazgo de producto** aunque no sean del plan:
-PQRS, verificación pública e ingesta IMAP **existen en el backend y no hay forma de llegar a
-ellas**. Son capacidades construidas y no ofrecidas.
+De esa lista salieron **tres hallazgos de producto**: capacidades que existían en el backend
+sin ninguna forma de llegar a ellas. Las tres están cerradas — ventanilla única y consulta
+ciudadana en `(public)/`, e ingesta de correo en `/admin/correo`. El patrón se repitió lo
+bastante como para dejarlo escrito: **un endpoint sin puerta no es una funcionalidad entregada**,
+y el inventario de pantallas es el sitio donde esa deuda se ve.
 
 ---
 

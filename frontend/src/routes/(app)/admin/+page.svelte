@@ -236,6 +236,20 @@
       implemented: true,
     },
     {
+      label: "Ingesta de correo",
+      description:
+        "Radica como Entrada los correos sin leer del buzón institucional (E19), y su historial.",
+      icon: "fas fa-envelope-open-text",
+      href: "/admin/correo",
+      // USUA_PERM_ADMIN: gate real de LOS DOS endpoints de
+      // `document-service/app/routers/ingest.py` (`GET /ingest/email/estado` y
+      // `POST /ingest/email/poll`), y también el de `/audit`, del que la
+      // pantalla lee el historial. Capacidad que existía en el backend desde F2
+      // sin ninguna puerta en la interfaz.
+      permission: "USUA_PERM_ADMIN",
+      implemented: true,
+    },
+    {
       label: "Claves de firma",
       description:
         "Revocación administrativa de la credencial de firma personal PKI de un usuario (E17/F4).",

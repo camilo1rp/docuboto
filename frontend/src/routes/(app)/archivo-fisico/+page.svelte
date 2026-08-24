@@ -1715,7 +1715,7 @@
   /* Sufijo tenue: el tipo de unidad y la signatura acompañan al código sin
      competir con él — el código es lo que se busca en el estante. */
   .af-fuid-tipo {
-    color: var(--op-text-muted);
+    color: var(--op-text-secondary);
     font-size: 0.85em;
     margin-left: 0.35rem;
   }
