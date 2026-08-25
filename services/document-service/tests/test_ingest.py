@@ -382,3 +382,40 @@ def test_sin_internaldate_no_se_inventa_una_fecha() -> None:
     from app.clients.imap_adaptador import _internaldate
 
     assert _internaldate(b"1 (UID 7 BODY[] {793}") is None
+
+
+# ── UIDVALIDITY: la comprobación que impide radicar el correo equivocado ──────
+
+
+def test_un_uidvalidity_distinto_impide_operar() -> None:
+    """El defecto que apareció usando el sistema, no en ningún test.
+
+    Un `uid` solo identifica un mensaje mientras el `UIDVALIDITY` de la carpeta
+    no cambie (RFC 3501 §2.3.1.1). Cuando cambia —restauración del buzón,
+    migración de servidor— los `uid` se reparten de nuevo desde 1: la bandeja
+    seguiría apuntando al «mensaje 7» y traería el que ahora ocupa esa posición.
+    Otro correo, de otro remitente, **radicado bajo el asunto del primero**.
+
+    El modelo guardaba el `uidvalidity` desde el principio; lo que faltaba era
+    comprobarlo antes de traer o mover. Se descubrió al reiniciarse el servidor
+    de pruebas, que asignó uno nuevo.
+    """
+    from app.clients.imap_adaptador import Conexion, ErrorDeCorreo, ImapAdaptador
+
+    adaptador = ImapAdaptador(
+        Conexion(
+            host="h", puerto=993, usa_ssl=True, direccion="a@b.co",
+            auth_tipo="password", secreto="x", login="a@b.co",
+        )
+    )
+    with pytest.raises(ErrorDeCorreo) as exc:
+        adaptador._exigir_uidvalidity(999, 111, "INBOX")
+    assert exc.value.codigo == "uidvalidity_cambiado"
+    # El mensaje dice qué hacer, no solo qué pasó.
+    assert "vuelva a consultar el buzón" in str(exc.value).lower()
+
+    # Coincidiendo, no estorba.
+    adaptador._exigir_uidvalidity(111, 111, "INBOX")
+    # Y sin expectativa declarada tampoco: es el caso de la propia
+    # sincronización, que acaba de leerlo y no tiene con qué contrastar.
+    adaptador._exigir_uidvalidity(111, None, "INBOX")

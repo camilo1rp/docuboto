@@ -115,10 +115,7 @@ describe("el aviso de configuración no contradice a la pantalla", () => {
    */
   it("el motivo de 'no configurada' depende de que no haya ninguna cuenta", async () => {
     const { readFileSync } = await import("node:fs");
-    const fuente = readFileSync(
-      "src/routes/(app)/admin/correo/+page.svelte",
-      "utf-8",
-    );
+    const fuente = readFileSync("src/routes/(app)/admin/correo/+page.svelte", "utf-8");
     const asignacion = /\$:\s*motivo\s*=([\s\S]*?);/.exec(fuente);
     expect(asignacion, "no encontré el cálculo de `motivo`").not.toBeNull();
     expect(asignacion[1]).toContain("cuentas.length === 0");

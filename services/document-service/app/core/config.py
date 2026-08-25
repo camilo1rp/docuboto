@@ -95,6 +95,18 @@ class Settings(BaseSettings):
     # `signing_key_encryption_key` y `totp_encryption_key` de auth-service.
     email_encryption_key: str = ""
 
+    # Sondeo programado de los buzones (E19 Increment 3). **Apagado por
+    # defecto**: un proceso que se conecta solo a buzones institucionales y crea
+    # documentos oficiales con número inmutable no debe encenderse porque sí al
+    # desplegar. La entidad lo activa cuando ha configurado sus cuentas y ha
+    # decidido cuáles radican solas.
+    email_sondeo_enabled: bool = False
+    email_sondeo_intervalo_segundos: int = 300
+    # Entidad cuyos buzones sondea este proceso. Igual que `imap_tenant_slug`,
+    # vacío = fail-closed: sin declararlo el worker no arranca, porque un sondeo
+    # que adivinara la entidad radicaría en el archivo equivocado.
+    email_sondeo_tenant_slug: str = ""
+
     # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
     # que el gateway declara público sin autenticación.
     #

@@ -220,6 +220,45 @@ class EmailMensajeRepository:
             "UPDATE email_mensaje SET crudo_file_id = $2 WHERE id = $1", mensaje_id, file_id
         )
 
+    async def estado_bandeja(self, cuenta_id: UUID) -> dict[str, Any]:
+        """Pendientes y marca de la última novedad. Lo consulta el sondeo.
+
+        Es lo que permite avisar a las demás pantallas de que la bandeja cambió
+        —alguien radicó, alguien reservó, entraron correos nuevos— sin traerse la
+        lista entera cada pocos segundos. Con diez operadores mirando la
+        ventanilla, la diferencia entre sondear una fila y sondear cien es la
+        diferencia entre que la función exista y que estorbe.
+
+        La marca combina las tres cosas que cambian lo que se ve: correos nuevos
+        (`visto_at`), radicados y descartados. La **reserva también cuenta**: que
+        un compañero tome un correo cambia lo que la pantalla debe mostrar, y sin
+        ella el resto vería «libre» algo que ya no lo está.
+        """
+        fila = await self._conn.fetchrow(
+            """
+            SELECT count(*) FILTER (WHERE estado = 'pendiente') AS pendientes,
+                   count(*) FILTER (
+                       WHERE estado = 'pendiente'
+                         AND reservado_hasta IS NOT NULL
+                         AND reservado_hasta > now()
+                   ) AS ocupados,
+                   greatest(
+                       max(visto_at),
+                       max(radicado_at),
+                       max(descartado_at),
+                       max(reservado_hasta)
+                   ) AS ultima_novedad
+              FROM email_mensaje
+             WHERE cuenta_id = $1
+            """,
+            cuenta_id,
+        )
+        return {
+            "pendientes": int(fila["pendientes"] or 0),
+            "ocupados": int(fila["ocupados"] or 0),
+            "ultima_novedad": fila["ultima_novedad"],
+        }
+
     async def ultima_sincronizacion(self, cuenta_id: UUID) -> datetime | None:
         return await self._conn.fetchval(
             "SELECT max(visto_at) FROM email_mensaje WHERE cuenta_id = $1", cuenta_id

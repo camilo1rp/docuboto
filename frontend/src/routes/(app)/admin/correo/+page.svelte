@@ -482,6 +482,15 @@
             {/if}
 
             <div class="cuenta__acciones">
+              <!--
+                La bandeja es a donde se va a trabajar; el resto de esta pantalla
+                es configuración. Sin este enlace la bandeja existiría y solo se
+                alcanzaría escribiendo la URL — que es exactamente el hueco que
+                esta revisión ha encontrado media docena de veces.
+              -->
+              <Button size="sm" icon="fas fa-inbox" href="/correo/{cuenta.id}">
+                Abrir la bandeja
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

@@ -514,6 +514,22 @@ async def listar_bandeja(
     return [dict(f) for f in filas]
 
 
+@bandeja_router.get("/estado", dependencies=[Depends(require_permission("PERM_RADI"))])
+async def estado_bandeja(
+    cuenta_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, Any]:
+    """Resumen barato para que las pantallas abiertas sepan si algo cambió.
+
+    Devuelve cuántos correos hay pendientes, cuántos están ocupados por alguien y
+    la marca de la última novedad. La pantalla compara esa marca con la que tenía
+    y solo recarga la lista si cambió: sondear una fila cada pocos segundos es
+    sostenible con diez operadores mirando la ventanilla; traerse la lista entera
+    no lo es.
+    """
+    return await EmailMensajeRepository(conn).estado_bandeja(cuenta_id)
+
+
 @bandeja_router.post("/{mensaje_id}/reservar", dependencies=[Depends(require_permission("PERM_RADI"))])
 async def reservar_correo(
     request: Request,

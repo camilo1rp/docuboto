@@ -280,7 +280,28 @@ class ImapAdaptador:
         finally:
             self._cerrar(conn)
 
-    def _traer_sync(self, carpeta: str, uid: int) -> tuple[bytes, datetime | None]:
+    def _exigir_uidvalidity(self, actual: int, esperado: int | None, carpeta: str) -> None:
+        """Rechaza operar si la carpeta ya no es la misma que se sincronizó.
+
+        **Esto no es una comprobación defensiva de más: sin ella el sistema puede
+        radicar el correo equivocado.** Un `uid` solo identifica un mensaje
+        mientras el `UIDVALIDITY` de la carpeta no cambie (RFC 3501 §2.3.1.1);
+        cuando cambia —una restauración del buzón, una migración de servidor— los
+        `uid` se reparten de nuevo desde 1. La bandeja seguiría apuntando al
+        «mensaje 7» y traería el que ahora ocupa esa posición: otro correo, de
+        otro remitente, radicado bajo el asunto del primero.
+        """
+        if esperado is not None and actual != esperado:
+            raise ErrorDeCorreo(
+                f"La carpeta «{carpeta}» se recreó en el servidor y los identificadores "
+                "de sus mensajes cambiaron. Vuelva a consultar el buzón antes de "
+                "seguir: la bandeja está apuntando a mensajes que ya no son los mismos.",
+                codigo="uidvalidity_cambiado",
+            )
+
+    def _traer_sync(
+        self, carpeta: str, uid: int, uidvalidity_esperado: int | None
+    ) -> tuple[bytes, datetime | None]:
         """El mensaje ÍNTEGRO en su formato original (RFC 822).
 
         Se conserva tal cual, sin convertirlo a texto: la Ley 527/1999 art. 12
@@ -308,7 +329,8 @@ class ImapAdaptador:
         """
         conn = self._abrir()
         try:
-            self._seleccionar(conn, carpeta, solo_lectura=True)
+            actual = self._seleccionar(conn, carpeta, solo_lectura=True)
+            self._exigir_uidvalidity(actual, uidvalidity_esperado, carpeta)
             estado, datos = conn.uid("FETCH", str(uid), "(INTERNALDATE BODY.PEEK[])")
             if estado != "OK" or not datos:
                 raise ErrorDeCorreo(
@@ -328,7 +350,9 @@ class ImapAdaptador:
         finally:
             self._cerrar(conn)
 
-    def _mover_sync(self, carpeta: str, uid: int, destino: str) -> None:
+    def _mover_sync(
+        self, carpeta: str, uid: int, destino: str, uidvalidity_esperado: int | None
+    ) -> None:
         """Mueve un mensaje a otra carpeta, creándola si no existe.
 
         Es lo que hace que un correo radicado **salga de la vista de todos a la
@@ -343,7 +367,10 @@ class ImapAdaptador:
         """
         conn = self._abrir()
         try:
-            self._seleccionar(conn, carpeta, solo_lectura=False)
+            actual = self._seleccionar(conn, carpeta, solo_lectura=False)
+            # Mover el mensaje equivocado sacaría de la carpeta de trabajo un
+            # correo que nadie ha radicado, y lo escondería entre los radicados.
+            self._exigir_uidvalidity(actual, uidvalidity_esperado, carpeta)
             # Crear la carpeta destino es idempotente en la práctica: si existe,
             # el servidor responde NO y se sigue adelante.
             try:
@@ -371,12 +398,24 @@ class ImapAdaptador:
     async def listar_uids(self, carpeta: str) -> tuple[int, list[int]]:
         return await asyncio.to_thread(self._listar_uids_sync, carpeta)
 
-    async def traer(self, carpeta: str, uid: int) -> tuple[bytes, datetime | None]:
-        """`(mensaje íntegro, fecha de recibo en el buzón)`."""
-        return await asyncio.to_thread(self._traer_sync, carpeta, uid)
+    async def traer(
+        self, carpeta: str, uid: int, *, uidvalidity_esperado: int | None = None
+    ) -> tuple[bytes, datetime | None]:
+        """`(mensaje íntegro, fecha de recibo en el buzón)`.
 
-    async def mover(self, carpeta: str, uid: int, destino: str) -> None:
-        await asyncio.to_thread(self._mover_sync, carpeta, uid, destino)
+        `uidvalidity_esperado` es el de la sincronización que registró ese `uid`.
+        Es opcional solo para la propia sincronización, que acaba de leerlo y
+        todavía no tiene nada con qué contrastarlo; **cualquier otro llamante
+        debe pasarlo**, o se arriesga a traer un mensaje distinto del que cree.
+        """
+        return await asyncio.to_thread(self._traer_sync, carpeta, uid, uidvalidity_esperado)
+
+    async def mover(
+        self, carpeta: str, uid: int, destino: str, *, uidvalidity_esperado: int | None = None
+    ) -> None:
+        await asyncio.to_thread(
+            self._mover_sync, carpeta, uid, destino, uidvalidity_esperado
+        )
 
     async def listar_carpetas(self) -> list[str]:
         return await asyncio.to_thread(self._listar_carpetas_sync)

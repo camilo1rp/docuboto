@@ -236,3 +236,58 @@ async def test_la_bandeja_va_por_fecha_de_RECIBO(tenant_ctx) -> None:
 
     orden = [m["message_id"] for m in await repo.bandeja(cuenta)]
     assert orden == ["<viernes@x>", "<domingo@x>"]
+
+
+async def test_el_estado_avisa_de_lo_que_cambia_la_vista(tenant_ctx) -> None:
+    """El sondeo que mantiene sincronizadas las pantallas abiertas.
+
+    La marca tiene que moverse ante **todo lo que cambia lo que se ve**, incluida
+    una reserva ajena: si un compañero toma un correo y la marca no se moviera,
+    el resto seguiría viéndolo libre e intentaría abrirlo para llevarse un 409
+    que no esperaba.
+    """
+    slug, conn = tenant_ctx
+    repo, cuenta = await _preparar(conn, slug)
+
+    vacia = await repo.estado_bandeja(cuenta)
+    assert vacia["pendientes"] == 0 and vacia["ultima_novedad"] is None
+
+    correo = await _correo(repo, cuenta)
+    con_uno = await repo.estado_bandeja(cuenta)
+    assert con_uno["pendientes"] == 1
+    assert con_uno["ocupados"] == 0
+    assert con_uno["ultima_novedad"] is not None
+
+    await repo.reservar(correo["id"], actor=ANA, minutos=10)
+    reservado = await repo.estado_bandeja(cuenta)
+    assert reservado["ocupados"] == 1
+    assert reservado["ultima_novedad"] > con_uno["ultima_novedad"]
+
+    await repo.marcar_radicado(
+        correo["id"], actor=ANA, radicado_id=uuid.uuid4(), tracking_number="2026-DEMO-E-1"
+    )
+    tras_radicar = await repo.estado_bandeja(cuenta)
+    assert tras_radicar["pendientes"] == 0
+    assert tras_radicar["ocupados"] == 0
+
+
+async def test_el_estado_no_mezcla_cuentas(tenant_ctx) -> None:
+    """Una ventanilla de PQRS y otra de notificaciones judiciales son bandejas
+    distintas; el sondeo de una no puede contar los correos de la otra."""
+    slug, conn = tenant_ctx
+    repo, pqrs = await _preparar(conn, slug)
+    judicial = uuid.uuid4()
+    await conn.execute(
+        """
+        INSERT INTO email_cuenta
+            (id, nombre, tipo, proveedor, host, direccion, auth_tipo,
+             secreto_cifrado, secreto_nonce)
+        VALUES ($1, 'Judicial', 'institucional', 'imap', 'h', 'j@e.gov.co',
+                'password', '\\x01', '\\x02')
+        """,
+        judicial,
+    )
+    await _correo(repo, pqrs)
+
+    assert (await repo.estado_bandeja(pqrs))["pendientes"] == 1
+    assert (await repo.estado_bandeja(judicial))["pendientes"] == 0

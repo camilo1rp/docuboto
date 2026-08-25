@@ -227,7 +227,13 @@ class EmailBandejaService:
         )
         adaptador = ImapAdaptador(conexion)
         try:
-            crudo, _ = await adaptador.traer(mensaje["carpeta"], int(mensaje["uid"]))
+            # Se exige el mismo UIDVALIDITY con el que se registró: si la carpeta
+            # se recreó, este `uid` ya no es este mensaje.
+            crudo, _ = await adaptador.traer(
+                mensaje["carpeta"],
+                int(mensaje["uid"]),
+                uidvalidity_esperado=int(mensaje["uidvalidity"]),
+            )
         except ErrorDeCorreo as exc:
             raise ErrorDeCuenta(exc.codigo, str(exc), status=502) from exc
         correo = leer(crudo, respaldo_id=mensaje["message_id"])
@@ -350,7 +356,12 @@ class EmailBandejaService:
         self, adaptador: ImapAdaptador, mensaje: asyncpg.Record, destino: str
     ) -> bool:
         try:
-            await adaptador.mover(mensaje["carpeta"], int(mensaje["uid"]), destino)
+            await adaptador.mover(
+                mensaje["carpeta"],
+                int(mensaje["uid"]),
+                destino,
+                uidvalidity_esperado=int(mensaje["uidvalidity"]),
+            )
             return True
         except ErrorDeCorreo:
             logger.warning(

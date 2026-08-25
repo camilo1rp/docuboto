@@ -17,6 +17,8 @@ Responsibilities:
 - Anexo references — file UUIDs from storage-service only (no direct MinIO)
 """
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -82,8 +84,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
     else:
         app.state.imap_client = None
+    # Sondeo programado de buzones (E19). Opt-in y con entidad declarada: sin
+    # ambas cosas no arranca, y se dice en el registro para que la ausencia no
+    # se confunda con un fallo silencioso.
+    app.state.tarea_sondeo = None
+    if settings.email_sondeo_enabled:
+        if settings.email_sondeo_tenant_slug:
+            from app.services.email_sondeo import bucle_de_sondeo
+
+            app.state.tarea_sondeo = asyncio.create_task(
+                bucle_de_sondeo(app.state.db_pool, settings.email_sondeo_tenant_slug)
+            )
+        else:
+            logger.warning(
+                "EMAIL_SONDEO_ENABLED está activo pero falta EMAIL_SONDEO_TENANT_SLUG: "
+                "el sondeo de correo NO arranca (un sondeo sin entidad declarada "
+                "radicaría en el archivo equivocado)"
+            )
+
     yield
     logger.info("document-service shutting down")
+    if app.state.tarea_sondeo is not None:
+        app.state.tarea_sondeo.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await app.state.tarea_sondeo
     await app.state.http_client.aclose()
     await app.state.redis.aclose()
     await close_pool()
