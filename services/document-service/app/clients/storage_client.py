@@ -209,3 +209,37 @@ async def upload_anexo_externo(
             f"'{filename}': {resp.text[:300]!r}"
         )
     return ArchivoSubido.desde_respuesta(resp.json())
+
+
+async def upload_artefacto(
+    *, tenant_slug: str, filename: str, mime_type: str, data: bytes
+) -> ArchivoSubido:
+    """Sube un artefacto que produce el SISTEMA, no un anexo aportado.
+
+    Lo usa la bandeja de correo (E19) para conservar el mensaje original en su
+    formato (`message/rfc822`, Ley 527/1999 art. 12). Va a
+    `/internal/artefacto`, sellado con `X-Internal-Token`, que aplica la lista de
+    formatos del sistema en vez de la de anexos (RF-DIG-04).
+
+    La distinción no es burocrática: admitir `.eml` como anexo dejaría subir
+    correos completos —con sus adjuntos incrustados— por la puerta que valida
+    formatos de anexo, y esa puerta la alcanza cualquiera con `PERM_RADI`.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    files = {"file": (filename, data, mime_type)}
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/storage/internal/artefacto", headers=headers, files=files
+            )
+        except httpx.RequestError as exc:
+            raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code not in (200, 201):
+        raise StorageContentError(
+            f"storage-service → HTTP {resp.status_code} al guardar el artefacto "
+            f"'{filename}': {resp.text[:300]!r}"
+        )
+    return ArchivoSubido.desde_respuesta(resp.json())

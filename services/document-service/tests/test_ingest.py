@@ -338,3 +338,47 @@ async def test_estado_y_poll_no_pueden_discrepar(client_with_conn, dueno, hay_im
     finally:
         settings.imap_tenant_slug = anterior
         app.dependency_overrides.pop(get_imap_client, None)
+
+
+# ── Fecha de recibo (E19 Increment 2) ─────────────────────────────────────────
+
+
+def test_la_fecha_de_recibo_sale_del_buzon_no_del_remitente() -> None:
+    """`INTERNALDATE` y no la cabecera `Date`.
+
+    `Date` la pone el cliente del REMITENTE: depende de su reloj, puede faltar
+    —el servidor de pruebas lo demostró: llegó vacía— y sobre todo **la controla
+    él**, así que podría fecharse en el pasado para ganar plazo en un derecho de
+    petición. El `INTERNALDATE` lo pone el servidor de la ENTIDAD cuando el
+    mensaje entra en el buzón, y es literalmente la «fecha y hora de recibo» de
+    la que la Circular Externa AGN 001/2020 exige dejar constancia.
+    """
+    from app.clients.imap_adaptador import _internaldate
+
+    respuesta = b'1 (UID 7 INTERNALDATE "20-Aug-2026 09:15:42 +0000" BODY[] {793}'
+    recibido = _internaldate(respuesta)
+    assert recibido is not None
+    assert (recibido.year, recibido.month, recibido.day) == (2026, 8, 20)
+    assert (recibido.hour, recibido.minute) == (9, 15)
+
+
+def test_un_huso_horario_no_desplaza_la_fecha_de_recibo() -> None:
+    """La misma marca en otro huso es el mismo instante, no otro día.
+
+    Interpretar la tupla como hora local desplazaría el recibo tantas horas como
+    el huso del servidor — cinco en Colombia, suficientes para cambiar el día en
+    que vence un plazo.
+    """
+    from app.clients.imap_adaptador import _internaldate
+
+    utc = _internaldate(b'1 (INTERNALDATE "20-Aug-2026 09:15:42 +0000" BODY[] {1}')
+    bogota = _internaldate(b'1 (INTERNALDATE "20-Aug-2026 04:15:42 -0500" BODY[] {1}')
+    assert utc is not None and bogota is not None
+    assert utc == bogota
+
+
+def test_sin_internaldate_no_se_inventa_una_fecha() -> None:
+    """Una fecha de recibo inventada es peor que ninguna: nadie la revisaría."""
+    from app.clients.imap_adaptador import _internaldate
+
+    assert _internaldate(b"1 (UID 7 BODY[] {793}") is None

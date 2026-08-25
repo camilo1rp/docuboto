@@ -34,6 +34,33 @@ import { mensajeError } from "$lib/utils/apiError.js";
 
 const HISTORIAL_SIZE = 20;
 
+/**
+ * Trae una lista y devuelve `[datos, error]`, sin lanzar.
+ *
+ * El error conserva el `status`: la pantalla distingue «no tienes permiso» de
+ * «el servicio no respondió», y ninguno de los dos puede presentarse como «no
+ * hay nada configurado» — ese fue un defecto real de `/envios`.
+ *
+ * @param {string} url
+ * @param {Record<string, string>} headers
+ * @param {typeof globalThis.fetch} fetch
+ * @param {any[]} vacio
+ * @returns {Promise<[any[], {detail: string, status: number} | null]>}
+ */
+async function traer(url, headers, fetch, vacio) {
+  try {
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      const crudo = await res.json().catch(() => vacio);
+      return [Array.isArray(crudo) ? crudo : vacio, null];
+    }
+    const cuerpo = await res.json().catch(() => ({}));
+    return [vacio, { detail: mensajeError(cuerpo, `Error ${res.status}`), status: res.status }];
+  } catch {
+    return [vacio, { detail: "No se pudo conectar al servicio de radicación.", status: 503 }];
+  }
+}
+
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
   const { user } = await parent();
@@ -81,5 +108,20 @@ export async function load({ cookies, parent, fetch }) {
     historialError = { detail: "No se pudo consultar el registro de auditoría.", status: 503 };
   }
 
-  return { estado, estadoError, historial, historialError };
+  // Cuentas y aplicaciones OAuth. Cada faceta lleva su propio error: un fallo
+  // al listar las aplicaciones no debe ocultar las cuentas que sí se leyeron, ni
+  // al revés — es el patrón que ya usa `/admin/notificaciones`.
+  const [cuentas, cuentasError] = await traer(`${API_V1}/email/cuentas`, headers, fetch, []);
+  const [apps, appsError] = await traer(`${API_V1}/email/apps-oauth`, headers, fetch, []);
+
+  return {
+    estado,
+    estadoError,
+    historial,
+    historialError,
+    cuentas,
+    cuentasError,
+    apps,
+    appsError,
+  };
 }

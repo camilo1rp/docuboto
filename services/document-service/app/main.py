@@ -39,6 +39,7 @@ from app.routers.export import router as export_router
 from app.routers.health import router as health_router
 from app.routers.import_ import router as import_router
 from app.routers.ingest import apps_router as email_apps_router
+from app.routers.ingest import bandeja_router as email_bandeja_router
 from app.routers.ingest import cuentas_router as email_cuentas_router
 from app.routers.ingest import router as ingest_router
 from app.routers.internal import router as internal_router
@@ -117,6 +118,7 @@ app.include_router(public_router)
 app.include_router(ingest_router)
 app.include_router(email_cuentas_router)
 app.include_router(email_apps_router)
+app.include_router(email_bandeja_router)
 app.include_router(signatures_router)
 app.include_router(postal_router)
 # Interoperabilidad pública ANÓNIMA: el router se monta siempre, pero sus rutas

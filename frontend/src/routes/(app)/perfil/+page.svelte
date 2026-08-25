@@ -575,8 +575,18 @@
           <div class="perfil-recovery__codes" role="group" aria-label="Códigos de recuperación">
             <p class="perfil-recovery__once">
               <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-              Guárdelos ahora en un lugar seguro. <strong>No se volverán a mostrar</strong> — si los pierde,
-              la única salida es generar un juego nuevo.
+              <!--
+                La frase va dentro de un <span> porque el contenedor es flex en
+                fila: sin él, cada trozo de texto y cada <strong> se convierten
+                en una columna y la advertencia se lee partida. Es el mismo
+                defecto que ya se corrigió en otras cinco advertencias; esta se
+                escapó porque el censo tenía un punto ciego con los contenedores
+                anidados (ver `prosa-en-flex.test.js`).
+              -->
+              <span>
+                Guárdelos ahora en un lugar seguro. <strong>No se volverán a mostrar</strong> — si los
+                pierde, la única salida es generar un juego nuevo.
+              </span>
             </p>
             <ol class="perfil-recovery__list">
               {#each recoveryCodes as codigo (codigo)}

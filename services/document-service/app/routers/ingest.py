@@ -47,13 +47,14 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from orpycamcp_common import audit
 
 from app.clients.imap_client import ImapClient
 from app.core.clearance import check_permission, require_permission
 from app.core.config import settings
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
+from app.repositories.email_mensaje_repository import EmailMensajeRepository
 from app.schemas.email_cuenta import (
     AppOAuthCrear,
     AppOAuthResponse,
@@ -63,6 +64,7 @@ from app.schemas.email_cuenta import (
 )
 from app.schemas.ingest import EstadoIngesta, PollResult
 from app.services.document_service import DocumentService, InvalidTenantError
+from app.services.email_bandeja_service import EmailBandejaService
 from app.services.email_cuenta_service import EmailCuentaService, ErrorDeCuenta
 from app.services.email_ingest import EmailIngestor
 
@@ -458,3 +460,134 @@ async def canjear_autorizacion(
         )
     except ErrorDeCuenta as exc:
         raise _traducir(exc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Bandeja de correo (E19 Increment 2)
+#
+# Varias personas de correspondencia trabajan el mismo buzón. La reserva impide
+# que dos radiquen el mismo correo; el gate de permiso es el de radicar, porque
+# eso es lo que se acaba haciendo aquí.
+# ═══════════════════════════════════════════════════════════════════════════
+
+bandeja_router = APIRouter(prefix="/api/v1/email/cuentas/{cuenta_id}/bandeja", tags=["email-bandeja"])
+
+
+@bandeja_router.post("/sincronizar", dependencies=[Depends(require_permission("PERM_RADI"))])
+async def sincronizar_bandeja(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    password: str | None = Body(default=None, embed=True),
+) -> dict[str, Any]:
+    """Trae de la carpeta de origen los correos que aún no están en la bandeja.
+
+    **No radica nada**: solo trae. Quién radica y con qué número lo decide un
+    funcionario después, correo a correo.
+    """
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        return await EmailBandejaService(conn, slug).sincronizar(
+            cuenta_id, actor=actor, es_admin=await _es_admin(conn, actor), password=password
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+
+
+@bandeja_router.get("", dependencies=[Depends(require_permission("PERM_RADI"))])
+async def listar_bandeja(
+    request: Request,
+    response: Response,
+    cuenta_id: uuid.UUID,
+    estado: str = "pendiente",
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[dict[str, Any]]:
+    """Los correos de la cuenta, el más antiguo por FECHA DE RECIBO primero.
+
+    Una ventanilla atiende por orden de llegada, y la llegada es la del correo al
+    buzón, no la del sondeo que lo trajo.
+    """
+    repo = EmailMensajeRepository(conn)
+    filas = await repo.bandeja(cuenta_id, estado=estado)
+    response.headers["X-Total-Count"] = str(await repo.contar(cuenta_id, estado=estado))
+    return [dict(f) for f in filas]
+
+
+@bandeja_router.post("/{mensaje_id}/reservar", dependencies=[Depends(require_permission("PERM_RADI"))])
+async def reservar_correo(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    mensaje_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, Any]:
+    """Toma el correo para este funcionario mientras lo trabaja.
+
+    `409 correo_ocupado` si otro lo tiene — que es la respuesta correcta y no un
+    error del sistema: significa que la reserva está haciendo su trabajo.
+    """
+    slug = _tenant_slug(request)
+    try:
+        fila = await EmailBandejaService(conn, slug).reservar(
+            mensaje_id, cuenta_id, actor=_actor(request)
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+    return dict(fila)
+
+
+@bandeja_router.post("/{mensaje_id}/radicar", dependencies=[Depends(require_permission("PERM_RADI"))])
+async def radicar_correo(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    mensaje_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    tenant_client: Any = Depends(get_tenant_client),
+    redis: Any = Depends(get_redis),
+    cuerpo: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """Convierte el correo en un radicado de Entrada con sus soportes."""
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        servicio = DocumentService(conn, slug, tenant_client, redis)
+    except InvalidTenantError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
+        )
+    try:
+        return await EmailBandejaService(conn, slug).radicar(
+            mensaje_id,
+            cuenta_id,
+            actor=actor,
+            es_admin=await _es_admin(conn, actor),
+            password=cuerpo.get("password"),
+            datos=cuerpo,
+            servicio=servicio,
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+
+
+@bandeja_router.post("/{mensaje_id}/descartar", dependencies=[Depends(require_permission("PERM_RADI"))])
+async def descartar_correo(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    mensaje_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    motivo: str = Body(..., embed=True, min_length=5),
+) -> dict[str, Any]:
+    """Aparta un correo que llegó a la carpeta y no debía radicarse.
+
+    Exige motivo: es una decisión sobre una comunicación oficial recibida, y la
+    unidad de correspondencia responde de ella (Ac. 060/2001 art. 3).
+    """
+    slug = _tenant_slug(request)
+    try:
+        fila = await EmailBandejaService(conn, slug).descartar(
+            mensaje_id, cuenta_id, actor=_actor(request), motivo=motivo
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+    return dict(fila)

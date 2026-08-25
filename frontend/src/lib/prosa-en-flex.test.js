@@ -46,18 +46,43 @@ function archivosSvelte() {
  * era invisible** — se le escaparon los tres avisos de `pinar-workspace__warning`,
  * que son justo las advertencias de los tres actos irreversibles del plan. Un
  * censo con un punto ciego es peor que no tenerlo: aprueba en silencio.
+ *
+ * **Segundo defecto, en la otra dirección (2026-08-24).** El censo comparaba
+ * solo el SUFIJO BEM de la clase (`.split("__").pop()`), así que dos bloques
+ * distintos con el mismo elemento colisionaban: `.correo__aviso`, que es flex,
+ * marcaba como culpable a `.form__aviso`, que no lo es. Un falso positivo es
+ * menos grave que un falso negativo, pero enseña a desconfiar del guardián — y
+ * un guardián del que se desconfía se acaba silenciando. Ahora se resuelve el
+ * `&` de Sass contra el bloque que lo envuelve y se compara el nombre completo.
  */
 function clasesFlex(estilos) {
   const encontradas = new Set();
-  for (const m of estilos.matchAll(/([&.][A-Za-z0-9_-]+)\s*\{/g)) {
-    const desde = m.index + m[0].length;
-    const cierre = estilos.indexOf("}", desde);
-    const anidado = estilos.indexOf("{", desde);
-    const hasta = anidado !== -1 && anidado < cierre ? anidado : cierre;
-    const propias = estilos.slice(desde, hasta === -1 ? undefined : hasta);
-    if (/display:\s*flex/.test(propias)) {
-      encontradas.add(m[1].replace(/^[&.]/, "").split("__").pop());
+  // Pila de bloques abiertos, para resolver el `&` de Sass: dentro de
+  // `.correo { &__aviso { … } }` el nombre real de la clase es `correo__aviso`.
+  const pila = [];
+  const re = /([&.][A-Za-z0-9_-]+)[^{}]*\{|\{|\}/g;
+  let m;
+  while ((m = re.exec(estilos))) {
+    if (m[0] === "}") {
+      pila.pop();
+      continue;
     }
+    if (!m[1]) {
+      // Una llave que no abre una regla de clase (media query, selector de
+      // elemento). Se apila igual para que el `}` que le corresponde no
+      // desequilibre la pila.
+      pila.push("");
+      continue;
+    }
+    const padre = pila.length ? pila[pila.length - 1] : "";
+    const nombre = m[1].startsWith("&") ? padre + m[1].slice(1) : m[1].slice(1);
+    pila.push(nombre);
+
+    const cierre = estilos.indexOf("}", re.lastIndex);
+    const anidado = estilos.indexOf("{", re.lastIndex);
+    const hasta = anidado !== -1 && anidado < cierre ? anidado : cierre;
+    const propias = estilos.slice(re.lastIndex, hasta === -1 ? undefined : hasta);
+    if (/display:\s*flex/.test(propias)) encontradas.add(nombre);
   }
   return encontradas;
 }
@@ -88,6 +113,34 @@ function textoDirecto(cuerpo) {
 }
 
 /**
+ * Contenido de un elemento, contando la anidación de su propia etiqueta.
+ *
+ * **Tercer punto ciego del censo, y el más caro (2026-08-24).** Antes el cuerpo
+ * se extraía con `([\s\S]*?)<\/\1>` no codicioso, que cierra en el PRIMER
+ * `</div>` que aparezca — el de un hijo, no el suyo. Con un `<div>` contenedor
+ * flex envolviendo la pantalla, la primera coincidencia se comía todo hasta ese
+ * cierre y `lastIndex` saltaba **por detrás de los contenedores interiores**,
+ * que quedaban sin examinar. La pantalla de correo tiene esa forma, y el censo
+ * daba verde sobre un defecto reproducido a propósito. Contar la profundidad
+ * cuesta unas líneas y elimina la clase entera de fallo.
+ *
+ * @param {string} markup
+ * @param {number} inicio índice justo después del `>` de la etiqueta de apertura
+ * @param {string} etiqueta
+ */
+function cuerpoBalanceado(markup, inicio, etiqueta) {
+  const re = new RegExp(`<${etiqueta}\\b[^>]*>|</${etiqueta}\\s*>`, "g");
+  re.lastIndex = inicio;
+  let profundidad = 1;
+  let m;
+  while ((m = re.exec(markup))) {
+    profundidad += m[0].startsWith("</") ? -1 : 1;
+    if (profundidad === 0) return markup.slice(inicio, m.index);
+  }
+  return markup.slice(inicio);
+}
+
+/**
  * Devuelve los banners de prosa que quedarían troceados en columnas.
  * @param {string} texto contenido de un `.svelte`
  */
@@ -97,9 +150,11 @@ export function prosaEnFlex(texto) {
   if (flex.size === 0) return [];
 
   const hallazgos = [];
-  for (const m of markup.matchAll(/<(p|div|li)\s[^>]*class="([^"]+)"[^>]*>([\s\S]*?)<\/\1>/g)) {
-    const [, , clases, cuerpo] = m;
-    const casa = clases.split(/\s+/).some((c) => flex.has(c.split("__").pop()));
+  for (const m of markup.matchAll(/<(p|div|li)\s([^>]*)>/g)) {
+    const clases = /class="([^"]+)"/.exec(m[2])?.[1];
+    if (!clases) continue;
+    const cuerpo = cuerpoBalanceado(markup, m.index + m[0].length, m[1]);
+    const casa = clases.split(/\s+/).some((c) => flex.has(c));
     if (!casa) continue;
     if (!EN_LINEA.test(cuerpo)) continue;
     // Un contenedor de bloques/componentes no es un banner de prosa: el análisis

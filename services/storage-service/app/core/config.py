@@ -239,7 +239,17 @@ class Settings(BaseSettings):
     # (entidades externas, XXE en cualquier consumidor futuro) que hoy no
     # existe, para resolver un problema que no es de los anexos. Esta lista solo
     # la alcanza el endpoint sellado con `X-Internal-Token`.
-    allowed_system_mime_types: str = "application/xml"
+    # `message/rfc822` (E19): el mensaje de correo ORIGINAL que se conserva al
+    # radicar una comunicación recibida por buzón. La Ley 527/1999 art. 12 exige
+    # guardarlo «en el formato en que se haya generado, enviado o recibido», con
+    # su origen, destino, fecha y hora — datos que viven en las cabeceras y que
+    # una transcripción a texto pierde.
+    #
+    # Va aquí y no en la lista de anexos por la misma razón que el XML: un `.eml`
+    # no es un soporte que aporte el ciudadano, es un artefacto que produce el
+    # sistema al preservar. Admitirlo como anexo dejaría subir correos completos
+    # —con sus adjuntos incrustados— por la puerta que valida formatos de anexo.
+    allowed_system_mime_types: str = "application/xml,message/rfc822"
 
     @property
     def database_url_asyncpg(self) -> str:

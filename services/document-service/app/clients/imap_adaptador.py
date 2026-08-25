@@ -45,9 +45,11 @@ con qué número es de `DocumentService`.
 from __future__ import annotations
 
 import asyncio
+import calendar
 import imaplib
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 # Un nombre de carpeta puede traer cualquier cosa; se cita para el protocolo en
 # vez de interpolarse. IMAP no tiene inyección de SQL, pero sí tiene comandos
@@ -56,6 +58,25 @@ _CRLF = re.compile(r"[\r\n]")
 
 # `* OK [UIDVALIDITY 1234] ...` en la respuesta al SELECT.
 _UIDVALIDITY = re.compile(rb"UIDVALIDITY\s+(\d+)", re.IGNORECASE)
+
+
+def _internaldate(respuesta: bytes) -> datetime | None:
+    """Extrae el `INTERNALDATE` de la respuesta a un FETCH.
+
+    Devuelve `None` si el servidor no lo trae, en vez de sustituirlo por la hora
+    actual: una fecha de recibo inventada es peor que ninguna, porque nadie
+    volvería a mirarla y de ella dependen los plazos del derecho de petición.
+    """
+    marca = imaplib.Internaldate2tuple(respuesta)
+    if marca is None:
+        return None
+    # `Internaldate2tuple` devuelve una tupla en hora local; se normaliza a UTC,
+    # que es como el sistema almacena y compara todas las fechas.
+    # `calendar.timegm` y no `time.mktime`: la tupla ya viene normalizada a UTC
+    # por `Internaldate2tuple`, así que interpretarla como hora local
+    # desplazaría la fecha de recibo tantas horas como el huso del servidor —
+    # y en Colombia son cinco, suficientes para cambiar el día de un plazo.
+    return datetime.fromtimestamp(calendar.timegm(marca), tz=UTC)
 
 
 class ErrorDeCorreo(RuntimeError):
@@ -238,8 +259,124 @@ class ImapAdaptador:
         except Exception:  # noqa: BLE001 — ya tenemos el resultado; el adiós da igual
             pass
 
+    def _listar_uids_sync(self, carpeta: str) -> tuple[int, list[int]]:
+        """`(uidvalidity, uids)` de la carpeta. No descarga ningún mensaje.
+
+        Se listan primero los identificadores y solo después se traen los que
+        faltan: la carpeta de filtrado de una ventanilla puede acumular meses de
+        correspondencia, y descargarla entera en cada sondeo para descubrir que
+        no hay nada nuevo sería absurdo.
+        """
+        conn = self._abrir()
+        try:
+            uidvalidity = self._seleccionar(conn, carpeta, solo_lectura=True)
+            estado, datos = conn.uid("SEARCH", "ALL")
+            if estado != "OK":
+                raise ErrorDeCorreo(
+                    f"No se pudo listar la carpeta «{carpeta}»", codigo="search_fallido"
+                )
+            crudo = datos[0] if datos and isinstance(datos[0], bytes) else b""
+            return uidvalidity, [int(x) for x in crudo.split() if x.isdigit()]
+        finally:
+            self._cerrar(conn)
+
+    def _traer_sync(self, carpeta: str, uid: int) -> tuple[bytes, datetime | None]:
+        """El mensaje ÍNTEGRO en su formato original (RFC 822).
+
+        Se conserva tal cual, sin convertirlo a texto: la Ley 527/1999 art. 12
+        exige guardar el mensaje «en el formato en que se haya generado, enviado
+        o recibido», con su origen, destino, fecha y hora. Una transcripción a
+        texto plano —que es lo que hacía la implementación anterior— pierde las
+        cabeceras que prueban esas cuatro cosas.
+
+        `BODY.PEEK[]` y no `BODY[]`: leerlo NO debe marcarlo como visto. La marca
+        `\\Seen` es compartida por todos los clientes del buzón, y tocarla aquí
+        cambiaría lo que ven las personas que trabajan ese correo desde su
+        gestor habitual.
+
+        **Devuelve además el `INTERNALDATE`, y esa es la fecha que cuenta.** No
+        la cabecera `Date`, que es cuándo dice el REMITENTE que lo envió: la pone
+        su cliente de correo, depende de su reloj, puede faltar —el servidor de
+        pruebas lo demostró al primer intento: `Date` llegó vacía— y, sobre todo,
+        **la controla él**. Un ciudadano podría fecharla en el pasado para ganar
+        plazo en un derecho de petición.
+
+        El `INTERNALDATE` lo pone el servidor de correo de la ENTIDAD cuando el
+        mensaje entra en el buzón, y es literalmente «la fecha y hora de recibo»
+        de la que la Circular Externa AGN 001/2020 exige dejar constancia. Es el
+        dato que fija el inicio de los plazos.
+        """
+        conn = self._abrir()
+        try:
+            self._seleccionar(conn, carpeta, solo_lectura=True)
+            estado, datos = conn.uid("FETCH", str(uid), "(INTERNALDATE BODY.PEEK[])")
+            if estado != "OK" or not datos:
+                raise ErrorDeCorreo(
+                    f"No se pudo traer el mensaje {uid}", codigo="fetch_fallido"
+                )
+            for parte in datos:
+                if isinstance(parte, tuple) and isinstance(parte[1], (bytes, bytearray)):
+                    # El prefijo de la respuesta trae el INTERNALDATE; imaplib
+                    # sabe interpretarlo, pero devuelve `None` si el servidor no
+                    # lo incluye — y entonces se dice, no se inventa una fecha.
+                    encabezado = parte[0] if isinstance(parte[0], (bytes, bytearray)) else b""
+                    return bytes(parte[1]), _internaldate(bytes(encabezado))
+            raise ErrorDeCorreo(
+                f"El servidor no devolvió el cuerpo del mensaje {uid}",
+                codigo="fetch_sin_cuerpo",
+            )
+        finally:
+            self._cerrar(conn)
+
+    def _mover_sync(self, carpeta: str, uid: int, destino: str) -> None:
+        """Mueve un mensaje a otra carpeta, creándola si no existe.
+
+        Es lo que hace que un correo radicado **salga de la vista de todos a la
+        vez**. Frente a marcar `\\Seen`: la marca es compartida, cualquiera puede
+        quitarla desde su gestor de correo, y no distingue «lo leí» de «lo
+        radiqué».
+
+        `UID MOVE` (RFC 6851) si el servidor lo anuncia; si no, la secuencia
+        clásica COPY + marcar borrado + EXPUNGE. El respaldo importa: hay
+        servidores IMAP en producción —y paneles de hosting— que no implementan
+        MOVE, y sin él la carpeta de trabajo nunca se vaciaría.
+        """
+        conn = self._abrir()
+        try:
+            self._seleccionar(conn, carpeta, solo_lectura=False)
+            # Crear la carpeta destino es idempotente en la práctica: si existe,
+            # el servidor responde NO y se sigue adelante.
+            try:
+                conn.create(_citar(destino))
+            except imaplib.IMAP4.error:
+                pass
+
+            if b"MOVE" in (conn.capabilities or ()):
+                estado, _ = conn.uid("MOVE", str(uid), _citar(destino))
+                if estado == "OK":
+                    return
+            estado, _ = conn.uid("COPY", str(uid), _citar(destino))
+            if estado != "OK":
+                raise ErrorDeCorreo(
+                    f"No se pudo copiar el mensaje a «{destino}»", codigo="copy_fallido"
+                )
+            conn.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
+            conn.expunge()
+        finally:
+            self._cerrar(conn)
+
     async def probar(self) -> str:
         return await asyncio.to_thread(self._probar_sync)
+
+    async def listar_uids(self, carpeta: str) -> tuple[int, list[int]]:
+        return await asyncio.to_thread(self._listar_uids_sync, carpeta)
+
+    async def traer(self, carpeta: str, uid: int) -> tuple[bytes, datetime | None]:
+        """`(mensaje íntegro, fecha de recibo en el buzón)`."""
+        return await asyncio.to_thread(self._traer_sync, carpeta, uid)
+
+    async def mover(self, carpeta: str, uid: int, destino: str) -> None:
+        await asyncio.to_thread(self._mover_sync, carpeta, uid, destino)
 
     async def listar_carpetas(self) -> list[str]:
         return await asyncio.to_thread(self._listar_carpetas_sync)
