@@ -124,12 +124,28 @@ def build_workflow_notifications(
     return []
 
 
-def build_document_notifications(envelope: dict) -> list[NotificationSend]:
+def build_document_notifications(
+    envelope: dict, *, buzon_destino: str
+) -> list[NotificationSend]:
     """Pure builder: maps a document-stream envelope to its NotificationSend(s).
 
-    Mirrors the routing rules previously inlined in ``process_document_event``:
-    only ``document.radicado.created`` produces an email; any other event_type
-    returns an empty list (webhooks still fire independently in the caller).
+    Solo ``document.radicado.created`` produce correo; cualquier otro tipo
+    devuelve lista vacía (los webhooks se disparan aparte, en el llamante).
+
+    **`buzon_destino` es keyword-only y sin valor por defecto**, igual que en
+    `build_workflow_notifications` y por la misma razón: la dependencia se puede
+    indicar por CÓDIGO o por NOMBRE, y este constructor no puede resolver el
+    nombre —haría falta consultar la base—. Un default convertiría «no supe a
+    quién avisar» en «avisé a la ventanilla» sin que nadie se entere; sin él, un
+    llamante que lo olvide falla al escribirse.
+
+    **El defecto que esto cierra.** Antes se leía solo `dest_dept_code`, así que
+    una radicación hecha por NOMBRE de dependencia —la que produce la bandeja de
+    correo, y la de cualquier cliente que no maneje códigos— acababa en dos
+    fallos a la vez: el aviso decía «Dependencia destino: sin asignar» teniendo el
+    nombre en el mismo payload, y se enviaba a la ventanilla genérica en lugar de
+    a la dependencia competente. Es el mismo defecto que ya se corrigió en el
+    stream de flujos; el de documentos se quedó fuera.
     """
     tenant_slug = envelope.get("tenant_slug")
     if envelope.get("event_type") != "document.radicado.created":
@@ -137,19 +153,22 @@ def build_document_notifications(envelope: dict) -> list[NotificationSend]:
 
     payload_data = envelope.get("payload") or {}
     tracking_number = payload_data.get("tracking_number", "N/A")
+    # El nombre primero: es lo que un humano reconoce. El código solo si es lo
+    # único que hay.
+    dest_dept = payload_data.get("dest_dept")
     dest_dept_code = payload_data.get("dest_dept_code")
-
-    recipient = buzon_de_codigo_o_ventanilla(dest_dept_code)
+    destino_legible = dest_dept or (
+        str(dest_dept_code) if dest_dept_code is not None else "sin asignar"
+    )
 
     return [
         NotificationSend(
-            recipient_email=recipient,
+            recipient_email=buzon_destino,
             subject=f"[OrpycaMCP] Documento radicado: {tracking_number}",
             body=(
                 f"Se ha radicado un nuevo documento.\n\n"
                 f"Número de radicado: {tracking_number}\n"
-                f"Dependencia destino: "
-                f"{dest_dept_code if dest_dept_code is not None else 'sin asignar'}\n"
+                f"Dependencia destino: {destino_legible}\n"
                 f"Inquilino: {tenant_slug}\n"
             ),
             tenant_slug=tenant_slug,
@@ -231,5 +250,18 @@ async def process_document_event(data: dict[str, str]) -> None:
     await dispatch_webhooks(envelope)
 
     event_type = envelope.get("event_type")
-    for send in build_document_notifications(envelope):
+    payload_data = envelope.get("payload") or {}
+    # Mismo camino que el stream de flujos: el CÓDIGO enruta directo; si solo
+    # viene el nombre, se resuelve contra la base. Sin esto, radicar por nombre
+    # mandaba el aviso a la ventanilla genérica y la dependencia competente no se
+    # enteraba de su documento.
+    codigo = payload_data.get("dest_dept_code")
+    if codigo is not None:
+        buzon_destino = buzon_de_codigo_o_ventanilla(codigo)
+    else:
+        async with acquire_tenant(tenant_slug) as conn:
+            buzon_destino = await resolver_buzon_dependencia(
+                conn, payload_data.get("dest_dept")
+            )
+    for send in build_document_notifications(envelope, buzon_destino=buzon_destino):
         await send_notification(send, event_type=event_type)

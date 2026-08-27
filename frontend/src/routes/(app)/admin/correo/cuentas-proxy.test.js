@@ -104,20 +104,38 @@ describe("el aviso de configuración no contradice a la pantalla", () => {
   /**
    * El defecto que esto blinda apareció al mirar la pantalla en el navegador:
    * arriba decía «La ingesta de correo no está configurada» y justo debajo
-   * había un buzón configurado, probado y funcionando. Los dos bloques hablan
-   * de cosas distintas —el de arriba, de la configuración heredada del
-   * despliegue; el de abajo, de las cuentas de la entidad— pero el de arriba
-   * estaba redactado en nombre de toda la ingesta.
+   * había un buzón configurado, probado y funcionando. Los dos bloques hablaban
+   * de cosas distintas —el de arriba, del buzón único heredado del despliegue;
+   * el de abajo, de las cuentas de la entidad— pero el de arriba estaba
+   * redactado en nombre de toda la ingesta.
    *
-   * Se comprueba sobre el FUENTE porque la condición vive en una expresión
-   * reactiva: lo que no puede volver es que `motivo` se calcule sin mirar
-   * cuántas cuentas hay.
+   * La corrección de entonces fue condicionar el aviso a que no hubiera ninguna
+   * cuenta. La de ahora es más fuerte y es la que se comprueba aquí: la
+   * SEGUNDA FUENTE ya no existe. Retirada la ruta heredada, la pantalla tiene
+   * un solo sitio del que sacar si la ingesta está configurada —las cuentas— y
+   * dos afirmaciones que se contradigan ya no se pueden escribir.
+   *
+   * Se comprueba sobre el fuente porque lo que no puede volver es la fuente,
+   * no una expresión concreta.
    */
-  it("el motivo de 'no configurada' depende de que no haya ninguna cuenta", async () => {
+  it("la pantalla no lee ningún estado heredado del despliegue", async () => {
     const { readFileSync } = await import("node:fs");
-    const fuente = readFileSync("src/routes/(app)/admin/correo/+page.svelte", "utf-8");
-    const asignacion = /\$:\s*motivo\s*=([\s\S]*?);/.exec(fuente);
-    expect(asignacion, "no encontré el cálculo de `motivo`").not.toBeNull();
-    expect(asignacion[1]).toContain("cuentas.length === 0");
+    const svelte = readFileSync("src/routes/(app)/admin/correo/+page.svelte", "utf-8");
+    const server = readFileSync("src/routes/(app)/admin/correo/+page.server.js", "utf-8");
+
+    // Anti-vacuidad: los ficheros son los que creo que son.
+    expect(svelte).toContain("data.cuentas");
+    expect(server).toContain("/email/cuentas");
+
+    // Y no hay rastro de la ruta heredada en ninguno de los dos.
+    for (const [nombre, fuente] of [
+      ["+page.svelte", svelte],
+      ["+page.server.js", server],
+    ]) {
+      const codigo = fuente.replace(/<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/|(^|\s)\/\/.*$/gm, "");
+      expect(codigo, `${nombre} sigue leyendo el estado heredado`).not.toMatch(
+        /ingest\/email|data\.estado|imap_no_configurado/,
+      );
+    }
   });
 });

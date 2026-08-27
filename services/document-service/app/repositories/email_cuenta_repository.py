@@ -38,6 +38,7 @@ _COLUMNAS = """
     c.host, c.puerto, c.usa_ssl,
     c.auth_tipo, c.app_oauth_id, c.carpeta_origen, c.carpeta_radicados,
     c.dependencia_destino, c.tipo_documental_id, c.modo, c.activa,
+    c.acuse_al_remitente, c.responsable_user_id AS responsable,
     c.propietario_user_id, c.ultimo_sondeo_at, c.ultimo_error, c.created_at,
     (c.secreto_cifrado IS NOT NULL OR c.oauth_refresh_cifrado IS NOT NULL) AS tiene_credencial
 """

@@ -56,7 +56,6 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # después lo capturaría siempre document-service.
         ("/api/v1/public/archive/", app_state.archive_service_url),
         ("/api/v1/public/", app_state.document_service_url),
-        ("/api/v1/ingest/", app_state.document_service_url),
         # Cuentas de correo (E19): configuración de buzones y de la aplicación
         # OAuth que la entidad registró ante Google o Microsoft.
         ("/api/v1/email/", app_state.document_service_url),

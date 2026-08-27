@@ -1103,7 +1103,7 @@ La ley prohíbe borrar radicados: se anulan con aprobación supervisora.
 
 ### Cuentas de correo (E19, `USUA_PERM_ADMIN`)
 
-Sustituyen a la cuenta única de las variables `IMAP_*`, que no podía expresar lo que exige el Acuerdo AGN 060/2001 art. 13 —«las entidades […] asignarán responsabilidades de acuerdo con la cantidad de cuentas habilitadas»— y guardaba la contraseña en claro en el entorno.
+Sustituyen a la cuenta única de las antiguas variables `IMAP_*` (ya retiradas), que no podía expresar lo que exige el Acuerdo AGN 060/2001 art. 13 —«las entidades […] asignarán responsabilidades de acuerdo con la cantidad de cuentas habilitadas»— y guardaba la contraseña en claro en el entorno.
 
 - `POST|GET /api/v1/email/apps-oauth` — **aplicación OAuth que la ENTIDAD registró** en su propio Google Cloud o Azure AD. `{proveedor, client_id, client_secret, azure_directory_id?, redirect_uri, notas?}`; una fila por proveedor (`409 app_ya_registrada`), y la misma sirve para todas las cuentas de ese proveedor. Microsoft exige `azure_directory_id`; Google no lo usa (`422` en ambos sentidos). El `client_secret` se cifra en reposo y **nunca se devuelve**: la respuesta solo dice `tiene_secreto`.
 
@@ -1123,19 +1123,7 @@ Sustituyen a la cuenta única de las variables `IMAP_*`, que no podía expresar 
 
   Scopes: Google `https://mail.google.com/`; Microsoft `https://outlook.office.com/IMAP.AccessAsUser.All` **más** `offline_access` — no `outlook.office365.com`, que es el del flujo de credenciales de aplicación y produce un token que el servidor IMAP rechaza.
 
-### `GET /api/v1/ingest/email/estado` (estado de la ingesta, E19)
-Informa si la entidad tiene ingesta de correo configurada **sin ejecutarla**. Respuesta `{ "habilitada": bool, "motivo": str|null, "servidor": str|null, "buzon": str|null, "cuenta": str|null }`. Exige **`USUA_PERM_ADMIN`**, el mismo gate que el poll.
-
-Responde **200 con `habilitada:false`** cuando no hay ingesta, no un error: «esta entidad no tiene ingesta de correo» es una respuesta correcta a la pregunta, no una avería. Motivos: `imap_no_configurado`, `entidad_no_declarada` (hay buzón pero no declara `IMAP_TENANT_SLUG`), `buzon_de_otra_entidad`.
-
-`servidor`, `buzon` y `cuenta` van **solo** si quien pregunta es la entidad dueña del buzón: con `buzon_de_otra_entidad` se devuelven vacíos, por la misma razón por la que el `403` del poll no dice de quién es el buzón — la dirección de correspondencia y el servidor de correo de otra institución del despliegue no son asunto de quien pregunta.
-
-Existe porque el poll era la única puerta: para saber si la ingesta estaba configurada había que dispararla, y dispararla **consume números de la secuencia oficial y marca los correos como leídos**. Una capacidad cuya única forma de consultarse es usarla no se puede ofrecer en una pantalla. Ambos endpoints comparten `diagnosticar_buzon`, de modo que el estado no puede anunciar disponible lo que el poll va a rechazar.
-
-### `POST /api/v1/ingest/email/poll` (ingesta de correo, E19)
-Trae los correos no leídos de la bandeja IMAP configurada, crea un radicado de Entrada por cada uno (`metadata.source=email`, remitente y anexos en `metadata`) y los marca como leídos. Respuesta `{ "ingested": n, "tracking_numbers": [...] }`. `503` si IMAP no está configurado (`IMAP_HOST` vacío).
-
-Exige **`USUA_PERM_ADMIN`**: radicar en masa es un acto administrativo, no algo que pueda hacer cualquier usuario con sesión abierta. Y exige que **`IMAP_TENANT_SLUG` coincida con `X-Tenant-Slug`** (`403 imap_tenant_mismatch`, sin decir de quién es el buzón): el proceso tiene **un solo** buzón y el tenant destino venía de la cabecera, así que un usuario de la entidad A podía llevarse a su entidad correos dirigidos a la B — y como el poll los marca como leídos, no vuelven a aparecer. No es una lectura indebida: es una apropiación irreversible. Sin `IMAP_TENANT_SLUG` responde `503 imap_tenant_not_configured` aunque IMAP esté configurado (fail-closed: un buzón sin dueño declarado no tiene forma de saber en qué entidad radicar). Cada poll deja asiento `ingest.email.poll` en `audit_log`.
+> **Ruta heredada retirada.** Existieron `GET /api/v1/ingest/email/estado` y `POST /api/v1/ingest/email/poll`, que operaban sobre un único buzón declarado en el entorno con las variables `IMAP_*` y radicaban de golpe todo lo no leído. Están retiradas junto con esas variables: un buzón por despliegue no expresa lo que exige el Acuerdo AGN 060/2001 art. 13, la contraseña vivía en claro en el entorno, y radicar la bandeja entera radicaba también la publicidad. Los sustituyen los endpoints de cuentas y bandeja de arriba, donde la entidad separa lo que se radica de lo que no.
 
 ### `POST /api/v1/public/{tenant}/pqrs` (radicación ciudadana, Ley 1755/2015)
 **Sin autenticación.** Un ciudadano radica una PQRS: `{ "tipo": "peticion|queja|reclamo|sugerencia|denuncia", "nombre", "identificacion"?, "email"?, "asunto", "descripcion" }`. Crea un radicado de Entrada (`metadata.canal=pqrs_ciudadano`) y devuelve `{radicado_id, tracking_number, verification_code}` para seguimiento posterior con el endpoint de verificación.

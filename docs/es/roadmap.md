@@ -116,11 +116,15 @@ procedimiento, los casos y los puntos ciegos declarados quedan en
       - [x] **Ingesta IMAP** (cerrado 2026-08-23): `/admin/correo`. El obstáculo no era dibujar la
             pantalla, era que **no se podía construir**: el poll era la única puerta, y ejecutarlo
             consume números de la secuencia oficial y marca los correos como leídos, así que
-            averiguar el estado costaba un acto irreversible. Nuevo `GET /ingest/email/estado`
-            (`USUA_PERM_ADMIN`, sin efectos, y sin describir el buzón a una entidad que no es su
-            dueña); ambas puertas comparten `diagnosticar_buzon` para que el estado no anuncie
-            disponible lo que el poll va a rechazar. La pantalla añade el acto con confirmación
-            —radicar, no «actualizar»— y el historial leído del `audit_log`.
+            averiguar el estado costaba un acto irreversible.
+            **Rediseñado y cerrado 2026-08-26**: la ruta de un solo buzón por despliegue está
+            retirada —radicaba de golpe todo lo no leído, publicidad incluida— y en su lugar la
+            entidad configura **sus** buzones (institucional compartido, personal del funcionario,
+            varios a la vez) con OAuth2 para Google y Microsoft, carpeta de filtrado y carpeta
+            «Radicados». Se radica en la **bandeja de cada buzón**, correo por correo y con reserva
+            para que dos funcionarios no radiquen el mismo dos veces; opcionalmente en automático,
+            con funcionario responsable declarado, y con constancia al remitente si el buzón la
+            activa.
 - [x] **Cola de anulaciones pendientes** (hueco de backend, cerrado 2026-08): `GET /api/v1/anulaciones`
       — recurso propio, gate `PERM_PANU_CODI` (el mismo que decidir), orden FIFO y no-read-up
       aplicado por igual a las filas y al recuento. `/anulaciones` deja de ser un buscador y pasa

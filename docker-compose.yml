@@ -488,8 +488,8 @@ services:
       # Custodia de las credenciales de las cuentas de correo (E19): la
       # contraseña IMAP de una cuenta institucional y el «client secret» de la
       # aplicación OAuth que la entidad registró ante Google o Microsoft. Las
-      # cuentas viven en `email_cuenta`, no aquí — las variables IMAP_* de
-      # arriba son la ruta heredada de una sola cuenta por despliegue.
+      # cuentas viven en `email_cuenta`, no aquí: una fila por buzón, con su
+      # responsable y su credencial cifrada.
       - EMAIL_ENCRYPTION_KEY=${EMAIL_ENCRYPTION_KEY:-}
       # Sondeo programado de buzones (E19 Increment 3). APAGADO por defecto: un
       # proceso que se conecta solo a buzones institucionales y crea documentos
@@ -499,6 +499,10 @@ services:
       - EMAIL_SONDEO_ENABLED=${EMAIL_SONDEO_ENABLED:-false}
       - EMAIL_SONDEO_TENANT_SLUG=${EMAIL_SONDEO_TENANT_SLUG:-}
       - EMAIL_SONDEO_INTERVALO_SEGUNDOS=${EMAIL_SONDEO_INTERVALO_SEGUNDOS:-300}
+      # Constancia de radicación al remitente (E19): va por el `/send` sellado
+      # de notification-service. El token DEBE ser el mismo que usa ese servicio.
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8007
+      - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

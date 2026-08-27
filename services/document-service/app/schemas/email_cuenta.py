@@ -126,6 +126,13 @@ class CuentaCrear(BaseModel):
     tipo_documental_id: UUID | None = None
     modo: str = Field(default="asistida", pattern="^(asistida|automatica)$")
     propietario_user_id: UUID | None = None
+    # Funcionario bajo cuya autoría radica una cuenta automática (Ac. 060/2001
+    # arts. 2 y 13). Sin él no hay «responsable del trámite» ni autoría para los
+    # anexos, que storage exige.
+    responsable_user_id: UUID | None = None
+    # Constancia al remitente. Opt-in: la Ley 1755/2015 art. 15 la exige a
+    # PETICIÓN del interesado, no de oficio.
+    acuse_al_remitente: bool = False
 
     @field_validator("direccion")
     @classmethod
@@ -162,6 +169,12 @@ class CuentaCrear(BaseModel):
                 "funcionario cuando entra a su buzón y vive solo en su sesión"
             )
 
+        if self.modo == "automatica" and not self.responsable_user_id:
+            raise ValueError(
+                "Una cuenta que radica automáticamente necesita un funcionario "
+                "responsable: es quien responde de lo que entre por ese buzón sin "
+                "revisión previa, y bajo cuya autoría se registran los anexos"
+            )
         if self.auth_tipo == "oauth2" and not self.app_oauth_id:
             raise ValueError(
                 "Una cuenta OAuth2 necesita la aplicación que la entidad registró "
@@ -207,6 +220,8 @@ class CuentaActualizar(BaseModel):
     dependencia_destino: str | None = Field(default=None, max_length=255)
     tipo_documental_id: UUID | None = None
     modo: str | None = Field(default=None, pattern="^(asistida|automatica)$")
+    responsable_user_id: UUID | None = None
+    acuse_al_remitente: bool | None = None
     activa: bool | None = None
 
 
@@ -228,6 +243,8 @@ class CuentaResponse(BaseModel):
     tipo_documental_id: UUID | None
     modo: str
     activa: bool
+    acuse_al_remitente: bool
+    responsable: UUID | None
     propietario_user_id: UUID | None
     ultimo_sondeo_at: datetime | None
     ultimo_error: str | None

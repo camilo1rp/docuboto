@@ -175,9 +175,12 @@ and `storage-service` refuse to serve without `SIGNATURE_SECRET`,
 `.env.example` untouched. The error message names the variable, never the value
 received.
 
-If you use email ingestion (E19), `IMAP_TENANT_SLUG` is also required: it declares
-**which institution owns the mailbox**. Without it, `POST /ingest/email/poll`
-returns `503` even when IMAP is configured.
+If you use email ingestion (E19), `EMAIL_ENCRYPTION_KEY` is required: mailbox
+credentials are encrypted at rest with it. There are no `IMAP_*` variables any
+more — each mailbox is configured from `/admin/correo` and lives in
+`email_cuenta`. For automatic polling, `EMAIL_SONDEO_TENANT_SLUG` declares
+**which institution owns the mailboxes the process polls**; without it the worker
+does not start even when `EMAIL_SONDEO_ENABLED` is on.
 
 ### CORS
 

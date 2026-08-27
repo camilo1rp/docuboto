@@ -64,7 +64,7 @@ from app.schemas.dead_letter import (
     DeadLetterSummary,
     DiscardRequest,
 )
-from app.services.buzones import resolver_buzon_dependencia
+from app.services.buzones import buzon_de_codigo_o_ventanilla, resolver_buzon_dependencia
 from app.services.event_consumer import (
     build_document_notifications,
     build_workflow_notifications,
@@ -102,11 +102,19 @@ async def _construir_envios(conn, origin_stream: str, envelope: dict):
     volvía a fallar. Ese es el motivo de que `buzon_destino` sea obligatorio y
     sin valor por defecto: convirtió un fallo silencioso en un error de firma.
     """
+    payload_data = envelope.get("payload") or {}
     if origin_stream == WORKFLOW_STREAM:
-        payload_data = envelope.get("payload") or {}
         buzon = await resolver_buzon_dependencia(conn, payload_data.get("to_dept"))
         return build_workflow_notifications(envelope, buzon_destino=buzon)
-    return build_document_notifications(envelope)
+    # El stream de documentos necesita la misma resolución: reintentar un aviso
+    # muerto de una radicación hecha por NOMBRE lo mandaría otra vez a la
+    # ventanilla genérica, reproduciendo el defecto que se está corrigiendo.
+    codigo = payload_data.get("dest_dept_code")
+    if codigo is not None:
+        buzon = buzon_de_codigo_o_ventanilla(codigo)
+    else:
+        buzon = await resolver_buzon_dependencia(conn, payload_data.get("dest_dept"))
+    return build_document_notifications(envelope, buzon_destino=buzon)
 
 router = APIRouter(
     prefix="/api/v1/notification/admin/deadletter",

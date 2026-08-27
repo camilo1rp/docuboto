@@ -113,6 +113,8 @@ class EmailCuentaService:
             "dependencia_destino": datos.dependencia_destino,
             "tipo_documental_id": datos.tipo_documental_id,
             "modo": datos.modo,
+            "responsable_user_id": datos.responsable_user_id,
+            "acuse_al_remitente": datos.acuse_al_remitente,
             "propietario_user_id": datos.propietario_user_id,
             "created_by": actor,
         }

@@ -214,6 +214,23 @@ class EmailMensajeRepository:
             mensaje_id, actor, motivo,
         )
 
+    async def registrar_acuse(self, mensaje_id: UUID, *, error: str | None) -> None:
+        """Deja constancia del intento de acuse, con o sin fallo.
+
+        Se guarda el error además del éxito: sin él, un ciudadano que nunca
+        recibió su número sería indistinguible de uno al que no había que
+        acusarle nada.
+        """
+        await self._conn.execute(
+            """
+            UPDATE email_mensaje
+               SET acuse_enviado_at = CASE WHEN $2::text IS NULL THEN now() ELSE NULL END,
+                   acuse_error = $2
+             WHERE id = $1
+            """,
+            mensaje_id, error,
+        )
+
     async def guardar_crudo(self, mensaje_id: UUID, *, file_id: UUID) -> None:
         """Enlaza el `.eml` conservado en storage (Ley 527/1999 art. 12)."""
         await self._conn.execute(

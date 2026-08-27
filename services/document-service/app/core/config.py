@@ -59,33 +59,14 @@ class Settings(BaseSettings):
     service_port: int = 8003
     log_level: str = "info"
 
-    # Ingesta de correo (E19). Si imap_host está vacío, la ingesta queda
-    # deshabilitada y el endpoint de poll responde 503.
-    imap_host: str = ""
-    imap_port: int = 993
-    imap_user: str = ""
-    imap_password: str = ""
-    imap_use_ssl: bool = True
-    imap_mailbox: str = "INBOX"
-    # Entidad DUEÑA del buzón. El proceso tiene UN solo buzón configurado, pero
-    # el endpoint de poll acepta el tenant de la cabecera: sin este campo, un
-    # usuario de la entidad A dispara la ingesta y los correos del buzón —que
-    # pueden ser de la entidad B— acaban radicados en A y marcados como leídos.
-    # No es una fuga de lectura: es una apropiación irreversible de documentos
-    # ajenos, porque el correo ya no vuelve a aparecer como no leído.
+    # --- E19: cuentas de correo en base de datos ---
     #
-    # Vacío por defecto = fail-closed: la ingesta responde 503 aunque IMAP esté
-    # configurado. Es deliberado — un buzón sin dueño declarado no tiene forma
-    # de saber en qué entidad debe radicar.
-    imap_tenant_slug: str = ""
-
-    # --- E19 Increment 1: cuentas de correo en base de datos ---
-    #
-    # Las variables `imap_*` de arriba configuran UNA sola cuenta para todo el
-    # despliegue. Eso no expresa lo que exige el Acuerdo AGN 060/2001 art. 13
-    # ("asignarán responsabilidades de acuerdo con la cantidad de cuentas
-    # habilitadas") y deja la contraseña en claro en el entorno. Quedan como
-    # ruta heredada mientras las entidades migran a `email_cuenta`.
+    # Hubo una ruta heredada —las variables `IMAP_*`— que configuraba UNA sola
+    # cuenta para todo el despliegue: no expresaba lo que exige el Acuerdo AGN
+    # 060/2001 art. 13 ("asignarán responsabilidades de acuerdo con la cantidad
+    # de cuentas habilitadas") y dejaba la contraseña en claro en el entorno.
+    # Retirada: las cuentas viven en `email_cuenta`, una por buzón, con la
+    # credencial cifrada y su responsable declarado.
     #
     # Clave maestra (AES-256 en base64) con la que se cifran en reposo las
     # credenciales de las cuentas institucionales. Vacía por defecto y
@@ -102,10 +83,19 @@ class Settings(BaseSettings):
     # decidido cuáles radican solas.
     email_sondeo_enabled: bool = False
     email_sondeo_intervalo_segundos: int = 300
-    # Entidad cuyos buzones sondea este proceso. Igual que `imap_tenant_slug`,
-    # vacío = fail-closed: sin declararlo el worker no arranca, porque un sondeo
-    # que adivinara la entidad radicaría en el archivo equivocado.
+    # Entidad cuyos buzones sondea este proceso. Vacío = fail-closed: sin
+    # declararlo el worker no arranca, porque un sondeo que adivinara la entidad
+    # radicaría en el archivo equivocado.
     email_sondeo_tenant_slug: str = ""
+
+    # Constancia de radicación al remitente (E19 Increment 3). Se envía por
+    # notification-service, cuyo `/send` está SELLADO con token interno: enviar
+    # correo con la identidad SMTP de la institución no puede quedar al alcance
+    # de cualquier JWT válido. Mismo secreto que
+    # `signature-service.notification_internal_token` — si divergen, el acuse
+    # falla con un 401 que parece un problema de red.
+    notification_service_url: str = "http://notification-service:8007"
+    notification_internal_token: str = ""
 
     # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
     # que el gateway declara público sin autenticación.

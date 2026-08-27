@@ -175,9 +175,12 @@ y `storage-service` se niegan a servir sin `SIGNATURE_SECRET`,
 (`change-me-in-production` y similares), por si alguien copia el `.env.example`
 sin tocarlo. El mensaje de error nombra la variable, nunca el valor recibido.
 
-Si además se usa la ingesta de correo (E19), `IMAP_TENANT_SLUG` es obligatoria:
-declara **a qué entidad pertenece el buzón**. Sin ella, `POST /ingest/email/poll`
-responde `503` aunque IMAP esté configurado.
+Si además se usa la ingesta de correo (E19), `EMAIL_ENCRYPTION_KEY` es
+obligatoria: con ella se cifran en reposo las credenciales de los buzones. Ya no
+hay variables `IMAP_*` — cada buzón se configura desde `/admin/correo` y vive en
+`email_cuenta`. Para el sondeo automático, `EMAIL_SONDEO_TENANT_SLUG` declara
+**a qué entidad pertenecen los buzones que sondea el proceso**; sin ella el
+worker no arranca aunque `EMAIL_SONDEO_ENABLED` esté activo.
 
 ### CORS
 

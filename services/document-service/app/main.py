@@ -43,7 +43,6 @@ from app.routers.import_ import router as import_router
 from app.routers.ingest import apps_router as email_apps_router
 from app.routers.ingest import bandeja_router as email_bandeja_router
 from app.routers.ingest import cuentas_router as email_cuentas_router
-from app.routers.ingest import router as ingest_router
 from app.routers.internal import router as internal_router
 from app.routers.metadata import router as metadata_router
 from app.routers.metadata_elements import router as metadata_elements_router
@@ -70,20 +69,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.http_client = httpx.AsyncClient(base_url=settings.tenant_service_url, timeout=5.0)
     # Redis para publicar eventos de dominio (orpycamcp.document.events, ADR-010).
     app.state.redis = redis.from_url(settings.redis_url)
-    # Cliente IMAP para la ingesta de correo (E19); None si IMAP no está configurado.
-    if settings.imap_host:
-        from app.clients.imap_client import ImaplibClient
-
-        app.state.imap_client = ImaplibClient(
-            settings.imap_host,
-            settings.imap_port,
-            settings.imap_user,
-            settings.imap_password,
-            use_ssl=settings.imap_use_ssl,
-            mailbox=settings.imap_mailbox,
-        )
-    else:
-        app.state.imap_client = None
     # Sondeo programado de buzones (E19). Opt-in y con entidad declarada: sin
     # ambas cosas no arranca, y se dice en el registro para que la ausencia no
     # se confunda con un fallo silencioso.
@@ -139,7 +124,6 @@ app.include_router(metadata_elements_router)
 app.include_router(search_router)
 app.include_router(reports_router)
 app.include_router(public_router)
-app.include_router(ingest_router)
 app.include_router(email_cuentas_router)
 app.include_router(email_apps_router)
 app.include_router(email_bandeja_router)

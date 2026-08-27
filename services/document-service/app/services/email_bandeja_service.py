@@ -40,6 +40,7 @@ from app.clients.email_parser import CorreoLeido, leer
 from app.clients.imap_adaptador import ErrorDeCorreo, ImapAdaptador
 from app.repositories.email_mensaje_repository import EmailMensajeRepository
 from app.schemas.document import AnexoInput, DocumentCreate
+from app.services import acuse_correo
 from app.services.document_service import DocumentService
 from app.services.email_cuenta_service import EmailCuentaService, ErrorDeCuenta
 
@@ -267,12 +268,56 @@ class EmailBandejaService:
         #    radicado existe igual y el correo se puede mover a mano.
         movido = await self._mover(adaptador, mensaje, cuenta["carpeta_radicados"])
 
+        # 5) La constancia al remitente, si la entidad la activó para este buzón.
+        #    Va al final y es best-effort a propósito: el número ya está asignado
+        #    y es inmutable, así que un fallo de correo no puede deshacer nada.
+        acuse = await self._acusar(mensaje, cuenta, resultado.tracking_number)
+
         return {
             "tracking_number": resultado.tracking_number,
             "radicado_id": str(resultado.id),
             "anexos": len(anexos),
             "movido_a": cuenta["carpeta_radicados"] if movido else None,
+            "acuse": acuse,
         }
+
+    async def _acusar(
+        self, mensaje: asyncpg.Record, cuenta: asyncpg.Record, tracking_number: str
+    ) -> dict[str, Any]:
+        """Constancia de radicación al remitente. Nunca lanza.
+
+        Devuelve qué pasó para que la interfaz pueda decirlo: «no se envió porque
+        el correo no traía remitente» y «no se pudo enviar» son cosas distintas, y
+        el operador necesita distinguirlas — en el segundo caso el ciudadano se
+        quedó sin su número.
+        """
+        if not cuenta["acuse_al_remitente"]:
+            return {"enviado": False, "motivo": None}
+
+        veredicto = acuse_correo.destinatario_valido(
+            mensaje["remitente_email"], direccion_cuenta=cuenta["direccion"]
+        )
+        if not veredicto.enviado:
+            await self._repo.registrar_acuse(mensaje["id"], error=veredicto.motivo)
+            return {"enviado": False, "motivo": veredicto.motivo}
+
+        recibido: datetime = mensaje["fecha_recibo"]
+        resultado = await acuse_correo.enviar(
+            tenant_slug=self._tenant,
+            destinatario=str(mensaje["remitente_email"]),
+            tracking_number=tracking_number,
+            asunto=str(mensaje["asunto"] or "(sin asunto)"),
+            recibido=recibido.strftime("%d/%m/%Y %H:%M"),
+        )
+        await self._repo.registrar_acuse(
+            mensaje["id"], error=None if resultado.enviado else resultado.motivo
+        )
+        if not resultado.enviado:
+            logger.warning(
+                "el radicado %s se creó pero la constancia no salió: %s",
+                tracking_number, resultado.motivo,
+            )
+        return {"enviado": resultado.enviado, "motivo": resultado.motivo}
 
     async def _subir_soportes(
         self, correo: CorreoLeido, crudo: bytes, mensaje: asyncpg.Record, *, actor: uuid.UUID
