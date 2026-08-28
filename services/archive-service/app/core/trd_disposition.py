@@ -75,6 +75,25 @@ ESTADOS_QUE_GOBIERNAN_ELIMINACION_EFECTIVA: frozenset[str] = frozenset(
 )
 
 
+def disposicion_final_autorizada(
+    *, serie_estado: str, acto_administrativo: str | None
+) -> bool:
+    """El criterio, en un solo sitio (2026-08-28).
+
+    Lo extrae de `assert_disposicion_final_autorizada` sin cambiarlo, porque
+    ahora hay DOS consumidores y responden preguntas distintas: el `assert`
+    corta un acto (409), y la cola de vencimientos
+    (`GET /trd/disposicion-vencida`) solo necesita **decir** si el snapshot de
+    cada expediente gobernaría su eliminación, sin cortar nada. Copiar la
+    condición en la consulta habría sido reimplementar lo que se verifica —y
+    esa divergencia no fallaría al escribirla, sino el día que alguien cambie
+    uno de los dos lados—: la pantalla diría «se puede eliminar» sobre un
+    expediente que el gate va a rechazar, o al revés."""
+    return serie_estado == "convalidada" or (
+        serie_estado == "derogada" and acto_administrativo is not None
+    )
+
+
 def assert_disposicion_final_autorizada(
     *,
     serie_estado: str,
@@ -94,10 +113,9 @@ def assert_disposicion_final_autorizada(
     módulo); el job de disposición futuro debe invocar este helper como su
     primer chequeo. `code`/`serie_version` son opcionales, solo para un
     mensaje de error más trazable."""
-    autorizado = serie_estado == "convalidada" or (
-        serie_estado == "derogada" and acto_administrativo is not None
-    )
-    if not autorizado:
+    if not disposicion_final_autorizada(
+        serie_estado=serie_estado, acto_administrativo=acto_administrativo
+    ):
         ref = f"'{code}' version {serie_version}" if code else "la serie TRD"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

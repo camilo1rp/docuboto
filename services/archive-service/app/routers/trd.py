@@ -20,6 +20,7 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    ExpedienteDisposicionVencidaResponse,
     ExpedienteRevisionPendienteResponse,
     RetentionSchedule,
     TrdSerieAprobar,
@@ -189,6 +190,50 @@ async def list_revision_pendiente(
     service = ArchiveService(conn, tenant_slug)
     items, total = await service.list_expedientes_revision_pendiente(
         page=page, size=size, user_id=user_id, canal=canal, tipo=tipo
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+@router.get(
+    "/disposicion-vencida",
+    response_model=list[ExpedienteDisposicionVencidaResponse],
+    summary="Expedientes cuyo calendario de retención ya venció (RF-TRD-08)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
+)
+async def list_disposicion_vencida(
+    response: Response,
+    fase: Literal["gestion", "central"] = Query(
+        default="central",
+        description=(
+            "'central': venció fin_archivo_central, toca la DISPOSICIÓN FINAL. "
+            "'gestion': venció fin_archivo_gestion, toca transferir al archivo central."
+        ),
+    ),
+    disposition_code: Literal["CT", "E", "S", "M"] | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+    tenant_slug: str = Depends(_require_tenant),
+    # Mismas dos dependencias que `revision-pendiente`, y por el mismo motivo:
+    # `USUA_PERM_TRD` es ORTOGONAL al clearance, así que sin resolverlo este
+    # informe enumeraría expedientes RESERVADA/CLASIFICADA a cualquier
+    # portador del permiso.
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[ExpedienteDisposicionVencidaResponse]:
+    # Declarado ANTES de `GET /{serie_id}`, igual que `revision-pendiente`:
+    # ambas son plantillas de UN segmento y Starlette resuelve por orden de
+    # registro -- si `/{serie_id}` fuera primero, "disposicion-vencida" caería
+    # ahí y reventaría con un 422 al no parsear como UUID.
+    service = ArchiveService(conn, tenant_slug)
+    items, total = await service.list_expedientes_disposicion_vencida(
+        page=page,
+        size=size,
+        fase=fase,
+        disposition_code=disposition_code,
+        user_id=user_id,
+        canal=canal,
     )
     response.headers["X-Total-Count"] = str(total)
     return items

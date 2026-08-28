@@ -22,6 +22,7 @@ from orpycamcp_common import audit
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.core.http_errors import motivo_de
+from app.core.trd_disposition import disposicion_final_autorizada
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.audit_read import AuditReadRepository
@@ -31,6 +32,7 @@ from app.schemas.archive import (
     BatchLinkResult,
     ExpedienteCreate,
     ExpedienteDisposicionResult,
+    ExpedienteDisposicionVencidaResponse,
     ExpedienteEventoResponse,
     ExpedienteIndice,
     ExpedienteRadicadoResponse,
@@ -1379,6 +1381,33 @@ class ArchiveService:
                 if vigente.estado == "migrada":
                     trd_revision_requerida = True
                     trd_revision_motivo = "cerrado_bajo_serie_migrada"
+            else:
+                # RF-TRD-09 (2026-08-28) -- UN CIERRE SIN SERIE NO DEJABA NINGÚN
+                # RASTRO. El expediente quedaba `closed` con `disposition = NULL`
+                # y `trd_revision_requerida = false`: sin calendario de retención,
+                # sin fecha de disposición y **sin aparecer en ninguna cola**. No
+                # es un expediente conservado de más, es un expediente que sale
+                # del ciclo de vida archivístico en silencio -- nadie volverá a
+                # mirarlo, porque nada lo nombra.
+                #
+                # El motivo `cierre_sin_snapshot_de_retencion` EXISTE desde la
+                # migración 037, que lo usó para marcar los cierres históricos...
+                # y ningún camino de código lo escribió nunca después. El backfill
+                # reparó el pasado y **nada protegía el futuro** -- el mismo hueco
+                # que tenían las defensas de `audit_log` (cubrían modificar y
+                # borrar, ninguna cubría añadir). Se comprobó sobre el tenant de
+                # demostración: 1 expediente cerrado en ese estado, invisible.
+                #
+                # Se MARCA, no se bloquea: es el criterio que este mismo método ya
+                # aplica a `migrada` (D6, «marca de revisión honesta, nunca
+                # bloqueante»). Bloquear el cierre dejaría atrapados los
+                # expedientes que ya están abiertos sin serie, y convertiría un
+                # problema de clasificación en uno de disponibilidad. La cola que
+                # lo recoge -- `GET /trd/revision-pendiente`, tercera pestaña de
+                # `/admin/trd` -- YA distingue este motivo y ya dice que no tiene
+                # resolución automática; solo que hasta hoy nunca recibía ninguno.
+                trd_revision_requerida = True
+                trd_revision_motivo = "cierre_sin_snapshot_de_retencion"
 
             async with self._conn.transaction():
                 transitioned = await self._repo.transition_expediente(
@@ -3818,6 +3847,95 @@ class ArchiveService:
             )
         return _to_trd_response(updated)
 
+    async def list_expedientes_disposicion_vencida(
+        self,
+        *,
+        page: int,
+        size: int,
+        fase: str,
+        disposition_code: str | None = None,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> tuple[list[ExpedienteDisposicionVencidaResponse], int]:
+        """`GET /trd/disposicion-vencida` (RF-TRD-08): la cola de expedientes
+        cuyo calendario de retención ya venció.
+
+        Es la parte de RF-TRD-08 **que no destruye nada**: el sistema deja de
+        limitarse a guardar el calendario y pasa a decir en voz alta qué venció,
+        cuándo, bajo qué acto administrativo y qué toca hacer con ello. El brazo
+        que ejecuta (borrado seguro con acta, RF-TRD-07) es el incremento
+        siguiente y tendrá su propio procedimiento -- aval del Comité,
+        publicidad previa del inventario, acta firmada.
+
+        No-read-up con el mismo criterio que `list_expedientes`, **incluido el
+        recuento**, y traza agregada de consulta (RF-BUS-10) gemela de la del
+        informe de revisión pendiente: enumerar los expedientes que están a un
+        paso de eliminarse es exactamente la clase de consulta que debe dejar
+        rastro de quién la hizo."""
+        offset = (page - 1) * size
+        clearance = await self._repo.caller_clearance(user_id)
+        rows, total = await self._repo.list_expedientes_disposicion_vencida(
+            offset=offset,
+            limit=size,
+            max_clearance=clearance,
+            fase=fase,
+            disposition_code=disposition_code,
+        )
+        await self._audit_search_access(
+            action="archive.expediente_disposicion_vencida_listado",
+            filtros={"fase": fase, "disposition_code": disposition_code},
+            total=total,
+            page=page,
+            size=size,
+            user_id=user_id,
+            canal=canal,
+        )
+        items = [self._fila_disposicion_vencida(r, fase=fase) for r in rows]
+        return items, total
+
+    def _fila_disposicion_vencida(
+        self, row: asyncpg.Record, *, fase: str
+    ) -> ExpedienteDisposicionVencidaResponse:
+        """Compone una fila de la cola desde el snapshot congelado."""
+        # `disposition` llega como texto JSON desde asyncpg (la columna es
+        # jsonb y este servicio no registra codec): se decodifica aquí, en un
+        # solo sitio, con el mismo cuidado que el resto del servicio -- un
+        # snapshot ilegible NO tumba el informe entero, deja la fila con lo que
+        # se pudo leer y sin afirmar nada sobre la eliminación.
+        raw = row["disposition"]
+        snapshot: dict[str, Any] = {}
+        if isinstance(raw, str):
+            try:
+                snapshot = json.loads(raw)
+            except (ValueError, TypeError):
+                snapshot = {}
+        elif isinstance(raw, dict):
+            snapshot = raw
+
+        serie_estado = snapshot.get("serie_estado")
+        acto = snapshot.get("acto_administrativo")
+        code = snapshot.get("disposition_code")
+        gobierna = bool(serie_estado) and disposicion_final_autorizada(
+            serie_estado=str(serie_estado), acto_administrativo=acto
+        )
+        return ExpedienteDisposicionVencidaResponse(
+            id=row["id"],
+            code=row["code"],
+            status=row["status"],
+            nivel_seguridad=row["nivel_seguridad"],
+            trd_serie_code=row["trd_serie_code"],
+            closed_at=row["closed_at"],
+            fase=fase,
+            fecha_vencimiento=row["fecha_vencimiento"],
+            dias_vencido=row["dias_vencido"],
+            disposition_code=code,
+            disposition_label=snapshot.get("disposition_label"),
+            serie_estado=serie_estado,
+            acto_administrativo=acto,
+            gobierna_eliminacion=gobierna,
+            accion=_accion_de_disposicion(code, fase=fase),
+        )
+
     async def list_expedientes_revision_pendiente(
         self,
         *,
@@ -3962,6 +4080,35 @@ _AGN_DISPOSITION: dict[str, tuple[str, str]] = {
     "M": ("M", "Microfilmación/Digitalización"),
     "digitize": ("M", "Microfilmación/Digitalización"),
 }
+
+
+# Qué toca hacer cuando vence cada fase. Escrito por ADMISIÓN: un código que
+# no esté aquí NO recibe una acción inventada, recibe la constancia de que el
+# snapshot no la declara. **Un vencimiento no es una orden de destruir** -- en
+# `CT` el vencimiento del archivo central significa conservar para siempre en
+# el histórico, y presentar esa fila junto a las de `E` sin distinguirlas
+# convertiría la cola en una «lista de lo que hay que borrar» que incluiría
+# justo los expedientes que jamás se borran.
+_ACCION_FASE_CENTRAL: dict[str, str] = {
+    "CT": "Transferir al archivo histórico y conservar permanentemente (no se elimina)",
+    "E": "Eliminar con acta, previo aval del Comité y publicidad del inventario",
+    "S": "Seleccionar la muestra a conservar y eliminar el resto, con acta",
+    "M": "Reproducir (microfilmar/digitalizar) y eliminar el original, con acta",
+}
+
+
+def _accion_de_disposicion(code: str | None, *, fase: str) -> str:
+    if fase == "gestion":
+        # La primera fase no depende del código: al vencer el archivo de
+        # gestión todo expediente sube al central, se conserve o se elimine
+        # después.
+        return "Transferir al archivo central (transferencia primaria)"
+    if code is None:
+        return "Sin acción determinable: el snapshot congelado no declara código de disposición"
+    return _ACCION_FASE_CENTRAL.get(
+        code,
+        f"Sin acción determinable: código de disposición '{code}' no reconocido",
+    )
 
 
 def _agn_disposition(value: str) -> tuple[str, str]:

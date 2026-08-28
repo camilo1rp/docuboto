@@ -524,6 +524,44 @@ class ExpedienteRevisionPendienteResponse(BaseModel):
     tipo_instrumento: str | None = None
 
 
+class ExpedienteDisposicionVencidaResponse(BaseModel):
+    """Fila de `GET /api/v1/trd/disposicion-vencida` (RF-TRD-08, 2026-08-28):
+    un expediente cuyo calendario de retención ya venció.
+
+    Todo sale del **snapshot congelado al cerrar** (`expedientes.disposition`),
+    no de la fila viva de la serie: el calendario que gobierna a un expediente
+    es el que se congeló, y una convalidación posterior no adelanta ni retrasa
+    un vencimiento ya fijado (ADR-025 D3/D4).
+
+    `gobierna_eliminacion` responde **exactamente lo mismo** que el gate
+    `assert_disposicion_final_autorizada` responderá cuando llegue el brazo
+    ejecutor: ambos llaman al mismo predicado. No es un adorno informativo —
+    si la pantalla dijera «se puede eliminar» sobre un expediente que el gate
+    va a rechazar, el funcionario descubriría el límite fallando.
+
+    `accion`: qué toca hacer, derivado del código de disposición del propio
+    snapshot. **Un vencimiento no es una orden de destruir**: sobre `CT`
+    (conservación total) el vencimiento del archivo central significa
+    transferir al histórico y conservar para siempre. Distinguirlo aquí evita
+    que la cola se lea como «lista de lo que hay que borrar»."""
+
+    id: uuid.UUID
+    code: str
+    status: str
+    nivel_seguridad: int
+    trd_serie_code: str | None
+    closed_at: datetime | None
+    fase: Literal["gestion", "central"]
+    fecha_vencimiento: date
+    dias_vencido: int
+    disposition_code: str | None
+    disposition_label: str | None
+    serie_estado: str | None
+    acto_administrativo: str | None
+    gobierna_eliminacion: bool
+    accion: str
+
+
 class TrdSerieResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

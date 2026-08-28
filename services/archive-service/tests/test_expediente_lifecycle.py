@@ -443,3 +443,113 @@ async def test_indice_foliation(client_with_conn) -> None:
     assert body["total_folios"] == 2
     assert body["items"][0]["folio"] == 1
     assert body["items"][1]["folio"] == 2
+
+
+# ---------------------------------------------------------------------------
+# RF-TRD-09 (2026-08-28): un cierre SIN serie TRD deja marca de revisión.
+#
+# Hasta esta fecha el expediente quedaba `closed` con `disposition = NULL` y
+# `trd_revision_requerida = false`: sin calendario de retención y **sin
+# aparecer en ninguna cola**. El motivo `cierre_sin_snapshot_de_retencion`
+# existía desde la migración 037 —que lo usó para marcar los cierres
+# históricos— y ningún camino de código lo escribió nunca después: el backfill
+# reparó el pasado y nada protegía el futuro. Comprobado sobre `tenant_demo`:
+# 1 expediente cerrado en ese estado, invisible para `/trd/revision-pendiente`.
+# ---------------------------------------------------------------------------
+
+
+def _sql_del_update_de_cierre(mock_conn) -> tuple[str, tuple]:
+    """El `UPDATE ... SET status = $1` de `transition_expediente`, con sus
+    parámetros. Se inspecciona el SQL EMITIDO, no el fuente: la lección de la
+    auditoría cruzada es que un `getsource` encuentra la frase en el propio
+    docstring que la niega."""
+    for llamada in mock_conn.fetchrow.await_args_list:
+        sql = llamada.args[0] if llamada.args else ""
+        if isinstance(sql, str) and sql.startswith("UPDATE expedientes SET status ="):
+            return sql, llamada.args[1:]
+    raise AssertionError("no se emitió ningún UPDATE de transición")
+
+
+@pytest.mark.asyncio
+async def test_cerrar_sin_serie_trd_deja_marca_de_revision(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    exp_open = make_expediente_record(exp_id=exp_id, trd_serie_id=None, exp_status="open")
+    exp_closed = make_expediente_record(exp_id=exp_id, trd_serie_id=None, exp_status="closed")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
+    mock_conn.fetch.return_value = []
+
+    from app.services.index_service import IndexService
+
+    with (
+        patch.object(IndexService, "regenerate", new=AsyncMock()),
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
+    ):
+        resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    sql, params = _sql_del_update_de_cierre(mock_conn)
+    assert "trd_revision_requerida" in sql, sql
+    assert "trd_revision_motivo" in sql, sql
+    assert True in params, params
+    assert "cierre_sin_snapshot_de_retencion" in params, params
+    # Y NO se toca el pin: no hay serie que fijar.
+    assert "trd_serie_id" not in sql, sql
+
+
+@pytest.mark.asyncio
+async def test_cerrar_con_serie_convalidada_no_marca_nada(client_with_conn) -> None:
+    """Control positivo: la marca es del caso sin calendario, no de todo
+    cierre. Sin esto, el test de arriba pasaría con un `True` constante."""
+    client, mock_conn = client_with_conn
+    serie_id = uuid.uuid4()
+    exp_id = uuid.uuid4()
+    exp_open = make_expediente_record(exp_id=exp_id, trd_serie_id=serie_id, exp_status="open")
+    trd = make_trd_serie_record(estado="convalidada", acto_administrativo="Res. 1 de 2026")
+    exp_closed = make_expediente_record(
+        exp_id=exp_id, trd_serie_id=serie_id, exp_status="closed", disposition={}
+    )
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed, exp_closed]
+    mock_conn.fetch.return_value = []
+
+    from app.services.index_service import IndexService
+
+    with (
+        patch.object(IndexService, "regenerate", new=AsyncMock()),
+        patch.object(IndexService, "firmar_indice_close", new=AsyncMock(return_value=None)),
+    ):
+        resp = await client.post(f"/api/v1/expedientes/{exp_id}/close", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    sql, params = _sql_del_update_de_cierre(mock_conn)
+    assert "cierre_sin_snapshot_de_retencion" not in params, params
+    assert False in params, params
+
+
+@pytest.mark.asyncio
+async def test_transferir_no_borra_una_marca_pendiente(client_with_conn) -> None:
+    """La transferencia NO escribe las marcas: con los defaults del método
+    (`False`/`None`) borraría una marca que nadie ha resuelto — trasladar un
+    expediente no responde la pregunta que la marca hace."""
+    client, mock_conn = client_with_conn
+    exp_id = uuid.uuid4()
+    exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
+    exp_transferred = make_expediente_record(exp_id=exp_id, exp_status="transferred")
+    mock_conn.fetchval.return_value = True
+    # _expediente_or_404 → _assert_indice_firmado(get_current) → transition → reload.
+    mock_conn.fetchrow.side_effect = [
+        exp_closed,
+        {"id": uuid.uuid4(), "estado": "firmado"},
+        exp_transferred,
+        exp_transferred,
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(f"/api/v1/expedientes/{exp_id}/transfer", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    sql, _ = _sql_del_update_de_cierre(mock_conn)
+    assert "trd_revision_requerida" not in sql, sql
+    assert "trd_revision_motivo" not in sql, sql

@@ -417,6 +417,19 @@ class ArchiveRepository:
             assignments.append(f"trd_serie_code = ${idx}")
             params.append(new_trd_serie_code)
             idx += 1
+        # Las marcas de revisión NO cuelgan del pin (2026-08-28, RF-TRD-09).
+        # Vivían dentro de `if pin_trd:`, que solo es cierto cuando el
+        # expediente TIENE serie -- justo el caso contrario al que hay que
+        # marcar. Un cierre sin serie no puede declarar que le falta el
+        # calendario si la declaración solo se escribe cuando el calendario
+        # existe. Se escriben al CERRAR, siempre: en un cierre normal valen
+        # `false`/`NULL`, que es el estado que ya escribían.
+        #
+        # `status == "closed"` y no «siempre»: en una TRANSFERENCIA los
+        # defaults del método (`False`/`None`) borrarían una marca pendiente
+        # que nadie ha resuelto -- trasladar un expediente no responde la
+        # pregunta que la marca hace.
+        if status == "closed":
             assignments.append(f"trd_revision_requerida = ${idx}")
             params.append(trd_revision_requerida)
             idx += 1
@@ -1441,6 +1454,84 @@ class ArchiveRepository:
             motivo,
         )
         return int(result.split()[-1])
+
+    async def list_expedientes_disposicion_vencida(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        max_clearance: int,
+        fase: str,
+        disposition_code: str | None = None,
+    ) -> tuple[list[asyncpg.Record], int]:
+        """`GET /trd/disposicion-vencida` (RF-TRD-08, 2026-08-28): expedientes
+        cuyo calendario de retención ya venció.
+
+        Lee el **snapshot congelado** (`expedientes.disposition`), nunca la
+        fila viva de `trd_series`: el calendario que gobierna a un expediente
+        es el que se congeló al cerrarlo (ADR-025 D3/D4), y una convalidación
+        posterior no puede adelantar ni retrasar un vencimiento ya fijado.
+
+        `fase`: `'gestion'` mira `fin_archivo_gestion` (toca transferir al
+        archivo central) y `'central'` mira `fin_archivo_central` (toca la
+        **disposición final**). Son dos colas distintas con dos actos
+        distintos, y mezclarlas invitaría a ejecutar una disposición final
+        sobre un expediente que solo debía cambiar de estante.
+
+        **No-read-up en la MISMA condición que las filas** (RF-SEG-08). El
+        `WHERE` se construye una vez y lo comparten el `COUNT` y la página:
+        recortar solo las filas dejaría que el total delatara cuántos
+        expedientes clasificados hay vencidos — la lección de la cola de
+        anulaciones, donde el recuento era el punto delicado. `USUA_PERM_TRD`
+        (gate del router) es ORTOGONAL al clearance, igual que en el gemelo
+        `list_expedientes_revision_pendiente`.
+
+        La comparación es `<= CURRENT_DATE`: «vencido» incluye el día en que
+        vence, no solo los posteriores.
+        """
+        await self._set_search_path()
+        # `fase` NUNCA viene cruda del cliente -- el router la restringe con un
+        # `Literal`, y aquí se vuelve a resolver contra un mapa cerrado: lo que
+        # se interpola es el nombre de una CLAVE de este módulo, no una entrada.
+        campo = {"gestion": "fin_archivo_gestion", "central": "fin_archivo_central"}[fase]
+
+        conditions = [
+            "e.nivel_seguridad <= $1",
+            "e.status IN ('closed', 'transferred')",
+            "e.disposition IS NOT NULL",
+            # El calendario puede no traer la fecha de esta fase (un snapshot
+            # sin `archivo_central_years`, p. ej.): sin fecha no hay
+            # vencimiento que afirmar, y afirmarlo sería inventarlo.
+            f"e.disposition->>'{campo}' IS NOT NULL",
+            f"(e.disposition->>'{campo}')::date <= CURRENT_DATE",
+        ]
+        params: list[object] = [max_clearance]
+        idx = 2
+        if disposition_code is not None:
+            conditions.append(f"e.disposition->>'disposition_code' = ${idx}")
+            params.append(disposition_code)
+            idx += 1
+        where = " AND ".join(conditions)
+
+        total: int = await self._conn.fetchval(
+            f"SELECT COUNT(*) FROM expedientes e WHERE {where}", *params
+        )
+        rows = await self._conn.fetch(
+            f"""
+            SELECT e.id, e.code, e.status, e.nivel_seguridad,
+                   e.trd_serie_code, e.closed_at, e.disposition,
+                   (e.disposition->>'{campo}')::date AS fecha_vencimiento,
+                   CURRENT_DATE - (e.disposition->>'{campo}')::date AS dias_vencido
+              FROM expedientes e
+             WHERE {where}
+             ORDER BY (e.disposition->>'{campo}')::date ASC, e.code ASC
+             LIMIT ${idx} OFFSET ${idx + 1}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+        return list(rows), total
 
     async def list_expedientes_revision_pendiente(
         self, *, offset: int, limit: int, max_clearance: int, tipo: str | None = None

@@ -145,6 +145,7 @@
     { id: "series", label: "Series TRD/CCD", icon: "fa-folder-tree" },
     { id: "tipos", label: "Tipos documentales", icon: "fa-file-lines" },
     { id: "revision", label: "Revisión pendiente", icon: "fa-triangle-exclamation" },
+    { id: "vencidos", label: "Disposición vencida", icon: "fa-hourglass-end" },
   ];
 
   // Cola de revisión (ADR-025 D4/D6). Expedientes ya cerrados que el backfill
@@ -185,6 +186,20 @@
     );
   }
   $: motivosPresentes = [...new Set(revision.map((r) => r.trd_revision_motivo))];
+
+  // Cola de vencimientos (RF-TRD-08). El sistema tenía el calendario congelado
+  // al cerrar cada expediente y no lo decía en voz alta: esta pestaña es la
+  // primera vez que la entidad ve QUÉ venció, cuándo y bajo qué acto.
+  //
+  // NO es una lista de lo que hay que borrar, y la interfaz no puede dejar que
+  // se lea así: en Conservación Total el vencimiento del archivo central
+  // significa transferir al histórico y conservar PARA SIEMPRE. Por eso la
+  // acción viaja por fila desde el backend —derivada del snapshot congelado, no
+  // adivinada aquí— y las filas que no gobiernan una eliminación lo dicen.
+  $: vencidos = data.vencidos ?? [];
+  $: vencidosEliminables = vencidos.filter((v) => v.disposition_code === "E").length;
+  const CHIP_DISPOSICION = { CT: "active", E: "error", S: "pending", M: "info" };
+
   let activeTab = "series";
 
   function handleTabKeydown(e, tabId) {
@@ -994,9 +1009,101 @@
       </div>
     {/if}
   </div>
+
+  <!-- ===================================================================
+       Panel: Disposición vencida (RF-TRD-08)
+       =================================================================== -->
+  <div
+    id="panel-vencidos"
+    role="tabpanel"
+    aria-labelledby="tab-vencidos"
+    hidden={activeTab !== "vencidos"}
+    tabindex="0"
+  >
+    <div class="trd-revision__intro" role="note">
+      <i class="fas fa-circle-info" aria-hidden="true"></i>
+      <p>
+        Expedientes cuyo <strong>archivo central ya venció</strong> según el calendario que se
+        congeló al cerrarlos. Vencer <strong>no</strong> significa eliminar: en Conservación Total
+        significa transferir al archivo histórico y conservar permanentemente. Cada fila dice qué
+        acto corresponde. El sistema <strong>no ejecuta ninguno todavía</strong>: la eliminación
+        efectiva exige aval del Comité, publicidad previa del inventario y acta firmada.
+      </p>
+    </div>
+
+    {#if data.vencidosError}
+      <p class="trd-revision__error" role="alert">
+        <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+        {data.vencidosError}
+      </p>
+    {:else if vencidos.length === 0}
+      <EmptyState
+        icon="fas fa-circle-check"
+        title="Ningún expediente con la retención vencida"
+        description="Ningún calendario de archivo central ha llegado a su término."
+      />
+    {:else}
+      <div class="trd-revision__leyenda">
+        <p class="trd-revision__motivo">
+          <StatusChip status="neutral" label={`${vencidos.length} vencidos`} />
+          <span>
+            {vencidosEliminables === 0
+              ? "Ninguno tiene disposición de eliminación: todos se conservan o se seleccionan."
+              : `${vencidosEliminables} con disposición de eliminación, que exige acta y aval del Comité.`}
+          </span>
+        </p>
+      </div>
+
+      <div class="trd-revision__tabla">
+        <table>
+          <caption class="is-sr-only">Expedientes con la retención vencida</caption>
+          <thead>
+            <tr>
+              <th scope="col">Expediente</th>
+              <th scope="col">Serie</th>
+              <th scope="col">Disposición</th>
+              <th scope="col">Venció</th>
+              <th scope="col">Días</th>
+              <th scope="col">Qué corresponde</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each vencidos as v (v.id)}
+              <tr>
+                <td>{v.code}</td>
+                <td>{v.trd_serie_code ?? "—"}</td>
+                <td>
+                  <StatusChip
+                    status={CHIP_DISPOSICION[v.disposition_code] ?? "neutral"}
+                    label={v.disposition_label ?? v.disposition_code ?? "sin declarar"}
+                  />
+                </td>
+                <td>{formatearFecha(v.fecha_vencimiento)}</td>
+                <td>{v.dias_vencido}</td>
+                <td>
+                  {v.accion}
+                  {#if v.disposition_code === "E" && !v.gobierna_eliminacion}
+                    <br />
+                    <small class="trd-vencidos__bloqueo">
+                      El instrumento congelado no está convalidado: no puede gobernar una
+                      eliminación efectiva.
+                    </small>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style lang="scss">
+  .trd-vencidos__bloqueo {
+    color: var(--op-error);
+  }
+
   .trd-revision__intro {
     display: flex;
     align-items: flex-start;

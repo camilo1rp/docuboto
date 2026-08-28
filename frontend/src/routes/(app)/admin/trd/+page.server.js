@@ -89,5 +89,35 @@ export async function load({ cookies, parent, fetch }) {
     revisionError = "No se pudo conectar al servidor para consultar la cola de revisión.";
   }
 
-  return { series, seriesError, tipos, tiposError, revision, revisionError };
+  // Cola de vencimientos (RF-TRD-08). Mismo criterio que la de revisión: se
+  // carga aquí porque su razón de ser es que ALGUIEN la vea. Se pide la fase
+  // `central` —la que desemboca en la disposición final— porque es la que exige
+  // una decisión; la fase `gestion` es una transferencia rutinaria y se ofrece
+  // como filtro dentro de la pestaña.
+  let vencidos = [];
+  let vencidosError = null;
+  try {
+    const res = await fetch(`${API_V1}/trd/disposicion-vencida?fase=central&size=200`, {
+      headers,
+    });
+    if (res.ok) {
+      vencidos = await res.json().catch(() => []);
+    } else {
+      const body = await res.json().catch(() => ({}));
+      vencidosError = mensajeError(body, `Error ${res.status}`);
+    }
+  } catch {
+    vencidosError = "No se pudo conectar al servidor para consultar los vencimientos.";
+  }
+
+  return {
+    series,
+    seriesError,
+    tipos,
+    tiposError,
+    revision,
+    revisionError,
+    vencidos,
+    vencidosError,
+  };
 }
