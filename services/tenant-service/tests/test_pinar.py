@@ -59,7 +59,8 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
     conn = AsyncMock()
     conn.fetch.return_value = []
     conn.fetchrow.return_value = None
-    # Las escrituras del PINAR ahora exigen USUA_PERM_ADMIN (app/core/authz.py),
+    # TODO el PINAR —escrituras y lecturas (2026-08-28)— exige USUA_PERM_ADMIN
+    # (app/core/authz.py, gate en el propio APIRouter),
     # gate resuelto vía conn.fetchval — truthy por defecto (permiso concedido) para
     # no romper las aserciones de negocio de los tests existentes; los tests que SÍ
     # ejercen fetchval con fines de negocio (p. ej. max_version) lo sobreescriben.
@@ -93,7 +94,7 @@ async def test_list_ejes(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
         {"code": 1, "nombre": "Administración de archivos"},
         {"code": 3, "nombre": "Preservación de la información"},
     ]
-    resp = await client.get("/api/v1/pinar/ejes")
+    resp = await client.get("/api/v1/pinar/ejes", headers=_HDRS)
     assert resp.status_code == 200
     assert {e["code"] for e in resp.json()} == {1, 3}
 
@@ -154,7 +155,7 @@ async def test_create_plan_forbidden_without_permission(
 async def test_get_plan_not_found(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     conn.fetchrow.return_value = None
-    resp = await client.get(f"/api/v1/pinar/planes/{uuid.uuid4()}")
+    resp = await client.get(f"/api/v1/pinar/planes/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "not_found"
 
@@ -366,7 +367,7 @@ async def test_get_priorizacion_parses_impactos(
             "impactos": '{"3": 9, "4": 8}',  # jsonb como str (asyncpg puede devolver texto)
         }
     ]
-    resp = await client.get(f"/api/v1/pinar/planes/{pid}/priorizacion")
+    resp = await client.get(f"/api/v1/pinar/planes/{pid}/priorizacion", headers=_HDRS)
     assert resp.status_code == 200
     body = resp.json()[0]
     assert body["prioridad"] == 17

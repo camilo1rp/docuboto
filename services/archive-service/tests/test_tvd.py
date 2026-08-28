@@ -265,14 +265,15 @@ async def test_get_trd_serie_versiones(client_with_conn) -> None:
     """ADR-026: `GET /api/v1/trd/{code}/versiones`, gemelo que ADR-025 dejó
     declarado y nunca implementó."""
     client, mock_conn = client_with_conn
+    # El historial es CIRCUITO, no vocabulario: exige USUA_PERM_TRD desde
+    # 2026-08-28 (ver `tests/test_trd_lectura_frontera.py`).
+    mock_conn.fetchval.return_value = True
     mock_conn.fetch.return_value = [
         make_trd_serie_record(code="100", version=2, estado="borrador"),
         make_trd_serie_record(code="100", version=1, estado="derogada"),
     ]
 
-    resp = await client.get(
-        "/api/v1/trd/100/versiones", headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]}
-    )
+    resp = await client.get("/api/v1/trd/100/versiones", headers=TENANT_HEADERS)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -284,14 +285,12 @@ async def test_get_trd_serie_versiones(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_get_tvd_agrupacion_versiones(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # USUA_PERM_TRD: el historial está gateado
     mock_conn.fetch.return_value = [
         make_tvd_agrupacion_record(code="FONDO-100", version=1, estado="convalidada")
     ]
 
-    resp = await client.get(
-        "/api/v1/tvd/FONDO-100/versiones",
-        headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]},
-    )
+    resp = await client.get("/api/v1/tvd/FONDO-100/versiones", headers=TENANT_HEADERS)
 
     assert resp.status_code == 200
     body = resp.json()

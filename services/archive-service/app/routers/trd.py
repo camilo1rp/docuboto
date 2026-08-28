@@ -33,6 +33,30 @@ from app.schemas.archive import (
 )
 from app.services.archive_service import ArchiveService
 
+# ---------------------------------------------------------------------------
+# Qué se lee sin permiso, y por qué (decisión de 2026-08-28, §4.bis del plan de
+# pruebas). Estas lecturas se dividen en dos clases que NO se pueden tratar
+# igual:
+#
+#   1. El VOCABULARIO de clasificación -- el listado de series TRD, su detalle y
+#      el cálculo de retención. Queda abierto a cualquier usuario autenticado
+#      del tenant, y no por descuido: `/radicar` y `/expedientes` lo consumen
+#      para poder clasificar, así que exigir `USUA_PERM_TRD` dejaría sin
+#      radicar a todo operador ordinario -- el permiso lo tiene quien
+#      ADMINISTRA el instrumento, no quien lo usa. Además el instrumento
+#      convalidado es de publicación obligatoria (Ac. AGN 004/2019, compilado
+#      por 001/2024; Ley 1712/2014 art. 9), así que la apertura es coherente
+#      con la norma. Esto es una decisión declarada, no una omisión.
+#
+#   2. El CIRCUITO -- `GET /{code}/versiones`, que devuelve el historial
+#      completo: los borradores, el `acta_comite`, la `fecha_aprobacion_comite`,
+#      la `instancia_convalidante` y el `created_by` de cada versión. Eso es la
+#      deliberación del Comité Institucional de Gestión y Desempeño, no el
+#      instrumento publicado, y solo lo consume `/admin/trd`. Exige
+#      `USUA_PERM_TRD`, igual que su gemelo `GET /revision-pendiente`, que ya lo
+#      exigía: era el hueco que quedaba de ese mismo par.
+# ---------------------------------------------------------------------------
+
 router = APIRouter(prefix="/api/v1/trd", tags=["trd"])
 
 
@@ -249,6 +273,8 @@ async def create_trd_serie_version(
         "Full version history of a TRD serie code (ADR-026: gemelo que "
         "ADR-025 declaro aditivo y nunca implemento)"
     ),
+    # Circuito, no vocabulario: ver la declaración al principio del módulo.
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
 )
 async def list_trd_serie_versiones(
     code: str,

@@ -13,10 +13,24 @@ Acuerdo AGN 003/2015. Prefijo /api/v1/pinar. El api-gateway autentica el JWT y
 propaga X-User-Id / X-Tenant-Slug / X-User-Roles server-side (nunca del cuerpo del
 cliente); el actor imputable de la auditoría se toma de X-User-Id.
 
-La spec §10.3 restringe la gestión al rol administrador: todas las escrituras
-(ciclo de vida del plan, aspectos, priorización, objetivos, proyectos, seguimiento,
-instrumentos) exigen `USUA_PERM_ADMIN` (`app/core/authz.py`). Los GET (tableros,
-mapa de ruta, catálogo de ejes) quedan solo autenticados — son consulta, no gestión.
+La spec §10.3 restringe la gestión al rol administrador, y desde 2026-08-28 eso
+alcanza también a la LECTURA: el gate `USUA_PERM_ADMIN` vive en el `APIRouter`, así
+que lo hereda todo endpoint que se añada aquí sin que nadie tenga que acordarse.
+
+Antes las escrituras lo exigían y los GET quedaban «solo autenticados — son consulta,
+no gestión». La frase se borra con el hueco, porque describía una decisión que la
+interfaz contradecía: `/admin/pinar` está escondida tras `USUA_PERM_ADMIN` en la barra
+lateral y en las tarjetas de `/admin`, y aun así cualquier funcionario del tenant leía
+el plan entero escribiendo la URL. Un sistema que esconde algo y lo sirve a la vez no
+ha decidido nada.
+
+Se cierra —en vez de abrirse— por dos motivos. Un plan en `borrador` es material de
+trabajo del Comité, no instrumento: sus objetivos, su priorización de riesgos y su
+seguimiento son la deliberación, no el resultado. Y el PINAR **aprobado** sí es de
+publicación obligatoria (Decreto 1080/2015 art. 2.8.2.5.8), pero publicar es un acto
+de la entidad hacia fuera —una pantalla en `(public)/`, como la consulta ciudadana—,
+no un GET interno sin gate que se le parece por accidente. Hoy no existe ningún
+consumidor de estas lecturas fuera de `/admin/pinar`: abrirlas no servía a nadie.
 """
 
 import uuid
@@ -53,7 +67,15 @@ from app.schemas.pinar import (
 )
 from app.services.pinar_service import PinarConflict, PinarNotFound, PinarService
 
-router = APIRouter(prefix="/api/v1/pinar", tags=["pinar"])
+router = APIRouter(
+    prefix="/api/v1/pinar",
+    tags=["pinar"],
+    # Gate por ADMISIÓN, no por lista: al colgar de `APIRouter` cubre los GET de
+    # hoy y cualquier endpoint futuro. Las escrituras conservan además su
+    # `Depends` propio -- redundante a propósito: si alguien mueve un endpoint
+    # a otro router, se lleva su gate puesto.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
 
 
 def _actor(request: Request) -> uuid.UUID | None:

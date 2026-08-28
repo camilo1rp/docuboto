@@ -10,13 +10,13 @@
 
 ## Conventions
 
-| Convention | Value |
-|---|---|
-| Authentication | `Authorization: Bearer {JWT}` |
-| Pagination | `?page=1&size=20` — response includes `X-Total-Count` |
-| Dates | ISO 8601 UTC — `2024-01-15T10:30:00Z` |
-| IDs | UUID v4 |
-| Multi-tenancy | Header `X-Tenant-Slug` injected by the gateway after validating the JWT |
+| Convention     | Value                                                                   |
+| -------------- | ----------------------------------------------------------------------- |
+| Authentication | `Authorization: Bearer {JWT}`                                           |
+| Pagination     | `?page=1&size=20` — response includes `X-Total-Count`                   |
+| Dates          | ISO 8601 UTC — `2024-01-15T10:30:00Z`                                   |
+| IDs            | UUID v4                                                                 |
+| Multi-tenancy  | Header `X-Tenant-Slug` injected by the gateway after validating the JWT |
 
 ### Standard error format
 
@@ -33,6 +33,7 @@
 ## auth-service — port 8001
 
 ### `POST /api/v1/auth/token` — public
+
 Authentication with credentials. Returns a pair of JWT tokens.
 
 ```json
@@ -49,6 +50,7 @@ Authentication with credentials. Returns a pair of JWT tokens.
 ```
 
 ### `POST /api/v1/auth/refresh` — public
+
 Renews the access token with a valid refresh token.
 
 ```json
@@ -58,6 +60,7 @@ Renews the access token with a valid refresh token.
 ```
 
 ### `POST /api/v1/auth/logout`
+
 Invalidates the refresh token in Keycloak.
 
 ```json
@@ -67,6 +70,7 @@ Invalidates the refresh token in Keycloak.
 ```
 
 ### `GET /api/v1/auth/validate`
+
 Validates a Bearer token. Used internally by the api-gateway.
 
 ```json
@@ -81,6 +85,7 @@ Validates a Bearer token. Used internally by the api-gateway.
 ```
 
 ### `GET /api/v1/auth/me`
+
 Information about the authenticated user extracted from the token, including their effective permissions resolved from the tenant DB (D-07).
 
 Requires `Authorization: Bearer <token>`. If `X-Tenant-Slug` is supplied, permissions are resolved from the tenant DB. Without that header (superadmin / direct call), `permissions` returns `[]` and `permission_levels` returns `{}` (fail-closed).
@@ -103,7 +108,9 @@ Requires `Authorization: Bearer <token>`. If `X-Tenant-Slug` is supplied, permis
 - If the user is not provisioned in the tenant, `permissions` is `[]` and `permission_levels` is `{}` (fail-closed). Neither field is ever omitted or returned as `null`: a consumer must never be able to read their absence as "no restriction".
 
 ### TOTP 2FA — user credential (E06 Inc.6, RF-FIR-13)
+
 The TOTP secret (RFC 6238) is a **durable identity credential** and lives in auth-service (per-tenant table `auth_user_totp`, encrypted with **AESGCM**; AAD `tenant:{slug}:user:{id}:totp`). The plaintext secret is disclosed **exactly once**, in the `otpauth://` URI returned by `enroll` (`Cache-Control: no-store`); it never leaves again. All of these are self-service (the user's own bearer token).
+
 - `POST /api/v1/auth/me/totp/enroll` — generates the secret (20 bytes, base32) in state `pendiente_activacion` and returns `{otpauth_uri, estado}` (for a QR code in an authenticator app). Re-enrolling over an **active** TOTP requires step-up (a currently valid code): `409 totp_ya_activo` / `401 step_up_invalido`.
 - `POST /api/v1/auth/me/totp/activate` `{code}` — activates the credential with a first valid code → `{estado:"activo", activated_at}`. `409 totp_no_pendiente`; `401 codigo_invalido` (increments `failed_attempts`); `423 totp_bloqueado`.
 - `GET /api/v1/auth/me/totp` — `{estado, activated_at, locked_until}`. **Never** returns the secret.
@@ -114,11 +121,12 @@ The TOTP secret (RFC 6238) is a **durable identity credential** and lives in aut
   - **It cannot be used on oneself** (`409`): an administrator who reset their own could remove it without proving device possession and enroll another right after — whoever stole their session would end up holding the second factor of their personal signature. **Two people** are always required; the administrator uses `/perfil` like everyone else.
 
 **Recovery codes (E06, migration 015).** TOTP is a **possession** factor, and until this migration **every** exit from it — revoking it, re-enrolling it, and revoking the personal signing key — required a current TOTP code, i.e. required the very phone that had been lost: whoever lost it was **locked out**, with no way out other than manual intervention on the database. Now `activate` returns **10 single-use codes** (`recovery_codes`, `Cache-Control: no-store`) and any of them works as `step_up_recovery_code` in `enroll` (re-enrolling) and in `DELETE /me/totp` (revoking).
+
 - They are stored **hashed** (scrypt with a per-code salt), not encrypted: unlike the TOTP secret, the server never needs them in plaintext, only to check them — so a dump of the table does not allow authenticating. They are shown **exactly once**; `GET /me/totp` returns `recovery_codes_restantes` (a count), never the codes.
 - **Single use**, guaranteed by an `UPDATE ... WHERE used_at IS NULL`: two concurrent requests with the same code race for the row and only one wins.
 - They are issued **on activation**, not on enrollment (until then the credential protects nothing) and in the **same transaction** as the activation — there is no instant with an active TOTP and no recovery path. Revoking or re-enrolling **deletes** the batch in the same transaction.
 - **Deliberate boundary: they do not work for SIGNING.** `POST /internal/totp/verify`, which signature-service invokes when signing, does **not** accept them (its `code` is validated as a 6-digit TOTP). A recovery code is written on paper or held in a password manager: it is not possession of a device, and admitting it as the second factor of a signing act would weaken the attribution RF-FIR-13 exists for. Recovering access and signing are different acts and demand different proof.
-- *(Internal, service-to-service inside the Docker network, **not** routed by the gateway)* `POST /internal/totp/verify` `{code, contexto?}` — called by signature-service when signing; it derives the identity from the **forwarded bearer token** (not from a body `user_id` → no IDOR), honours `locked_until` before comparing, and advances the `last_timestep` anti-replay counter in a single atomic `UPDATE`. Lockout after `TOTP_MAX_FAILED_ATTEMPTS` (default 5) for `TOTP_LOCKOUT_SECONDS` (default 900). Skew window ±`TOTP_SKEW_STEPS` (default 1).
+- _(Internal, service-to-service inside the Docker network, **not** routed by the gateway)_ `POST /internal/totp/verify` `{code, contexto?}` — called by signature-service when signing; it derives the identity from the **forwarded bearer token** (not from a body `user_id` → no IDOR), honours `locked_until` before comparing, and advances the `last_timestep` anti-replay counter in a single atomic `UPDATE`. Lockout after `TOTP_MAX_FAILED_ATTEMPTS` (default 5) for `TOTP_LOCKOUT_SECONDS` (default 900). Skew window ±`TOTP_SKEW_STEPS` (default 1).
 
 **PERSONAL PKI signing key (E06/E17 F4, Inc.1 — server custody, `acreditado=false`).** Each user's private signing key lives **only in auth-service**, AESGCM-encrypted (KEK `SIGNING_KEY_ENCRYPTION_KEY`, **separate** from the TOTP one), and it NEVER leaves the service.
 
@@ -126,21 +134,25 @@ The TOTP secret (RFC 6238) is a **durable identity credential** and lives in aut
 - `GET /api/v1/auth/me/signing-key` — `{estado, certificado_fingerprint?, not_after?}`. **Never** returns the private key.
 - `DELETE /api/v1/auth/me/signing-key` `{step_up_totp_code}` — **revokes one's own key**, requiring TOTP step-up (verify-and-consume; without a code → `422`) → `{estado:"revocado"}` (E06/E17 Inc.2). Writes a `signing_key.revocada` audit entry (with `revocado_at`/`motivo`) **atomically** with the UPDATE. `404` if there is no key.
 - `POST /api/v1/auth/admin/users/{user_id}/signing-key/revoke` `{motivo?}` — an **admin** (`USUA_PERM_ADMIN`) revokes another user's key (the "departed employee" case): the target `user_id` travels in the path, the actor comes from the token (the two can never be confused). Atomic audit entry with `revocado_por`.
-- *(Internal, **not** routed by the gateway)* `GET /internal/signing-key/revocation-status?fingerprint=<hex>` — queried by signature-service when verifying a personal signature (`X-Internal-Token` + `X-Tenant-Slug`): it returns **only** `{status, revocado_at?}` (`status ∈ vigente|revocado|desconocido`) — never the certificate or the key. Tenant-isolated: a fingerprint from another tenant, or a non-existent one, returns `desconocido` (fail-closed, never `vigente`). The pending→active activation persists `user_ca_fingerprint`+`certificado_fingerprint` and validates `leaf.verify_directly_issued_by(sub_ca)` fail-closed.
-- *(Internal, **not** routed by the gateway)* `POST /internal/signing-key/sign-digest` `{digest_b64, alg:"RSA-SHA256", prehashed:true, totp_code}` — called by signature-service when signing a personal act in the chain: it derives the user from the **forwarded bearer token** (no IDOR), **verifies-and-consumes the TOTP atomically** with the signature, decrypts the key **in memory only** (minimum lifetime), signs the digest, and returns `{signature_value_b64, certificado_pem, certificado_fingerprint, serial, not_after}` — the private key is never returned. This is the "sign a digest" interface of an HSM (the seam towards qualified signature). `X-Internal-Token` is compared with `compare_digest`. The pending→active activation leaves an atomic `signing_key.activada` audit entry.
+- _(Internal, **not** routed by the gateway)_ `GET /internal/signing-key/revocation-status?fingerprint=<hex>` — queried by signature-service when verifying a personal signature (`X-Internal-Token` + `X-Tenant-Slug`): it returns **only** `{status, revocado_at?}` (`status ∈ vigente|revocado|desconocido`) — never the certificate or the key. Tenant-isolated: a fingerprint from another tenant, or a non-existent one, returns `desconocido` (fail-closed, never `vigente`). The pending→active activation persists `user_ca_fingerprint`+`certificado_fingerprint` and validates `leaf.verify_directly_issued_by(sub_ca)` fail-closed.
+- _(Internal, **not** routed by the gateway)_ `POST /internal/signing-key/sign-digest` `{digest_b64, alg:"RSA-SHA256", prehashed:true, totp_code}` — called by signature-service when signing a personal act in the chain: it derives the user from the **forwarded bearer token** (no IDOR), **verifies-and-consumes the TOTP atomically** with the signature, decrypts the key **in memory only** (minimum lifetime), signs the digest, and returns `{signature_value_b64, certificado_pem, certificado_fingerprint, serial, not_after}` — the private key is never returned. This is the "sign a digest" interface of an HSM (the seam towards qualified signature). `X-Internal-Token` is compared with `compare_digest`. The pending→active activation leaves an atomic `signing_key.activada` audit entry.
 
 ### RBAC user management (E14)
+
 - `POST /api/v1/auth/users` · `GET /api/v1/auth/users` (paginated, `X-Total-Count`) · `GET /api/v1/auth/users/{id}/permissions` — user administration. The whole router requires `USUA_PERM_ADMIN`. `POST` writes an `rbac.usuario_creado` entry to `audit_log`, **atomically** with the INSERT (see the audit note below).
   - **`POST` with `is_root: true` → `403 forbidden` if the caller is not ROOT** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md), closing a High self-escalation finding). A non-ROOT `USUA_PERM_ADMIN` can never create a ROOT user; ROOT can. A tenant's first ROOT is provisioned out-of-band (`app/ops/grant_root.py`, not over HTTP).
 - `GET /api/v1/auth/users/pickable?size=N` — minimal projection `[{id, username}]` of **active** users, for UI pickers (e.g. the `UserPicker` used for approval chains, T-08c). Gated with `PERM_RADI` (not admin); it exposes neither `email` nor administrative metadata (D-10). `size` in `[1, 500]`.
 
 ### URD and dependencia context (E08)
+
 - `GET /api/v1/auth/users/{user_id}/urd` · `POST` · `DELETE /{urd_id}` — manages the User-Role-Dependencia assignments (one per (user, dependencia); a single primary one). Requires `USUA_PERM_ADMIN`. `POST`/`DELETE` write `urd.creada`/`urd.eliminada` entries, **atomically** with the mutation.
 - `GET /api/v1/auth/context` — caller context: `{user_id, active_depe_id, available_depts[]}`.
 - `POST /api/v1/auth/context/switch` `{ "depe_id": 120 }` — sets the active dependencia (organizational unit) for the user themselves. **Does not reissue the token** (ADR-013): it persists the context and audits it in `usua_historico` (Channel B, not `audit_log`). `400 no_urd_for_dependency` if the user has no active URD there.
 
 ### Groups, memberships and permissions (E08)
+
 The whole router requires `USUA_PERM_ADMIN`.
+
 - `POST /api/v1/auth/groups` · `GET /api/v1/auth/groups` — create and list groups. `POST` writes an `rbac.grupo_creado` entry.
 - `GET /api/v1/auth/permissions` — permission catalog (`{id, nombre, descripcion}`). **`USUA_PERM_ROOT` is omitted from the catalog if the caller is not ROOT** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md)) — an option the `PUT .../permissions/{id}` below would reject is not offered in the first place.
 - `POST /api/v1/auth/groups/{group_id}/members/{user_id}` · `DELETE .../members/{user_id}` — add/remove a user from a group. They write `rbac.miembro_agregado`/`rbac.miembro_removido` entries.
@@ -150,9 +162,10 @@ The whole router requires `USUA_PERM_ADMIN`.
 - `GET /api/v1/auth/groups/{group_id}/permissions` — permissions assigned to the group: `[{permission_id, nombre, descripcion, crud}]`. The read mirror of the `PUT` above.
 - A `group_id` that does not exist **or belongs to another tenant** → an indistinguishable `404` (the `search_path` already scopes the tenant schema; never `403`, which would confirm the other tenant's group exists).
 
-**Auditing of RBAC/URD writes (E08, closing a traceability gap):** every `POST`/`PUT`/`DELETE` in this section and in "URD" writes an entry to `public.audit_log` **within the same transaction** as the mutation (`async with conn.transaction()`) — not *best-effort*: if `audit.append` fails, the mutation is rolled back; if the audit library is not installed, the write responds `500 auditoria_no_disponible` **before** touching any row (the same fail-closed pattern as `signing-key`/`totp`). `tenant_slug` is internally mandatory (`X-Tenant-Slug`, already required by `get_tenant_conn`); the actor is the `X-User-Id` resolved by the gate.
+**Auditing of RBAC/URD writes (E08, closing a traceability gap):** every `POST`/`PUT`/`DELETE` in this section and in "URD" writes an entry to `public.audit_log` **within the same transaction** as the mutation (`async with conn.transaction()`) — not _best-effort_: if `audit.append` fails, the mutation is rolled back; if the audit library is not installed, the write responds `500 auditoria_no_disponible` **before** touching any row (the same fail-closed pattern as `signing-key`/`totp`). `tenant_slug` is internally mandatory (`X-Tenant-Slug`, already required by `get_tenant_conn`); the actor is the `X-User-Id` resolved by the gate.
 
 ### Security classification (E08, RF-SEG-08, Law 1712/2014)
+
 - `GET /api/v1/auth/security-levels` — catalog of levels (1 Public, 2 Reserved, 3 Classified).
 - `PUT /api/v1/auth/groups/{group_id}/clearance` `{ "max_level": 2 }` — sets the maximum accessible level for a group (requires `USUA_PERM_ADMIN`). Writes a `clearance.grupo_actualizado` entry with `{group_id, previous_max_level, new_max_level}` (**atomic**, same fail-closed guarantees as RBAC/URD above) — the previous level is what lets an upgrade be told apart from a downgrade.
   - **No write-up → `403 forbidden` if `max_level` exceeds the caller's effective clearance** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md)). An admin with Reserved (2) clearance cannot set Classified (3) on any group, including their own; ROOT is not subject to this limit (full bypass, `_MAX_LEVEL`=3).
@@ -161,29 +174,43 @@ The whole router requires `USUA_PERM_ADMIN`.
 - `GET /api/v1/auth/clearance/check?level=N` — `{level, max_level, allowed}` (least privilege: `allowed = max_level ≥ level`).
 
 ### `GET /api/v1/audit`
+
 Queries the tenant's immutable audit log (ADR-008), most recent first. Requires `USUA_PERM_ADMIN`. Filters: `?action=&object_type=&object_ref=&actor=&page=1&size=20`. Header `X-Total-Count`.
 
 **Clearance-trimmed (no read-up, RF-SEG-08).** `USUA_PERM_ADMIN` is administrative competence, not a security clearance: administering the tenant does not authorise knowing the classified matters processed within it. Entries whose object is a document or file above the caller's effective clearance are **neither listed nor counted** (`X-Total-Count` reflects the same trimming; otherwise the total would be an oracle for how many classified documents exist). Details:
 
-- **Allow-list, not deny-list**: what gets listed is the types that *cannot* refer to a document or file (identity, RBAC, org structure, instruments and catalogues: `usuario`, `grupo`, `membresia`, `dependencia`, `trd_serie`, `parametro`, `auth_session`…) plus classifiable ones resolving to a reachable level. **Everything else is left out.** Why: `audit_log` is written by eleven services, and several types that do not denote a document carry its identity in the `payload` — `evento` (dead-letter) serialises the whole envelope including `business.tracking_number`, `import` stores the literal list of imported tracking numbers, `file` stores the attachment filename. With a deny-list, every new type or service is born visible and the omission is silent.
+- **Allow-list, not deny-list**: what gets listed is the types that _cannot_ refer to a document or file (identity, RBAC, org structure, instruments and catalogues: `usuario`, `grupo`, `membresia`, `dependencia`, `trd_serie`, `parametro`, `auth_session`…) plus classifiable ones resolving to a reachable level. **Everything else is left out.** Why: `audit_log` is written by eleven services, and several types that do not denote a document carry its identity in the `payload` — `evento` (dead-letter) serialises the whole envelope including `business.tracking_number`, `import` stores the literal list of imported tracking numbers, `file` stores the attachment filename. With a deny-list, every new type or service is born visible and the omission is silent.
 - The level is resolved **live** against the tenant schema's `radicados` / `expedientes` — never denormalised, so a reclassification takes effect immediately. The schema is anchored to the request's `tenant_slug`, not to the connection's `search_path`.
 - **Fail-closed**: an `object_ref` that resolves to no row (deleted object, different reference format) is left out; what cannot be classified is not declared public. Likewise if the tenant lacks the source tables.
 - Filtering by the `object_ref` of an out-of-reach document returns zero entries, indistinguishable from it not existing.
 - At maximum clearance (3 = Classified, and ROOT) **no trimming is applied**: the audit log is served in full, which is what that clearance authorises.
-- **Declared residue**: `id` is a monotonic sequence, so gaps between visible ids reveal *how many* entries were hidden and, via neighbouring `ts`, *when*. Not closed because `id` is what matches `broken_id` from `/audit/verify`; documented instead.
+- **Declared residue**: `id` is a monotonic sequence, so gaps between visible ids reveal _how many_ entries were hidden and, via neighbouring `ts`, _when_. Not closed because `id` is what matches `broken_id` from `/audit/verify`; documented instead.
 
 ```json
-[ { "id": 42, "ts": "2024-01-15T10:30:00Z", "service": "document-service", "actor": "uuid",
-    "canal": "api", "action": "document.radicado_created", "object_type": "radicado",
-    "object_ref": "2024-ICETEX-E-000001", "payload": { "...": "..." }, "hash": "sha256..." } ]
+[
+  {
+    "id": 42,
+    "ts": "2024-01-15T10:30:00Z",
+    "service": "document-service",
+    "actor": "uuid",
+    "canal": "api",
+    "action": "document.radicado_created",
+    "object_type": "radicado",
+    "object_ref": "2024-ICETEX-E-000001",
+    "payload": { "...": "..." },
+    "hash": "sha256..."
+  }
+]
 ```
 
 ### `GET /api/v1/audit/verify`
+
 Recomputes the tenant's hash chain and reports its integrity (ADR-008). Requires `USUA_PERM_ADMIN`. **Not** clearance-trimmed: the chain only has evidentiary value if recomputed whole, and over a subset it would always read as "broken". The response is content-free (a boolean and, at most, the id of the row where it breaks), so it reveals nothing about the object.
 
 ```json
 { "tenant_slug": "icetex", "ok": true, "broken_id": null }
 ```
+
 - `ok=false` with `broken_id` = id of the first row whose chain does not match.
 
 ---
@@ -228,15 +255,19 @@ Creates an institution and provisions its PostgreSQL schema `tenant_{slug}`.
 - 409 if slug or code already exist
 
 ### `GET /api/v1/tenants` — NOT routed by the gateway
+
 Lists institutions. Query: `?status=active&page=1&size=20`. Header `X-Total-Count`.
 
 ### `GET /api/v1/tenants/{id}` — NOT routed by the gateway
+
 Get by UUID.
 
 ### `GET /api/v1/tenants/by-slug/{slug}` — NOT routed by the gateway
+
 Get by slug. Used by other services to validate the JWT's tenant.
 
 ### `PATCH /api/v1/tenants/{id}` — NOT routed by the gateway
+
 Update `name` or `status`. `slug` and `code` are immutable.
 
 ### Tenant administration (E14)
@@ -265,9 +296,16 @@ A per-tenant archival planning instrument. Every write (plan lifecycle, critical
 aspects, prioritization, objectives, projects, follow-up, instruments) requires
 **`USUA_PERM_ADMIN`** (`app/core/authz.py`, closing the same Critical finding as
 catalogues/dependencias/config — there was previously no role gate at all, even
-though spec §10.3 restricts management to the administrator). The `GET`s
-(dashboards, roadmap, axis catalog) remain authenticated only. The accountable
-actor arrives in `X-User-Id`.
+though spec §10.3 restricts management to the administrator). **Since
+2026-08-28 so do the `GET`s** (§4.bis of the test plan): the gate lives on the
+`APIRouter` itself, so every endpoint added here inherits it. Before, the 11
+reads were "authenticated only" while the sidebar and the `/admin` cards hid
+the screen — a system that hides something and serves it at the same time has
+decided nothing. It closes rather than opens because a plan in `borrador` is the
+Committee's working material, and because publishing the approved PINAR (Decreto
+1080/2015 art. 2.8.2.5.8) is an act directed outwards — a public screen — and not
+an ungated internal `GET` that merely resembles one. The accountable actor
+arrives in `X-User-Id`.
 
 - **Axes** (fixed catalog, seed of 5): `GET /api/v1/pinar/ejes`.
 - **Plan**: `POST /api/v1/pinar/planes` (creates in `borrador`, `version = max+1`) · `GET /api/v1/pinar/planes` (`?estado=`) · `GET /api/v1/pinar/planes/{id}` · `PATCH /api/v1/pinar/planes/{id}` (vision/validity period, only while in `borrador`).
@@ -289,6 +327,7 @@ Structural editing is allowed **only in `borrador`** (→ 409 `plan_no_editable`
 > Requires the `X-Tenant-Slug` and `X-User-Id` headers (injected by the gateway).
 
 ### `POST /api/v1/documents`
+
 Registers a new radicado (official tracking record). Assigns an atomic radicado number.
 
 ```json
@@ -337,26 +376,39 @@ Registers a new radicado (official tracking record). Assigns an atomic radicado 
 > **Access control (metadata catalog):** the **mutations** — `POST /api/v1/metadata/templates` and `POST/PATCH/DELETE /api/v1/metadata/elements` — require **`USUA_PERM_TRD`** (fail-closed: `403` without tenant/user-id/permission), the same permission that governs its twin `POST /api/v1/expediente-metadata/templates` in archive-service (a template that relaxes the mandatory validation of a document type is every bit as consequential as an expediente's). `DELETE /metadata/elements/{id}` additionally requires **`crud≥3`** (RF-SEG-03; precedent: `DELETE /tipos-documentales/{id}`). All four writes leave an `audit_log` entry. The `GET` **reads** remain open (tenant only).
 
 ### `POST /api/v1/metadata/templates`
+
 Defines the metadata template (JSON Schema) of a document type. A single active template per `tipo_documental`.
 
 ```json
 // Request
-{ "tipo_documental": "Factura", "version": 1, "activo": true,
-  "json_schema": { "type": "object", "required": ["valor"],
-                   "properties": { "valor": { "type": "number" } } } }
+{
+  "tipo_documental": "Factura",
+  "version": 1,
+  "activo": true,
+  "json_schema": {
+    "type": "object",
+    "required": ["valor"],
+    "properties": { "valor": { "type": "number" } }
+  }
+}
 ```
+
 - `422 invalid_json_schema` if `json_schema` is not a valid JSON Schema; `409 conflict` if that version, or an active one for the type, already exists.
 
 ### `GET /api/v1/metadata/templates`
+
 Lists templates; optional filter `?tipo_documental=Factura`.
 
 ### `/api/v1/metadata/elements` (metadata element catalog, RF-MET-03)
+
 CRUD for reusable metadata field definitions (`POST`/`GET`/`GET {id}`/`PATCH {id}`/`DELETE {id}`). Attributes: `clave`, `etiqueta`, `tipo_dato` (text/number/date/boolean/select), `longitud`, `ocurrencia_min/max`, `modificable`, `valor_default`, `opciones`, `orden`, `searchable`, `mapeo_dublin_core` (RF-MET-09 hook). `409` if the key already exists. `POST`/`PATCH` require `USUA_PERM_TRD`; `DELETE` requires `USUA_PERM_TRD` with `crud≥3`.
 
 ### `GET /api/v1/documents`
-List radicados. Filters: `?doc_type=E&status=registered&page=1&size=20`. **Filter by metadata** (RF-MET-02): `?meta.<campo>=valor` (one or several) uses JSONB containment over the GIN index, e.g. `?meta.area=juridica`. **Access control (RF-SEG-08):** the listing is scoped by the radicado's classification exactly as search is — each user only sees those with `nivel_seguridad ≤` their clearance (*fail-closed* to PUBLIC).
+
+List radicados. Filters: `?doc_type=E&status=registered&page=1&size=20`. **Filter by metadata** (RF-MET-02): `?meta.<campo>=valor` (one or several) uses JSONB containment over the GIN index, e.g. `?meta.area=juridica`. **Access control (RF-SEG-08):** the listing is scoped by the radicado's classification exactly as search is — each user only sees those with `nivel_seguridad ≤` their clearance (_fail-closed_ to PUBLIC).
 
 ### `GET` / `PATCH /api/v1/documents/{id}/disposition`
+
 Document disposition metadata (RF-MET-08): `programa`, `retention_until`, `accion` (conserve/delete/transfer/select), `confirmado`, `marcado_eliminacion`, `fundamento`. `PATCH` merges the provided fields. **`GET` requires `USUA_PERM_EXPEDIENTE`; `PATCH` additionally requires `crud≥3`** — read level used to be enough to mark an official document for destruction, the same permission and the same level as consulting it (this is the threshold `storage-service` already used for its own dispositions).
 
 `fundamento` is **mandatory** when `accion="eliminar"` or `marcado_eliminacion=true` (`422` otherwise): destruction is irreversible (Law 594/2000 art. 24) and must be justified. It is not required on the non-destructive path, so the field is not devalued by filling it out of routine. Every `PATCH` writes a `document.disposition_set` entry to `audit_log` **including the previous state**, in the same transaction as the write.
@@ -366,6 +418,7 @@ Document disposition metadata (RF-MET-08): `programa`, `retention_until`, `accio
 **Access control (RF-SEG-08):** `404` both when the radicado does not exist and when it exceeds the caller's clearance — indistinguishable, so as not to reveal the existence of classified material.
 
 ### `POST /api/v1/documents/{id}/publicacion`
+
 **Proactive publication** act (Law 1712/2014 art. 12). Body: `{publicar: bool, fundamento: str}` — the justification is mandatory in **both** directions (`422` otherwise), because withdrawing a publication is also a decision that must be explainable. Response: `{tracking_number, publicable, publicado_at}`.
 
 Requires `PERM_RECLASIFICAR` with `crud≥3`: the same permission that decides **reservation**, because publishing and classifying are two faces of the same authority over the document's access regime; splitting them across separate permissions would let someone who cannot declassify publish anyway.
@@ -383,6 +436,7 @@ The public cut requires **all three** conditions at once (`publicable AND nivel_
 **Screen**: the act is performed from the "Publicación" drawer in `/bandeja`, which always offers the act opposite to the current state and offers no form at all over a reserved or annulled radicado — the backend's neutral `404` is correct, but letting someone draft a justification only to receive "does not exist" afterwards would be a screen that deceives.
 
 ### `GET /api/v1/assistant/alcance`
+
 The caller's scope frame: **what they can do, what they can consult, and what they cannot — with their alternative route**. No permission of its own: it describes the asker's capabilities, resolved from their token.
 
 It exists because permissions had been a silent filter: the catalogue hid what the user could not use, so the limit was discovered **by failing** — or by waiting for an action that was never going to happen. The frame states it up front and offers the way out when there is one ("you cannot send it, but you can transfer the radicado to correspondence").
@@ -394,11 +448,13 @@ It includes `limites_declarados`: what the system does **not** distinguish, so a
 It lives under `/api/v1/assistant/` because that is the only mcp-server prefix the gateway routes. It does not require the assistant to be available: knowing what you can do should not depend on a model being up.
 
 ### `POST /api/v1/expedientes/{id}/publicacion`
+
 **Proactive publication** act for the expediente (Ley 1712/2014 art. 12, archive migration `042`). Same contract as the radicado twin: `{publicar: bool, fundamento: str}` → `{code, publicable, publicado_at}`, `PERM_RECLASIFICAR` at `crud≥3`, justification mandatory in both directions, act and audit entry in a single transaction.
 
 It closes the asymmetry the cross audit uncovered: the art. 12 correction had been applied to radicados and **not here**, so archive-service's `oai_repository._PUBLIC` was still `nivel_seguridad = 1` and the multi-level EAD OAI kept proactively disseminating every unclassified expediente — the column's default. The asymmetry was also implicit: anyone reading document-service's cut would assume this service did the same.
 
 Two **deliberate** differences from radicados:
+
 - The cut carries **no status condition**. An annulled radicado is withdrawn from circulation; a `closed`/`transferred` expediente is not — those are normal lifecycle states. Copying `status <> …` for symmetry would have silently unpublished the entire closed archive, which is most of a fonds.
 - What is disseminated is aggregate: code, name, description, extreme dates and the **count** of radicados. Child `tracking_number`s are never enumerated (a public expediente may contain reserved radicados).
 
@@ -407,12 +463,15 @@ Two **deliberate** differences from radicados:
 **Screen**: the "Publicación" drawer in `/expedientes/{id}`. Over a reserved expediente it does not offer publishing — and says why — but it **does** offer withdrawal, which is the backend's real asymmetry.
 
 ### `GET /api/v1/documents/{id}`
+
 Get by UUID. Includes the list of anexos (attachments). **Access control (RF-SEG-08):** if the radicado exceeds the caller's clearance, it answers `404` (it does not reveal its existence).
 
 ### `GET /api/v1/documents/by-tracking/{tracking_number}`
+
 Get by radicado number (e.g.: `2024-ICETEX-E-000001`). Same clearance scoping as the detail by UUID (`404` if it exceeds the caller's level).
 
 ### `PATCH /api/v1/documents/{id}`
+
 Update `subject`, `dest_dept`, `observations`, `status`, `pages`, `doc_class` and `metadata`.
 `tracking_number`, `doc_type`, `year`, `sequence` are immutable.
 **Typing (`doc_class`) requires `PERM_RADI` at `crud >= 3`; the rest of the PATCH, `crud >= 1`.** The document type fixes the TRD series, and with it the radicado's retention and final disposition (Ley 594/2000 art. 24): an act with that consequence cannot be exercised with read permission. The threshold is only checked when `doc_class` is present in the body, so anyone correcting a subject or a page count keeps the level that always sufficed.
@@ -422,9 +481,11 @@ Update `subject`, `dest_dept`, `observations`, `status`, `pages`, `doc_class` an
 **Audit:** writes a `document.radicado_actualizado` entry with the **before and after** of every field touched, in the SAME transaction as the mutation — if the entry fails, the change is rolled back.
 
 ### `PATCH /api/v1/documents/{id}/security-level`
-**Reclassification of the security level** of an already-registered radicado (E08, parity with Orfeo's *Cambio Nivel de Seguridad*). Changes `nivel_seguridad` (1=PUBLIC, 2=RESERVED, 3=CLASSIFIED) without altering content or `tracking_number` (immutability intact). Requires the **`PERM_RECLASIFICAR`** permission.
+
+**Reclassification of the security level** of an already-registered radicado (E08, parity with Orfeo's _Cambio Nivel de Seguridad_). Changes `nivel_seguridad` (1=PUBLIC, 2=RESERVED, 3=CLASSIFIED) without altering content or `tracking_number` (immutability intact). Requires the **`PERM_RECLASIFICAR`** permission.
+
 - **Body**: `nivel_seguridad` (1..3, mandatory), `motivo` (non-empty string, **mandatory** — an act of reservation must be reasoned, Law 1712 arts. 19/28), plus optional `causal_reserva`, `fundamento_juridico`, `plazo_reserva_meses`.
-- **Access control (RF-SEG-08)**: *no read-up* — if the caller's clearance is below the radicado's current level it answers a neutral `404` (revealing neither existence nor level); *no write-up* — it cannot set a level higher than the caller's own clearance (`403`). If the requested level equals the current one, it is an idempotent no-op (no audit entry, no event).
+- **Access control (RF-SEG-08)**: _no read-up_ — if the caller's clearance is below the radicado's current level it answers a neutral `404` (revealing neither existence nor level); _no write-up_ — it cannot set a level higher than the caller's own clearance (`403`). If the requested level equals the current one, it is an idempotent no-op (no audit entry, no event).
 - **Trace**: records `nivel_anterior`, `nivel_nuevo`, `motivo` and the legal basis in the immutable `audit_log` (`document.radicado_reclassified`), atomically with the change.
 - **Propagation**: emits `document.radicado.reclassified`; signature-service re-synchronises the `nivel_seguridad` snapshot of the object's signature chains (closing the RF-SEG-08 staleness residue).
 
@@ -435,6 +496,7 @@ Update `subject`, `dest_dept`, `observations`, `status`, `pages`, `doc_class` an
 > Requires the `X-Tenant-Slug` header. Files stored in the MinIO bucket `orpycamcp-{slug}-documents`.
 
 ### `POST /api/v1/storage/upload`
+
 Uploads a file (`multipart/form-data`, field `file`).
 
 - Computes SHA-256; if it already exists in the tenant, returns the existing record with `200` (deduplication)
@@ -455,43 +517,60 @@ Uploads a file (`multipart/form-data`, field `file`).
 ```
 
 ### `GET /api/v1/storage/files/{file_id}`
+
 File metadata (without content).
 
 ### `GET /api/v1/storage/files/{file_id}/download`
+
 Returns a MinIO pre-signed URL valid for 1 hour.
 
 ```json
-{ "url": "http://minio:9000/orpycamcp-icetex-documents/uuid/solicitud.pdf?X-Amz-...", "expires_in": 3600 }
+{
+  "url": "http://minio:9000/orpycamcp-icetex-documents/uuid/solicitud.pdf?X-Amz-...",
+  "expires_in": 3600
+}
 ```
 
 ### `GET /api/v1/storage/files/{file_id}/verify`
+
 Re-verifies integrity (RF-DIG-02): downloads the object from MinIO, recomputes the SHA-256 and compares it with the recorded one.
 
 ```json
-{ "file_id": "uuid", "expected_sha256": "...", "actual_sha256": "...", "integrity_ok": true }
+{
+  "file_id": "uuid",
+  "expected_sha256": "...",
+  "actual_sha256": "...",
+  "integrity_ok": true
+}
 ```
+
 - `409 integrity_check_failed` if the object in MinIO does not match the recorded fingerprint (integrity alert).
 
 ### `POST /api/v1/storage/files/{file_id}/replace`
+
 Replaces an anexo (attachment) by creating a **new immutable version** (RF-DIG-01; `multipart/form-data`, field `file`). The previous version is kept.
+
 - `201` with the new version (`version` incremented); `200` if the content is identical (no version created); `409 not_current_version` if `{file_id}` is not the current version; `415` if the format is not allowed.
 
 ### `GET /api/v1/storage/files/{file_id}/versions`
+
 Returns the version chain of the anexo (ordered by `version`). Each element includes `version` and `is_current`.
 
 ### `DELETE /api/v1/storage/files/{file_id}`
+
 Deletes from MinIO and from the database. Responds `204`.
 
 ### Digital preservation (E10, OAIS/AGN 001/2024)
+
 - `GET /api/v1/preservacion/plan` (current) · `PUT /api/v1/preservacion/plan` (new version) · `GET /api/v1/preservacion/plan/versions` — Versioned Digital Preservation Plan: `formatos_destino`, `num_copias`, `periodicidad_fixity_dias`, `politica_migracion`, `contingencia`.
-- `POST /api/v1/preservacion/eventos` `{object_ref, tipo, resultado, hash_before?, hash_after?, detalle?}` · `GET /api/v1/preservacion/eventos?object_ref=` — immutable PREMIS log. `tipo` ∈ INGESTA/FIJACION/MIGRACION/VALIDACION_PDFA/WORM/REPLICA; `resultado` ∈ `ok`/`fallo`/**`no_evaluado`** (a third state since E10 C2a, migration `008`: PDF/A validation with the default stub honestly reports `no_evaluado` — *"not evaluated" ≠ "passed"*). When packaging the AIP, every **PDF** document (detected by the `%PDF` magic bytes) emits a `VALIDACION_PDFA` (**advisory** — a non-PDF/A PDF does not block the AIP) plus a PREMIS `validation` event. Config: `PRESERVATION_PDFA_VALIDATION_ENABLED` (default `false`), `PDFA_VALIDATOR` (`stub`|`verapdf`, default `stub`), `PDFA_PROFILE` (default `2b`). **The real veraPDF validator (subprocess) is implemented (E10 C2b)**: with `PDFA_VALIDATOR=verapdf` + `VERAPDF_BINARY` (absolute path to the binary, present in the **deploy** image — the dev image degrades honestly to the `no_evaluado` stub), `SubprocessVeraPdfValidator` runs veraPDF under a hardened security model (scrubbed ENV, guaranteed `killpg`+reap, semaphore, 0700 tempdir, timeout→`no_evaluado`, JSON-only). Tuning: `VERAPDF_TIMEOUT_SECONDS` (60), `VERAPDF_MAX_CONCURRENCY` (1), `VERAPDF_JVM_MAX_HEAP_MB` (512), `VERAPDF_JVM_MAX_METASPACE_MB` (256).
-- `POST /api/v1/preservacion/aip` `{expediente_id, documentos:[{document_id, file_id, nombre}], indice_file_id?, retain_until? | (retencion_anios + fecha_inicio), legal_hold?}` — **(E10 Increment B, [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md))** packages the **real OAIS AIP**: for each document it resolves the object by `file_id`, downloads the bytes from MinIO, **recomputes the fixity** (SHA-256 vs `files.sha256`; mismatch → `409` + a failed `FIJACION` event), assembles a **BagIt bag (RFC 8493)** (`data/` with the bytes + `bagit.txt` + `bag-info.txt` with a real Payload-Oxum + `manifest-sha256.txt` + `premis.xml` [PREMIS v3, official namespace, validated against a local XSD profile] + `indice-firmado.xml` [if `indice_file_id`] + `tagmanifest-sha256.txt`), **serialises it to ZIP**, uploads it to the preservation **WORM bucket** with `Retention(COMPLIANCE, retain_until)` derived from the TRD + `legal_hold`, and records it in `preservacion_worm_objeto` (`tipo='aip'` → covered by the disposition gate). Requires `USUA_PERM_EXPEDIENTE` with **`crud≥3`**. `nombre` is validated (no `/`, `..`, control chars) and must be **unique** within `documentos` (`422`). `201` with `{id, expediente_id, aip_sha256 (of the ZIP), num_documentos, estado, bucket, object_key, aip_bytes, formato, retain_until, retention_mode, legal_hold, premis_xml, replicado, replica_target, replica_copias_hechas, created_at}`; `400` invalid retention; `404/422` non-existent `file_id` or duplicate `nombre`; `409` fixity mismatch; `503` if `PRESERVATION_ENABLED=false`. **REPLICA (C1b)**: if `PRESERVATION_REPLICA_ENABLED=true` and the plan has `num_copias≥2`, after uploading the primary AIP an **immutable replica** is created in a second WORM bucket (`replica_target="local"` = a second bucket in the same MinIO, *not* a geographic copy; `="cross-site"` if `MINIO_SECONDARY_ENDPOINT`). It is **best-effort and non-fatal**: a replica failure does **not** roll back the AIP (`replicado=false` + a `REPLICA` `preservacion_evento` with `resultado=fallo`); `num_copias≤1` → no replica.
+- `POST /api/v1/preservacion/eventos` `{object_ref, tipo, resultado, hash_before?, hash_after?, detalle?}` · `GET /api/v1/preservacion/eventos?object_ref=` — immutable PREMIS log. `tipo` ∈ INGESTA/FIJACION/MIGRACION/VALIDACION_PDFA/WORM/REPLICA; `resultado` ∈ `ok`/`fallo`/**`no_evaluado`** (a third state since E10 C2a, migration `008`: PDF/A validation with the default stub honestly reports `no_evaluado` — _"not evaluated" ≠ "passed"_). When packaging the AIP, every **PDF** document (detected by the `%PDF` magic bytes) emits a `VALIDACION_PDFA` (**advisory** — a non-PDF/A PDF does not block the AIP) plus a PREMIS `validation` event. Config: `PRESERVATION_PDFA_VALIDATION_ENABLED` (default `false`), `PDFA_VALIDATOR` (`stub`|`verapdf`, default `stub`), `PDFA_PROFILE` (default `2b`). **The real veraPDF validator (subprocess) is implemented (E10 C2b)**: with `PDFA_VALIDATOR=verapdf` + `VERAPDF_BINARY` (absolute path to the binary, present in the **deploy** image — the dev image degrades honestly to the `no_evaluado` stub), `SubprocessVeraPdfValidator` runs veraPDF under a hardened security model (scrubbed ENV, guaranteed `killpg`+reap, semaphore, 0700 tempdir, timeout→`no_evaluado`, JSON-only). Tuning: `VERAPDF_TIMEOUT_SECONDS` (60), `VERAPDF_MAX_CONCURRENCY` (1), `VERAPDF_JVM_MAX_HEAP_MB` (512), `VERAPDF_JVM_MAX_METASPACE_MB` (256).
+- `POST /api/v1/preservacion/aip` `{expediente_id, documentos:[{document_id, file_id, nombre}], indice_file_id?, retain_until? | (retencion_anios + fecha_inicio), legal_hold?}` — **(E10 Increment B, [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md))** packages the **real OAIS AIP**: for each document it resolves the object by `file_id`, downloads the bytes from MinIO, **recomputes the fixity** (SHA-256 vs `files.sha256`; mismatch → `409` + a failed `FIJACION` event), assembles a **BagIt bag (RFC 8493)** (`data/` with the bytes + `bagit.txt` + `bag-info.txt` with a real Payload-Oxum + `manifest-sha256.txt` + `premis.xml` [PREMIS v3, official namespace, validated against a local XSD profile] + `indice-firmado.xml` [if `indice_file_id`] + `tagmanifest-sha256.txt`), **serialises it to ZIP**, uploads it to the preservation **WORM bucket** with `Retention(COMPLIANCE, retain_until)` derived from the TRD + `legal_hold`, and records it in `preservacion_worm_objeto` (`tipo='aip'` → covered by the disposition gate). Requires `USUA_PERM_EXPEDIENTE` with **`crud≥3`**. `nombre` is validated (no `/`, `..`, control chars) and must be **unique** within `documentos` (`422`). `201` with `{id, expediente_id, aip_sha256 (of the ZIP), num_documentos, estado, bucket, object_key, aip_bytes, formato, retain_until, retention_mode, legal_hold, premis_xml, replicado, replica_target, replica_copias_hechas, created_at}`; `400` invalid retention; `404/422` non-existent `file_id` or duplicate `nombre`; `409` fixity mismatch; `503` if `PRESERVATION_ENABLED=false`. **REPLICA (C1b)**: if `PRESERVATION_REPLICA_ENABLED=true` and the plan has `num_copias≥2`, after uploading the primary AIP an **immutable replica** is created in a second WORM bucket (`replica_target="local"` = a second bucket in the same MinIO, _not_ a geographic copy; `="cross-site"` if `MINIO_SECONDARY_ENDPOINT`). It is **best-effort and non-fatal**: a replica failure does **not** roll back the AIP (`replicado=false` + a `REPLICA` `preservacion_evento` with `resultado=fallo`); `num_copias≤1` → no replica.
 - `GET /api/v1/preservacion/aip/{expediente_id}` — the current AIP (requires `USUA_PERM_EXPEDIENTE` `min_crud=1` — it exposes `premis_xml` with document names/hashes and the WORM location). The WORM location fields are `null` in AIP rows predating Increment B (backward compatibility).
 - `POST /api/v1/preservacion/proteger-indice` `{file_id, expediente_id, retain_until? | (retencion_anios + fecha_inicio), legal_hold?}` — **(E10 Increment A, [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md))** protects the **signed electronic index** (already uploaded to `files`, referenced by `file_id`) under **WORM / Object-Lock (MinIO)**. It provisions (idempotently) the per-tenant preservation bucket `orpycamcp-{slug}-preservation` (name taken **only from the JWT claim**), **verifies fixity** (recomputes the SHA-256 over the bytes and checks it against the hash **recorded at the original upload** — the caller declares **no** hash; mismatch → `409` + a failed `FIJACION` event, nothing is uploaded), copies the object with per-object **`Retention(COMPLIANCE, retain_until)`** + `legal_hold`, records it in `preservacion_worm_objeto` and emits `WORM`/`FIJACION` PREMIS events plus an `audit_log` entry. **Retention is supplied by the caller**, derived from the TRD (storage never calls archive): either `retain_until` directly **or** `retencion_anios` (1–100) + `fecha_inicio` (calendar-year arithmetic), never both. Requires `USUA_PERM_EXPEDIENTE` with **`crud≥3`** (the disposition threshold) + clearance. **Idempotent (E10 Inc.1 wiring)**: `201` with the WORM location on first protection; **`200`** with the existing row if that expediente's index is ALREADY protected (it does not re-upload — a short circuit before `put_object`, backed by the partial unique index `WHERE tipo='indice'` and a **per-`(tenant, expediente)` session advisory lock** that serialises `check→put→insert`, so no duplicate irreversible WORM objects are created under a race). `400` invalid retention (missing, in the past, out of bounds, or conflicting sources); `404` if the `file_id` does not exist in the tenant; `409` fixity mismatch; `503` if `PRESERVATION_ENABLED=false`. **Trust boundary**: the `file_id ↔ expediente_id` correspondence (that `file_id` really is that expediente's signed index) is guaranteed by **archive-service** (its only caller); storage validates that the `file_id` exists but does not model expedientes. **Effect on disposition**: while the index is under a future `retain_until` or a `legal_hold`, the expediente's final disposition stays **blocked** (destruction cannot happen before the retention expires — Law 594/2000, AGN Agreement 060/2001).
-- *(Internal, service-to-service; **not** reachable from the gateway — `X-Internal-Token` is not in `FORWARDED_REQUEST_HEADERS`)* `POST /api/v1/preservacion/proteger-indice-internal` — the **internal** twin (D-02) of `proteger-indice` with the SAME service and idempotency, authenticated **only** by `X-Internal-Token` instead of `require_permission(crud≥3)`, and attributed to the system principal `SYSTEM_RECONCILER_ID`. It exists because the **WORM wiring of the index** (`IndexService.proteger_worm_indice`, archive-service, E10 Inc.1) has two origins: the best-effort synchronous attempt right after signing the index on closure (`origen="close"`, a real user → the public route) and the **3rd reconciliation phase** (`run_once_worm`, `origen="reconciliation"`, `SYSTEM_RECONCILER_ID` with no `auth_users` row → this internal route; `require_permission` would always reject it). Retention is derived from the expediente's TRD (`archivo_gestion_years + archivo_central_years`, `fecha_inicio`=closure); **fail-closed if the TRD does not resolve** (it does not protect, marks `trd_sin_retencion`, recoverable by the sweep). It mirrors `/signature/internal/sign-indice`.
+- _(Internal, service-to-service; **not** reachable from the gateway — `X-Internal-Token` is not in `FORWARDED_REQUEST_HEADERS`)_ `POST /api/v1/preservacion/proteger-indice-internal` — the **internal** twin (D-02) of `proteger-indice` with the SAME service and idempotency, authenticated **only** by `X-Internal-Token` instead of `require_permission(crud≥3)`, and attributed to the system principal `SYSTEM_RECONCILER_ID`. It exists because the **WORM wiring of the index** (`IndexService.proteger_worm_indice`, archive-service, E10 Inc.1) has two origins: the best-effort synchronous attempt right after signing the index on closure (`origen="close"`, a real user → the public route) and the **3rd reconciliation phase** (`run_once_worm`, `origen="reconciliation"`, `SYSTEM_RECONCILER_ID` with no `auth_users` row → this internal route; `require_permission` would always reject it). Retention is derived from the expediente's TRD (`archivo_gestion_years + archivo_central_years`, `fecha_inicio`=closure); **fail-closed if the TRD does not resolve** (it does not protect, marks `trd_sin_retencion`, recoverable by the sweep). It mirrors `/signature/internal/sign-indice`.
 - `POST /api/v1/preservacion/proteger-artefacto` `{file_id, expediente_id, tipo, retain_until? | (retencion_anios + fecha_inicio), legal_hold?}` — **(E10 Inc.2 wiring, [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md))** the **generalised** form of `proteger-indice`: it protects any **preservation artifact** of the expediente under WORM/Object-Lock, with `tipo ∈ {indice, acta_transferencia}` (defaults to `indice` if omitted). SAME service, fixity, caller-derived TRD retention, `USUA_PERM_EXPEDIENTE crud≥3` RBAC + clearance, and **idempotency** as `proteger-indice`, now keyed **on `(expediente_id, tipo)`** (partial unique index `WHERE tipo='acta_transferencia'` on `preservacion_worm_objeto`, migration `010`) and with the session advisory lock keyed on **`(tenant, expediente, tipo)`** — two artifact types of the same expediente (index and acta) do not collide, but each serialises its own `check→put→insert`. `/proteger-indice` is kept as a **hard alias** that forces `tipo="indice"` whatever the body says (Inc.1 backward compatibility). Status codes and trust boundary are identical to `proteger-indice`. The **signed transfer record** (XAdES seal, `transferencia_acta_firma`) is wired by archive via `TransferenciaService.proteger_worm_acta` (best-effort synchronous trigger after sealing + the 4th reconciliation phase `run_once_actas_worm`); its retention derives from the TRD of the transfer's expediente with **`fecha_inicio = firmado_at` of the acta** (not the closure date — an acta may be signed much later in secondary transfers).
-- *(Internal, service-to-service; **not** reachable from the gateway)* `POST /api/v1/preservacion/proteger-artefacto-internal` — the **internal** twin of `proteger-artefacto` (with `tipo` in the body), authenticated only by `X-Internal-Token`, attributed to `SYSTEM_RECONCILER_ID`. Used by the unattended acta reconciliation (`run_once_actas_worm`, `origen="reconciliation"`), just as `proteger-indice-internal` is for the index. `/proteger-indice-internal` remains the hard `tipo="indice"` alias.
-- *(Internal, service-to-service; **not** reachable from the gateway — `X-Internal-Token` is not in `FORWARDED_REQUEST_HEADERS`)* `POST /api/v1/preservacion/renovar-retencion-internal` `{expediente_id, tipo, retencion_anios + fecha_inicio | retain_until}` — **(E10 debt: WORM retention renewal for Permanent Conservation series)** extends (never shortens) the `retain_until` of an artifact **already protected** under WORM, identified by `(expediente_id, tipo)` (`tipo ∈ {indice, acta_transferencia}`). It reuses `RetentionMixin`. **Monotonic** semantics: if the resolved date does not **strictly** exceed the persisted `retain_until`, it is an **idempotent no-op** (`200`, `renovado=false`, MinIO untouched). If it does exceed it, it calls `Minio.set_object_retention` (a real extension; COMPLIANCE would reject a shortening anyway) and answers `200` with `renovado=true`; the UPDATE + the `RENOVACION` PREMIS event + the `file.worm_retencion_renovada` audit entry all go in **one transaction** (the `set_object_retention` sits outside it, before). Authenticated **only** by `X-Internal-Token` (attributed to `SYSTEM_RECONCILER_ID`): renewal is a **system act** driven by archive's 5th reconciliation phase (`run_once_worm_renovacion`), the only component that knows which series are Permanent Conservation — **there is NO public route** (it was withdrawn during remediation: storage cannot enforce the CT filter, so a public route taking a direct `retain_until` would be irreversible surface with no CT guarantee). `404` `worm_object_not_found`; `400` invalid retention; `503` if `PRESERVATION_ENABLED=false`. `retention_mode`/`legal_hold` do **not** change. Response: `{id, expediente_id, tipo, bucket, object_key, retain_until, retention_mode, renovado, renovaciones, renovado_at}`.
+- _(Internal, service-to-service; **not** reachable from the gateway)_ `POST /api/v1/preservacion/proteger-artefacto-internal` — the **internal** twin of `proteger-artefacto` (with `tipo` in the body), authenticated only by `X-Internal-Token`, attributed to `SYSTEM_RECONCILER_ID`. Used by the unattended acta reconciliation (`run_once_actas_worm`, `origen="reconciliation"`), just as `proteger-indice-internal` is for the index. `/proteger-indice-internal` remains the hard `tipo="indice"` alias.
+- _(Internal, service-to-service; **not** reachable from the gateway — `X-Internal-Token` is not in `FORWARDED_REQUEST_HEADERS`)_ `POST /api/v1/preservacion/renovar-retencion-internal` `{expediente_id, tipo, retencion_anios + fecha_inicio | retain_until}` — **(E10 debt: WORM retention renewal for Permanent Conservation series)** extends (never shortens) the `retain_until` of an artifact **already protected** under WORM, identified by `(expediente_id, tipo)` (`tipo ∈ {indice, acta_transferencia}`). It reuses `RetentionMixin`. **Monotonic** semantics: if the resolved date does not **strictly** exceed the persisted `retain_until`, it is an **idempotent no-op** (`200`, `renovado=false`, MinIO untouched). If it does exceed it, it calls `Minio.set_object_retention` (a real extension; COMPLIANCE would reject a shortening anyway) and answers `200` with `renovado=true`; the UPDATE + the `RENOVACION` PREMIS event + the `file.worm_retencion_renovada` audit entry all go in **one transaction** (the `set_object_retention` sits outside it, before). Authenticated **only** by `X-Internal-Token` (attributed to `SYSTEM_RECONCILER_ID`): renewal is a **system act** driven by archive's 5th reconciliation phase (`run_once_worm_renovacion`), the only component that knows which series are Permanent Conservation — **there is NO public route** (it was withdrawn during remediation: storage cannot enforce the CT filter, so a public route taking a direct `retain_until` would be irreversible surface with no CT guarantee). `404` `worm_object_not_found`; `400` invalid retention; `503` if `PRESERVATION_ENABLED=false`. `retention_mode`/`legal_hold` do **not** change. Response: `{id, expediente_id, tipo, bucket, object_key, retain_until, retention_mode, renovado, renovaciones, renovado_at}`.
 - `GET /api/v1/expedientes/indices/pendientes-renovacion?page=&size=` — **(E10 debt: visibility of CT renewal)** lists the WORM artifacts of **Permanent Conservation** series (index + acta) whose renewal is **exhausted** (`worm_renovacion_agotado=TRUE`) or **at risk** (`worm_retain_until` falls due within `worm_renovacion_ventana_dias`) — so that an archivist can see a permanent-conservation COMPLIANCE lock about to expire unrenewed (mirror of `pendientes-firma`). Gate `USUA_PERM_EXPEDIENTE` + **no read-up** (the `nivel_seguridad <= clearance` filter lives in the SQL of both queries; `X-Total-Count` reflects the count **already filtered** by clearance — it is not an oracle). Exhausted first, then nearest expiry. Per row: `{expediente_id, expediente_code, tipo, worm_retain_until, worm_renovacion_intentos, worm_renovacion_agotado, worm_renovacion_ultimo_error}`. The 5th reconciliation phase feeds it: for every active tenant it sweeps the indexes and actas **of Permanent Conservation (CT) disposition series** whose `retain_until` falls due within `WORM_RENOVACION_VENTANA_DIAS` (default 400 days) and calls the internal endpoint with `retencion_anios=TRD_total` + `fecha_inicio=today` (**rolling window**, never a far-off/9999 date). The CT filter is **fail-closed in archive's own SQL** (`disposition ∈ {CT, conserve}`) — `E`/`S`/`M` series never enter the sweep, even when close to expiry (they expire and are disposed of legitimately). It has its own exponential backoff (`worm_renovacion_intentos`/`worm_renovacion_agotado` in `expediente_indice`/`transferencia_acta_firma`, migrations `031`/`032`) — an `agotado=true` on this axis is a **higher-severity** alarm than on initial sealing/protection: it means the COMPLIANCE lock of a **permanently** conserved record risks expiring without ever having been extended. **AIP is out of scope** for renewal (no mirror in archive-service, future debt).
 
 ---
@@ -503,6 +582,7 @@ Deletes from MinIO and from the database. Responds `204`.
 > **Automatic distribution (RF-FLU-04):** in addition to the endpoints, workflow-service consumes the `orpycamcp.document.events` stream. When a document is registered (`document.radicado.created`) it evaluates the active rules and, if any matches, **auto-assigns** the radicado to its dependencia (step + append-only event, author = system). It is idempotent (it does not redistribute if the radicado already has steps).
 
 ### `POST /api/v1/workflows/assign`
+
 Assigns a radicado to a dependencia (first step or reassignment). Requires `PERM_TRAMITAR`; `403 forbidden` if the permission or the tenant is missing (RF-SEG-03).
 
 ```json
@@ -519,9 +599,11 @@ Assigns a radicado to a dependencia (first step or reassignment). Requires `PERM
 ```
 
 ### `POST /api/v1/workflows/transfer`
+
 Transfers the radicado to another dependencia. Requires `from_dept`. Requires `PERM_TRAMITAR` (RF-SEG-03).
 
 ### `GET /api/v1/workflows/{radicado_id}/history`
+
 Complete history of steps ordered by `step_number ASC`.
 
 ```json
@@ -536,29 +618,36 @@ Complete history of steps ordered by `step_number ASC`.
 ```
 
 ### `GET /api/v1/workflows/inbox`
+
 Typed inbox of active steps (RF-FLU-03). `?box=entrada|salida|internos` (maps to `doc_type` E/S/I), `&dept=&assigned_to=&page=&size=`. Prioritizes by age; header `X-Total-Count`. `400 invalid_box` if the box is not valid. Each step includes `due_at` and `semaforo` (green/yellow/red/overdue, RF-FLU-07).
 
 **Scoped by dependencia (RF-SEG-08):** without `dept`/`assigned_to`, the caller sees **their own** — steps assigned to them or belonging to a dependencia they are a member of (active URD). Passing `dept` and/or `assigned_to` **widens** the scope to another dependencia or user and requires `PERM_TRAMITAR` or `USUA_PERM_ADMIN`; without that permission, `403 forbidden` (the parameter is never silently ignored). `X-Total-Count` always reflects the same filter as the returned rows.
 
 ### `POST /api/v1/workflows/overdue/scan`
+
 Overdue sweep (RF-FLU-07): detects active overdue steps not yet alerted, emits `workflow.step.overdue` to the bus (→ notifications) and marks them to avoid duplication. Idempotent per step; intended for periodic invocation by a scheduler. Responds `{ "alerted": N }`. Requires `USUA_PERM_ADMIN` (a tenant-wide sweep). The bulk reassignment `POST /api/v1/workflows/reassign/cascade` (RF-FLU-08) requires the same administrative permission.
 
 ### Sequential approvals (vistos buenos) (legacy parity)
+
 - `POST /api/v1/workflows/{radicado_id}/vistos-buenos` `{revisores: [uuid,...]}` — creates the ordered review chain (1..20 reviewers, no duplicates). Requires `PERM_RADI` (D-09); `403 forbidden` if the permission, the identity or the tenant is missing. `409 cadena_existente` if the radicado already has a chain.
 - `POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir` `{aprobar, comentario?}` — the reviewer whose turn it is (lowest pending order) approves/rejects. Requires a valid `X-User-Id` (400 if missing). `403 not_a_reviewer` if the actor is not in that radicado's reviewer chain; `403 no_es_su_turno` if they are in the chain but it is not their turn; a rejection stops the chain.
 - `GET /api/v1/workflows/{radicado_id}/vistos-buenos` — chain + global status (`en_revision|aprobado|rechazado`).
 
 ### `POST /api/v1/workflows/{radicado_id}/devolver` (return to sender)
+
 Re-routes a misassigned radicado: `{ "to_dept": "...", "causal": "DEV-DEP", "comentario"? }`. Closes the active step as `returned` and creates a new one towards `to_dept`, with the reason code in the history. Requires **`PERM_TRAMITAR`** (like `assign`, `transfer` and `complete`; this route and `rollback` were the only two trámite writes in the router with no gate at all). Authorization by tenure on top of the permission: only the current holder of the active step may return it. `403 not_current_holder` if the actor is not the holder. `404` if there is no active step.
 
 ### Procedure transactions (RF-FLU-01)
+
 - `GET /api/v1/workflows/transaction-types` — catalog (informar, NRR, agendar, no_agendar, change_folder, marcar_leido, validate_trd_send, solicitar_firma, vobo, cerrar_exp, anular…), with their atomic permission and state effect.
 - `POST /api/v1/workflows/{radicado_id}/transactions` `{ "tipo_tx": "anular", "comentario": "...", "detalles": {} }` — executes the transaction: applies the effect to the active step (e.g. `marcar_leido`→in_progress, `anular`→cancelled) and records the append-only event. **Per-type RBAC enforcement (RF-SEG-03):** each type declares in `transaction_types.requires_permission` the permission it demands (`anular`→`PERM_ANULAR`, `cerrar_exp`→`PERM_CERRAR_EXP`, `vobo`→`PERM_VOBO`…); without it, `403 forbidden` and the transaction is **not** applied. A type with `requires_permission = NULL` **falls back to the `PERM_TRAMITAR` floor**, it is not open: `transaction_types` is a tenant catalogue, and leaving the column empty cannot be the easiest way to open a door. All 12 seeded types declare their own, so the floor changes nothing observable today. There is deliberately no fixed route gate: requiring `PERM_TRAMITAR` for all of them would break someone who holds `PERM_VOBO` to sign off and nothing else. `404 unknown_transaction` / `no_flow`. `PATCH /{step_id}/complete` requires `PERM_TRAMITAR`.
 
 ### `POST /api/v1/workflows/{radicado_id}/rollback`
+
 `{motivo}` (**mandatory**, 5-500 characters). Requires **`PERM_TRAMITAR`**. Reverts the last assignment (RF-FLU-08): cancels the current step —only if it is still `pending`— and reactivates the previous one, atomically, with a `tipo_tx=rollback` event. The `motivo` is recorded in two traces, atomically with the mutation (a single transaction): `flow_events.comentario` (the operational route map) and `public.audit_log.payload` (the forensic legal trace, the same pattern as assignment). `409 no_active_step` (no active step) or `cannot_rollback_initial` (it is the initial registration). `422` if the `motivo` is missing or below the minimum length.
 
 ### `POST /api/v1/workflows/reassign/cascade`
+
 Reassigns, in a single transaction, all the active steps of a user or dependencia to a new responsible party, leaving no orphan radicados (RF-FLU-08).
 
 ```json
@@ -569,22 +658,36 @@ Reassigns, in a single transaction, all the active steps of a user or dependenci
 ```
 
 ### `GET /api/v1/workflows/{radicado_id}/events`
-**Append-only** history of the radicado's transactions (RF-FLU-02, unalterable). Unlike `/history` (a projection of steps), it records every transaction and its table rejects UPDATE/DELETE. **Access control (E05 §10 / RF-SEG-08):** this is the *operational route map* (Channel B) — visible to any user who can **read** the radicado, scoped by their clearance (no read-up); requires `X-User-Id`, and a radicado above the clearance returns an empty history. No admin permission required (that is the `audit_log` forensic audit).
+
+**Append-only** history of the radicado's transactions (RF-FLU-02, unalterable). Unlike `/history` (a projection of steps), it records every transaction and its table rejects UPDATE/DELETE. **Access control (E05 §10 / RF-SEG-08):** this is the _operational route map_ (Channel B) — visible to any user who can **read** the radicado, scoped by their clearance (no read-up); requires `X-User-Id`, and a radicado above the clearance returns an empty history. No admin permission required (that is the `audit_log` forensic audit).
 
 ```json
-[ { "id": "uuid", "tipo_tx": "assign", "from_dept": null, "to_dept": "Ventanilla",
-    "actor": "uuid", "comentario": "...", "detalles": { "step_number": 1 }, "ts": "2024-01-15T10:30:00Z" } ]
+[
+  {
+    "id": "uuid",
+    "tipo_tx": "assign",
+    "from_dept": null,
+    "to_dept": "Ventanilla",
+    "actor": "uuid",
+    "comentario": "...",
+    "detalles": { "step_number": 1 },
+    "ts": "2024-01-15T10:30:00Z"
+  }
+]
 ```
 
 ### `GET /api/v1/workflows/{radicado_id}/current`
+
 Current active step of the radicado. `404` if it is closed or unassigned.
 
 ### `GET /api/v1/workflows/pending`
+
 Pending radicados. Filters: `?dept=Dirección+Jurídica&assigned_to={uuid}&page=1&size=20`.
 
 **Scoped by dependencia (RF-SEG-08):** same criterion as `/inbox` — by default, one's own (assigned to the caller or to a dependencia they belong to through an active URD); `dept`/`assigned_to` widen the scope and require `PERM_TRAMITAR` or `USUA_PERM_ADMIN` (`403 forbidden` without the permission).
 
 ### `PATCH /api/v1/workflows/{step_id}/complete`
+
 Marks a step as completed.
 
 ```json
@@ -601,9 +704,10 @@ Marks a step as completed.
 
 ### Expedientes
 
-> **Access control:** **all** expediente endpoints (12: create/list/search/get/foliado/eventos/close/transfer/update/link/batch/unlink) and those in `batch.py` (`POST /api/v1/batch/expedientes`, `GET /api/v1/batch/expedientes/{job_id}/status`) require `USUA_PERM_EXPEDIENTE` (fail-closed: `403` without `X-Tenant-Slug`, without `X-User-Id`, or without the permission). **Least privilege (RF-SEG-03, `crud` level 0-5):** the **disposition** operations — `close`, `transfer`, `unlink`, and the `PATCH` that transitions to `closed`/`transferred` — require `USUA_PERM_EXPEDIENTE` with **`crud≥3`** (Create/Delete); everything else (reads, create, link, `PATCH` of name/series) is satisfied by `crud≥1`. In `list`/`get`/`eventos`/`search` **and in `PATCH`**, **clearance (RF-SEG-08, no read-up)** filters what is visible **in addition**, by security level: each user only sees/edits expedientes with `nivel_seguridad ≤` their clearance (*fail-closed* to PUBLIC without `X-User-Id`), an expediente above it returns **404** (it does not reveal its existence), and in `list`/`search` the **`X-Total-Count` is filtered too** (it does not reveal how many classified ones exist). Every `list`/`search` query leaves an **aggregate trace** in `audit_log` (RF-BUS-10: user, criteria, total; without the raw text of `q`), separate from the per-expediente trail. In `link`/`batch`/`unlink`/`indice/rebuild` (M2, RF-SEG-08) the **mutation is legitimate without read clearance** (composing and ordering an expediente is archival management, orthogonal to reading its content) and it **always** happens and **always** audits; but the **response is trimmed** if the caller cannot read the expediente (`nivel_seguridad >` their clearance): counts/hash/`added_at` → `null`, and the **oracles are suppressed** (409 `radicado_already_linked`, 404 `radicado_link_not_found`, 409 `expediente_not_open`) by returning a **uniform, indistinguishable** ack whatever the state — a non-reader infers neither membership, nor volume, nor lifecycle of a classified expediente. The permission is resolved in the tenant DB (the api-gateway does not gate by route).
+> **Access control:** **all** expediente endpoints (12: create/list/search/get/foliado/eventos/close/transfer/update/link/batch/unlink) and those in `batch.py` (`POST /api/v1/batch/expedientes`, `GET /api/v1/batch/expedientes/{job_id}/status`) require `USUA_PERM_EXPEDIENTE` (fail-closed: `403` without `X-Tenant-Slug`, without `X-User-Id`, or without the permission). **Least privilege (RF-SEG-03, `crud` level 0-5):** the **disposition** operations — `close`, `transfer`, `unlink`, and the `PATCH` that transitions to `closed`/`transferred` — require `USUA_PERM_EXPEDIENTE` with **`crud≥3`** (Create/Delete); everything else (reads, create, link, `PATCH` of name/series) is satisfied by `crud≥1`. In `list`/`get`/`eventos`/`search` **and in `PATCH`**, **clearance (RF-SEG-08, no read-up)** filters what is visible **in addition**, by security level: each user only sees/edits expedientes with `nivel_seguridad ≤` their clearance (_fail-closed_ to PUBLIC without `X-User-Id`), an expediente above it returns **404** (it does not reveal its existence), and in `list`/`search` the **`X-Total-Count` is filtered too** (it does not reveal how many classified ones exist). Every `list`/`search` query leaves an **aggregate trace** in `audit_log` (RF-BUS-10: user, criteria, total; without the raw text of `q`), separate from the per-expediente trail. In `link`/`batch`/`unlink`/`indice/rebuild` (M2, RF-SEG-08) the **mutation is legitimate without read clearance** (composing and ordering an expediente is archival management, orthogonal to reading its content) and it **always** happens and **always** audits; but the **response is trimmed** if the caller cannot read the expediente (`nivel_seguridad >` their clearance): counts/hash/`added_at` → `null`, and the **oracles are suppressed** (409 `radicado_already_linked`, 404 `radicado_link_not_found`, 409 `expediente_not_open`) by returning a **uniform, indistinguishable** ack whatever the state — a non-reader infers neither membership, nor volume, nor lifecycle of a classified expediente. The permission is resolved in the tenant DB (the api-gateway does not gate by route).
 
 #### `POST /api/v1/expedientes`
+
 Creates an expediente (case file). Generates an automatic code `EXP-{YEAR}-{SEQ:04d}`.
 
 ```json
@@ -617,6 +721,7 @@ Creates an expediente (case file). Generates an automatic code `EXP-{YEAR}-{SEQ:
 - `metadata` (optional, ADR-007): if the TRD (document retention schedule) series (`trd_serie_id`) has an active template, the values are validated against its JSON Schema → `422 metadata_validation_failed` if they do not comply. Column indexed with GIN.
 
 #### `POST /api/v1/expediente-metadata/templates`
+
 Defines the metadata template (JSON Schema) of a TRD series. A single active one per series. `422 invalid_json_schema` / `409 conflict`. `GET` lists (filter `?trd_serie_id=`).
 
 #### Documentary transfers (E12)
@@ -638,21 +743,24 @@ Defines the metadata template (JSON Schema) of a TRD series. A single active one
 - `POST/GET /api/v1/ubicaciones`, `GET /api/v1/ubicaciones/{id}` — recursive topology (site→…→drawer); `codigo` unique per tenant; derived `ruta`. Filters `?parent_id=&activo=`.
 - `POST/GET /api/v1/unidades`, `GET /api/v1/unidades/{id}` — conservation units (box|folder|…); when `ubicacion_id` is provided, the **topographic signature** is derived (`DEP01-E05-C0124`, unique). Filters `?ubicacion_id=&tipo=`.
 - `POST /api/v1/unidades/{id}/expedientes` — link an expediente to a unit (`folio_inicio/fin`).
-- `GET /api/v1/unidades/{id}/expedientes` — what the unit contains; **filtered row by row** by clearance (RF-SEG-08, no read-up): enumerating a unit's contents reveals the *existence* of its classified expedientes, so a non-reader does not see those with `nivel_seguridad >` their clearance (Law 1712/2014 art. 19; *fail-closed* to PUBLIC, `403` without `X-User-Id`). `GET /api/v1/expedientes/{id}/unidades` — where the expediente is (signature + range); **deliberately without a clearance filter**: it is queried by an already known `expediente_id` and returns only the physical location (signature/folios, not subject/series) — custody management, orthogonal to read clearance (the same criterion as transfers).
+- `GET /api/v1/unidades/{id}/expedientes` — what the unit contains; **filtered row by row** by clearance (RF-SEG-08, no read-up): enumerating a unit's contents reveals the _existence_ of its classified expedientes, so a non-reader does not see those with `nivel_seguridad >` their clearance (Law 1712/2014 art. 19; _fail-closed_ to PUBLIC, `403` without `X-User-Id`). `GET /api/v1/expedientes/{id}/unidades` — where the expediente is (signature + range); **deliberately without a clearance filter**: it is queried by an already known `expediente_id` and returns only the physical location (signature/folios, not subject/series) — custody management, orthogonal to read clearance (the same criterion as transfers).
 - **Loans (RF-ARF-07)**: `POST /api/v1/unidades/{id}/prestamos` (409 if already lent out), `POST /api/v1/prestamos/{id}/devolver`, `GET /api/v1/prestamos?estado=prestado|devuelto|vencido`, `GET /api/v1/unidades/{id}/prestamos`. `vencido` is derived from `fecha_devolucion_esperada`.
 - **History (RF-ARF-08)**: `GET /api/v1/unidades/{id}/movimientos` — append-only movements (RETIRADO/DEVUELTO/…).
-- **FUID (RF-ARF-10)**: `GET /api/v1/fuid` — documentary inventory (expediente↔unit↔signature↔series) in JSON with consecutive ordering and AGN 042/2002 fields; filters `?ubicacion_id=&trd_serie_id=`. `GET /api/v1/fuid.xml` exports as XML. **Form header** (AGN Agreement 042/2002, Annex): `entidad_productora` is resolved **server-side** from `public.tenants` — it heads an official archival document, and a free-text field would turn one institution's inventory into any other's — while `unidad_administrativa`, `oficina_productora` and `objeto` arrive as query parameters and are **declarative**: whoever compiles the inventory fills them in, just as on paper. Every row also carries `frecuencia_consulta` (column 9 of the form: `alta`/`media`/`baja`), **derived** from access entries recorded in `audit_log` over the last 12 months rather than estimated — the count is scoped by `tenant_slug`, because `audit_log` is the only table shared across institutions and expediente codes are consecutives that collide between them. **Access control (RF-SEG-08, no read-up):** the FUID describes **content** (`asunto`/series/`signatura`), so it is filtered **row by row** by the expediente's classification — each user only sees in the inventory those with `nivel_seguridad ≤` their clearance (`total` counts only what is visible; *fail-closed* to PUBLIC, `403` without `X-User-Id`). In `GET /transferencias/{id}/fuid` (a single expediente) the filter is a total `404` if the expediente exceeds the clearance (indistinguishable from non-existent). The transfer itself (create/send/receive/reject) is an act of **custody**, orthogonal to read clearance (it does not filter by it, as with expediente closure/transfer).
+- **FUID (RF-ARF-10)**: `GET /api/v1/fuid` — documentary inventory (expediente↔unit↔signature↔series) in JSON with consecutive ordering and AGN 042/2002 fields; filters `?ubicacion_id=&trd_serie_id=`. `GET /api/v1/fuid.xml` exports as XML. **Form header** (AGN Agreement 042/2002, Annex): `entidad_productora` is resolved **server-side** from `public.tenants` — it heads an official archival document, and a free-text field would turn one institution's inventory into any other's — while `unidad_administrativa`, `oficina_productora` and `objeto` arrive as query parameters and are **declarative**: whoever compiles the inventory fills them in, just as on paper. Every row also carries `frecuencia_consulta` (column 9 of the form: `alta`/`media`/`baja`), **derived** from access entries recorded in `audit_log` over the last 12 months rather than estimated — the count is scoped by `tenant_slug`, because `audit_log` is the only table shared across institutions and expediente codes are consecutives that collide between them. **Access control (RF-SEG-08, no read-up):** the FUID describes **content** (`asunto`/series/`signatura`), so it is filtered **row by row** by the expediente's classification — each user only sees in the inventory those with `nivel_seguridad ≤` their clearance (`total` counts only what is visible; _fail-closed_ to PUBLIC, `403` without `X-User-Id`). In `GET /transferencias/{id}/fuid` (a single expediente) the filter is a total `404` if the expediente exceeds the clearance (indistinguishable from non-existent). The transfer itself (create/send/receive/reject) is an act of **custody**, orthogonal to read clearance (it does not filter by it, as with expediente closure/transfer).
 
 #### TRD/CCD — the TRD as a validated instrument (E04, [ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md))
-> **Access control (archival configuration):** config **mutations** (`POST/PATCH /api/v1/trd`, `POST /trd/{code}/versiones`, the validation circuit below, `POST/PATCH/DELETE /api/v1/tipos-documentales`, `POST /api/v1/expediente-metadata/templates`) require **`USUA_PERM_TRD`** (fail-closed: `403` without tenant/user-id/permission) and leave an `audit_log` entry. **Config disposition** — `DELETE /tipos-documentales/{id}`, `PATCH /trd/{id}`, `POST /trd/{code}/versiones` and the validation circuit — requires **`crud≥3`** (RF-SEG-03). The `GET` **reads** (including `GET /trd/revision-pendiente`) are **read-only `USUA_PERM_TRD`** (`crud≥1`): they feed classification during registration (TRD/type dropdowns) and template validation.
+
+> **Access control (archival configuration):** config **mutations** (`POST/PATCH /api/v1/trd`, `POST /trd/{code}/versiones`, the validation circuit below, `POST/PATCH/DELETE /api/v1/tipos-documentales`, `POST /api/v1/expediente-metadata/templates`) require **`USUA_PERM_TRD`** (fail-closed: `403` without tenant/user-id/permission) and leave an `audit_log` entry. **Config disposition** — `DELETE /tipos-documentales/{id}`, `PATCH /trd/{id}`, `POST /trd/{code}/versiones` and the validation circuit — requires **`crud≥3`** (RF-SEG-03). The `GET` **reads are not all alike**, and since 2026-08-28 the code says so (§4.bis of the test plan). The **classification vocabulary** — `GET /api/v1/trd`, `GET /trd/{id}`, `GET /trd/{id}/retention` and their TVD twins, plus `GET /api/v1/tipos-documentales` and `GET /api/v1/expediente-metadata/templates` — is **open to any authenticated user of the tenant, by declared decision**: `/radicar` and `/expedientes` consume it in order to classify, and `USUA_PERM_TRD` belongs to whoever **administers** the instrument, not to whoever uses it — requiring it here would stop every ordinary officer from registering — and the validated instrument must be published anyway (Ac. AGN 004/2019, compiled by 001/2024; Ley 1712/2014 art. 9). The **circuit** does require **`USUA_PERM_TRD`** (`crud≥1`): `GET /trd/revision-pendiente` and `GET /trd/{code}/versiones` + `GET /tvd/{code}/versiones`, because the history returns the drafts, the `acta_comite`, the `fecha_aprobacion_comite`, the `instancia_convalidante` and the `created_by` of every version — the Committee's deliberation, not the published instrument.
 >
 > **Instrument state machine** (ADR-025, AGN Agreement 001/2024 which compiles 004/2019): `borrador → aprobada → convalidada`, with `migrada` as a backfill state (series predating migration 037, "the system does not know whether they were validated") that can be **ratified** straight to `convalidada` without passing through `aprobada`, and `aprobada → borrador` (**return**, migration 038) as an honest path for returning with observations. `borrador`/`aprobada`/`derogada` do **not** govern a closure (`409 trd_version_no_vigente`); `convalidada`/`migrada` do. Effective destruction (final disposition, no job yet) will require the frozen snapshot to describe a validated instrument — `convalidada`, or `derogada` with an administrative act (D5, gate corrected in 038: see `app/core/trd_disposition.py`) — the rest of the rules live in the ADR.
+
 - `POST/GET/PATCH /api/v1/trd` — documentary series and **subseries**. Fields: `code`, `name`, `parent_id` (subseries), `archivo_gestion_years`/`archivo_central_years` (two-phase retention), `disposition` (AGN: `CT`/`E`/`S`/`M`), `version`, `valid_from`, `estado`, `valid_to`, `acto_administrativo`, `acta_comite`, `fecha_aprobacion_comite`, `fecha_convalidacion`, `instancia_convalidante`, `rusd_radicado`, `fecha_publicacion`, `supersede_a`, `created_by`. `POST` always creates **`version=1` in `borrador`** (`estado` is not settable by the client). `PATCH` is **append-only** (D1): only applicable over `borrador` — any other state answers `409 trd_version_inmutable`, unless the only field sent is `pdfa_profile` (technical preservation policy, editable in any state). `is_active` is no longer accepted in `PATCH` (retiring a version is `derogar`, below).
 - `POST /api/v1/trd/{code}/versiones` — clones the code's **current** version (`convalidada`/`migrada`) as a **new** row `version+1` in `borrador`; if the code has no current version (all its versions are `derogada`), it falls back to the **highest version number, in any state** (migration 038 — a derogated code with no successor is never left without a way back). `404 trd_code_not_found` only if the code never existed; `409 trd_version_en_tramite` if there is already a `borrador`/`aprobada` version in progress.
 - `GET /api/v1/trd/{serie_id}/retention?closed_at=YYYY-MM-DD` — **retention calendar**: `fin_archivo_gestion`, `fin_archivo_central` and final disposition (`disposition_code`/`disposition_label`) derived from the series and the closing date, plus the **instrument's provenance** (`serie_version`, `serie_estado`, `acto_administrativo`, `fecha_convalidacion`, `instancia_convalidante`, `rusd_radicado`) — declared exactly as it stands in the row, never asserting a validation that did not happen (RF-FIR-15).
 - `GET /api/v1/trd/{code}/versiones` — **(ADR-026; the twin declared by ADR-025 and never implemented)** the complete history (any state) of a code, most recent first; an empty list if the code never existed (not a `404`).
 
 **Validation circuit (ADR-025 D2/D6, Increment 2 + migration 038)** — a state machine isolated in the service layer, validated before touching the DB (`409 trd_transicion_invalida` on any transition outside those listed):
+
 - `POST /api/v1/trd/{code}/versiones/{version}/aprobar` `{acta_comite, fecha_aprobacion_comite}` — `borrador → aprobada` (approval by the Institutional Management and Performance Committee; both fields **mandatory**, migration 038 — previously the endpoint took no body and the system could not record the circuit's first act). A necessary and **insufficient** condition for governing a closure.
 - `POST /api/v1/trd/{code}/versiones/{version}/devolver` `{motivo}` — **new (038)**: `aprobada → borrador`, with a mandatory `motivo`. The honest "returned with observations" path (AGN Agreement 001/2024) — previously the only way out of `aprobada` was `convalidar`, which demands declaring an act that may not exist yet. It clears `acta_comite`/`fecha_aprobacion_comite` (the approval becomes VOID).
 - `POST /api/v1/trd/{code}/versiones/{version}/convalidar` `{acto_administrativo, fecha_convalidacion, instancia_convalidante, rusd_radicado?, fecha_publicacion?}` — **one action, two origins**: (a) from `aprobada` (the normal circuit, requiring `acta_comite`/`fecha_aprobacion_comite` to be already on record — `409 trd_aprobacion_comite_requerida` otherwise, migration 038): `aprobada → convalidada`, and **in the same transaction** it derogates the code's previously current version (if one existed: `valid_to=today`, `estado='derogada'`, `is_active=false`; if the derogation loses a concurrent race it aborts with `409` rather than leaving orphan FKs) and **re-points** (an `UPDATE`, not a clone, collision-safe — a key that already exists in the new version is **skipped**, never blowing up the transaction) the `tipos_documentales`/`expediente_metadata_templates` FKs from the derogated version to the new one; (b) from `migrada` (**D6 ratification**): `migrada → convalidada` **without creating a new version or derogating anything** — the same row gains the act's fields, and `trd_revision_requerida`/`trd_revision_motivo` are cleared on the `closed`/`transferred` expedientes bound to it whose reason is **exactly** `cerrado_bajo_serie_migrada` (other reasons, e.g. `serie_no_resoluble`, are not resolved this way). `acto_administrativo`/`fecha_convalidacion`/`instancia_convalidante` are mandatory in the body (`422` if missing; the `trd_series_convalidada_acto_check` CHECK requires them at DB level too); `rusd_radicado`/`fecha_publicacion` are optional. Once `convalidada`, the 038 trigger shields the act at ENGINE level (`acto_administrativo`/`fecha_convalidacion`/`instancia_convalidante` immutable, `estado` can only move to `derogada`).
@@ -683,9 +791,11 @@ A TVD is **the same instrument as a TRD** (AGN Agreement 001/2024, which compile
 The audit entry names are **deliberately different** (`archive.tvd_*`, object `tvd_agrupacion`): in `audit_log` the decision is the opposite of the one taken in the data model — whoever filters on `archive.trd_version_convalidada` should not have to remember to also inspect a payload field.
 
 #### `POST /api/v1/expedientes/{id}/radicados/batch` (bulk inclusion)
+
 Links several radicados at once `{radicados:[{radicado_id, tracking_number, content_hash?, formato?, tamano_bytes?, folios?, dependencia_productora_codigo?, dependencia_productora_nombre?}]}` (up to 500; idempotent, skipping those already linked — it does not update the metadata of already-linked ones); regenerates the index only once. The RT-15 fields (`formato`/`tamano_bytes`/`folios`) and the **producing dependencia** (code + name, v4) are optional but **code and name must go together or not at all** (Pydantic `422` validation, mirroring `RadicadoLink`). Returns `{vinculados, omitidos, total}`. `409` if the expediente is not `open` (for a caller without read clearance over a classified expediente, `vinculados`/`omitidos` arrive as `null` and the `409` is replaced by the trimmed ack — see the access-control note above).
 
 #### Expediente lifecycle (E02)
+
 - `POST /api/v1/expedientes/{id}/close` — closes the expediente (`open→closed`), materializes the TRD disposition in `disposition` and **generates and signs (XAdES-B) the final version of the electronic index** via signature-service (E06 Inc.1). Sealing is **best-effort and does not block the closure**: if the signature is obtained it leaves `expediente_indice.estado='firmado'`; if it fails (seal not provisioned, service unreachable) it leaves **`estado='pendiente_firma'`** and emits the `archive.indice_firma_pendiente` audit entry. The closure audit entry includes `indice_estado`/`firma_id`. **Response**: a **trimmed** `ExpedienteDisposicionResult` (`id`, `code`, `status`, `disposition`, `closed_at`, `transferred_at`) — **not** the full expediente: disposition is orthogonal to read clearance (RF-SEG-08, Option B), so the response exposes no `metadata`/`description`/`radicados`/`opened_by`, and a user with disposition authority (`crud≥3`) but no clearance over a CLASSIFIED expediente receives **200** (previously: a spurious 404 despite closing successfully).
 - `POST /api/v1/expedientes/{id}/indice/firmar` — **retries** the XAdES-B sealing of an index in `pendiente_firma` (E06 Inc.1). Idempotent: `409` if already `firmado`, `503` if sealing still cannot be obtained. Requires `USUA_PERM_EXPEDIENTE` **+ `PERM_FIRMA`** and `X-User-Id` (400 if the UUID is malformed).
 - `POST /api/v1/expedientes/{id}/transfer` — transfers (`closed→transferred`). `409` if the transition is invalid **or if the index is not `firmado`** (an index in `pendiente_firma` blocks the transfer — AGN Agreement 001/2024 art. 4.3.2.4). The same block applies in the generic `PATCH` with `status=transferred` and on receipt of transfers (E12). **Response**: a trimmed `ExpedienteDisposicionResult` (as with `/close`), not the full expediente.
@@ -693,10 +803,12 @@ Links several radicados at once `{radicados:[{radicado_id, tracking_number, cont
 - `GET /api/v1/expedientes/{id}/foliado` — foliation: radicados ordered with a sequential `folio` (`{expediente_id, code, total_folios, items[]}`). (The normative **electronic index** is E15, below.)
 
 #### Electronic index (E15, AGN Agreement 001/2024)
+
 > **Profile v4 "fully conformant" (E15, [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md); XSD `schemas/indice-v4.xsd`):** new indexes are generated in `urn:orpycamcp:indice:v4`, which **closes the 4 residues of v3**. **Per document**: RT-15 metadata (`<formato>`/`<tamano>`/`<folios>`/`<fechaIncorporacion>`), a **stable `<orden>`** (immutable), **`<dependenciaProductora codigo="N">`** (supplied at link time; **omitted** on legacy rows without the datum) and **`<fechaDeclaracion>`** (= `added_at`, declaration ≡ incorporation). **In the header**: `<contexto>` (`fechaPrimerUso` + series/subseries by name), **`<listaControlAcceso>`** with `<nivelSeguridad>` + **`<politicaAcceso modelo="no-read-up" requiere="USUA_PERM_EXPEDIENTE" clearanceMinimo="N">`** (a stable, portable policy — the **live RBAC matrix is NOT embedded**, it is queried through an endpoint), **`<pistaAuditoria registro="public.audit_log" objetoRef cadenaVerificable>`** (it attests to the trail, it does **not** embed live entries) and **`<conformidad perfil="v4" productoraPresente pistaAccesoDesde>`** (a per-instance marker; `productoraPresente="false"` over an empty set). The v4 **content_hash canonicalises the whole tree** (v3 covered only `<documentos>`). **Excluding** a radicado is a **soft delete** (`<documento excluido="true">` with its ordinal + `<fechaExclusion>`/`<causalExclusion>` → a **traceable gap**, AGN 001/2024 art. 4.3.2.3). Indexes in v1/v2/v3/v4 that are **already signed remain immutable** (`verify` is version-agnostic). **Label**: "fully conformant — **prospective applicability**" (legacy instances may omit the producing dependencia and their access trail starts at instrumentation; every index self-declares this in `<conformidad>` — RF-FIR-15, do not over-declare). **All** index reads require `USUA_PERM_EXPEDIENTE` + clearance (no read-up, RF-SEG-08) and **leave an access entry** in `audit_log` (`archive.indice_consultado`, real actor only + channel `api|ui|mcp`).
+
 - `GET /api/v1/expedientes/{id}/indice` (`?version=N`) — current index or by version: `{version, estado, num_documentos, xml_sha256, algoritmo, items[]}`. Each item includes `formato`, `tamano_bytes`, `folios`, `fecha_incorporacion` (null if not declared at link time).
 - `GET /api/v1/expedientes/{id}/indice.xml` (`?version=N`) — XML body (`application/xml`, namespace `urn:orpycamcp:indice:v4` on new indexes; `v1`/`v2`/`v3` on already-signed ones).
-- `GET /api/v1/expedientes/{id}/export.zip` — **export of the expediente to ZIP** (E02/export, Law 594/2000 art. 19). A CONSULTATION/DELIVERY copy (distinct from the E10 preservation AIP and from the E12 FUID transfer). The ZIP contains: `indice-electronico.xml` (E15, if signed — best-effort), `manifiesto.csv` (both **linked and excluded** radicados —the latter with their reason, without bytes—, with `orden_documental`/`folios`/`formato`/`dependencia_productora`/`fecha`), `documentos/{tracking}/{idx}-{filename}` (the attachment bytes), `LEEME.txt` (a scope legend) and `checksums.txt` (SHA-256 per member, to validate integrity). Requires `USUA_PERM_EXPEDIENTE`. **PER-RADICADO no read-up** (RF-SEG-08): `404` if the expediente exceeds the caller's clearance, and **individual radicados above the clearance are omitted entirely** (not even their existence is enumerated in the manifest) — an expediente-level gate is not enough. Archive orchestrates; the byte assembly is done by storage-service (an internal D-02 endpoint, unreachable from the gateway) without persisting anything; `arcname` is sanitised against zip-slip. The export leaves an aggregate audit entry (`archive.expediente_exportado`, RF-BUS-10). *Debt: combined PDF, streaming for large expedientes, `asunto`/document type in the manifest.*
+- `GET /api/v1/expedientes/{id}/export.zip` — **export of the expediente to ZIP** (E02/export, Law 594/2000 art. 19). A CONSULTATION/DELIVERY copy (distinct from the E10 preservation AIP and from the E12 FUID transfer). The ZIP contains: `indice-electronico.xml` (E15, if signed — best-effort), `manifiesto.csv` (both **linked and excluded** radicados —the latter with their reason, without bytes—, with `orden_documental`/`folios`/`formato`/`dependencia_productora`/`fecha`), `documentos/{tracking}/{idx}-{filename}` (the attachment bytes), `LEEME.txt` (a scope legend) and `checksums.txt` (SHA-256 per member, to validate integrity). Requires `USUA_PERM_EXPEDIENTE`. **PER-RADICADO no read-up** (RF-SEG-08): `404` if the expediente exceeds the caller's clearance, and **individual radicados above the clearance are omitted entirely** (not even their existence is enumerated in the manifest) — an expediente-level gate is not enough. Archive orchestrates; the byte assembly is done by storage-service (an internal D-02 endpoint, unreachable from the gateway) without persisting anything; `arcname` is sanitised against zip-slip. The export leaves an aggregate audit entry (`archive.expediente_exportado`, RF-BUS-10). _Debt: combined PDF, streaming for large expedientes, `asunto`/document type in the manifest._
 - `GET /api/v1/expedientes/{id}/historial-acceso` (`?page&size`, E15 v4 R3) — the expediente's **access trail**: it reads `public.audit_log` (read-only, with an explicit `tenant_slug` filter) filtered by `object_ref = code` and `object_type ∈ (expediente, expediente_indice)`, ordered `ts DESC`, with `X-Total-Count`. Returns `{ts, actor, canal, action, ...}`. Requires `USUA_PERM_EXPEDIENTE` + no read-up (**404**, not 403, if the expediente exceeds the caller's clearance — it does not leak existence).
 - `GET /api/v1/expedientes/{id}/roles-autorizados` (E15 v4 R4) — a **live snapshot** (unsigned) of the access matrix: the groups that hold `USUA_PERM_EXPEDIENTE` (`crud≥1`) **and** `role_clearance.max_level ≥` the expediente's `nivel_seguridad`, as `[{grupo, clearanceMax, crud}]` sorted by name. Same gate (`USUA_PERM_EXPEDIENTE` + no read-up). This is the datum the signed index deliberately does **not** embed (avoiding churn in the evidentiary artifact and IAM topology leakage in AGN transfers).
 - `GET /api/v1/expedientes/{id}/indice/versions` — version history (append-only) with `X-Total-Count`.
@@ -707,28 +819,36 @@ Links several radicados at once `{radicados:[{radicado_id, tracking_number, cont
 - When linking a radicado (`POST /api/v1/expedientes/{id}/radicados`) you may supply `content_hash` (SHA-256, `valor_huella`), the RT-15 metadata **`formato`** (MIME), **`tamano_bytes`** and **`folios`** (optional, `ge=0`) and, in **v4**, the **`dependencia_productora_codigo`** (INTEGER) + **`dependencia_productora_nombre`** (text) — optional but **together or not at all** (`422` on the partial case). An immutable snapshot is persisted per index version, so `GET /indice?version=N` shows the producing dependencia as it stood when that version was generated. Linking/excluding regenerates the index automatically; on a non-`open` expediente it returns `409`.
 
 #### `GET /api/v1/expedientes/search` (FTS search, E09)
-Full-text search of expedientes (ADR-014). `q` optional (`tsvector` over `code`/`name`/`description` + `ts_rank` ranking); filters `?status=&date_from=&date_to=&meta.<campo>=`. Header `X-Total-Count`. Without text = filtered query ordered by `opened_at`. **Access control (RF-SEG-08 / RF-BUS-04):** only expedientes with `nivel_seguridad ≤` the caller's clearance are returned (*fail-closed* to PUBLIC). The level is set when creating the expediente (`POST /api/v1/expedientes`, field `nivel_seguridad`, default 1).
+
+Full-text search of expedientes (ADR-014). `q` optional (`tsvector` over `code`/`name`/`description` + `ts_rank` ranking); filters `?status=&date_from=&date_to=&meta.<campo>=`. Header `X-Total-Count`. Without text = filtered query ordered by `opened_at`. **Access control (RF-SEG-08 / RF-BUS-04):** only expedientes with `nivel_seguridad ≤` the caller's clearance are returned (_fail-closed_ to PUBLIC). The level is set when creating the expediente (`POST /api/v1/expedientes`, field `nivel_seguridad`, default 1).
 
 #### `/api/v1/tipos-documentales` (3rd TRD level, RF-MET-07)
+
 CRUD for the catalog of documentary types (`POST`/`GET`/`GET {id}`/`PATCH {id}`/`DELETE {id}`). Fields: `code`, `nombre`, `trd_serie_id` (series/subseries), `obligatorio`, `metadata_template` (associated template). Filters `?trd_serie_id=&activo=`. `409` if the `(serie, code)` already exists.
 
 #### `GET /api/v1/expedientes`
+
 List with filters `?status=open&page=1&size=20`.
 
 #### `GET /api/v1/expedientes/{id}`
+
 Get by UUID. Includes the list of linked radicados. **Access control (RF-SEG-08):** if the expediente exceeds the caller's clearance, it answers `404`.
 
 #### `PATCH /api/v1/expedientes/{id}`
+
 Update `name`, `description`, `trd_serie_id`, `status`.
 Valid transitions: `open → closed → transferred`. It cannot be reopened.
 
 #### `POST /api/v1/expedientes/{id}/radicados`
+
 Link a radicado to the expediente.
+
 ```json
 { "radicado_id": "uuid", "tracking_number": "2024-ICETEX-E-000001" }
 ```
 
 #### `DELETE /api/v1/expedientes/{id}/radicados/{radicado_id}` (`?causal=…`)
+
 Excludes (unlinks) a radicado. It is a **soft delete** (E15 v3): it marks `estado='excluido'` (+ `excluido_at`, `excluido_causal` from the optional query param) — it does **not** delete the row; the `orden_documental` is never reused and the index keeps the gap traceable. `204`. Requires `USUA_PERM_EXPEDIENTE` with `crud≥3` (disposition). `404` if it was not linked.
 
 ### TRD
@@ -736,18 +856,29 @@ Excludes (unlinks) a radicado. It is a **soft delete** (E15 v3): it marks `estad
 > See the **"TRD/CCD — the TRD as a validated instrument"** section above (§ archive-service) for the complete, up-to-date contract (ADR-025: append-only versioning, state machine, validation circuit). The examples here remain only as a quick reference for the shape of the body.
 
 #### `POST /api/v1/trd`
+
 Create a documentary series (always `version=1`, `estado='borrador'`).
+
 ```json
-{ "code": "100", "name": "Contratos", "retention_years": 5, "total_retention": 10, "disposition": "conserve" }
+{
+  "code": "100",
+  "name": "Contratos",
+  "retention_years": 5,
+  "total_retention": 10,
+  "disposition": "conserve"
+}
 ```
 
 #### `GET /api/v1/trd`
+
 List series. Filter: `?is_active=true&page=1&size=50`.
 
 #### `GET /api/v1/trd/{id}`
+
 Get series by UUID.
 
 #### `PATCH /api/v1/trd/{id}`
+
 Update a series — only applicable if `estado='borrador'` (append-only, ADR-025 D1); in any other state use `POST /trd/{code}/versiones`.
 
 ---
@@ -755,28 +886,39 @@ Update a series — only applicable if `estado='borrador'` (append-only, ADR-025
 ## notification-service — port 8007
 
 ### `POST /api/v1/notifications/send`
+
 Manual sending of an email notification. Responds `202` (accepted for async sending). The history is persisted in the database of the indicated `tenant_slug`.
 
 ```json
-{ "recipient_email": "juridica@icetex.gov.co", "subject": "Nuevo radicado", "body": "...", "tenant_slug": "icetex" }
+{
+  "recipient_email": "juridica@icetex.gov.co",
+  "subject": "Nuevo radicado",
+  "body": "...",
+  "tenant_slug": "icetex"
+}
 ```
 
 ### `GET /api/v1/notifications/history`
+
 Notification history of the tenant (persisted in the database per institution). Requires `X-Tenant-Slug`. Query: `?limit=20`.
 
 ### `GET /api/v1/notifications/{id}`
+
 Get notification by UUID. Requires `X-Tenant-Slug`. `404` if it does not exist.
 
 ### Electronic signature — signature-service, port 8008 (E06, ADR-016)
+
 A **pluggable** provider (`app/providers/`): `nativa` (HMAC hash+identity, the default for every object) and **`xades_local`** (real enveloped XAdES-B via `signxml`, active only for the **electronic index**). Selection: `xades_local` when `objeto_tipo=="indice"` **and** `SIGNER_PROVIDER=="xades_local"` (the default; kill switch `SIGNER_PROVIDER=nativa`); anything else → `nativa`. See [ADR-016 addendum Inc.1](adr/ADR-016-firma-electronica.md#addendum--incremento-1-2026-07-02-xades-b-del-índice-electrónico--sello-institucional).
+
 - `POST /api/v1/signature/sign-xml` `{payload_xml, objeto_tipo, objeto_id?, formato?, indice_id?, version?}` — signs the payload and persists the signature. With `objeto_tipo="indice"` it produces **XAdES-T** (XAdES-B with the tenant's institutional seal **+ an RFC 3161 timestamp** from a TSA, E06 Inc.4) and, if `SIGNER_LT_ENABLED=true` **and** the tenant's seal carries CA material (`ca.crt`+`crl.der`), it escalates to **XAdES-LTA** (E06 Inc.5): it adds `xades:CertificateValues` (the CA only) + `xades:RevocationValues` (the CRL) + `xadesv141:ArchiveTimeStamp`. With `SIGNER_OCSP_ENABLED=true` (default `false`) **and** the OCSP responder pair mounted (`ocsp.crt`+`ocsp.key`, per tenant alongside the seal), it additionally embeds a **stapled OCSP response (RFC 6960)** as `xades:OCSPValues/EncapsulatedOCSPValue`, a **sibling** of the CRL inside the same `RevocationValues` (E06 Inc.7) — signed by a **delegated responder** issued offline by the tenant's CA, with `certStatus` derived from the CRL, and covered by the `ArchiveTimeStamp`. Requires `PERM_FIRMA` + `X-User-Id` (the signer **never** comes from the body, RF-FIR-11). Returns `{firma_id, payload_sha256, provider, minio_key_firmado?, xades_level?, nivel_conformidad?, tipo_firma?, certificado_fingerprint?, acreditado, tsa_timestamp?, lt_material_present?, archive_timestamp_present?, crl_next_update?, revocation_provenance?, ocsp_present?, ...}`. `xades_level` ∈ `XAdES-B|XAdES-T|XAdES-LT|XAdES-LTA` according to what was **achieved** (never what was intended; OCSP does **not** change the level, it enriches the revocation evidence); **without CA material the signature stays at XAdES-T** and leaves a `firma.lt_downgrade_no_ca` audit entry; **with OCSP enabled but no responder pair** it leaves `firma.ocsp_downgrade_no_responder` (staying at LT/LTA with the CRL alone). `acreditado` is **always `false`** (dev CA/TSA/OCSP responder, not ONAC — validation material that is **verifiable, not accredited**, RF-FIR-15; `nivel_conformidad` ∈ `xades_b|xades_lt|xades_lta_no_acreditado`, dev revocation marked with `revocation_provenance="dev"`). `503 signing_seal_unavailable` if the seal is missing; **`503 timestamp_authority_unavailable`** if the TSA is unavailable; **`503 lt_material_required`** if `SIGNER_LT_REQUIRE=true` and CA material is missing; **`503 ocsp_material_required`** if `SIGNER_OCSP_REQUIRE=true` and no OCSP response was produced (missing CA or responder material); `503 signed_index_upload_failed` if storage rejects the upload.
 - `POST /api/v1/signature/sign-personal` `{payload_xml, objeto_tipo, objeto_id?, totp_code, firmante_id?}` — **personal PKI signature of an arbitrary XML payload** with the authenticated actor's certificate (E17/F4 Inc.1; the `personal_signing.sign_personal_xml` primitive is reused by the radicado chain and by the transfer acta signature). Authenticated as a **user** (`get_actor` + `PERM_FIRMA`, `X-User-Id`/JWT — **not** `X-Internal-Token`: it carries the real signer's identity + TOTP, unlike `/internal/sign-indice`). **ASSERT `firmante_id == user(JWT)`**: if the body carries `firmante_id` and it differs from the actor derived from the token → `403 firmante_no_coincide` (not impersonable through the body; the persisted row always uses the JWT actor). It assembles the XAdES with an ephemeral RSA key + the real public certificate, asks auth-service to sign the `SignedInfo` digest **while consuming the TOTP atomically** (the remote-signing split), and uploads the signed XML to MinIO under a deterministic name that includes the `firma_id` (the H-H pattern, no overwrite under a race). It returns the standard `FirmaResponse` (`firma_id`, `minio_key_firmado`, `xades_level`, `provider="xades_personal"`, `acreditado` **always `false`**, `nivel_conformidad='xades_personal_no_acreditado'`). **The no-read-up gate no longer hangs off `objeto_tipo`**: `objeto_tipo` is free text here (it has to be — institutional actas travel this route), and while the gate hung on `== "radicado"`, declaring any other value over a CLASSIFIED radicado's identifier evaluated it against level 1 and skipped it. The level is now resolved from the `objeto_id` against `radicados`/`expedientes`, whatever type is declared; if it does not resolve, it is an object with no level of its own (an acta, a draft) and stays at PUBLIC, and for those the no-read-up is still enforced by the **mediating service** (archive) **before** calling — verified that a direct call is not a bypass (it only signs the payload the caller itself supplies, it does not insert into the domain tables). `4xx` if the TOTP is invalid; `503` if the auth channel is down.
 - `POST /api/v1/signature/verify` `{firma_id, payload_xml}` — verifies. **`xades_local` signatures**: `payload_xml` must be the **complete signed XML** (the one at `minio_key_firmado`); it validates cryptography + root coverage + certificate validity + seal fingerprint + a match against `signed_xml_sha256`; **XAdES-T** additionally validates the RFC 3161 token (covering the `ds:SignatureValue`, CMS signature, TSA cert **pinned to `firma.tsa_cert_fingerprint`**); **XAdES-LT/LTA** additionally validates (fail-closed) the **`seal→CA` chain** (anchored to **the tenant's** CA via `ca_fingerprint` pinning — a seal from another tenant's CA fails), the CRL's **signature and non-revocation** (the seal's serial not revoked), and the **`ArchiveTimeStamp`** over the deterministic covered set; `crl_next_update` is exposed without a hard fail if it has lapsed (not accredited). If the signature carries **`xades:OCSPValues`** (E06 Inc.7), it additionally validates (fail-closed) the **OCSP response (RFC 6960)**: `responseStatus=successful`, responder issued by the tenant's CA + validity, `OCSPSigning` EKU + `id-pkix-ocsp-nocheck`, the `BasicOCSPResponse` signature, a **CertID bound to the seal** (serial + issuer hashes), `certStatus=good`, and **pinning** of the responder fingerprint against `firma.ocsp_responder_fingerprint` (without it → fail-closed); its absence is backward-compatible (LT valid on the CRL alone). **`xades_personal` signatures** (per-user personal PKI signature, E06/E17 Inc.1-2): it validates cryptography + coverage + validity + the leaf fingerprint; if the signature embeds the sub-CA (`xades:CertificateValues`, Inc.2) it additionally anchors the **leaf→tenant user sub-CA chain** with `user_ca_fingerprint` pinning (a branch separate from the seal's — it does not require an embedded CRL); and it **checks revocation online** (state in the DB, no cache) → `valida=false` (`motivo=certificado_revocado`) if the certificate was revoked. The verdict is broken out: `firma_criptograficamente_valida` (cryptography+chain alone) and `revocacion_status ∈ {vigente, revocado, no_verificable, desconocido}`; `valida = cryptography AND revocacion_status=='vigente'`; a downed revocation channel → `valida=false`/`motivo=revocacion_no_verificable` but `firma_criptograficamente_valida=true` (fail-closed by default, `verify_personal_revocation_require`). Inc.1 `xades_personal` signatures (without `CertificateValues`) verify as XAdES-B/T (grandfathered) but **remain revocable** by certificate identity. **`nativa` signatures**: `payload_xml` is the original plaintext. Returns `{firma_id, valida, provider, xades_level?, nivel_conformidad?, acreditado, motivo?, sello_tiempo_valido?, tsa_timestamp?, lt_material_present?, archive_timestamp_present?, crl_next_update?, revocation_provenance?, ocsp_present?, ocsp_cert_status?, firma_criptograficamente_valida?, revocacion_status?}` (in `/verify` the **authoritative** field for the level actually verified is `xades_level`, derived from the result). A **public** endpoint (no auth). `404` if the signature does not exist.
 - `GET /api/v1/signature/firmas/{firma_id}` — a signature's metadata (the same fields as `sign-xml`, without the full `certificado_pem`). Public. `404` if it does not exist.
-- *(Internal, service-to-service; **not** reachable from the gateway — `X-Internal-Token` is not in `FORWARDED_REQUEST_HEADERS`)* `POST /api/v1/signature/internal/sign-indice` `{payload_xml, objeto_id, version, objeto_tipo?, indice_id?}` — seals a XAdES-eligible object **attributed to the system principal `SYSTEM_RECONCILER_ID`** (not to a human), for archive-service's **reconciliation jobs** (the E15/E06 Inc.8 index, and the H-H transfer acta). Authenticated **only** by `X-Internal-Token` (fail-closed: empty setting → 503, missing header → 401, wrong header → 403); it requires neither `PERM_FIRMA` nor `X-User-Id`. `objeto_tipo` (default `"indice"`) is **validated against the allow-set `{"indice","acta_transferencia"}`** (`422` outside it) → only those two types produce the tenant's institutional seal (which does NOT derive from the actor); **structurally it cannot sign the personal chain**. The `firma.creada` entry carries `origen="reconciliation"`. The personal signature (`/requests/{id}/sign`, `/sign-xml`) NEVER accepts this token.
+- _(Internal, service-to-service; **not** reachable from the gateway — `X-Internal-Token` is not in `FORWARDED_REQUEST_HEADERS`)_ `POST /api/v1/signature/internal/sign-indice` `{payload_xml, objeto_id, version, objeto_tipo?, indice_id?}` — seals a XAdES-eligible object **attributed to the system principal `SYSTEM_RECONCILER_ID`** (not to a human), for archive-service's **reconciliation jobs** (the E15/E06 Inc.8 index, and the H-H transfer acta). Authenticated **only** by `X-Internal-Token` (fail-closed: empty setting → 503, missing header → 401, wrong header → 403); it requires neither `PERM_FIRMA` nor `X-User-Id`. `objeto_tipo` (default `"indice"`) is **validated against the allow-set `{"indice","acta_transferencia"}`** (`422` outside it) → only those two types produce the tenant's institutional seal (which does NOT derive from the actor); **structurally it cannot sign the personal chain**. The `firma.creada` entry carries `origen="reconciliation"`. The personal signature (`/requests/{id}/sign`, `/sign-xml`) NEVER accepts this token.
 
 **Signature chain (the signer's inbox, RF-FIR-04).** All of these require `PERM_FIRMA`; the signer is derived from the JWT (never from the body, RF-FIR-11). The active turn is the lowest `orden` still pending. A personal signature requires **2FA** (RF-FIR-13): either an **email OTP** (E06 Inc.2) or, stronger, **TOTP RFC 6238** (device possession, E06 Inc.6, see [ADR-016 addendum Inc.6](adr/ADR-016-firma-electronica.md#addendum--incremento-6-2026-07-06-2fa-por-totp-rfc-6238-en-la-firma-personal)). The TOTP secret lives in **auth-service** (AESGCM-encrypted); see `POST /api/v1/auth/me/totp/*` above. **Personal signature format (E06/E17 F4, Inc.1)**: if the signer has an **active PKI signing key** (see `/me/signing-key/*`), the chain produces a per-user **XAdES-B/T** signature with their own certificate (third-party verifiable via `/verify`, `provider=xades_personal`); otherwise it degrades to the **native HMAC signature** (`provider=nativa`, backward compatible). Both are **art. 7 non-accredited** electronic signatures (`acreditado=false`) — the per-user PKI adds verifiability, format and cryptographic separation, not reinforced legal value (server custody ⇒ no sole control). **XAdES gate by level (Inc.3, `FIRMA_PERSONAL_REQUIRE_XADES` ∈ `off`|`clasificados`|`todos`, default `off`)**: with `clasificados`, an act at `nivel_seguridad>=2` **no longer degrades** to native — no active certificate → **`422 firma_xades_requerida`** (with enrollment guidance), auth-service down → **`503 canal_firma_personal_no_disponible`** (fail-closed); with `todos`, it applies at any level. A denial leaves an atomic `firma.xades_requerida_denegada` entry and **consumes** no 2FA factor. In a batch it is evaluated **per item**. The legacy boolean env var is accepted (`false`→`off`, `true`→`todos`); an unrecognised value aborts startup. Only enable `clasificados` after completing enrollment for signers with clearance>=2 (certificate issuance is offline).
-- `POST /api/v1/signature/requests` `{objeto_tipo, objeto_id, titulo?, payload_sha256?, firmantes:[uuid,…], nivel_seguridad?}` — creates the chain (turns `orden` 1..N). `409 cadena_existente` if the object already has an open chain. *Note:* to sign with 2FA the request must carry a stable `payload_sha256`.
+
+- `POST /api/v1/signature/requests` `{objeto_tipo, objeto_id, titulo?, payload_sha256?, firmantes:[uuid,…], nivel_seguridad?}` — creates the chain (turns `orden` 1..N). `409 cadena_existente` if the object already has an open chain. _Note:_ to sign with 2FA the request must carry a stable `payload_sha256`.
   - **`objeto_tipo` is bounded** to `radicado` · `expediente` · `borrador` · `documento` (`422` outside the set). This is not cosmetic validation: the chain's security level used to be resolved by comparing this field —free text from the body— against the literal `"radicado"`, so `"Radicado"` was enough to bypass the authoritative source (RF-SEG-08).
   - **The level is decided by the object, not by the body.** If `objeto_id` resolves against `radicados` or `expedientes`, that row's real `nivel_seguridad` prevails and the body's is ignored — it is resolved **without looking at `objeto_tipo`**, so declaring `borrador` over a CLASSIFIED radicado's identifier lowers nothing either. `nivel_seguridad` only takes effect for unregistered objects (draft/document), where there is no table to consult.
   - **Fail-closed**: `objeto_tipo` ∈ {`radicado`, `expediente`} whose `objeto_id` does not resolve → `404 solicitud_not_found`, the same neutral answer as no-read-up (it does not distinguish "does not exist" from "you cannot reach it"). Previously it fell back to the level declared in the body.
@@ -786,10 +928,12 @@ A **pluggable** provider (`app/providers/`): `nativa` (HMAC hash+identity, the d
 - `POST /api/v1/signature/requests/{id}/challenge` — **(RF-FIR-13)** issues the 2FA challenge: it generates a 6-digit OTP bound to `(request, active-turn signer, document hash)`, emails it to the signer and returns `{challenge_id, factor_tipo:"otp_email", canal:"j***@dominio", expira_at}` (TTL 5 min). Only the active-turn signer (`403 no_es_su_turno`); `404 solicitud_no_encontrada` (neutral); **`422 payload_no_fijado`** if the request has no `payload_sha256`; `429 challenge_cooldown` if reissued within 30s; `503 canal_2fa_no_disponible` if the email cannot be sent (fail-closed). The OTP **never** appears in the response or in logs.
 - `POST /api/v1/signature/requests/{id}/sign` `{payload_xml?, challenge_id?, otp?, totp_code?}` — signs the active turn (reusing the native HMAC signer) requiring **verified 2FA**; it advances the chain and, on signing the last turn, the request moves to `firmado`. **Factor selection**: if `totp_code` (6 digits) arrives and the signer has TOTP **active** → it is verified against auth-service (**no** prior `/challenge` needed); if `challenge_id`+`otp` arrive → email OTP; if `totp_code` arrives but the signer does **not** have active TOTP → **`422 totp_no_activo`** (it does not silently fall back to email); both → TOTP prevails; neither → **`409 2fa_requerido`**. TOTP errors: `401 totp_incorrecto` `{intentos_restantes}`, `423 totp_bloqueado`, `503 canal_2fa_no_disponible` if auth does not answer (fail-closed → rollback). Email-OTP errors: `401 otp_incorrecto` `{intentos_restantes}` (5 attempts → `challenge_bloqueado`), `409 challenge_expirado`/`challenge_consumido`/`challenge_documento_distinto`/`challenge_acto_distinto`, `403 challenge_ajeno`. Common: `403 no_es_su_turno`; `409` if the request is not pending or the turn race is lost (`FOR UPDATE` lock). 2FA is **non-disableable** for `nivel_seguridad ≥ 2` (RESERVED/CLASSIFIED) — both factors satisfy it; TOTP is the stronger one.
 - `POST /api/v1/signature/requests/{id}/reject` `{motivo}` — rejects the active turn and **stops** the chain (request `rechazado`).
-- `POST /api/v1/signature/batch` `{items:[{solicitud_id, challenge_id?, otp?, totp_code?}, …]}` — batch-signs the user's turns, with **one second factor per document** (RF-FIR-13): email OTP (`challenge_id`+`otp`) or `totp_code`; it does not abort on an individual failure (`{resultados:[{solicitud_id, resultado:'firmado'|'omitido', detalle?}]}`). *(Contract changed in E06 Inc.2: previously `{solicitud_ids:[…]}`.)*
+- `POST /api/v1/signature/batch` `{items:[{solicitud_id, challenge_id?, otp?, totp_code?}, …]}` — batch-signs the user's turns, with **one second factor per document** (RF-FIR-13): email OTP (`challenge_id`+`otp`) or `totp_code`; it does not abort on an individual failure (`{resultados:[{solicitud_id, resultado:'firmado'|'omitido', detalle?}]}`). _(Contract changed in E06 Inc.2: previously `{solicitud_ids:[…]}`.)_
 
 ### Postal shipments (E20) — document-service
+
 The lifecycle of the physical dispatch of an outbound radicado. State machine `registrado → en_transito → entregado/devuelto/fallido` (`entregado`/`devuelto`/`fallido` are terminal). The human-facing routes require **`PERM_RADI_SALIDA`** and apply clearance-based no read-up.
+
 - `POST /api/v1/documents/{document_id}/envios` `{operador, destinatario?, direccion?}` — dispatches the radicado with a carrier (auto-generated tracking number). `201`. It resolves the caller's clearance → `404 radicado_not_found` if the radicado does not exist **or** exceeds it (indistinguishable): what cannot be seen is not dispatched.
 - `GET /api/v1/documents/{document_id}/envios` — the radicado's shipments (clearance-filtered).
 - `GET /api/v1/envios?estado=&page=&size=` — tenant-wide listing (`X-Total-Count`, no read-up).
@@ -807,7 +951,7 @@ The lifecycle of the physical dispatch of an outbound radicado. State machine `r
     - `metadataPrefix=oai_dc` — simple **Dublin Core** (title=subject, identifier=radicado number, type, date, publisher, language).
     - `metadataPrefix=ead` — **EAD 2002 / ISAD(G)** (namespace `urn:isbn:1-931666-22-9`): each radicado is disseminated as a self-contained EAD fragment with `<archdesc level="item">` (a simple documentary unit) and the **6 ISAD(G)/NTC 4095 elements mandatory for exchange** — 3.1.1 `<unitid countrycode="CO" repositorycode>` (reference code: country+repository+number), 3.1.2 `<unittitle>` (subject), 3.1.3 `<unitdate normal>` (date), 3.1.4 `@level="item"`, 3.1.5 `<physdesc>` (medium), 3.2.1 `<origination>` (originating dependencia) — plus 3.4.1 `<accessrestrict>` (public, Law 1712/2014), 3.7.2 `<descrules>` (ISAD(G) 2nd ed. / NTC 4095), `<langmaterial>` and `<repository>`. **Declared debt** (roadmap): single-level `item` description; the multilevel fonds→section→series→file context (archive-service, TRD/CCD) is injected in a fast-follow.
   - **Access control (CRITICAL, Law 1712/2014 arts. 18-19, RF-SEG-08):** the trimming (`_PUBLIC` at the source) is **orthogonal to the format** — choosing `ead` neither dodges the filter nor creates an oracle for reserved records; a reserved/annulled/non-existent id → an indistinguishable `idDoesNotExist` in both formats.
-- **Access control (CRITICAL, Law 1712/2014 arts. 18-19, RF-SEG-08):** harvesting exposes **only** what is **public** (`nivel_seguridad=1`, not annulled). The trimming is applied at the source, so the omission of reserved/classified records is **indistinguishable**: `completeListSize` counts only public records, `ListSets` does not enumerate a reserved-only *set*, and `GetRecord`/`ListMetadataFormats` over a reserved identifier return `idDoesNotExist` (they do not confirm its existence). There is no third-party credential with clearance in this scope (public harvesting).
+- **Access control (CRITICAL, Law 1712/2014 arts. 18-19, RF-SEG-08):** harvesting exposes **only** what is **public** (`nivel_seguridad=1`, not annulled). The trimming is applied at the source, so the omission of reserved/classified records is **indistinguishable**: `completeListSize` counts only public records, `ListSets` does not enumerate a reserved-only _set_, and `GetRecord`/`ListMetadataFormats` over a reserved identifier return `idDoesNotExist` (they do not confirm its existence). There is no third-party credential with clearance in this scope (public harvesting).
 
 ### Interoperability — OAI-PMH for expedientes / multilevel EAD (E11, RF-INT-06) — archive-service
 
@@ -833,7 +977,8 @@ Browser Binding (JSON). **Read-only** over the tenant's **public** radicados. **
 - `POST /api/v1/import` — **imports an interoperable package** of radicados. **Authenticated**; gate `USUA_PERM_EXPEDIENTE` + **clearance-based no write-up**. It receives the INT-01 ZIP as a **raw body** (`Content-Type: application/zip`, cap 512 MiB). **ALL-OR-NOTHING validation before ingesting**: it validates every radicado against the service's trusted JSON Schema and **verifies the SHA-256 of every binary**; if anything fails → `422 paquete_invalido` **leaving no partial state**. It re-ingests **preserving the radicado number** (a collision is **skipped**, never overwritten); it rebuilds the E↔S relationship (`responde_a`) by number; it uploads the binaries to storage; it audits `radicado.import`. Anti zip-slip/zip-bomb guards. Response `{import_uuid, importados, omitidos_existentes, omitidos_clearance, relaciones_reconstruidas}`. A radicado whose `nivel_seguridad` exceeds the importer's clearance is **skipped** (`omitidos_clearance`).
 
 ### MCP layer (E18, ADR-019) — mcp-server, port 8009
-It exposes the API as *tools* to agents/LLMs, while itself being a client of the gateway. The **MCP protocol** is available over **stdio** (`python -m app.mcp_stdio`) and **streamable HTTP**.
+
+It exposes the API as _tools_ to agents/LLMs, while itself being a client of the gateway. The **MCP protocol** is available over **stdio** (`python -m app.mcp_stdio`) and **streamable HTTP**.
 
 **It is now routed through the gateway** (`/api/v1/mcp/` → mcp-server), which it was not before: catalogue and protocol were left outside, so an external MCP client had no way in except talking to the service behind the gateway's back, with no JWT validation and no `X-Tenant-Slug`. Exposing it is safe because the write gate no longer depends on the client (signed proposal, see above). The streamable transport is mounted at `POST /api/v1/mcp/stream` in addition to `/mcp`.
 
@@ -842,62 +987,63 @@ The session context is **two headers**: `Authorization` and `X-Tenant-Slug`. `X-
 **Scope framework**: the `mi_alcance` tool and the `orfeo://alcance` resource return what the person can execute, what they can read, and what they **cannot** with its reason and its **alternative route**. It is always offered, even to someone who reaches no write at all.
 
 Simple HTTP catalog API:
+
 - `GET /api/v1/mcp/tools` — catalogue of the tools THIS caller can use, resolved against `/auth/me` (permission **and** level).
 - `POST /api/v1/mcp/tools/{name}/invoke` `{...args}` — invokes the tool: propagates `Authorization` + `X-Tenant-Slug` to the gateway. Identity and permissions are resolved against `GET /api/v1/auth/me` using the caller's token (permission **and** CRUD level; `403` if insufficient). Tools: `radicar_documento`, `consultar_radicado`, `buscar_radicados`, `consultar_expediente`, `indice_expediente`, `listar_trd`, `bandeja_tramite`, `consultar_fuid`, `buscar_conocimiento` (E21 semantic search; POST `/api/v1/knowledge/search`, read-only, server-side ACL).
   **Write operations are NOT executed here: they return a proposal.** `X-Confirm-Write` is **no longer read** — it was a boolean any client could set, and it bound the confirmation to no particular act (it confirmed "something", not "this"). The response is `{kind:"proposal", ejecutado:false, proposal:{id, tool, operacion, campos, expira_en, token}, aviso}`: `campos` are the human-readable fields of the act — worded by the **catalog**, never by the model — and `token` is an opaque HMAC-SHA256-signed value carrying the tool and its already-validated arguments. It expires after 120 s and is bound to the user and tenant that requested it.
-- `POST /api/v1/mcp/proposals/execute` `{token}` — executes the act signed inside the token. **The body carries only the token**: the arguments come from it, so what runs is exactly what was described. It **re-authorizes** on confirmation (the permission may have been revoked between proposing and confirming: a proposal attests *what* was approved, not that whoever presents it may still do it) and **consumes** the proposal before dispatching. Errors: `400 propuesta_invalida`, `403 propuesta_ajena` / `permiso_insuficiente`, `409 propuesta_consumida`, `410 propuesta_expirada`.
+- `POST /api/v1/mcp/proposals/execute` `{token}` — executes the act signed inside the token. **The body carries only the token**: the arguments come from it, so what runs is exactly what was described. It **re-authorizes** on confirmation (the permission may have been revoked between proposing and confirming: a proposal attests _what_ was approved, not that whoever presents it may still do it) and **consumes** the proposal before dispatching. Errors: `400 propuesta_invalida`, `403 propuesta_ajena` / `permiso_insuficiente`, `409 propuesta_consumida`, `410 propuesta_expirada`.
   The same act over the **MCP protocol**: writes return the proposal as structured content and are confirmed with the `confirmar_accion(token)` tool; where the transport has a return channel (**stdio**) the user is asked in-band via **elicitation**, using those same fields. Over streamable HTTP (`stateless`) there is no session to ask and only the two-tool path remains — a declared limit. Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`) as **hints**, so the client can add its own friction: the guarantee still lives in the signed proposal, not in them.
-  *Declared limit*: the consumption registry lives in process memory — it covers double-clicks and retries, not multi-replica. `Idempotency-Key: <jti>` is emitted to the gateway as a hook for each epic to implement, not as a guarantee.
+  _Declared limit_: the consumption registry lives in process memory — it covers double-clicks and retries, not multi-replica. `Idempotency-Key: <jti>` is emitted to the gateway as a hook for each epic to implement, not as a guarantee.
 
 The current catalogue (45 tools, 16 of them writes). Every write returns a signed proposal and requires explicit confirmation (see above):
 
-| Tool | Endpoint | Permission (crud) | |
-|---|---|---|---|
-| `radicar_documento` | `POST /documents` | `PERM_RADI` (1) | **W** consumes an immutable number |
-| `tipificar_radicado` | `PATCH /documents/{id}` | `PERM_RADI` (**3**) | **W** fixes the TRD series |
-| `actualizar_radicado` | `PATCH /documents/{id}` | `PERM_RADI` (1) | **W** subject, destination, status, folios |
-| `consultar_radicado` | `GET /documents/{id}` | *clearance* | R |
-| `consultar_por_numero` | `GET /documents/by-tracking/{tn}` | *clearance* | R |
-| `buscar_radicados` | `GET /search` | *clearance* | R |
-| `listar_anexos` | `GET /documents/{id}/anexos` | *clearance* | R |
-| `consultar_disposicion` | `GET /documents/{id}/disposition` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `listar_tipos_documentales` | `GET /tipos-documentales` | *none* | R |
-| `crear_expediente` | `POST /expedientes` | `USUA_PERM_EXPEDIENTE` (1) | **W** |
-| `actualizar_expediente` | `PATCH /expedientes/{id}` | `USUA_PERM_EXPEDIENTE` (1) | **W** |
-| `vincular_radicado` | `POST /expedientes/{id}/radicados` | `USUA_PERM_EXPEDIENTE` (1) | **W** |
-| `cerrar_expediente` | `POST /expedientes/{id}/close` | `USUA_PERM_EXPEDIENTE` (**3**) | **W** IRREVERSIBLE |
-| `consultar_expediente` | `GET /expedientes/{id}` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `buscar_expedientes` | `GET /expedientes/search` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `consultar_foliado` | `GET /expedientes/{id}/foliado` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `hoja_ruta_expediente` | `GET /expedientes/{id}/eventos` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `indice_expediente` | `GET /expedientes/{id}/indice` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `listar_trd` | `GET /trd` | *none* | R |
-| `bandeja_tramite` | `GET /workflows/inbox` | *none* | R |
-| `pendientes_equipo` | `GET /workflows/pending` | *sin permiso* | R |
-| `tipos_transaccion` | `GET /workflows/transaction-types` | *sin permiso* | R |
-| `hoja_ruta_radicado` | `GET /workflows/{id}/history` | *sin permiso* | R |
-| `paso_actual` | `GET /workflows/{id}/current` | *sin permiso* | R |
-| `asignar_radicado` | `POST /workflows/assign` | `PERM_TRAMITAR` (1) | **W** |
-| `trasladar_radicado` | `POST /workflows/transfer` | `PERM_TRAMITAR` (1) | **W** |
-| `completar_paso` | `PATCH /workflows/{step_id}/complete` | `PERM_TRAMITAR` (1) | **W** el id es del PASO |
-| `ejecutar_transaccion` | `POST /workflows/{id}/transactions` | por tipo, suelo `PERM_TRAMITAR` | **W** |
-| `consultar_fuid` | `GET /transferencias/{id}/fuid` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `buscar_conocimiento` | `POST /knowledge/search` | *clearance* | R |
-| `buscar_antecedentes` | `POST /knowledge/antecedentes` | *clearance* | R **query XOR radicado_ref** |
-| `redactar_con_antecedentes` | `POST /knowledge/rag` | *clearance* | R returns text **with citations**, writes nothing |
-| `listar_respuestas` | `GET /documents/{id}/respuestas` | *clearance* | R |
-| `crear_respuesta_vinculada` | `POST /documents/{id}/respuesta` | `PERM_RESPUESTA_VINCULADA` (1) | **W** consumes an immutable number |
-| `listar_plantillas` | `GET /plantillas` | `PERM_RADI` (1) | R |
-| `listar_borradores` | `GET /borradores` | `PERM_RADI` (1) | R |
-| `crear_borrador` | `POST /borradores` | `PERM_RADI` (1) | **W** no number yet; not an archival act |
-| `editar_borrador` | `PATCH /borradores/{id}` | `PERM_RADI` (1) | **W** |
-| `aprobar_borrador` | `POST /borradores/{id}/aprobar` | `PERM_RADI` (1) | **W** *not* required before radicar |
-| `radicar_borrador` | `POST /borradores/{id}/radicar` | `PERM_RADI` (1) | **W** consumes an immutable number |
-| `consultar_serie` | `GET /trd/{id}` | *no permission* | R |
-| `consultar_retencion` | `GET /trd/{id}/retention` | *no permission* | R a computation, not the recorded disposition |
-| `ubicacion_expediente` | `GET /expedientes/{id}/unidades` | `USUA_PERM_EXPEDIENTE` (1) | R where it is, not what it holds |
-| `listar_prestamos` | `GET /prestamos` | `USUA_PERM_EXPEDIENTE` (1) | R |
-| `reporte_radicacion` | `GET /reports/radicados` | *no permission* | R aggregates only |
+| Tool                        | Endpoint                              | Permission (crud)               |                                                   |
+| --------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------- |
+| `radicar_documento`         | `POST /documents`                     | `PERM_RADI` (1)                 | **W** consumes an immutable number                |
+| `tipificar_radicado`        | `PATCH /documents/{id}`               | `PERM_RADI` (**3**)             | **W** fixes the TRD series                        |
+| `actualizar_radicado`       | `PATCH /documents/{id}`               | `PERM_RADI` (1)                 | **W** subject, destination, status, folios        |
+| `consultar_radicado`        | `GET /documents/{id}`                 | _clearance_                     | R                                                 |
+| `consultar_por_numero`      | `GET /documents/by-tracking/{tn}`     | _clearance_                     | R                                                 |
+| `buscar_radicados`          | `GET /search`                         | _clearance_                     | R                                                 |
+| `listar_anexos`             | `GET /documents/{id}/anexos`          | _clearance_                     | R                                                 |
+| `consultar_disposicion`     | `GET /documents/{id}/disposition`     | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `listar_tipos_documentales` | `GET /tipos-documentales`             | _none_                          | R                                                 |
+| `crear_expediente`          | `POST /expedientes`                   | `USUA_PERM_EXPEDIENTE` (1)      | **W**                                             |
+| `actualizar_expediente`     | `PATCH /expedientes/{id}`             | `USUA_PERM_EXPEDIENTE` (1)      | **W**                                             |
+| `vincular_radicado`         | `POST /expedientes/{id}/radicados`    | `USUA_PERM_EXPEDIENTE` (1)      | **W**                                             |
+| `cerrar_expediente`         | `POST /expedientes/{id}/close`        | `USUA_PERM_EXPEDIENTE` (**3**)  | **W** IRREVERSIBLE                                |
+| `consultar_expediente`      | `GET /expedientes/{id}`               | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `buscar_expedientes`        | `GET /expedientes/search`             | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `consultar_foliado`         | `GET /expedientes/{id}/foliado`       | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `hoja_ruta_expediente`      | `GET /expedientes/{id}/eventos`       | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `indice_expediente`         | `GET /expedientes/{id}/indice`        | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `listar_trd`                | `GET /trd`                            | _none_                          | R                                                 |
+| `bandeja_tramite`           | `GET /workflows/inbox`                | _none_                          | R                                                 |
+| `pendientes_equipo`         | `GET /workflows/pending`              | _sin permiso_                   | R                                                 |
+| `tipos_transaccion`         | `GET /workflows/transaction-types`    | _sin permiso_                   | R                                                 |
+| `hoja_ruta_radicado`        | `GET /workflows/{id}/history`         | _sin permiso_                   | R                                                 |
+| `paso_actual`               | `GET /workflows/{id}/current`         | _sin permiso_                   | R                                                 |
+| `asignar_radicado`          | `POST /workflows/assign`              | `PERM_TRAMITAR` (1)             | **W**                                             |
+| `trasladar_radicado`        | `POST /workflows/transfer`            | `PERM_TRAMITAR` (1)             | **W**                                             |
+| `completar_paso`            | `PATCH /workflows/{step_id}/complete` | `PERM_TRAMITAR` (1)             | **W** el id es del PASO                           |
+| `ejecutar_transaccion`      | `POST /workflows/{id}/transactions`   | por tipo, suelo `PERM_TRAMITAR` | **W**                                             |
+| `consultar_fuid`            | `GET /transferencias/{id}/fuid`       | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `buscar_conocimiento`       | `POST /knowledge/search`              | _clearance_                     | R                                                 |
+| `buscar_antecedentes`       | `POST /knowledge/antecedentes`        | _clearance_                     | R **query XOR radicado_ref**                      |
+| `redactar_con_antecedentes` | `POST /knowledge/rag`                 | _clearance_                     | R returns text **with citations**, writes nothing |
+| `listar_respuestas`         | `GET /documents/{id}/respuestas`      | _clearance_                     | R                                                 |
+| `crear_respuesta_vinculada` | `POST /documents/{id}/respuesta`      | `PERM_RESPUESTA_VINCULADA` (1)  | **W** consumes an immutable number                |
+| `listar_plantillas`         | `GET /plantillas`                     | `PERM_RADI` (1)                 | R                                                 |
+| `listar_borradores`         | `GET /borradores`                     | `PERM_RADI` (1)                 | R                                                 |
+| `crear_borrador`            | `POST /borradores`                    | `PERM_RADI` (1)                 | **W** no number yet; not an archival act          |
+| `editar_borrador`           | `PATCH /borradores/{id}`              | `PERM_RADI` (1)                 | **W**                                             |
+| `aprobar_borrador`          | `POST /borradores/{id}/aprobar`       | `PERM_RADI` (1)                 | **W** _not_ required before radicar               |
+| `radicar_borrador`          | `POST /borradores/{id}/radicar`       | `PERM_RADI` (1)                 | **W** consumes an immutable number                |
+| `consultar_serie`           | `GET /trd/{id}`                       | _no permission_                 | R                                                 |
+| `consultar_retencion`       | `GET /trd/{id}/retention`             | _no permission_                 | R a computation, not the recorded disposition     |
+| `ubicacion_expediente`      | `GET /expedientes/{id}/unidades`      | `USUA_PERM_EXPEDIENTE` (1)      | R where it is, not what it holds                  |
+| `listar_prestamos`          | `GET /prestamos`                      | `USUA_PERM_EXPEDIENTE` (1)      | R                                                 |
+| `reporte_radicacion`        | `GET /reports/radicados`              | _no permission_                 | R aggregates only                                 |
 
 **Mutual exclusion declared, not discovered through a 422.** `buscar_antecedentes` takes either the subject (`query`) or the reference tracking number (`radicado_ref`), never both and never neither — enforced by `AntecedentesRequest` with a `model_validator`, and JSON Schema cannot express it with the catalogue's building blocks. The catalogue declares it via `exactly_one_of` and `coerce_args` answers `parametros_excluyentes` **before** the request leaves: the backend's 422 says the same thing, only after making the person wait.
 
@@ -912,19 +1058,24 @@ The current catalogue (45 tools, 16 of them writes). Every write returns a signe
 **Two cross-service invariants** live in `shared/tests/`, the only CI lane that sees the whole repository: `test_rutas_mcp_alcanzables.py` (every catalogue path is in the gateway's routing table — the gap that already slipped through with bulk upload) and `test_permisos_declarados.py` (what the catalogue declares is what the endpoint requires, in both directions: under-declaring offers the tool to someone who will get a 403; over-declaring hides it from someone who can actually use it).
 
 ### Conversational assistant (E18, ADR-019/ADR-020) — via the gateway
-Unlike the MCP catalog/protocol (which is **not** exposed through the gateway), the conversational assistant **is** routed by the `api-gateway` (`/api/v1/assistant/` → mcp-server), so it inherits its JWT validation and `X-Tenant-Slug` injection. The mcp-server orchestrates an **LLM loop (Claude)** that executes the catalog's **read-only** tools as calls to the gateway, **re-propagating the user's token** — the assistant runs *as-the-user*, never with credentials of its own, and every tool revalidates its RBAC/clearance in the backend.
+
+Unlike the MCP catalog/protocol (which is **not** exposed through the gateway), the conversational assistant **is** routed by the `api-gateway` (`/api/v1/assistant/` → mcp-server), so it inherits its JWT validation and `X-Tenant-Slug` injection. The mcp-server orchestrates an **LLM loop (Claude)** that executes the catalog's **read-only** tools as calls to the gateway, **re-propagating the user's token** — the assistant runs _as-the-user_, never with credentials of its own, and every tool revalidates its RBAC/clearance in the backend.
+
 - `POST /api/v1/assistant/message` `{mensaje: string(1..4000), conversation_id?: string}` — sends one user turn. Returns `{conversation_id, message: {id, role:"assistant", texto, formato:"markdown", ts}}`. The `conversation_id` (generated if omitted) keeps the thread; the history is **ephemeral per process** and **isolated per tenant** (a `conversation_id` never crosses tenants). **v1 = READ-ONLY**: the catalog's only write tool (`radicar_documento`) is **excluded** from the set offered to the model (defence in depth: filtered when building the prompt and denied again at dispatch). Content returned by the tools (e.g. inbound radicados drafted by third parties) is **data, never instruction** (an anti-injection boundary in the system prompt). `503 assistant_unavailable` if the assistant is not configured (no `ANTHROPIC_API_KEY`) or the SDK fails — **honest degradation**, never a simulated answer (RF-FIR-15); `401` without a token; `409 conversation_limit` when the thread's turn cap is exhausted. Tool `403`/`404` responses are communicated **generically** ("I could not find that record"), without revealing the existence of classified records (non-oracle, RF-SEG-08 / Law 1712/2014).
 
 ### Knowledge layer (E21, ADR-006) — knowledge-service, port 8011
+
 An **advisory/derived and opt-in** layer (not a source of truth). Embeddings with a pluggable provider (local stub by default).
+
 - `POST /api/v1/knowledge/ingest` `{source_type, source_ref, texto, metadata?, acl?}` — computes the embedding and persists the fragment (pgvector) with its ACL. To protect classified content, the ingester must include the level in `acl.nivel_seguridad` (1–3); absent = PUBLIC (1).
 - `POST /api/v1/knowledge/search` `{query, top_k?, acl?}` — semantic retrieval (cosine kNN). **Access control resolved on the server (RF-SEG-08 / RF-BUS-04):** only fragments with `nivel_seguridad ≤` the caller's clearance are **ever** returned (derived from the JWT/DB, not from the request body); the client's optional `acl` only narrows further (e.g. by dependencia), it never widens access. Returns `[{id, source_type, source_ref, texto, metadata, score}]`. Tombstones (fragments purged by reclassification) are **excluded** from search.
 - `POST /api/v1/knowledge/antecedentes` `{query|radicado_ref, source_type?, top_k?}` (XOR `query`/`radicado_ref`, E21 Inc.2, Pattern A) — pure ANCHORED and CITED retrieval, without an LLM: it reuses `search` (same ACL pre-filter) and returns `{antecedentes:[{source_type, source_ref, snippet, score}], advisory}` with a **fixed** notice (CC-01/CC-02). A non-existent `radicado_ref` **or** one exceeding the requester's clearance collapse to the same `404 antecedente_source_not_found` (anti-oracle, with no differentiated 403).
 - `POST /api/v1/knowledge/rag` `{query, top_k?}` (E21 Inc.3, Pattern B) — generative RAG with citations. It retrieves with the same ACL pre-filter as `search` and, if `AI_PROVIDER` is a real generation provider (`ollama_local`, the sovereign default; `ollama_cloud`/`openai_compatible` external; `anthropic` with the native Citations API), it synthesises an ANCHORED answer. **Hard sovereignty barrier (no override)**: with an external provider it excludes from the context sent to the LLM any fragment at `nivel_seguridad ≥ RESERVED` — visible under ACL, but never egressed to a third party; if no generatable context remains, it falls back to pure retrieval (Pattern A) over everything retrieved. `AI_PROVIDER=disabled` (or unconfigured) also always falls back to Pattern A. Returns `{answer, citations:[{cited_text, source_type, source_ref, score}], proveedor, modelo, confianza, suggestion_id, advisory}` — `answer`/`modelo`/`suggestion_id` are `null` when there was no real generation. Every real generation is recorded in `kb_suggestions` (CC-03: `proveedor`/`modelo` in separate columns) and in `audit_log`. `503 rag_unavailable` on any provider failure (missing SDK, missing credential, network/API error) — honest degradation (RF-FIR-15), never a simulated answer.
 
-> **Event-driven ingestion (E21, MVP):** besides the manual `POST /ingest`, the knowledge-service **consumes `orpycamcp.document.events`** (consumer group `knowledge-ingest` + DLQ, ADR-021) and auto-indexes every radicado on creation (`document.radicado.created` → `subject`/`sender`, `source_type="radicado"`, `source_ref=tracking_number`). The `nivel_seguridad` is **replicated from the event** (fail-closed to CLASSIFIED if absent) and **kept consistent under reclassification** (`document.radicado.reclassified`): an upgrade to RESERVED+ with an external embedding provider **purges the content** (tombstone), and a fragment's level **never goes down** except by an explicit reclassification, whatever order the events arrive in. RESERVED+ material is **not embedded** with an external provider (it is recorded in `audit_log`). An **annulled** radicado (`document.radicado.annulled`) is marked *voided* **permanently** and stays excluded from search at any clearance (it is not re-indexed even if a creation event is reprocessed later). This is a **derived/advisory** layer (ADR-006): it is not a source of truth; the legal record lives in document/archive.
+> **Event-driven ingestion (E21, MVP):** besides the manual `POST /ingest`, the knowledge-service **consumes `orpycamcp.document.events`** (consumer group `knowledge-ingest` + DLQ, ADR-021) and auto-indexes every radicado on creation (`document.radicado.created` → `subject`/`sender`, `source_type="radicado"`, `source_ref=tracking_number`). The `nivel_seguridad` is **replicated from the event** (fail-closed to CLASSIFIED if absent) and **kept consistent under reclassification** (`document.radicado.reclassified`): an upgrade to RESERVED+ with an external embedding provider **purges the content** (tombstone), and a fragment's level **never goes down** except by an explicit reclassification, whatever order the events arrive in. RESERVED+ material is **not embedded** with an external provider (it is recorded in `audit_log`). An **annulled** radicado (`document.radicado.annulled`) is marked _voided_ **permanently** and stays excluded from search at any clearance (it is not re-indexed even if a creation event is reprocessed later). This is a **derived/advisory** layer (ADR-006): it is not a source of truth; the legal record lives in document/archive.
 
 ### Outbound webhooks (E11, ADR-018)
+
 - `POST /api/v1/webhooks` `{url, event_types: [...], secret?}` — subscribes an external endpoint (empty `event_types` = all events). The `secret` is not returned. **Requires `USUA_PERM_ADMIN`** (the whole CRUD): registering a subscription delivers every tenant event to the given URL, so it is administrative configuration — without the gate it would be an exfiltration channel (and SSRF). **New `422`** if `url` points at an internal/non-routable destination (loopback `127.0.0.0/8`/`::1`/`localhost`, link-local `169.254.0.0/16`/`fe80::/10` — which covers the cloud metadata endpoint, private `10.0.0.0/8`/`172.16.0.0/12`/`192.168.0.0/16`/`fc00::/7`, an OrpycaMCP internal Docker network service name, or a scheme other than `http`/`https`): the `detail` explains the concrete reason for the rejection, not a generic "invalid URL". Strict by default; relaxable only in development with `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` in notification-service (a kill switch, never in production).
 - `GET /api/v1/webhooks` — lists the subscriptions (`X-Total-Count`). Requires `USUA_PERM_ADMIN`.
 - `DELETE /api/v1/webhooks/{id}` — deletes a subscription. Requires `USUA_PERM_ADMIN`.
@@ -969,6 +1120,7 @@ The notification-service consumes this stream (consumer group `notification-serv
 > neither route required any permission.
 
 ### `POST /api/v1/batch/documents`
+
 Creates a job to register 1-1000 radicados. Returns `202 Accepted` immediately. Requires `PERM_RADI`.
 
 ```json
@@ -985,14 +1137,18 @@ Creates a job to register 1-1000 radicados. Returns `202 Accepted` immediately. 
 ```
 
 ### `GET /api/v1/batch/documents/{job_id}/status`
+
 Monitors the progress of the job. Requires `PERM_RADI`.
 
 ```json
 // Response 200
 {
-  "job_id": "uuid", "job_type": "documents",
-  "status": "completed",  // pending | processing | completed | failed
-  "total_items": 2, "processed_items": 2, "failed_items": 0,
+  "job_id": "uuid",
+  "job_type": "documents",
+  "status": "completed", // pending | processing | completed | failed
+  "total_items": 2,
+  "processed_items": 2,
+  "failed_items": 0,
   "items": [
     { "item_index": 0, "status": "success", "result_id": "uuid-radicado" },
     { "item_index": 1, "status": "failed", "error_message": "..." }
@@ -1005,6 +1161,7 @@ Monitors the progress of the job. Requires `PERM_RADI`.
 ## Batch API — archive-service
 
 ### `POST /api/v1/batch/expedientes`
+
 Creates 1-100 expedientes with linked radicados. Returns `202 Accepted`.
 
 ```json
@@ -1023,6 +1180,7 @@ Creates 1-100 expedientes with linked radicados. Returns `202 Accepted`.
 ```
 
 ### `GET /api/v1/batch/expedientes/{job_id}/status`
+
 Monitors the progress of an expediente batch job. Same response shape as the document
 batch status. Requires `USUA_PERM_EXPEDIENTE`.
 
@@ -1031,16 +1189,20 @@ batch status. Requires `USUA_PERM_EXPEDIENTE`.
 ## Full-Text Search & Reports — document-service
 
 ### Output templates and drafts (legacy parity)
+
 - `GET/POST/DELETE /api/v1/plantillas` — reusable templates (`nombre`, `cuerpo`, `tipo_documental`).
 - `POST /api/v1/borradores` `{doc_type, subject, dest_dept?, cuerpo?, plantilla_id?}` — creates a draft (if `plantilla_id` is given and no `cuerpo`, it inherits the body from the template).
 - `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (edit only if not yet registered), `POST /{id}/aprobar` (draft→approved), `POST /{id}/radicar` (→ generates the real radicado and marks the draft `radicado`).
 
 ### Quick response (legacy parity)
+
 - `POST /api/v1/documents/{id}/respuesta` `{subject?, dest_dept?, observations?, response_days?}` — creates a **Salida** (outbound) radicado in response to this one (inherits the `RE: …` subject and dependencia if omitted), linked to the antecedent (`responde_a`). Returns the new radicado.
 - `GET /api/v1/documents/{id}/respuestas` — outbound documents that respond to this radicado.
 
 ### Two-step radicado annulment (legacy parity)
+
 The law prohibits deleting radicados: they are annulled with supervisory approval.
+
 - `POST /api/v1/documents/{id}/anulacion` `{causal, motivo?}` — requests (step 1). `409` if it is already annulled or there is a pending request.
 - `POST /api/v1/documents/{id}/anulacion/aprobar` `{observacion?}` — approves (step 2): the radicado moves to `anulado` (the number is kept).
 - `POST /api/v1/documents/{id}/anulacion/rechazar` `{observacion?}` — rejects. `GET /api/v1/documents/{id}/anulacion` — last request.
@@ -1054,38 +1216,69 @@ The law prohibits deleting radicados: they are annulled with supervisory approva
 - `POST /api/v1/public/{tenant}/pqrs` — **legacy**, kept because it is an already-published public surface; delegates to the single window and is not extended.
 
 ### Electronic signature (E06, ADR-016)
+
 - `POST /api/v1/documents/{id}/signatures` `{ "content_hash": "<sha256 hex>", "anexo_id"?, "reason"? }` — signs the radicado/anexo: records identity (gateway claims), `content_hash` and timestamp. `422` if the hash is not SHA-256.
 - `GET /api/v1/documents/{id}/signatures` — lists the signatures (`X-Total-Count`).
 - `GET /api/v1/documents/{id}/signatures/verify?content_hash=<hex>` — `{content_hash, valid, signatures[]}`: `valid=true` if any signature of the radicado matches that hash (if the content changed, it stops verifying).
 
 ### Postal dispatches (E20)
+
 - `POST /api/v1/documents/{id}/envios` `{operador, destinatario?, direccion?}` — dispatches the radicado via a postal operator (4-72/servientrega/otro); generates the tracking guide and `registrado` status.
 - `GET /api/v1/documents/{id}/envios` · `GET /api/v1/envios/{id}` — dispatches of the radicado / detail with event history.
 - `POST /api/v1/envios/{id}/estado` `{estado, descripcion?}` — updates the delivery status (operator callback/polling). State machine `registrado→en_transito→entregado|devuelto|fallido`; `409` if the transition is invalid.
 
+**Mailbox inbox (E19).** The mailbox mirrored in the database, which is what lets several officers work the same account without colliding. Gate `PERM_RADI`; which accounts each person reaches is cut in the `WHERE`, as above.
+
+- `POST /api/v1/email/cuentas/{id}/bandeja/sincronizar` `{password?}` — pulls from the filtering folder the messages not yet in the inbox. It lists identifiers first — which downloads nothing — and only fetches what is missing. Stable identity is the `Message-ID` (RFC 5322 §3.6.4), not the `uid`, which only identifies a message while the folder's `UIDVALIDITY` is unchanged (RFC 3501 §2.3.1.1); it is checked before fetching or moving, or a mailbox restore would register **another** message under this subject. The receipt date comes from the institution's server `INTERNALDATE`, not the `Date` header, which the sender's client sets and could backdate to gain a deadline.
+
+- `GET /api/v1/email/cuentas/{id}/bandeja?estado=` — the messages, FIFO by receipt date. `X-Total-Count`.
+
+- `GET /api/v1/email/cuentas/{id}/bandeja/estado` — pending, taken, and `ultima_novedad`, so the screen knows whether to reload without pulling the whole list.
+
+- `POST /api/v1/email/cuentas/{id}/bandeja/{mensaje_id}/reservar` — a 15-minute reservation. This is what prevents two officers registering the same message twice: it is taken in the `WHERE`, so "zero rows" distinguishes "I took it" from "someone beat me to it" with no TOCTOU window.
+
+- `POST /api/v1/email/cuentas/{id}/bandeja/{mensaje_id}/liberar` — releases your own reservation; it **does not touch anyone else's**, and it answers `204` whether or not there was something to release: an officer who opens a message, sees it is not theirs and closes it should not leave it locked for a quarter of an hour for the whole front desk.
+
+- `POST /api/v1/email/cuentas/{id}/bandeja/{mensaje_id}/radicar` — creates the inbound radicado. Ordered by reversibility: binaries first (attachments and the original `.eml`, which Ley 527/1999 art. 12 requires to be kept in its own format with origin, destination, date and time), then the radicado, then the move to the "Radicados" folder, and last the acknowledgement to the sender if the mailbox has it enabled. The reservation is re-checked before closing.
+
+- `POST /api/v1/email/cuentas/{id}/bandeja/{mensaje_id}/descartar` `{motivo}` — sets aside a message that reached the folder and should not be registered. Requires a reservation and a reason, and writes an `email.mensaje.descartado` entry into `audit_log` **in the same transaction**: it is not best-effort. Deciding that a received communication is **not** registered is as much a decision as registering it — it is the one that makes the document disappear from the archive — and until now it left only an `UPDATE` on an ordinary table, rewritable afterwards without a trace. The entry carries **neither** subject nor sender: a discarded message was never registered, so it has no classification level with which to cut its readability, and in `audit_log` every `USUA_PERM_ADMIN` would see it. The reason does travel, because it is the text of the decision, not of the document.
+
 > **Legacy route retired.** `GET /api/v1/ingest/email/estado` and `POST /api/v1/ingest/email/poll` used to exist. They operated on a single mailbox declared in the environment through the `IMAP_*` variables and registered every unread message in one go. They are retired along with those variables: one mailbox per deployment does not express what Acuerdo AGN 060/2001 art. 13 requires, the password lived in clear text in the environment, and registering the whole inbox registered the advertising too. They are replaced by the account and inbox endpoints above, where the institution separates what gets registered from what does not.
 
 ### `POST /api/v1/public/{tenant}/pqrs` (citizen registration, Law 1755/2015)
+
 **No authentication.** A citizen files a PQRS (citizen request: petition/complaint/claim): `{ "tipo": "peticion|queja|reclamo|sugerencia|denuncia", "nombre", "identificacion"?, "email"?, "asunto", "descripcion" }`. Creates an Entrada (inbound) radicado (`metadata.canal=pqrs_ciudadano`) and returns `{radicado_id, tracking_number, verification_code}` for later tracking with the verification endpoint.
 
 ### `GET /api/v1/public/{tenant}/verify/{code}` (public lookup, E13)
+
 **No authentication.** Verifies the traceability of a radicado by its verification code (an unguessable token, distinct from the radicado number). The tenant travels in the path. Returns only NON-sensitive information: `tracking_number`, `doc_type`, `status`, `registered_at`, `dest_dept`. `404` if the code does not exist; `400` if the tenant slug is invalid.
 
 ### `GET /api/v1/reports/radicados`
+
 Statistical summary of the tenant's radicados (E09): `total` and counts `by_doc_type`, `by_status`, `by_month` (`YYYY-MM`), `by_dependencia`. Optional filters `?date_from=&date_to=`. Native SQL aggregations (`GROUP BY`/`date_trunc`).
 
 ### `GET /api/v1/reports/radicados.csv`
+
 Exports the summary in **CSV** (`seccion,clave,valor` with type/status/month/dependencia sections) — for periodic reports to the AGN/oversight bodies. Same filters `?date_from=&date_to=`.
 
 ```json
-{ "total": 8, "by_doc_type": {"E": 5, "S": 3}, "by_status": {"registered": 6, "archived": 2},
-  "by_month": [{"month": "2024-01", "count": 4}, {"month": "2024-02", "count": 4}] }
+{
+  "total": 8,
+  "by_doc_type": { "E": 5, "S": 3 },
+  "by_status": { "registered": 6, "archived": 2 },
+  "by_month": [
+    { "month": "2024-01", "count": 4 },
+    { "month": "2024-02", "count": 4 }
+  ]
+}
 ```
 
 ### `GET /api/v1/reports/indice-reservado` · `.csv`
+
 **Index of classified and reserved information** (E08, Law 1712/2014 art. 20 + Decree 1081/2015). A register of every radicado at `nivel_seguridad ≥ 2` with the metadata of the classification act. Gate **`PERM_RECLASIFICAR`**. It is **CONTENT-FREE** (it never exposes the subject or content) and **ORTHOGONAL to clearance** (the register is COMPLETE by legal mandate — it is a publication of metadata, not a reading of content). Mapping: `level 2 = reserved → art. 19`, `level 3 = classified → art. 18`. Each item: `{numero_radicado, tipo_radicado (E/S/I, NOT the TRD series), nivel_seguridad, clasificacion, excepcion_ley_1712, fundamento_juridico, causal_reserva, plazo_reserva_meses, fecha_clasificacion, fecha_radicacion}`. The metadata is populated when **registering something classified** or **reclassifying** (both require a `fundamento` when moving to level ≥2, `422` if missing — Law 1712 arts. 19/28) and is cleared on declassification. The `.csv` neutralises formula injection in the free-text fields. Generating it leaves an aggregate entry in `audit_log` (RF-BUS-10).
 
 ### `GET /api/v1/search`
+
 Advanced radicado search (E09, ADR-014: PostgreSQL FTS). Full text with ranking (`tsvector`/`ts_rank`) + fuzzy (`pg_trgm`), combinable with structured filters.
 
 Searches in: `tracking_number` (weight A), `subject` (B), `sender_name` / `sender_entity` (C), `dest_dept` / `observations` (D).
@@ -1127,6 +1320,7 @@ GET /api/v1/search?q=tutela&doc_type=E&date_from=2024-01-01&meta.area=juridica
 Requires `X-Tenant-Slug` (and `X-User-Id` to record the author).
 
 ### `POST /api/v1/workflow/rules`
+
 Create a rule. Two condition forms (compatible):
 
 - **Operator engine** (`conditions` + `match_mode`): list of `{field, op, value}` combined by `all` (AND) or `any` (OR). Fields: `doc_type, doc_class, dest_dept, origin_dept, subject, sender_name, sender_entity, pages`. Operators: `eq, ne, contains, not_contains, in, gt, lt, gte, lte, regex`.
@@ -1150,18 +1344,23 @@ Create a rule. Two condition forms (compatible):
 ```
 
 ### `GET /api/v1/workflow/rules`
+
 List rules. Query: `?active_only=true&page=1&size=50`.
 
 ### `GET /api/v1/workflow/rules/{id}`
+
 Get rule by UUID.
 
 ### `PATCH /api/v1/workflow/rules/{id}`
+
 Partial update (e.g.: change priority, enable/disable).
 
 ### `DELETE /api/v1/workflow/rules/{id}`
+
 Delete rule. Responds `204`.
 
 ### `POST /api/v1/workflow/rules/evaluate`
+
 Evaluate rules against a radicado (returns the first one that matches).
 
 ```json
@@ -1181,6 +1380,7 @@ Evaluate rules against a radicado (returns the first one that matches).
 ```
 
 ### `POST /api/v1/workflow/rules/evaluate/batch`
+
 Evaluates several radicados (1-500) against the same set of rules in a single call.
 
 ```json
@@ -1193,10 +1393,10 @@ Evaluates several radicados (1-500) against the same set of rules in a single ca
 ## Conversational assistant — the front↔gateway contract (E18/E22, ADR-020)
 
 > **Correction of a stale claim (2026-08-07):** this section used to be titled
-> "contract defined, backend PENDING" and declared the `mcp-server` a *scaffold*.
+> "contract defined, backend PENDING" and declared the `mcp-server` a _scaffold_.
 > That has been **false since E18**: the backend is implemented and documented
 > above (see [Conversational assistant (E18, ADR-019/ADR-020) — via the gateway](#conversational-assistant-e18-adr-019adr-020--via-the-gateway)),
-> with a real LLM loop executing the read-only tools *as-the-user*. This section
+> with a real LLM loop executing the read-only tools _as-the-user_. This section
 > is kept because it documents the other half of the contract — **what the
 > frontend's SSR proxy does with the response** — which the backend section does
 > not cover.

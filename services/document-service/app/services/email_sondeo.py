@@ -195,7 +195,15 @@ class SondeoDeCorreo:
             if correo["reservado_vigente"]:
                 continue
             try:
-                await servicio.reservar(correo["id"], fila["id"], actor=responsable)
+                # `es_admin=True` como en `radicar`, y por lo mismo: el recorte de
+                # visibilidad de cuentas responde «¿alcanza ESTE funcionario este
+                # buzón?», y aquí no hay petición de un funcionario — el sondeo ya
+                # eligió la cuenta con sus propias reglas (`_cuentas_candidatas`
+                # excluye las personales y las que no han autorizado) y opera bajo
+                # el responsable declarado en esa misma fila.
+                await servicio.reservar(
+                    correo["id"], fila["id"], actor=responsable, es_admin=True
+                )
                 creado = await servicio.radicar(
                     correo["id"],
                     fila["id"],

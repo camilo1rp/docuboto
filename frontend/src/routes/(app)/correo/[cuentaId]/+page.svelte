@@ -43,6 +43,19 @@
 
   $: correos = data.correos ?? [];
   $: correosError = data.correosError ?? null;
+
+  /**
+   * La bandeja no se pudo leer — no existe el buzón, o no está al alcance de
+   * quien mira.
+   *
+   * Lo que esto apaga importa: sin ello, el sondeo seguía preguntando cada 12 s,
+   * fallaba con el mismo 404 y la pantalla anunciaba «no se está pudiendo
+   * comprobar si hay novedades, actualícela a mano antes de radicar» — sobre una
+   * bandeja que no existe y en la que no se puede radicar nada. Un error de
+   * autorización presentado como un fallo transitorio del sondeo: el mismo
+   * patrón que hizo que `/envios` presentara un 403 como «no hay registros».
+   */
+  $: bandejaInaccesible = Boolean(correosError);
   $: cuenta = data.cuenta ?? null;
   $: yo = data.yo ?? "";
 
@@ -157,9 +170,35 @@
   }
 
   async function cerrarSinRadicar() {
+    const correo = abierto;
     abierto = null;
     formulario = null;
+    // Cerrar el formulario suelta la reserva. Sin esto, mirar un correo y
+    // decidir que no es para uno lo dejaba bloqueado quince minutos para toda
+    // la ventanilla — y la única salida era esperar a que caducara.
+    if (correo) await soltar(correo, { avisar: false });
     await recargarAhora();
+  }
+
+  /**
+   * Suelta la reserva propia. No decide nada sobre el correo.
+   *
+   * Best-effort a propósito: si la petición falla, el peor caso es que la
+   * reserva siga puesta hasta que caduque sola, que es exactamente lo que pasaba
+   * antes de que esto existiera. Convertirlo en un error bloquearía el cierre
+   * del formulario por un problema que se resuelve solo.
+   */
+  async function soltar(correo, { avisar = true } = {}) {
+    try {
+      const { ok, datos } = await accion(correo, "liberar");
+      if (!ok && avisar) {
+        notifyWarning(mensajeError(datos, `No se pudo soltar (${codigoError(datos)}).`));
+        return;
+      }
+      if (avisar) await recargarAhora();
+    } catch {
+      if (avisar) notifyError("No se pudo conectar al servidor.");
+    }
   }
 
   async function radicar() {
@@ -255,7 +294,9 @@
       { label: "Ingesta de correo", href: "/admin/correo" },
       { label: cuenta?.nombre ?? "Bandeja" },
     ]);
-    sondeo = setInterval(mirarSiHayNovedades, SONDEO_MS);
+    // Sin bandeja que vigilar no se sondea: preguntaría cada 12 s por algo que
+    // ya se sabe que no se alcanza.
+    if (!bandejaInaccesible) sondeo = setInterval(mirarSiHayNovedades, SONDEO_MS);
     // El intervalo se limpia en el RETORNO de onMount y no en onDestroy:
     // `onDestroy` corre también en SSR, donde no hay temporizador que limpiar.
     return () => clearInterval(sondeo);
@@ -281,7 +322,12 @@
         {/if}
       </p>
     </div>
-    <Button icon="fas fa-inbox-in" loading={sincronizando} on:click={sincronizar}>
+    <Button
+      icon="fas fa-inbox-in"
+      loading={sincronizando}
+      disabled={bandejaInaccesible}
+      on:click={sincronizar}
+    >
       Consultar el buzón
     </Button>
   </header>
@@ -295,7 +341,7 @@
     </div>
   {/if}
 
-  {#if sondeoCaido}
+  {#if sondeoCaido && !bandejaInaccesible}
     <div class="bandeja__aviso" role="status">
       <span>
         No se está pudiendo comprobar si hay novedades, así que esta lista puede estar
@@ -357,6 +403,9 @@
             <p class="correo__mio">
               <i class="fas fa-user-check" aria-hidden="true"></i>
               Lo tiene usted abierto.
+              <button type="button" class="correo__soltar" on:click={() => soltar(correo)}>
+                Soltarlo
+              </button>
             </p>
           {/if}
 
@@ -566,6 +615,17 @@
 
   .correo__mio {
     color: var(--op-info-fg);
+  }
+
+  .correo__soltar {
+    margin-left: var(--op-space-2);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
   }
 
   .correo__acciones {

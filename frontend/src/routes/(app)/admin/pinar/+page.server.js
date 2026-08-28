@@ -17,9 +17,17 @@
  * resto (aspectos críticos, priorización, objetivos, proyectos, seguimiento,
  * instrumentos, mapa de ruta) queda para una fase posterior.
  *
- * GET /pinar/planes — solo autenticado en el backend (consulta); la gestión
- * (crear/aprobar/ejecutar/cerrar) exige USUA_PERM_ADMIN, gateado en la UI
- * contra el permiso real del usuario ($permissions), nunca contra el rol.
+ * GET /pinar/planes — exige USUA_PERM_ADMIN en el backend desde 2026-08-28,
+ * igual que la gestión (crear/aprobar/ejecutar/cerrar). La frase que había aquí
+ * («solo autenticado en el backend, consulta») se borra con el hueco: describía
+ * una apertura que la barra lateral y las tarjetas de /admin ya contradecían, y
+ * un comentario obsoleto es el vector, no el adorno — quien lo lea creerá que
+ * puede consumir esto sin permiso.
+ *
+ * Por eso el 403 NO viaja como `loadError` genérico: se distingue en
+ * `sinPermiso`, y la pantalla lo dice con su nombre. Presentar una negativa de
+ * acceso como un fallo de carga manda a buscar la avería donde no está — el
+ * mismo defecto que /envios presentando un 403 como «no hay registros».
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
@@ -46,11 +54,14 @@ export async function load({ cookies, parent, fetch, url }) {
 
   let planes = [];
   let loadError = null;
+  let sinPermiso = false;
   try {
     const qs = params.toString();
     const res = await fetch(`${API_V1}/pinar/planes${qs ? `?${qs}` : ""}`, { headers });
     if (res.ok) {
       planes = await res.json().catch(() => []);
+    } else if (res.status === 403) {
+      sinPermiso = true;
     } else {
       const body = await res.json().catch(() => ({}));
       loadError = mensajeError(body, `Error ${res.status}`);
@@ -59,5 +70,10 @@ export async function load({ cookies, parent, fetch, url }) {
     loadError = "No se pudo conectar al servidor del PINAR.";
   }
 
-  return { planes, loadError, estadoFiltro: estado && ESTADOS.has(estado) ? estado : "" };
+  return {
+    planes,
+    loadError,
+    sinPermiso,
+    estadoFiltro: estado && ESTADOS.has(estado) ? estado : "",
+  };
 }

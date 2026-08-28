@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 describe("proxy de acciones sobre un correo", () => {
-  it("solo admite las tres acciones de la lista cerrada", async () => {
+  it("solo admite las acciones de la lista cerrada", async () => {
     globalThis.fetch = vi.fn();
     for (const mala of ["borrar", "constructor", "toString", ""]) {
       const res = await accion({ locals, params, url: conAccion(mala), request: peticion() });
@@ -67,6 +67,19 @@ describe("proxy de acciones sobre un correo", () => {
     });
     const res = await accion({ locals, params, url: conAccion("reservar"), request: peticion() });
     expect(res.status).toBe(200);
+  });
+
+  it("liberar está en la lista, y su 204 no lleva cuerpo", async () => {
+    // Un 204 con cuerpo no es una respuesta válida, y `json({}, {status: 204})`
+    // produce exactamente eso. Se comprueba que el cuerpo va vacío de verdad.
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      expect(String(url)).toContain(`/bandeja/${MENSAJE}/liberar`);
+      expect(opts.method).toBe("POST");
+      return new Response(null, { status: 204 });
+    });
+    const res = await accion({ locals, params, url: conAccion("liberar"), request: peticion() });
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe("");
   });
 
   it("un 409 de la reserva llega al cliente tal cual", async () => {
@@ -171,5 +184,42 @@ describe("load de la bandeja", () => {
     });
     expect(result.correos).toEqual([]);
     expect(result.correosError.status).toBe(403);
+  });
+});
+
+describe("una bandeja que no se alcanza no finge ser una bandeja", () => {
+  /**
+   * Encontrado en el navegador, no en un test: `jefe` (administrador) abrió por
+   * URL directa la bandeja de la cuenta PERSONAL de otra funcionaria. El backend
+   * la negó con el `404` neutro, correcto — pero la pantalla, además del aviso
+   * bueno, mostraba en ámbar «no se está pudiendo comprobar si hay novedades,
+   * así que esta lista puede estar desactualizada, actualícela a mano antes de
+   * radicar». Sobre una bandeja que no existe y en la que no se puede radicar
+   * nada. El sondeo seguía preguntando cada 12 s y su 404 se leía como un fallo
+   * transitorio: un error de AUTORIZACIÓN presentado como otra cosa, que es el
+   * mismo defecto que hacía que `/envios` presentara un 403 como «no hay
+   * registros».
+   *
+   * Se comprueba sobre el fuente porque las tres consecuencias —no sondear, no
+   * avisar de sondeo caído, no ofrecer el botón— cuelgan de una sola condición,
+   * y lo que no puede volver es que esa condición desaparezca.
+   */
+  it("con `correosError` no se sondea, no se avisa de sondeo caído y no se ofrece consultar", async () => {
+    const { readFileSync } = await import("node:fs");
+    const fuente = readFileSync("src/routes/(app)/correo/[cuentaId]/+page.svelte", "utf-8");
+
+    // Anti-vacuidad: el fichero es el que creo que es.
+    expect(fuente).toContain("mirarSiHayNovedades");
+    expect(fuente).toContain("Consultar el buzón");
+
+    // La condición existe y sale del error de carga.
+    expect(fuente).toMatch(/\$:\s*bandejaInaccesible\s*=\s*Boolean\(correosError\)/);
+
+    // 1. El sondeo no arranca.
+    expect(fuente).toMatch(/if\s*\(!bandejaInaccesible\)\s*sondeo\s*=\s*setInterval/);
+    // 2. El aviso de sondeo caído queda callado.
+    expect(fuente).toContain("{#if sondeoCaido && !bandejaInaccesible}");
+    // 3. El botón no ofrece un acto imposible.
+    expect(fuente).toContain("disabled={bandejaInaccesible}");
   });
 });

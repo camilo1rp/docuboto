@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+from orpycamcp_common import audit
 
 from app.clients import storage_client
 from app.clients.email_parser import CorreoLeido, leer
@@ -45,6 +46,8 @@ from app.services.document_service import DocumentService
 from app.services.email_cuenta_service import EmailCuentaService, ErrorDeCuenta
 
 logger = logging.getLogger(__name__)
+
+_SERVICE = "document-service"
 
 # Cuánto dura la reserva de un correo abierto. Suficiente para revisarlo y
 # radicarlo con calma; poco para que un navegador cerrado no lo bloquee media
@@ -64,6 +67,55 @@ class EmailBandejaService:
         self._tenant = tenant_slug
         self._repo = EmailMensajeRepository(conn)
         self._cuentas = EmailCuentaService(conn, tenant_slug)
+
+    async def _exigir_cuenta(self, cuenta_id: uuid.UUID, *, actor: uuid.UUID, es_admin: bool):
+        """Único sitio que decide si este funcionario alcanza este buzón.
+
+        **El hueco que cierra.** El gate de `PERM_RADI` dice quién puede trabajar
+        correo; no dice QUÉ buzón. Ese recorte vivía —bien escrito y con su
+        test— en el `WHERE` de `email_cuenta_repository`, y las operaciones de
+        bandeja no pasaban por él: listar, reservar, liberar y descartar iban
+        directas al mensaje por su id. Cualquier funcionario con `PERM_RADI` de
+        la entidad podía, conociendo un `cuenta_id`, leer la bandeja de una
+        cuenta **personal de otro** —la que el proyecto cuidó hasta el punto de
+        ocultarla al propio administrador— y apartar sus correos.
+
+        Es la segunda vez en este repositorio que un recorte correcto no alcanza
+        a la puerta de al lado. Por eso hay UN método y no una comprobación
+        repetida en cada endpoint: la que se repite es la que un día falta.
+
+        `404` y no `403`: distinguirlos convertiría el endpoint en un oráculo de
+        qué cuentas de correo tiene la entidad y quién las trabaja — el mismo
+        criterio, y las mismas palabras, que `EmailCuentaRepository.obtener`.
+        """
+        cuenta = await self._cuentas._repo.obtener(cuenta_id, actor=actor, es_admin=es_admin)
+        if cuenta is None:
+            raise ErrorDeCuenta(
+                "cuenta_no_encontrada",
+                "No existe un buzón con ese identificador, o no está a su alcance.",
+                status=404,
+            )
+        return cuenta
+
+
+    # -- lecturas ----------------------------------------------------------
+    #
+    # Pasan por el mismo guardián que las escrituras. No es simetría estética:
+    # la bandeja lista ASUNTO y REMITENTE de cada correo, así que leer la de una
+    # cuenta ajena es la fuga, no un paso previo a ella.
+
+    async def listar(
+        self, cuenta_id: uuid.UUID, *, actor: uuid.UUID, es_admin: bool, estado: str = "pendiente"
+    ) -> tuple[list[Any], int]:
+        await self._exigir_cuenta(cuenta_id, actor=actor, es_admin=es_admin)
+        filas = await self._repo.bandeja(cuenta_id, estado=estado)
+        return list(filas), await self._repo.contar(cuenta_id, estado=estado)
+
+    async def estado(
+        self, cuenta_id: uuid.UUID, *, actor: uuid.UUID, es_admin: bool
+    ) -> dict[str, Any]:
+        await self._exigir_cuenta(cuenta_id, actor=actor, es_admin=es_admin)
+        return await self._repo.estado_bandeja(cuenta_id)
 
     # -- sincronización ----------------------------------------------------
 
@@ -171,9 +223,17 @@ class EmailBandejaService:
 
     # -- trabajo sobre un correo -------------------------------------------
 
-    async def reservar(self, mensaje_id: uuid.UUID, cuenta_id: uuid.UUID, *, actor: uuid.UUID):
+    async def reservar(
+        self,
+        mensaje_id: uuid.UUID,
+        cuenta_id: uuid.UUID,
+        *,
+        actor: uuid.UUID,
+        es_admin: bool,
+    ):
+        await self._exigir_cuenta(cuenta_id, actor=actor, es_admin=es_admin)
         reservado = await self._repo.reservar(
-            mensaje_id, actor=actor, minutos=RESERVA_MINUTOS
+            mensaje_id, cuenta_id, actor=actor, minutos=RESERVA_MINUTOS
         )
         if reservado is None:
             # No se dice QUIÉN lo tiene: el listado ya lo muestra, y aquí el
@@ -185,6 +245,29 @@ class EmailBandejaService:
                 status=409,
             )
         return reservado
+
+    async def liberar(
+        self,
+        mensaje_id: uuid.UUID,
+        cuenta_id: uuid.UUID,
+        *,
+        actor: uuid.UUID,
+        es_admin: bool,
+    ) -> None:
+        """Suelta la reserva propia.
+
+        **No distingue «solté algo» de «no había nada que soltar», y es
+        deliberado.** Las dos situaciones acaban igual —el correo queda libre
+        para quien lo necesite— y la diferencia solo serviría para decirle a un
+        funcionario que la reserva la tiene otro, cosa que la bandeja ya muestra.
+        Un 404 aquí convertiría en error una reserva que simplemente había
+        caducado mientras leía.
+
+        No toca la reserva de otro: el `WHERE` del repositorio exige que sea la
+        suya.
+        """
+        await self._exigir_cuenta(cuenta_id, actor=actor, es_admin=es_admin)
+        await self._repo.liberar(mensaje_id, cuenta_id, actor=actor)
 
     async def radicar(
         self,
@@ -252,6 +335,7 @@ class EmailBandejaService:
         #    una radicación, y en ese rato la reserva pudo caducar.
         cerrado = await self._repo.marcar_radicado(
             mensaje_id,
+            cuenta_id,
             actor=actor,
             radicado_id=resultado.id,
             tracking_number=resultado.tracking_number,
@@ -415,14 +499,57 @@ class EmailBandejaService:
             return False
 
     async def descartar(
-        self, mensaje_id: uuid.UUID, cuenta_id: uuid.UUID, *, actor: uuid.UUID, motivo: str
+        self,
+        mensaje_id: uuid.UUID,
+        cuenta_id: uuid.UUID,
+        *,
+        actor: uuid.UUID,
+        es_admin: bool,
+        motivo: str,
     ):
-        fuera = await self._repo.descartar(mensaje_id, actor=actor, motivo=motivo)
-        if fuera is None:
-            raise ErrorDeCuenta(
-                "sin_reserva",
-                "Para descartar un correo hay que tenerlo abierto: su reserva caducó "
-                "o la tiene otro funcionario.",
-                status=409,
+        """Aparta un correo que llegó a la carpeta y no debía radicarse.
+
+        **El único acto de la bandeja que no produce nada.** Radicar deja un
+        radicado, con su número inmutable y su asiento; descartar dejaba solo un
+        `UPDATE` sobre `email_mensaje`, que es una tabla corriente: quién lo
+        descartó y por qué se podían reescribir después sin rastro. Y decidir que
+        una comunicación recibida **no** se registra es tan decisión como
+        registrarla — de hecho es la que un tercero querría poder revisar, porque
+        es la que hace desaparecer el documento del archivo.
+
+        Por eso el asiento va en la MISMA transacción que el descarte y **no es
+        best-effort**: si la cadena inmutable no puede recibirlo, el correo no se
+        descarta. Es el criterio de `anulacion_service`, y por la misma razón —
+        aquí el asiento no acompaña al acto, ES el registro del acto.
+
+        El asiento no lleva el asunto ni el remitente. Un correo descartado nunca
+        se radicó, así que no tiene nivel de clasificación con el que recortar su
+        lectura: meter su contenido en `audit_log` lo publicaría a todo
+        `USUA_PERM_ADMIN`. Queda en `email_mensaje`, donde lo recorta el
+        `WHERE` de la cuenta. El motivo sí va: lo escribe el funcionario y es el
+        texto de su decisión, no el del documento.
+        """
+        await self._exigir_cuenta(cuenta_id, actor=actor, es_admin=es_admin)
+        async with self._conn.transaction():
+            fuera = await self._repo.descartar(mensaje_id, cuenta_id, actor=actor, motivo=motivo)
+            if fuera is None:
+                raise ErrorDeCuenta(
+                    "sin_reserva",
+                    "Para descartar un correo hay que tenerlo abierto: su reserva caducó "
+                    "o la tiene otro funcionario.",
+                    status=409,
+                )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant,
+                service=_SERVICE,
+                action="email.mensaje.descartado",
+                # NO está en la lista de admisión de `audit_query_repository`, y
+                # eso es lo correcto: un correo sin clasificar se trata como lo
+                # más restrictivo, no como configuración.
+                object_type="email_mensaje",
+                object_ref=str(mensaje_id),
+                actor=str(actor),
+                payload={"cuenta_id": str(cuenta_id), "motivo": motivo},
             )
         return fuera

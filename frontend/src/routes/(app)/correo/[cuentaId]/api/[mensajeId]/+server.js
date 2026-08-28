@@ -10,8 +10,8 @@
 /**
  * /correo/[cuentaId]/api/[mensajeId] — Acciones sobre un correo de la bandeja.
  *
- * Una sola ruta con `?accion=` en vez de tres subrutas: las tres comparten
- * validación, cabeceras y traducción de errores, y separarlas triplicaría ese
+ * Una sola ruta con `?accion=` en vez de una subruta por acción: todas comparten
+ * validación, cabeceras y traducción de errores, y separarlas multiplicaría ese
  * andamiaje para variar una palabra de la URL.
  *
  * La acción se resuelve contra una **lista cerrada**; cualquier otra cosa es un
@@ -31,7 +31,12 @@ import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ACCIONES = { reservar: "reservar", radicar: "radicar", descartar: "descartar" };
+const ACCIONES = {
+  reservar: "reservar",
+  liberar: "liberar",
+  radicar: "radicar",
+  descartar: "descartar",
+};
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, params, url, request }) {
@@ -68,6 +73,9 @@ export async function POST({ locals, params, url, request }) {
         `${encodeURIComponent(params.mensajeId)}/${accion}`,
       { method: "POST", headers, body: JSON.stringify(cuerpo) },
     );
+    // `liberar` responde 204: un 204 con cuerpo no es una respuesta válida, y
+    // `json({}, {status: 204})` produce exactamente eso.
+    if (res.status === 204) return new Response(null, { status: 204 });
     return json(await res.json().catch(() => ({})), { status: res.status });
   } catch {
     return json(

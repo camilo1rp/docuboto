@@ -70,22 +70,23 @@ _append-only_ por Ley 594.
 
 ## 2. Los bloques
 
-| #       | Bloque                                                                                                                                                   | Produce / por qué va aquí                                                                  |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| **B0**  | Arranque y sesión — login PKCE, `/403`, guarda SSR, `/perfil` (contexto, TOTP, credencial de firma)                                                      | TOTP y credencial son **prerequisito duro** de B6 y B11                                    |
-| **B1**  | Identidad — `/admin/usuarios`, `/admin/grupos` (permisos, nivel CRUD, clearance), `/admin/dependencias`, `/admin/parametros`                             | el clearance habilita la clasificación de B3; los festivos cambian el plazo que B3 calcula |
-| **B2**  | Instrumentos — `/admin/trd` y `/admin/tvd` (nueva versión → aprobar → convalidar → RUSD), `/admin/metadatos`, `/admin/catalogos`, `/admin/plantillas`    | **sin serie y tipo documental no se puede radicar**                                        |
-| **B3**  | Radicación — `/radicar` (5 pasos, anexos, sugerencia RAG), `/borradores` (crear → aprobar → radicar)                                                     | produce las Entradas y la Salida que consume todo lo demás                                 |
-| **B4**  | Bandeja y trámite — 3 vistas, filtros, drawer, distribuir, asignar, trasladar, devolver, VoBo en cadena, ejecutar transacción, respuesta vinculada       | produce la Salida vinculada que firma B6                                                   |
-| **B5**  | Expedientes — las 8 pestañas: vincular (individual y por lote), excluir, foliar, metadatos, índice electrónico, integridad, versiones, exportar ZIP      | **foliar antes de cerrar**: el cierre de B11 congela la foliación                          |
-| **B6**  | Firma — `/firmas` (individual, lote, rechazo con motivo), firmar índice, `/admin/seguridad/claves`                                                       | aquí se prueba la **cadena de firmantes en orden**                                         |
-| **B7**  | Envíos postales — `/envios`: registrar, cambiar estado, devolución, planilla                                                                             | `Actualizar rastreo` es **stub declarado**, no defecto                                     |
-| **B8**  | Archivo físico — ubicaciones, unidades, vincular, localizar, préstamos, FUID (JSON y XML)                                                                | su ubicación alimenta la transferencia de B11                                              |
-| **B9**  | Consulta y asistente — `/busqueda` (exacta, semántica, antecedentes), `/dashboard`, `/reportes`, asistente, marco de alcance, propuesta firmada, dictado | la búsqueda semántica valida de paso la **ingesta event-driven** de E21                    |
-| **B10** | Interoperabilidad — exportar ZIP, importar (stepper de 4 pasos), lotes con seguimiento de job                                                            | el _round-trip_ export→import es el caso de valor                                          |
-| **B11** | **Actos irreversibles** (orden interno abajo)                                                                                                            | cada uno **quema** su objeto                                                               |
-| **B12** | Observabilidad — `/admin/auditoria` (**+ reverificar cadena**), `/admin/notificaciones`, `/admin/colas`, `/admin/preservacion`, `/admin/pinar`           | el último **a propósito**: es el instrumento que verifica todo lo anterior                 |
-| **B13** | Barrido negativo con `consulta`                                                                                                                          | cierra los dos ejes de gate sin duplicar el plan                                           |
+| #       | Bloque                                                                                                                                                                      | Produce / por qué va aquí                                                                     |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **B0**  | Arranque y sesión — login PKCE, `/403`, guarda SSR, `/perfil` (contexto, TOTP, credencial de firma)                                                                         | TOTP y credencial son **prerequisito duro** de B6 y B11                                       |
+| **B1**  | Identidad — `/admin/usuarios`, `/admin/grupos` (permisos, nivel CRUD, clearance), `/admin/dependencias`, `/admin/parametros`                                                | el clearance habilita la clasificación de B3; los festivos cambian el plazo que B3 calcula    |
+| **B2**  | Instrumentos — `/admin/trd` y `/admin/tvd` (nueva versión → aprobar → convalidar → RUSD), `/admin/metadatos`, `/admin/catalogos`, `/admin/plantillas`                       | **sin serie y tipo documental no se puede radicar**                                           |
+| **B3**  | Radicación — `/radicar` (5 pasos, anexos, sugerencia RAG), `/borradores` (crear → aprobar → radicar)                                                                        | produce las Entradas y la Salida que consume todo lo demás                                    |
+| **B4**  | Bandeja y trámite — 3 vistas, filtros, drawer, distribuir, asignar, trasladar, devolver, VoBo en cadena, ejecutar transacción, respuesta vinculada                          | produce la Salida vinculada que firma B6                                                      |
+| **B5**  | Expedientes — las 8 pestañas: vincular (individual y por lote), excluir, foliar, metadatos, índice electrónico, integridad, versiones, exportar ZIP                         | **foliar antes de cerrar**: el cierre de B11 congela la foliación                             |
+| **B6**  | Firma — `/firmas` (individual, lote, rechazo con motivo), firmar índice, `/admin/seguridad/claves`                                                                          | aquí se prueba la **cadena de firmantes en orden**                                            |
+| **B7**  | Envíos postales — `/envios`: registrar, cambiar estado, devolución, planilla                                                                                                | `Actualizar rastreo` es **stub declarado**, no defecto                                        |
+| **B8**  | Archivo físico — ubicaciones, unidades, vincular, localizar, préstamos, FUID (JSON y XML)                                                                                   | su ubicación alimenta la transferencia de B11                                                 |
+| **B9**  | Consulta y asistente — `/busqueda` (exacta, semántica, antecedentes), `/dashboard`, `/reportes`, asistente, marco de alcance, propuesta firmada, dictado                    | la búsqueda semántica valida de paso la **ingesta event-driven** de E21                       |
+| **B10** | Interoperabilidad — exportar ZIP, importar (stepper de 4 pasos), lotes con seguimiento de job                                                                               | el _round-trip_ export→import es el caso de valor                                             |
+| **B11** | **Actos irreversibles** (orden interno abajo)                                                                                                                               | cada uno **quema** su objeto                                                                  |
+| **B12** | Observabilidad — `/admin/auditoria` (**+ reverificar cadena**), `/admin/notificaciones`, `/admin/colas`, `/admin/preservacion`, `/admin/pinar`                              | el último **a propósito**: es el instrumento que verifica todo lo anterior                    |
+| **B13** | Barrido negativo con `consulta`                                                                                                                                             | cierra los dos ejes de gate sin duplicar el plan                                              |
+| **B14** | Bandeja de correo — `/admin/correo` (cuentas, app OAuth) y `/correo/[cuentaId]`: sincronizar, reservar, soltar, descartar con motivo, radicar con anexo, recorte de cuentas | añadido en 2026-08-28 al cerrar E19; **exige un servidor IMAP de pruebas**, por eso no estaba |
 
 ### 2.1 Orden interno de B11, y qué inutiliza cada acto
 
@@ -118,6 +119,35 @@ prueba nada:
   y su acceso directo por URL da 403/404 **indistinguibles**.
 - **Las dos rutas que fallan en el `load`** (`/expedientes/[id]`, `/admin/pinar/[id]`) dan `403`,
   no una pantalla en blanco.
+
+### 2.3 B14 — la bandeja de correo, y el servidor que hay que levantar
+
+Es el único bloque que **no se puede ejecutar contra el despliegue de desarrollo tal cual**: hace
+falta un buzón IMAP de verdad. Con GreenMail en la red del compose basta, y sembrar tres correos
+—uno con anexo— da los siete casos:
+
+```bash
+docker run -d --name greenmail --network orpyca-mcp_orpycamcp-net \
+  -e GREENMAIL_OPTS='-Dgreenmail.setup.test.imap -Dgreenmail.users=buzon:clave@entidad.gov.co' \
+  greenmail/standalone:2.1.0
+```
+
+Luego, en `/admin/correo`, dar de alta la cuenta con anfitrión `greenmail`, puerto `3143`, sin
+TLS, y la contraseña de la cuenta de prueba.
+
+| #      | Caso                  | Lo que distingue _el botón respondió_ de _el acto ocurrió_                                                         |
+| ------ | --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| B14-01 | Pantalla de cuentas   | ninguna petición a `/api/v1/ingest/` — la ruta heredada está retirada, solo `/email/cuentas` y `/email/apps-oauth` |
+| B14-02 | Sincronizar           | la bandeja trae los correos **en orden de recepción** y detecta el anexo                                           |
+| B14-03 | Cerrar sin radicar    | se llama a `/liberar`: la reserva se suelta y **otro funcionario puede abrir el correo**                           |
+| B14-04 | «Soltarlo» en la fila | misma comprobación desde la lista, sin abrir el formulario                                                         |
+| B14-05 | Descartar con motivo  | asiento `email.mensaje.descartado` en `/admin/auditoria`, con actor y motivo y **sin asunto ni remitente**         |
+| B14-06 | Radicar               | número asignado, `.eml` conservado como anexo, y el mensaje **movido a `Radicados` en el servidor IMAP**           |
+| B14-07 | Recorte de cuentas    | un administrador recibe **`404` neutro** sobre el buzón personal de otro funcionario, no `403`                     |
+
+El caso que justifica el bloque es **B14-07**: el gate llegaba donde hacía falta técnicamente
+—`sincronizar` y `radicar`, porque necesitan abrir la sesión IMAP— y no donde hacía falta por
+seguridad. Leer, reservar, soltar y descartar cruzaban el recorte sin comprobarlo.
 
 ---
 
@@ -153,9 +183,8 @@ Se declara como límite, no se disimula:
 - Alta de tenants y ciclo de vida de ficheros en storage (retirados del gateway a propósito,
   `X-Internal-Token`), y todos los endpoints `*-internal`.
 - Empaquetado AIP, protección WORM, barrido de vencidos y las 6 fases de reconciliación (cron).
-- **Ingesta IMAP** — gateada y enrutada. **Ya tiene pantalla** (`/admin/correo`, 2026-08-23),
-  con el endpoint de estado que faltaba para poder ofrecerla sin ejecutarla; queda fuera del
-  barrido porque el despliegue de pruebas no tiene buzón IMAP configurado.
+- ~~**Ingesta IMAP**~~ — **cubierta desde 2026-08-28**: es el bloque B14. Dejó de estar fuera
+  el día que se levantó un servidor IMAP de pruebas, que era el único motivo por el que lo estaba.
 - **OAI-PMH y CMIS** (`public_interop_enabled=False`, sin pantalla).
 - **PQRS ciudadana y verificación pública por código** — endpoints públicos **sin pantalla** en
   `(public)/`.
@@ -163,29 +192,61 @@ Se declara como límite, no se disimula:
 
 De esa lista salieron **tres hallazgos de producto**: capacidades que existían en el backend
 sin ninguna forma de llegar a ellas. Las tres están cerradas — ventanilla única y consulta
-ciudadana en `(public)/`, e ingesta de correo en `/admin/correo`. El patrón se repitió lo
+ciudadana en `(public)/`, e ingesta de correo en `/admin/correo` + `/correo/[cuentaId]`. El patrón se repitió lo
 bastante como para dejarlo escrito: **un endpoint sin puerta no es una funcionalidad entregada**,
 y el inventario de pantallas es el sitio donde esa deuda se ve.
 
 ---
 
-## 4.bis Decisión de producto abierta (resultado de B13)
+## 4.bis Decisión de producto **resuelta** (resultado de B13, cerrada el 2026-08-28)
 
-El barrido negativo dejó una pregunta que **no es un defecto de código sino una decisión que
-alguien tiene que tomar**, y por eso se anota aquí en vez de resolverse por cuenta propia:
+El barrido negativo dejó una pregunta que no era un defecto de código sino una decisión que
+alguien tenía que tomar:
 
-> **Las lecturas de TRD (4 endpoints) y de PINAR (11) no exigen ningún permiso**, y sus proxies
-> BFF solo comprueban que haya sesión. Un usuario sin `USUA_PERM_TRD` ni `USUA_PERM_ADMIN` ve el
-> listado y el detalle completos escribiendo la URL — aunque la barra lateral le esconde
-> Administración entera y `/admin` gatea sus tarjetas.
+> **Las lecturas de TRD y de PINAR no exigían ningún permiso**, y sus proxies BFF solo
+> comprobaban que hubiera sesión. Un usuario sin `USUA_PERM_TRD` ni `USUA_PERM_ADMIN` veía el
+> listado y el detalle completos escribiendo la URL — aunque la barra lateral le escondía
+> Administración entera y `/admin` gateaba sus tarjetas.
 
-Los dos son instrumentos de **publicación obligatoria** (Acuerdo AGN 004/2019 para la TRD,
-Acuerdo AGN 003/2015 para el PINAR), así que la apertura puede ser deliberada. Pero hoy **no está
-declarada en ninguna parte**, y la interfaz dice lo contrario. Las dos salidas son legítimas y
-excluyentes: gatear las lecturas —coherente con lo que la interfaz ya comunica— o declararlas
-abiertas y dejar de esconder las pantallas.
+**Lo primero que cambió fue el tamaño del problema.** El recuento original —«TRD 4, PINAR 11»—
+se hizo a mano. Un censo por FORMA sobre los routers de los dos servicios encontró **33
+lecturas sin gate** alcanzables por el gateway: las 4 de TRD, **4 de TVD que la pregunta no
+mencionaba**, 11 de PINAR, y 14 de catálogos (dependencias, parámetros, tipos documentales,
+plantillas de metadatos). Es la enésima vez en este proyecto que una lista escrita a mano se
+queda corta en silencio.
 
-Lo que no es defendible es lo que hay: que el sistema esconda algo y lo sirva a la vez.
+**Y con la lista completa, la disyuntiva se disolvió.** «Gatear o declarar abierto» era una
+pregunta mal planteada, porque esas 33 lecturas no son una sola cosa:
+
+| Clase                            | Qué es                                                                                                                            | Decisión                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Vocabulario de clasificación** | listado y detalle de series TRD y agrupaciones TVD, cálculo de retención, tipos documentales, dependencias, catálogos, parámetros | **abierto** a cualquier autenticado del tenant, **declarado en el código y con test** |
+| **Circuito del instrumento**     | `GET /trd/{code}/versiones` y su gemelo de TVD                                                                                    | **`USUA_PERM_TRD`**                                                                   |
+| **PINAR entero**                 | las 11 lecturas del plan                                                                                                          | **`USUA_PERM_ADMIN`**, gate en el propio `APIRouter`                                  |
+
+El **vocabulario** no se gatea porque `/radicar` y `/expedientes` lo consumen para poder
+clasificar: `USUA_PERM_TRD` lo tiene quien **administra** el instrumento, no quien lo usa, y
+exigirlo dejaría sin radicar a todo operador ordinario —el remedio sería peor que el defecto, y
+el síntoma («no puedo radicar») caería lejos de su causa—. Además el instrumento convalidado es
+de publicación obligatoria (Ac. AGN 004/2019, compilado por 001/2024; Ley 1712/2014 art. 9). Eso
+**también lleva test**: si alguien lo «asegura» de más, se pone en rojo antes que la ventanilla.
+
+El **circuito** sí, porque `GET /{code}/versiones` no devuelve el instrumento publicado sino su
+elaboración: los borradores, el `acta_comite`, la `fecha_aprobacion_comite`, la
+`instancia_convalidante` y el `created_by` de cada versión. Su gemelo `GET /revision-pendiente`
+ya exigía el permiso: era el hueco que quedaba de ese mismo par.
+
+**PINAR se cierra en vez de abrirse** por dos motivos. Un plan en `borrador` es material de
+trabajo del Comité. Y el PINAR aprobado sí es de publicación obligatoria (Decreto 1080/2015
+art. 2.8.2.5.8), pero **publicar es un acto de la entidad hacia fuera** —una pantalla en
+`(public)/`, como la consulta ciudadana— y no un `GET` interno sin gate que se le parece por
+accidente; hoy no existía ningún consumidor de esas lecturas fuera de `/admin/pinar`, así que
+abrirlas no servía a nadie. Es la misma lección que dejó el `verify` público: un endpoint sin
+gate no es publicación, es un descuido con forma de publicación.
+
+El gate de PINAR va en el `APIRouter`, **por admisión**: lo hereda el endpoint que alguien añada
+mañana. Su guardián recorre las rutas que el router declara —no una lista— y exige el 403 en
+todas, con aserción anti-vacuidad para que no pase en verde si el censo devolviera cero.
 
 ---
 
@@ -244,6 +305,22 @@ Las cuatro filas restantes no son manipulación: son datos de prueba insertados 
 una sesión anterior, y su daño **no es reparable** porque el registro es append-only. Eso destapó
 el hallazgo de fondo de B12: las tres defensas del registro cubrían _modificar_ y _borrar_ un
 asiento, y **ninguna cubría añadir uno** que no viniera de `audit.append`.
+
+### B14, añadido después: el gate que llegó donde hacía falta técnicamente
+
+La bandeja de correo se recorrió el 2026-08-28, ya cerrado el resto del plan, y su hallazgo no
+encaja en ninguno de los dos patrones anteriores. No era la pantalla mostrando otro dato ni un
+gate que viviera solo en el navegador: era un gate **puesto donde el código lo necesitaba, no
+donde la seguridad lo necesitaba**. `sincronizar` y `radicar` comprobaban el recorte de cuentas
+porque sin él no podían ni abrir la sesión IMAP; leer, reservar, soltar y descartar no lo
+comprobaban, y por ahí un funcionario alcanzaba el buzón **personal** de otro. La corrección
+responde **`404`, no `403`**, por el mismo motivo que el no-read-up de B13: distinguirlos
+convierte el endpoint en un oráculo de qué buzones tiene la entidad.
+
+Y una segunda aparición del patrón que este plan lleva cazando desde el principio: **`liberar()`
+existía en el repositorio, con su test, desde el incremento anterior — y ninguna pantalla lo
+llamaba**. Cerrar el formulario sin radicar dejaba el correo reservado para siempre. Se destapó
+cruzando `docs/*/api.md` contra el OpenAPI del servicio en marcha, no navegando.
 
 > **Y una trampa del propio método.** La primera medición dio «946 de 951, 1 roto» porque
 > reimplementé el cálculo del hash a mano para verificarlo. La buena usa

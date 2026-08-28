@@ -121,33 +121,37 @@ class EmailMensajeRepository:
     # -- reserva -----------------------------------------------------------
 
     async def reservar(
-        self, mensaje_id: UUID, *, actor: UUID, minutos: int
+        self, mensaje_id: UUID, cuenta_id: UUID, *, actor: UUID, minutos: int
     ) -> asyncpg.Record | None:
         """Toma el correo para `actor`. `None` si otro lo tiene o ya no está pendiente.
 
         La condición y la mutación son el mismo `UPDATE`: dos peticiones
         simultáneas se serializan en la fila y solo una ve filas afectadas.
+
+        `cuenta_id` va en el `WHERE` y no es redundante: ata el mensaje al buzón
+        cuyo alcance ya comprobó el servicio. Sin él, alcanzar UNA cuenta bastaría
+        para operar sobre el correo de cualquier otra con solo conocer su id.
         """
         return await self._conn.fetchrow(
             f"""
             UPDATE email_mensaje m
                SET reservado_por = $2,
                    reservado_hasta = now() + make_interval(mins => $3)
-             WHERE m.id = $1 AND {_RESERVABLE.format(actor="$2")}
+             WHERE m.id = $1 AND m.cuenta_id = $4 AND {_RESERVABLE.format(actor="$2")}
             RETURNING {_COLUMNAS}
             """,
-            mensaje_id, actor, minutos,
+            mensaje_id, actor, minutos, cuenta_id,
         )
 
-    async def liberar(self, mensaje_id: UUID, *, actor: UUID) -> bool:
+    async def liberar(self, mensaje_id: UUID, cuenta_id: UUID, *, actor: UUID) -> bool:
         """Suelta la reserva propia. No toca la de otro."""
         estado = await self._conn.execute(
             """
             UPDATE email_mensaje
                SET reservado_por = NULL, reservado_hasta = NULL
-             WHERE id = $1 AND reservado_por = $2
+             WHERE id = $1 AND cuenta_id = $3 AND reservado_por = $2
             """,
-            mensaje_id, actor,
+            mensaje_id, actor, cuenta_id,
         )
         return estado.endswith(" 1")
 
@@ -156,6 +160,7 @@ class EmailMensajeRepository:
     async def marcar_radicado(
         self,
         mensaje_id: UUID,
+        cuenta_id: UUID,
         *,
         actor: UUID,
         radicado_id: UUID,
@@ -180,16 +185,17 @@ class EmailMensajeRepository:
                    reservado_por = NULL,
                    reservado_hasta = NULL
              WHERE m.id = $1
+               AND m.cuenta_id = $5
                AND m.estado = 'pendiente'
                AND m.reservado_por = $2
                AND m.reservado_hasta > now()
             RETURNING {_COLUMNAS}
             """,
-            mensaje_id, actor, radicado_id, tracking_number,
+            mensaje_id, actor, radicado_id, tracking_number, cuenta_id,
         )
 
     async def descartar(
-        self, mensaje_id: UUID, *, actor: UUID, motivo: str
+        self, mensaje_id: UUID, cuenta_id: UUID, *, actor: UUID, motivo: str
     ) -> asyncpg.Record | None:
         """Aparta un correo que llegó a la carpeta y no debía radicarse.
 
@@ -206,12 +212,13 @@ class EmailMensajeRepository:
                    reservado_por = NULL,
                    reservado_hasta = NULL
              WHERE m.id = $1
+               AND m.cuenta_id = $4
                AND m.estado = 'pendiente'
                AND m.reservado_por = $2
                AND m.reservado_hasta > now()
             RETURNING {_COLUMNAS}
             """,
-            mensaje_id, actor, motivo,
+            mensaje_id, actor, motivo, cuenta_id,
         )
 
     async def registrar_acuse(self, mensaje_id: UUID, *, error: str | None) -> None:

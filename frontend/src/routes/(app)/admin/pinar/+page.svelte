@@ -29,6 +29,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError } from "$lib/stores/notifications.js";
@@ -42,6 +43,10 @@
   $: estadoFiltro = data.estadoFiltro ?? "";
 
   $: canManage = $permissions.includes("USUA_PERM_ADMIN");
+  // Dos fuentes para lo mismo, y se hacen caso las dos: lo que la sesión
+  // dice que puede (`canManage`) y lo que el backend contestó de verdad
+  // (`data.sinPermiso`). Si discrepan manda el backend — es quien decide.
+  $: bloqueada = !canManage || data.sinPermiso === true;
 
   const ESTADO_LABELS = {
     borrador: "Borrador",
@@ -127,90 +132,98 @@
   <title>PINAR — Administración — OrpycaMCP</title>
 </svelte:head>
 
-<CatalogCrudPanel
-  title="PINAR — Plan Institucional de Archivos"
-  ariaLabel="Lista de planes PINAR"
-  items={planes}
-  rowKey={(p) => p.id}
-  loadError={loadError ? (loadError ?? "No se pudo cargar el listado de planes PINAR.") : null}
-  canCreate={canManage}
-  createLabel="Nuevo plan"
-  emptyIcon="fas fa-map"
-  emptyTitle="Sin planes PINAR"
-  emptyDescription={canManage
-    ? 'Crea el primero con "Nuevo plan".'
-    : "Aún no se ha creado ningún plan institucional de archivos."}
-  bind:createOpen
-  on:create={resetForm}
->
-  <svelte:fragment slot="toolbar-extra">
-    <FormField
-      id="pinar-filtro-estado"
-      name="estado"
-      label="Estado"
-      type="select"
-      options={ESTADO_OPTIONS}
-      bind:value={estadoFiltro}
-      on:change={onFiltroChange}
-    />
-  </svelte:fragment>
-
-  <svelte:fragment slot="thead">
-    <th scope="col">Versión</th>
-    <th scope="col">Estado</th>
-    <th scope="col">Vigencia</th>
-    <th scope="col">Acto administrativo</th>
-    <th scope="col">Creado</th>
-  </svelte:fragment>
-
-  <svelte:fragment slot="row" let:item>
-    <td>v{item.version}</td>
-    <td>
-      <StatusChip
-        status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"}
-        label={ESTADO_LABELS[item.estado] ?? item.estado}
+{#if bloqueada}
+  <EmptyState
+    icon="fas fa-lock"
+    title="Sin permiso de administración del PINAR"
+    description="Tu usuario no tiene el permiso USUA_PERM_ADMIN, necesario para consultar y gestionar el Plan Institucional de Archivos."
+  />
+{:else}
+  <CatalogCrudPanel
+    title="PINAR — Plan Institucional de Archivos"
+    ariaLabel="Lista de planes PINAR"
+    items={planes}
+    rowKey={(p) => p.id}
+    loadError={loadError ? (loadError ?? "No se pudo cargar el listado de planes PINAR.") : null}
+    canCreate={canManage}
+    createLabel="Nuevo plan"
+    emptyIcon="fas fa-map"
+    emptyTitle="Sin planes PINAR"
+    emptyDescription={canManage
+      ? 'Crea el primero con "Nuevo plan".'
+      : "Aún no se ha creado ningún plan institucional de archivos."}
+    bind:createOpen
+    on:create={resetForm}
+  >
+    <svelte:fragment slot="toolbar-extra">
+      <FormField
+        id="pinar-filtro-estado"
+        name="estado"
+        label="Estado"
+        type="select"
+        options={ESTADO_OPTIONS}
+        bind:value={estadoFiltro}
+        on:change={onFiltroChange}
       />
-    </td>
-    <td>
-      {#if item.vigencia_desde || item.vigencia_hasta}
-        {formatDate(item.vigencia_desde)} – {formatDate(item.vigencia_hasta)}
-      {:else}
-        —
-      {/if}
-    </td>
-    <td>{item.acto_administrativo ?? "—"}</td>
-    <td>{formatDate(item.created_at)}</td>
-  </svelte:fragment>
+    </svelte:fragment>
 
-  <svelte:fragment slot="row-actions" let:item>
-    <Button variant="ghost" size="sm" icon="fas fa-eye" href="/admin/pinar/{item.id}">Ver</Button>
-  </svelte:fragment>
+    <svelte:fragment slot="thead">
+      <th scope="col">Versión</th>
+      <th scope="col">Estado</th>
+      <th scope="col">Vigencia</th>
+      <th scope="col">Acto administrativo</th>
+      <th scope="col">Creado</th>
+    </svelte:fragment>
 
-  <svelte:fragment slot="create-form">
-    <FormField
-      id="pinar-vision"
-      label="Visión"
-      type="textarea"
-      hint="Visión estratégica del plan (opcional; puede completarse después, mientras esté en borrador)."
-      bind:value={fVision}
-    />
-    <FormField
-      id="pinar-vigencia-desde"
-      label="Vigencia desde"
-      type="date"
-      bind:value={fVigenciaDesde}
-    />
-    <FormField
-      id="pinar-vigencia-hasta"
-      label="Vigencia hasta"
-      type="date"
-      bind:value={fVigenciaHasta}
-    />
-  </svelte:fragment>
-  <svelte:fragment slot="create-footer">
-    <Button variant="ghost" on:click={() => (createOpen = false)} disabled={actionLoading}
-      >Cancelar</Button
-    >
-    <Button icon="fas fa-save" loading={actionLoading} on:click={crear}>Crear</Button>
-  </svelte:fragment>
-</CatalogCrudPanel>
+    <svelte:fragment slot="row" let:item>
+      <td>v{item.version}</td>
+      <td>
+        <StatusChip
+          status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"}
+          label={ESTADO_LABELS[item.estado] ?? item.estado}
+        />
+      </td>
+      <td>
+        {#if item.vigencia_desde || item.vigencia_hasta}
+          {formatDate(item.vigencia_desde)} – {formatDate(item.vigencia_hasta)}
+        {:else}
+          —
+        {/if}
+      </td>
+      <td>{item.acto_administrativo ?? "—"}</td>
+      <td>{formatDate(item.created_at)}</td>
+    </svelte:fragment>
+
+    <svelte:fragment slot="row-actions" let:item>
+      <Button variant="ghost" size="sm" icon="fas fa-eye" href="/admin/pinar/{item.id}">Ver</Button>
+    </svelte:fragment>
+
+    <svelte:fragment slot="create-form">
+      <FormField
+        id="pinar-vision"
+        label="Visión"
+        type="textarea"
+        hint="Visión estratégica del plan (opcional; puede completarse después, mientras esté en borrador)."
+        bind:value={fVision}
+      />
+      <FormField
+        id="pinar-vigencia-desde"
+        label="Vigencia desde"
+        type="date"
+        bind:value={fVigenciaDesde}
+      />
+      <FormField
+        id="pinar-vigencia-hasta"
+        label="Vigencia hasta"
+        type="date"
+        bind:value={fVigenciaHasta}
+      />
+    </svelte:fragment>
+    <svelte:fragment slot="create-footer">
+      <Button variant="ghost" on:click={() => (createOpen = false)} disabled={actionLoading}
+        >Cancelar</Button
+      >
+      <Button icon="fas fa-save" loading={actionLoading} on:click={crear}>Crear</Button>
+    </svelte:fragment>
+  </CatalogCrudPanel>
+{/if}

@@ -45,7 +45,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, 
 
 from app.core.clearance import check_permission, require_permission
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
-from app.repositories.email_mensaje_repository import EmailMensajeRepository
 from app.schemas.email_cuenta import (
     AppOAuthCrear,
     AppOAuthResponse,
@@ -323,14 +322,21 @@ async def listar_bandeja(
     Una ventanilla atiende por orden de llegada, y la llegada es la del correo al
     buzón, no la del sondeo que lo trajo.
     """
-    repo = EmailMensajeRepository(conn)
-    filas = await repo.bandeja(cuenta_id, estado=estado)
-    response.headers["X-Total-Count"] = str(await repo.contar(cuenta_id, estado=estado))
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        filas, total = await EmailBandejaService(conn, slug).listar(
+            cuenta_id, actor=actor, es_admin=await _es_admin(conn, actor), estado=estado
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
+    response.headers["X-Total-Count"] = str(total)
     return [dict(f) for f in filas]
 
 
 @bandeja_router.get("/estado", dependencies=[Depends(require_permission("PERM_RADI"))])
 async def estado_bandeja(
+    request: Request,
     cuenta_id: uuid.UUID,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, Any]:
@@ -342,7 +348,14 @@ async def estado_bandeja(
     sostenible con diez operadores mirando la ventanilla; traerse la lista entera
     no lo es.
     """
-    return await EmailMensajeRepository(conn).estado_bandeja(cuenta_id)
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        return await EmailBandejaService(conn, slug).estado(
+            cuenta_id, actor=actor, es_admin=await _es_admin(conn, actor)
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
 
 
 @bandeja_router.post("/{mensaje_id}/reservar", dependencies=[Depends(require_permission("PERM_RADI"))])
@@ -359,12 +372,42 @@ async def reservar_correo(
     """
     slug = _tenant_slug(request)
     try:
+        actor = _actor(request)
         fila = await EmailBandejaService(conn, slug).reservar(
-            mensaje_id, cuenta_id, actor=_actor(request)
+            mensaje_id, cuenta_id, actor=actor, es_admin=await _es_admin(conn, actor)
         )
     except ErrorDeCuenta as exc:
         raise _traducir(exc)
     return dict(fila)
+
+
+@bandeja_router.post(
+    "/{mensaje_id}/liberar",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
+async def liberar_correo(
+    request: Request,
+    cuenta_id: uuid.UUID,
+    mensaje_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> None:
+    """Suelta la reserva propia sin decidir nada sobre el correo.
+
+    **Capacidad construida y no ofrecida**, el patrón que más veces ha aparecido
+    en este repositorio: el repositorio tenía `liberar()` con su test desde el
+    Increment 2 y no había forma de llamarlo. El efecto era que abrir un correo,
+    ver que no era para uno y cerrar la pantalla lo dejaba bloqueado quince
+    minutos para toda la ventanilla.
+    """
+    slug = _tenant_slug(request)
+    actor = _actor(request)
+    try:
+        await EmailBandejaService(conn, slug).liberar(
+            mensaje_id, cuenta_id, actor=actor, es_admin=await _es_admin(conn, actor)
+        )
+    except ErrorDeCuenta as exc:
+        raise _traducir(exc)
 
 
 @bandeja_router.post("/{mensaje_id}/radicar", dependencies=[Depends(require_permission("PERM_RADI"))])
@@ -416,8 +459,13 @@ async def descartar_correo(
     """
     slug = _tenant_slug(request)
     try:
+        actor = _actor(request)
         fila = await EmailBandejaService(conn, slug).descartar(
-            mensaje_id, cuenta_id, actor=_actor(request), motivo=motivo
+            mensaje_id,
+            cuenta_id,
+            actor=actor,
+            es_admin=await _es_admin(conn, actor),
+            motivo=motivo,
         )
     except ErrorDeCuenta as exc:
         raise _traducir(exc)
