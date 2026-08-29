@@ -17,6 +17,7 @@ append-only (PREMIS-style). search_path al tenant en cada método.
 from __future__ import annotations
 
 import json
+import uuid
 
 import asyncpg
 
@@ -110,6 +111,46 @@ class PreservacionRepository:
         return row
 
     # -- eventos -------------------------------------------------------
+
+    async def insert_migracion(self, data: dict) -> asyncpg.Record:
+        """Registra una migración de formato (E10, RF-PRE-04, migración 015).
+
+        Se inserta TAMBIÉN cuando falló: «se intentó y no se pudo» es
+        información de preservación, no ruido — es lo que dice qué documentos
+        siguen esperando una migración que no sale."""
+        await self._sp()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO preservacion_migracion
+                (file_id_origen, file_id_destino, formato_origen, formato_destino,
+                 sha256_origen, sha256_destino, herramienta, estado, motivo, iniciada_por)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING *
+            """,
+            data["file_id_origen"],
+            data["file_id_destino"],
+            data["formato_origen"],
+            data["formato_destino"],
+            data["sha256_origen"],
+            data["sha256_destino"],
+            data["herramienta"],
+            data["estado"],
+            data["motivo"],
+            data["iniciada_por"],
+        )
+        assert row is not None
+        return row
+
+    async def list_migraciones(self, file_id: uuid.UUID) -> list[asyncpg.Record]:
+        """Cadena de procedencia de un archivo, la más reciente primero."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                "SELECT * FROM preservacion_migracion WHERE file_id_origen = $1 "
+                "ORDER BY iniciada_at DESC",
+                file_id,
+            )
+        )
 
     async def insert_evento(self, data: dict, *, agente: str | None) -> asyncpg.Record:
         await self._sp()

@@ -127,6 +127,20 @@ class Settings(BaseSettings):
     # cinturón barato, no la garantía dura.
     verapdf_jvm_max_metaspace_mb: int = 256
 
+    # ── Migración de formato contra la obsolescencia (E10, RF-PRE-04) ──────
+    # "none" (default) | "ghostscript". **No hay opción "stub" y es
+    # deliberado**: un validador puede declarar honestamente «no evaluado»,
+    # pero un migrador de mentira tendría que PRODUCIR un archivo, y el único
+    # que puede producir sin la herramienta es uno inventado. Sin convertidor,
+    # el endpoint responde 503 en vez de fabricar una copia de preservación.
+    format_migrator: str = "none"
+    # Ruta ABSOLUTA al binario de Ghostscript. Misma validación que
+    # `verapdf_binary`: si no apunta a un ejecutable real, la factory devuelve
+    # `None` y no hay migración en este despliegue.
+    ghostscript_binary: str | None = None
+    ghostscript_timeout_seconds: int = 120
+    ghostscript_max_concurrency: int = 1
+
     @field_validator("pdfa_validator")
     @classmethod
     def _validate_pdfa_validator(cls, v: str) -> str:

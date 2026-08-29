@@ -10,89 +10,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
-### Baseline v0.01 — what the system does
-
-> **How to read this file.** OrpycaMCP has not cut a release yet: everything below
-> is one unpublished baseline. The Spanish changelog keeps the entry-by-entry
-> record of how it was built — every audit finding, remediation and increment,
-> in the project's working language. This section states what v0.01 **is**, which
-> is what an evaluator coming from outside needs; the individual entries that
-> follow it cover selected changes and are not a complete log.
-
-**Records management core (E01/E02/E03/E07)** — Registration of incoming, outgoing
-and internal documents with an immutable tracking number, assigned atomically per
-year + type + tenant. Expedientes (case files) with a full lifecycle
-(`open → closed → transferred`), foliation, ZIP export and metadata templates
-validated against a JSON Schema per documentary type. Attachments are SHA-256
-checksummed on upload, deduplicated per tenant, streamed in chunks (never buffered
-whole), and served through document-service so every download passes the clearance
-gate.
-
-**Retention and disposition (E04)** — TRD (retention schedule) and TVD (valuation
-schedule for accumulated fonds) as a single instrument with two discriminators,
-sharing one convalidation circuit: Comité approval, Consejo convalidation, RUSD
-registration, publication and repeal — each with its administrative act recorded,
-immutable once convalidated (enforced by a database trigger, not only by the
-application). Final disposition per radicado and per expediente, with a mandatory
-justification on the destructive path.
-
-**Electronic index and signature (E15/E06/E17)** — Append-only versioned XML index
-(RT-15 profile v4) with a per-document fingerprint and independent verification.
-The index is signed at closure with an institutional XAdES-B/T/LT/LTA signature
-(local CA, timestamp, long-term validation material), and transfer actas carry
-per-user personal signatures whose role is derived from identity, never chosen by
-the client. Personal PKI credentials are enrolled, renewed and revoked in-system,
-with a versioned key-encryption keyring and purge of revoked material.
-**Not accredited**: this is art. 7 electronic signature, not art. 28 — no ONAC
-certificate, no HSM under sole signer control, no accredited TSA.
-
-**Preservation (E10/E12)** — Preservation plan, PREMIS events, AIP packaging
-(BagIt/PREMIS) and real PDF/A validation through veraPDF. WORM protection via
-MinIO Object-Lock in `COMPLIANCE` mode over the signed index and the transfer
-acta, with retention derived from the retention schedule. Primary and secondary
-transfers with fixity re-verification on receipt. **Not accredited**: the
-repository itself is not an accredited preservation repository.
-
-**Security (E08)** — Multi-tenant isolation by PostgreSQL schema, with the
-`search_path` switched per request from JWT claims and MinIO buckets scoped per
-tenant. RBAC plus security clearance (no-read-up) applied in the `WHERE` of every
-query and inside every write — never as a prior check, so authorization and
-mutation are one act. Hash-chained immutable `audit_log`, partitioned monthly and
-hardened per partition. Publication is an explicit, justified and audited act
-(Ley 1712/2014 art. 12): absence of a reservation decision no longer means
-"public".
-
-**Workflow, notifications and search (E05/E16/E09/E19)** — Routing between
-dependencias with assignment, transfer, step completion, transaction execution and
-rollback, plus automatic routing rules. Email and in-app notifications with a
-dead-letter queue and replay. Full-text search embedded in PostgreSQL (no separate
-search service), reports, public lookup by verification code, and IMAP mail
-ingestion.
-
-**Interoperability (E11/E20)** — OAI-PMH harvesting (Dublin Core and EAD 2002 /
-ISAD(G)), CMIS browsing and content retrieval, interoperable export and import of
-radicados preserving the original tracking number with mandatory fixity, signed
-outbound webhooks and an inbound postal-operator callback with per-tenant HMAC.
-Every public channel ships **off** and trims at the source through a single
-chokepoint. **Stub**: the concrete connector for a given postal operator.
-
-**AI (E18/E21)** — An MCP server exposing the gateway's capabilities as tools, a
-conversational assistant, and a knowledge-service doing retrieval-augmented
-generation over pgvector with sovereign embeddings, ACL pre-filtering that fails
-closed, and answers that always carry their citations.
-
-**Frontend (E22)** — SvelteKit application with OAuth2 PKCE login, around 40 screens
-covering the tray, expedientes, signatures, transfers, physical archive, search,
-reports and the entity's own administration. The access token never reaches
-client-side JavaScript: every gateway call goes through SSR.
-
-**Operations** — Production Docker Compose manifest verified against real
-containers, nginx template, backup and restore programs exercised end to end
-(including audit-chain verification after restore), upgrade and rollback
-procedure, CI running lint, unit, real-database and frontend tests across all
-eleven services, and per-request tracing propagated from the edge.
-
-### Changed
+> **Coverage note (2026-08-29).** This English changelog carries the most recent entries and the
+> project's milestones, **not every entry**: the Spanish page (`docs/es/changelog.md`) has 410
+> entries against 241 here. The gap is historical —older increments that were never translated—
+> and it is stated here rather than left for the reader to discover: a changelog that looks
+> complete and is not is worse than one that declares its scope. New entries are written in both
+> from now on.
 
 - `refactor(rebrand)`: full rename `orfeomcp` → **`OrpycaMCP`** / **`orpycamcp`** before v0.01 — *Why*: the project is the evolution of Orfeo under the **Orpyca** concept ("Orfeo Pyme Calidad") with AI connectivity via **MCP** (Model Context Protocol) — *Impact*: by-surface convention — **brand** `OrpycaMCP`; **data/infra token** `orpycamcp` (DB `orpycamcp_db`, Keycloak realm `orpycamcp`, buckets `orpycamcp-{slug}-*`, Redis streams `orpycamcp.*`, Python package `orpycamcp_common`, network `orpycamcp-net`, containers `orpycamcp-*`); **repo/images/Compose project** `orpyca-mcp`; **company/web/org** `Orpyca`/`orpyca.com`/GitLab `orpyca`. **Requires recreating volumes**; the repo folder is renamed to `orpyca-mcp` (manual step)
 - `docs(claude)`: `CLAUDE.md` synced with the real architecture — 11 microservices with correct ports; removed SQLAlchemy/Alembic references (contradicted ADR-003: asyncpg + raw SQL); phases updated per specDrive
@@ -101,6 +24,44 @@ eleven services, and per-request tracing propagated from the edge.
 - `fix(compose)`: `signature-service` and `knowledge-service` now wait for `postgres` *healthy* (`depends_on: condition: service_healthy`) — they previously exited at startup with `ConnectionRefused`
 
 ### Added
+
+- `feat(storage,frontend)`: **format migration against obsolescence — the system can now produce preservation copies** (RF-PRE-04)
+  The last preservation requirement still in gap. PDF/A **validation** existed (real veraPDF since E10 C2b) and **migration** did not: the system could say a document was not PDF/A and do nothing about it.
+  **THE ORIGINAL IS NEVER TOUCHED.** The migration produces a **derived** artifact alongside it — a system that replaces the original has lost the evidence the day someone disputes whether the conversion altered the content. The test proves it: the file repository is replaced by a double and the **only** call on the source must be the read.
+  **FIXITY IS CHECKED BEFORE CONVERTING**, not after: migrating an already-corrupt file would propagate the corruption into the preservation copy and give it **the appearance of being the good one**. A mismatch answers `409` and records the attempt.
+  **A fourth guarantee the rule does not ask for and practice does**: converting to PDF/A without checking the result IS PDF/A produces a copy nobody validated. Three outcomes, never conflated: `migrado`, `fallido` (bytes discarded) and `no_verificado` (converted but unverifiable — **not promoted** either).
+  **THERE IS NO "STUB MIGRATOR", AND THAT IS THE DECISION.** The PDF/A validator's twin factory degrades to an honest stub because "not evaluated" is a real result. Here there is no equivalent: a stub would have to **produce a file**, and the only one it can produce without the tool is invented. The absence propagates as `None` up to a `503` that says what to install.
+  The PREMIS `MIGRACION` event type had been in the vocabulary from the start with **nobody writing it**; now this does, with `hash_before` and `hash_after`.
+  *Impact*: two new endpoints, migration `015`, `ghostscript` in the production image, and a "Migrate to PDF/A" action per annex. **RF-PRE-04 closed.**
+
+- `feat(storage,archive,frontend)`: **the elimination record enters WORM — the debt phase 4 left declared** (E10 + RF-TRD-07)
+  The record was left with **three local guarantees** —append-only trigger, SHA anchored in `audit_log`, XAdES signature— and **no Object-Lock**. The reason was declared then and was one of **model**: the WORM store assumed every protected artifact belongs to an **expediente**, and an elimination record covers N expedientes that are also about to disappear. Pinning it under one of their ids was not awkward: it was **wrong**.
+  Migration `storage tenant/014` opens the model with a `CHECK` that **enforces the pairing**: `objeto_tipo` (`expediente` | `lote`) says what `expediente_id` refers to, and the constraint closes both impossible combinations. Without it a row could claim an electronic index belongs to a batch, and the purge gate —which queries by expediente— would stop seeing it **with nothing to warn**.
+  `expediente_id` is **not renamed**, and the cost is declared: renaming would touch 142 references across ten modules, most of which are about actual expedientes. What does change is that the purge gate and the per-expediente listing now require `objeto_tipo = 'expediente'` **explicitly** — the two id spaces not colliding "in practice" is not a control.
+  The record joins `CONTROL_INSTRUMENT_TIPOS`: like the transfer record it outlives the content and **must not postpone its disposition** — and all the more so, since its retention is permanent and treating it as content would make it **the instrument blocking the very act it documents**.
+  **A repo guard had a blind spot, and this change was its first exposure**: `test_preservacion_tipos_guard.py` forces every new `tipo` in the `CHECK` to be classified, but read migration 010 **by name**. Migration 014 widens the `CHECK` and the guard would have kept reading 010, accepting an incomplete taxonomy **without failing**. *A guard pointing at a fixed file expires the day someone writes the next one.*
+  **Permanent preservation = 100 years**, the contract's maximum, because Object-Lock demands a **date**, not an infinity. Renewable through the same path as Total Conservation series.
+  *Impact*: `objeto_tipo` in the WORM store (backwards compatible: existing rows become `expediente`), two migrations, and the lock's state visible on screen. E04 has no loose ends left.
+
+- `feat(frontend)`: **PINAR stops being a dashboard that can never be filled** (RF-ADM-08)
+  The screen consumed **6 of the module's 31 endpoints**: a plan could be created and walked through its lifecycle, but there was no way to create a critical aspect, an objective or a project from the browser. The dashboard was always empty and the page itself called it "a later PINAR phase". A dashboard that can never be filled is not an empty state: it is a **false green**.
+  Three new tabs. **The screen mirrors the service's two lifecycles, which never overlap**: structure is editable only in `borrador`, follow-up only when `aprobado`/`en_ejecucion`. And the gate is **two** conditions, not one: the plan's state **and** `USUA_PERM_ADMIN` — the permission gate was missing in the first version and **its own test caught it**.
+  **The backend computes the priority**; the table is shown already sorted by it, and "not prioritised" is **not** painted as priority zero. **A project's progress is never typed in**: it comes from its append-only follow-up cut-offs, which is why `avance_pct` is not in the create/edit allow-list.
+  **A proxy factory instead of eleven files**: the allow-list is the anti mass-assignment barrier, and eleven copies of a barrier drift apart silently. *Impact*: 2 → 5 tabs, 6 → 31 endpoints consumed, no backend changes.
+
+- `feat(archive,document,storage,knowledge,frontend)`: **secure deletion — the retention schedule finally destroys what it orders destroyed** (RF-TRD-07 phase 5 of 5: epic closed)
+  The system **preserved well and never destroyed**. Constitution invariant 12 held without a crack, and that was simultaneously the non-compliance: keeping everything forever is not applying the retention schedule, it is **not** applying it (Law 594/2000 art. 24; AGN Agreement 001/2024 art. 4.3.2.5).
+  **It takes no body**, the most deliberate design decision of the phase: in a destruction there is nothing for the client to parametrise. On screen the button requires **typing the batch code**.
+  **Order is half the design**: bytes before rows (otherwise orphan objects in MinIO nobody can attribute — impossible to find and therefore to delete); documents before the expediente (otherwise the radicado links cascade away and **there is no way left to know what had to be destroyed**); the headstone before the deletion and in its own transaction (otherwise a destroyed expediente with no headstone, and silence is indistinguishable from "never existed").
+  **All-or-nothing per expediente**, and `purge_for_disposition` **had had no door since it was written**. **Migration 049 released three foreign keys and one averted a silent loss**: `transferencias` was `ON DELETE CASCADE` and would have taken `transferencia_acta` with it — a control instrument that storage-service's own code declares must outlive the content.
+  *Impact*: RF-TRD-07 closed, and with it E04 complete.
+
+- `feat(archive,signature,frontend)`: **the elimination record — what outlives what was eliminated** (RF-TRD-07 phase 4)
+  Permanent preservation, append-only by trigger, canonical XML with its SHA-256 anchored in `audit_log`, XAdES signature. **The record's inventory is complete, never clearance-narrowed** — what is narrowed is *who reads it*, with the threshold derived from the highest level in the inventory itself. `acta_eliminacion` had to enter signature-service's XAdES allow-list: without it the record would have fallen back to the `nativa` HMAC **with no error and no visible difference**.
+
+- `feat(archive,frontend)`: **the Committee's endorsement, batch withdrawal, and the page that was missing** (RF-TRD-07 phase 3)
+  **No endorsement while the publicity period is still open**, guarded in the transition's own `WHERE` with the server clock. The `409` distinguishes all three reasons. And the phase-2 chokepoint was leaving a case out silently: a published-then-withdrawn batch vanished from the public view. Rewritten as the **mark of the act** (`publicado_at IS NOT NULL`).
+
 
 - `feat(archive,frontend)`: **prior publicity — the inventory of what is to be destroyed, in plain sight** (RF-TRD-07, phase 2 of 5)
   A published batch stops being an internal matter: its inventory becomes visible **without authentication**, with the deadline to object, linked from the portal. Without prior publicity, the Committee endorses something nobody outside could look at.

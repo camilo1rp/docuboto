@@ -30,6 +30,30 @@
 
 ---
 
+## Cross-cutting routes (all services)
+
+- `GET /health` · `GET /health/ready` — liveness and readiness probes, in **all eleven** services. `/health` answers if the process is up; `/health/ready` also checks its dependencies (PostgreSQL pool, Redis, MinIO as applicable). Docker Compose healthchecks and ordered startup rely on them: a service answering `/health` but not `/health/ready` is alive and **must not receive traffic yet**, and conflating the two produces the cascading startup that looks like an intermittent failure.
+- `GET /api/v1/openapi.json` — the service's OpenAPI schema, served by FastAPI; the gateway aggregates them into `/docs`.
+
+**Internal endpoints (`/internal/...` and the `-internal` suffix)**: sealed with `X-Internal-Token` (D-02) and **not routed by the gateway** — that header is not in `FORWARDED_REQUEST_HEADERS` — so they are unreachable from outside the internal network no matter how well the path is known.
+
+| Internal endpoint | Service | Purpose |
+|---|---|---|
+| `POST /api/v1/internal/documentos/anexos` | document | FULL annex inventory for a batch of radicados (system act, no clearance narrowing) |
+| `POST /api/v1/internal/documentos/metadata` | document | Metadata (`subject`/`doc_type`) of **visible** radicados for the export manifest — this one does narrow by clearance |
+| `POST /api/v1/internal/documentos/purgar` | document | **Destroys** radicados and their annexes under final disposition (RF-TRD-07 phase 5) |
+| `POST /api/v1/storage/internal/artefacto` | storage | Uploads a SYSTEM-produced artifact (signed index, original `.eml`) under its own format allow-list |
+| `POST /api/v1/storage/internal/anexo-externo` | storage | Annex received through the public single window |
+| `POST /api/v1/storage/internal/purgar-disposicion` | storage | **Physical deletion** from MinIO + row, behind the WORM gate |
+| `GET /api/v1/storage/files/{id}/content` | storage | Bytes for service-to-service processing (mediated download, AIP) |
+| `POST /api/v1/preservacion/proteger-indice-internal` · `proteger-artefacto-internal` · `renovar-retencion-internal` | storage | WORM wiring and renewal from unattended reconciliation |
+| `POST /api/v1/preservacion/aip-internal` | storage | AIP packaging driven by reconciliation (`SYSTEM_RECONCILER_ID`) |
+| `POST /api/v1/preservacion/export-zip-internal` | storage | Expediente ZIP export requested by archive-service |
+| `GET /internal/signing-key/revocation-status` · `POST /internal/signing-key/sign-digest` | auth | Revocation status and digest signing with the custodied key |
+| `POST /api/v1/signature/internal/sign-indice` | signature | Deferred XAdES sealing of the index/record |
+
+---
+
 ## auth-service — port 8001
 
 ### `POST /api/v1/auth/token` — public
@@ -145,7 +169,7 @@ The TOTP secret (RFC 6238) is a **durable identity credential** and lives in aut
 
 ### URD and dependencia context (E08)
 
-- `GET /api/v1/auth/users/{user_id}/urd` · `POST` · `DELETE /{urd_id}` — manages the User-Role-Dependencia assignments (one per (user, dependencia); a single primary one). Requires `USUA_PERM_ADMIN`. `POST`/`DELETE` write `urd.creada`/`urd.eliminada` entries, **atomically** with the mutation.
+- `GET /api/v1/auth/users/{user_id}/urd` · `POST /api/v1/auth/users/{user_id}/urd` · `DELETE /api/v1/auth/users/{user_id}/urd/{urd_id}` — manages the User-Role-Dependencia assignments (one per (user, dependencia); a single primary one). Requires `USUA_PERM_ADMIN`. `POST`/`DELETE` write `urd.creada`/`urd.eliminada` entries, **atomically** with the mutation.
 - `GET /api/v1/auth/context` — caller context: `{user_id, active_depe_id, available_depts[]}`.
 - `POST /api/v1/auth/context/switch` `{ "depe_id": 120 }` — sets the active dependencia (organizational unit) for the user themselves. **Does not reissue the token** (ADR-013): it persists the context and audits it in `usua_historico` (Channel B, not `audit_log`). `400 no_urd_for_dependency` if the user has no active URD there.
 
@@ -352,7 +376,7 @@ Public page at `(public)/eliminacion`, linked from the portal. **The objection c
 
 Admin page at `/admin/eliminacion`.
 
-**Phase 4 — the elimination record (2026-08-29).** `POST /api/v1/eliminacion/lotes/{id}/acta` · `GET .../acta` · `POST .../acta/firmar`.
+**Phase 4 — the elimination record (2026-08-29).** `POST /api/v1/eliminacion/lotes/{id}/acta` · `GET /api/v1/eliminacion/lotes/{id}/acta` · `POST /api/v1/eliminacion/lotes/{id}/acta/firmar`.
 
 **The record is what outlives what was eliminated.** Once phase 5 deletes the bytes it will be — together with the headstone and `audit_log` — the only evidence of what was destroyed, under which act and who authorised it. It is of **permanent preservation**: no retention schedule, no final disposition. It is produced **before** the deletion, because the inventory it describes comes from expedientes that are about to cease existing.
 
@@ -368,7 +392,7 @@ XAdES sealing runs post-commit, best-effort and bounded, with the transfer recor
 
 > **The record's WORM lock: closed on 2026-08-29.** The reason it was pending was one of **model**: the Object-Lock store assumed every protected artifact belongs to an expediente, and an elimination record covers **N** expedientes that are about to disappear. Migration `storage tenant/014` adds `objeto_tipo` (`expediente` | `lote`) with a `CHECK` that **enforces the pairing**, and the purge gate now requires `objeto_tipo = 'expediente'` explicitly — a row whose id belongs to a batch must never decide about an expediente's purge. The record also joins `CONTROL_INSTRUMENT_TIPOS`: like the transfer record it outlives the content and must not postpone its disposition. **Permanent preservation is materialised as 100 years**, the contract's maximum: Object-Lock demands a date, not an infinity.
 
-**Phase 5 — secure deletion (2026-08-29). This destroys.** `POST /api/v1/eliminacion/lotes/{id}/ejecutar` · `GET .../lapidas`.
+**Phase 5 — secure deletion (2026-08-29). This destroys.** `POST /api/v1/eliminacion/lotes/{id}/ejecutar` · `GET /api/v1/eliminacion/lotes/{id}/lapidas`.
 
 The only path in the system that deletes archival documents, and it **takes no body**: in a destruction there is nothing for the client to parametrise. What is destroyed is set by the inventory frozen at proposal time; under which act, by the endorsement.
 
@@ -1399,6 +1423,60 @@ GET /api/v1/search?q=tutela&doc_type=E&date_from=2024-01-01&meta.area=juridica
 }
 ```
 
+
+## Dead-letter queue — admin (ADR-021 phase 5)
+
+Three services keep their own dead-letter queue for events they could not consume: `signature`, `workflow` and `notification` (**singular** — the path is `/api/v1/notification/...`, not `notifications`; the Spanish page said otherwise until 2026-08-29 and a mechanical route census caught it).
+
+| Method | Route | Notes |
+|---|---|---|
+| `GET` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter?status=pending&origin_stream=&page=&size=` | Paginated list (`X-Total-Count`). Headers only (no business payload) and **narrowed by the caller's clearance** — row-by-row no-read-up against the *live* level of the referenced radicado. A row whose object exceeds the admin's level is omitted entirely: it neither appears nor counts towards `X-Total-Count`, consistent with the neutral `404` of the detail view. Fail-closed on any resolution error. The candidate set is capped at `1000` before filtering; reaching the cap adds **`X-Truncated: true`** (warning that `X-Total-Count` may under-report). |
+| `GET` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter/{event_id}` | Detail (full envelope + failure). Clearance-gated; **neutral `404`** — byte-identical body — when insufficient or non-existent. An authorised view writes an `evento.dead_letter.viewed` entry; **a blocked view does not audit**, so as not to confirm existence. |
+| `POST` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter/{event_id}/replay` | Re-injects the event into its stream. Same clearance gate, audited. |
+| `POST` | `/api/v1/{signature\|workflow\|notification}/admin/deadletter/{event_id}/discard` | Discards it permanently, with a reason. Same gate, audited. |
+
+Gate: `PERM_DLQ_ADMIN` (**not** `USUA_PERM_ADMIN`) on all four.
+
+---
+
+## Format migration against obsolescence (E10, RF-PRE-04)
+
+`POST /api/v1/preservacion/migrar-formato` · `GET /api/v1/preservacion/migraciones/{file_id}` — gate `USUA_PERM_EXPEDIENTE` `crud≥3`.
+
+The rule (Decree 2609/2012 art. 32) asks for three things, and all three are invariants of the endpoint:
+
+1. **Keep the original.** The migration produces a **derived** artifact that lives alongside it; the source file is not touched, not flagged, not replaced. A system that replaces the original has lost the evidence the day someone disputes whether the conversion altered the content.
+2. **Record source and target versions** with their provenance chain (`preservacion_migracion`, migration `015`) and their PREMIS **`MIGRACION`** event — a type that had been in the vocabulary from the start and that **nobody wrote** until now.
+3. **Verify integrity before and after.** The source SHA-256 is **recomputed** over the downloaded bytes and compared with the stored one **before** converting: migrating an already-corrupt file would propagate the corruption into the preservation copy and give it the appearance of being the good one. A mismatch answers `409` and **records the attempt** — a file that fails fixity is exactly the one to go and look at.
+
+And a fourth the rule does not state and practice does: **converting to PDF/A without checking that the result IS PDF/A produces a copy nobody validated.** The derivative goes through veraPDF, with three outcomes that are never conflated: `migrado` (conformant), `fallido` (non-conformant — the bytes are discarded) and `no_verificado` (converted, but no validator available: **not promoted** to a preservation copy either).
+
+> **`503` when the deployment has no converter, and there is no "stub migrator".** The PDF/A validator's twin factory degrades to an honest stub because "not evaluated" is a real result; here there is no equivalent — a stub would have to **produce a file**, and the only file it can produce without the tool is an invented one. Same deliberate asymmetry as voice transcription. The production image installs `ghostscript` and sets `FORMAT_MIGRATOR=ghostscript`.
+
+The profile is limited to the **`b`** variants of PDF/A (`1b`/`2b`/`3b`, default `2b`): the `a`/`u` ones require tagged text or guaranteed Unicode, which an automatic conversion cannot promise. `GET /migraciones/{file_id}` returns the provenance chain **including failed attempts**: "it was tried and it did not work" is what tells you which documents are still waiting for a migration that never comes.
+
+---
+
+## Voice dictation (E18, ADR-020)
+
+- `GET /api/v1/assistant/transcribe` — **availability probe**, not decoration: it answers whether a transcription provider is configured and reachable, so the UI can decide whether to offer the microphone instead of offering it and failing when the button is released.
+- `POST /api/v1/assistant/transcribe` — takes the audio, returns the text.
+
+**There is no `stub` provider, and the asymmetry with the rest of the system is deliberate**: a validator can honestly report "not evaluated", but a fake transcriber would have to **invent what was said**. With no provider the `POST` answers `503` and the `GET` says so beforehand.
+
+---
+
+## Other routes documented in the Spanish page
+
+These exist and behave identically; the Spanish page (`docs/es/api.md`) carries the full rationale:
+
+- `GET /api/v1/dependencias/tree` — the org chart as a **tree** (`parent_id` resolved), not a flat list: rebuilding the hierarchy client-side from a partial page produces orphan nodes.
+- `GET /api/v1/documents/{id}/anexos/{anexo_id}/download` — annex download **mediated by document-service**, so storage-service stays sealed and no-read-up is decided by whoever knows the radicado's classification.
+- `GET /api/v1/expedientes/{id}/aip` · `GET /api/v1/expedientes/{id}/preservacion/eventos` (archive-service) — the expediente's AIP and its PREMIS events, behind `USUA_PERM_EXPEDIENTE`.
+- `GET /api/v1/reports/indice-reservado.csv` — CSV form of the classified-information index (Law 1712 art. 20), content-free.
+- `GET /api/v1/public/archive/eliminacion/{tenant}/lotes/{lote_id}` — a published elimination batch, unauthenticated.
+
+---
 ---
 
 ## Workflow Rules Engine — workflow-service

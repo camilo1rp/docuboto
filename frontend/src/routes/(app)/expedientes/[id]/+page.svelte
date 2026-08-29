@@ -633,6 +633,55 @@
   $: if (activeTab === "acceso") loadAcceso();
 
   // ---------------------------------------------------------------------------
+  // Migración de formato contra la obsolescencia (E10, RF-PRE-04)
+  // ---------------------------------------------------------------------------
+  // Produce una COPIA DE PRESERVACIÓN en PDF/A y **deja el original intacto**
+  // (Decreto 2609/2012 art. 32): la norma manda conservar el original y su
+  // procedencia, no reemplazarlo. Por eso el aviso de éxito dice que se creó
+  // una copia, no que el anexo «se convirtió» — que es lo que la gente
+  // entendería si no se lo dijéramos.
+  let migrandoFileId = null;
+
+  async function migrarAPdfa(anexo) {
+    migrandoFileId = anexo.file_id;
+    try {
+      const res = await fetch(`/expedientes/${expediente.id}/api/migrar-formato`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: anexo.file_id, perfil: "2b" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // El 503 del convertidor ausente se muestra tal cual: es un problema
+        // de instalación, no de este documento, y colapsarlo mandaría a
+        // depurar el PDF equivocado.
+        notifyError(mensajeError(body, `Error ${res.status}`));
+        return;
+      }
+      if (body.estado === "migrado") {
+        notifySuccess(
+          `Copia de preservación creada en ${body.formato_destino}. ` +
+            "El original se conserva intacto.",
+        );
+      } else if (body.estado === "no_verificado") {
+        notifyError(
+          "Se convirtió, pero no hay validador PDF/A para comprobarlo: la copia " +
+            "NO se guardó como copia de preservación.",
+        );
+      } else {
+        notifyError(`No se pudo migrar: ${body.motivo ?? "conversión fallida"}`);
+      }
+      // Los eventos PREMIS del expediente cambian con la migración.
+      preservacionState = { ...preservacionState, status: "idle" };
+      if (activeTab === "preservacion") loadPreservacion();
+    } catch {
+      notifyError("No se pudo conectar con el servidor de preservación.");
+    } finally {
+      migrandoFileId = null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Descarga de anexo (mediada por document-service — E07, RF-SEG-08, D-02)
   // ---------------------------------------------------------------------------
   /**
@@ -1617,6 +1666,25 @@
                                   >
                                     <i class="fas fa-download" aria-hidden="true"></i> Descargar
                                   </button>
+                                  <!-- Migración de formato (E10, RF-PRE-04). Solo
+                                       se ofrece sobre PDF: es una conversión A
+                                       PDF/A, y ofrecerla sobre un .docx sería
+                                       ofrecer un botón que el convertidor
+                                       rechaza. El original NO se toca. -->
+                                  {#if (anexo.mime_type ?? "").includes("pdf")}
+                                    <button
+                                      type="button"
+                                      class="exp-action-link"
+                                      aria-label="Migrar {anexo.filename} a PDF/A"
+                                      disabled={migrandoFileId === anexo.file_id}
+                                      on:click={() => migrarAPdfa(anexo)}
+                                    >
+                                      <i class="fas fa-file-shield" aria-hidden="true"></i>
+                                      {migrandoFileId === anexo.file_id
+                                        ? "Migrando…"
+                                        : "Migrar a PDF/A"}
+                                    </button>
+                                  {/if}
                                 </td>
                               </tr>
                             {/each}

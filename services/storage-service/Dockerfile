@@ -118,8 +118,18 @@ ARG JAVA_PACKAGE=openjdk-21-jre-headless
 # Runtime que el wrapper shell `/opt/verapdf/verapdf` necesita en PATH para
 # invocar su JVM (el propio veraPDF ya viene instalado desde el stage
 # anterior) -- mismo paquete que verapdf-builder, ver el comentario ahí.
+# `ghostscript` es el CONVERTIDOR de la migración de formato contra la
+# obsolescencia (E10, RF-PRE-04; Decreto 2609/2012 art. 32). Va en el mismo
+# `apt-get` que la JVM porque comparten motivo: son las dos herramientas
+# externas que el servicio necesita para preservar de verdad.
+#
+# **Sin él NO hay migración de formato, y eso es correcto**: la factory
+# (`app/services/migracion/factory.py`) devuelve `None` y el endpoint responde
+# 503. A diferencia del validador PDF/A, aquí no hay stub al que degradar — un
+# validador puede declarar honestamente «no evaluado», pero un migrador falso
+# tendría que inventarse el archivo.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends "$JAVA_PACKAGE" \
+    && apt-get install -y --no-install-recommends "$JAVA_PACKAGE" ghostscript \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=verapdf-builder /opt/verapdf /opt/verapdf
@@ -129,7 +139,9 @@ COPY --from=verapdf-builder /opt/verapdf /opt/verapdf
 # `app/services/pdfa/factory.py::_resolve_verapdf_binary`).
 ENV VERAPDF_BINARY=/opt/verapdf/verapdf \
     PDFA_VALIDATOR=verapdf \
-    PRESERVATION_PDFA_VALIDATION_ENABLED=true
+    PRESERVATION_PDFA_VALIDATION_ENABLED=true \
+    GHOSTSCRIPT_BINARY=/usr/bin/gs \
+    FORMAT_MIGRATOR=ghostscript
 
 # Usuario NO-root: `SubprocessVeraPdfValidator` ejecuta un binario Java sobre
 # PDFs subidos por cualquier tenant (input NO confiable) -- si el proceso

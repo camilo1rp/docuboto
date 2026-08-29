@@ -499,3 +499,36 @@ class RenovarRetencionResponse(BaseModel):
     renovado: bool
     renovaciones: int
     renovado_at: datetime | None
+
+
+class MigrarFormatoRequest(BaseModel):
+    """`POST /api/v1/preservacion/migrar-formato` (E10, RF-PRE-04).
+
+    `perfil` se acota a las variantes **`b`** de PDF/A: las `a`/`u` exigen texto
+    etiquetado o Unicode garantizado, y una conversión automática no puede
+    prometerlo — ofrecerlas sería declarar una conformidad que el convertidor no
+    alcanza."""
+
+    file_id: uuid.UUID
+    perfil: Literal["1b", "2b", "3b"] = "2b"
+
+
+class MigracionResponse(BaseModel):
+    """Un registro de la cadena de procedencia.
+
+    `file_id_destino` y `sha256_destino` viajan en `None` cuando la migración no
+    produjo una copia admisible — que es la mayor parte de la información útil
+    cuando algo va mal."""
+
+    id: uuid.UUID
+    file_id_origen: uuid.UUID
+    file_id_destino: uuid.UUID | None
+    formato_origen: str
+    formato_destino: str
+    sha256_origen: str
+    sha256_destino: str | None
+    herramienta: str
+    estado: str
+    motivo: str | None
+    iniciada_por: uuid.UUID | None
+    iniciada_at: datetime

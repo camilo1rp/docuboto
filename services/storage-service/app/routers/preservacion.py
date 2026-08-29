@@ -12,16 +12,18 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response
 
 from app.core.clearance import require_permission
+from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import get_db_conn
 from app.core.internal_auth import require_internal_token
-from app.core.minio_client import ObjectLockNotEnabledError
+from app.core.minio_client import ObjectLockNotEnabledError, get_minio
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.schemas.preservacion import (
     AipCreate,
@@ -29,6 +31,8 @@ from app.schemas.preservacion import (
     EventoCreate,
     EventoResponse,
     ExportZipCreate,
+    MigracionResponse,
+    MigrarFormatoRequest,
     PlanCreate,
     PlanResponse,
     ProtegerIndiceRequest,
@@ -38,6 +42,17 @@ from app.schemas.preservacion import (
 )
 from app.services.aip_builder import PremisValidationError
 from app.services.aip_service import AipService
+from app.services.format_migration_service import (
+    FileNotFoundForMigrationError,
+    FormatMigrationService,
+    MigradorNoDisponibleError,
+)
+from app.services.format_migration_service import (
+    # Alias explícito: `preservation_worm_service` exporta otra excepción con
+    # el MISMO nombre, y dejar que una tape a la otra haría que un `except`
+    # capturara la equivocada sin que nada avisara.
+    FixityMismatchError as MigracionFixityMismatchError,
+)
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
@@ -46,6 +61,7 @@ from app.services.preservation_worm_service import (
     PreservationWormService,
     WormObjectNotFoundError,
 )
+from app.services.storage_service import StorageService
 
 router = APIRouter(prefix="/api/v1/preservacion", tags=["preservacion"])
 
@@ -65,6 +81,23 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
 
 def _actor(request: Request) -> str | None:
     return request.headers.get("X-Username") or request.headers.get("X-User-Id")
+
+
+def _actor_uuid(request: Request) -> uuid.UUID | None:
+    """El actor como UUID, para las columnas que lo son.
+
+    `_actor` devuelve TEXTO porque prefiere `X-Username`, que es lo que se lee
+    mejor en un evento PREMIS. Aquí hace falta el identificador: un
+    `X-Username` no convertible resuelve a `None` en vez de reventar la
+    petición — la migración es un acto de preservación y no debe fallar por el
+    formato de una cabecera."""
+    crudo = request.headers.get("X-User-Id")
+    if not crudo:
+        return None
+    try:
+        return uuid.UUID(crudo)
+    except ValueError:
+        return None
 
 
 def _evento_response(row) -> EventoResponse:
@@ -634,3 +667,104 @@ async def export_zip_internal(
             detail={"error": "anexo_no_encontrado", "detail": str(exc), "status": 404},
         )
     return Response(content=zip_bytes, media_type="application/zip")
+
+
+@router.post(
+    "/migrar-formato",
+    response_model=MigracionResponse,
+    summary="Migrar un archivo a PDF/A contra la obsolescencia (RF-PRE-04)",
+    # Mismo gate que proteger un artefacto: es un acto de preservación sobre el
+    # archivo de un expediente, y produce un artefacto nuevo.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
+async def migrar_formato(
+    payload: MigrarFormatoRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_actor_uuid),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> MigracionResponse:
+    """Produce una copia de preservación en PDF/A **sin tocar el original**
+    (Decreto 2609/2012 art. 32).
+
+    **`503` si este despliegue no tiene convertidor**, y esa es la respuesta
+    correcta: no hay migrador «stub» porque un migrador falso tendría que
+    inventarse el archivo. El `503` dice qué falta instalar; fabricar una copia
+    de preservación que nadie generó sería mucho peor que no migrar.
+
+    La integridad se verifica **antes y después**, y el derivado se valida
+    contra el perfil PDF/A: si no resulta conforme, la migración es `fallido` y
+    los bytes se descartan. Si no hay validador, queda `no_verificado` y
+    **tampoco** se promueve a copia de preservación.
+    """
+    service = FormatMigrationService(conn, tenant_slug)
+    storage = StorageService(conn, tenant_slug)
+
+    async def _descargar(record) -> bytes:
+        minio = get_minio()
+        respuesta = await minio.get_object(record.bucket, record.object_key)
+        try:
+            return await respuesta.read()
+        finally:
+            close = getattr(respuesta, "close", None)
+            if close:
+                close()
+
+    async def _subir(origen, contenido: bytes, formato: str) -> uuid.UUID:
+        # El derivado entra como ARTEFACTO DE SISTEMA, no como anexo: nadie lo
+        # aportó, lo produjo la preservación. Por eso usa la lista de formatos
+        # del sistema y no la de anexos.
+        nombre = f"{origen.filename.rsplit('.', 1)[0]}-{formato.replace('/', '')}.pdf"
+        respuesta, _creado, _ = await storage.upload(
+            filename=nombre,
+            mime_type="application/pdf",
+            content=contenido,
+            uploaded_by=actor,
+            formatos_admitidos=settings.allowed_system_mime_set,
+        )
+        return respuesta.id
+
+    try:
+        registro = await service.migrar_a_pdfa(
+            payload.file_id,
+            perfil=payload.perfil,
+            actor=actor,
+            descargar=_descargar,
+            subir=_subir,
+        )
+    except MigradorNoDisponibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "migrador_no_disponible", "detail": str(exc), "status": 503},
+        ) from exc
+    except FileNotFoundForMigrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "file_not_found",
+                "detail": f"No existe el archivo {exc}",
+                "status": 404,
+            },
+        ) from exc
+    except MigracionFixityMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "fixity_no_coincide", "detail": str(exc), "status": 409},
+        ) from exc
+    return MigracionResponse(**registro)
+
+
+@router.get(
+    "/migraciones/{file_id}",
+    response_model=list[MigracionResponse],
+    summary="Cadena de procedencia de las migraciones de un archivo (RF-PRE-04)",
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+)
+async def listar_migraciones(
+    file_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[MigracionResponse]:
+    """Los intentos, no solo los que salieron bien: «se intentó y no se pudo»
+    es lo que dice qué documentos siguen esperando una migración que no sale."""
+    repo = PreservacionRepository(conn, tenant_slug)
+    return [MigracionResponse(**dict(r)) for r in await repo.list_migraciones(file_id)]
