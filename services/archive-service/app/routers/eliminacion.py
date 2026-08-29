@@ -32,6 +32,8 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    LoteAnulacion,
+    LoteAval,
     LoteEliminacionCreate,
     LoteEliminacionResponse,
     LotePublicar,
@@ -137,4 +139,52 @@ async def publicar_lote(
     service = ArchiveService(conn, tenant_slug)
     return await service.publicar_lote_eliminacion(
         lote_id, publicado_hasta=payload.publicado_hasta, actor=actor.id
+    )
+
+
+@router.post(
+    "/lotes/{lote_id}/avalar",
+    response_model=LoteEliminacionResponse,
+    summary="Registrar el aval del Comité (RF-TRD-07, fase 3 de 5)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def avalar_lote(
+    lote_id: uuid.UUID,
+    payload: LoteAval,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> LoteEliminacionResponse:
+    """El aval del Comité Institucional de Gestión y Desempeño. **No se
+    registra con el plazo de publicidad todavía abierto** (409
+    `publicidad_en_curso`). Autoriza la destrucción; no la ejecuta."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.avalar_lote_eliminacion(
+        lote_id,
+        acta_comite=payload.acta_comite,
+        fecha_aval=payload.fecha_aval,
+        acto_administrativo=payload.acto_administrativo,
+        actor=actor.id,
+    )
+
+
+@router.post(
+    "/lotes/{lote_id}/anular",
+    response_model=LoteEliminacionResponse,
+    summary="Retirar un lote del procedimiento (RF-TRD-07, fase 3 de 5)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def anular_lote(
+    lote_id: uuid.UUID,
+    payload: LoteAnulacion,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> LoteEliminacionResponse:
+    """Retira el lote **hasta el último momento, incluso ya avalado** — pero
+    nunca después de ejecutarlo. Si el lote se llegó a publicar, sigue siendo
+    público tras anularse, con su motivo."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.anular_lote_eliminacion(
+        lote_id, motivo=payload.motivo, actor=actor.id
     )

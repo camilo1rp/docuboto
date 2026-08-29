@@ -33,6 +33,9 @@
     publicado: { chip: "pending", texto: "En plazo de oposición" },
     avalado: { chip: "info", texto: "Avalado por el Comité" },
     ejecutado: { chip: "neutral", texto: "Eliminación ejecutada" },
+    // Un lote publicado y luego retirado sigue siendo público: la constancia
+    // de que algo NO se eliminó le importa a quien leyó que iba a eliminarse.
+    anulado: { chip: "neutral", texto: "Retirado, no se eliminará" },
   };
   const info = (e) => ESTADO[e] ?? { chip: "neutral", texto: e };
 

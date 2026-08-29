@@ -613,6 +613,44 @@ class LotePublicar(BaseModel):
         return self
 
 
+class LoteAval(BaseModel):
+    """`POST /api/v1/eliminacion/lotes/{id}/avalar` (RF-TRD-07, fase 3 de 5).
+
+    El **aval del Comité Institucional de Gestión y Desempeño**: la decisión
+    archivística que autoriza destruir (Ac. AGN 001/2024 art. 4.3.2.5). Las
+    tres constancias son obligatorias por el mismo criterio que la
+    convalidación de una versión de TRD --un aval sin acta ni fecha ni acto
+    administrativo es una afirmación no verificada--, y el CHECK de la
+    migración 047 las exige también en la base, no solo aquí.
+
+    El sistema **no decide**: registra que un Comité decidió, y con qué acto.
+    """
+
+    acta_comite: str = Field(min_length=3, max_length=200)
+    fecha_aval: date
+    acto_administrativo: str = Field(min_length=3, max_length=200)
+
+    @model_validator(mode="after")
+    def _fecha_no_futura(self) -> LoteAval:
+        if self.fecha_aval > date.today():
+            raise ValueError(
+                "La fecha del aval no puede ser futura: se registra un acta que ya "
+                "existe, no una reunión que aún no ha ocurrido."
+            )
+        return self
+
+
+class LoteAnulacion(BaseModel):
+    """`POST /api/v1/eliminacion/lotes/{id}/anular` (RF-TRD-07, fase 3 de 5).
+
+    Retirar un lote del procedimiento. El motivo es obligatorio y de longitud
+    mínima porque es la constancia de por qué NO se eliminó -- y si el lote
+    llegó a publicarse, esa constancia queda a la vista de quien leyó el
+    inventario y pudo estar esperando la oposición que presentó."""
+
+    motivo: str = Field(min_length=10, max_length=500)
+
+
 class LoteEliminacionItemPublico(BaseModel):
     """Una fila del inventario **publicado**.
 
@@ -645,6 +683,10 @@ class LoteEliminacionPublico(BaseModel):
     acto_administrativo: str | None
     ejecutado_at: datetime | None
     observaciones: str | None = None
+    # Un lote publicado y luego RETIRADO sigue siendo público, con su motivo:
+    # quien leyó que esos expedientes iban a eliminarse tiene que poder ver en
+    # qué quedó.
+    anulado_motivo: str | None = None
     total_items: int
     items: list[LoteEliminacionItemPublico] = []
 

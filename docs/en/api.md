@@ -322,7 +322,7 @@ Structural editing is allowed **only in `borrador`** (→ 409 `plan_no_editable`
 
 ---
 
-### Documentary elimination — batches (RF-TRD-07, phase 1 of 5, 2026-08-28)
+### Documentary elimination — batches (RF-TRD-07, phases 1-3 of 5, 2026-08-29)
 
 `POST /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes/{id}`
 
@@ -336,11 +336,19 @@ An expediente outside the proposer's clearance is reported as `no_encontrado`, *
 
 **Phase 2 — prior publicity (2026-08-28).** `POST /api/v1/eliminacion/lotes/{id}/publicar` moves `borrador → publicado` and **freezes the inventory**. `publicado_hasta` is mandatory and future — **no default**: one does not invent how many days an institution gives for objecting to a document's destruction.
 
-The inventory becomes visible **without authentication** at `GET /api/v1/public/archive/eliminacion/{tenant}/lotes[/{id}]`. **The chokepoint is the batch's STATE**, not a deployment switch: deliberately **not** tied to `public_interop_enabled`, because publishing the correspondence register is the institution's decision while publishing what it is about to destroy is a **duty of the procedure**. A `borrador` or `anulado` batch answers **404**; `avalado` and `ejecutado` ones **remain consultable**, because the record of what was eliminated cannot vanish upon eliminating it.
+The inventory becomes visible **without authentication** at `GET /api/v1/public/archive/eliminacion/{tenant}/lotes[/{id}]`. **The chokepoint is the batch's STATE**, not a deployment switch: deliberately **not** tied to `public_interop_enabled`, because publishing the correspondence register is the institution's decision while publishing what it is about to destroy is a **duty of the procedure**. The chokepoint is written as the **mark of the act** (`publicado_at IS NOT NULL`), not as a list of states: **every batch that was ever published** stays public — `avalado`, `ejecutado` and `anulado` too. The record of what was eliminated cannot vanish upon eliminating it, and the record that something was **not** eliminated matters to whoever read that it would be. A `borrador` batch answers **404**.
 
 **A classified expediente's description is not published, but its row is.** The narrowing lives in the `SELECT`, not in the renderer. Omitting the row would fail the publicity duty precisely over what matters most to be able to object to; what is withheld is the **denomination**, where the content lives. It is flagged `nombre_reservado` so the page **says so** instead of leaving a mute gap.
 
 Public page at `(public)/eliminacion`, linked from the portal. **The objection channel is not invented**: it is the institution's existing single window.
+
+**Phase 3 — the Committee's endorsement and withdrawal (2026-08-29).** `POST /api/v1/eliminacion/lotes/{id}/avalar` (`USUA_PERM_TRD` `crud≥3`) moves `publicado → avalado` with three **mandatory** records — `acta_comite`, `fecha_aval` (not in the future) and `acto_administrativo` — enforced in the schema, the service and a migration-047 `CHECK`. The system does **not** decide: it records that a Committee did (AGN Agreement 001/2024 art. 4.3.2.5).
+
+**No endorsement while the publicity period is still open.** The guard lives in the transition's own `WHERE` (`AND publicado_hasta < CURRENT_DATE`, server clock), not in a prior check that would leave a read-then-write window. The `409` **tells which of the three reasons** applies: `publicidad_en_curso` says until when, `lote_no_avalable` says what state the batch is in, and an unknown id gives **404**.
+
+`POST /api/v1/eliminacion/lotes/{id}/anular` withdraws the batch with a `motivo` of at least 10 characters — allowed **up to the last moment, even once endorsed** (written by admission of the three live states, not by negating `ejecutado`), never after execution. A withdrawn batch that had been published **stays public**, with its reason.
+
+Admin page at `/admin/eliminacion`.
 
 > **Three phases remain**: Committee endorsement, the signed record, and secure deletion. `ejecutado` always travels as `false`.
 

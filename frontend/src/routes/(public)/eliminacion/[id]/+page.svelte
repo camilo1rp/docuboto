@@ -56,6 +56,13 @@
     <p role="note">
       El plazo para oponerse terminó el {formatearFecha(lote.publicado_hasta)}.
     </p>
+  {:else if lote.estado === "anulado"}
+    <p class="elim__plazo" role="note">
+      <strong>Esta eliminación se retiró y no se va a ejecutar.</strong>
+      {#if lote.anulado_motivo}Motivo: {lote.anulado_motivo}{/if}
+      El inventario se conserva publicado como constancia: quien leyó que estos expedientes iban a eliminarse
+      tiene que poder ver en qué quedó.
+    </p>
   {:else if lote.estado === "ejecutado"}
     <p role="note">
       Esta eliminación <strong>ya se ejecutó</strong> el {formatearFecha(lote.ejecutado_at)}. El

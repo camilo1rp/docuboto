@@ -49,6 +49,7 @@ const lote = (o = {}) => ({
   acto_administrativo: null,
   ejecutado_at: null,
   observaciones: null,
+  anulado_motivo: null,
   total_items: 1,
   items: [item()],
   ...o,
@@ -80,6 +81,26 @@ describe("el inventario publicado dice cómo oponerse", () => {
     });
     expect(document.body.textContent).toMatch(/ya se ejecutó/);
     expect(document.body.textContent).toMatch(/constancia de qué se eliminó/);
+  });
+
+  it("retirado: se dice que NO se va a eliminar, y por qué", () => {
+    // El caso que la lista de estados dejaba fuera: un lote publicado y luego
+    // anulado desaparecía de la vista pública, justo de quien leyó el
+    // inventario y podía estar esperando saber en qué quedó su oposición.
+    render(DetallePage, {
+      props: {
+        data: {
+          lote: lote({
+            estado: "anulado",
+            publicado_hasta: PASADO,
+            anulado_motivo: "Oposición de un tercero admitida por el Comité",
+          }),
+        },
+      },
+    });
+    expect(document.body.textContent).toMatch(/se retiró y no se va a ejecutar/);
+    expect(document.body.textContent).toMatch(/Oposición de un tercero admitida/);
+    expect(document.body.textContent).not.toMatch(/Puede oponerse hasta/);
   });
 });
 

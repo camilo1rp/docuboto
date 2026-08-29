@@ -1734,6 +1734,98 @@ class ArchiveRepository:
             publicado_hasta,
         )
 
+    async def avalar_lote_eliminacion(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        acta_comite: str,
+        fecha_aval: date,
+        acto_administrativo: str,
+        avalado_por: uuid.UUID,
+    ) -> asyncpg.Record | None:
+        """`publicado -> avalado` (RF-TRD-07, fase 3).
+
+        La condición que de verdad importa está en el `WHERE`, no en la capa de
+        servicio: **`publicado_hasta < CURRENT_DATE`**. Avalar mientras el
+        plazo sigue abierto vacía de sentido la publicidad previa -- se estaría
+        autorizando la destrucción antes de que venza el tiempo que la propia
+        entidad dio para oponerse. Va aquí, en la MISMA sentencia que la
+        transición, porque comprobarlo antes en Python y actualizar después
+        deja una ventana en la que el plazo se lee abierto y se escribe cerrado
+        (o al revés, en el cambio de día).
+
+        `CURRENT_DATE` y no una fecha del cliente: el plazo lo mide el
+        servidor.
+
+        Un `None` no distingue «no existe» de «no está publicado» de «el plazo
+        sigue abierto»; el diagnóstico lo compone el servicio con una lectura
+        aparte, que solo EXPLICA -- la guarda sigue siendo esta."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            UPDATE eliminacion_lotes
+               SET estado = 'avalado',
+                   acta_comite = $2,
+                   fecha_aval = $3,
+                   acto_administrativo = $4,
+                   avalado_por = $5,
+                   avalado_at = now()
+             WHERE id = $1
+               AND estado = 'publicado'
+               AND publicado_hasta < CURRENT_DATE
+            RETURNING *
+            """,
+            lote_id,
+            acta_comite,
+            fecha_aval,
+            acto_administrativo,
+            avalado_por,
+        )
+
+    async def anular_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, motivo: str, anulado_por: uuid.UUID
+    ) -> asyncpg.Record | None:
+        """`borrador | publicado | avalado -> anulado` (RF-TRD-07, fase 3).
+
+        Se puede retirar un lote hasta el último momento, **pero nunca después
+        de ejecutarlo**: lo ejecutado ya no existe, y marcarlo «anulado»
+        afirmaría que no se destruyó algo que sí se destruyó. Por eso la
+        condición se escribe por ADMISIÓN de los tres estados vivos y no
+        negando `ejecutado`: un estado nuevo entra en el CHECK antes de que
+        nadie se acuerde de esta línea, y con la lista negativa entraría
+        además, callando."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            UPDATE eliminacion_lotes
+               SET estado = 'anulado',
+                   anulado_motivo = $2,
+                   anulado_por = $3,
+                   anulado_at = now()
+             WHERE id = $1
+               AND estado IN ('borrador', 'publicado', 'avalado')
+            RETURNING *
+            """,
+            lote_id,
+            motivo,
+            anulado_por,
+        )
+
+    async def get_lote_estado(self, lote_id: uuid.UUID) -> asyncpg.Record | None:
+        """Lectura de DIAGNÓSTICO: estado y plazo de publicidad, para explicar
+        por qué una transición no se aplicó. No es una guarda -- la guarda es
+        el `WHERE` de la propia transición (ver `avalar_lote_eliminacion`)."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            SELECT estado, publicado_hasta,
+                   (publicado_hasta IS NOT NULL AND publicado_hasta >= CURRENT_DATE)
+                       AS publicidad_abierta
+              FROM eliminacion_lotes WHERE id = $1
+            """,
+            lote_id,
+        )
+
     # ------------------------------------------------------------------
     # Vista PÚBLICA del inventario (RF-TRD-07 fase 2, publicidad previa)
     # ------------------------------------------------------------------
@@ -1745,27 +1837,37 @@ class ArchiveRepository:
     # mismo interruptor dejaría a una entidad sin poder eliminar por no haber
     # activado una cosecha que no le interesa. Un chokepoint se reutiliza
     # cuando la política es la misma, no porque el nombre encaje.
-    _ESTADOS_PUBLICOS = ("publicado", "avalado", "ejecutado")
+    #
+    # El chokepoint es «este lote LLEGÓ A PUBLICARSE» (`publicado_at IS NOT
+    # NULL`) y no una lista de estados admitidos. La lista decía
+    # ("publicado", "avalado", "ejecutado") y dejaba fuera un caso que sí
+    # importa: un lote publicado que luego se ANULA desaparecía de la vista
+    # pública, justo de quien leyó el inventario y podía estar esperando saber
+    # en qué quedó su oposición. Escrito por la marca del acto, el caso no se
+    # puede olvidar: `borrador` es el único estado sin `publicado_at`, así que
+    # la condición admite exactamente lo que debe.
+    _COND_PUBLICO = "l.publicado_at IS NOT NULL"
 
     async def list_lotes_publicos(self) -> list[asyncpg.Record]:
         """Lotes cuyo inventario es público. Incluye los ya `avalado` y
         `ejecutado` a propósito: la constancia de QUÉ se eliminó tiene que
         seguir siendo consultable después — es la cara pública de la lápida, y
         retirarla al ejecutar convertiría la publicidad previa en un trámite
-        que se borra a sí mismo."""
+        que se borra a sí mismo. Y también los `anulado` que se llegaron a
+        publicar: la constancia de que algo NO se eliminó le importa a quien
+        leyó que iba a eliminarse."""
         await self._set_search_path()
         return list(
             await self._conn.fetch(
-                """
+                f"""
                 SELECT l.id, l.codigo, l.estado, l.publicado_at, l.publicado_hasta,
                        l.fecha_aval, l.acto_administrativo, l.ejecutado_at,
                        (SELECT COUNT(*) FROM eliminacion_lote_items li
                          WHERE li.lote_id = l.id) AS total_items
                   FROM eliminacion_lotes l
-                 WHERE l.estado = ANY($1::text[])
+                 WHERE {self._COND_PUBLICO}
                  ORDER BY l.publicado_at DESC
                 """,
-                list(self._ESTADOS_PUBLICOS),
             )
         )
 
@@ -1784,14 +1886,14 @@ class ArchiveRepository:
         pantalla lo DIGA en vez de dejar un hueco mudo."""
         await self._set_search_path()
         lote = await self._conn.fetchrow(
-            """
-            SELECT id, codigo, estado, publicado_at, publicado_hasta,
-                   fecha_aval, acto_administrativo, ejecutado_at, observaciones
-              FROM eliminacion_lotes
-             WHERE id = $1 AND estado = ANY($2::text[])
+            f"""
+            SELECT l.id, l.codigo, l.estado, l.publicado_at, l.publicado_hasta,
+                   l.fecha_aval, l.acto_administrativo, l.ejecutado_at, l.observaciones,
+                   l.anulado_motivo
+              FROM eliminacion_lotes l
+             WHERE l.id = $1 AND {self._COND_PUBLICO}
             """,
             lote_id,
-            list(self._ESTADOS_PUBLICOS),
         )
         if lote is None:
             return None, []

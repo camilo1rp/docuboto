@@ -139,6 +139,19 @@
       implemented: true,
     },
     {
+      label: "Eliminación documental",
+      description:
+        "Lotes de eliminación por disposición final: publicidad previa, aval del Comité y acta (RF-TRD-07).",
+      icon: "fas fa-fire",
+      href: "/admin/eliminacion",
+      // Mismo permiso que TRD/TVD, y por el mismo motivo: eliminar no es una
+      // potestad aparte, es EJECUTAR el instrumento que la TRD convalidó
+      // (gate real: `USUA_PERM_TRD`, `crud>=3` para publicar/avalar/anular —
+      // `services/archive-service/app/routers/eliminacion.py`).
+      permission: "USUA_PERM_TRD",
+      implemented: true,
+    },
+    {
       label: "Metadatos",
       description: "Esquemas de metadatos variables por tipo documental (E03).",
       icon: "fas fa-tags",

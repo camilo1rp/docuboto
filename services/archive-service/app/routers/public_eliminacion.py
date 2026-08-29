@@ -21,8 +21,12 @@ entidad sin poder eliminar por no haber activado una cosecha que no le interesa.
 Un chokepoint se reutiliza cuando la política es la misma, no porque el nombre
 encaje.
 
-Un lote en `borrador` o `anulado` **no existe** para estos endpoints: 404, no
-403 — la respuesta es indistinguible de la de un identificador inventado.
+Es público **todo lote que llegó a publicarse**, y lo sigue siendo después:
+avalado, ejecutado y también **anulado**. La constancia de qué se eliminó no
+puede desaparecer al eliminarlo, y la de que algo NO se eliminó le importa a
+quien leyó que iba a eliminarse — con su motivo a la vista. Un lote en
+`borrador` **no existe** para estos endpoints: 404, no 403 — la respuesta es
+indistinguible de la de un identificador inventado.
 """
 
 from __future__ import annotations

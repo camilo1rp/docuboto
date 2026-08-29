@@ -324,7 +324,7 @@ Edición estructural permitida **solo en `borrador`** (→ 409 `plan_no_editable
 
 ---
 
-### Eliminación documental — lotes (RF-TRD-07, fase 1 de 5, 2026-08-28)
+### Eliminación documental — lotes (RF-TRD-07, fases 1-3 de 5, 2026-08-29)
 
 `POST /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes/{id}`
 
@@ -344,13 +344,23 @@ Un expediente fuera del clearance del proponente se informa como `no_encontrado`
 
 **Fase 2 — publicidad previa (2026-08-28).** `POST /api/v1/eliminacion/lotes/{id}/publicar` (`USUA_PERM_TRD` `crud≥3`) transita `borrador → publicado` y **congela el inventario**: el trigger de la migración 047 deja de admitir que se quite una fila, porque lo publicado es sobre lo que un tercero decidió no oponerse. `publicado_hasta` es obligatorio y futuro — **no hay default**: no se inventa cuántos días da una entidad para oponerse a que destruyan un documento.
 
-El inventario queda visible **sin autenticar** en `GET /api/v1/public/archive/eliminacion/{tenant}/lotes[/{id}]`. **El chokepoint es el ESTADO del lote**, no un interruptor de despliegue: deliberadamente **no** cuelga de `public_interop_enabled` (la cosecha OAI/CMIS), porque publicar el registro de correspondencia es una decisión de la entidad y publicar el inventario de lo que va a eliminar es una **obligación del procedimiento** — atarlas al mismo interruptor dejaría a una entidad sin poder eliminar por no activar una cosecha que no le interesa. Un lote en `borrador` o `anulado` responde **404**, indistinguible de un identificador inventado; los ya `avalado` y `ejecutado` **siguen siendo consultables**, porque la constancia de qué se eliminó no puede desaparecer al eliminarlo.
+El inventario queda visible **sin autenticar** en `GET /api/v1/public/archive/eliminacion/{tenant}/lotes[/{id}]`. **El chokepoint es el ESTADO del lote**, no un interruptor de despliegue: deliberadamente **no** cuelga de `public_interop_enabled` (la cosecha OAI/CMIS), porque publicar el registro de correspondencia es una decisión de la entidad y publicar el inventario de lo que va a eliminar es una **obligación del procedimiento** — atarlas al mismo interruptor dejaría a una entidad sin poder eliminar por no activar una cosecha que no le interesa. El chokepoint está escrito por la **marca del acto** (`publicado_at IS NOT NULL`) y no por una lista de estados: es público **todo lote que llegó a publicarse**, y lo sigue siendo después — `avalado`, `ejecutado` y también `anulado`. La constancia de qué se eliminó no puede desaparecer al eliminarlo, y la de que algo **no** se eliminó le importa a quien leyó que iba a eliminarse. Un lote en `borrador` responde **404**, indistinguible de un identificador inventado.
 
 **La descripción de un expediente clasificado no se publica, pero la fila sí.** El recorte va en el `SELECT` (`CASE WHEN nivel_seguridad > 1 THEN NULL`), no en quien pinta. Omitir la fila dejaría de cumplir la publicidad previa justo sobre los expedientes que más importa que alguien pueda objetar; lo que se retiene es la **denominación**, que es donde vive el contenido. Va marcada con `nombre_reservado` para que la pantalla lo **diga** en vez de dejar un hueco mudo.
 
 Pantalla pública en `(public)/eliminacion`, enlazada desde el portal. **El canal de oposición no se inventa**: es la ventanilla única que la entidad ya tiene — un formulario aparte sería una segunda bandeja que nadie mira, y una oposición es exactamente lo que una ventanilla existe para recibir.
 
-> **Faltan las tres fases siguientes**: aval del Comité, acta firmada y borrado seguro. `ejecutado` viaja siempre en `false`.
+**Fase 3 — el aval del Comité y la retirada (2026-08-29).**
+
+`POST /api/v1/eliminacion/lotes/{id}/avalar` (`USUA_PERM_TRD` `crud≥3`, actor imputable) transita `publicado → avalado` con las **tres constancias obligatorias** —`acta_comite`, `fecha_aval` (no futura) y `acto_administrativo`—, exigidas en el schema, en el servicio y en un `CHECK` de la migración 047: un aval sin ellas es una afirmación no verificada, el mismo criterio que la convalidación de una versión de TRD. El sistema **no decide**; registra que un Comité decidió y con qué acto (Ac. AGN 001/2024 art. 4.3.2.5).
+
+**No se avala con el plazo de publicidad todavía abierto.** Es la regla de fondo de la fase: autorizar la destrucción antes de que venza el tiempo que la propia entidad dio para oponerse convierte la publicidad previa en un adorno. La guarda vive en el `WHERE` de la transición (`AND publicado_hasta < CURRENT_DATE`, con la fecha del **servidor**), no en una comprobación previa en Python que dejaría una ventana entre leer y escribir. El `409` **distingue los tres motivos**: `publicidad_en_curso` dice hasta cuándo, `lote_no_avalable` dice en qué estado está, y un identificador desconocido da **404**.
+
+`POST /api/v1/eliminacion/lotes/{id}/anular` retira el lote con un `motivo` de al menos 10 caracteres. Se puede **hasta el último momento, incluso ya avalado** —la condición se escribe por admisión de los tres estados vivos, no negando `ejecutado`—, pero nunca después de ejecutarlo: lo destruido no se des-destruye. Si el lote llegó a publicarse **sigue siendo público tras anularse**, con su motivo a la vista.
+
+Pantalla en `/admin/eliminacion` (listado, detalle con el inventario recortado por clearance, y los tres actos). Vive fuera de `/admin/trd` por el mismo criterio que el router: un lote no es una lectura del instrumento. Lo único que se queda en TRD es **proponer**, porque se propone desde la cola de vencimientos.
+
+> **Faltan las dos fases siguientes**: acta firmada y borrado seguro. `ejecutado` viaja siempre en `false`.
 
 ---
 

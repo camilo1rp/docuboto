@@ -1,0 +1,198 @@
+// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+// Contacto: aurigadl@gmail.com
+//
+// Software libre: este archivo se distribuye bajo la Licencia Pública General
+// Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+// conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+// SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+/**
+ * lotes-page.test.js — /admin/eliminacion (RF-TRD-07, fase 3).
+ *
+ * La pantalla que faltaba: se podía proponer un lote y no había dónde verlo
+ * después. Lo que se prueba es lo que esta pantalla no se puede permitir decir
+ * mal, que es casi todo — el procedimiento que gobierna termina destruyendo:
+ *
+ *  - **El aval no se ofrece con el plazo de publicidad abierto.** Ofrecer un
+ *    botón que el backend va a rechazar hace descubrir el límite fallando; y
+ *    aquí el límite no es técnico, es que un tercero todavía puede oponerse.
+ *  - **El botón no es el gate**: el nivel CRUD gobierna los tres actos, y si
+ *    el backend ya dijo 403 al cargar, manda el backend.
+ *  - **La pantalla no promete lo que no hace**: las cinco fases están a la
+ *    vista y la quinta se declara no construida.
+ *  - **El inventario recortado por clearance se explica**, en vez de dejar una
+ *    resta muda entre lo que el lote declara y lo que se ve.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, screen } from "@testing-library/svelte";
+import { writable } from "svelte/store";
+
+vi.mock("$app/navigation", () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
+vi.mock("$app/stores", () => {
+  const page = writable({ url: new URL("http://localhost/admin/eliminacion") });
+  return { page, navigating: writable(null), updated: writable(false) };
+});
+
+const { default: Pagina } = await import("./+page.svelte");
+const { initSession, clearSession } = await import("$lib/stores/auth.js");
+
+const HOY = new Date();
+const iso = (dias) => new Date(HOY.getTime() + dias * 86400000).toISOString().slice(0, 10);
+
+const sesion = (nivel = 3) => ({
+  sub: "u-1",
+  email: "a@b.co",
+  name: "Archivista",
+  preferred_username: "archivista",
+  roles: [],
+  tenant_slug: "icetex",
+  permissions: ["USUA_PERM_TRD"],
+  permission_levels: { USUA_PERM_TRD: nivel },
+});
+
+const item = (o = {}) => ({
+  expediente_id: crypto.randomUUID(),
+  expediente_code: "EXP-2020-0001",
+  expediente_nombre: "Contratos 2020",
+  trd_serie_code: "DEM-100",
+  disposition_code: "E",
+  fecha_vencimiento: "2026-01-01",
+  fecha_extrema_inicial: "2020-01-01",
+  fecha_extrema_final: "2020-12-31",
+  nivel_seguridad: 1,
+  radicados_incluidos: 12,
+  worm_retain_until: null,
+  ...o,
+});
+
+const lote = (o = {}) => ({
+  id: "11111111-1111-4111-8111-111111111111",
+  codigo: "LOTE-2026-001",
+  estado: "publicado",
+  observaciones: null,
+  creado_por: "u-1",
+  creado_at: "2026-08-01T00:00:00Z",
+  publicado_at: "2026-08-02T00:00:00Z",
+  publicado_hasta: iso(30),
+  acta_comite: null,
+  fecha_aval: null,
+  acto_administrativo: null,
+  ejecutado_at: null,
+  anulado_motivo: null,
+  total_items: 1,
+  items: [item()],
+  ...o,
+});
+
+const datos = (o = {}) => ({
+  lotes: [],
+  lotesError: null,
+  sinPermiso: false,
+  seleccionado: "",
+  detalle: null,
+  detalleError: null,
+  ...o,
+});
+
+const conDetalle = (l) => datos({ lotes: [l], seleccionado: l.id, detalle: l });
+
+// El texto se normaliza antes de compararlo: una frase de la plantilla llega a
+// `textContent` con los saltos de línea del fuente dentro, y una aserción que
+// no lo tenga en cuenta falla por dónde se cortó la línea, no por lo que dice.
+const texto = () => document.body.textContent.replace(/\s+/g, " ");
+
+describe("/admin/eliminacion", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sesion());
+  });
+  afterEach(() => clearSession());
+
+  it("las cinco fases están a la vista y la quinta se declara no construida", () => {
+    render(Pagina, { props: { data: datos() } });
+    expect(texto()).toMatch(/Aval del Comité/i);
+    expect(texto()).toMatch(/Borrado seguro/i);
+    expect(texto()).toMatch(/todavía no está construido/i);
+  });
+
+  it("sin lotes remite a donde se proponen, no a un vacío mudo", () => {
+    render(Pagina, { props: { data: datos() } });
+    expect(texto()).toMatch(/Disposición vencida/i);
+  });
+
+  it("un 403 del backend NO se presenta como «no hay lotes»", () => {
+    render(Pagina, { props: { data: datos({ sinPermiso: true }) } });
+    expect(texto()).toMatch(/USUA_PERM_TRD/);
+    expect(texto()).not.toMatch(/No hay lotes de eliminación/i);
+  });
+
+  it("con el plazo de publicidad ABIERTO no se ofrece avalar, y se dice hasta cuándo", () => {
+    render(Pagina, { props: { data: conDetalle(lote({ publicado_hasta: iso(15) })) } });
+    expect(screen.queryByRole("button", { name: /Registrar el aval/i })).toBeNull();
+    expect(texto()).toMatch(/todavía abierto hasta/i);
+  });
+
+  it("vencido el plazo, avalar SÍ se ofrece", () => {
+    render(Pagina, { props: { data: conDetalle(lote({ publicado_hasta: iso(-1) })) } });
+    expect(screen.getByRole("button", { name: /Registrar el aval/i })).toBeInTheDocument();
+  });
+
+  it("un lote en borrador ofrece publicar y no avalar", () => {
+    render(Pagina, {
+      props: {
+        data: conDetalle(lote({ estado: "borrador", publicado_at: null, publicado_hasta: null })),
+      },
+    });
+    expect(screen.getByRole("button", { name: /Publicar el inventario/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Registrar el aval/i })).toBeNull();
+  });
+
+  it("un lote EJECUTADO no ofrece retirarlo: lo destruido no se des-destruye", () => {
+    render(Pagina, {
+      props: {
+        data: conDetalle(
+          lote({
+            estado: "ejecutado",
+            ejecutado_at: "2026-09-01T00:00:00Z",
+            publicado_hasta: iso(-30),
+          }),
+        ),
+      },
+    });
+    expect(screen.queryByRole("button", { name: /Retirar el lote/i })).toBeNull();
+  });
+
+  it("con nivel CRUD 1 no se ofrece ninguno de los tres actos", () => {
+    clearSession();
+    initSession(sesion(1));
+    render(Pagina, { props: { data: conDetalle(lote({ publicado_hasta: iso(-1) })) } });
+    expect(screen.queryByRole("button", { name: /Publicar el inventario/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Registrar el aval/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Retirar el lote/i })).toBeNull();
+  });
+
+  it("el inventario recortado por clearance se EXPLICA, no deja una resta muda", () => {
+    render(Pagina, { props: { data: conDetalle(lote({ total_items: 5, items: [item()] })) } });
+    expect(texto()).toMatch(/Se muestran 1 de 5/i);
+    expect(texto()).toMatch(/nivel de clasificación superior/i);
+  });
+
+  it("un lote retirado muestra su motivo", () => {
+    render(Pagina, {
+      props: {
+        data: conDetalle(
+          lote({ estado: "anulado", anulado_motivo: "Oposición de un tercero admitida" }),
+        ),
+      },
+    });
+    expect(texto()).toMatch(/Oposición de un tercero admitida/);
+  });
+
+  it("un lote publicado enlaza a su vista pública", () => {
+    const l = lote();
+    render(Pagina, { props: { data: conDetalle(l) } });
+    const enlace = screen.getByRole("link", { name: /se ve sin autenticar/i });
+    expect(enlace.getAttribute("href")).toBe(`/eliminacion/${l.id}`);
+  });
+});

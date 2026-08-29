@@ -14,8 +14,9 @@ autenticar**, para que quien tenga algo que oponer pueda hacerlo ANTES.
 
 Lo que se prueba:
 
-* **El chokepoint es el ESTADO del lote**, no un interruptor de despliegue. Un
-  lote en `borrador` o `anulado` **no existe** para el público: 404, no 403.
+* **El chokepoint es «este lote llegó a publicarse»**, no un interruptor de
+  despliegue ni una lista de estados. Un lote en `borrador` **no existe** para
+  el público: 404, no 403.
 * **La descripción de un expediente clasificado NO se publica**, pero la fila
   SÍ. Omitirla dejaría de cumplir la publicidad previa justo sobre lo que más
   importa que alguien pueda objetar; lo que se retiene es dónde vive el
@@ -226,16 +227,36 @@ async def test_un_lote_en_borrador_no_existe_para_el_publico(client_with_conn) -
 
 
 @pytest.mark.asyncio
-async def test_el_estado_es_el_chokepoint_y_esta_en_el_SQL(client_with_conn) -> None:
+async def test_el_chokepoint_es_haber_llegado_a_publicarse(client_with_conn) -> None:
+    """Escrito por la MARCA DEL ACTO (`publicado_at IS NOT NULL`) y no por una
+    lista de estados admitidos. La lista decía ("publicado", "avalado",
+    "ejecutado") y se dejaba fuera un caso que sí importa: un lote publicado y
+    luego anulado desaparecía de la vista pública — justo de quien leyó el
+    inventario y podía estar esperando saber en qué quedó su oposición."""
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.return_value = None
     await client.get(f"{PUBLICO}/{LOTE}")
 
     sql = mock_conn.fetchrow.await_args.args[0]
-    estados = mock_conn.fetchrow.await_args.args[2]
-    assert "estado = ANY" in sql
-    # Los ya avalados y ejecutados siguen siendo consultables: la constancia de
-    # qué se eliminó no puede desaparecer al eliminarlo.
-    assert set(estados) == {"publicado", "avalado", "ejecutado"}
-    assert "borrador" not in estados
-    assert "anulado" not in estados
+    assert "publicado_at IS NOT NULL" in sql
+    # Y ya no se filtra por estado: los cuatro estados posteriores a publicar
+    # son públicos, incluido `anulado`.
+    assert "estado = ANY" not in sql
+
+
+@pytest.mark.asyncio
+async def test_un_lote_publicado_y_luego_ANULADO_sigue_siendo_publico(
+    client_with_conn,
+) -> None:
+    """Con su motivo a la vista: la constancia de que algo NO se eliminó le
+    importa a quien leyó que iba a eliminarse."""
+    client, mock_conn = client_with_conn
+    fila = _lote_row(estado="anulado")
+    fila["anulado_motivo"] = "Oposición de un tercero admitida por el Comité"
+    mock_conn.fetchrow.return_value = fila
+    mock_conn.fetch.return_value = [_item_publico()]
+
+    cuerpo = (await client.get(f"{PUBLICO}/{LOTE}")).json()
+
+    assert cuerpo["estado"] == "anulado"
+    assert cuerpo["anulado_motivo"] == "Oposición de un tercero admitida por el Comité"

@@ -1323,6 +1323,10 @@
       <strong>{resultadoLote.total_items}</strong> expedientes.
     </p>
     <p class="trd-vencidos__aviso">{resultadoLote.nota}</p>
+    <p>
+      El lote y sus cuatro pasos siguientes se siguen desde
+      <a href="/admin/eliminacion?lote={resultadoLote.id}">Eliminación documental</a>.
+    </p>
     {#if resultadoLote.rechazados?.length}
       <p>No entraron {resultadoLote.rechazados.length}, y por estos motivos:</p>
       <ul class="trd-vencidos__rechazos">

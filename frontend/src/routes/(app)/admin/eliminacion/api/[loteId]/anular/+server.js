@@ -8,12 +8,12 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * Proxy SSR de `POST /api/v1/eliminacion/lotes/{id}/publicar` (RF-TRD-07, fase 2).
+ * Proxy SSR de `POST /api/v1/eliminacion/lotes/{id}/anular` (RF-TRD-07, fase 3).
  *
- * Publicar **congela el inventario** y lo pone a la vista de cualquiera sin
- * autenticar. El plazo no tiene default ni aquí ni en el backend: no se inventa
- * cuántos días da una entidad para que un tercero se oponga a que destruyan un
- * documento.
+ * Retira el lote del procedimiento. El motivo tiene mínimo real (10
+ * caracteres, igual que el CHECK de la base) porque es la constancia de por
+ * qué NO se eliminó — y si el lote se llegó a publicar, esa constancia se ve
+ * en la pantalla pública.
  */
 import { json } from "@sveltejs/kit";
 
@@ -21,7 +21,6 @@ import { API_V1 } from "$lib/utils/config.server.js";
 import { headersFor } from "$lib/server/trdCircuitoProxy.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ params, request, locals, fetch }) {
@@ -35,23 +34,23 @@ export async function POST({ params, request, locals, fetch }) {
     );
   }
   const body = await request.json().catch(() => ({}));
-  const { publicado_hasta } = body ?? {};
-  if (typeof publicado_hasta !== "string" || !DATE_RE.test(publicado_hasta)) {
+  const motivo = typeof body?.motivo === "string" ? body.motivo.trim() : "";
+  if (motivo.length < 10) {
     return json(
       {
         error: "validation_error",
-        detail: "Indique hasta qué fecha se puede oponer un tercero (AAAA-MM-DD).",
+        detail: "Explique por qué se retira el lote (al menos 10 caracteres).",
       },
       { status: 400 },
     );
   }
 
   const res = await fetch(
-    `${API_V1}/eliminacion/lotes/${encodeURIComponent(params.loteId)}/publicar`,
+    `${API_V1}/eliminacion/lotes/${encodeURIComponent(params.loteId)}/anular`,
     {
       method: "POST",
       headers: headersFor(locals, true),
-      body: JSON.stringify({ publicado_hasta }),
+      body: JSON.stringify({ motivo }),
     },
   );
   const data = await res.json().catch(() => ({}));

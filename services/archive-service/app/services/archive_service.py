@@ -4113,6 +4113,154 @@ class ArchiveService:
         )
         return self._lote_a_respuesta(lote, total_items=total)
 
+    async def avalar_lote_eliminacion(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        acta_comite: str,
+        fecha_aval: date,
+        acto_administrativo: str,
+        actor: uuid.UUID,
+    ) -> LoteEliminacionResponse:
+        """`POST /eliminacion/lotes/{id}/avalar` (RF-TRD-07, fase 3 de 5).
+
+        El **aval del Comité Institucional de Gestión y Desempeño**: la
+        decisión archivística que autoriza destruir (Ac. AGN 001/2024 art.
+        4.3.2.5). El sistema no decide nada — registra que un Comité decidió,
+        con qué acta y con qué acto administrativo, y sin las tres constancias
+        no admite el aval.
+
+        **No se avala con el plazo de publicidad todavía abierto.** Es la regla
+        de fondo de esta fase: autorizar la destrucción antes de que venza el
+        tiempo que la propia entidad dio para oponerse convierte la publicidad
+        previa en un adorno. La guarda vive en el `WHERE` de la transición
+        (`ArchiveRepository.avalar_lote_eliminacion`); aquí solo se COMPONE la
+        explicación, con una lectura que no decide nada.
+
+        Sigue **sin eliminarse nada**: avalar autoriza, el borrado seguro es la
+        quinta fase y no está construida."""
+        lote = await self._repo.avalar_lote_eliminacion(
+            lote_id,
+            acta_comite=acta_comite,
+            fecha_aval=fecha_aval,
+            acto_administrativo=acto_administrativo,
+            avalado_por=actor,
+        )
+        if lote is None:
+            raise await self._conflicto_de_lote(
+                lote_id,
+                accion="avalar",
+                estado_exigido="publicado",
+                error="lote_no_avalable",
+            )
+        total = await self._repo.contar_items_lote(lote_id)
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service="archive-service",
+            action="archive.eliminacion_lote_avalado",
+            object_type="eliminacion_lote",
+            object_ref=str(lote_id),
+            actor=str(actor),
+            payload={
+                "codigo": lote["codigo"],
+                "acta_comite": acta_comite,
+                "fecha_aval": str(fecha_aval),
+                "acto_administrativo": acto_administrativo,
+                "total_items": total,
+            },
+        )
+        return self._lote_a_respuesta(lote, total_items=total)
+
+    async def anular_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, motivo: str, actor: uuid.UUID
+    ) -> LoteEliminacionResponse:
+        """`POST /eliminacion/lotes/{id}/anular` (RF-TRD-07, fase 3 de 5).
+
+        Retira el lote del procedimiento. Se puede hasta el último momento
+        —incluso ya avalado— pero **nunca después de ejecutarlo**: lo destruido
+        no se des-destruye, y marcar «anulado» un lote ejecutado afirmaría lo
+        contrario de lo que pasó.
+
+        Si el lote llegó a publicarse **sigue siendo público tras anularse**,
+        con su motivo: quien leyó que esos expedientes iban a eliminarse tiene
+        que poder ver en qué quedó."""
+        lote = await self._repo.anular_lote_eliminacion(
+            lote_id, motivo=motivo, anulado_por=actor
+        )
+        if lote is None:
+            raise await self._conflicto_de_lote(
+                lote_id,
+                accion="anular",
+                estado_exigido=None,
+                error="lote_no_anulable",
+            )
+        total = await self._repo.contar_items_lote(lote_id)
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service="archive-service",
+            action="archive.eliminacion_lote_anulado",
+            object_type="eliminacion_lote",
+            object_ref=str(lote_id),
+            actor=str(actor),
+            payload={"codigo": lote["codigo"], "motivo": motivo, "total_items": total},
+        )
+        return self._lote_a_respuesta(lote, total_items=total)
+
+    async def _conflicto_de_lote(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        accion: str,
+        estado_exigido: str | None,
+        error: str,
+    ) -> HTTPException:
+        """Compone el 409 de una transición que no se aplicó.
+
+        La lectura es **de diagnóstico**, no una guarda: la transición ya se
+        intentó y ya falló: lo único que se decide aquí es qué frase lee la
+        persona. Y merece decidirse — «no se pudo avalar» manda a buscar un
+        permiso cuando lo que pasa es que faltan cuatro días de plazo, que es
+        el mismo defecto que ya se pagó aquí con un 403 que acusaba de faltar
+        un permiso que el usuario tenía."""
+        fila = await self._repo.get_lote_estado(lote_id)
+        if fila is None:
+            return HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "lote_no_encontrado",
+                    "detail": "No existe un lote de eliminación con ese identificador",
+                    "status": 404,
+                },
+            )
+        if accion == "avalar" and fila["publicidad_abierta"]:
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "publicidad_en_curso",
+                    "detail": (
+                        "El plazo para oponerse sigue abierto hasta el "
+                        f"{fila['publicado_hasta']}: el aval del Comité no se "
+                        "registra antes de que venza."
+                    ),
+                    "status": 409,
+                },
+            )
+        exigido = (
+            f" Se exige que esté en '{estado_exigido}'." if estado_exigido else ""
+        )
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": error,
+                "detail": (
+                    f"No se puede {accion} un lote en estado '{fila['estado']}'.{exigido}"
+                ),
+                "status": 409,
+            },
+        )
+
     async def list_lotes_publicos(self) -> list[LoteEliminacionPublico]:
         """Inventarios publicados, para cualquiera y sin autenticar."""
         rows = await self._repo.list_lotes_publicos()
@@ -4155,6 +4303,7 @@ class ArchiveService:
             acto_administrativo=lote["acto_administrativo"],
             ejecutado_at=lote["ejecutado_at"],
             observaciones=lote["observaciones"],
+            anulado_motivo=lote["anulado_motivo"],
             total_items=len(items),
             items=[LoteEliminacionItemPublico(**dict(i)) for i in items],
         )
