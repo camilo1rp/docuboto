@@ -27,7 +27,7 @@ Gating: `RUN_INTEGRATION=1` + Postgres real (ver CLAUDE.md de este servicio).
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -282,3 +282,306 @@ async def test_un_lote_publicado_y_luego_anulado_SIGUE_siendo_publico(tenant_ctx
     # Y el que nunca se publicó sigue sin existir para el público.
     assert borrador_id not in publicos
     assert (await repo.get_lote_publico(borrador_id))[0] is None
+
+
+# ── Fase 4: el acta, contra el motor ────────────────────────────────────────
+
+
+async def _avalar_en_bd(conn: asyncpg.Connection, lote_id: uuid.UUID) -> None:
+    await _publicar(conn, lote_id, date.today() - timedelta(days=1))
+    await conn.execute(
+        """
+        UPDATE eliminacion_lotes
+           SET estado='avalado', acta_comite='Acta 07', fecha_aval=CURRENT_DATE,
+               acto_administrativo='Res. 512', avalado_por=gen_random_uuid(),
+               avalado_at=now()
+         WHERE id=$1
+        """,
+        lote_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_acta_no_se_edita_ni_se_borra_JAMAS(tenant_ctx) -> None:
+    """Conservación permanente, y el motor es quien lo garantiza. Un acta que
+    se pudiera reescribir no serviría para lo único que sirve: dar fe de una
+    destrucción irreversible cuando ya no queda nada con qué contrastarla."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    await _avalar_en_bd(conn, lote_id)
+    await conn.execute(
+        """
+        INSERT INTO eliminacion_acta (lote_id, acta_xml, acta_sha256, metodo_borrado, generado_por)
+        VALUES ($1, '<a/>', repeat('a', 64), 'Borrado seguro y picado', gen_random_uuid())
+        """,
+        lote_id,
+    )
+
+    with pytest.raises(asyncpg.PostgresError):
+        await conn.execute("UPDATE eliminacion_acta SET acta_xml='<b/>' WHERE lote_id=$1", lote_id)
+    with pytest.raises(asyncpg.PostgresError):
+        await conn.execute("DELETE FROM eliminacion_acta WHERE lote_id=$1", lote_id)
+
+
+@pytest.mark.asyncio
+async def test_un_lote_CON_acta_ya_no_se_puede_borrar(tenant_ctx) -> None:
+    """Consecuencia deliberada del par trigger + `ON DELETE CASCADE`: la
+    cascada intenta llevarse el acta y el trigger aborta la operación entera.
+    Un lote deja de ser desechable en cuanto existe el documento que da fe de
+    lo que se destruyó."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    await _avalar_en_bd(conn, lote_id)
+    await conn.execute(
+        """
+        INSERT INTO eliminacion_acta (lote_id, acta_xml, acta_sha256, metodo_borrado, generado_por)
+        VALUES ($1, '<a/>', repeat('a', 64), 'Borrado seguro y picado', gen_random_uuid())
+        """,
+        lote_id,
+    )
+
+    with pytest.raises(asyncpg.PostgresError):
+        await conn.execute("DELETE FROM eliminacion_lotes WHERE id=$1", lote_id)
+
+
+@pytest.mark.asyncio
+async def test_el_acta_no_se_genera_dos_veces(tenant_ctx) -> None:
+    """`ON CONFLICT DO NOTHING` lo resuelve POSTGRES: el segundo intento
+    devuelve `None` y el servicio lo convierte en 409. Regenerarla produciría
+    otro instante y otro SHA para una eliminación que ya tenía el suyo."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    await _avalar_en_bd(conn, lote_id)
+    repo = ArchiveRepository(conn, schema)
+    args = dict(
+        acta_xml="<a/>",
+        acta_sha256="b" * 64,
+        metodo_borrado="Borrado seguro y picado de soportes",
+        observaciones=None,
+        generado_por=uuid.uuid4(),
+        generado_at=datetime.now(UTC),
+    )
+
+    primera = await repo.insert_acta_eliminacion(lote_id, **args)
+    segunda = await repo.insert_acta_eliminacion(lote_id, **args)
+
+    assert primera is not None
+    assert segunda is None
+
+
+@pytest.mark.asyncio
+async def test_el_nivel_para_leer_el_acta_sale_del_inventario(tenant_ctx) -> None:
+    """El umbral se DERIVA del contenido, no de un campo declarado: manda el
+    expediente más clasificado del lote, porque el acta se firma entera y no se
+    puede servir recortada."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    repo = ArchiveRepository(conn, schema)
+    exp_id = await conn.fetchval(
+        "INSERT INTO expedientes (code, name, status, nivel_seguridad) "
+        "VALUES ($1, 'Historias', 'closed', 3) RETURNING id",
+        f"EXP-IT-{uuid.uuid4().hex[:6]}",
+    )
+    await conn.execute(
+        """
+        INSERT INTO eliminacion_lote_items (
+            lote_id, expediente_id, expediente_code, disposition_code,
+            fecha_vencimiento, nivel_seguridad
+        ) VALUES ($1, $2, 'EXP-IT-CLAS', 'E', '2020-01-01', 3)
+        """,
+        lote_id,
+        exp_id,
+    )
+
+    # El lote ya traía un ítem de nivel 1 desde `_sembrar_lote`: manda el 3.
+    assert await repo.max_nivel_items_lote(lote_id) == 3
+
+
+@pytest.mark.asyncio
+async def test_el_inventario_del_acta_NO_se_recorta(tenant_ctx) -> None:
+    """La única lectura del inventario que no se acota, y a propósito: lo que
+    construye el acta tiene que ser lo que se destruye."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    repo = ArchiveRepository(conn, schema)
+    exp_id = await conn.fetchval(
+        "INSERT INTO expedientes (code, name, status, nivel_seguridad) "
+        "VALUES ($1, 'Historias', 'closed', 3) RETURNING id",
+        f"EXP-IT-{uuid.uuid4().hex[:6]}",
+    )
+    await conn.execute(
+        """
+        INSERT INTO eliminacion_lote_items (
+            lote_id, expediente_id, expediente_code, disposition_code,
+            fecha_vencimiento, nivel_seguridad
+        ) VALUES ($1, $2, 'EXP-IT-CLAS', 'E', '2020-01-01', 3)
+        """,
+        lote_id,
+        exp_id,
+    )
+
+    completo = await repo.list_items_lote_completo(lote_id)
+    _lote, recortado = await repo.get_lote_eliminacion(lote_id, max_clearance=1)
+
+    assert len(completo) == 2
+    assert len(recortado) == 1
+
+
+# ── Fase 5: el borrado, contra el motor ─────────────────────────────────────
+#
+# Aquí es donde estas garantías se prueban de verdad. Con dobles, «el expediente
+# se borró» lo afirma el doble; lo que hay que comprobar es que las cascadas y
+# las claves foráneas de la migración 049 dejan vivo exactamente lo que debe
+# quedar vivo, y eso lo decide PostgreSQL.
+
+
+@pytest.mark.asyncio
+async def test_borrar_el_expediente_DEJA_VIVO_lo_que_debe_sobrevivir(tenant_ctx) -> None:
+    """La migración 049 soltó tres claves foráneas. Dos BLOQUEABAN el borrado
+    (el inventario del lote y la decisión de disposición) y una se habría
+    llevado por delante las transferencias **con su acta**, que es un
+    instrumento de control que debe sobrevivir al contenido (Ley 594/2000 art.
+    26). Sin este test, esa pérdida habría sido silenciosa."""
+    schema, conn = tenant_ctx
+    lote_id, exp_id = await _sembrar_lote(conn, schema)
+    repo = ArchiveRepository(conn, schema)
+    await conn.execute(
+        """
+        INSERT INTO disposicion_decisiones
+            (expediente_id, fase, decision, fecha_vencimiento, disposition_code, decidido_por)
+        VALUES ($1, 'central', 'confirmada', '2026-01-01', 'E', gen_random_uuid())
+        """,
+        exp_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO expediente_eventos (expediente_id, accion) VALUES ($1, 'cerrado')
+        """,
+        exp_id,
+    )
+
+    borrado = await repo.delete_expediente(exp_id)
+
+    assert borrado is True
+    assert await conn.fetchval(
+        "SELECT count(*) FROM eliminacion_lote_items WHERE expediente_id=$1", exp_id
+    ) == 1
+    assert await conn.fetchval(
+        "SELECT count(*) FROM disposicion_decisiones WHERE expediente_id=$1", exp_id
+    ) == 1
+    # La hoja de ruta nunca tuvo clave foránea: sobrevive desde siempre.
+    assert await conn.fetchval(
+        "SELECT count(*) FROM expediente_eventos WHERE expediente_id=$1", exp_id
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_borrar_el_expediente_SE_LLEVA_lo_que_describe_su_contenido(tenant_ctx) -> None:
+    """El control positivo del test de arriba: sin él, pasaría igual con unas
+    claves foráneas que no borraran nada. El vínculo a radicados y el AIP
+    DESCRIBEN un contenido que ya no existe, y mueren con él."""
+    schema, conn = tenant_ctx
+    _lote_id, exp_id = await _sembrar_lote(conn, schema)
+    repo = ArchiveRepository(conn, schema)
+    await conn.execute(
+        "INSERT INTO expediente_radicados (expediente_id, radicado_id, tracking_number) "
+        "VALUES ($1, gen_random_uuid(), '2026-DEMO-E-000001')",
+        exp_id,
+    )
+    await conn.execute("INSERT INTO expediente_aip (expediente_id) VALUES ($1)", exp_id)
+
+    await repo.delete_expediente(exp_id)
+
+    assert await conn.fetchval(
+        "SELECT count(*) FROM expediente_radicados WHERE expediente_id=$1", exp_id
+    ) == 0
+    assert await conn.fetchval(
+        "SELECT count(*) FROM expediente_aip WHERE expediente_id=$1", exp_id
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_la_lapida_no_se_edita_ni_se_borra(tenant_ctx) -> None:
+    """Es lo único que queda. Una lápida editable no acredita nada."""
+    schema, conn = tenant_ctx
+    lote_id, exp_id = await _sembrar_lote(conn, schema)
+    repo = ArchiveRepository(conn, schema)
+    datos = {
+        "expediente_id": exp_id,
+        "expediente_code": "EXP-2020-0001",
+        "trd_serie_code": "DEM-100",
+        "fecha_extrema_inicial": date(2020, 1, 1),
+        "fecha_extrema_final": date(2020, 12, 31),
+        "radicados_eliminados": 12,
+        "anexos_eliminados": 30,
+        "lote_id": lote_id,
+        "lote_codigo": "LOTE-IT",
+        "acta_comite": "Acta 07",
+        "acto_administrativo": "Res. 512",
+        "acta_sha256": "d" * 64,
+        "eliminado_por": uuid.uuid4(),
+    }
+
+    assert await repo.insert_lapida(datos) is not None
+    # Y no se duplica: un reintento tras un fallo a medias no la reescribe.
+    assert await repo.insert_lapida(datos) is None
+
+    with pytest.raises(asyncpg.PostgresError):
+        await conn.execute(
+            "UPDATE expediente_lapida SET radicados_eliminados = 0 WHERE expediente_id=$1", exp_id
+        )
+    with pytest.raises(asyncpg.PostgresError):
+        await conn.execute("DELETE FROM expediente_lapida WHERE expediente_id=$1", exp_id)
+
+
+@pytest.mark.asyncio
+async def test_la_lapida_SOBREVIVE_al_expediente(tenant_ctx) -> None:
+    """No tiene clave foránea a `expedientes` a propósito: si la tuviera, el
+    borrado se la llevaría y la única respuesta a «¿qué pasó con este
+    expediente?» sería el silencio — indistinguible de «nunca existió»."""
+    schema, conn = tenant_ctx
+    lote_id, exp_id = await _sembrar_lote(conn, schema)
+    repo = ArchiveRepository(conn, schema)
+    await repo.insert_lapida(
+        {
+            "expediente_id": exp_id,
+            "expediente_code": "EXP-2020-0001",
+            "trd_serie_code": "DEM-100",
+            "fecha_extrema_inicial": None,
+            "fecha_extrema_final": None,
+            "radicados_eliminados": 3,
+            "anexos_eliminados": 4,
+            "lote_id": lote_id,
+            "lote_codigo": "LOTE-IT",
+            "acta_comite": "Acta 07",
+            "acto_administrativo": "Res. 512",
+            "acta_sha256": "e" * 64,
+            "eliminado_por": uuid.uuid4(),
+        }
+    )
+
+    await repo.delete_expediente(exp_id)
+
+    lapida = await repo.get_lapida(exp_id)
+    assert lapida is not None
+    assert lapida["expediente_code"] == "EXP-2020-0001"
+    assert lapida["acto_administrativo"] == "Res. 512"
+    # Y el expediente ya no está.
+    assert await conn.fetchval("SELECT count(*) FROM expedientes WHERE id=$1", exp_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_un_lote_no_se_ejecuta_dos_veces(tenant_ctx) -> None:
+    """Lo cuenta Postgres: el segundo `UPDATE` toca cero filas. Dos clics no
+    destruyen dos veces — aunque la segunda ya no quedara nada que destruir, el
+    lote afirmaría dos ejecuciones distintas del mismo acto."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    await _avalar_en_bd(conn, lote_id)
+    repo = ArchiveRepository(conn, schema)
+
+    primera = await repo.marcar_lote_ejecutado(lote_id, ejecutado_por=uuid.uuid4())
+    segunda = await repo.marcar_lote_ejecutado(lote_id, ejecutado_por=uuid.uuid4())
+
+    assert primera is not None and primera["estado"] == "ejecutado"
+    assert segunda is None

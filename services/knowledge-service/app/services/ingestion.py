@@ -305,8 +305,18 @@ async def apply_reclassification(
 
 
 async def void_radicado(conn: asyncpg.Connection, *, tenant_slug: str, payload: dict) -> None:
-    """Aplica un `document.radicado.annulled` (residual "purga-en-anulación", E21):
-    purga PERMANENTE del chunk indexado del radicado anulado.
+    """Aplica un `document.radicado.annulled` — y, desde E04/RF-TRD-07 fase 5, un
+    `document.radicado.purged`: purga PERMANENTE del chunk indexado.
+
+    **Por qué la ELIMINACIÓN por TRD no usa `delete_by_source` aunque el
+    documento ya no exista.** Borrar la fila parecía lo correcto —el radicado se
+    destruyó, no queda nada que representar— y es justo lo contrario: bajo
+    entrega *at-least-once*, un `created` reentregado DESPUÉS del DELETE
+    reinsertaría el fragmento desde cero, sin marcador, y el texto del documento
+    eliminado volvería a ser consultable. El `DELETE` borraría el propio
+    centinela que hace la purga irreversible. Así que se reutiliza el centinela
+    `voided=true`, que **no conserva texto, ni embedding, ni metadatos**: solo el
+    número de radicado, que es lo que hace que la purga se sostenga.
 
     A diferencia de `apply_reclassification` (que puede subir Y bajar el nivel de
     un chunk, porque una reclasificación siempre es potencialmente reversible), la

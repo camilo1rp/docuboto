@@ -45,6 +45,8 @@
 
   $: lotes = data.lotes ?? [];
   $: detalle = data.detalle;
+  $: acta = data.acta;
+  $: lapidas = data.lapidas ?? [];
 
   // Dos fuentes para lo mismo y se hacen caso las dos: el nivel que la sesión
   // dice tener y lo que el backend contestó de verdad. Si discrepan manda el
@@ -89,6 +91,10 @@
   let fFechaAval = HOY;
   let fActo = "";
   let fMotivo = "";
+  let fMetodo = "";
+  let fObsActa = "";
+  let fConfirmacion = "";
+  let resultadoEjecucion = null;
 
   function abrir(cual) {
     accion = cual;
@@ -98,12 +104,64 @@
     fFechaAval = HOY;
     fActo = "";
     fMotivo = "";
+    fMetodo = "";
+    fObsActa = "";
+    fConfirmacion = "";
+    resultadoEjecucion = null;
   }
 
   function cerrar() {
     accion = null;
     enviando = false;
     errorAccion = "";
+  }
+
+  async function ejecutar() {
+    enviando = true;
+    errorAccion = "";
+    try {
+      const res = await fetch(`/admin/eliminacion/api/${detalle.id}/ejecutar`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      enviando = false;
+      if (!res.ok) {
+        errorAccion = mensajeError(body, `Error ${res.status}`);
+        return;
+      }
+      // El resultado se queda EN EL MODAL en vez de cerrarlo con un toast: hay
+      // que poder leer qué se destruyó y, sobre todo, qué no. Un toast de
+      // cuatro segundos sobre un acto irreversible es exactamente donde se
+      // pierde la lista de fallidos.
+      resultadoEjecucion = body;
+      await invalidateAll();
+    } catch {
+      enviando = false;
+      errorAccion = "No se pudo conectar con el servidor.";
+    }
+  }
+
+  async function firmarActa() {
+    enviando = true;
+    try {
+      const res = await fetch(`/admin/eliminacion/api/${detalle.id}/acta/firmar`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      enviando = false;
+      if (!res.ok) {
+        notifyError(mensajeError(body, `Error ${res.status}`));
+        return;
+      }
+      // Se dice cuál de los dos desenlaces fue: «reintentado» sin decir si
+      // funcionó dejaría a quien mira sin saber si volver a intentarlo.
+      if (body.firma_estado === "firmado") notifySuccess("Acta firmada.");
+      else notifyError(`El sellado sigue pendiente: ${body.last_error ?? "sin detalle"}`);
+      await invalidateAll();
+    } catch {
+      enviando = false;
+      notifyError("No se pudo conectar con el servidor.");
+    }
   }
 
   async function enviar(ruta, cuerpo, exito) {
@@ -284,10 +342,120 @@
               Registrar el aval del Comité
             </Button>
           {/if}
+          {#if detalle.estado === "avalado" && acta?.firma_estado === "firmado"}
+            <Button variant="danger" on:click={() => abrir("ejecutar")}>
+              Ejecutar la eliminación
+            </Button>
+          {/if}
           {#if detalle.estado !== "ejecutado" && detalle.estado !== "anulado"}
             <Button variant="danger" on:click={() => abrir("anular")}>Retirar el lote</Button>
           {/if}
         </div>
+      {/if}
+
+      {#if detalle.estado === "avalado" || detalle.estado === "ejecutado"}
+        <h3 class="elim__inv-titulo">Acta de eliminación</h3>
+        {#if data.actaSobreClearance}
+          <p class="elim__aviso">
+            Este lote tiene acta, pero incluye expedientes con un nivel de clasificación superior a
+            tu nivel de acceso. <strong>No se puede mostrar recortada</strong>: es un documento
+            firmado, y quitarle filas rompería su firma.
+          </p>
+        {:else if data.actaError}
+          <p class="elim__error" role="alert">{data.actaError}</p>
+        {:else if acta}
+          <p class="elim__aviso">
+            El acta es de <strong>conservación permanente</strong>: sobrevive a lo eliminado y no se
+            elimina nunca. No se regenera ni se edita.
+          </p>
+          <dl class="elim__datos">
+            <div>
+              <dt>Generada</dt>
+              <dd>{fecha(acta.generado_at)}</dd>
+            </div>
+            <div>
+              <dt>Sellado</dt>
+              <dd>
+                {#if acta.firma_estado === "firmado"}
+                  Firmada{acta.xades_level ? ` (${acta.xades_level})` : ""}
+                {:else}
+                  Pendiente de firma{acta.last_error ? ` — ${acta.last_error}` : ""}
+                {/if}
+              </dd>
+            </div>
+            <div>
+              <dt>Método de borrado</dt>
+              <dd>{acta.metodo_borrado}</dd>
+            </div>
+          </dl>
+          <p class="elim__sha">
+            SHA-256: <code>{acta.acta_sha256}</code>
+          </p>
+          {#if acta.firma_estado === "firmado" && !acta.acreditado}
+            <p class="elim__sub">
+              Firma electrónica del art. 7 de la Ley 527 de 1999. <strong
+                >No es una firma digital acreditada</strong
+              > ante la ONAC (art. 28).
+            </p>
+          {/if}
+          {#if puedeActuar && acta.firma_estado !== "firmado"}
+            <div class="elim__acciones">
+              <Button variant="secondary" loading={enviando} on:click={() => firmarActa()}>
+                Reintentar el sellado
+              </Button>
+            </div>
+          {/if}
+        {:else if puedeActuar}
+          <p class="elim__aviso">
+            Todavía no hay acta. <strong>Se genera antes del borrado, no después</strong>: describe
+            un inventario que sale de expedientes que van a dejar de existir.
+          </p>
+          <div class="elim__acciones">
+            <Button variant="primary" on:click={() => abrir("acta")}>
+              Generar el acta de eliminación
+            </Button>
+          </div>
+        {:else}
+          <p class="elim__sub">Este lote todavía no tiene acta de eliminación.</p>
+        {/if}
+      {/if}
+
+      {#if detalle.estado === "ejecutado"}
+        <h3 class="elim__inv-titulo">Lo que queda</h3>
+        <p class="elim__aviso">
+          Estos expedientes <strong>ya no existen</strong>. De cada uno queda su lápida —código,
+          serie, fechas extremas, volumen y el acto que lo autorizó—, el acta de eliminación y los
+          asientos de auditoría. <strong>La denominación no se conserva</strong>: era contenido.
+        </p>
+        {#if lapidas.length === 0}
+          <p class="elim__sub">No se pudieron cargar las lápidas de este lote.</p>
+        {:else}
+          <table class="elim__tabla">
+            <caption class="is-sr-only">Lápidas del lote {detalle.codigo}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Expediente</th>
+                <th scope="col">Serie</th>
+                <th scope="col">Fechas extremas</th>
+                <th scope="col">Radicados</th>
+                <th scope="col">Anexos</th>
+                <th scope="col">Eliminado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each lapidas as l (l.expediente_id)}
+                <tr>
+                  <td><strong>{l.expediente_code}</strong></td>
+                  <td>{l.trd_serie_code ?? "—"}</td>
+                  <td>{fecha(l.fecha_extrema_inicial)} – {fecha(l.fecha_extrema_final)}</td>
+                  <td>{l.radicados_eliminados}</td>
+                  <td>{l.anexos_eliminados}</td>
+                  <td>{fecha(l.eliminado_at)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
       {/if}
 
       <h3 class="elim__inv-titulo">Inventario congelado</h3>
@@ -419,6 +587,111 @@
     >
       Registrar el aval
     </Button>
+  </svelte:fragment>
+</Modal>
+
+<Modal open={accion === "acta"} title="Generar el acta de eliminación" size="sm" on:close={cerrar}>
+  <p>
+    El acta deja constancia de <strong>qué</strong> se elimina, <strong>bajo qué acto</strong> y
+    <strong>cómo</strong> se destruye. Es de <strong>conservación permanente</strong>: sobrevive a
+    lo eliminado y no se elimina nunca.
+  </p>
+  <p class="elim__aviso">
+    Se genera <strong>una sola vez</strong> y no se puede editar ni volver a generar. Revisa el inventario
+    antes de continuar.
+  </p>
+  <FormField
+    id="acta-metodo"
+    name="metodo_borrado"
+    type="textarea"
+    label="Método de borrado"
+    required
+    bind:value={fMetodo}
+    hint="Cómo se destruyen los documentos. El sistema no lo inventa: lo declara la entidad."
+  />
+  <FormField
+    id="acta-obs"
+    name="observaciones"
+    type="textarea"
+    label="Observaciones (opcional)"
+    bind:value={fObsActa}
+  />
+  {#if errorAccion}<p class="elim__error" role="alert">{errorAccion}</p>{/if}
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={cerrar}>Cancelar</Button>
+    <Button
+      variant="primary"
+      loading={enviando}
+      disabled={fMetodo.trim().length < 10}
+      on:click={() =>
+        enviar(
+          "acta",
+          { metodo_borrado: fMetodo, observaciones: fObsActa || undefined },
+          "Acta de eliminación generada.",
+        )}
+    >
+      Generar el acta
+    </Button>
+  </svelte:fragment>
+</Modal>
+
+<Modal open={accion === "ejecutar"} title="Ejecutar la eliminación" size="md" on:close={cerrar}>
+  {#if resultadoEjecucion === null}
+    <p class="elim__peligro" role="alert">
+      <strong>Esto destruye documentos de archivo y no se puede deshacer.</strong>
+      Se borrarán los archivos y los radicados de
+      <strong>{detalle?.total_items ?? 0}</strong> expedientes.
+    </p>
+    <p>
+      Lo que quedará de cada expediente: su <strong>lápida</strong> —código, serie, fechas extremas,
+      volumen y el acto que lo autorizó—, el <strong>acta de eliminación</strong> firmada y los
+      asientos de <strong>auditoría</strong>. No quedará el contenido ni la denominación.
+    </p>
+    <p class="elim__sub">
+      Autorizado por {detalle?.acta_comite} · {detalle?.acto_administrativo}
+    </p>
+    <FormField
+      id="ejecutar-confirmacion"
+      name="confirmacion"
+      label="Escribe el código del lote para confirmar"
+      required
+      bind:value={fConfirmacion}
+      hint="Un acto irreversible no debe estar a un clic de distancia."
+    />
+    {#if errorAccion}<p class="elim__error" role="alert">{errorAccion}</p>{/if}
+  {:else}
+    <p>
+      Eliminados <strong>{resultadoEjecucion.expedientes_eliminados}</strong> expedientes,
+      <strong>{resultadoEjecucion.radicados_eliminados}</strong> radicados y
+      <strong>{resultadoEjecucion.anexos_eliminados}</strong> anexos.
+    </p>
+    {#if resultadoEjecucion.fallidos?.length}
+      <p class="elim__peligro" role="alert">
+        <strong>No se eliminaron {resultadoEjecucion.fallidos.length}</strong>, y siguen
+        <strong>intactos y sin lápida</strong>. El lote sigue sin marcarse como ejecutado; se puede
+        volver a ejecutar cuando se resuelva el motivo.
+      </p>
+      <ul class="elim__rechazos">
+        {#each resultadoEjecucion.fallidos as f (f.expediente_id)}
+          <li><strong>{f.expediente_code}</strong>: {f.detalle}</li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={cerrar}>
+      {resultadoEjecucion === null ? "Cancelar" : "Cerrar"}
+    </Button>
+    {#if resultadoEjecucion === null}
+      <Button
+        variant="danger"
+        loading={enviando}
+        disabled={fConfirmacion.trim() !== detalle?.codigo}
+        on:click={ejecutar}
+      >
+        Eliminar definitivamente
+      </Button>
+    {/if}
   </svelte:fragment>
 </Modal>
 
@@ -563,6 +836,26 @@
     margin-bottom: var(--op-space-2);
     font-weight: var(--op-weight-bold);
     color: var(--op-text);
+  }
+  .elim__sha {
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+    word-break: break-all;
+    margin-bottom: var(--op-space-2);
+  }
+  .elim__peligro {
+    margin: var(--op-space-2) 0;
+    padding: var(--op-space-3);
+    border-left: 3px solid var(--op-error);
+    background: var(--op-bg);
+    color: var(--op-text);
+    font-size: var(--op-font-sm);
+  }
+  .elim__rechazos {
+    margin: var(--op-space-2) 0 0 var(--op-space-4);
+    font-size: var(--op-font-sm);
+    color: var(--op-text);
+    list-style: disc;
   }
   .elim__error {
     color: var(--op-error);

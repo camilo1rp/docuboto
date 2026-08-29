@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -19,7 +21,10 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
+from app.clients import document_client
+from app.clients.document_client import DocumentClientError, DocumentPurgaError
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
+from app.core.config import settings
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.core.http_errors import motivo_de
 from app.core.trd_disposition import (
@@ -32,7 +37,10 @@ from app.repositories.audit_read import AuditReadRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.archive import (
+    ActaEliminacionResponse,
     BatchLinkResult,
+    EjecucionFallo,
+    EjecucionLoteResponse,
     ExpedienteCreate,
     ExpedienteDisposicionDecisionResponse,
     ExpedienteDisposicionResult,
@@ -45,6 +53,7 @@ from app.schemas.archive import (
     ExpedienteUpdate,
     HistorialAccesoEntry,
     IndiceItem,
+    LapidaResponse,
     LoteEliminacionItem,
     LoteEliminacionItemPublico,
     LoteEliminacionPublico,
@@ -65,6 +74,7 @@ from app.schemas.archive import (
     TvdAgrupacionUpdate,
     TvdAgrupacionVersionCreate,
 )
+from app.services.eliminacion_acta import construir_acta_xml
 from app.services.metadata_service import validate_metadata
 
 logger = logging.getLogger(__name__)
@@ -4260,6 +4270,551 @@ class ArchiveService:
                 "status": 409,
             },
         )
+
+    # ------------------------------------------------------------------
+    # El ACTA de eliminación (RF-TRD-07, fase 4 de 5)
+    # ------------------------------------------------------------------
+
+    async def generar_acta_eliminacion(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        metodo_borrado: str,
+        observaciones: str | None,
+        actor: uuid.UUID,
+    ) -> ActaEliminacionResponse:
+        """`POST /eliminacion/lotes/{id}/acta` (RF-TRD-07, fase 4 de 5).
+
+        **El acta es lo que sobrevive a lo eliminado.** Cuando la fase 5 borre
+        los bytes, el expediente dejará de existir y esta acta será —junto con
+        la lápida y el `audit_log`— la única constancia de qué se destruyó,
+        bajo qué acto y quién lo autorizó. Es de **conservación permanente**:
+        no tiene calendario ni disposición final.
+
+        Va **antes** del borrado y no después, y no es un detalle de orden: el
+        inventario que el acta describe sale de un expediente que va a dejar de
+        existir. Un acta redactada después no tendría de dónde leerlo.
+
+        Se exige el lote **avalado**: sin la decisión del Comité no hay nada
+        que documentar. Y **una sola vez** —`ON CONFLICT DO NOTHING`—: un
+        segundo intento produciría otro documento, con otro instante y otro
+        SHA, para una eliminación que ya tenía el suyo.
+
+        `metodo_borrado` lo declara quien genera el acta y **no lo inventa el
+        sistema** (Ac. AGN 001/2024 art. 4.3.2.5 exige decir cómo se destruye):
+        una frase por defecto sería una afirmación que nadie hizo, sobre un
+        acto irreversible.
+
+        El sellado XAdES corre **después del commit** y es best-effort, igual
+        que el del acta de transferencia: el acta ya quedó íntegra y su SHA
+        anclado en `audit_log`, así que un signature-service caído retrasa la
+        firma pero no pierde el documento."""
+        lote = await self._repo.get_lote_estado(lote_id)
+        if lote is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "lote_no_encontrado",
+                    "detail": "No existe un lote de eliminación con ese identificador",
+                    "status": 404,
+                },
+            )
+        if lote["estado"] != "avalado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "lote_sin_aval",
+                    "detail": (
+                        f"El lote está en estado '{lote['estado']}': el acta de "
+                        "eliminación documenta una decisión del Comité, y sin el "
+                        "aval no hay nada que documentar."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        fila = await self._repo.get_lote_row(lote_id)
+        items = await self._repo.list_items_lote_completo(lote_id)
+        generado_at = datetime.now(UTC)
+        acta_xml = construir_acta_xml(
+            lote=fila,
+            items=items,
+            tenant_slug=self._tenant_slug,
+            metodo_borrado=metodo_borrado,
+            observaciones=observaciones,
+            generado_por=str(actor),
+            generado_ts=generado_at,
+        )
+        acta_sha = hashlib.sha256(acta_xml.encode("utf-8")).hexdigest()
+
+        async with self._conn.transaction():
+            creada = await self._repo.insert_acta_eliminacion(
+                lote_id,
+                acta_xml=acta_xml,
+                acta_sha256=acta_sha,
+                metodo_borrado=metodo_borrado,
+                observaciones=observaciones,
+                generado_por=actor,
+                generado_at=generado_at,
+            )
+            if creada is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "acta_ya_existe",
+                        "detail": (
+                            "Este lote ya tiene su acta de eliminación. El acta es "
+                            "única y de conservación permanente: no se regenera."
+                        ),
+                        "status": 409,
+                    },
+                )
+            # En la MISMA tx: toda acta nace con su estado de firma, y ninguna
+            # queda fuera del alcance de la reconciliación por escribirse a
+            # medias.
+            await self._repo.insert_acta_eliminacion_firma_pendiente(lote_id)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="archive-service",
+                action="archive.eliminacion_acta_generada",
+                object_type="eliminacion_acta",
+                object_ref=str(lote_id),
+                actor=str(actor),
+                payload={
+                    "codigo": fila["codigo"],
+                    # El SHA va al asiento INDELEBLE: `eliminacion_acta` es
+                    # append-only por trigger, pero un acta alterada saltándose
+                    # el trigger seguiría delatándose contra este número.
+                    "acta_sha256": acta_sha,
+                    "total_items": len(items),
+                    "metodo_borrado": metodo_borrado,
+                },
+            )
+
+        await self._sellar_acta_eliminacion(lote_id, acta_xml=acta_xml, actor=actor)
+        return await self.get_acta_eliminacion(lote_id, actor=actor)
+
+    async def get_acta_eliminacion(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID
+    ) -> ActaEliminacionResponse:
+        """`GET /eliminacion/lotes/{id}/acta`.
+
+        **El acta se sirve entera o no se sirve.** Es un documento firmado y
+        monolítico: recortarle filas rompería la firma y produciría algo que ya
+        no es el acta. Así que lo que se acota es quién la lee, y el umbral se
+        **deriva del contenido** —el nivel más alto del inventario—, nunca de
+        un campo declarado.
+
+        El 403 (y no 404) es deliberado aquí: quien pregunta ya podía ver el
+        lote, así que no se le confirma nada que no supiera; lo que necesita es
+        entender **por qué** no puede leerla, no creer que no existe."""
+        acta = await self._repo.get_acta_eliminacion(lote_id)
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "acta_no_encontrada",
+                    "detail": "Este lote todavía no tiene acta de eliminación",
+                    "status": 404,
+                },
+            )
+        clearance = await self._repo.caller_clearance(actor)
+        nivel_acta = await self._repo.max_nivel_items_lote(lote_id)
+        if nivel_acta > clearance:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "acta_sobre_su_clearance",
+                    "detail": (
+                        "El acta incluye expedientes con un nivel de clasificación "
+                        "superior a su nivel de acceso, y no se puede servir "
+                        "recortada sin romper su firma."
+                    ),
+                    "status": 403,
+                },
+            )
+        return ActaEliminacionResponse(
+            lote_id=lote_id,
+            acta_xml=acta["acta_xml"],
+            acta_sha256=acta["acta_sha256"],
+            metodo_borrado=acta["metodo_borrado"],
+            observaciones=acta["observaciones"],
+            generado_por=acta["generado_por"],
+            generado_at=acta["generado_at"],
+            firma_estado=acta["firma_estado"] or "pendiente_firma",
+            firma_id=acta["firma_id"],
+            xades_level=acta["xades_level"],
+            acreditado=bool(acta["acreditado"]),
+            firmado_at=acta["firmado_at"],
+            last_error=acta["last_error"],
+        )
+
+    async def firmar_acta_eliminacion_retry(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID
+    ) -> ActaEliminacionResponse:
+        """`POST /eliminacion/lotes/{id}/acta/firmar` — reintento manual.
+
+        No regenera nada: sella **el mismo XML** ya congelado. Existe porque un
+        acta pendiente de firma con signature-service caído no puede quedarse
+        esperando a que un job pase: alguien tiene que poder empujarla, y ver
+        el motivo del último fallo mientras tanto."""
+        acta = await self._repo.get_acta_eliminacion(lote_id)
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "acta_no_encontrada",
+                    "detail": "Este lote todavía no tiene acta de eliminación",
+                    "status": 404,
+                },
+            )
+        if acta["firma_estado"] == "firmado":
+            # No es un error: es el estado que se quería. Devolverla firmada
+            # evita que un doble clic parezca un fallo.
+            return await self.get_acta_eliminacion(lote_id, actor=actor)
+        await self._sellar_acta_eliminacion(lote_id, acta_xml=acta["acta_xml"], actor=actor)
+        return await self.get_acta_eliminacion(lote_id, actor=actor)
+
+    async def _sellar_acta_eliminacion(
+        self, lote_id: uuid.UUID, *, acta_xml: str, actor: uuid.UUID
+    ) -> None:
+        """Intento SÍNCRONO ACOTADO del sellado XAdES — gemelo de
+        `TransferenciaService._sellar_acta_post_commit`, con sus mismos tres
+        desenlaces:
+
+        - éxito → `firmado` + asiento `archive.eliminacion_acta_firmada`;
+        - `seal_absent` → degrada **sin reintentar**, porque firmar es
+          estructuralmente imposible ahora mismo y repetir solo gasta tiempo;
+        - `transient` agotado → degrada y queda para el reintento manual.
+
+        **Siempre fuera de una transacción**: el sellado es HTTP y una llamada
+        remota dentro de una tx la mantiene abierta a merced de un tercero.
+
+        El XML **nunca se altera aquí**: el sello cubre exactamente la cadena
+        ya anclada, y el XML firmado es un artefacto derivado en MinIO."""
+        from app.clients import signature_client
+
+        max_attempts = max(1, settings.acta_sign_max_sync_attempts)
+        for intento in range(1, max_attempts + 1):
+            outcome = await signature_client.sign_xml_outcome(
+                tenant_slug=self._tenant_slug,
+                actor_id=str(actor),
+                payload_xml=acta_xml,
+                objeto_tipo="acta_eliminacion",
+                objeto_id=str(lote_id),
+                indice_id=None,
+                version=1,
+            )
+            if outcome.signed is not None:
+                if not outcome.signed.minio_key_firmado:
+                    # Firma sin artefacto: el CHECK de la migración 048 exige
+                    # `minio_key_firmado` para admitir 'firmado', y con razón —
+                    # un acta «firmada» cuyo XML firmado no está en ninguna
+                    # parte no se puede verificar nunca más. Se trata como
+                    # fallo del sellado, con su motivo, en vez de dejar que la
+                    # base lo rechace con un error opaco. Lo destapó mypy: el
+                    # tipo decía `str | None` y el código lo daba por presente.
+                    await self._degradar_acta_eliminacion(
+                        lote_id, actor=actor, motivo="sellado_sin_artefacto"
+                    )
+                    return
+                async with self._conn.transaction():
+                    afectadas = await self._repo.mark_acta_eliminacion_firmada(
+                        lote_id,
+                        firma_id=outcome.signed.firma_id,
+                        minio_key=outcome.signed.minio_key_firmado,
+                        xades_level=outcome.signed.xades_level,
+                        acreditado=outcome.signed.acreditado,
+                    )
+                    # Cero filas = otro proceso ya la marcó firmada entre medias;
+                    # el sello recién obtenido queda huérfano y NO se escribe el
+                    # asiento fantasma.
+                    if afectadas:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant_slug,
+                            service="archive-service",
+                            action="archive.eliminacion_acta_firmada",
+                            object_type="eliminacion_acta",
+                            object_ref=str(lote_id),
+                            actor=str(actor),
+                            payload={
+                                "firma_id": str(outcome.signed.firma_id),
+                                "xades_level": outcome.signed.xades_level,
+                                "acreditado": outcome.signed.acreditado,
+                            },
+                        )
+                return
+            if outcome.seal_absent:
+                await self._degradar_acta_eliminacion(
+                    lote_id, actor=actor, motivo="sello_ausente"
+                )
+                return
+            if intento < max_attempts:
+                await asyncio.sleep(settings.acta_sign_sync_delay_seconds)
+
+        await self._degradar_acta_eliminacion(
+            lote_id, actor=actor, motivo="sellado_xades_no_obtenido"
+        )
+
+    async def _degradar_acta_eliminacion(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID, motivo: str
+    ) -> None:
+        """Marca el fallo y su asiento como UN acto: si el asiento se escribiera
+        aparte, un fallo entre ambos dejaría el estado sin explicación."""
+        async with self._conn.transaction():
+            await self._repo.mark_acta_eliminacion_pendiente(
+                lote_id, last_error=motivo, proximo_at=None
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="archive-service",
+                action="archive.eliminacion_acta_firma_pendiente",
+                object_type="eliminacion_acta",
+                object_ref=str(lote_id),
+                actor=str(actor),
+                payload={"motivo": motivo},
+            )
+
+    # ------------------------------------------------------------------
+    # La EJECUCIÓN (RF-TRD-07, fase 5 de 5) -- aquí SÍ se destruye
+    # ------------------------------------------------------------------
+
+    async def ejecutar_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID
+    ) -> EjecucionLoteResponse:
+        """`POST /eliminacion/lotes/{id}/ejecutar` (RF-TRD-07, fase 5 de 5).
+
+        **Esto destruye.** Es el único camino del sistema que borra documentos
+        de archivo, y llega al final de un procedimiento de cinco actos:
+        propuesta con cinco condiciones de admisión, publicidad previa con plazo
+        para oponerse, aval del Comité con su acto administrativo, y acta
+        firmada de conservación permanente.
+
+        **Cuatro precondiciones, y ninguna es un formalismo**: lote `avalado`,
+        acta existente, acta **firmada**, y el inventario congelado como única
+        fuente de qué se destruye. Exigir la firma antes de destruir puede
+        bloquear la ejecución si signature-service está caído — y es
+        deliberado: el último acto irreversible es exactamente el momento de no
+        seguir adelante con una constancia a medias. Hay reintento manual para
+        desbloquearlo.
+
+        **Expediente por expediente, y todo-o-nada dentro de cada uno.** Si la
+        purga de un expediente falla, ese expediente NO recibe lápida y NO se
+        borra; los demás siguen. Un fallo parcial silencioso sería lo peor
+        posible: una lápida sobre bytes vivos afirma para siempre una
+        destrucción que no ocurrió.
+
+        **La lápida se escribe ANTES de borrar el expediente**, en la misma
+        transacción. Al revés, un fallo entre ambos dejaría el expediente
+        destruido y sin lápida: la única respuesta a «¿qué pasó con
+        2015-DEM-000123?» sería el silencio, indistinguible de «nunca existió».
+        """
+        estado = await self._repo.get_lote_estado(lote_id)
+        if estado is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "lote_no_encontrado",
+                    "detail": "No existe un lote de eliminación con ese identificador",
+                    "status": 404,
+                },
+            )
+        if estado["estado"] != "avalado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "lote_no_ejecutable",
+                    "detail": (
+                        f"El lote está en estado '{estado['estado']}': solo se ejecuta "
+                        "un lote avalado por el Comité."
+                    ),
+                    "status": 409,
+                },
+            )
+        acta = await self._repo.get_acta_eliminacion(lote_id)
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "acta_ausente",
+                    "detail": (
+                        "No se destruye sin acta: el acta es lo único que quedará "
+                        "diciendo qué se eliminó y bajo qué acto."
+                    ),
+                    "status": 409,
+                },
+            )
+        if acta["firma_estado"] != "firmado":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "acta_sin_firmar",
+                    "detail": (
+                        "El acta todavía no está firmada"
+                        + (f" ({acta['last_error']})" if acta["last_error"] else "")
+                        + ". Reintente el sellado antes de ejecutar: el último acto "
+                        "irreversible no se hace con una constancia a medias."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        lote = await self._repo.get_lote_row(lote_id)
+        items = await self._repo.list_items_lote_completo(lote_id)
+        eliminados: list[uuid.UUID] = []
+        fallidos: list[EjecucionFallo] = []
+        total_radicados = 0
+        total_anexos = 0
+
+        for item in items:
+            expediente_id = item["expediente_id"]
+            try:
+                recuento = await self._eliminar_expediente(
+                    expediente_id, item=item, lote=lote, acta=acta, actor=actor
+                )
+            except (DocumentPurgaError, DocumentClientError) as exc:
+                # El expediente queda INTACTO y sin lápida. Se informa con su
+                # código, no solo con su UUID: quien tiene que reintentar
+                # necesita saber cuál es.
+                fallidos.append(
+                    EjecucionFallo(
+                        expediente_id=expediente_id,
+                        expediente_code=item["expediente_code"],
+                        detalle=str(exc),
+                    )
+                )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service="archive-service",
+                    action="archive.eliminacion_expediente_fallida",
+                    object_type="expediente",
+                    object_ref=str(expediente_id),
+                    actor=str(actor),
+                    payload={
+                        "lote": lote["codigo"],
+                        "expediente_code": item["expediente_code"],
+                        "motivo": str(exc)[:500],
+                    },
+                )
+                continue
+            eliminados.append(expediente_id)
+            total_radicados += recuento["radicados_eliminados"]
+            total_anexos += recuento["anexos_eliminados"]
+
+        # El lote solo pasa a `ejecutado` si NO quedó ninguno pendiente: un lote
+        # marcado ejecutado con expedientes vivos dentro mentiría sobre lo único
+        # que este estado significa.
+        ejecutado = False
+        if not fallidos:
+            fila = await self._repo.marcar_lote_ejecutado(lote_id, ejecutado_por=actor)
+            ejecutado = fila is not None
+            if ejecutado:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service="archive-service",
+                    action="archive.eliminacion_lote_ejecutado",
+                    object_type="eliminacion_lote",
+                    object_ref=str(lote_id),
+                    actor=str(actor),
+                    payload={
+                        "codigo": lote["codigo"],
+                        "expedientes_eliminados": len(eliminados),
+                        "radicados_eliminados": total_radicados,
+                        "anexos_eliminados": total_anexos,
+                        "acta_sha256": acta["acta_sha256"],
+                    },
+                )
+
+        return EjecucionLoteResponse(
+            lote_id=lote_id,
+            estado="ejecutado" if ejecutado else lote["estado"],
+            expedientes_eliminados=len(eliminados),
+            radicados_eliminados=total_radicados,
+            anexos_eliminados=total_anexos,
+            fallidos=fallidos,
+        )
+
+    async def _eliminar_expediente(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        item: Any,
+        lote: Any,
+        acta: Any,
+        actor: uuid.UUID,
+    ) -> dict[str, int]:
+        """Destruye UN expediente: primero sus documentos, después él mismo.
+
+        El orden no es negociable. Si se borrara el expediente primero, sus
+        vínculos a radicados caerían en cascada y **ya no habría forma de saber
+        qué documentos había que destruir**: quedarían vivos para siempre y sin
+        nadie que supiera que debían morir. Es el mismo razonamiento que dentro
+        de document-service pone los bytes antes que las filas.
+        """
+        radicados = await self._repo.list_radicados_de_expediente(expediente_id)
+        motivo = f"Eliminación TRD, lote {lote['codigo']}, {lote['acto_administrativo']}"
+        recuento = await document_client.purgar_radicados_internal(
+            tenant_slug=self._tenant_slug,
+            radicado_ids=radicados,
+            expediente_id=expediente_id,
+            motivo=motivo,
+            actor=actor,
+        )
+
+        async with self._conn.transaction():
+            # La lápida ANTES del borrado y en la misma transacción: al revés,
+            # un fallo entre ambos dejaría el expediente destruido y sin
+            # lápida, y el silencio es indistinguible de «nunca existió».
+            await self._repo.insert_lapida(
+                {
+                    "expediente_id": expediente_id,
+                    "expediente_code": item["expediente_code"],
+                    "trd_serie_code": item["trd_serie_code"],
+                    "fecha_extrema_inicial": item["fecha_extrema_inicial"],
+                    "fecha_extrema_final": item["fecha_extrema_final"],
+                    "radicados_eliminados": recuento["radicados_eliminados"],
+                    "anexos_eliminados": recuento["anexos_eliminados"],
+                    "lote_id": lote["id"],
+                    "lote_codigo": lote["codigo"],
+                    "acta_comite": lote["acta_comite"],
+                    "acto_administrativo": lote["acto_administrativo"],
+                    "acta_sha256": acta["acta_sha256"],
+                    "eliminado_por": actor,
+                }
+            )
+            await self._repo.delete_expediente(expediente_id)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="archive-service",
+                action="archive.expediente_eliminado_trd",
+                object_type="expediente",
+                object_ref=str(expediente_id),
+                actor=str(actor),
+                payload={
+                    "expediente_code": item["expediente_code"],
+                    "lote": lote["codigo"],
+                    "acto_administrativo": lote["acto_administrativo"],
+                    "acta_sha256": acta["acta_sha256"],
+                    **recuento,
+                },
+            )
+        return recuento
+
+    async def list_lapidas_de_lote(self, lote_id: uuid.UUID) -> list[LapidaResponse]:
+        """Las lápidas de un lote ejecutado. **Sin recortar por clearance**: una
+        lápida es content-free por construcción —código, serie, fechas extremas,
+        volumen y el acto que lo autorizó— y no hay nada que proteger en ella.
+        Recortarla haría desaparecer la constancia justo de los expedientes cuya
+        destrucción más importa poder acreditar."""
+        return [
+            LapidaResponse(**dict(r)) for r in await self._repo.list_lapidas_de_lote(lote_id)
+        ]
 
     async def list_lotes_publicos(self) -> list[LoteEliminacionPublico]:
         """Inventarios publicados, para cualquiera y sin autenticar."""

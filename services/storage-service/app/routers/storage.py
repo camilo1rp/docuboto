@@ -31,6 +31,8 @@ from app.schemas.storage import (
     FileResponse,
     IntegrityResponse,
     PresignedUrlResponse,
+    PurgaDisposicionRequest,
+    PurgaDisposicionResponse,
 )
 from app.services.pdfa_ingest_service import (
     PdfaNonConformantError,
@@ -40,6 +42,7 @@ from app.services.storage_service import (
     NotCurrentVersionError,
     StorageService,
     UnsupportedFormatError,
+    WormLockActiveError,
 )
 
 router = APIRouter(prefix="/api/v1/storage", tags=["storage"])
@@ -548,3 +551,61 @@ async def delete_file(
                 "status": 404,
             },
         )
+
+
+@router.post(
+    "/internal/purgar-disposicion",
+    response_model=PurgaDisposicionResponse,
+    summary="Purgar físicamente archivos por disposición final de TRD (internal only)",
+    # La ÚNICA puerta al borrado físico, y llevaba sin puerta desde que se
+    # escribió: `StorageService.purge_for_disposition` existía, tenía su gate
+    # WORM y su asiento, y ningún router lo alcanzaba. Es el patrón que esta
+    # revisión persigue —una capacidad construida y no ofrecida—, aquí sobre el
+    # acto más irreversible del sistema.
+    #
+    # Sellado con `X-Internal-Token` (D-02) y NO enrutado por el gateway: nadie
+    # de fuera puede pedir un borrado físico. Quien lo pide es archive-service,
+    # ejecutando un lote de eliminación con acta firmada (RF-TRD-07 fase 5).
+    dependencies=[Depends(_require_internal_token)],
+)
+async def purgar_disposicion(
+    payload: PurgaDisposicionRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> PurgaDisposicionResponse:
+    """Borra los objetos de MinIO y sus filas, uno a uno.
+
+    **Por archivo y no en bloque**: el gate WORM se evalúa por expediente y un
+    fallo en uno no puede llevarse por delante los demás — quien orquesta
+    necesita saber exactamente cuáles se fueron y cuáles no, porque de eso
+    depende lo que la lápida podrá afirmar.
+
+    `no_encontrados` no es un error: un archivo ya purgado (reintento tras un
+    fallo a medias) es el estado que se buscaba.
+    """
+    service = StorageService(conn, tenant_slug)
+    purgados: list[uuid.UUID] = []
+    no_encontrados: list[uuid.UUID] = []
+    for file_id in payload.file_ids:
+        try:
+            ok = await service.purge_for_disposition(
+                file_id,
+                payload.expediente_id,
+                payload.motivo,
+                actor=payload.actor,
+            )
+        except WormLockActiveError as exc:
+            # El candado WORM aborta la purga ENTERA del expediente, no solo la
+            # de este archivo: si un objeto sigue protegido, eliminar el resto
+            # dejaría un expediente medio destruido y un índice que ya no
+            # describe nada. Mejor no haber empezado.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "worm_lock_activo",
+                    "detail": str(exc),
+                    "status": 409,
+                },
+            ) from exc
+        (purgados if ok else no_encontrados).append(file_id)
+    return PurgaDisposicionResponse(purgados=purgados, no_encontrados=no_encontrados)

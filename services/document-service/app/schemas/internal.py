@@ -42,3 +42,27 @@ class RadicadoMetaItem(BaseModel):
 
     subject: str
     doc_type: str
+
+
+class PurgaInternalRequest(BaseModel):
+    """`POST /api/v1/internal/documentos/purgar` (E04, RF-TRD-07 fase 5).
+
+    **No lleva ningún interruptor.** Nada de `dry_run`, `forzar` ni
+    `omitir_worm`: un acto irreversible no debe tener parámetros que cambien lo
+    que hace, porque el día que uno se pase mal la pregunta «¿qué pidió
+    exactamente quien llamó?» ya no tendrá respuesta comprobable.
+    """
+
+    radicado_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    # Llave del gate WORM en storage-service; no es un dato decorativo.
+    expediente_id: str = Field(min_length=1, max_length=200)
+    motivo: str = Field(min_length=3, max_length=500)
+    actor: uuid.UUID | None = None
+
+
+class PurgaInternalResponse(BaseModel):
+    """Recuento REAL de lo destruido — el que la lápida va a afirmar para
+    siempre. Se devuelve lo que ocurrió, nunca lo que se pidió."""
+
+    radicados_eliminados: int
+    anexos_eliminados: int

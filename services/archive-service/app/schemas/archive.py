@@ -691,6 +691,95 @@ class LoteEliminacionPublico(BaseModel):
     items: list[LoteEliminacionItemPublico] = []
 
 
+class ActaEliminacionCreate(BaseModel):
+    """`POST /api/v1/eliminacion/lotes/{id}/acta` (RF-TRD-07, fase 4 de 5).
+
+    `metodo_borrado` es **obligatorio y sin valor por defecto**: el acta debe
+    decir cómo se destruye (Ac. AGN 001/2024 art. 4.3.2.5), y una frase
+    inventada por el sistema sería una afirmación que nadie hizo sobre un acto
+    irreversible. Lo declara quien genera el acta."""
+
+    metodo_borrado: str = Field(min_length=10, max_length=1000)
+    observaciones: str | None = Field(default=None, max_length=2000)
+
+
+class ActaEliminacionResponse(BaseModel):
+    """El acta con su estado de sellado.
+
+    `acreditado` viaja explícito y hoy es SIEMPRE `false` (art. 7 de la Ley
+    527/1999, no art. 28): sin él, «firmado» se leería como firma digital
+    cualificada, que es exactamente lo que no es."""
+
+    lote_id: uuid.UUID
+    acta_xml: str
+    acta_sha256: str
+    metodo_borrado: str
+    observaciones: str | None
+    generado_por: uuid.UUID
+    generado_at: datetime
+    firma_estado: str
+    firma_id: uuid.UUID | None
+    xades_level: str | None
+    acreditado: bool
+    firmado_at: datetime | None
+    # Motivo del último intento fallido de sellado. Se expone a propósito: un
+    # acta «pendiente de firma» sin decir por qué deja a quien mira sin saber
+    # si esperar o llamar a alguien.
+    last_error: str | None
+
+
+class EjecucionFallo(BaseModel):
+    """Un expediente que NO se pudo eliminar.
+
+    Lleva el **código** además del identificador, y no por comodidad: quien
+    tiene que reintentar necesita saber cuál es, y un UUID no se lo dice. Un
+    expediente que aparece aquí quedó **intacto y sin lápida**."""
+
+    expediente_id: uuid.UUID
+    expediente_code: str
+    detalle: str
+
+
+class EjecucionLoteResponse(BaseModel):
+    """Resultado de ejecutar un lote (RF-TRD-07, fase 5).
+
+    Los recuentos son los **reales**, no los pedidos. Y `estado` solo dice
+    `ejecutado` si no quedó ningún expediente pendiente: un lote marcado
+    ejecutado con expedientes vivos dentro mentiría sobre lo único que ese
+    estado significa."""
+
+    lote_id: uuid.UUID
+    estado: str
+    expedientes_eliminados: int
+    radicados_eliminados: int
+    anexos_eliminados: int
+    fallidos: list[EjecucionFallo] = []
+
+
+class LapidaResponse(BaseModel):
+    """La lápida de un expediente eliminado.
+
+    **Content-free por construcción**: código, serie, fechas extremas, volumen y
+    el acto que lo autorizó. La denominación NO está —es contenido, y una lápida
+    que la conservara filtraría para siempre justo lo que se destruyó por orden
+    de la TRD."""
+
+    expediente_id: uuid.UUID
+    expediente_code: str
+    trd_serie_code: str | None
+    fecha_extrema_inicial: date | None
+    fecha_extrema_final: date | None
+    radicados_eliminados: int
+    anexos_eliminados: int
+    lote_id: uuid.UUID
+    lote_codigo: str
+    acta_comite: str
+    acto_administrativo: str
+    acta_sha256: str
+    eliminado_por: uuid.UUID
+    eliminado_at: datetime
+
+
 class DisposicionDecisionCreate(BaseModel):
     """Cuerpo de `POST /api/v1/trd/disposicion-vencida/{id}/decidir`.
 

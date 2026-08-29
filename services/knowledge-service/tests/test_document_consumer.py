@@ -366,3 +366,41 @@ async def test_handle_malformed_event_trace_is_best_effort() -> None:
         mock_get_pool.return_value.acquire.side_effect = RuntimeError("pool exhausted")
         mock_audit.append = AsyncMock()
         await document_consumer._handle(fields)  # no debe propagar
+
+
+@pytest.mark.asyncio
+async def test_handle_dispatches_purged_to_void() -> None:
+    """E04/RF-TRD-07 fase 5: `document.radicado.purged` —la eliminación por
+    disposición final de la TRD— llega al MISMO tratamiento que la anulación.
+
+    Y es deliberado: son actos jurídicamente distintos, pero para una copia
+    derivada significan exactamente lo mismo — ese fragmento no puede volver a
+    ser resultado de búsqueda, nunca. Se distinguen por nombre para que la traza
+    diga cuál ocurrió; el efecto es uno solo.
+
+    **Por qué el centinela y no un DELETE**, aunque el documento ya no exista:
+    bajo entrega *at-least-once*, un `created` reentregado después del DELETE
+    reinsertaría el fragmento desde cero, sin marcador, y el texto del documento
+    eliminado volvería a ser consultable. El DELETE borraría el propio marcador
+    que hace la purga irreversible.
+    """
+    from app.workers import document_consumer
+
+    fields = _fields(
+        "document.radicado.purged",
+        payload={"id": "doc-id-9", "tracking_number": TRACKING},
+    )
+    fake_conn = AsyncMock()
+
+    with (
+        patch.object(document_consumer, "acquire_tenant", return_value=_AcquireTenantCtx(fake_conn)),
+        patch("app.workers.document_consumer.ingestion.void_radicado", AsyncMock()) as mock_void,
+        patch(
+            "app.workers.document_consumer.ingestion.ingest_radicado_created", AsyncMock()
+        ) as mock_ingest,
+    ):
+        await document_consumer._handle(fields)
+
+    mock_void.assert_awaited_once()
+    assert mock_void.await_args.kwargs["payload"]["tracking_number"] == TRACKING
+    mock_ingest.assert_not_awaited()

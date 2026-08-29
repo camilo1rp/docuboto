@@ -79,5 +79,55 @@ export async function load({ cookies, parent, fetch, url }) {
     }
   }
 
-  return { lotes, lotesError, sinPermiso, seleccionado, detalle, detalleError };
+  // El acta (RF-TRD-07 fase 4). Se pide solo si el lote está avalado o más
+  // allá: antes no puede existir, y pedirla generaría un 404 esperado en cada
+  // carga — un error que siempre ocurre deja de leerse como error.
+  let acta = null;
+  let actaError = null;
+  let actaSobreClearance = false;
+  if (detalle && ["avalado", "ejecutado"].includes(detalle.estado)) {
+    try {
+      const res = await fetch(`${API_V1}/eliminacion/lotes/${seleccionado}/acta`, { headers });
+      if (res.ok) {
+        acta = await res.json().catch(() => null);
+      } else if (res.status === 403) {
+        // El acta existe pero cubre expedientes por encima del clearance de
+        // quien mira. Es un estado que hay que DECIR, no un hueco.
+        actaSobreClearance = true;
+      } else if (res.status !== 404) {
+        const body = await res.json().catch(() => ({}));
+        actaError = mensajeError(body, `Error ${res.status}`);
+      }
+    } catch {
+      actaError = "No se pudo conectar al servidor para consultar el acta.";
+    }
+  }
+
+  // Las lápidas (RF-TRD-07 fase 5). Solo tienen sentido en un lote ejecutado:
+  // antes no existe ninguna, y pedirlas sería una consulta vacía en cada carga.
+  let lapidas = [];
+  if (detalle && detalle.estado === "ejecutado") {
+    try {
+      const res = await fetch(`${API_V1}/eliminacion/lotes/${seleccionado}/lapidas`, { headers });
+      if (res.ok) lapidas = await res.json().catch(() => []);
+    } catch {
+      // Silencio deliberado: la pantalla ya dice que el lote está ejecutado, y
+      // un fallo al listar las lápidas no debe leerse como que no las hay. La
+      // ausencia se distingue abajo por `detalle.estado`.
+      lapidas = [];
+    }
+  }
+
+  return {
+    lotes,
+    lotesError,
+    sinPermiso,
+    seleccionado,
+    detalle,
+    detalleError,
+    acta,
+    actaError,
+    actaSobreClearance,
+    lapidas,
+  };
 }

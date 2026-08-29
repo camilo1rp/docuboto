@@ -13,7 +13,8 @@ Worker: consume `orpycamcp.document.events` y auto-puebla el índice pgvector (E
 Por cada `document.radicado.created` embebe el texto derivado (subject/remitente) y
 lo indexa respetando ACL/RF-SEG-08 (fail-closed, ver `app/services/ingestion.py`).
 Por cada `document.radicado.reclassified` actualiza o purga el chunk indexado. Por
-cada `document.radicado.annulled` purga PERMANENTEMENTE el chunk indexado
+cada `document.radicado.annulled` (y desde E04/RF-TRD-07 fase 5, cada
+`document.radicado.purged`) purga PERMANENTEMENTE el chunk indexado
 (residual "purga-en-anulación", `ingestion.void_radicado`) — a diferencia de
 `reclassified`, esta purga no es reversible: el radicado anulado no se des-anula.
 Usa el sobre canónico de `orpycamcp_common` y un grupo de consumidores PROPIO
@@ -80,6 +81,7 @@ _HANDLED_EVENT_TYPES = (
     "document.radicado.created",
     "document.radicado.reclassified",
     "document.radicado.annulled",
+    "document.radicado.purged",
 )
 
 # Cadencia del barrido de reclamación de la PEL (segundos).
@@ -113,7 +115,13 @@ async def _handle(data: dict) -> None:
             await ingestion.apply_reclassification(
                 conn, tenant_slug=tenant_slug, payload=payload
             )
-        else:  # "document.radicado.annulled"
+        else:  # "document.radicado.annulled" | "document.radicado.purged"
+            # Los DOS llegan al mismo tratamiento, y es deliberado: una
+            # anulación y una eliminación por TRD son actos jurídicamente
+            # distintos, pero para una copia derivada significan exactamente lo
+            # mismo -- ese fragmento no puede volver a ser resultado de
+            # búsqueda, nunca. Se distinguen por nombre para que la traza diga
+            # cuál ocurrió; el efecto es uno solo.
             await ingestion.void_radicado(conn, tenant_slug=tenant_slug, payload=payload)
 
 

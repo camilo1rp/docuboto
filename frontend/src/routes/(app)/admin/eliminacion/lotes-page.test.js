@@ -25,7 +25,7 @@
  *    resta muda entre lo que el lote declara y lo que se ve.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 import { writable } from "svelte/store";
 
 vi.mock("$app/navigation", () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
@@ -92,8 +92,32 @@ const datos = (o = {}) => ({
   seleccionado: "",
   detalle: null,
   detalleError: null,
+  acta: null,
+  actaError: null,
+  actaSobreClearance: false,
+  lapidas: [],
   ...o,
 });
+
+const acta = (o = {}) => ({
+  lote_id: "11111111-1111-4111-8111-111111111111",
+  acta_xml: "<actaEliminacion/>",
+  acta_sha256: "a".repeat(64),
+  metodo_borrado: "Borrado seguro de los objetos y picado de soportes",
+  observaciones: null,
+  generado_por: "u-1",
+  generado_at: "2026-08-29T10:00:00Z",
+  firma_estado: "firmado",
+  firma_id: "22222222-2222-4222-8222-222222222222",
+  xades_level: "XAdES-B",
+  acreditado: false,
+  firmado_at: "2026-08-29T10:00:05Z",
+  last_error: null,
+  ...o,
+});
+
+const avalado = (o = {}) =>
+  lote({ estado: "avalado", publicado_hasta: iso(-10), acto_administrativo: "Res. 512", ...o });
 
 const conDetalle = (l) => datos({ lotes: [l], seleccionado: l.id, detalle: l });
 
@@ -194,5 +218,176 @@ describe("/admin/eliminacion", () => {
     render(Pagina, { props: { data: conDetalle(l) } });
     const enlace = screen.getByRole("link", { name: /se ve sin autenticar/i });
     expect(enlace.getAttribute("href")).toBe(`/eliminacion/${l.id}`);
+  });
+});
+
+describe("/admin/eliminacion — el acta (fase 4)", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sesion());
+  });
+  afterEach(() => clearSession());
+
+  it("un lote avalado SIN acta ofrece generarla, y dice que va antes del borrado", () => {
+    render(Pagina, { props: { data: conDetalle(avalado()) } });
+    expect(screen.getByRole("button", { name: /Generar el acta/i })).toBeInTheDocument();
+    expect(texto()).toMatch(/antes del borrado, no después/i);
+  });
+
+  it("un lote solo PUBLICADO no ofrece el acta: no hay nada que documentar", () => {
+    render(Pagina, { props: { data: conDetalle(lote({ publicado_hasta: iso(-1) })) } });
+    expect(screen.queryByRole("button", { name: /Generar el acta/i })).toBeNull();
+  });
+
+  it("con acta firmada muestra su SHA y declara que NO es firma acreditada", () => {
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    expect(texto()).toMatch(/conservación permanente/i);
+    expect(texto()).toMatch(new RegExp("a".repeat(64)));
+    expect(texto()).toMatch(/no es una firma digital acreditada/i);
+    expect(screen.queryByRole("button", { name: /Reintentar el sellado/i })).toBeNull();
+  });
+
+  it("con el sellado pendiente dice POR QUÉ y ofrece reintentarlo", () => {
+    const l = avalado();
+    render(Pagina, {
+      props: {
+        data: {
+          ...conDetalle(l),
+          acta: acta({
+            firma_estado: "pendiente_firma",
+            firma_id: null,
+            last_error: "sello_ausente",
+          }),
+        },
+      },
+    });
+    expect(texto()).toMatch(/Pendiente de firma — sello_ausente/i);
+    expect(screen.getByRole("button", { name: /Reintentar el sellado/i })).toBeInTheDocument();
+  });
+
+  it("un acta por encima del clearance se EXPLICA, y no se ofrece recortada", () => {
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), actaSobreClearance: true } } });
+    expect(texto()).toMatch(/no se puede mostrar recortada/i);
+    expect(texto()).toMatch(/rompería su firma/i);
+    expect(screen.queryByRole("button", { name: /Generar el acta/i })).toBeNull();
+  });
+
+  it("con nivel CRUD 1 no se ofrece generar ni reintentar", () => {
+    clearSession();
+    initSession(sesion(1));
+    const l = avalado();
+    render(Pagina, {
+      props: {
+        data: {
+          ...conDetalle(l),
+          acta: acta({ firma_estado: "pendiente_firma", firma_id: null }),
+        },
+      },
+    });
+    expect(screen.queryByRole("button", { name: /Reintentar el sellado/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Generar el acta/i })).toBeNull();
+  });
+});
+
+describe("/admin/eliminacion — la ejecución (fase 5)", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sesion());
+  });
+  afterEach(() => clearSession());
+
+  it("SIN acta firmada no se ofrece ejecutar", () => {
+    const l = avalado();
+    render(Pagina, {
+      props: {
+        data: {
+          ...conDetalle(l),
+          acta: acta({ firma_estado: "pendiente_firma", firma_id: null }),
+        },
+      },
+    });
+    expect(screen.queryByRole("button", { name: /Ejecutar la eliminación/i })).toBeNull();
+  });
+
+  it("con acta firmada SÍ se ofrece, y el aviso dice qué queda y qué no", async () => {
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    const boton = screen.getByRole("button", { name: /Ejecutar la eliminación/i });
+    await fireEvent.click(boton);
+    expect(texto()).toMatch(/destruye documentos de archivo y no se puede deshacer/i);
+    expect(texto()).toMatch(/lápida/i);
+    expect(texto()).toMatch(/No quedará el contenido ni la denominación/i);
+  });
+
+  it("el botón de destruir exige escribir el código del lote", async () => {
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    await fireEvent.click(screen.getByRole("button", { name: /Ejecutar la eliminación/i }));
+    const destruir = screen.getByRole("button", { name: /Eliminar definitivamente/i });
+    // Un acto irreversible no debe estar a un clic de distancia.
+    expect(destruir).toBeDisabled();
+
+    const campo = document.getElementById("ejecutar-confirmacion");
+    await fireEvent.input(campo, { target: { value: "LOTE-2026-001" } });
+    expect(screen.getByRole("button", { name: /Eliminar definitivamente/i })).not.toBeDisabled();
+  });
+
+  it("un código equivocado NO habilita la destrucción", async () => {
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    await fireEvent.click(screen.getByRole("button", { name: /Ejecutar la eliminación/i }));
+    const campo = document.getElementById("ejecutar-confirmacion");
+    await fireEvent.input(campo, { target: { value: "LOTE-2026-002" } });
+    expect(screen.getByRole("button", { name: /Eliminar definitivamente/i })).toBeDisabled();
+  });
+
+  it("un lote ejecutado muestra las lápidas y dice que ya no existen", () => {
+    const l = lote({ estado: "ejecutado", publicado_hasta: iso(-30) });
+    render(Pagina, {
+      props: {
+        data: {
+          ...conDetalle(l),
+          acta: acta(),
+          lapidas: [
+            {
+              expediente_id: "e-1",
+              expediente_code: "EXP-2020-0001",
+              trd_serie_code: "DEM-100",
+              fecha_extrema_inicial: "2020-01-01",
+              fecha_extrema_final: "2020-12-31",
+              radicados_eliminados: 12,
+              anexos_eliminados: 30,
+              lote_id: l.id,
+              lote_codigo: l.codigo,
+              acta_comite: "Acta 07",
+              acto_administrativo: "Res. 512",
+              acta_sha256: "a".repeat(64),
+              eliminado_por: "u-1",
+              eliminado_at: "2026-09-01T10:00:00Z",
+            },
+          ],
+        },
+      },
+    });
+    expect(texto()).toMatch(/ya no existen/i);
+    // La aserción se acota a la TABLA DE LÁPIDAS y no a la página entera: el
+    // inventario congelado del lote sí conserva la denominación —es lo que el
+    // acta describe, y su lectura ya está acotada por clearance—, así que un
+    // `not.toMatch` sobre todo el documento estaría midiendo otra cosa.
+    const tabla = screen.getByRole("table", { name: /Lápidas del lote/i });
+    expect(tabla.textContent).toMatch(/EXP-2020-0001/);
+    expect(tabla.textContent).toMatch(/DEM-100/);
+    // La denominación NO está en la lápida: era contenido.
+    expect(tabla.textContent).not.toMatch(/Contratos 2020/);
+  });
+
+  it("con nivel CRUD 1 no se ofrece ejecutar", () => {
+    clearSession();
+    initSession(sesion(1));
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    expect(screen.queryByRole("button", { name: /Ejecutar la eliminación/i })).toBeNull();
   });
 });

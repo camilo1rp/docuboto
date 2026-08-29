@@ -322,7 +322,7 @@ Structural editing is allowed **only in `borrador`** (→ 409 `plan_no_editable`
 
 ---
 
-### Documentary elimination — batches (RF-TRD-07, phases 1-3 of 5, 2026-08-29)
+### Documentary elimination — batches (RF-TRD-07 **complete**, 2026-08-29)
 
 `POST /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes/{id}`
 
@@ -349,6 +349,38 @@ Public page at `(public)/eliminacion`, linked from the portal. **The objection c
 `POST /api/v1/eliminacion/lotes/{id}/anular` withdraws the batch with a `motivo` of at least 10 characters — allowed **up to the last moment, even once endorsed** (written by admission of the three live states, not by negating `ejecutado`), never after execution. A withdrawn batch that had been published **stays public**, with its reason.
 
 Admin page at `/admin/eliminacion`.
+
+**Phase 4 — the elimination record (2026-08-29).** `POST /api/v1/eliminacion/lotes/{id}/acta` · `GET .../acta` · `POST .../acta/firmar`.
+
+**The record is what outlives what was eliminated.** Once phase 5 deletes the bytes it will be — together with the headstone and `audit_log` — the only evidence of what was destroyed, under which act and who authorised it. It is of **permanent preservation**: no retention schedule, no final disposition. It is produced **before** the deletion, because the inventory it describes comes from expedientes that are about to cease existing.
+
+Two tables (migration `048`), same criterion as the transfer record: `eliminacion_acta` holds the **frozen content** and is *append-only by trigger*; `eliminacion_acta_firma` holds the **mutable** sealing state. Deliberate, verified consequence: once the record exists, the batch row **can no longer be deleted**.
+
+The XML (`urn:orpycamcp:acta-eliminacion:v1`) is canonicalised with the inventory sorted by code — two builds from the same data must be byte-identical, or `acta_sha256` would mean nothing. That SHA is also anchored in the indelible `audit_log`.
+
+**The record's inventory is complete, never clearance-narrowed** — a record missing the classified expedientes attests to nothing. What is narrowed is **who may read it**: the threshold is **derived from the content** (the highest security level in the inventory), and whoever falls short gets **403** with the reason, not a trimmed record — breaking the signature would be worse than refusing it.
+
+`metodo_borrado` is mandatory with **no default** in any of the three layers: the record must state how documents are destroyed (AGN Agreement 001/2024 art. 4.3.2.5), and a system-invented sentence would be a claim nobody made about an irreversible act.
+
+XAdES sealing runs post-commit, best-effort and bounded, with the transfer record's three outcomes and a manual retry. `acta_eliminacion` was added to signature-service's `XADES_ELIGIBLE_OBJETO_TIPOS`: **without it the record would silently fall back to the `nativa` HMAC**, marked "signed" while being structurally weaker. `acreditado` is always `false` (Law 527/1999 art. 7, never art. 28).
+
+> **WORM pending, declared**: the Object-Lock store is keyed by `(expediente_id, tipo)` and an elimination record covers **N** expedientes that are about to disappear, so it cannot be pinned there without changing storage-service's model. The record is protected today by its three local guarantees — append-only trigger, SHA anchored in `audit_log`, and the XAdES signature.
+
+**Phase 5 — secure deletion (2026-08-29). This destroys.** `POST /api/v1/eliminacion/lotes/{id}/ejecutar` · `GET .../lapidas`.
+
+The only path in the system that deletes archival documents, and it **takes no body**: in a destruction there is nothing for the client to parametrise. What is destroyed is set by the inventory frozen at proposal time; under which act, by the endorsement.
+
+**Four preconditions**: batch `avalado`, record present, record **signed**, frozen inventory as the only source. Requiring the signature can block execution if signature-service is down — deliberately so.
+
+**The chain**: archive-service → document-service (`/internal/documentos/purgar`) → storage-service (`/storage/internal/purgar-disposicion`, which finally gives a door to `purge_for_disposition`, written long ago with **no caller**) → `document.radicado.purged` → knowledge-service purges the vector. Within each leg, **bytes before rows**; across legs, **documents before the expediente** — otherwise the radicado links would cascade away and there would be no way left to know what had to be destroyed.
+
+**All-or-nothing per expediente.** A failure leaves that expediente **intact and without a headstone**, reported in `fallidos` with its code; the batch does not become `ejecutado` while any remain. A headstone over live bytes would assert a destruction that never happened.
+
+**The headstone** (`expediente_lapida`, migration `049`) is written **before** deleting the expediente, in the same transaction. It is **content-free**: code, series, extreme dates, volume and the authorising act — **not the denomination**, which is content.
+
+> **Migration 049 released three foreign keys, and one of them averted a silent loss.** Two blocked the deletion; `transferencias` was `ON DELETE CASCADE` and would have taken the transfers and, in cascade, `transferencia_acta` — a control instrument storage-service's own code declares must outlive the content (Law 594/2000 art. 26). Single criterion: **what must survive keeps `expediente_id` without a foreign key**.
+
+> **Why the vector purge uses the sentinel and not a `DELETE`**, even though the document is gone: under at-least-once delivery, a `created` redelivered after the `DELETE` would reinsert the chunk from scratch, unmarked, and the deleted document's text would be searchable again. The `DELETE` would erase the very marker that makes the purge irreversible.
 
 > **Three phases remain**: Committee endorsement, the signed record, and secure deletion. `ejecutado` always travels as `false`.
 

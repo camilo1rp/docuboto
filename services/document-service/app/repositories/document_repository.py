@@ -667,6 +667,40 @@ class DocumentRepository:
         )
         return {r["id"]: {"subject": r["subject"], "doc_type": r["doc_type"]} for r in rows}
 
+    async def list_tracking_numbers_internal(
+        self, radicado_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, str]:
+        """Números de radicado de un lote, **sin recortar por clearance**.
+
+        Es la lectura previa a destruirlos (E04, RF-TRD-07 fase 5): recortarla
+        dejaría los clasificados sin número en su asiento de auditoría, que es
+        lo único que va a quedar de ellos. El no-read-up protege de LEER lo que
+        no te toca; aquí no se está leyendo un documento, se está anotando cuál
+        se destruyó por orden de la TRD."""
+        if not radicado_ids:
+            return {}
+        rows = await self._conn.fetch(
+            "SELECT id, tracking_number FROM radicados WHERE id = ANY($1::uuid[])",
+            radicado_ids,
+        )
+        return {r["id"]: r["tracking_number"] for r in rows}
+
+    async def purge_radicado(self, radicado_id: uuid.UUID) -> bool:
+        """Borrado FÍSICO del radicado (E04, RF-TRD-07 fase 5).
+
+        El único `DELETE FROM radicados` del servicio. Las tablas dependientes
+        —`anexos`, `postal_shipment`, `radicado_anulacion`— caen por
+        `ON DELETE CASCADE`, que es lo correcto: son partes del documento, no
+        constancias del acto. Lo que da fe de la destrucción es `audit_log`, que
+        no cuelga de esta fila.
+
+        Devuelve `False` si ya no estaba: un reintento tras un fallo a medias
+        tiene que converger, no fallar."""
+        tag: str = await self._conn.execute(
+            "DELETE FROM radicados WHERE id = $1", radicado_id
+        )
+        return tag.rsplit(" ", 1)[-1] != "0"
+
     async def list_anexos_for_radicados_internal(
         self, radicado_ids: list[uuid.UUID], max_clearance: int | None = None
     ) -> dict[uuid.UUID, list[Anexo]]:

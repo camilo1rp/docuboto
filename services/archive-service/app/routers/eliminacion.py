@@ -32,6 +32,10 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    ActaEliminacionCreate,
+    ActaEliminacionResponse,
+    EjecucionLoteResponse,
+    LapidaResponse,
     LoteAnulacion,
     LoteAval,
     LoteEliminacionCreate,
@@ -188,3 +192,115 @@ async def anular_lote(
     return await service.anular_lote_eliminacion(
         lote_id, motivo=payload.motivo, actor=actor.id
     )
+
+
+@router.post(
+    "/lotes/{lote_id}/acta",
+    response_model=ActaEliminacionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generar y firmar el acta de eliminación (RF-TRD-07, fase 4 de 5)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def generar_acta(
+    lote_id: uuid.UUID,
+    payload: ActaEliminacionCreate,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ActaEliminacionResponse:
+    """El acta es **lo que sobrevive a lo eliminado**: conservación permanente,
+    append-only por trigger y con su SHA-256 anclado en `audit_log`. Se genera
+    **una sola vez** y **antes** del borrado — el inventario que describe sale
+    de expedientes que van a dejar de existir.
+
+    El sellado XAdES es best-effort y no bloquea: el acta ya quedó íntegra."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.generar_acta_eliminacion(
+        lote_id,
+        metodo_borrado=payload.metodo_borrado,
+        observaciones=payload.observaciones,
+        actor=actor.id,
+    )
+
+
+@router.get(
+    "/lotes/{lote_id}/acta",
+    response_model=ActaEliminacionResponse,
+    summary="Ver el acta de eliminación",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
+)
+async def ver_acta(
+    lote_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    # El acta se sirve ENTERA o no se sirve: es un documento firmado y
+    # monolítico. El umbral para leerla se deriva del nivel más alto de su
+    # inventario, así que sin identidad no se puede resolver.
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ActaEliminacionResponse:
+    service = ArchiveService(conn, tenant_slug)
+    return await service.get_acta_eliminacion(lote_id, actor=actor.id)
+
+
+@router.post(
+    "/lotes/{lote_id}/acta/firmar",
+    response_model=ActaEliminacionResponse,
+    summary="Reintentar el sellado XAdES del acta",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def firmar_acta(
+    lote_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ActaEliminacionResponse:
+    """Reintento manual. **No regenera nada**: sella el mismo XML ya congelado.
+    Un acta ya firmada se devuelve tal cual, sin error — un doble clic no es un
+    fallo."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.firmar_acta_eliminacion_retry(lote_id, actor=actor.id)
+
+
+@router.post(
+    "/lotes/{lote_id}/ejecutar",
+    response_model=EjecucionLoteResponse,
+    summary="Ejecutar el borrado seguro del lote (RF-TRD-07, fase 5 de 5)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def ejecutar_lote(
+    lote_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> EjecucionLoteResponse:
+    """**Este endpoint destruye.** Es el único del sistema que borra documentos
+    de archivo, y llega al final de cinco actos: propuesta admitida, publicidad
+    previa cumplida, aval del Comité y acta firmada.
+
+    **No lleva cuerpo, y es deliberado**: no hay nada que el cliente pueda
+    parametrizar en una destrucción. Qué se destruye lo dice el inventario
+    congelado al proponer; bajo qué acto, el aval. Un `dry_run` o un `forzar`
+    serían justo los parámetros que un día alguien pasa mal.
+
+    Cada expediente es todo-o-nada: el que falle queda **intacto y sin lápida**,
+    y viaja en `fallidos` con su código."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.ejecutar_lote_eliminacion(lote_id, actor=actor.id)
+
+
+@router.get(
+    "/lotes/{lote_id}/lapidas",
+    response_model=list[LapidaResponse],
+    summary="Lápidas de los expedientes eliminados en el lote",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
+)
+async def lapidas_del_lote(
+    lote_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[LapidaResponse]:
+    """Lo que queda. **No se recorta por clearance**: la lápida es content-free
+    por construcción y recortarla haría desaparecer la constancia justo de los
+    expedientes cuya destrucción más importa poder acreditar."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.list_lapidas_de_lote(lote_id)

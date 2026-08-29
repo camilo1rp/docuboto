@@ -23,16 +23,20 @@ el expediente vería. Único llamador legítimo: `archive-service`
 """
 
 import asyncpg
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.clients.storage_client import StoragePurgaError
 from app.core.database import get_tenant_conn
 from app.core.internal_auth import require_internal_token
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.internal import (
     AnexoInternalItem,
     AnexosInternalRequest,
+    PurgaInternalRequest,
+    PurgaInternalResponse,
     RadicadoMetaItem,
 )
+from app.services.purga_service import PurgaService
 
 router = APIRouter(
     prefix="/api/v1/internal/documentos",
@@ -81,3 +85,46 @@ async def metadata_batch(
     clearance = payload.max_clearance if payload.max_clearance is not None else 3
     meta = await repo.list_radicado_metadata_internal(payload.radicado_ids, max_clearance=clearance)
     return {str(rid): RadicadoMetaItem(**m) for rid, m in meta.items()}
+
+
+@router.post(
+    "/purgar",
+    response_model=PurgaInternalResponse,
+    summary="Purgar radicados por disposición final de TRD (acto de sistema, destructivo)",
+)
+async def purgar_radicados(
+    payload: PurgaInternalRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> PurgaInternalResponse:
+    """**Destruye.** Es el único camino de document-service que borra un
+    radicado, y solo lo alcanza archive-service ejecutando un lote de
+    eliminación avalado y con acta firmada (E04, RF-TRD-07 fase 5).
+
+    Un fallo al borrar los bytes **sube como 502 y no se degrada**: significa
+    que los documentos siguen existiendo, y quien orquesta tiene que abortar
+    ese expediente sin escribir su lápida. Una lápida sobre bytes vivos es peor
+    que no haber eliminado.
+    """
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    service = PurgaService(conn, tenant_slug, redis=getattr(request.app.state, "redis", None))
+    try:
+        recuento = await service.purgar_radicados(
+            payload.radicado_ids,
+            expediente_id=payload.expediente_id,
+            motivo=payload.motivo,
+            actor=payload.actor,
+        )
+    except StoragePurgaError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "purga_incompleta",
+                "detail": (
+                    f"No se pudieron borrar los archivos: {exc}. No se eliminó "
+                    "ningún radicado."
+                ),
+                "status": 502,
+            },
+        ) from exc
+    return PurgaInternalResponse(**recuento)

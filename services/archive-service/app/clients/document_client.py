@@ -130,3 +130,62 @@ async def fetch_radicado_metadata_internal(
             f"document-service → HTTP {resp.status_code} al pedir la metadata de radicados"
         )
     return resp.json()
+
+
+class DocumentPurgaError(Exception):
+    """La purga de radicados no se completó en document-service.
+
+    **Clase propia y no `DocumentClientError`**, aunque el transporte sea el
+    mismo: los demás fallos de este cliente degradan un enriquecimiento o un
+    listado, y este significa que **los documentos siguen existiendo**. Quien
+    orquesta tiene que abortar el expediente sin escribir su lápida, y con una
+    sola clase de error esa distinción se perdería en el primer `except`.
+    """
+
+
+async def purgar_radicados_internal(
+    *,
+    tenant_slug: str,
+    radicado_ids: list[uuid.UUID],
+    expediente_id: uuid.UUID,
+    motivo: str,
+    actor: uuid.UUID,
+) -> dict[str, int]:
+    """Destruye los radicados y sus anexos (E04, RF-TRD-07 fase 5).
+
+    Devuelve el recuento REAL de lo eliminado, que es lo que la lápida va a
+    afirmar para siempre. Cualquier fallo —red, 502 por bytes vivos, 4xx—
+    levanta `DocumentPurgaError`: aquí no hay degradación posible.
+
+    El timeout es largo a propósito: purgar un expediente con cientos de anexos
+    implica otras tantas llamadas a MinIO aguas abajo, y cortar a mitad dejaría
+    justo el estado a medias que todo lo demás intenta evitar.
+    """
+    if not radicado_ids:
+        return {"radicados_eliminados": 0, "anexos_eliminados": 0}
+    body = {
+        "radicado_ids": [str(r) for r in radicado_ids],
+        "expediente_id": str(expediente_id),
+        "motivo": motivo,
+        "actor": str(actor),
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.document_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.document_service_url, timeout=300.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/internal/documentos/purgar", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise DocumentPurgaError(
+            f"document-service inalcanzable al purgar los radicados: {exc}"
+        ) from exc
+    if resp.status_code != 200:
+        raise DocumentPurgaError(
+            f"document-service → HTTP {resp.status_code} al purgar: {resp.text[:300]!r}"
+        )
+    return resp.json()

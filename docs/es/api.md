@@ -324,7 +324,7 @@ Edición estructural permitida **solo en `borrador`** (→ 409 `plan_no_editable
 
 ---
 
-### Eliminación documental — lotes (RF-TRD-07, fases 1-3 de 5, 2026-08-29)
+### Eliminación documental — lotes (RF-TRD-07 **completo**, 2026-08-29)
 
 `POST /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes/{id}`
 
@@ -360,7 +360,43 @@ Pantalla pública en `(public)/eliminacion`, enlazada desde el portal. **El cana
 
 Pantalla en `/admin/eliminacion` (listado, detalle con el inventario recortado por clearance, y los tres actos). Vive fuera de `/admin/trd` por el mismo criterio que el router: un lote no es una lectura del instrumento. Lo único que se queda en TRD es **proponer**, porque se propone desde la cola de vencimientos.
 
-> **Faltan las dos fases siguientes**: acta firmada y borrado seguro. `ejecutado` viaja siempre en `false`.
+**Fase 4 — el acta de eliminación (2026-08-29).**
+
+`POST /api/v1/eliminacion/lotes/{id}/acta` (`USUA_PERM_TRD` `crud≥3`) · `GET .../acta` (`USUA_PERM_TRD`) · `POST .../acta/firmar` (`crud≥3`)
+
+**El acta es lo que sobrevive a lo eliminado.** Cuando la fase 5 borre los bytes, será —junto con la lápida y el `audit_log`— la única constancia de qué se destruyó, bajo qué acto y quién lo autorizó. Es de **conservación permanente**: sin calendario de retención y sin disposición final. Se genera **antes** del borrado y no después, porque el inventario que describe sale de expedientes que van a dejar de existir.
+
+Son **dos tablas** (migración `048`), por el mismo criterio que el acta de transferencia: `eliminacion_acta` guarda el **contenido congelado** y es *append-only por trigger* —ni se edita ni se borra—, y `eliminacion_acta_firma` guarda el **estado mutable** del sellado. Mezclarlas obligaría a que el contenido fuera mutable para que la firma pudiera avanzar. Consecuencia deliberada y verificada: con el acta escrita, **la fila del lote ya no se puede borrar** (el `ON DELETE CASCADE` choca con el trigger).
+
+El XML (`urn:orpycamcp:acta-eliminacion:v1`) se serializa **canónicamente y con el inventario ordenado por código**: dos construcciones con los mismos datos dan la misma cadena byte a byte, o el `acta_sha256` no significaría nada. Ese SHA se ancla además en `audit_log`, que es indeleble.
+
+**El inventario del acta va completo, sin recortar por clearance** — un acta a la que le faltan los clasificados no da fe de lo que se destruyó. Lo que se acota es **quién la lee**: el umbral se **deriva del contenido** (el nivel de seguridad más alto del inventario, nunca un campo declarado) y quien no lo despeja recibe **403** con el motivo, no un acta recortada: romper la firma sería peor que negarla.
+
+`metodo_borrado` es obligatorio, de al menos 10 caracteres y **sin valor por defecto** en ninguna de las tres capas: el acta debe decir cómo se destruye (Ac. AGN 001/2024 art. 4.3.2.5), y una frase inventada por el sistema sería una afirmación que nadie hizo sobre un acto irreversible.
+
+El sellado **XAdES** corre post-commit, best-effort y acotado, con los tres desenlaces del acta de transferencia (firmado / `sello_ausente` sin reintentar / `transient` agotado), el motivo del último fallo visible y reintento manual. `acta_eliminacion` se añadió al allow-set `XADES_ELIGIBLE_OBJETO_TIPOS` de signature-service: **sin estar en él, el acta habría caído al HMAC `nativa` sin error y sin diferencia visible**, quedando marcada «firmada» siendo estructuralmente más débil. `acreditado` viaja explícito y es siempre `false` (art. 7 de la Ley 527/1999, nunca art. 28).
+
+> **WORM pendiente, declarado**: el almacén de Object-Lock está indexado por `(expediente_id, tipo)` y un acta de eliminación cubre **N** expedientes que además van a dejar de existir, así que no se puede clavar ahí sin cambiar el modelo de storage-service. Hoy el acta se protege con sus **tres garantías locales** —trigger append-only, SHA anclado en `audit_log` y firma XAdES—; el Object-Lock queda para la fase 5 o para E10.
+
+**Fase 5 — el borrado seguro (2026-08-29). Esto destruye.**
+
+`POST /api/v1/eliminacion/lotes/{id}/ejecutar` (`USUA_PERM_TRD` `crud≥3`) · `GET .../lapidas`
+
+Es el único camino del sistema que borra documentos de archivo, y **no acepta ningún cuerpo**: en una destrucción no hay nada que el cliente pueda parametrizar. Qué se destruye lo dice el inventario congelado al proponer; bajo qué acto, el aval. Un `dry_run` o un `forzar` serían justo los parámetros que un día alguien pasa mal.
+
+**Cuatro precondiciones**: lote `avalado`, acta existente, acta **firmada**, e inventario congelado como única fuente. Exigir la firma puede bloquear la ejecución si signature-service está caído, y es deliberado — el último acto irreversible es el momento de no seguir con una constancia a medias; hay reintento manual para desbloquearlo.
+
+**La cadena, y su orden**: `archive-service` → `document-service` (`POST /internal/documentos/purgar`) → `storage-service` (`POST /storage/internal/purgar-disposicion`, que por fin da puerta a `purge_for_disposition`, escrito hacía tiempo y **sin ningún llamante**) → evento `document.radicado.purged` → `knowledge-service` purga el vector. Dentro de cada tramo, **los bytes van antes que las filas**: al revés quedarían objetos huérfanos en MinIO que nadie sabe ya a qué radicado pertenecían — imposibles de encontrar y por tanto de eliminar. Y **los documentos van antes que el expediente**: al revés, los vínculos a radicados caerían en cascada y ya no habría forma de saber qué había que destruir.
+
+**Todo-o-nada por expediente.** El que falle queda **intacto y sin lápida**, y viaja en `fallidos` con su código; el lote **no** pasa a `ejecutado` mientras quede uno pendiente. Una lápida sobre bytes vivos afirmaría para siempre una destrucción que no ocurrió. El candado WORM aborta la purga **entera** del expediente, no la del archivo protegido.
+
+**La lápida** (`expediente_lapida`, migración `049`) se escribe **antes** de borrar el expediente y en la misma transacción: al revés, un fallo entre ambos dejaría el expediente destruido y sin lápida, y el silencio es indistinguible de «nunca existió». Es **content-free**: código, serie, fechas extremas, volumen y el acto que lo autorizó — **la denominación no**, que es contenido. Append-only por trigger, y sin FK a `expedientes` a propósito.
+
+> **La migración 049 soltó tres claves foráneas, y una de ellas evitó una pérdida silenciosa.** `eliminacion_lote_items` y `disposicion_decisiones` **bloqueaban** el borrado; `transferencias` iba en `ON DELETE CASCADE` y se habría llevado por delante las transferencias y, en cascada, `transferencia_acta` — un instrumento de control que el propio código de storage-service ya declara que debe sobrevivir al contenido (Ley 594/2000 art. 26). Criterio único: **lo que debe sobrevivir conserva el `expediente_id` sin clave foránea**, como `expediente_eventos` desde siempre. Y una al revés: `expediente_aip` pasó a `CASCADE` porque empaqueta el contenido y no describe nada sin él.
+
+> **Por qué la purga del vector usa el centinela y no un `DELETE`**, aunque el documento ya no exista: bajo entrega *at-least-once*, un `created` reentregado después del `DELETE` reinsertaría el fragmento desde cero, sin marcador, y el texto del documento eliminado volvería a ser consultable. El `DELETE` borraría el propio centinela que hace la purga irreversible. El centinela no conserva texto, ni embedding, ni metadatos.
+
+**Lo que sobrevive**: la lápida, el acta firmada, el inventario congelado, las decisiones de disposición, la hoja de ruta del expediente (`expediente_eventos`), las transferencias con su acta, y el `audit_log` con un asiento por radicado destruido —con su número de radicado, que es lo único que queda de cada documento—.
 
 ---
 

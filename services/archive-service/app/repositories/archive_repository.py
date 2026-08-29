@@ -1956,6 +1956,251 @@ class ArchiveRepository:
         )
         return list(rows), total
 
+    # ------------------------------------------------------------------
+    # El ACTA de eliminación (RF-TRD-07 fase 4) -- conservación permanente
+    # ------------------------------------------------------------------
+
+    async def list_items_lote_completo(self, lote_id: uuid.UUID) -> list[asyncpg.Record]:
+        """El inventario **entero**, sin recortar por clearance.
+
+        Es la única lectura del inventario que no se acota, y a propósito: lo
+        que construye el acta tiene que ser lo que se destruye. Un acta a la
+        que le faltan los expedientes clasificados no da fe de nada. Lo que se
+        acota es **quién puede leer el acta después** -- ver
+        `ArchiveService.get_acta_eliminacion`."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                "SELECT * FROM eliminacion_lote_items WHERE lote_id = $1 ORDER BY expediente_code",
+                lote_id,
+            )
+        )
+
+    async def get_lote_row(self, lote_id: uuid.UUID) -> asyncpg.Record:
+        """La fila del lote entera, para construir el acta. No recorta nada: el
+        lote en sí no es un expediente -- su código, su aval y su acto
+        administrativo no dicen nada del archivo."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            "SELECT * FROM eliminacion_lotes WHERE id = $1", lote_id
+        )
+
+    async def max_nivel_items_lote(self, lote_id: uuid.UUID) -> int:
+        """El nivel de seguridad MÁS ALTO del inventario.
+
+        Es el nivel que hay que despejar para leer el acta: el documento es
+        monolítico y su firma cubre el conjunto, así que no se puede servir
+        recortado. Se **deriva del contenido**, nunca de un campo declarado --
+        mismo criterio que resolver el nivel de una firma por su `objeto_id`.
+        Un lote sin ítems devuelve 1 (PÚBLICA): no hay nada que proteger."""
+        await self._set_search_path()
+        nivel: int | None = await self._conn.fetchval(
+            "SELECT MAX(nivel_seguridad) FROM eliminacion_lote_items WHERE lote_id = $1",
+            lote_id,
+        )
+        return nivel or 1
+
+    async def insert_acta_eliminacion(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        acta_xml: str,
+        acta_sha256: str,
+        metodo_borrado: str,
+        observaciones: str | None,
+        generado_por: uuid.UUID,
+        generado_at: datetime,
+    ) -> asyncpg.Record | None:
+        """Congela el acta. `ON CONFLICT DO NOTHING` devuelve `None` cuando ya
+        existía: el acta es **única y permanente**, y un segundo intento no la
+        regenera -- regenerarla produciría un documento distinto (otro
+        instante, otro SHA) para una eliminación que ya tenía el suyo."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            INSERT INTO eliminacion_acta (
+                lote_id, acta_xml, acta_sha256, metodo_borrado, observaciones,
+                generado_por, generado_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (lote_id) DO NOTHING
+            RETURNING *
+            """,
+            lote_id,
+            acta_xml,
+            acta_sha256,
+            metodo_borrado,
+            observaciones,
+            generado_por,
+            generado_at,
+        )
+
+    async def insert_acta_eliminacion_firma_pendiente(self, lote_id: uuid.UUID) -> None:
+        """Fila de bookkeeping del sellado, en la MISMA tx que congela el acta:
+        así **toda** acta nace con su estado de firma, y ninguna queda fuera
+        del alcance de la reconciliación por haberse escrito a medias."""
+        await self._set_search_path()
+        await self._conn.execute(
+            "INSERT INTO eliminacion_acta_firma (lote_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            lote_id,
+        )
+
+    async def get_acta_eliminacion(self, lote_id: uuid.UUID) -> asyncpg.Record | None:
+        """El acta con su estado de sellado. `LEFT JOIN`: el acta manda y su
+        firma acompaña -- un acta sin fila de firma seguiría siendo un acta."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            SELECT a.*, f.estado AS firma_estado, f.firma_id, f.minio_key_firmado,
+                   f.xades_level, f.acreditado, f.last_error, f.firmado_at
+              FROM eliminacion_acta a
+              LEFT JOIN eliminacion_acta_firma f ON f.lote_id = a.lote_id
+             WHERE a.lote_id = $1
+            """,
+            lote_id,
+        )
+
+    async def mark_acta_eliminacion_firmada(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        firma_id: uuid.UUID,
+        minio_key: str,
+        xades_level: str | None,
+        acreditado: bool,
+    ) -> int:
+        """`pendiente_firma -> firmado`. El `AND estado <> 'firmado'` cierra la
+        carrera entre el intento síncrono y la reconciliación: quien llega
+        segundo afecta **cero filas** y no escribe un asiento fantasma sobre
+        una firma que ya no es la vigente."""
+        await self._set_search_path()
+        resultado: str = await self._conn.execute(
+            """
+            UPDATE eliminacion_acta_firma
+               SET estado = 'firmado', firma_id = $2, minio_key_firmado = $3,
+                   xades_level = $4, acreditado = $5, firmado_at = now(),
+                   last_error = NULL, reconcile_proximo_at = NULL
+             WHERE lote_id = $1 AND estado <> 'firmado'
+            """,
+            lote_id,
+            firma_id,
+            minio_key,
+            xades_level,
+            acreditado,
+        )
+        return int(resultado.rsplit(" ", 1)[-1])
+
+    async def mark_acta_eliminacion_pendiente(
+        self, lote_id: uuid.UUID, *, last_error: str, proximo_at: datetime | None
+    ) -> None:
+        """Re-arma el backoff tras un intento fallido, sin tocar `estado`
+        cuando ya es `firmado` (una degradación tardía no puede des-firmar)."""
+        await self._set_search_path()
+        await self._conn.execute(
+            """
+            UPDATE eliminacion_acta_firma
+               SET last_error = $2,
+                   reconcile_intentos = reconcile_intentos + 1,
+                   reconcile_proximo_at = $3
+             WHERE lote_id = $1 AND estado <> 'firmado'
+            """,
+            lote_id,
+            last_error,
+            proximo_at,
+        )
+
+    # ------------------------------------------------------------------
+    # La EJECUCIÓN (RF-TRD-07 fase 5) -- la lápida y el borrado
+    # ------------------------------------------------------------------
+
+    async def list_radicados_de_expediente(self, expediente_id: uuid.UUID) -> list[uuid.UUID]:
+        """Los radicados vinculados, **sin recortar por clearance**: se van a
+        destruir todos, y recortar aquí dejaría vivos justo los clasificados que
+        la TRD ordena eliminar."""
+        await self._set_search_path()
+        rows = await self._conn.fetch(
+            "SELECT radicado_id FROM expediente_radicados WHERE expediente_id = $1",
+            expediente_id,
+        )
+        return [r["radicado_id"] for r in rows]
+
+    async def insert_lapida(self, datos: dict) -> asyncpg.Record | None:
+        """Escribe la lápida. `ON CONFLICT DO NOTHING`: un reintento tras un
+        fallo a medias no la duplica ni la reescribe -- es permanente."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            INSERT INTO expediente_lapida (
+                expediente_id, expediente_code, trd_serie_code,
+                fecha_extrema_inicial, fecha_extrema_final,
+                radicados_eliminados, anexos_eliminados,
+                lote_id, lote_codigo, acta_comite, acto_administrativo,
+                acta_sha256, eliminado_por
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            ON CONFLICT (expediente_id) DO NOTHING
+            RETURNING *
+            """,
+            datos["expediente_id"],
+            datos["expediente_code"],
+            datos["trd_serie_code"],
+            datos["fecha_extrema_inicial"],
+            datos["fecha_extrema_final"],
+            datos["radicados_eliminados"],
+            datos["anexos_eliminados"],
+            datos["lote_id"],
+            datos["lote_codigo"],
+            datos["acta_comite"],
+            datos["acto_administrativo"],
+            datos["acta_sha256"],
+            datos["eliminado_por"],
+        )
+
+    async def delete_expediente(self, expediente_id: uuid.UUID) -> bool:
+        """Borrado FÍSICO del expediente. El único `DELETE FROM expedientes`.
+
+        Caen en cascada su índice electrónico, su AIP, sus vínculos a radicados
+        y sus ubicaciones físicas -- todo eso DESCRIBE un contenido que ya no
+        existe. **No** caen la hoja de ruta (`expediente_eventos`, sin FK desde
+        siempre), el inventario del lote, las decisiones de disposición ni las
+        transferencias con su acta: la migración 049 soltó esas tres claves
+        foráneas justo para que sobrevivan."""
+        await self._set_search_path()
+        tag: str = await self._conn.execute(
+            "DELETE FROM expedientes WHERE id = $1", expediente_id
+        )
+        return tag.rsplit(" ", 1)[-1] != "0"
+
+    async def marcar_lote_ejecutado(
+        self, lote_id: uuid.UUID, *, ejecutado_por: uuid.UUID
+    ) -> asyncpg.Record | None:
+        """`avalado -> ejecutado`. El `WHERE ... AND estado = 'avalado'` cierra
+        la carrera: dos clics no ejecutan dos veces una destrucción."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            UPDATE eliminacion_lotes
+               SET estado = 'ejecutado', ejecutado_at = now(), ejecutado_por = $2
+             WHERE id = $1 AND estado = 'avalado'
+            RETURNING *
+            """,
+            lote_id,
+            ejecutado_por,
+        )
+
+    async def get_lapida(self, expediente_id: uuid.UUID) -> asyncpg.Record | None:
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            "SELECT * FROM expediente_lapida WHERE expediente_id = $1", expediente_id
+        )
+
+    async def list_lapidas_de_lote(self, lote_id: uuid.UUID) -> list[asyncpg.Record]:
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                "SELECT * FROM expediente_lapida WHERE lote_id = $1 ORDER BY expediente_code",
+                lote_id,
+            )
+        )
+
     async def list_destinatarios_disposicion(self) -> list[asyncpg.Record]:
         """Quién puede DECIDIR sobre un vencimiento, con su correo y su
         clearance (E04, RF-TRD-06 R.4.8).

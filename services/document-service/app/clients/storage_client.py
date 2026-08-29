@@ -243,3 +243,58 @@ async def upload_artefacto(
             f"'{filename}': {resp.text[:300]!r}"
         )
     return ArchivoSubido.desde_respuesta(resp.json())
+
+
+class StoragePurgaError(Exception):
+    """El borrado físico no se pudo completar en storage-service.
+
+    **Nunca se degrada a un aviso**: a diferencia de subir un artefacto o
+    publicar un evento, aquí el fallo significa que los bytes SIGUEN EXISTIENDO.
+    Quien orquesta la eliminación tiene que abortar el expediente entero y no
+    escribir su lápida — una lápida sobre bytes vivos es peor que no eliminar.
+    """
+
+
+async def purgar_disposicion(
+    *,
+    tenant_slug: str,
+    file_ids: list[uuid.UUID],
+    expediente_id: str,
+    motivo: str,
+    actor: uuid.UUID | None,
+) -> list[uuid.UUID]:
+    """Borra físicamente los objetos de MinIO y sus filas (E04, RF-TRD-07 fase 5).
+
+    Devuelve los `file_id` **realmente purgados**. Los que storage no encontró
+    se consideran ya ausentes y no se cuentan: un reintento tras un fallo a
+    medias tiene que poder converger, y contar como purgado lo que no estaba
+    inflaría la cifra que después afirma la lápida.
+
+    Un `409 worm_lock_activo` llega aquí como `StoragePurgaError`: el candado
+    aborta la purga del expediente ENTERO, porque eliminar el resto dejaría un
+    expediente medio destruido.
+    """
+    if not file_ids:
+        return []
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    body = {
+        "file_ids": [str(f) for f in file_ids],
+        "expediente_id": expediente_id,
+        "motivo": motivo,
+        "actor": str(actor) if actor else None,
+    }
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=120.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/storage/internal/purgar-disposicion", headers=headers, json=body
+            )
+        except httpx.RequestError as exc:
+            raise StoragePurgaError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code != 200:
+        raise StoragePurgaError(
+            f"storage-service → HTTP {resp.status_code} al purgar: {resp.text[:300]!r}"
+        )
+    return [uuid.UUID(f) for f in resp.json().get("purgados", [])]

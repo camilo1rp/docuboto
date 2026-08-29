@@ -83,6 +83,7 @@ _MINIO_FILENAME_PREFIX = {
     "indice": "indice",
     "acta_transferencia": "acta-transferencia",
     "acta_transferencia_personal": "acta-transferencia-personal",
+    "acta_eliminacion": "acta-eliminacion",
 }
 
 

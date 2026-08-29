@@ -57,8 +57,15 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 > las tres capas y que **no se registra mientras el plazo para oponerse siga abierto** —la guarda
 > va en el `WHERE` de la propia transición, con el reloj del servidor—, más la **retirada** del
 > lote, posible incluso ya avalado y nunca después de ejecutarlo. Todo ello desde
-> `/admin/eliminacion`, la pantalla del procedimiento. **Nada se elimina todavía**: faltan el acta
-> firmada y el borrado seguro.
+> `/admin/eliminacion`, la pantalla del procedimiento. Y el **acta de eliminación**: contenido
+> congelado append-only por trigger, XML canónico con su SHA-256 anclado en `audit_log`, firma
+> XAdES best-effort con reintento, e **inventario completo sin recortar por clearance** —lo que se
+> acota es quién la lee, con el umbral derivado del nivel más alto del propio inventario—. Es de
+> **conservación permanente**: sobrevive a lo eliminado. Y el **borrado seguro**, que cierra la
+> épica: la cadena archive → document → storage → knowledge, todo-o-nada por expediente, con la
+> **lápida content-free** escrita antes del borrado y en su misma transacción. **RF-TRD-07 queda
+> cerrado y con él E04 completo**: el sistema ya destruye lo que la TRD ordena destruir, con
+> procedimiento, y solo eso.
 >
 > Conviene decir de qué lado falla: el sistema **conserva bien y no destruye nunca** —el invariante
 > 12 de la constitución se cumple, no hay ninguna ruta que borre un documento de archivo—. Lo que
