@@ -48,8 +48,11 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 > **Y el disparo programado con su alerta**: un tercer bucle de fondo barre los vencimientos y
 > avisa por correo a quien puede decidir, con el recuento **recortado por el clearance de cada
 > destinatario** —decirle «tienes 14 pendientes» a quien alcanza 9 delataría 5 clasificados—.
-> **RF-TRD-06, 08 y 09 quedan cerrados.** Solo falta **RF-TRD-07** (borrado seguro con acta,
-> aval del Comité y publicidad previa del inventario), el incremento que sí destruye.
+> **RF-TRD-06, 08 y 09 quedan cerrados**, y **RF-TRD-07 tiene su primera fase de cinco**: el
+> lote de eliminación, que propone y congela el inventario con cinco condiciones de admisión
+> —confirmado, disposición que destruye, instrumento que la gobierna, candado WORM expirado y
+> no estar en otro lote— e informa de cada rechazo. **Nada se elimina todavía**: faltan
+> publicar el inventario, el aval del Comité, el acta firmada y el borrado seguro.
 >
 > Conviene decir de qué lado falla: el sistema **conserva bien y no destruye nunca** —el invariante
 > 12 de la constitución se cumple, no hay ninguna ruta que borre un documento de archivo—. Lo que

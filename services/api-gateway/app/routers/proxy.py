@@ -78,6 +78,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/batch/expedientes", app_state.archive_service_url),
         # archive-service
         ("/api/v1/archive/", app_state.archive_service_url),
+        # E04/RF-TRD-07: lotes de eliminación documental. Recurso propio, no
+        # un apéndice de /trd -- es un procedimiento con ciclo de vida.
+        ("/api/v1/eliminacion/", app_state.archive_service_url),
         ("/api/v1/expedientes/", app_state.archive_service_url),
         ("/api/v1/expediente-metadata/", app_state.archive_service_url),
         ("/api/v1/tipos-documentales/", app_state.archive_service_url),

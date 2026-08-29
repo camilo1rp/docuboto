@@ -45,6 +45,9 @@ from app.schemas.archive import (
     ExpedienteUpdate,
     HistorialAccesoEntry,
     IndiceItem,
+    LoteEliminacionItem,
+    LoteEliminacionRechazo,
+    LoteEliminacionResponse,
     RadicadoLink,
     RetentionSchedule,
     RolAutorizado,
@@ -3903,6 +3906,235 @@ class ArchiveService:
         items = [self._fila_disposicion_vencida(r, fase=fase) for r in rows]
         return items, total
 
+    async def proponer_lote_eliminacion(
+        self,
+        *,
+        codigo: str,
+        expediente_ids: list[uuid.UUID],
+        observaciones: str | None,
+        actor: uuid.UUID,
+    ) -> LoteEliminacionResponse:
+        """`POST /eliminacion/lotes` (RF-TRD-07, primera de las cinco fases).
+
+        Se elimina **por lotes** porque el acta y el aval del Comité son del
+        lote. Esta fase **no elimina nada** —ni siquiera al final del
+        procedimiento lo haría todavía: el borrado seguro no está construido—;
+        lo que hace es fijar QUÉ se propone eliminar y congelarlo.
+
+        **Cinco condiciones de admisión, y ninguna se salta.** Un expediente
+        entra solo si:
+
+        1. Su vencimiento del archivo central está **confirmado** por un
+           usuario autorizado (RF-TRD-06). Sin decisión no hay propuesta: sería
+           saltarse la única barrera que impide la destrucción automática.
+        2. Su disposición **termina en destrucción** (`E`, `S`, `M`).
+           Conservación Total **jamás** entra, y si llega aquí el error está
+           aguas arriba.
+        3. El **instrumento congelado la gobierna** (ADR-025 D5), el mismo
+           predicado del gate.
+        4. Su **candado WORM ya expiró**. Es el máximo de los tres que puede
+           tener (índice, acta, AIP): mientras uno siga vigente el borrado es
+           físicamente imposible en modo COMPLIANCE, y un lote que se acepta y
+           luego no se puede ejecutar es la peor de las dos respuestas.
+        5. **No está ya en otro lote** vivo.
+
+        **Lo rechazado se informa, no se descarta.** Quien propone 40 y recibe
+        31 tiene que ver cuáles nueve faltan y qué le pasa a cada uno; si no, la
+        única salida es probar de uno en uno. Un expediente **fuera del
+        clearance** del proponente no aparece siquiera entre los candidatos —y
+        se informa como «no encontrado», sin distinguirlo de uno inexistente,
+        para no convertir el endpoint en un oráculo."""
+        clearance = await self._repo.caller_clearance(actor)
+        candidatos = await self._repo.list_candidatos_eliminacion(
+            expediente_ids, max_clearance=clearance
+        )
+        por_id = {c["id"]: c for c in candidatos}
+
+        admitidos: list[dict] = []
+        rechazados: list[LoteEliminacionRechazo] = []
+        ahora = datetime.now(tz=UTC)
+
+        for exp_id in expediente_ids:
+            fila = por_id.get(exp_id)
+            if fila is None:
+                rechazados.append(
+                    LoteEliminacionRechazo(
+                        expediente_id=exp_id,
+                        expediente_code=None,
+                        motivo="no_encontrado",
+                        detalle=(
+                            "No existe un expediente con ese identificador, o no "
+                            "está a su alcance."
+                        ),
+                    )
+                )
+                continue
+            snapshot = _leer_snapshot(fila["disposition"])
+            code = snapshot.get("disposition_code")
+            rechazo = _motivo_de_rechazo(fila, snapshot, ahora=ahora)
+            if rechazo is not None:
+                motivo, detalle = rechazo
+                rechazados.append(
+                    LoteEliminacionRechazo(
+                        expediente_id=exp_id,
+                        expediente_code=fila["code"],
+                        motivo=motivo,
+                        detalle=detalle,
+                    )
+                )
+                continue
+            worm = fila["worm_retain_until"]
+            admitidos.append(
+                {
+                    "expediente_id": exp_id,
+                    "expediente_code": fila["code"],
+                    "expediente_nombre": fila["name"],
+                    "trd_serie_code": fila["trd_serie_code"],
+                    "disposition_code": code,
+                    "fecha_vencimiento": fila["fecha_vencimiento"],
+                    "fecha_extrema_inicial": fila["fecha_extrema_inicial"],
+                    "fecha_extrema_final": fila["fecha_extrema_final"],
+                    "nivel_seguridad": fila["nivel_seguridad"],
+                    "radicados_incluidos": fila["radicados_incluidos"],
+                    "worm_retain_until": None if _sin_worm(worm) else worm,
+                }
+            )
+
+        if not admitidos:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "lote_sin_expedientes_admisibles",
+                    "detail": (
+                        "Ninguno de los expedientes indicados puede entrar en un "
+                        "lote de eliminación. Revise el detalle de cada rechazo."
+                    ),
+                    "status": 409,
+                    "rechazados": [r.model_dump(mode="json") for r in rechazados],
+                },
+            )
+
+        async with self._conn.transaction():
+            try:
+                lote = await self._repo.crear_lote_eliminacion(
+                    codigo=codigo, observaciones=observaciones, creado_por=actor
+                )
+            except asyncpg.UniqueViolationError:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "lote_codigo_duplicado",
+                        "detail": f"Ya existe un lote de eliminación con el código '{codigo}'",
+                        "status": 409,
+                    },
+                )
+            for item in admitidos:
+                await self._repo.add_item_lote_eliminacion(lote["id"], item)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="archive-service",
+                action="archive.eliminacion_lote_propuesto",
+                object_type="eliminacion_lote",
+                object_ref=str(lote["id"]),
+                actor=str(actor),
+                payload={
+                    "codigo": codigo,
+                    "admitidos": len(admitidos),
+                    "rechazados": len(rechazados),
+                },
+            )
+
+        return LoteEliminacionResponse(
+            id=lote["id"],
+            codigo=lote["codigo"],
+            estado=lote["estado"],
+            observaciones=lote["observaciones"],
+            creado_por=lote["creado_por"],
+            creado_at=lote["creado_at"],
+            total_items=len(admitidos),
+            items=[LoteEliminacionItem(**a) for a in admitidos],
+            rechazados=rechazados,
+        )
+
+    async def list_lotes_eliminacion(
+        self, *, estado: str | None, page: int, size: int
+    ) -> tuple[list[LoteEliminacionResponse], int]:
+        """Listado de lotes, sin inventario. No se recorta por clearance: un
+        lote **no es un expediente** — su código, su estado y su acta no dicen
+        nada del archivo. Lo que se recorta es su inventario, al abrirlo."""
+        offset = (page - 1) * size
+        rows, total = await self._repo.list_lotes_eliminacion(
+            estado=estado, offset=offset, limit=size
+        )
+        return [self._lote_a_respuesta(r, total_items=r["total_items"]) for r in rows], total
+
+    async def get_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID
+    ) -> LoteEliminacionResponse:
+        """El lote con su inventario, **recortado por el clearance de quien
+        mira** (RF-SEG-08).
+
+        `total_items` sale de la BD y NO de contar lo devuelto: si se
+        recalculara, la resta entre lo que dice el lote y lo que se ve
+        delataría cuántos expedientes clasificados contiene. Es el mismo
+        cuidado que el recuento de la cola de anulaciones, aquí en su
+        variante de detalle."""
+        clearance = await self._repo.caller_clearance(actor)
+        lote, items = await self._repo.get_lote_eliminacion(lote_id, max_clearance=clearance)
+        if lote is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "lote_no_encontrado",
+                    "detail": "No existe un lote de eliminación con ese identificador",
+                    "status": 404,
+                },
+            )
+        total = await self._repo.contar_items_lote(lote_id)
+        return self._lote_a_respuesta(
+            lote,
+            total_items=total,
+            items=[
+                LoteEliminacionItem(
+                    expediente_id=i["expediente_id"],
+                    expediente_code=i["expediente_code"],
+                    expediente_nombre=i["expediente_nombre"],
+                    trd_serie_code=i["trd_serie_code"],
+                    disposition_code=i["disposition_code"],
+                    fecha_vencimiento=i["fecha_vencimiento"],
+                    fecha_extrema_inicial=i["fecha_extrema_inicial"],
+                    fecha_extrema_final=i["fecha_extrema_final"],
+                    nivel_seguridad=i["nivel_seguridad"],
+                    radicados_incluidos=i["radicados_incluidos"],
+                    worm_retain_until=i["worm_retain_until"],
+                )
+                for i in items
+            ],
+        )
+
+    @staticmethod
+    def _lote_a_respuesta(
+        row: Any, *, total_items: int, items: list[LoteEliminacionItem] | None = None
+    ) -> LoteEliminacionResponse:
+        return LoteEliminacionResponse(
+            id=row["id"],
+            codigo=row["codigo"],
+            estado=row["estado"],
+            observaciones=row["observaciones"],
+            creado_por=row["creado_por"],
+            creado_at=row["creado_at"],
+            publicado_at=row["publicado_at"],
+            publicado_hasta=row["publicado_hasta"],
+            acta_comite=row["acta_comite"],
+            fecha_aval=row["fecha_aval"],
+            acto_administrativo=row["acto_administrativo"],
+            ejecutado_at=row["ejecutado_at"],
+            anulado_motivo=row["anulado_motivo"],
+            total_items=total_items,
+            items=items or [],
+        )
+
     async def decidir_disposicion(
         self,
         expediente_id: uuid.UUID,
@@ -4204,6 +4436,67 @@ _AGN_DISPOSITION: dict[str, tuple[str, str]] = {
     "M": ("M", "Microfilmación/Digitalización"),
     "digitize": ("M", "Microfilmación/Digitalización"),
 }
+
+
+def _sin_worm(valor: object) -> bool:
+    """`GREATEST(...)` sobre tres `COALESCE(..., '-infinity')` devuelve
+    `-infinity` cuando el expediente no tiene NINGÚN candado. Se traduce a
+    «sin candado» en un solo sitio: dejar el `-infinity` llegar a la fila del
+    inventario lo pintaría como una fecha, y una fecha imposible en un
+    inventario de eliminación es peor que un hueco."""
+    return valor is None or (isinstance(valor, datetime) and valor.year <= 1)
+
+
+def _motivo_de_rechazo(
+    fila: Any, snapshot: dict[str, Any], *, ahora: datetime
+) -> tuple[str, str] | None:
+    """Las cinco condiciones de admisión de un lote (RF-TRD-07), en orden y en
+    un solo sitio. Devuelve `(motivo, detalle)` o `None` si el expediente
+    entra.
+
+    El ORDEN importa para el mensaje, no para la seguridad: se informa del
+    impedimento más de fondo primero (no está confirmado) antes que del más
+    circunstancial (su candado aún no expira), porque es el que la persona
+    tiene que resolver."""
+    code = snapshot.get("disposition_code")
+
+    if fila["decision"] != "confirmada":
+        return (
+            "sin_confirmacion",
+            "Su vencimiento no ha sido confirmado por un usuario autorizado. "
+            "Ninguna destrucción es automática: primero hay que decidir.",
+        )
+    if code not in _DISPOSICIONES_QUE_DESTRUYEN:
+        etiqueta = snapshot.get("disposition_label") or code or "sin declarar"
+        return (
+            "disposicion_no_destruye",
+            f"Su disposición final es «{etiqueta}»: no termina en destrucción. "
+            "Conservación Total se transfiere al archivo histórico y se conserva "
+            "permanentemente.",
+        )
+    if not disposicion_final_autorizada(
+        serie_estado=str(snapshot.get("serie_estado") or ""),
+        acto_administrativo=snapshot.get("acto_administrativo"),
+    ):
+        return (
+            "instrumento_no_gobierna",
+            "El instrumento congelado no está convalidado: no puede gobernar "
+            "una eliminación efectiva (ADR-025 D5).",
+        )
+    worm = fila["worm_retain_until"]
+    if not _sin_worm(worm) and worm > ahora:
+        return (
+            "worm_vigente",
+            f"Su retención WORM no expira hasta {worm.date().isoformat()}. "
+            "En modo COMPLIANCE nadie puede borrar antes de esa fecha, ni el "
+            "administrador: aceptarlo ahora daría un lote imposible de ejecutar.",
+        )
+    if fila["lote_existente"]:
+        return (
+            "ya_en_otro_lote",
+            f"Ya forma parte del lote «{fila['lote_existente']}».",
+        )
+    return None
 
 
 def _leer_snapshot(raw: object) -> dict[str, Any]:

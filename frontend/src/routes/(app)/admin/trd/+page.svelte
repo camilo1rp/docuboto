@@ -207,6 +207,70 @@
   // sesión no trae el nivel, no se ofrece el acto.
   $: puedeDecidir = canWriteLevel3;
 
+  // Proponer un lote de eliminación (RF-TRD-07, fase 1 de 5). SOLO se pueden
+  // seleccionar las filas ya CONFIRMADAS y con disposición que termina en
+  // destrucción: es la misma condición que el backend exige, y ofrecer una
+  // casilla sobre una fila que va a ser rechazada es hacer perder el viaje.
+  // Conservación Total no lleva casilla, porque no se elimina jamás.
+  const DESTRUYEN = new Set(["E", "S", "M"]);
+  let seleccion = new Set();
+  let loteAbierto = false;
+  let loteCodigo = "";
+  let loteObservaciones = "";
+  let enviandoLote = false;
+  let resultadoLote = null;
+
+  $: elegibles = vencidos.filter(
+    (v) => v.decision === "confirmada" && DESTRUYEN.has(v.disposition_code),
+  );
+  $: seleccionados = elegibles.filter((v) => seleccion.has(v.id));
+
+  function alternar(id) {
+    const s = new Set(seleccion);
+    if (s.has(id)) s.delete(id);
+    else s.add(id);
+    seleccion = s;
+  }
+
+  async function proponerLote() {
+    enviandoLote = true;
+    resultadoLote = null;
+    try {
+      const res = await fetch("/admin/trd/api/eliminacion/lotes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          codigo: loteCodigo,
+          expediente_ids: seleccionados.map((v) => v.id),
+          observaciones: loteObservaciones || undefined,
+        }),
+      });
+      const cuerpo = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // El 409 trae el detalle de POR QUÉ se rechazó cada expediente: es lo
+        // que la persona necesita, no un «no se pudo».
+        resultadoLote = { error: true, ...cuerpo };
+        enviandoLote = false;
+        return;
+      }
+      resultadoLote = cuerpo;
+      seleccion = new Set();
+      enviandoLote = false;
+      await invalidateAll();
+    } catch {
+      notifyError("No se pudo conectar para proponer el lote.");
+      enviandoLote = false;
+    }
+  }
+
+  function cerrarLote() {
+    loteAbierto = false;
+    resultadoLote = null;
+    loteCodigo = "";
+    loteObservaciones = "";
+    enviandoLote = false;
+  }
+
   // Decidir sobre un vencimiento (RF-TRD-06). Confirmar NO elimina nada: es la
   // precondición del brazo ejecutor, que no existe. El texto del modal lo dice
   // con todas las letras, porque un botón que pone «Confirmar» sobre una fila
@@ -1114,11 +1178,31 @@
         </p>
       </div>
 
+      {#if puedeDecidir && elegibles.length > 0}
+        <div class="trd-vencidos__lote">
+          <p>
+            <strong>{seleccionados.length}</strong> de {elegibles.length} expedientes confirmados seleccionados
+            para un lote de eliminación.
+          </p>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={seleccionados.length === 0}
+            on:click={() => (loteAbierto = true)}
+          >
+            Proponer lote de eliminación
+          </Button>
+        </div>
+      {/if}
+
       <div class="trd-revision__tabla">
         <table>
           <caption class="is-sr-only">Expedientes con la retención vencida</caption>
           <thead>
             <tr>
+              {#if puedeDecidir}
+                <th scope="col"><span class="is-sr-only">Incluir en un lote</span></th>
+              {/if}
               <th scope="col">Expediente</th>
               <th scope="col">Serie</th>
               <th scope="col">Disposición</th>
@@ -1131,6 +1215,18 @@
           <tbody>
             {#each vencidos as v (v.id)}
               <tr>
+                {#if puedeDecidir}
+                  <td>
+                    {#if v.decision === "confirmada" && DESTRUYEN.has(v.disposition_code)}
+                      <input
+                        type="checkbox"
+                        checked={seleccion.has(v.id)}
+                        on:change={() => alternar(v.id)}
+                        aria-label={`Incluir ${v.code} en un lote de eliminación`}
+                      />
+                    {/if}
+                  </td>
+                {/if}
                 <td>{v.code}</td>
                 <td>{v.trd_serie_code ?? "—"}</td>
                 <td>
@@ -1183,6 +1279,75 @@
     {/if}
   </div>
 </div>
+
+<Modal open={loteAbierto} title="Proponer un lote de eliminación" size="md" on:close={cerrarLote}>
+  {#if resultadoLote === null}
+    <p>
+      Vas a proponer un lote con <strong>{seleccionados.length}</strong> expedientes. El sistema congela
+      su inventario —código, serie, fechas extremas y volumen— porque es lo que después se publica para
+      que un tercero pueda oponerse.
+    </p>
+    <p class="trd-vencidos__aviso">
+      <strong>Esto no elimina nada</strong>, y no es el último paso sino el primero de cinco:
+      proponer → publicar el inventario → aval del Comité → acta firmada → borrado seguro. El
+      borrado seguro <strong>todavía no está construido</strong>.
+    </p>
+    <FormField
+      id="lote-codigo"
+      name="codigo"
+      label="Código del lote"
+      required
+      bind:value={loteCodigo}
+      hint="Por ejemplo, LOTE-2026-001. Identifica el lote en el acta."
+    />
+    <FormField
+      id="lote-observaciones"
+      name="observaciones"
+      label="Observaciones (opcional)"
+      bind:value={loteObservaciones}
+    />
+  {:else if resultadoLote.error}
+    <p role="alert">
+      {resultadoLote.detail?.detail ?? "No se pudo proponer el lote."}
+    </p>
+    {#if resultadoLote.detail?.rechazados?.length}
+      <ul class="trd-vencidos__rechazos">
+        {#each resultadoLote.detail.rechazados as r (r.expediente_id)}
+          <li><strong>{r.expediente_code ?? r.expediente_id}</strong>: {r.detalle}</li>
+        {/each}
+      </ul>
+    {/if}
+  {:else}
+    <p>
+      Lote <strong>{resultadoLote.codigo}</strong> propuesto con
+      <strong>{resultadoLote.total_items}</strong> expedientes.
+    </p>
+    <p class="trd-vencidos__aviso">{resultadoLote.nota}</p>
+    {#if resultadoLote.rechazados?.length}
+      <p>No entraron {resultadoLote.rechazados.length}, y por estos motivos:</p>
+      <ul class="trd-vencidos__rechazos">
+        {#each resultadoLote.rechazados as r (r.expediente_id)}
+          <li><strong>{r.expediente_code ?? r.expediente_id}</strong>: {r.detalle}</li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={cerrarLote}>
+      {resultadoLote === null ? "Cancelar" : "Cerrar"}
+    </Button>
+    {#if resultadoLote === null}
+      <Button
+        variant="danger"
+        loading={enviandoLote}
+        disabled={loteCodigo.trim().length < 3}
+        on:click={proponerLote}
+      >
+        Proponer lote
+      </Button>
+    {/if}
+  </svelte:fragment>
+</Modal>
 
 <Modal
   open={decidiendo !== null}
@@ -1252,6 +1417,19 @@
   .trd-vencidos__acciones {
     display: flex;
     gap: var(--op-space-2);
+  }
+
+  .trd-vencidos__lote {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--op-space-3);
+    margin-bottom: var(--op-space-3);
+  }
+
+  .trd-vencidos__rechazos {
+    margin: var(--op-space-2) 0 0 var(--op-space-4);
+    list-style: disc;
   }
 
   .trd-vencidos__aviso {

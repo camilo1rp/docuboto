@@ -194,7 +194,10 @@ describe("/admin/trd — decidir sobre un vencimiento (RF-TRD-06)", () => {
     });
     const panel = document.getElementById("panel-vencidos");
     expect(panel.textContent).toMatch(/Confirmada/);
-    expect(panel.querySelector("button")).toBeNull();
+    // Se acota a la FILA: el panel tiene ahora otros botones (proponer lote)
+    // que no tienen nada que ver con decidir sobre esta fila.
+    const botonesDeLaFila = [...panel.querySelectorAll("tbody button")].map((b) => b.textContent);
+    expect(botonesDeLaFila.join(" ")).not.toMatch(/Confirmar|Aplazar/);
   });
 
   it("una fila aplazada dice cuándo vuelve", () => {
@@ -207,5 +210,70 @@ describe("/admin/trd — decidir sobre un vencimiento (RF-TRD-06)", () => {
       },
     });
     expect(document.getElementById("panel-vencidos").textContent).toMatch(/Se revisa el/);
+  });
+});
+
+describe("/admin/trd — proponer un lote de eliminación (RF-TRD-07, fase 1)", () => {
+  const confirmado = (o = {}) => ({ ...vencido(), decision: "confirmada", ...o });
+
+  beforeEach(() => {
+    clearSession();
+    initSession({
+      ...sesion,
+      permissions: ["USUA_PERM_TRD"],
+      permission_levels: { USUA_PERM_TRD: 3 },
+    });
+  });
+  afterEach(() => clearSession());
+
+  it("solo las filas CONFIRMADAS y que destruyen llevan casilla", () => {
+    render(TrdPage, {
+      props: {
+        data: datos({
+          vencidos: [
+            confirmado({ id: "a", code: "EXP-E", disposition_code: "E" }),
+            confirmado({ id: "b", code: "EXP-CT", disposition_code: "CT" }),
+            vencido({ id: "c", code: "EXP-SIN-DECIDIR", decision: null }),
+          ],
+        }),
+      },
+    });
+    const panel = document.getElementById("panel-vencidos");
+    const casillas = panel.querySelectorAll('input[type="checkbox"]');
+    // Conservación Total NO se elimina jamás, y sin confirmar no hay propuesta.
+    expect(casillas.length).toBe(1);
+    expect(casillas[0].getAttribute("aria-label")).toMatch(/EXP-E/);
+  });
+
+  it("sin ninguna fila elegible no se ofrece proponer nada", () => {
+    render(TrdPage, {
+      props: { data: datos({ vencidos: [vencido({ decision: null })] }) },
+    });
+    expect(document.getElementById("panel-vencidos").textContent).not.toMatch(
+      /Proponer lote de eliminación/,
+    );
+  });
+
+  it("con filas elegibles se ofrece, pero deshabilitado hasta seleccionar", () => {
+    render(TrdPage, { props: { data: datos({ vencidos: [confirmado()] }) } });
+    const panel = document.getElementById("panel-vencidos");
+    expect(panel.textContent).toMatch(/Proponer lote de eliminación/);
+    const boton = [...panel.querySelectorAll("button")].find((b) =>
+      b.textContent.includes("Proponer lote de eliminación"),
+    );
+    expect(boton.disabled).toBe(true);
+  });
+
+  it("sin nivel 3 no se ofrece seleccionar ni proponer", () => {
+    clearSession();
+    initSession({
+      ...sesion,
+      permissions: ["USUA_PERM_TRD"],
+      permission_levels: { USUA_PERM_TRD: 1 },
+    });
+    render(TrdPage, { props: { data: datos({ vencidos: [confirmado()] }) } });
+    const panel = document.getElementById("panel-vencidos");
+    expect(panel.querySelectorAll('input[type="checkbox"]').length).toBe(0);
+    expect(panel.textContent).not.toMatch(/Proponer lote de eliminación/);
   });
 });

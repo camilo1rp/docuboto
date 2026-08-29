@@ -40,6 +40,7 @@ from app.jobs.indice_reconciliation import (
     run_once_worm_renovacion as _reconcile_worm_renovacion_once,
 )
 from app.routers.batch import router as batch_router
+from app.routers.eliminacion import router as eliminacion_router
 from app.routers.expedientes import router as expedientes_router
 from app.routers.fisico import router as fisico_router
 from app.routers.health import router as health_router
@@ -221,6 +222,7 @@ app = FastAPI(
 app.add_middleware(request_log.RequestLogMiddleware, servicio="archive-service")
 
 app.include_router(batch_router)
+app.include_router(eliminacion_router)
 app.include_router(expedientes_router)
 app.include_router(indice_router)
 app.include_router(fisico_router)

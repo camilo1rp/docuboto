@@ -324,6 +324,28 @@ Edición estructural permitida **solo en `borrador`** (→ 409 `plan_no_editable
 
 ---
 
+### Eliminación documental — lotes (RF-TRD-07, fase 1 de 5, 2026-08-28)
+
+`POST /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes/{id}`
+
+**Recurso propio y no un apéndice de `/trd`** (mismo criterio que la cola de anulaciones): un lote no es una lectura del instrumento, es un procedimiento con ciclo de vida `borrador → publicado → avalado → ejecutado`, o `anulado`. Proponer y listar exigen **`USUA_PERM_TRD`**; proponer además **`crud≥3`** y actor imputable.
+
+**Nada de esto elimina nada.** Se elimina por lotes porque el acta y el aval del Comité son del lote; esta fase propone y **congela el inventario** —código, nombre, serie, disposición, fecha de vencimiento, fechas extremas, nivel y volumen—, que es lo que después se publica para que un tercero pueda oponerse y lo que el acta describirá. No se lee en vivo del expediente: el expediente va a dejar de existir.
+
+**Cinco condiciones de admisión**, y lo rechazado **se informa con su motivo** en vez de descartarse en silencio (`sin_confirmacion`, `disposicion_no_destruye`, `instrumento_no_gobierna`, `worm_vigente`, `ya_en_otro_lote`, `no_encontrado`):
+
+1. El vencimiento del archivo central está **confirmado** por un usuario autorizado (RF-TRD-06) — sin decisión no hay propuesta.
+2. La disposición **termina en destrucción** (`E`, `S`, `M`). Conservación Total **jamás** entra.
+3. El instrumento congelado la **gobierna** (ADR-025 D5).
+4. El **candado WORM ya expiró** — y es el **máximo de los tres** que puede tener un expediente (índice firmado, acta de transferencia y AIP): mientras uno siga vigente, en modo COMPLIANCE no puede borrar nadie, ni el administrador.
+5. No está ya en otro lote vivo.
+
+Un expediente fuera del clearance del proponente se informa como `no_encontrado`, **sin distinguirlo de uno inexistente**. Al abrir un lote, el **inventario se recorta por clearance** pero `total_items` sale de la base y no de contar lo devuelto: recalcularlo dejaría que la resta delatara cuántos clasificados contiene. El listado de lotes **no** se recorta — un lote no es un expediente: su código, su estado y su acta no dicen nada del archivo.
+
+> **Faltan las cuatro fases siguientes**: publicar el inventario, aval del Comité, acta firmada y borrado seguro. `ejecutado` viaja siempre en `false`.
+
+---
+
 ## document-service — puerto 8003
 
 > Requiere headers `X-Tenant-Slug` y `X-User-Id` (inyectados por el gateway).

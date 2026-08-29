@@ -102,6 +102,17 @@ eleven services, and per-request tracing propagated from the edge.
 
 ### Added
 
+- `feat(archive,api-gateway,frontend)`: **the elimination batch — first of the five phases of the only remaining requirement** (RF-TRD-07)
+  Elimination happens **by batch** because the record of proceedings and the Committee's endorsement belong to the batch. This phase proposes and **freezes the inventory**; publishing, endorsing, signing the record and executing secure deletion are the four that follow, and the last one **is not built**. `ejecutado` always travels as `false`.
+  **A resource of its own, not an appendix of `/trd`**: a batch is a procedure with a lifecycle, and each transition has constancies enforced by `CHECK` — publishing without a deadline gives no time to object, and endorsing without a record, date and administrative act is an unverified assertion.
+  **The inventory is frozen, and not as a convenience copy**: it is what gets published for third parties to object to, and the expediente is going to cease to exist. A trigger enforces it: **never editable**, and removable **only while the batch is a draft**.
+  **Five admission conditions**: a confirmed due date (without a decision there is no proposal — the only barrier against automatic destruction); a disposition that **ends in destruction** (`E`, `S`, `M`; Conservación Total **never** enters); a frozen instrument that governs it; an **expired WORM lock**; and not already being in a live batch.
+  **There are THREE locks, and the longest one wins.** An expediente may carry `worm_retain_until` on its signed index, its transfer record and its AIP; while one stands, COMPLIANCE mode lets **nobody** delete, not even the administrator. Taking the first one found would yield a batch that blows up on execution, with the Committee already convened.
+  **Rejections are reported, not dropped.** Whoever proposes 40 and gets 31 must see which nine are missing and why. An expediente outside the proposer's clearance is reported as "not found", **indistinguishable from a non-existent one**.
+  **With its door on the same day**: only rows already confirmed whose disposition destroys carry a checkbox, and the `409` with its reasons is forwarded as-is instead of collapsing into "could not create batch".
+  Migration `archive tenant/047` validated against real PostgreSQL. 823 archive-service tests, 1828 frontend, svelte-check 0/0, lint green. **The five conditions verified by mutation one by one.**
+  *Why*: preserving everything forever is not complying with the TRD, it is failing to apply it — *Impact*: `/api/v1/eliminacion/` joins the gateway. **Still nothing is deleted.**
+
 - `feat(archive)`: **the sweep that runs on its own, and the alert that reaches whoever is not looking** (RF-TRD-08 + R.4.8)
   Fourth step of the increment that **destroys nothing**, closing the scheduled trigger. The due-disposition queue had to be visited; now the system sweeps by itself and **alerts whoever can decide**.
   **No new infrastructure was needed**: `archive-service` already had two background loops with exactly the right shape — a testable `run_once`, their own kill switch and interval, never dying on an exception. This is a third with the same mould, and its interval **is** the alert cadence, so there is no per-tenant "last sent" state to keep in sync. **What silences the alert is deciding, not having read it.**

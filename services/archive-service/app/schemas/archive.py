@@ -524,6 +524,76 @@ class ExpedienteRevisionPendienteResponse(BaseModel):
     tipo_instrumento: str | None = None
 
 
+class LoteEliminacionCreate(BaseModel):
+    """`POST /api/v1/eliminacion/lotes` (RF-TRD-07). Propone un lote."""
+
+    codigo: str = Field(min_length=3, max_length=60)
+    expediente_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    observaciones: str | None = Field(default=None, max_length=4000)
+
+
+class LoteEliminacionItem(BaseModel):
+    """Una fila del inventario **congelado** — ver la cabecera de la migración
+    047. No se lee del expediente en vivo: el expediente va a dejar de
+    existir, y lo que se publicó debe seguir siendo legible después."""
+
+    expediente_id: uuid.UUID
+    expediente_code: str
+    expediente_nombre: str | None
+    trd_serie_code: str | None
+    disposition_code: str
+    fecha_vencimiento: date
+    fecha_extrema_inicial: date | None
+    fecha_extrema_final: date | None
+    nivel_seguridad: int
+    radicados_incluidos: int | None
+    worm_retain_until: datetime | None
+
+
+class LoteEliminacionRechazo(BaseModel):
+    """Un expediente que NO entró, y por qué.
+
+    Existe porque descartar en silencio sería lo peor que puede hacer aquí una
+    interfaz: quien propone un lote de 40 y recibe uno de 31 tiene que poder
+    ver **cuáles nueve** faltan y qué le pasa a cada uno — si no, la única
+    salida es ir probando de uno en uno."""
+
+    expediente_id: uuid.UUID
+    expediente_code: str | None
+    motivo: str
+    detalle: str
+
+
+class LoteEliminacionResponse(BaseModel):
+    """El lote propuesto, con su inventario y **el informe de lo rechazado**."""
+
+    id: uuid.UUID
+    codigo: str
+    estado: str
+    observaciones: str | None
+    creado_por: uuid.UUID
+    creado_at: datetime
+    publicado_at: datetime | None = None
+    publicado_hasta: date | None = None
+    acta_comite: str | None = None
+    fecha_aval: date | None = None
+    acto_administrativo: str | None = None
+    ejecutado_at: datetime | None = None
+    anulado_motivo: str | None = None
+    total_items: int
+    items: list[LoteEliminacionItem] = []
+    rechazados: list[LoteEliminacionRechazo] = []
+    # `ejecutado` es siempre False hoy: el borrado seguro (RF-TRD-07 §5.4) no
+    # está construido. Va explícito por el mismo motivo que en la decisión --
+    # un 201 sobre «lote de eliminación» invita a creer que algo se eliminó.
+    ejecutado: bool = False
+    nota: str = (
+        "Lote propuesto. NADA se ha eliminado: falta publicar el inventario, "
+        "obtener el aval del Comité, firmar el acta y ejecutar el borrado seguro, "
+        "que todavía no está construido."
+    )
+
+
 class DisposicionDecisionCreate(BaseModel):
     """Cuerpo de `POST /api/v1/trd/disposicion-vencida/{id}/decidir`.
 

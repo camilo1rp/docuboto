@@ -322,6 +322,22 @@ Structural editing is allowed **only in `borrador`** (→ 409 `plan_no_editable`
 
 ---
 
+### Documentary elimination — batches (RF-TRD-07, phase 1 of 5, 2026-08-28)
+
+`POST /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes` · `GET /api/v1/eliminacion/lotes/{id}`
+
+**A resource of its own, not an appendix of `/trd`**: a batch is a procedure with a lifecycle `borrador → publicado → avalado → ejecutado`, or `anulado`. Proposing requires **`USUA_PERM_TRD` with `crud≥3`** and an accountable actor.
+
+**None of this deletes anything.** Elimination happens by batch because the record of proceedings and the Committee's endorsement belong to the batch; this phase proposes and **freezes the inventory**, which is what gets published for third parties to object to and what the record will describe. It is not read live from the expediente — the expediente is going to cease to exist.
+
+**Five admission conditions**, and rejections are **reported with their reason** rather than silently dropped: the due date must be **confirmed** by an authorized user; the disposition must **end in destruction** (`E`, `S`, `M` — Conservación Total never enters); the frozen instrument must **govern** it (ADR-025 D5); the **WORM lock must have expired** — the **maximum of the three** an expediente can carry (signed index, transfer record, AIP), because while one stands, COMPLIANCE mode lets nobody delete; and it must not already be in a live batch.
+
+An expediente outside the proposer's clearance is reported as `no_encontrado`, **indistinguishable from a non-existent one**. When opening a batch the inventory is clearance-narrowed, but `total_items` comes from the database, not from counting what was returned.
+
+> **Four phases remain**: publishing the inventory, Committee endorsement, the signed record, and secure deletion. `ejecutado` always travels as `false`.
+
+---
+
 ## document-service — port 8003
 
 > Requires the `X-Tenant-Slug` and `X-User-Id` headers (injected by the gateway).

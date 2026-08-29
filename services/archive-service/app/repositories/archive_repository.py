@@ -1568,6 +1568,194 @@ class ArchiveRepository:
         )
         return list(rows), total
 
+    async def list_candidatos_eliminacion(
+        self, expediente_ids: list[uuid.UUID], *, max_clearance: int
+    ) -> list[asyncpg.Record]:
+        """Todo lo necesario para JUZGAR si cada expediente puede entrar en un
+        lote de eliminación (E04, RF-TRD-07). No decide: reúne.
+
+        Trae, por expediente: su inventario, la última decisión sobre el
+        vencimiento del archivo central, y el **candado WORM efectivo** — que
+        es el **MÁXIMO** de los tres que puede tener (índice firmado, acta de
+        transferencia y AIP). Manda el más largo: mientras UNO siga vigente no
+        se puede borrar nada, y quedarse con el primero que se encuentre daría
+        un lote que revienta al ejecutarse.
+
+        Acotado por clearance (RF-SEG-08): un expediente fuera de alcance
+        simplemente no aparece, igual que no aparece en la cola. Quien no puede
+        verlo tampoco puede proponer su eliminación.
+
+        `radicados_incluidos` cuenta los vínculos vivos: es el volumen que se
+        publica en el inventario, no el detalle (que no se publica nunca)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT e.id, e.code, e.name, e.status, e.nivel_seguridad,
+                       e.trd_serie_code, e.disposition,
+                       e.fecha_extrema_inicial, e.fecha_extrema_final,
+                       (e.disposition->>'fin_archivo_central')::date AS fecha_vencimiento,
+                       d.decision,
+                       (SELECT COUNT(*) FROM expediente_radicados er
+                         WHERE er.expediente_id = e.id) AS radicados_incluidos,
+                       GREATEST(
+                           COALESCE(ei.worm_retain_until, '-infinity'::timestamptz),
+                           COALESCE(ta.worm_retain_until, '-infinity'::timestamptz),
+                           COALESCE(ap.worm_retain_until, '-infinity'::timestamptz)
+                       ) AS worm_retain_until,
+                       (SELECT l.codigo
+                          FROM eliminacion_lote_items li
+                          JOIN eliminacion_lotes l ON l.id = li.lote_id
+                         WHERE li.expediente_id = e.id
+                           AND l.estado <> 'anulado'
+                         LIMIT 1) AS lote_existente
+                  FROM expedientes e
+                  LEFT JOIN LATERAL (
+                      SELECT dd.decision
+                        FROM disposicion_decisiones dd
+                       WHERE dd.expediente_id = e.id
+                         AND dd.fase = 'central'
+                         AND dd.fecha_vencimiento
+                             = (e.disposition->>'fin_archivo_central')::date
+                       ORDER BY dd.decidido_at DESC
+                       LIMIT 1
+                  ) d ON TRUE
+                  LEFT JOIN LATERAL (
+                      SELECT MAX(x.worm_retain_until) AS worm_retain_until
+                        FROM expediente_indice x WHERE x.expediente_id = e.id
+                  ) ei ON TRUE
+                  LEFT JOIN LATERAL (
+                      SELECT MAX(x.worm_retain_until) AS worm_retain_until
+                        FROM transferencia_acta_firma x WHERE x.expediente_id = e.id
+                  ) ta ON TRUE
+                  LEFT JOIN LATERAL (
+                      SELECT MAX(x.worm_retain_until) AS worm_retain_until
+                        FROM expediente_aip x WHERE x.expediente_id = e.id
+                  ) ap ON TRUE
+                 WHERE e.id = ANY($1::uuid[])
+                   AND e.nivel_seguridad <= $2
+                """,
+                expediente_ids,
+                max_clearance,
+            )
+        )
+
+    async def crear_lote_eliminacion(
+        self, *, codigo: str, observaciones: str | None, creado_por: uuid.UUID
+    ) -> asyncpg.Record:
+        """Crea el lote en `borrador`. El inventario se añade aparte."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            INSERT INTO eliminacion_lotes (codigo, observaciones, creado_por)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            """,
+            codigo,
+            observaciones,
+            creado_por,
+        )
+
+    async def add_item_lote_eliminacion(self, lote_id: uuid.UUID, item: dict) -> None:
+        """Congela una fila del inventario. Ver la cabecera de la migración
+        047: no es una copia por comodidad, es lo que se publica y lo que el
+        acta describirá -- y el expediente va a dejar de existir."""
+        await self._set_search_path()
+        await self._conn.execute(
+            """
+            INSERT INTO eliminacion_lote_items (
+                lote_id, expediente_id, expediente_code, expediente_nombre,
+                trd_serie_code, disposition_code, fecha_vencimiento,
+                fecha_extrema_inicial, fecha_extrema_final, nivel_seguridad,
+                radicados_incluidos, worm_retain_until
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            """,
+            lote_id,
+            item["expediente_id"],
+            item["expediente_code"],
+            item["expediente_nombre"],
+            item["trd_serie_code"],
+            item["disposition_code"],
+            item["fecha_vencimiento"],
+            item["fecha_extrema_inicial"],
+            item["fecha_extrema_final"],
+            item["nivel_seguridad"],
+            item["radicados_incluidos"],
+            item["worm_retain_until"],
+        )
+
+    async def get_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, max_clearance: int
+    ) -> tuple[asyncpg.Record | None, list[asyncpg.Record]]:
+        """El lote y su inventario, **acotado por clearance en los ítems**.
+
+        El lote se ve entero (su código, su estado, su acta); lo que se recorta
+        son las FILAS del inventario, igual que en cualquier otro listado de
+        expedientes. Un lote puede así aparecer con menos ítems de los que
+        tiene -- y por eso el total NO se recalcula contando lo devuelto: se
+        expone aparte, para que nadie deduzca de una resta cuántos clasificados
+        hay dentro."""
+        await self._set_search_path()
+        lote = await self._conn.fetchrow(
+            "SELECT * FROM eliminacion_lotes WHERE id = $1", lote_id
+        )
+        if lote is None:
+            return None, []
+        items = await self._conn.fetch(
+            """
+            SELECT * FROM eliminacion_lote_items
+             WHERE lote_id = $1 AND nivel_seguridad <= $2
+             ORDER BY expediente_code
+            """,
+            lote_id,
+            max_clearance,
+        )
+        return lote, list(items)
+
+    async def contar_items_lote(self, lote_id: uuid.UUID) -> int:
+        """El total REAL de ítems del lote, sin recortar por clearance.
+
+        Se expone a propósito junto al inventario recortado: si el total se
+        recalculara contando lo devuelto, la resta entre lo que el lote dice
+        tener y lo que se ve delataría cuántos expedientes clasificados
+        contiene. Aquí el número honesto es el total; lo que se protege es el
+        DETALLE."""
+        await self._set_search_path()
+        total: int = await self._conn.fetchval(
+            "SELECT COUNT(*) FROM eliminacion_lote_items WHERE lote_id = $1", lote_id
+        )
+        return total
+
+    async def list_lotes_eliminacion(
+        self, *, estado: str | None, offset: int, limit: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Listado de lotes. No se recorta por clearance: un lote **no es un
+        expediente** -- su código, su estado y su acta no dicen nada del
+        archivo. Lo que se recorta es su inventario, al abrirlo."""
+        await self._set_search_path()
+        cond = "TRUE" if estado is None else "estado = $1"
+        params: list[object] = [] if estado is None else [estado]
+        idx = len(params) + 1
+        total: int = await self._conn.fetchval(
+            f"SELECT COUNT(*) FROM eliminacion_lotes WHERE {cond}", *params
+        )
+        rows = await self._conn.fetch(
+            f"""
+            SELECT l.*,
+                   (SELECT COUNT(*) FROM eliminacion_lote_items li
+                     WHERE li.lote_id = l.id) AS total_items
+              FROM eliminacion_lotes l
+             WHERE {cond}
+             ORDER BY l.creado_at DESC
+             LIMIT ${idx} OFFSET ${idx + 1}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+        return list(rows), total
+
     async def list_destinatarios_disposicion(self) -> list[asyncpg.Record]:
         """Quién puede DECIDIR sobre un vencimiento, con su correo y su
         clearance (E04, RF-TRD-06 R.4.8).
