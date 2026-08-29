@@ -342,7 +342,15 @@ Edición estructural permitida **solo en `borrador`** (→ 409 `plan_no_editable
 
 Un expediente fuera del clearance del proponente se informa como `no_encontrado`, **sin distinguirlo de uno inexistente**. Al abrir un lote, el **inventario se recorta por clearance** pero `total_items` sale de la base y no de contar lo devuelto: recalcularlo dejaría que la resta delatara cuántos clasificados contiene. El listado de lotes **no** se recorta — un lote no es un expediente: su código, su estado y su acta no dicen nada del archivo.
 
-> **Faltan las cuatro fases siguientes**: publicar el inventario, aval del Comité, acta firmada y borrado seguro. `ejecutado` viaja siempre en `false`.
+**Fase 2 — publicidad previa (2026-08-28).** `POST /api/v1/eliminacion/lotes/{id}/publicar` (`USUA_PERM_TRD` `crud≥3`) transita `borrador → publicado` y **congela el inventario**: el trigger de la migración 047 deja de admitir que se quite una fila, porque lo publicado es sobre lo que un tercero decidió no oponerse. `publicado_hasta` es obligatorio y futuro — **no hay default**: no se inventa cuántos días da una entidad para oponerse a que destruyan un documento.
+
+El inventario queda visible **sin autenticar** en `GET /api/v1/public/archive/eliminacion/{tenant}/lotes[/{id}]`. **El chokepoint es el ESTADO del lote**, no un interruptor de despliegue: deliberadamente **no** cuelga de `public_interop_enabled` (la cosecha OAI/CMIS), porque publicar el registro de correspondencia es una decisión de la entidad y publicar el inventario de lo que va a eliminar es una **obligación del procedimiento** — atarlas al mismo interruptor dejaría a una entidad sin poder eliminar por no activar una cosecha que no le interesa. Un lote en `borrador` o `anulado` responde **404**, indistinguible de un identificador inventado; los ya `avalado` y `ejecutado` **siguen siendo consultables**, porque la constancia de qué se eliminó no puede desaparecer al eliminarlo.
+
+**La descripción de un expediente clasificado no se publica, pero la fila sí.** El recorte va en el `SELECT` (`CASE WHEN nivel_seguridad > 1 THEN NULL`), no en quien pinta. Omitir la fila dejaría de cumplir la publicidad previa justo sobre los expedientes que más importa que alguien pueda objetar; lo que se retiene es la **denominación**, que es donde vive el contenido. Va marcada con `nombre_reservado` para que la pantalla lo **diga** en vez de dejar un hueco mudo.
+
+Pantalla pública en `(public)/eliminacion`, enlazada desde el portal. **El canal de oposición no se inventa**: es la ventanilla única que la entidad ya tiene — un formulario aparte sería una segunda bandeja que nadie mira, y una oposición es exactamente lo que una ventanilla existe para recibir.
+
+> **Faltan las tres fases siguientes**: aval del Comité, acta firmada y borrado seguro. `ejecutado` viaja siempre en `false`.
 
 ---
 

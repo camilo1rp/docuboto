@@ -334,7 +334,15 @@ Structural editing is allowed **only in `borrador`** (→ 409 `plan_no_editable`
 
 An expediente outside the proposer's clearance is reported as `no_encontrado`, **indistinguishable from a non-existent one**. When opening a batch the inventory is clearance-narrowed, but `total_items` comes from the database, not from counting what was returned.
 
-> **Four phases remain**: publishing the inventory, Committee endorsement, the signed record, and secure deletion. `ejecutado` always travels as `false`.
+**Phase 2 — prior publicity (2026-08-28).** `POST /api/v1/eliminacion/lotes/{id}/publicar` moves `borrador → publicado` and **freezes the inventory**. `publicado_hasta` is mandatory and future — **no default**: one does not invent how many days an institution gives for objecting to a document's destruction.
+
+The inventory becomes visible **without authentication** at `GET /api/v1/public/archive/eliminacion/{tenant}/lotes[/{id}]`. **The chokepoint is the batch's STATE**, not a deployment switch: deliberately **not** tied to `public_interop_enabled`, because publishing the correspondence register is the institution's decision while publishing what it is about to destroy is a **duty of the procedure**. A `borrador` or `anulado` batch answers **404**; `avalado` and `ejecutado` ones **remain consultable**, because the record of what was eliminated cannot vanish upon eliminating it.
+
+**A classified expediente's description is not published, but its row is.** The narrowing lives in the `SELECT`, not in the renderer. Omitting the row would fail the publicity duty precisely over what matters most to be able to object to; what is withheld is the **denomination**, where the content lives. It is flagged `nombre_reservado` so the page **says so** instead of leaving a mute gap.
+
+Public page at `(public)/eliminacion`, linked from the portal. **The objection channel is not invented**: it is the institution's existing single window.
+
+> **Three phases remain**: Committee endorsement, the signed record, and secure deletion. `ejecutado` always travels as `false`.
 
 ---
 

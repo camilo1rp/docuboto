@@ -1713,6 +1713,104 @@ class ArchiveRepository:
         )
         return lote, list(items)
 
+    async def publicar_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, publicado_hasta: date
+    ) -> asyncpg.Record | None:
+        """`borrador -> publicado` (RF-TRD-07, fase 2).
+
+        El `WHERE ... AND estado = 'borrador'` cierra la transición contra una
+        carrera: dos clics, un reintento del cliente o dos réplicas del gateway
+        no pueden publicar dos veces ni publicar un lote ya avalado. Un `None`
+        aquí significa que otro ganó, no que el lote no exista."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            UPDATE eliminacion_lotes
+               SET estado = 'publicado', publicado_at = now(), publicado_hasta = $2
+             WHERE id = $1 AND estado = 'borrador'
+            RETURNING *
+            """,
+            lote_id,
+            publicado_hasta,
+        )
+
+    # ------------------------------------------------------------------
+    # Vista PÚBLICA del inventario (RF-TRD-07 fase 2, publicidad previa)
+    # ------------------------------------------------------------------
+    # El chokepoint es el ESTADO del lote, no un interruptor de despliegue.
+    # Deliberadamente NO se reutiliza `public_interop_enabled` (la cosecha
+    # OAI/CMIS): la política no es la misma -- publicar el registro de
+    # correspondencia es una decisión de la entidad, y publicar el inventario
+    # de lo que va a eliminar es una OBLIGACIÓN del procedimiento. Atarlas al
+    # mismo interruptor dejaría a una entidad sin poder eliminar por no haber
+    # activado una cosecha que no le interesa. Un chokepoint se reutiliza
+    # cuando la política es la misma, no porque el nombre encaje.
+    _ESTADOS_PUBLICOS = ("publicado", "avalado", "ejecutado")
+
+    async def list_lotes_publicos(self) -> list[asyncpg.Record]:
+        """Lotes cuyo inventario es público. Incluye los ya `avalado` y
+        `ejecutado` a propósito: la constancia de QUÉ se eliminó tiene que
+        seguir siendo consultable después — es la cara pública de la lápida, y
+        retirarla al ejecutar convertiría la publicidad previa en un trámite
+        que se borra a sí mismo."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT l.id, l.codigo, l.estado, l.publicado_at, l.publicado_hasta,
+                       l.fecha_aval, l.acto_administrativo, l.ejecutado_at,
+                       (SELECT COUNT(*) FROM eliminacion_lote_items li
+                         WHERE li.lote_id = l.id) AS total_items
+                  FROM eliminacion_lotes l
+                 WHERE l.estado = ANY($1::text[])
+                 ORDER BY l.publicado_at DESC
+                """,
+                list(self._ESTADOS_PUBLICOS),
+            )
+        )
+
+    async def get_lote_publico(
+        self, lote_id: uuid.UUID
+    ) -> tuple[asyncpg.Record | None, list[asyncpg.Record]]:
+        """Un lote público con su inventario.
+
+        **El recorte va en la FUENTE**, no en quien pinta: el `SELECT` no trae
+        el nombre del expediente cuando su nivel de seguridad es superior a
+        PÚBLICA. La fila SÍ sale —con su código, su serie, sus fechas extremas
+        y su volumen—, porque omitirla dejaría de cumplir la publicidad previa
+        justo sobre los expedientes que más importa que alguien pueda objetar;
+        lo que se retiene es la DESCRIPCIÓN, que es donde vive el contenido
+        («Historia laboral de …»). Se marca con `nombre_reservado` para que la
+        pantalla lo DIGA en vez de dejar un hueco mudo."""
+        await self._set_search_path()
+        lote = await self._conn.fetchrow(
+            """
+            SELECT id, codigo, estado, publicado_at, publicado_hasta,
+                   fecha_aval, acto_administrativo, ejecutado_at, observaciones
+              FROM eliminacion_lotes
+             WHERE id = $1 AND estado = ANY($2::text[])
+            """,
+            lote_id,
+            list(self._ESTADOS_PUBLICOS),
+        )
+        if lote is None:
+            return None, []
+        items = await self._conn.fetch(
+            """
+            SELECT expediente_code,
+                   CASE WHEN nivel_seguridad > 1 THEN NULL ELSE expediente_nombre END
+                       AS expediente_nombre,
+                   (nivel_seguridad > 1) AS nombre_reservado,
+                   trd_serie_code, disposition_code, fecha_vencimiento,
+                   fecha_extrema_inicial, fecha_extrema_final, radicados_incluidos
+              FROM eliminacion_lote_items
+             WHERE lote_id = $1
+             ORDER BY expediente_code
+            """,
+            lote_id,
+        )
+        return lote, list(items)
+
     async def contar_items_lote(self, lote_id: uuid.UUID) -> int:
         """El total REAL de ítems del lote, sin recortar por clearance.
 

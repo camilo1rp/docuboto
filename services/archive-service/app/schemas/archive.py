@@ -594,6 +594,61 @@ class LoteEliminacionResponse(BaseModel):
     )
 
 
+class LotePublicar(BaseModel):
+    """`POST /api/v1/eliminacion/lotes/{id}/publicar` (RF-TRD-07, fase 2).
+
+    `publicado_hasta` es el plazo para oponerse, y **no tiene default**: no se
+    inventa cuántos días da una entidad para que un tercero se oponga a que
+    destruyan un documento. Quien publica lo declara."""
+
+    publicado_hasta: date
+
+    @model_validator(mode="after")
+    def _plazo_util(self) -> LotePublicar:
+        if self.publicado_hasta <= date.today():
+            raise ValueError(
+                "El plazo de publicidad debe terminar después de hoy: publicar con "
+                "el plazo ya vencido no da a nadie ocasión de oponerse."
+            )
+        return self
+
+
+class LoteEliminacionItemPublico(BaseModel):
+    """Una fila del inventario **publicado**.
+
+    `expediente_nombre` viaja vacío y `nombre_reservado` en `True` cuando el
+    expediente está clasificado: la fila SÍ se publica —omitirla dejaría de
+    cumplir la publicidad previa justo sobre lo que más importa que alguien
+    pueda objetar— pero su DESCRIPCIÓN se retiene, que es donde vive el
+    contenido. La pantalla lo dice; no deja un hueco mudo."""
+
+    expediente_code: str
+    expediente_nombre: str | None
+    nombre_reservado: bool
+    trd_serie_code: str | None
+    disposition_code: str
+    fecha_vencimiento: date
+    fecha_extrema_inicial: date | None
+    fecha_extrema_final: date | None
+    radicados_incluidos: int | None
+
+
+class LoteEliminacionPublico(BaseModel):
+    """Un lote de eliminación tal y como lo ve cualquiera, sin autenticar."""
+
+    id: uuid.UUID
+    codigo: str
+    estado: str
+    publicado_at: datetime | None
+    publicado_hasta: date | None
+    fecha_aval: date | None
+    acto_administrativo: str | None
+    ejecutado_at: datetime | None
+    observaciones: str | None = None
+    total_items: int
+    items: list[LoteEliminacionItemPublico] = []
+
+
 class DisposicionDecisionCreate(BaseModel):
     """Cuerpo de `POST /api/v1/trd/disposicion-vencida/{id}/decidir`.
 

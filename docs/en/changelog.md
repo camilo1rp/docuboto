@@ -102,6 +102,17 @@ eleven services, and per-request tracing propagated from the edge.
 
 ### Added
 
+- `feat(archive,frontend)`: **prior publicity — the inventory of what is to be destroyed, in plain sight** (RF-TRD-07, phase 2 of 5)
+  A published batch stops being an internal matter: its inventory becomes visible **without authentication**, with the deadline to object, linked from the portal. Without prior publicity, the Committee endorses something nobody outside could look at.
+  **The objection channel is not invented**: it is the institution's existing **single window**. A separate objection form would be a second inbox nobody watches.
+  **The chokepoint is the batch's STATE, not a deployment switch** — deliberately not tied to `public_interop_enabled`: publishing the correspondence register is the institution's *decision*; publishing what it is about to destroy is a *duty*. A chokepoint is reused when the policy is the same, not because the name fits.
+  **A classified expediente's description is not published, but its row is**, and the narrowing lives in the `SELECT`. Omitting the row would fail the duty precisely over what matters most to object to; what is withheld is the **denomination**. The page **says so** rather than leaving a mute gap.
+  Publishing **freezes the inventory**, and `publicado_hasta` is mandatory and future, **with no default**.
+  **A test of mine did not discriminate, and mutation exposed it.** The unit test mocked `fetchrow` returning `None`, so mutating the `WHERE ... AND estado = 'borrador'` left it **green**: the "0 rows" came from the mock. Fixed on both sides: the unit test now asserts on the **emitted SQL**, and the real race is proven in the **integration lane** against real PostgreSQL.
+  **Another non-existent colour token**: `--op-text-muted` (it is `--op-text-secondary`). Fourth appearance of the same silent failure.
+  832 archive-service unit tests + 6 integration, 1837 frontend, svelte-check 0/0, lint green.
+  *Why*: destroying a document without anyone outside being able to look at the inventory is not a procedure — *Impact*: new public page. **Still nothing is deleted.**
+
 - `feat(archive,api-gateway,frontend)`: **the elimination batch — first of the five phases of the only remaining requirement** (RF-TRD-07)
   Elimination happens **by batch** because the record of proceedings and the Committee's endorsement belong to the batch. This phase proposes and **freezes the inventory**; publishing, endorsing, signing the record and executing secure deletion are the four that follow, and the last one **is not built**. `ejecutado` always travels as `false`.
   **A resource of its own, not an appendix of `/trd`**: a batch is a procedure with a lifecycle, and each transition has constancies enforced by `CHECK` — publishing without a deadline gives no time to object, and endorsing without a record, date and administrative act is an unverified assertion.

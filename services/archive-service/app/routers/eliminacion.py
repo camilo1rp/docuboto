@@ -31,7 +31,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
-from app.schemas.archive import LoteEliminacionCreate, LoteEliminacionResponse
+from app.schemas.archive import (
+    LoteEliminacionCreate,
+    LoteEliminacionResponse,
+    LotePublicar,
+)
 from app.services.archive_service import ArchiveService
 
 router = APIRouter(prefix="/api/v1/eliminacion", tags=["eliminacion"])
@@ -112,3 +116,25 @@ async def ver_lote(
 ) -> LoteEliminacionResponse:
     service = ArchiveService(conn, tenant_slug)
     return await service.get_lote_eliminacion(lote_id, actor=actor.id)
+
+
+@router.post(
+    "/lotes/{lote_id}/publicar",
+    response_model=LoteEliminacionResponse,
+    summary="Publicar el inventario del lote (RF-TRD-07, fase 2 de 5)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def publicar_lote(
+    lote_id: uuid.UUID,
+    payload: LotePublicar,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> LoteEliminacionResponse:
+    """La publicidad previa. **Congela el inventario** (migración 047) y lo
+    pone a la vista de cualquiera sin autenticar, para que quien tenga algo que
+    oponer pueda hacerlo ANTES. Sigue sin eliminarse nada."""
+    service = ArchiveService(conn, tenant_slug)
+    return await service.publicar_lote_eliminacion(
+        lote_id, publicado_hasta=payload.publicado_hasta, actor=actor.id
+    )

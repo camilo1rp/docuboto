@@ -106,6 +106,10 @@
              ninguna forma de llegar a ellos. -->
         <a href="/radicacion">Radicar un documento</a>
         <a href="/consulta">Consultar mi trámite</a>
+        <!-- Publicidad previa de la eliminación documental (RF-TRD-07, fase 2):
+             tiene que estar donde alguien la encuentre sin buscarla, o el plazo
+             para oponerse se agota sin que nadie sepa que existía. -->
+        <a href="/eliminacion">Eliminación documental</a>
         <a href="#caracteristicas">Características</a>
         <a href="#normativa">Normativa</a>
         <a href="#evolucion">Evolución</a>

@@ -46,6 +46,8 @@ from app.schemas.archive import (
     HistorialAccesoEntry,
     IndiceItem,
     LoteEliminacionItem,
+    LoteEliminacionItemPublico,
+    LoteEliminacionPublico,
     LoteEliminacionRechazo,
     LoteEliminacionResponse,
     RadicadoLink,
@@ -4055,6 +4057,106 @@ class ArchiveService:
             total_items=len(admitidos),
             items=[LoteEliminacionItem(**a) for a in admitidos],
             rechazados=rechazados,
+        )
+
+    async def publicar_lote_eliminacion(
+        self, lote_id: uuid.UUID, *, publicado_hasta: date, actor: uuid.UUID
+    ) -> LoteEliminacionResponse:
+        """`POST /eliminacion/lotes/{id}/publicar` (RF-TRD-07, fase 2 de 5).
+
+        La **publicidad previa**: el inventario de lo que se va a eliminar se
+        pone a la vista para que quien tenga algo que oponer pueda hacerlo
+        ANTES, no después. Publicar **congela el inventario** —el trigger de la
+        migración 047 deja de admitir que se quite una fila—, y con razón: lo
+        publicado es sobre lo que un tercero decidió no oponerse, y cambiarlo
+        después vaciaría de sentido el trámite.
+
+        **El canal de oposición no se inventa aquí**: es la ventanilla única
+        pública que la entidad ya tiene. Montar un formulario de oposición
+        aparte crearía una segunda bandeja que nadie mira, y una oposición es
+        exactamente lo que una ventanilla existe para recibir. La pantalla
+        pública lo dice y enlaza.
+
+        Sigue **sin eliminarse nada**."""
+        lote = await self._repo.publicar_lote_eliminacion(
+            lote_id, publicado_hasta=publicado_hasta
+        )
+        if lote is None:
+            # No se distingue «no existe» de «ya no está en borrador»: el
+            # llamante que tiene el identificador ya sabe que existe, y lo que
+            # necesita saber es que su acto NO se aplicó.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "lote_no_publicable",
+                    "detail": (
+                        "El lote no existe o ya no está en borrador: solo se "
+                        "publica un lote que todavía no se publicó."
+                    ),
+                    "status": 409,
+                },
+            )
+        total = await self._repo.contar_items_lote(lote_id)
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service="archive-service",
+            action="archive.eliminacion_lote_publicado",
+            object_type="eliminacion_lote",
+            object_ref=str(lote_id),
+            actor=str(actor),
+            payload={
+                "codigo": lote["codigo"],
+                "publicado_hasta": str(publicado_hasta),
+                "total_items": total,
+            },
+        )
+        return self._lote_a_respuesta(lote, total_items=total)
+
+    async def list_lotes_publicos(self) -> list[LoteEliminacionPublico]:
+        """Inventarios publicados, para cualquiera y sin autenticar."""
+        rows = await self._repo.list_lotes_publicos()
+        return [
+            LoteEliminacionPublico(
+                id=r["id"],
+                codigo=r["codigo"],
+                estado=r["estado"],
+                publicado_at=r["publicado_at"],
+                publicado_hasta=r["publicado_hasta"],
+                fecha_aval=r["fecha_aval"],
+                acto_administrativo=r["acto_administrativo"],
+                ejecutado_at=r["ejecutado_at"],
+                total_items=r["total_items"],
+            )
+            for r in rows
+        ]
+
+    async def get_lote_publico(self, lote_id: uuid.UUID) -> LoteEliminacionPublico:
+        """Un inventario publicado con su detalle. El recorte de la descripción
+        de los clasificados va en el `SELECT`, no aquí — ver
+        `ArchiveRepository.get_lote_publico`."""
+        lote, items = await self._repo.get_lote_publico(lote_id)
+        if lote is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "lote_no_encontrado",
+                    "detail": "No hay ningún inventario publicado con ese identificador",
+                    "status": 404,
+                },
+            )
+        return LoteEliminacionPublico(
+            id=lote["id"],
+            codigo=lote["codigo"],
+            estado=lote["estado"],
+            publicado_at=lote["publicado_at"],
+            publicado_hasta=lote["publicado_hasta"],
+            fecha_aval=lote["fecha_aval"],
+            acto_administrativo=lote["acto_administrativo"],
+            ejecutado_at=lote["ejecutado_at"],
+            observaciones=lote["observaciones"],
+            total_items=len(items),
+            items=[LoteEliminacionItemPublico(**dict(i)) for i in items],
         )
 
     async def list_lotes_eliminacion(

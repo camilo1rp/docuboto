@@ -47,6 +47,7 @@ from app.routers.health import router as health_router
 from app.routers.indice import router as indice_router
 from app.routers.metadata import router as metadata_router
 from app.routers.oai import router as oai_router
+from app.routers.public_eliminacion import router as public_eliminacion_router
 from app.routers.tipos_documentales import router as tipos_documentales_router
 from app.routers.transferencias import router as transferencias_router
 from app.routers.trd import router as trd_router
@@ -223,6 +224,7 @@ app.add_middleware(request_log.RequestLogMiddleware, servicio="archive-service")
 
 app.include_router(batch_router)
 app.include_router(eliminacion_router)
+app.include_router(public_eliminacion_router)
 app.include_router(expedientes_router)
 app.include_router(indice_router)
 app.include_router(fisico_router)
