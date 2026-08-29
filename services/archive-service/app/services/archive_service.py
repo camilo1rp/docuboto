@@ -22,7 +22,10 @@ from orpycamcp_common import audit
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.core.http_errors import motivo_de
-from app.core.trd_disposition import disposicion_final_autorizada
+from app.core.trd_disposition import (
+    assert_disposicion_final_autorizada,
+    disposicion_final_autorizada,
+)
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.audit_read import AuditReadRepository
@@ -31,6 +34,7 @@ from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.archive import (
     BatchLinkResult,
     ExpedienteCreate,
+    ExpedienteDisposicionDecisionResponse,
     ExpedienteDisposicionResult,
     ExpedienteDisposicionVencidaResponse,
     ExpedienteEventoResponse,
@@ -3854,6 +3858,7 @@ class ArchiveService:
         size: int,
         fase: str,
         disposition_code: str | None = None,
+        incluir_aplazados: bool = False,
         user_id: uuid.UUID | None = None,
         canal: str = "system",
     ) -> tuple[list[ExpedienteDisposicionVencidaResponse], int]:
@@ -3880,10 +3885,15 @@ class ArchiveService:
             max_clearance=clearance,
             fase=fase,
             disposition_code=disposition_code,
+            incluir_aplazados=incluir_aplazados,
         )
         await self._audit_search_access(
             action="archive.expediente_disposicion_vencida_listado",
-            filtros={"fase": fase, "disposition_code": disposition_code},
+            filtros={
+                "fase": fase,
+                "disposition_code": disposition_code,
+                "incluir_aplazados": incluir_aplazados,
+            },
             total=total,
             page=page,
             size=size,
@@ -3892,6 +3902,123 @@ class ArchiveService:
         )
         items = [self._fila_disposicion_vencida(r, fase=fase) for r in rows]
         return items, total
+
+    async def decidir_disposicion(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        fase: str,
+        decision: str,
+        motivo: str | None,
+        revisar_de_nuevo_el: date | None,
+        actor: uuid.UUID,
+    ) -> ExpedienteDisposicionDecisionResponse:
+        """`POST /trd/disposicion-vencida/{id}/decidir` (RF-TRD-06/08).
+
+        **«Ninguna destrucción es automática sin confirmación de usuario
+        autorizado»** (RT 04, regla 4). Esta es esa confirmación — y sigue sin
+        destruir nada: el brazo ejecutor (RF-TRD-07: borrado seguro con acta,
+        aval del Comité y publicidad previa del inventario) no existe todavía.
+        Confirmar es su **precondición**, no su disparo, y la respuesta lo dice
+        para que nadie crea que ya ocurrió.
+
+        Tres cosas que no se toman del cliente, y por el mismo motivo:
+
+        * La **fecha del vencimiento** y el **código de disposición** salen del
+          snapshot congelado en la base. Si viajaran en el cuerpo, confirmar
+          una eliminación sería cuestión de mandar la fecha adecuada.
+        * El **clearance** recorta el expediente antes de nada (RF-SEG-08), y
+          un expediente fuera de alcance responde `404` como si no existiera:
+          un `403` confirmaría que existe.
+        * Si la acción de la TRD termina en destrucción, el **snapshot tiene
+          que gobernarla**: se llama a `assert_disposicion_final_autorizada`
+          (ADR-025 D5) — que hasta hoy estaba escrito y **sin ningún
+          llamante**. Confirmar una eliminación que el gate va a rechazar
+          después sería dejar que el funcionario descubra el límite al final
+          del procedimiento, cuando ya movilizó al Comité.
+
+        Sobre `CT` el gate **no** aplica: conservación total no termina en
+        destrucción, y exigir un instrumento convalidado para confirmar que
+        algo se conserva sería un requisito inventado."""
+        clearance = await self._repo.caller_clearance(actor)
+        fila = await self._repo.get_expediente_vencimiento(
+            expediente_id, fase=fase, max_clearance=clearance
+        )
+        if fila is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "vencimiento_no_encontrado",
+                    "detail": (
+                        "No hay un expediente con ese identificador y un "
+                        "vencimiento de esa fase a su alcance."
+                    ),
+                    "status": 404,
+                },
+            )
+        snapshot = _leer_snapshot(fila["disposition"])
+        code = snapshot.get("disposition_code")
+
+        if decision == "confirmada" and code in _DISPOSICIONES_QUE_DESTRUYEN:
+            assert_disposicion_final_autorizada(
+                serie_estado=str(snapshot.get("serie_estado") or ""),
+                acto_administrativo=snapshot.get("acto_administrativo"),
+                code=snapshot.get("code"),
+                serie_version=snapshot.get("serie_version"),
+            )
+
+        async with self._conn.transaction():
+            row = await self._repo.registrar_decision_disposicion(
+                expediente_id=expediente_id,
+                fase=fase,
+                decision=decision,
+                fecha_vencimiento=fila["fecha_vencimiento"],
+                disposition_code=code,
+                motivo=motivo,
+                revisar_de_nuevo_el=revisar_de_nuevo_el,
+                decidido_por=actor,
+            )
+            # El asiento es EL REGISTRO DEL ACTO, no un acompañamiento: si la
+            # cadena inmutable no puede recibirlo, la decisión no se toma
+            # (mismo criterio que el descarte de un correo y que la anulación).
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="archive-service",
+                action="archive.disposicion_decidida",
+                object_type="expediente",
+                object_ref=str(expediente_id),
+                actor=str(actor),
+                payload={
+                    "fase": fase,
+                    "decision": decision,
+                    "fecha_vencimiento": str(fila["fecha_vencimiento"]),
+                    "disposition_code": code,
+                    "motivo": motivo,
+                    "revisar_de_nuevo_el": (
+                        str(revisar_de_nuevo_el) if revisar_de_nuevo_el else None
+                    ),
+                },
+            )
+        return ExpedienteDisposicionDecisionResponse(
+            id=row["id"],
+            expediente_id=expediente_id,
+            fase=fase,
+            decision=decision,
+            fecha_vencimiento=row["fecha_vencimiento"],
+            disposition_code=code,
+            motivo=motivo,
+            revisar_de_nuevo_el=revisar_de_nuevo_el,
+            decidido_por=actor,
+            decidido_at=row["decidido_at"],
+            ejecutada=False,
+            nota=(
+                "Decisión registrada. El sistema NO ha eliminado ni transferido "
+                "nada: la ejecución de la disposición final exige acta, aval del "
+                "Comité y publicidad previa del inventario, y todavía no está "
+                "construida."
+            ),
+        )
 
     def _fila_disposicion_vencida(
         self, row: asyncpg.Record, *, fase: str
@@ -3902,15 +4029,7 @@ class ArchiveService:
         # solo sitio, con el mismo cuidado que el resto del servicio -- un
         # snapshot ilegible NO tumba el informe entero, deja la fila con lo que
         # se pudo leer y sin afirmar nada sobre la eliminación.
-        raw = row["disposition"]
-        snapshot: dict[str, Any] = {}
-        if isinstance(raw, str):
-            try:
-                snapshot = json.loads(raw)
-            except (ValueError, TypeError):
-                snapshot = {}
-        elif isinstance(raw, dict):
-            snapshot = raw
+        snapshot = _leer_snapshot(row["disposition"])
 
         serie_estado = snapshot.get("serie_estado")
         acto = snapshot.get("acto_administrativo")
@@ -3934,6 +4053,11 @@ class ArchiveService:
             acto_administrativo=acto,
             gobierna_eliminacion=gobierna,
             accion=_accion_de_disposicion(code, fase=fase),
+            decision=row["decision"],
+            decision_motivo=row["decision_motivo"],
+            revisar_de_nuevo_el=row["revisar_de_nuevo_el"],
+            decidido_por=row["decidido_por"],
+            decidido_at=row["decidido_at"],
         )
 
     async def list_expedientes_revision_pendiente(
@@ -4080,6 +4204,33 @@ _AGN_DISPOSITION: dict[str, tuple[str, str]] = {
     "M": ("M", "Microfilmación/Digitalización"),
     "digitize": ("M", "Microfilmación/Digitalización"),
 }
+
+
+def _leer_snapshot(raw: object) -> dict[str, Any]:
+    """El snapshot congelado (`expedientes.disposition`) como dict.
+
+    Llega como texto JSON desde asyncpg (columna jsonb, sin codec en este
+    servicio). Un snapshot ilegible devuelve `{}` en vez de reventar: la fila
+    sale sin afirmar nada sobre su eliminación —que es lo honesto— y el resto
+    de la cola sigue siendo trabajo pendiente de alguien."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+# Qué disposiciones terminan en destrucción, y por tanto exigen que el
+# instrumento congelado la gobierne (ADR-025 D5) antes de confirmarlas.
+# `S` (selección) elimina lo no seleccionado y `M` elimina el original tras
+# reproducirlo: las tres destruyen. `CT` NO está aquí -- conservación total no
+# termina en destrucción, y pedirle un instrumento convalidado para confirmar
+# que algo se conserva sería un requisito inventado.
+_DISPOSICIONES_QUE_DESTRUYEN: frozenset[str] = frozenset({"E", "S", "M"})
 
 
 # Qué toca hacer cuando vence cada fase. Escrito por ADMISIÓN: un código que

@@ -524,6 +524,64 @@ class ExpedienteRevisionPendienteResponse(BaseModel):
     tipo_instrumento: str | None = None
 
 
+class DisposicionDecisionCreate(BaseModel):
+    """Cuerpo de `POST /api/v1/trd/disposicion-vencida/{id}/decidir`.
+
+    **Lo que NO se acepta del cliente** es tan importante como lo que sí: la
+    fecha del vencimiento y el código de disposición NO viajan aquí, salen del
+    snapshot congelado en la base. Si viajaran, confirmar una eliminación sería
+    cuestión de mandar la fecha adecuada."""
+
+    fase: Literal["gestion", "central"]
+    decision: Literal["confirmada", "aplazada"]
+    # Obligatorio al aplazar (validado abajo y por el CHECK de la migración
+    # 046, que es quien manda): un aplazamiento sin motivo y sin fecha de
+    # regreso no es una decisión, es quitar el expediente de la vista.
+    motivo: str | None = Field(default=None, max_length=2000)
+    revisar_de_nuevo_el: date | None = None
+
+    @model_validator(mode="after")
+    def _aplazar_exige_motivo_y_fecha(self) -> DisposicionDecisionCreate:
+        if self.decision != "aplazada":
+            return self
+        if not self.motivo or len(self.motivo.strip()) < 10:
+            raise ValueError(
+                "Aplazar exige un motivo de al menos 10 caracteres: es lo que "
+                "leerá quien retome el expediente."
+            )
+        if self.revisar_de_nuevo_el is None:
+            raise ValueError(
+                "Aplazar exige una fecha para volver a revisarlo: un "
+                "aplazamiento sin fecha de regreso es un olvido con mejor nombre."
+            )
+        if self.revisar_de_nuevo_el <= date.today():
+            raise ValueError("La fecha de revisión debe ser posterior a hoy.")
+        return self
+
+
+class ExpedienteDisposicionDecisionResponse(BaseModel):
+    """Resultado de decidir sobre un vencimiento (RF-TRD-06/08).
+
+    `ejecutada` es **siempre `False`** hoy, y va explícito a propósito: una
+    respuesta `200` sobre un endpoint llamado «decidir» invita a creer que algo
+    ocurrió. Lo que ocurrió es que la decisión quedó registrada en una tabla
+    append-only y en la cadena de auditoría inmutable; la ejecución de la
+    disposición final (RF-TRD-07) no está construida."""
+
+    id: uuid.UUID
+    expediente_id: uuid.UUID
+    fase: str
+    decision: str
+    fecha_vencimiento: date
+    disposition_code: str | None
+    motivo: str | None
+    revisar_de_nuevo_el: date | None
+    decidido_por: uuid.UUID
+    decidido_at: datetime
+    ejecutada: bool
+    nota: str
+
+
 class ExpedienteDisposicionVencidaResponse(BaseModel):
     """Fila de `GET /api/v1/trd/disposicion-vencida` (RF-TRD-08, 2026-08-28):
     un expediente cuyo calendario de retención ya venció.
@@ -560,6 +618,13 @@ class ExpedienteDisposicionVencidaResponse(BaseModel):
     acto_administrativo: str | None
     gobierna_eliminacion: bool
     accion: str
+    # Estado de la decisión sobre ESTE vencimiento (RF-TRD-06). `None` = nadie
+    # la ha mirado todavía; es el caso que la alerta persigue.
+    decision: str | None = None
+    decision_motivo: str | None = None
+    revisar_de_nuevo_el: date | None = None
+    decidido_por: uuid.UUID | None = None
+    decidido_at: datetime | None = None
 
 
 class TrdSerieResponse(BaseModel):

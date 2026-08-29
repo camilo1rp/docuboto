@@ -41,8 +41,11 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 > nunca recibía. **Y RF-TRD-08 en su parte que no destruye**: la cola de vencimientos
 > (`GET /trd/disposicion-vencida` + cuarta pestaña de `/admin/trd`) saca a la luz el calendario
 > congelado, distinguiendo que en Conservación Total vencer significa conservar para siempre.
-> Quedan **TRD-06** (disparo programado y confirmación de usuario autorizado) y **TRD-07**
-> (borrado seguro con acta), que es el incremento que sí destruye.
+> **Y RF-TRD-06 en su parte de confirmación**: un usuario autorizado decide sobre cada
+> vencimiento —confirmar (que no ejecuta nada) o aplazar con motivo y fecha de regreso—, en una
+> tabla append-only y con asiento inmutable en la misma transacción; ahí el gate de ADR-025 D5
+> recibe su primer llamante. Quedan la **alerta de confirmación vencida** (R.4.8, necesita el
+> disparo programado) y **TRD-07** (borrado seguro con acta), que es el incremento que sí destruye.
 >
 > Conviene decir de qué lado falla: el sistema **conserva bien y no destruye nunca** —el invariante
 > 12 de la constitución se cumple, no hay ninguna ruta que borre un documento de archivo—. Lo que

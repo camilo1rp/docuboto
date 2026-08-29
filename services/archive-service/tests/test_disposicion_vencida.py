@@ -48,6 +48,9 @@ def _fila(
     serie_estado: str = "convalidada",
     acto: str | None = "Resolución 214 de 2026",
     dias: int = 30,
+    decision: str | None = None,
+    decision_motivo: str | None = None,
+    revisar_de_nuevo_el: date | None = None,
 ) -> dict:
     snapshot = {
         "disposition_code": disposition_code,
@@ -67,6 +70,13 @@ def _fila(
         "disposition": json.dumps(snapshot),
         "fecha_vencimiento": date(2026, 7, 29),
         "dias_vencido": dias,
+        # Estado de la decisión sobre ESTE vencimiento (RF-TRD-06): `None` es
+        # «nadie lo ha mirado todavía», que es el caso por defecto de la cola.
+        "decision": decision,
+        "decision_motivo": decision_motivo,
+        "revisar_de_nuevo_el": revisar_de_nuevo_el,
+        "decidido_por": None,
+        "decidido_at": None,
     }
 
 

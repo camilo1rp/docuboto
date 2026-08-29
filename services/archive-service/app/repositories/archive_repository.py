@@ -1463,6 +1463,7 @@ class ArchiveRepository:
         max_clearance: int,
         fase: str,
         disposition_code: str | None = None,
+        incluir_aplazados: bool = False,
     ) -> tuple[list[asyncpg.Record], int]:
         """`GET /trd/disposicion-vencida` (RF-TRD-08, 2026-08-28): expedientes
         cuyo calendario de retención ya venció.
@@ -1504,6 +1505,17 @@ class ArchiveRepository:
             # vencimiento que afirmar, y afirmarlo sería inventarlo.
             f"e.disposition->>'{campo}' IS NOT NULL",
             f"(e.disposition->>'{campo}')::date <= CURRENT_DATE",
+            # R.4.9 (Modelo SGDEA): un vencimiento APLAZADO sale de la cola
+            # activa hasta la fecha en que toca volver a mirarlo. No
+            # desaparece —sigue consultable pidiendo `incluir_aplazados`— y
+            # vuelve solo: un aplazamiento sin fecha de regreso sería un olvido
+            # con mejor nombre, y por eso la fecha es obligatoria en la BD.
+            (
+                "(d.decision IS NULL OR d.decision <> 'aplazada'"
+                " OR d.revisar_de_nuevo_el <= CURRENT_DATE)"
+                if not incluir_aplazados
+                else "TRUE"
+            ),
         ]
         params: list[object] = [max_clearance]
         idx = 2
@@ -1513,16 +1525,39 @@ class ArchiveRepository:
             idx += 1
         where = " AND ".join(conditions)
 
+        # La ÚLTIMA decisión sobre ESTE vencimiento concreto (no sobre «el
+        # vencimiento vigente»): el `LATERAL` amarra por expediente + fase +
+        # fecha, así que una decisión de 2026 no se lee como si autorizara el
+        # vencimiento que una TRD reformulada ordene en 2030.
+        #
+        # El JOIN va en el COUNT **y** en la página, literalmente el mismo
+        # texto: si solo estuviera en la página, el total contaría los
+        # aplazados que la página oculta y el aviso de la pantalla mentiría.
+        lateral = f"""
+              LEFT JOIN LATERAL (
+                  SELECT dd.decision, dd.motivo, dd.revisar_de_nuevo_el,
+                         dd.decidido_por, dd.decidido_at
+                    FROM disposicion_decisiones dd
+                   WHERE dd.expediente_id = e.id
+                     AND dd.fase = '{fase}'
+                     AND dd.fecha_vencimiento = (e.disposition->>'{campo}')::date
+                   ORDER BY dd.decidido_at DESC
+                   LIMIT 1
+              ) d ON TRUE
+        """
         total: int = await self._conn.fetchval(
-            f"SELECT COUNT(*) FROM expedientes e WHERE {where}", *params
+            f"SELECT COUNT(*) FROM expedientes e {lateral} WHERE {where}", *params
         )
         rows = await self._conn.fetch(
             f"""
             SELECT e.id, e.code, e.status, e.nivel_seguridad,
                    e.trd_serie_code, e.closed_at, e.disposition,
                    (e.disposition->>'{campo}')::date AS fecha_vencimiento,
-                   CURRENT_DATE - (e.disposition->>'{campo}')::date AS dias_vencido
+                   CURRENT_DATE - (e.disposition->>'{campo}')::date AS dias_vencido,
+                   d.decision, d.motivo AS decision_motivo,
+                   d.revisar_de_nuevo_el, d.decidido_por, d.decidido_at
               FROM expedientes e
+              {lateral}
              WHERE {where}
              ORDER BY (e.disposition->>'{campo}')::date ASC, e.code ASC
              LIMIT ${idx} OFFSET ${idx + 1}
@@ -1532,6 +1567,79 @@ class ArchiveRepository:
             offset,
         )
         return list(rows), total
+
+    async def registrar_decision_disposicion(
+        self,
+        *,
+        expediente_id: uuid.UUID,
+        fase: str,
+        decision: str,
+        fecha_vencimiento: date,
+        disposition_code: str | None,
+        motivo: str | None,
+        revisar_de_nuevo_el: date | None,
+        decidido_por: uuid.UUID,
+    ) -> asyncpg.Record:
+        """Inserta la decisión sobre un vencimiento (RF-TRD-06/08, migración
+        046). La tabla es **append-only**: una confirmación no se edita ni se
+        retira, se sustituye por una decisión posterior — quien la firma
+        responde de que la disposición de la TRD procede sobre ese expediente.
+
+        `fecha_vencimiento` y `disposition_code` se guardan **congelados**: la
+        decisión es sobre ESE vencimiento y bajo ESA orden de la TRD, no sobre
+        «lo que la serie diga cuando alguien ejecute»."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO disposicion_decisiones (
+                expediente_id, fase, decision, fecha_vencimiento,
+                disposition_code, motivo, revisar_de_nuevo_el, decidido_por
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+            """,
+            expediente_id,
+            fase,
+            decision,
+            fecha_vencimiento,
+            disposition_code,
+            motivo,
+            revisar_de_nuevo_el,
+            decidido_por,
+        )
+        return row
+
+    async def get_expediente_vencimiento(
+        self, expediente_id: uuid.UUID, *, fase: str, max_clearance: int
+    ) -> asyncpg.Record | None:
+        """El expediente y su vencimiento de esta fase, **acotado por
+        clearance** (RF-SEG-08).
+
+        Se lee aquí y no se confía en lo que mande el cliente: la fecha y el
+        código de disposición sobre los que se decide salen del snapshot
+        congelado en la base, nunca del cuerpo de la petición — si viajaran en
+        el body, confirmar una eliminación sería cuestión de mandar la fecha
+        adecuada. Mismo criterio que el nivel de firma resuelto por
+        `objeto_id` en signature-service.
+
+        Devuelve `None` tanto si no existe como si el llamante no lo alcanza:
+        distinguirlos convertiría el endpoint en un oráculo de qué expedientes
+        clasificados hay."""
+        await self._set_search_path()
+        campo = {"gestion": "fin_archivo_gestion", "central": "fin_archivo_central"}[fase]
+        return await self._conn.fetchrow(
+            f"""
+            SELECT e.id, e.code, e.status, e.nivel_seguridad, e.disposition,
+                   (e.disposition->>'{campo}')::date AS fecha_vencimiento
+              FROM expedientes e
+             WHERE e.id = $1
+               AND e.nivel_seguridad <= $2
+               AND e.disposition IS NOT NULL
+               AND e.disposition->>'{campo}' IS NOT NULL
+            """,
+            expediente_id,
+            max_clearance,
+        )
 
     async def list_expedientes_revision_pendiente(
         self, *, offset: int, limit: int, max_clearance: int, tipo: str | None = None

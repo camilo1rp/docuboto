@@ -20,6 +20,8 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    DisposicionDecisionCreate,
+    ExpedienteDisposicionDecisionResponse,
     ExpedienteDisposicionVencidaResponse,
     ExpedienteRevisionPendienteResponse,
     RetentionSchedule,
@@ -211,6 +213,13 @@ async def list_disposicion_vencida(
         ),
     ),
     disposition_code: Literal["CT", "E", "S", "M"] | None = Query(default=None),
+    incluir_aplazados: bool = Query(
+        default=False,
+        description=(
+            "Los vencimientos APLAZADOS salen de la cola activa hasta su fecha de "
+            "revisión (R.4.9). No desaparecen: con esto vuelven a la lista."
+        ),
+    ),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
     tenant_slug: str = Depends(_require_tenant),
@@ -232,11 +241,43 @@ async def list_disposicion_vencida(
         size=size,
         fase=fase,
         disposition_code=disposition_code,
+        incluir_aplazados=incluir_aplazados,
         user_id=user_id,
         canal=canal,
     )
     response.headers["X-Total-Count"] = str(total)
     return items
+
+
+@router.post(
+    "/disposicion-vencida/{expediente_id}/decidir",
+    response_model=ExpedienteDisposicionDecisionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Decidir sobre un vencimiento de disposición (RF-TRD-06/08)",
+    # `min_crud=3` como el circuito de convalidación: confirmar que procede la
+    # disposición de la TRD es la precondición de una destrucción, no una
+    # lectura ni una anotación menor.
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def decidir_disposicion(
+    expediente_id: uuid.UUID,
+    payload: DisposicionDecisionCreate,
+    tenant_slug: str = Depends(_require_tenant),
+    # `require_actor` fail-closed, no `_optional_user`: esto es una MUTACIÓN y
+    # la decisión tiene que ser imputable a alguien -- es el acto que un día
+    # respaldará una eliminación.
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ExpedienteDisposicionDecisionResponse:
+    service = ArchiveService(conn, tenant_slug)
+    return await service.decidir_disposicion(
+        expediente_id,
+        fase=payload.fase,
+        decision=payload.decision,
+        motivo=payload.motivo,
+        revisar_de_nuevo_el=payload.revisar_de_nuevo_el,
+        actor=actor.id,
+    )
 
 
 @router.get(

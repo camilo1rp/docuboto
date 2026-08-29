@@ -33,6 +33,7 @@
 -->
 <script>
   import { onMount } from "svelte";
+  import { invalidateAll } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
@@ -44,6 +45,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import Modal from "$lib/components/ui/Modal.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
 
   // Circuito de convalidación (ADR-025/ADR-026): mismos estados/chips que
@@ -199,6 +201,64 @@
   $: vencidos = data.vencidos ?? [];
   $: vencidosEliminables = vencidos.filter((v) => v.disposition_code === "E").length;
   const CHIP_DISPOSICION = { CT: "active", E: "error", S: "pending", M: "info" };
+  // Espejo del gate real del endpoint (`USUA_PERM_TRD` con `min_crud=3`, el
+  // mismo nivel que el circuito de convalidación): decidir es la precondición
+  // de una destrucción, no una anotación. Con `?? 0` fail-closed — si la
+  // sesión no trae el nivel, no se ofrece el acto.
+  $: puedeDecidir = canWriteLevel3;
+
+  // Decidir sobre un vencimiento (RF-TRD-06). Confirmar NO elimina nada: es la
+  // precondición del brazo ejecutor, que no existe. El texto del modal lo dice
+  // con todas las letras, porque un botón que pone «Confirmar» sobre una fila
+  // que dice «Eliminar» invita a creer que se está ordenando la destrucción.
+  let decidiendo = null; // fila abierta en el modal
+  let decisionTipo = "confirmada";
+  let decisionMotivo = "";
+  let decisionFecha = "";
+  let enviandoDecision = false;
+
+  function abrirDecision(v, tipo) {
+    decidiendo = v;
+    decisionTipo = tipo;
+    decisionMotivo = "";
+    decisionFecha = "";
+  }
+
+  function cerrarDecision() {
+    decidiendo = null;
+    enviandoDecision = false;
+  }
+
+  async function enviarDecision() {
+    if (!decidiendo) return;
+    enviandoDecision = true;
+    try {
+      const res = await fetch(
+        `/admin/trd/api/disposicion/${encodeURIComponent(decidiendo.id)}/decidir`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fase: decidiendo.fase,
+            decision: decisionTipo,
+            motivo: decisionMotivo || undefined,
+            revisar_de_nuevo_el: decisionTipo === "aplazada" ? decisionFecha : undefined,
+          }),
+        },
+      );
+      const cuerpo = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notifyError(mensajeError(cuerpo, "No se pudo registrar la decisión."));
+        enviandoDecision = false;
+        return;
+      }
+      cerrarDecision();
+      await invalidateAll();
+    } catch {
+      notifyError("No se pudo conectar para registrar la decisión.");
+      enviandoDecision = false;
+    }
+  }
 
   let activeTab = "series";
 
@@ -1065,6 +1125,7 @@
               <th scope="col">Venció</th>
               <th scope="col">Días</th>
               <th scope="col">Qué corresponde</th>
+              <th scope="col">Decisión</th>
             </tr>
           </thead>
           <tbody>
@@ -1090,6 +1151,30 @@
                     </small>
                   {/if}
                 </td>
+                <td>
+                  {#if v.decision === "confirmada"}
+                    <StatusChip status="active" label="Confirmada" />
+                  {:else if v.decision === "aplazada"}
+                    <StatusChip status="pending" label="Aplazada" />
+                    <br />
+                    <small>Se revisa el {formatearFecha(v.revisar_de_nuevo_el)}</small>
+                  {:else if puedeDecidir}
+                    <div class="trd-vencidos__acciones">
+                      <Button size="sm" on:click={() => abrirDecision(v, "confirmada")}>
+                        Confirmar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        on:click={() => abrirDecision(v, "aplazada")}
+                      >
+                        Aplazar
+                      </Button>
+                    </div>
+                  {:else}
+                    <small>Sin decidir</small>
+                  {/if}
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -1099,9 +1184,81 @@
   </div>
 </div>
 
+<Modal
+  open={decidiendo !== null}
+  title={decisionTipo === "confirmada" ? "Confirmar la disposición" : "Aplazar la disposición"}
+  size="sm"
+  on:close={cerrarDecision}
+>
+  {#if decidiendo}
+    {#if decisionTipo === "confirmada"}
+      <p>
+        Vas a dejar constancia de que procede la disposición de la TRD sobre
+        <strong>{decidiendo.code}</strong>: <em>{decidiendo.accion}</em>
+      </p>
+      <p class="trd-vencidos__aviso">
+        <strong>Esto no ejecuta nada.</strong> El sistema no elimina ni transfiere el expediente: la
+        ejecución de la disposición final exige acta, aval del Comité y publicidad previa del
+        inventario, y todavía no está construida. Lo que queda registrado —de forma
+        <strong>irreversible</strong>, en la auditoría inmutable— es que tú lo autorizaste.
+      </p>
+      <FormField
+        id="decision-motivo"
+        name="motivo"
+        label="Referencia del acto o acta (opcional)"
+        bind:value={decisionMotivo}
+        hint="Por ejemplo, el acta del Comité que respalda la decisión."
+      />
+    {:else}
+      <p>
+        Vas a aplazar la disposición de <strong>{decidiendo.code}</strong>. Sale de la lista activa
+        hasta la fecha que indiques, y vuelve sola.
+      </p>
+      <FormField
+        id="decision-motivo"
+        name="motivo"
+        label="Motivo del aplazamiento"
+        required
+        bind:value={decisionMotivo}
+        hint="Mínimo 10 caracteres: es lo que leerá quien retome el expediente."
+      />
+      <FormField
+        id="decision-fecha"
+        name="revisar_de_nuevo_el"
+        type="date"
+        label="Volver a revisarlo el"
+        required
+        bind:value={decisionFecha}
+      />
+    {/if}
+  {/if}
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={cerrarDecision}>Cancelar</Button>
+    <Button
+      variant={decisionTipo === "confirmada" ? "primary" : "secondary"}
+      loading={enviandoDecision}
+      on:click={enviarDecision}
+    >
+      {decisionTipo === "confirmada" ? "Dejar constancia" : "Aplazar"}
+    </Button>
+  </svelte:fragment>
+</Modal>
+
 <style lang="scss">
   .trd-vencidos__bloqueo {
     color: var(--op-error);
+  }
+
+  .trd-vencidos__acciones {
+    display: flex;
+    gap: var(--op-space-2);
+  }
+
+  .trd-vencidos__aviso {
+    background: var(--op-bg);
+    border-left: 3px solid var(--op-warning);
+    padding: var(--op-space-2) var(--op-space-3);
+    margin: var(--op-space-3) 0;
   }
 
   .trd-revision__intro {

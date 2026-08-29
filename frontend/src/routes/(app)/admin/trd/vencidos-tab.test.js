@@ -152,3 +152,60 @@ describe("/admin/trd — pestaña de disposición vencida", () => {
     expect(panel.textContent).toMatch(/Ningún expediente con la retención vencida/i);
   });
 });
+
+describe("/admin/trd — decidir sobre un vencimiento (RF-TRD-06)", () => {
+  const conDecision = (o = {}) => ({ ...vencido(), ...o });
+
+  beforeEach(() => {
+    clearSession();
+  });
+  afterEach(() => clearSession());
+
+  function sesionCon(levels) {
+    initSession({ ...sesion, permissions: ["USUA_PERM_TRD"], permission_levels: levels });
+  }
+
+  it("con nivel 3 se ofrecen las dos decisiones", () => {
+    sesionCon({ USUA_PERM_TRD: 3 });
+    render(TrdPage, { props: { data: datos({ vencidos: [conDecision()] }) } });
+    const panel = document.getElementById("panel-vencidos");
+    expect(panel.textContent).toMatch(/Confirmar/);
+    expect(panel.textContent).toMatch(/Aplazar/);
+  });
+
+  it("con nivel de lectura NO se ofrece decidir — espejo del gate real (min_crud=3)", () => {
+    sesionCon({ USUA_PERM_TRD: 1 });
+    render(TrdPage, { props: { data: datos({ vencidos: [conDecision()] }) } });
+    const panel = document.getElementById("panel-vencidos");
+    expect(panel.textContent).toMatch(/Sin decidir/);
+    expect(panel.querySelector("button")).toBeNull();
+  });
+
+  it("sin nivel en la sesión falla cerrado: no se ofrece el acto", () => {
+    sesionCon({});
+    render(TrdPage, { props: { data: datos({ vencidos: [conDecision()] }) } });
+    expect(document.getElementById("panel-vencidos").textContent).toMatch(/Sin decidir/);
+  });
+
+  it("una fila ya confirmada muestra su estado, no los botones", () => {
+    sesionCon({ USUA_PERM_TRD: 3 });
+    render(TrdPage, {
+      props: { data: datos({ vencidos: [conDecision({ decision: "confirmada" })] }) },
+    });
+    const panel = document.getElementById("panel-vencidos");
+    expect(panel.textContent).toMatch(/Confirmada/);
+    expect(panel.querySelector("button")).toBeNull();
+  });
+
+  it("una fila aplazada dice cuándo vuelve", () => {
+    sesionCon({ USUA_PERM_TRD: 3 });
+    render(TrdPage, {
+      props: {
+        data: datos({
+          vencidos: [conDecision({ decision: "aplazada", revisar_de_nuevo_el: "2027-03-01" })],
+        }),
+      },
+    });
+    expect(document.getElementById("panel-vencidos").textContent).toMatch(/Se revisa el/);
+  });
+});
