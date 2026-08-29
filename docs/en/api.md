@@ -320,6 +320,8 @@ arrives in `X-User-Id`.
 
 Structural editing is allowed **only in `borrador`** (→ 409 `plan_no_editable` in `aprobado`/`en_ejecucion`/`cerrado`: content freezes on approval); follow-up is allowed in `{aprobado, en_ejecucion}` (→ 409 `plan_no_seguible`).
 
+> **The UI now consumes the whole module (2026-08-29).** Until then the screen used **6 of the 31 endpoints**: a plan could be created and walked through its lifecycle, but there was **no way to create an aspect, an objective or a project from the browser** — so the dashboard was always empty and the page itself called it "a later PINAR phase". A dashboard that can never be filled is not an empty state: it is a false green.
+
 ---
 
 ### Documentary elimination — batches (RF-TRD-07 **complete**, 2026-08-29)
@@ -364,7 +366,7 @@ The XML (`urn:orpycamcp:acta-eliminacion:v1`) is canonicalised with the inventor
 
 XAdES sealing runs post-commit, best-effort and bounded, with the transfer record's three outcomes and a manual retry. `acta_eliminacion` was added to signature-service's `XADES_ELIGIBLE_OBJETO_TIPOS`: **without it the record would silently fall back to the `nativa` HMAC**, marked "signed" while being structurally weaker. `acreditado` is always `false` (Law 527/1999 art. 7, never art. 28).
 
-> **WORM pending, declared**: the Object-Lock store is keyed by `(expediente_id, tipo)` and an elimination record covers **N** expedientes that are about to disappear, so it cannot be pinned there without changing storage-service's model. The record is protected today by its three local guarantees — append-only trigger, SHA anchored in `audit_log`, and the XAdES signature.
+> **The record's WORM lock: closed on 2026-08-29.** The reason it was pending was one of **model**: the Object-Lock store assumed every protected artifact belongs to an expediente, and an elimination record covers **N** expedientes that are about to disappear. Migration `storage tenant/014` adds `objeto_tipo` (`expediente` | `lote`) with a `CHECK` that **enforces the pairing**, and the purge gate now requires `objeto_tipo = 'expediente'` explicitly — a row whose id belongs to a batch must never decide about an expediente's purge. The record also joins `CONTROL_INSTRUMENT_TIPOS`: like the transfer record it outlives the content and must not postpone its disposition. **Permanent preservation is materialised as 100 years**, the contract's maximum: Object-Lock demands a date, not an infinity.
 
 **Phase 5 — secure deletion (2026-08-29). This destroys.** `POST /api/v1/eliminacion/lotes/{id}/ejecutar` · `GET .../lapidas`.
 

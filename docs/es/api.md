@@ -322,6 +322,8 @@ material de trabajo del Comité, y porque publicar el PINAR aprobado (Decreto
 
 Edición estructural permitida **solo en `borrador`** (→ 409 `plan_no_editable` en `aprobado`/`en_ejecucion`/`cerrado`: el contenido se congela al aprobar); seguimiento permitido en `{aprobado, en_ejecucion}` (→ 409 `plan_no_seguible`).
 
+> **La interfaz consume ya el módulo completo (2026-08-29).** Hasta esta fecha la pantalla usaba **6 de los 31 endpoints**: se podía crear un plan y recorrer su ciclo de vida, pero **no había forma de crear un aspecto, un objetivo ni un proyecto desde el navegador** — así que el tablero salía siempre vacío y la propia pantalla lo declaraba como «fase posterior de PINAR». Un tablero que no puede llenarse nunca no es un estado vacío: es un falso verde. Ahora `/admin/pinar/[id]` tiene tres pestañas más —aspectos con su matriz, objetivos y proyectos con seguimiento, e instrumentos articulados— y **espeja los dos ciclos de vida del servicio**: la estructura solo se edita en `borrador` y el seguimiento solo con el plan `aprobado` o `en_ejecucion`, que nunca coinciden.
+
 ---
 
 ### Eliminación documental — lotes (RF-TRD-07 **completo**, 2026-08-29)
@@ -376,7 +378,13 @@ El XML (`urn:orpycamcp:acta-eliminacion:v1`) se serializa **canónicamente y con
 
 El sellado **XAdES** corre post-commit, best-effort y acotado, con los tres desenlaces del acta de transferencia (firmado / `sello_ausente` sin reintentar / `transient` agotado), el motivo del último fallo visible y reintento manual. `acta_eliminacion` se añadió al allow-set `XADES_ELIGIBLE_OBJETO_TIPOS` de signature-service: **sin estar en él, el acta habría caído al HMAC `nativa` sin error y sin diferencia visible**, quedando marcada «firmada» siendo estructuralmente más débil. `acreditado` viaja explícito y es siempre `false` (art. 7 de la Ley 527/1999, nunca art. 28).
 
-> **WORM pendiente, declarado**: el almacén de Object-Lock está indexado por `(expediente_id, tipo)` y un acta de eliminación cubre **N** expedientes que además van a dejar de existir, así que no se puede clavar ahí sin cambiar el modelo de storage-service. Hoy el acta se protege con sus **tres garantías locales** —trigger append-only, SHA anclado en `audit_log` y firma XAdES—; el Object-Lock queda para la fase 5 o para E10.
+> **WORM del acta: cerrado el 2026-08-29.** Era la deuda declarada al cerrar esta fase, y la razón era de **modelo**: el almacén de Object-Lock asumía que todo artefacto protegido pertenece a un expediente, y un acta de eliminación cubre **N** expedientes que además van a dejar de existir — clavarla bajo el id de uno de ellos no era incómodo, era incorrecto.
+>
+> La migración `storage tenant/014` añade `objeto_tipo` (`expediente` | `lote`) con un `CHECK` que **impone la pareja**: un `acta_eliminacion` pertenece siempre a un lote y todo lo demás siempre a un expediente, así que no puede existir la fila que diga que un índice electrónico pertenece a un lote. `expediente_id` **no se renombra** —era ya un id de propietario sin clave foránea, y renombrarlo tocaría 142 referencias de las que la mayoría hablan de expedientes de verdad—, pero el gate de purga y el listado por expediente ahora **exigen `objeto_tipo = 'expediente'` explícitamente**: sin eso, una fila cuyo id es de un lote podría decidir sobre la purga de un expediente. Que los dos espacios de identificadores no coincidan «en la práctica» no es un control.
+>
+> El acta entra además en `CONTROL_INSTRUMENT_TIPOS`: como el acta de transferencia, **sobrevive al contenido y no debe postergar su disposición** — y con más razón, porque su retención es permanente y sería el instrumento impidiendo el acto que él mismo documenta. La **conservación permanente se materializa como 100 años**, el máximo del contrato: Object-Lock exige una fecha, no un infinito; es renovable por la misma vía que las series CT.
+>
+> El cableado corre tras el sellado, es **best-effort y nunca revierte la firma** (que ya es un hecho consumado), anota el motivo si falla, y `/admin/eliminacion` **muestra si el acta está protegida o solo firmada** — durante una fase entera esa diferencia estuvo declarada como pendiente y no se veía.
 
 **Fase 5 — el borrado seguro (2026-08-29). Esto destruye.**
 

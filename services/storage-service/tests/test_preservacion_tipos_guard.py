@@ -31,27 +31,33 @@ from app.core.preservacion_tipos import (
     CONTROL_INSTRUMENT_TIPOS,
 )
 
-_MIGRATION = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "migrations"
-    / "tenant"
-    / "010_preservacion_worm_acta.sql"
-)
+_MIGRACIONES = pathlib.Path(__file__).resolve().parent.parent / "migrations" / "tenant"
 
 
 def _tipos_from_check() -> frozenset[str]:
-    """Extrae los valores del CHECK ACTIVO `tipo IN (...)` de la migración 010.
+    """Extrae los valores del CHECK `tipo IN (...)` **vigente**.
 
-    Ignora las líneas de rollback comentadas (`-- ... CHECK (tipo IN ...)`) para
-    no confundir el CHECK viejo con el vigente.
+    Recorre TODAS las migraciones en orden y se queda con la ÚLTIMA definición,
+    que es la que manda en la base. Antes leía la migración 010 por su nombre, y
+    ese guardián tenía un punto ciego que se estrenó con este mismo cambio: la
+    migración 014 amplía el CHECK con `acta_eliminacion` y el guard habría
+    seguido leyendo la 010, dando por buena una taxonomía incompleta **sin
+    fallar**. Un guardián que apunta a un archivo fijo caduca el día que alguien
+    escribe el siguiente.
+
+    Ignora las líneas de rollback comentadas para no confundir un CHECK
+    derogado con el vigente.
     """
     activos: list[str] = []
-    for linea in _MIGRATION.read_text(encoding="utf-8").splitlines():
-        if linea.lstrip().startswith("--"):
-            continue
-        m = re.search(r"tipo\s+IN\s*\(([^)]*)\)", linea, re.IGNORECASE)
-        if m:
-            activos.extend(re.findall(r"'([^']+)'", m.group(1)))
+    for archivo in sorted(_MIGRACIONES.glob("*.sql")):
+        for linea in archivo.read_text(encoding="utf-8").splitlines():
+            if linea.lstrip().startswith("--"):
+                continue
+            m = re.search(r"tipo\s+IN\s*\(([^)]*)\)", linea, re.IGNORECASE)
+            if m:
+                # Cada CHECK nuevo REEMPLAZA al anterior (`DROP CONSTRAINT` +
+                # `ADD CONSTRAINT`), así que se sustituye, no se acumula.
+                activos = re.findall(r"'([^']+)'", m.group(1))
     return frozenset(activos)
 
 

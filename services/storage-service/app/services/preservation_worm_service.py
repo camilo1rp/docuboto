@@ -287,6 +287,7 @@ class PreservationWormService:
             retention_mode=mode,
             legal_hold=payload.legal_hold,
             file_id=payload.file_id,
+            objeto_tipo=payload.objeto_tipo,
         )
 
         await self._evt_repo.insert_evento(
@@ -339,6 +340,7 @@ class PreservationWormService:
             id=row["id"],
             expediente_id=payload.expediente_id,
             tipo=payload.tipo,
+            objeto_tipo=payload.objeto_tipo,
             bucket=bucket,
             object_key=object_key,
             version_id=version_id,
@@ -525,6 +527,7 @@ def _worm_row_to_response(row) -> ProtegerIndiceResponse:
         id=row["id"],
         expediente_id=row["expediente_id"],
         tipo=row["tipo"],
+        objeto_tipo=row["objeto_tipo"],
         bucket=row["bucket"],
         object_key=row["object_key"],
         version_id=row["version_id"],

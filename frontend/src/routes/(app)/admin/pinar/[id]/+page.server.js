@@ -75,9 +75,33 @@ export async function load({ params, cookies, parent }) {
     error(400, { message: "ID de plan PINAR requerido" });
   }
 
-  const [planResult, tableroResult] = await Promise.allSettled([
+  // El CONTENIDO del plan (Fase 8, 2026-08-29): aspectos críticos con su
+  // priorización, objetivos, proyectos e instrumentos articulados. Va en el
+  // mismo `allSettled` y NO en cargas bajo demanda por pestaña: son seis
+  // consultas pequeñas al mismo servicio, y pedirlas al abrir cada pestaña
+  // convertiría un cambio de pestaña en una espera — además de multiplicar los
+  // estados de carga que la plantilla tendría que distinguir.
+  //
+  // Todas son NO CRÍTICAS, igual que el tablero: el fallo de una no puede
+  // tumbar la vista del plan.
+  const [
+    planResult,
+    tableroResult,
+    ejesResult,
+    aspectosResult,
+    priorizacionResult,
+    objetivosResult,
+    proyectosResult,
+    instrumentosResult,
+  ] = await Promise.allSettled([
     gatewayGet(`/pinar/planes/${id}`, token, tenant, extraHeaders),
     gatewayGet(`/pinar/planes/${id}/tablero`, token, tenant, extraHeaders),
+    gatewayGet(`/pinar/ejes`, token, tenant, extraHeaders),
+    gatewayGet(`/pinar/planes/${id}/aspectos`, token, tenant, extraHeaders),
+    gatewayGet(`/pinar/planes/${id}/priorizacion`, token, tenant, extraHeaders),
+    gatewayGet(`/pinar/planes/${id}/objetivos`, token, tenant, extraHeaders),
+    gatewayGet(`/pinar/planes/${id}/proyectos`, token, tenant, extraHeaders),
+    gatewayGet(`/pinar/planes/${id}/instrumentos`, token, tenant, extraHeaders),
   ]);
 
   if (planResult.status === "rejected") {
@@ -103,8 +127,46 @@ export async function load({ params, cookies, parent }) {
           },
         };
 
+  // Una lista vacía y un fallo de carga NO se confunden: `contenidoError`
+  // recoge el primero que falle. Sin esto, un 5xx se leería como «este plan no
+  // tiene objetivos», que es justo la lectura que ha tenido esta pantalla
+  // desde que existe — solo que por no consumir los endpoints.
+  const listas = {
+    ejes: ejesResult,
+    aspectos: aspectosResult,
+    priorizacion: priorizacionResult,
+    objetivos: objetivosResult,
+    proyectos: proyectosResult,
+    instrumentos: instrumentosResult,
+  };
+  /** @type {Record<string, any[]>} */
+  const contenido = {};
+  let contenidoError = null;
+  for (const [clave, resultado] of Object.entries(listas)) {
+    if (resultado.status === "fulfilled" && Array.isArray(resultado.value)) {
+      contenido[clave] = resultado.value;
+    } else {
+      contenido[clave] = [];
+      contenidoError ??= mensajeError(
+        resultado.status === "rejected" ? resultado.reason : null,
+        `No se pudo cargar «${clave}» del plan.`,
+      );
+    }
+  }
+
+  // Las seis listas se devuelven NOMBRADAS y no con un `...contenido`: el
+  // spread de un `Record` deja al inferidor de tipos sin las claves, y
+  // `svelte-check` empieza a decir que `data.aspectos` no existe justo donde
+  // más falta hace que avise.
   return {
     plan: planResult.value,
     tablero,
+    ejes: contenido.ejes,
+    aspectos: contenido.aspectos,
+    priorizacion: contenido.priorizacion,
+    objetivos: contenido.objetivos,
+    proyectos: contenido.proyectos,
+    instrumentos: contenido.instrumentos,
+    contenidoError,
   };
 }

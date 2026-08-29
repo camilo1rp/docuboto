@@ -396,7 +396,22 @@ class ProtegerIndiceRequest(RetentionMixin):
     # servicio). 'aip' NO es un valor válido aquí a propósito: el AIP real usa
     # su propio schema `AipCreate` (Increment B), con su propia semántica de
     # NO-singleton (re-empaquetable), ver la migración 009.
-    tipo: Literal["indice", "acta_transferencia"] = "indice"
+    tipo: Literal["indice", "acta_transferencia", "acta_eliminacion"] = "indice"
+    # De QUÉ es `expediente_id` (migración 014). El acta de eliminación
+    # pertenece a un LOTE —cubre N expedientes que además van a dejar de
+    # existir—, y el CHECK de la base impone la pareja: un `acta_eliminacion`
+    # siempre de un lote, todo lo demás siempre de un expediente. Aquí se
+    # valida antes para dar un 422 legible en vez de una violación opaca.
+    objeto_tipo: Literal["expediente", "lote"] = "expediente"
+
+    @model_validator(mode="after")
+    def _pareja_tipo_propietario(self) -> ProtegerIndiceRequest:
+        if (self.tipo == "acta_eliminacion") != (self.objeto_tipo == "lote"):
+            raise ValueError(
+                "El acta de eliminación pertenece a un lote, y todo lo demás a un "
+                "expediente: `tipo` y `objeto_tipo` no casan."
+            )
+        return self
 
     @field_validator("expediente_id")
     @classmethod
@@ -408,6 +423,7 @@ class ProtegerIndiceResponse(BaseModel):
     id: uuid.UUID
     expediente_id: str
     tipo: str
+    objeto_tipo: str = "expediente"
     bucket: str
     object_key: str
     version_id: str | None

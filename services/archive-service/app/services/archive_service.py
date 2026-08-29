@@ -79,6 +79,14 @@ from app.services.metadata_service import validate_metadata
 
 logger = logging.getLogger(__name__)
 
+# Conservación PERMANENTE del acta de eliminación, materializada como el máximo
+# que admite el contrato de storage-service (`retencion_anios <= 100`):
+# Object-Lock exige una FECHA, no un infinito. No es una retención archivística
+# —el acta no se elimina jamás, es lo único que sobrevive a lo eliminado—, es la
+# forma de decirle al almacén que no deje borrarlo; y es renovable por la misma
+# vía que las series de Conservación Total.
+_ACTA_ELIMINACION_RETENCION_ANIOS = 100
+
 _SERVICE = "archive-service"
 
 # Canales que representan una consulta real de un usuario (gateway/mcp-server,
@@ -4448,6 +4456,8 @@ class ArchiveService:
             acreditado=bool(acta["acreditado"]),
             firmado_at=acta["firmado_at"],
             last_error=acta["last_error"],
+            worm_protegido_at=acta["worm_protegido_at"],
+            worm_retain_until=acta["worm_retain_until"],
         )
 
     async def firmar_acta_eliminacion_retry(
@@ -4545,6 +4555,12 @@ class ArchiveService:
                                 "acreditado": outcome.signed.acreditado,
                             },
                         )
+                # Cableado WORM del acta recién firmada, FUERA de la tx que
+                # acaba de comprometerse (mismo motivo que el sellado corre
+                # fuera de la tx que congeló el acta). Si `afectadas` es 0
+                # —carrera perdida— no se dispara: quien ganó ya lo hará.
+                if afectadas:
+                    await self._proteger_worm_acta_eliminacion(lote_id, actor=actor)
                 return
             if outcome.seal_absent:
                 await self._degradar_acta_eliminacion(
@@ -4557,6 +4573,91 @@ class ArchiveService:
         await self._degradar_acta_eliminacion(
             lote_id, actor=actor, motivo="sellado_xades_no_obtenido"
         )
+
+    async def _proteger_worm_acta_eliminacion(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID
+    ) -> None:
+        """Object-Lock del acta de eliminación ya firmada (E10 + RF-TRD-07).
+
+        Cierra la deuda que la fase 4 dejó declarada: el acta tenía sus tres
+        garantías locales —trigger append-only, SHA en `audit_log` y firma
+        XAdES— y no tenía candado. La razón era de MODELO: el almacén WORM
+        asumía que todo artefacto protegido pertenece a un expediente, y un
+        acta de eliminación cubre N expedientes que además van a dejar de
+        existir. Ahora el almacén admite un propietario de tipo `lote`.
+
+        **Conservación permanente se materializa como 100 años**, que es el
+        máximo que el contrato admite: Object-Lock exige una fecha, no un
+        infinito. No es una retención archivística —el acta no se elimina
+        jamás—, es la forma de decirle al almacén «no dejes borrar esto»; y es
+        renovable por la misma vía que ya usan las series de Conservación
+        Total.
+
+        **Best-effort y NUNCA lanza**, igual que su gemelo del acta de
+        transferencia: la firma ya es un hecho consumado y este cableado no
+        puede revertirla. Un fallo queda anotado con su motivo para poder
+        reintentarlo."""
+        from app.clients import storage_client
+
+        try:
+            acta = await self._repo.get_acta_eliminacion(lote_id)
+            if acta is None or acta["firma_estado"] != "firmado":
+                return
+            if acta["worm_protegido_at"] is not None:
+                return
+            if not acta["minio_key_firmado"]:
+                return
+            # `file_id` se DERIVA de la clave del artefacto firmado
+            # (`"{file_id}/{filename}"`), nunca de una entrada externa — misma
+            # frontera de confianza que el acta de transferencia.
+            file_id = acta["minio_key_firmado"].split("/", 1)[0]
+
+            outcome = await storage_client.proteger_artefacto_worm(
+                tenant_slug=self._tenant_slug,
+                actor_id=str(actor),
+                file_id=file_id,
+                expediente_id=str(lote_id),
+                tipo="acta_eliminacion",
+                retencion_anios=_ACTA_ELIMINACION_RETENCION_ANIOS,
+                fecha_inicio=date.today(),
+                objeto_tipo="lote",
+            )
+            if not outcome.ok:
+                await self._repo.mark_acta_eliminacion_worm_fallido(
+                    lote_id, motivo="worm_no_obtenido"
+                )
+                return
+
+            async with self._conn.transaction():
+                afectadas = await self._repo.mark_acta_eliminacion_worm(
+                    lote_id,
+                    worm_object_id=outcome.protected_object_id,
+                    worm_retain_until=outcome.retain_until,
+                )
+                if afectadas:
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service="archive-service",
+                        action="archive.eliminacion_acta_worm_protegida",
+                        object_type="eliminacion_acta",
+                        object_ref=str(lote_id),
+                        actor=str(actor),
+                        payload={
+                            "worm_object_id": str(outcome.protected_object_id),
+                            "retain_until": (
+                                outcome.retain_until.isoformat()
+                                if outcome.retain_until
+                                else None
+                            ),
+                        },
+                    )
+        except Exception:  # noqa: BLE001 — best-effort, ver el docstring.
+            logger.warning(
+                "No se pudo cablear el WORM del acta de eliminación del lote %s",
+                lote_id,
+                exc_info=True,
+            )
 
     async def _degradar_acta_eliminacion(
         self, lote_id: uuid.UUID, *, actor: uuid.UUID, motivo: str

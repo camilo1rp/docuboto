@@ -32,6 +32,10 @@ import asyncpg
 _COLS = (
     "id, expediente_id, tipo, bucket, object_key, version_id, sha256, "
     "retain_until, retention_mode, legal_hold, created_at, file_id, "
+    # `objeto_tipo` (migración 014) dice DE QUÉ es `expediente_id`: de un
+    # expediente o de un lote de eliminación. Va en todas las lecturas porque
+    # el gate de purga lo exige y las vistas lo muestran.
+    "objeto_tipo, "
     # E10 debt (renovación de retención WORM para series CT, migración 011):
     # incluidas en TODAS las lecturas (no solo un subconjunto dedicado, a
     # diferencia de `_WORM_COLS` en archive-service) porque tanto el camino
@@ -63,14 +67,15 @@ class PreservacionWormRepository:
         retention_mode: str,
         legal_hold: bool,
         file_id: uuid.UUID | None = None,
+        objeto_tipo: str = "expediente",
     ) -> asyncpg.Record:
         await self._sp()
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO preservacion_worm_objeto
                 (expediente_id, tipo, bucket, object_key, version_id, sha256,
-                 retain_until, retention_mode, legal_hold, file_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 retain_until, retention_mode, legal_hold, file_id, objeto_tipo)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING {_COLS}
             """,
             expediente_id,
@@ -83,6 +88,7 @@ class PreservacionWormRepository:
             retention_mode,
             legal_hold,
             file_id,
+            objeto_tipo,
         )
         assert row is not None
         return row
@@ -133,6 +139,12 @@ class PreservacionWormRepository:
             f"""
             SELECT {_COLS} FROM preservacion_worm_objeto
             WHERE expediente_id = $1
+              -- `objeto_tipo` explícito (migración 014): sin él, una fila cuyo
+              -- `expediente_id` guarda el id de un LOTE podría casar aquí y
+              -- decidir sobre la purga de un expediente. Hoy los identificadores
+              -- de ambos espacios no coinciden en la práctica, pero «en la
+              -- práctica» no es un control.
+              AND objeto_tipo = 'expediente'
               AND (legal_hold OR (retain_until > now() AND tipo <> ALL($2::text[])))
             LIMIT 1
             """,
@@ -173,7 +185,8 @@ class PreservacionWormRepository:
         return list(
             await self._conn.fetch(
                 f"SELECT {_COLS} FROM preservacion_worm_objeto "
-                "WHERE expediente_id = $1 ORDER BY created_at DESC",
+                "WHERE expediente_id = $1 AND objeto_tipo = 'expediente' "
+                "ORDER BY created_at DESC",
                 expediente_id,
             )
         )

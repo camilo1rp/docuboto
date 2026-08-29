@@ -726,6 +726,12 @@ class ActaEliminacionResponse(BaseModel):
     # acta «pendiente de firma» sin decir por qué deja a quien mira sin saber
     # si esperar o llamar a alguien.
     last_error: str | None
+    # Candado WORM/Object-Lock del acta (E10 + RF-TRD-07, 2026-08-29). Se
+    # expone porque durante una fase entera estuvo declarado como pendiente:
+    # quien mira tiene derecho a ver si el acta que sobrevive a lo eliminado
+    # está de verdad protegida contra borrado, o solo firmada.
+    worm_protegido_at: datetime | None = None
+    worm_retain_until: datetime | None = None
 
 
 class EjecucionFallo(BaseModel):

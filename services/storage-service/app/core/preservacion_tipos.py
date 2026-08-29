@@ -13,9 +13,9 @@ Taxonomía de ``tipo`` para ``preservacion_worm_objeto`` (E10) — fuente única
 Distingue CONTENIDO (bloquea la purga de disposición mientras esté bajo
 retención) de INSTRUMENTO DE CONTROL (evidencia del acto que sobrevive al
 contenido y NO debe postergar su eliminación; Ley 594/2000 art. 26 +
-procedimiento de eliminación Ac. AGN 004/2013 art. 22 — el instrumento
-modelado hoy es el **acta de transferencia**, no el acta de eliminación del
-Comité, que es un residual de conformidad aparte).
+procedimiento de eliminación Ac. AGN 004/2013 art. 22). Desde 2026-08-29 son
+DOS: el **acta de transferencia** y el **acta de eliminación** (E04/RF-TRD-07),
+que hasta entonces era el residual que este mismo docstring declaraba pendiente.
 
 Motivo del remedio (observación Media, auditoría archivística E10 Inc.2): el
 acta de transferencia ancla su retención en ``firmado_at`` (posterior al
@@ -37,7 +37,16 @@ from __future__ import annotations
 # INSTRUMENTOS DE CONTROL: sobreviven al contenido y NO postergan su
 # disposición → se excluyen del bloqueo por retención del gate (nunca del
 # `legal_hold`, que es incondicional).
-CONTROL_INSTRUMENT_TIPOS: frozenset[str] = frozenset({"acta_transferencia"})
+#
+# `acta_eliminacion` entra aquí y NO en `CONTENT_TIPOS` por el mismo motivo que
+# el acta de transferencia, y con más razón: es lo ÚNICO que sobrevive a lo
+# eliminado. Su retención es de conservación permanente, así que tratarla como
+# contenido bloquearía para siempre la disposición de cualquier expediente que
+# compartiera propietario — y, sobre todo, sería el instrumento impidiendo el
+# acto que él mismo documenta.
+CONTROL_INSTRUMENT_TIPOS: frozenset[str] = frozenset(
+    {"acta_transferencia", "acta_eliminacion"}
+)
 
 # CONTENIDO documental del expediente: bloquea la purga mientras esté bajo
 # retención. El índice electrónico ancla su retención en `closed_at`

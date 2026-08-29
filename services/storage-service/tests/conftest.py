@@ -121,6 +121,11 @@ def make_worm_row(
         "id": worm_id or uuid.uuid4(),
         "expediente_id": expediente_id,
         "tipo": tipo,
+        # Migración 014: DE QUÉ es `expediente_id`. Se deriva del `tipo` en vez
+        # de ser otro parámetro con default, porque el CHECK de la base impone
+        # la pareja — un doble que pudiera declarar una combinación imposible
+        # dejaría pasar tests sobre filas que la base rechazaría.
+        "objeto_tipo": "lote" if tipo == "acta_eliminacion" else "expediente",
         "bucket": bucket,
         "object_key": object_key or f"{uuid.uuid4()}/indice.xml",
         "version_id": version_id,

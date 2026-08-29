@@ -274,6 +274,10 @@ async def proteger_artefacto_worm(
     retencion_anios: int,
     fecha_inicio: date,
     legal_hold: bool = False,
+    # De QUÉ es `expediente_id` (storage, migración 014): el acta de
+    # eliminación pertenece a un LOTE. El default conserva el contrato de
+    # todos los llamadores anteriores.
+    objeto_tipo: str = "expediente",
 ) -> WormProtectionOutcome:
     """Disparo SÍNCRONO GENERALIZADO (usuario real) — gemelo de
     `proteger_indice_worm` que acepta `tipo` explícito y llama a
@@ -286,6 +290,7 @@ async def proteger_artefacto_worm(
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
         "legal_hold": legal_hold,
+        "objeto_tipo": objeto_tipo,
     }
     headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
     try:
@@ -312,6 +317,10 @@ async def proteger_artefacto_worm_internal(
     retencion_anios: int,
     fecha_inicio: date,
     legal_hold: bool = False,
+    # De QUÉ es `expediente_id` (storage, migración 014): el acta de
+    # eliminación pertenece a un LOTE. El default conserva el contrato de
+    # todos los llamadores anteriores.
+    objeto_tipo: str = "expediente",
 ) -> WormProtectionOutcome:
     """Gemelo SISTEMA GENERALIZADO (D-02, `X-Internal-Token`) — llama a
     `POST /proteger-artefacto-internal` (E10 Inc.2 wiring). Ver el docstring
@@ -323,6 +332,7 @@ async def proteger_artefacto_worm_internal(
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
         "legal_hold": legal_hold,
+        "objeto_tipo": objeto_tipo,
     }
     headers = {
         "X-Tenant-Slug": tenant_slug,

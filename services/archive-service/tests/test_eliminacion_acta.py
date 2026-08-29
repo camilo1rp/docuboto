@@ -102,6 +102,12 @@ def _acta_row(*, firma_estado="pendiente_firma", last_error=None) -> dict:
         "acreditado": False,
         "last_error": last_error,
         "firmado_at": datetime(2026, 8, 29, tzinfo=UTC) if firma_estado == "firmado" else None,
+        # Contabilidad del cableado WORM (migración 050). `None` = firmada pero
+        # todavía sin candado, que es el estado en el que el cableado actúa.
+        "worm_protegido_at": None,
+        "worm_object_id": None,
+        "worm_retain_until": None,
+        "worm_last_error": None,
     }
 
 
@@ -225,7 +231,8 @@ async def test_generar_congela_el_acta_y_ancla_su_sha_en_la_auditoria(client_wit
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
         {"id": LOTE},  # INSERT ... RETURNING
-        _acta_row(firma_estado="firmado"),  # lectura final
+        _acta_row(firma_estado="firmado"),  # la relee el cableado WORM
+        _acta_row(firma_estado="firmado"),  # lectura final de la respuesta
         _CLEARANCE,
     ]
     mock_conn.fetch.return_value = [_item()]
@@ -357,7 +364,8 @@ async def test_el_acta_se_sella_como_acta_eliminacion_y_sobre_SU_xml(
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
         {"id": LOTE},
-        _acta_row(firma_estado="firmado"),
+        _acta_row(firma_estado="firmado"),  # la relee el cableado WORM
+        _acta_row(firma_estado="firmado"),  # lectura final de la respuesta
         _CLEARANCE,
     ]
     mock_conn.fetch.return_value = [_item()]
@@ -480,3 +488,150 @@ async def test_una_firma_SIN_artefacto_no_se_marca_firmada(client_with_conn) -> 
         and c.args[5] == "archive.eliminacion_acta_firma_pendiente"
     ]
     assert asientos
+
+
+# ── El candado WORM del acta (E10 + RF-TRD-07, deuda de la fase 4) ───────────
+
+
+class _WormOk:
+    ok = True
+    transient = False
+    protected_object_id = uuid.uuid4()
+    retain_until = datetime(2126, 8, 29, tzinfo=UTC)
+
+
+class _WormFallo:
+    ok = False
+    transient = True
+    retain_until = None
+
+
+def _worm(outcome):
+    return patch(
+        "app.clients.storage_client.proteger_artefacto_worm",
+        AsyncMock(return_value=outcome),
+    )
+
+
+def _entorno_firmada(mock_conn):
+    mock_conn.execute.return_value = "UPDATE 1"
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.side_effect = [
+        {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
+        _lote_row(),
+        {"id": LOTE},
+        _acta_row(firma_estado="firmado"),
+        _acta_row(firma_estado="firmado"),
+        _CLEARANCE,
+    ]
+    mock_conn.fetch.return_value = [_item()]
+
+
+@pytest.mark.asyncio
+async def test_el_acta_firmada_se_protege_bajo_WORM_como_propiedad_del_LOTE(
+    client_with_conn,
+) -> None:
+    """La deuda que la fase 4 dejó declarada. El acta **no pertenece a un
+    expediente**: cubre N, y esos N van a dejar de existir — por eso viaja
+    `objeto_tipo='lote'` y el id del lote, no el de ningún expediente."""
+    client, mock_conn = client_with_conn
+    _entorno_firmada(mock_conn)
+
+    with _sellado(signed=_Firmada()), _worm(_WormOk()) as proteger:
+        resp = await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 201
+    kwargs = proteger.await_args.kwargs
+    assert kwargs["objeto_tipo"] == "lote"
+    assert kwargs["expediente_id"] == str(LOTE)
+    assert kwargs["tipo"] == "acta_eliminacion"
+    # Conservación permanente = el máximo que admite el contrato: Object-Lock
+    # exige una fecha, no un infinito.
+    assert kwargs["retencion_anios"] == 100
+    asientos = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str)
+        and "INSERT INTO public.audit_log" in c.args[0]
+        and c.args[5] == "archive.eliminacion_acta_worm_protegida"
+    ]
+    assert asientos
+
+
+@pytest.mark.asyncio
+async def test_el_file_id_se_DERIVA_del_artefacto_firmado(client_with_conn) -> None:
+    """Frontera de confianza: sale de `minio_key_firmado` (`"{file_id}/…"`),
+    nunca de una entrada externa."""
+    client, mock_conn = client_with_conn
+    _entorno_firmada(mock_conn)
+
+    with _sellado(signed=_Firmada()), _worm(_WormOk()) as proteger:
+        await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
+
+    assert proteger.await_args.kwargs["file_id"] == "k"
+
+
+@pytest.mark.asyncio
+async def test_si_el_candado_falla_el_ACTA_SIGUE_firmada(client_with_conn) -> None:
+    """El cableado es best-effort y no revierte nada: la firma ya es un hecho
+    consumado. Lo que queda es el motivo anotado, para poder reintentarlo."""
+    client, mock_conn = client_with_conn
+    _entorno_firmada(mock_conn)
+
+    with _sellado(signed=_Firmada()), _worm(_WormFallo()):
+        resp = await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 201
+    assert resp.json()["firma_estado"] == "firmado"
+    sql = " ".join(str(c.args[0]) for c in mock_conn.execute.call_args_list)
+    assert "worm_last_error" in sql
+
+
+@pytest.mark.asyncio
+async def test_sin_sello_NO_se_llega_siquiera_a_pedir_el_candado(client_with_conn) -> None:
+    """Verifica al LLAMANTE: si el sellado no ocurrió, el cableado ni se
+    invoca. (La guarda interna del propio método se prueba aparte, abajo — este
+    test seguía en verde al mutarla, porque nunca llegaba a ejecutarla.)"""
+    client, mock_conn = client_with_conn
+    mock_conn.execute.return_value = "UPDATE 1"
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.side_effect = [
+        {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
+        _lote_row(),
+        {"id": LOTE},
+        _acta_row(last_error="sello_ausente"),
+        _CLEARANCE,
+    ]
+    mock_conn.fetch.return_value = [_item()]
+
+    with _sellado(seal_absent=True), _worm(_WormOk()) as proteger:
+        await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
+
+    proteger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_la_guarda_del_cableado_no_protege_un_acta_sin_firmar() -> None:
+    """La guarda **dentro** del método, ejercida directamente.
+
+    Existe como defensa en profundidad para el día que la reconciliación llame
+    aquí sin pasar por el sellado — y probarla por el camino largo dejaba un
+    test que seguía verde al quitarla, porque nunca llegaba a ejecutarse."""
+    from unittest.mock import MagicMock
+
+    from app.services.archive_service import ArchiveService
+
+    servicio = ArchiveService(MagicMock(), "demo")
+    servicio._repo = MagicMock()
+    # La fila lleva `minio_key_firmado` A PROPÓSITO: sin él, el que corta es
+    # otro guard ("no hay artefacto") y este test pasaría aunque la condición
+    # sobre el estado de la firma desapareciera — que es justo lo que pasó la
+    # primera vez que lo escribí.
+    fila = _acta_row(firma_estado="pendiente_firma")
+    fila["minio_key_firmado"] = "k"
+    servicio._repo.get_acta_eliminacion = AsyncMock(return_value=fila)
+
+    with _worm(_WormOk()) as proteger:
+        await servicio._proteger_worm_acta_eliminacion(LOTE, actor=uuid.uuid4())
+
+    proteger.assert_not_awaited()

@@ -366,7 +366,8 @@
         {:else if acta}
           <p class="elim__aviso">
             El acta es de <strong>conservación permanente</strong>: sobrevive a lo eliminado y no se
-            elimina nunca. No se regenera ni se edita.
+            elimina nunca. No se regenera ni se edita, y una vez firmada queda bajo
+            <strong>Object-Lock</strong> — el almacén deja de admitir su borrado, ni siquiera a un administrador.
           </p>
           <dl class="elim__datos">
             <div>
@@ -386,6 +387,18 @@
             <div>
               <dt>Método de borrado</dt>
               <dd>{acta.metodo_borrado}</dd>
+            </div>
+            <div>
+              <dt>Protección WORM</dt>
+              <dd>
+                {#if acta.worm_protegido_at}
+                  Protegida hasta {fecha(acta.worm_retain_until)}
+                {:else if acta.firma_estado === "firmado"}
+                  Pendiente
+                {:else}
+                  —
+                {/if}
+              </dd>
             </div>
           </dl>
           <p class="elim__sha">
@@ -594,7 +607,8 @@
   <p>
     El acta deja constancia de <strong>qué</strong> se elimina, <strong>bajo qué acto</strong> y
     <strong>cómo</strong> se destruye. Es de <strong>conservación permanente</strong>: sobrevive a
-    lo eliminado y no se elimina nunca.
+    lo eliminado y no se elimina nunca, y una vez firmada queda bajo <strong>Object-Lock</strong>:
+    el almacén deja de admitir su borrado, ni siquiera por un administrador.
   </p>
   <p class="elim__aviso">
     Se genera <strong>una sola vez</strong> y no se puede editar ni volver a generar. Revisa el inventario

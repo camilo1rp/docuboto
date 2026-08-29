@@ -113,6 +113,8 @@ const acta = (o = {}) => ({
   acreditado: false,
   firmado_at: "2026-08-29T10:00:05Z",
   last_error: null,
+  worm_protegido_at: "2026-08-29T10:00:10Z",
+  worm_retain_until: "2126-08-29T10:00:10Z",
   ...o,
 });
 
@@ -246,6 +248,30 @@ describe("/admin/eliminacion — el acta (fase 4)", () => {
     expect(texto()).toMatch(new RegExp("a".repeat(64)));
     expect(texto()).toMatch(/no es una firma digital acreditada/i);
     expect(screen.queryByRole("button", { name: /Reintentar el sellado/i })).toBeNull();
+  });
+
+  it("dice si el acta está de verdad PROTEGIDA contra borrado, no solo firmada", () => {
+    // Durante una fase entera el WORM del acta estuvo declarado como
+    // pendiente: quien mira tiene derecho a ver la diferencia.
+    const l = avalado();
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    expect(texto()).toMatch(/Protección WORM/i);
+    expect(texto()).toMatch(/Protegida hasta/i);
+    expect(texto()).toMatch(/Object-Lock/i);
+  });
+
+  it("firmada pero SIN candado todavía se dice «pendiente», no se calla", () => {
+    const l = avalado();
+    render(Pagina, {
+      props: {
+        data: {
+          ...conDetalle(l),
+          acta: acta({ worm_protegido_at: null, worm_retain_until: null }),
+        },
+      },
+    });
+    const datos = screen.getByText(/Protección WORM/i).closest("div");
+    expect(datos.textContent).toMatch(/Pendiente/i);
   });
 
   it("con el sellado pendiente dice POR QUÉ y ofrece reintentarlo", () => {

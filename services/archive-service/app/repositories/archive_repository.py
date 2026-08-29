@@ -1976,6 +1976,51 @@ class ArchiveRepository:
             )
         )
 
+    async def mark_acta_eliminacion_worm(
+        self,
+        lote_id: uuid.UUID,
+        *,
+        worm_object_id: uuid.UUID,
+        worm_retain_until: datetime | None,
+    ) -> int:
+        """Marca el acta como protegida bajo Object-Lock.
+
+        El `AND worm_protegido_at IS NULL` cierra la carrera entre el disparo
+        síncrono y la reconciliación: quien llega segundo afecta **cero filas**
+        y no escribe un asiento fantasma sobre una protección que no produjo."""
+        await self._set_search_path()
+        resultado: str = await self._conn.execute(
+            """
+            UPDATE eliminacion_acta_firma
+               SET worm_protegido_at = now(), worm_object_id = $2,
+                   worm_retain_until = $3, worm_last_error = NULL,
+                   worm_reconcile_proximo_at = NULL
+             WHERE lote_id = $1 AND worm_protegido_at IS NULL
+            """,
+            lote_id,
+            worm_object_id,
+            worm_retain_until,
+        )
+        return int(resultado.rsplit(" ", 1)[-1])
+
+    async def mark_acta_eliminacion_worm_fallido(
+        self, lote_id: uuid.UUID, *, motivo: str
+    ) -> None:
+        """Anota el fallo del cableado sin tocar la firma: el acta ya está
+        firmada y su sellado es un hecho consumado — lo que falló es la
+        protección, y decirlo es lo que permite reintentarla."""
+        await self._set_search_path()
+        await self._conn.execute(
+            """
+            UPDATE eliminacion_acta_firma
+               SET worm_last_error = $2,
+                   worm_reconcile_intentos = worm_reconcile_intentos + 1
+             WHERE lote_id = $1 AND worm_protegido_at IS NULL
+            """,
+            lote_id,
+            motivo,
+        )
+
     async def get_lote_row(self, lote_id: uuid.UUID) -> asyncpg.Record:
         """La fila del lote entera, para construir el acta. No recorta nada: el
         lote en sí no es un expediente -- su código, su aval y su acto
@@ -2051,7 +2096,9 @@ class ArchiveRepository:
         return await self._conn.fetchrow(
             """
             SELECT a.*, f.estado AS firma_estado, f.firma_id, f.minio_key_firmado,
-                   f.xades_level, f.acreditado, f.last_error, f.firmado_at
+                   f.xades_level, f.acreditado, f.last_error, f.firmado_at,
+                   f.worm_protegido_at, f.worm_object_id, f.worm_retain_until,
+                   f.worm_last_error
               FROM eliminacion_acta a
               LEFT JOIN eliminacion_acta_firma f ON f.lote_id = a.lote_id
              WHERE a.lote_id = $1

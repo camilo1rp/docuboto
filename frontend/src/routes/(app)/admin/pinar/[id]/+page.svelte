@@ -11,6 +11,8 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import AspectosPanel from "$lib/components/features/pinar/AspectosPanel.svelte";
+  import ProyectosPanel from "$lib/components/features/pinar/ProyectosPanel.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
 
   import { permissions } from "$lib/stores/auth.js";
@@ -21,6 +23,102 @@
 
   $: plan = data.plan;
   $: tablero = data.tablero;
+  // Espejo EXACTO de `_EDITABLE` y `_TRACKABLE` en `pinar_service.py`: la
+  // estructura solo se edita en `borrador`, el seguimiento solo con el plan
+  // aprobado o en ejecución. Nunca las dos a la vez — ofrecer la que no toca
+  // haría descubrir el límite chocando con un 409.
+  // Listas normalizadas: el `load` siempre las devuelve, pero el contenido es
+  // NO CRÍTICO por diseño y una lista ausente no puede tumbar la pantalla
+  // entera del plan — que es lo que hacía `instrumentos.length` sobre un
+  // `undefined`.
+  $: ejes = data.ejes ?? [];
+  $: aspectos = data.aspectos ?? [];
+  $: priorizacion = data.priorizacion ?? [];
+  $: objetivos = data.objetivos ?? [];
+  $: proyectos = data.proyectos ?? [];
+  $: instrumentos = data.instrumentos ?? [];
+
+  // DOS condiciones, no una: el estado del plan **y** el permiso. El router de
+  // PINAR entero está gateado con `USUA_PERM_ADMIN`, así que ofrecer los
+  // botones de edición a quien no lo tiene es ofrecer botones que el backend
+  // rechaza — el mismo defecto que las acciones del ciclo de vida ya evitaban
+  // arriba con `canManage`, y que aquí faltaba (lo destapó su test).
+  $: editable = canManage && plan?.estado === "borrador";
+  $: rastreable = canManage && (plan?.estado === "aprobado" || plan?.estado === "en_ejecucion");
+
+  async function recargar() {
+    await invalidateAll();
+  }
+
+  // ── Instrumentos articulados ────────────────────────────────────────────────
+  // Articulación POR REFERENCIA, no por copia (invariante 5 del servicio): el
+  // PINAR apunta al CCD/TRD/FUID que ya existen en vez de duplicarlos, que es
+  // lo que los dejaría desincronizados.
+  const TIPOS_INSTRUMENTO = [
+    { value: "ccd", label: "Cuadro de Clasificación (CCD)" },
+    { value: "trd", label: "Tabla de Retención (TRD)" },
+    { value: "fuid", label: "Formato Único de Inventario (FUID)" },
+    { value: "plan_preservacion", label: "Plan de preservación digital" },
+    { value: "plan_contingencia", label: "Plan de contingencia" },
+  ];
+  const TIPO_LABEL = Object.fromEntries(TIPOS_INSTRUMENTO.map((t) => [t.value, t.label]));
+
+  let instrumentoModal = false;
+  let instrumentoError = "";
+  let fTipo = "ccd";
+  let fRef = "";
+  let fDescripcionInstrumento = "";
+
+  function abrirInstrumento() {
+    instrumentoModal = true;
+    instrumentoError = "";
+    fTipo = "ccd";
+    fRef = "";
+    fDescripcionInstrumento = "";
+  }
+
+  async function guardarInstrumento() {
+    actionLoading = true;
+    instrumentoError = "";
+    try {
+      const res = await fetch(`/admin/pinar/api/planes/${plan.id}/instrumentos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tipo: fTipo,
+          ref: fRef,
+          descripcion: fDescripcionInstrumento || null,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      actionLoading = false;
+      if (!res.ok) {
+        instrumentoError = mensajeError(body, `Error ${res.status}`);
+        return;
+      }
+      instrumentoModal = false;
+      await recargar();
+    } catch {
+      actionLoading = false;
+      instrumentoError = "No se pudo conectar con el servidor.";
+    }
+  }
+
+  async function quitarInstrumento(instrumento) {
+    try {
+      const res = await fetch(`/admin/pinar/api/planes/${plan.id}/instrumentos/${instrumento.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        notifyError(mensajeError(body, `Error ${res.status}`));
+        return;
+      }
+      await recargar();
+    } catch {
+      notifyError("No se pudo conectar con el servidor.");
+    }
+  }
 
   $: canManage = $permissions.includes("USUA_PERM_ADMIN");
 
@@ -73,6 +171,9 @@
   // ---------------------------------------------------------------------------
   const TABS = [
     { id: "resumen", label: "Resumen", icon: "fa-map" },
+    { id: "aspectos", label: "Aspectos y priorización", icon: "fa-triangle-exclamation" },
+    { id: "proyectos", label: "Objetivos y proyectos", icon: "fa-diagram-project" },
+    { id: "instrumentos", label: "Instrumentos", icon: "fa-link" },
     { id: "tablero", label: "Tablero", icon: "fa-gauge-high" },
   ];
   let activeTab = "resumen";
@@ -326,6 +427,7 @@
         {#if plan.estado === "borrador"}
           <p class="pinar-workspace__hint">
             <i class="fas fa-circle-info" aria-hidden="true"></i>
+            <!-- Panel: Aspectos críticos y matriz de priorización (Fase 8) -->
             <!-- El <span> NO es decorativo: `__hint` es `display: flex`, así que cada
                  hijo directo pasa a ser una columna. Sin él, el icono, los tres trozos
                  de texto y los dos <strong> se repartían en SEIS columnas y la frase
@@ -339,6 +441,97 @@
               editarse; para cambios posteriores se crea una versión nueva desde el listado.
             </span>
           </p>
+        {/if}
+      </Card>
+    </div>
+
+    <div
+      id="panel-aspectos"
+      role="tabpanel"
+      aria-labelledby="tab-aspectos"
+      hidden={activeTab !== "aspectos"}
+      tabindex="0"
+    >
+      {#if data.contenidoError}
+        <p class="pinar-workspace__warning" role="alert">{data.contenidoError}</p>
+      {/if}
+      <Card>
+        <h2 slot="header" class="op-card-title">Aspectos críticos</h2>
+        <AspectosPanel
+          planId={plan.id}
+          {aspectos}
+          {priorizacion}
+          {ejes}
+          {editable}
+          on:cambio={recargar}
+        />
+      </Card>
+    </div>
+
+    <!-- Panel: Objetivos y proyectos (Fase 8) -->
+    <div
+      id="panel-proyectos"
+      role="tabpanel"
+      aria-labelledby="tab-proyectos"
+      hidden={activeTab !== "proyectos"}
+      tabindex="0"
+    >
+      <Card>
+        <h2 slot="header" class="op-card-title">Objetivos y mapa de ruta</h2>
+        <ProyectosPanel
+          planId={plan.id}
+          {objetivos}
+          {proyectos}
+          {aspectos}
+          {editable}
+          {rastreable}
+          on:cambio={recargar}
+        />
+      </Card>
+    </div>
+
+    <!-- Panel: Instrumentos articulados (Fase 8) -->
+    <div
+      id="panel-instrumentos"
+      role="tabpanel"
+      aria-labelledby="tab-instrumentos"
+      hidden={activeTab !== "instrumentos"}
+      tabindex="0"
+    >
+      <Card>
+        <h2 slot="header" class="op-card-title">Instrumentos articulados</h2>
+        <p class="pinar-workspace__hint-text">
+          El PINAR se articula con los demás instrumentos <strong
+            >por referencia, no por copia</strong
+          >: apunta al CCD, la TRD o el FUID que ya existen en vez de duplicarlos, que es lo que los
+          dejaría desincronizados.
+        </p>
+        {#if editable}
+          <Button variant="primary" icon="fas fa-plus" on:click={abrirInstrumento}>
+            Articular un instrumento
+          </Button>
+        {/if}
+        {#if instrumentos.length === 0}
+          <EmptyState
+            icon="fas fa-link-slash"
+            title="Sin instrumentos articulados"
+            description="Un PINAR que no se articula con el CCD, la TRD ni el FUID queda como un plan aislado del resto de la gestión documental."
+          />
+        {:else}
+          <ul class="pinar-instrumentos">
+            {#each instrumentos as instrumento (instrumento.id)}
+              <li>
+                <strong>{TIPO_LABEL[instrumento.tipo] ?? instrumento.tipo}</strong>
+                — {instrumento.ref}
+                {#if instrumento.descripcion}<br /><span>{instrumento.descripcion}</span>{/if}
+                {#if editable}
+                  <Button size="sm" variant="ghost" on:click={() => quitarInstrumento(instrumento)}>
+                    Quitar
+                  </Button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
         {/if}
       </Card>
     </div>
@@ -436,6 +629,49 @@
     </div>
   </div>
 </div>
+
+<Modal
+  open={instrumentoModal}
+  title="Articular un instrumento"
+  size="sm"
+  on:close={() => (instrumentoModal = false)}
+>
+  <FormField
+    id="instrumento-tipo"
+    name="tipo"
+    type="select"
+    label="Instrumento"
+    bind:value={fTipo}
+    options={TIPOS_INSTRUMENTO}
+  />
+  <FormField
+    id="instrumento-ref"
+    name="ref"
+    label="Referencia"
+    required
+    bind:value={fRef}
+    hint="El código o identificador del instrumento al que se apunta (por ejemplo, el código de la serie o la versión de la TRD)."
+  />
+  <FormField
+    id="instrumento-descripcion"
+    name="descripcion"
+    type="textarea"
+    label="Descripción (opcional)"
+    bind:value={fDescripcionInstrumento}
+  />
+  {#if instrumentoError}<p class="pinar-workspace__warning" role="alert">{instrumentoError}</p>{/if}
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={() => (instrumentoModal = false)}>Cancelar</Button>
+    <Button
+      variant="primary"
+      loading={actionLoading}
+      disabled={!fRef.trim()}
+      on:click={guardarInstrumento}
+    >
+      Articular
+    </Button>
+  </svelte:fragment>
+</Modal>
 
 <!-- Modal: Confirmar aprobación (IRREVERSIBLE — congela el contenido) -->
 <Modal
