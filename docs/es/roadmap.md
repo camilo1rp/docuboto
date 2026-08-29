@@ -44,8 +44,12 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 > **Y RF-TRD-06 en su parte de confirmación**: un usuario autorizado decide sobre cada
 > vencimiento —confirmar (que no ejecuta nada) o aplazar con motivo y fecha de regreso—, en una
 > tabla append-only y con asiento inmutable en la misma transacción; ahí el gate de ADR-025 D5
-> recibe su primer llamante. Quedan la **alerta de confirmación vencida** (R.4.8, necesita el
-> disparo programado) y **TRD-07** (borrado seguro con acta), que es el incremento que sí destruye.
+> recibe su primer llamante.
+> **Y el disparo programado con su alerta**: un tercer bucle de fondo barre los vencimientos y
+> avisa por correo a quien puede decidir, con el recuento **recortado por el clearance de cada
+> destinatario** —decirle «tienes 14 pendientes» a quien alcanza 9 delataría 5 clasificados—.
+> **RF-TRD-06, 08 y 09 quedan cerrados.** Solo falta **RF-TRD-07** (borrado seguro con acta,
+> aval del Comité y publicidad previa del inventario), el incremento que sí destruye.
 >
 > Conviene decir de qué lado falla: el sistema **conserva bien y no destruye nunca** —el invariante
 > 12 de la constitución se cumple, no hay ninguna ruta que borre un documento de archivo—. Lo que

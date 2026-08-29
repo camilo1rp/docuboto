@@ -66,6 +66,26 @@ class Settings(BaseSettings):
     # AGN 001/2024 art. 4.3.2.4) — ver app/jobs/indice_reconciliation.py ---
     # Kill-switch: True (default) arranca el loop de reconciliación en el
     # lifespan de app/main.py.
+    # ── Alerta de disposición vencida (E04, RF-TRD-06 R.4.8 / RF-TRD-08) ──
+    # «Alerta a usuarios autorizados cuando vence la fecha de confirmación sin
+    # confirmar». El canal es el CORREO y no una campana in-app: E16 no tiene
+    # canal persistente —el store del frontend son toasts efímeros— y un toast
+    # no es una alerta, porque solo lo ve quien ya estaba mirando, que es
+    # justo a quien la alerta no va dirigida.
+    disposicion_alerta_enabled: bool = True
+    # El intervalo del bucle ES la cadencia del aviso, a propósito: así no hay
+    # un «último enviado» por tenant que mantener sincronizado, y el aviso se
+    # repite mientras el vencimiento siga sin decidir. Semanal por defecto --
+    # un vencimiento no caduca, y un correo diario sobre lo mismo se convierte
+    # en ruido que se filtra a la papelera, que es peor que no avisar.
+    disposicion_alerta_interval_seconds: int = 604800
+    # Días que un vencimiento puede llevar sin decisión antes de que se avise.
+    # No es un plazo legal: es el margen para que la ventanilla trabaje sin que
+    # el sistema le respire encima.
+    disposicion_alerta_dias_sin_decidir: int = 30
+    notification_service_url: str = "http://notification-service:8007"
+    notification_internal_token: str = ""
+
     indice_reconciliation_enabled: bool = True
     # Cadencia (segundos) entre barridas del loop.
     indice_reconciliation_interval_seconds: int = 300

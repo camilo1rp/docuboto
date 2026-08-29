@@ -1568,6 +1568,105 @@ class ArchiveRepository:
         )
         return list(rows), total
 
+    async def list_destinatarios_disposicion(self) -> list[asyncpg.Record]:
+        """Quién puede DECIDIR sobre un vencimiento, con su correo y su
+        clearance (E04, RF-TRD-06 R.4.8).
+
+        «Usuario autorizado» se resuelve por **consulta a las tablas RBAC del
+        tenant**, nunca por una lista de correos configurada: una lista se
+        desincroniza de los permisos en silencio y acaba avisando a quien ya no
+        decide (y callando a quien sí). El criterio es exactamente el gate del
+        endpoint que decide -- `USUA_PERM_TRD` con `crud >= 3` -- para que no
+        se avise a nadie de un acto que el backend le va a negar.
+
+        Un ROOT entra por su propia vía (`u.is_root`), igual que en
+        `check_permission`, y con clearance máximo.
+
+        Devuelve el `max_level` de cada destinatario porque **el recuento del
+        aviso se recorta por él**: ver `contar_vencimientos_sin_decidir`."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT u.id,
+                       u.email,
+                       CASE WHEN u.is_root THEN 3
+                            ELSE COALESCE((
+                                SELECT MAX(rc.max_level)
+                                  FROM auth_memberships m2
+                                  JOIN role_clearance rc ON rc.group_id = m2.group_id
+                                 WHERE m2.user_id = u.id
+                            ), 1)
+                       END AS max_clearance
+                  FROM auth_users u
+                 WHERE u.email IS NOT NULL
+                   AND btrim(u.email) <> ''
+                   AND (
+                        u.is_root
+                        OR EXISTS (
+                            SELECT 1
+                              FROM auth_memberships m
+                              JOIN auth_group_permissions gp ON gp.group_id = m.group_id
+                              JOIN auth_permissions p ON p.id = gp.permission_id
+                             WHERE m.user_id = u.id
+                               AND p.nombre = 'USUA_PERM_TRD'
+                               AND gp.crud >= 3
+                        )
+                   )
+                """
+            )
+        )
+
+    async def contar_vencimientos_sin_decidir(
+        self, *, max_clearance: int, dias: int
+    ) -> int:
+        """Cuántos vencimientos del archivo central llevan `dias` o más **sin
+        decisión**, para el clearance dado.
+
+        **El recuento se recorta igual que la cola, y por el mismo motivo.**
+        Decirle «tienes 14 vencimientos pendientes» a quien solo alcanza 9 le
+        está diciendo que existen 5 expedientes clasificados. Es la lección de
+        la cola de anulaciones reapareciendo en un sitio nuevo: allí el punto
+        delicado era el total de la lista, aquí es el número del aviso.
+
+        Por eso el aviso se compone **por destinatario** y no una vez por
+        tenant: dos personas con distinto clearance reciben números distintos,
+        y cada uno es cierto para quien lo lee.
+
+        Un vencimiento APLAZADO cuya fecha de regreso ya pasó vuelve a contar:
+        es la otra mitad de R.4.9 -- el aplazamiento devuelve el expediente a
+        la cola, no lo saca de ella para siempre."""
+        await self._set_search_path()
+        total: int = await self._conn.fetchval(
+            """
+            SELECT COUNT(*)
+              FROM expedientes e
+              LEFT JOIN LATERAL (
+                  SELECT dd.decision, dd.revisar_de_nuevo_el
+                    FROM disposicion_decisiones dd
+                   WHERE dd.expediente_id = e.id
+                     AND dd.fase = 'central'
+                     AND dd.fecha_vencimiento
+                         = (e.disposition->>'fin_archivo_central')::date
+                   ORDER BY dd.decidido_at DESC
+                   LIMIT 1
+              ) d ON TRUE
+             WHERE e.nivel_seguridad <= $1
+               AND e.status IN ('closed', 'transferred')
+               AND e.disposition IS NOT NULL
+               AND e.disposition->>'fin_archivo_central' IS NOT NULL
+               AND (e.disposition->>'fin_archivo_central')::date
+                   <= CURRENT_DATE - make_interval(days => $2)
+               AND (
+                    d.decision IS NULL
+                    OR (d.decision = 'aplazada' AND d.revisar_de_nuevo_el <= CURRENT_DATE)
+               )
+            """,
+            max_clearance,
+            dias,
+        )
+        return total
+
     async def registrar_decision_disposicion(
         self,
         *,

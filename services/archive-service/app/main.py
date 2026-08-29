@@ -28,6 +28,7 @@ from orpycamcp_common import request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.jobs.disposicion_alerta import run_once as _disposicion_alerta_once
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
 from app.jobs.indice_reconciliation import (
@@ -147,6 +148,29 @@ async def _acta_reconciliation_loop() -> None:
         await asyncio.sleep(settings.acta_reconciliation_interval_seconds)
 
 
+async def _disposicion_alerta_loop() -> None:
+    """Loop de fondo (E04, RF-TRD-08 + RF-TRD-06 R.4.8): barre los
+    vencimientos de disposición sin decidir y avisa a quien puede decidir.
+
+    Tercer bucle con el mismo molde que los dos de arriba —kill-switch propio,
+    cadencia propia, y NUNCA muere por una excepción— y con la cadencia más
+    larga de los tres (semanal por defecto): un vencimiento no caduca, y el
+    intervalo ES la cadencia del aviso, así que bajarlo convierte el aviso en
+    ruido que acaba filtrado a la papelera.
+
+    **Este bucle no ejecuta ninguna disposición.** Cuenta y avisa; decidir es
+    de una persona y ejecutar (RF-TRD-07) todavía no existe."""
+    while True:
+        try:
+            await _disposicion_alerta_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de alerta de disposición vencida",
+                exc_info=True,
+            )
+        await asyncio.sleep(settings.disposicion_alerta_interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("archive-service starting up")
@@ -157,6 +181,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     acta_reconcile_task: asyncio.Task[None] | None = None
     if settings.acta_reconciliation_enabled:
         acta_reconcile_task = asyncio.create_task(_acta_reconciliation_loop())
+    disposicion_task: asyncio.Task[None] | None = None
+    if settings.disposicion_alerta_enabled:
+        disposicion_task = asyncio.create_task(_disposicion_alerta_loop())
     yield
     logger.info("archive-service shutting down")
     if reconcile_task is not None:
@@ -167,6 +194,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         acta_reconcile_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await acta_reconcile_task
+    if disposicion_task is not None:
+        disposicion_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await disposicion_task
     await close_pool()
 
 

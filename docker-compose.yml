@@ -542,6 +542,11 @@ services:
       # document-service.INTERNAL_SERVICE_TOKEN más arriba. Dev-only.
       - DOCUMENT_SERVICE_URL=http://document-service:8003
       - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
+      # E04/RF-TRD-06 R.4.8: la alerta de disposición vencida sale por correo
+      # (`POST /api/v1/notifications/send`, sellado). Mismo secreto que
+      # signature-service.NOTIFICATION_INTERNAL_TOKEN.
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8007
+      - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

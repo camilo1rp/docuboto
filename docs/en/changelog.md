@@ -102,6 +102,16 @@ eleven services, and per-request tracing propagated from the edge.
 
 ### Added
 
+- `feat(archive)`: **the sweep that runs on its own, and the alert that reaches whoever is not looking** (RF-TRD-08 + R.4.8)
+  Fourth step of the increment that **destroys nothing**, closing the scheduled trigger. The due-disposition queue had to be visited; now the system sweeps by itself and **alerts whoever can decide**.
+  **No new infrastructure was needed**: `archive-service` already had two background loops with exactly the right shape — a testable `run_once`, their own kill switch and interval, never dying on an exception. This is a third with the same mould, and its interval **is** the alert cadence, so there is no per-tenant "last sent" state to keep in sync. **What silences the alert is deciding, not having read it.**
+  **The plan's recommendation was false and was corrected before building on it.** It said "start in-app", assuming E16 had a notifications channel. **It does not**: the frontend store is ephemeral session toasts and `notification-service` is email only. A toast is not an alert — it vanishes in four seconds and is seen only by someone already looking, precisely who the alert is not for.
+  **The alert is composed PER RECIPIENT**, and there lay the trap the plan flagged in advance: the count is narrowed by the recipient's clearance. Telling someone with clearance for 9 that they have "14 pending" tells them **5 classified expedientes exist**. Verified against real PostgreSQL: a classified overdue expediente counts for clearance 3 and **not** for 1 or 2. Whoever has nothing due **gets no email**.
+  **Recipients are resolved by RBAC query**, with the same criterion as the deciding endpoint's gate, never a configured mailing list: a list drifts from the permissions silently.
+  **The email is deliberately poor**: a number, a deadline and where to go. No tracking numbers, no subjects, no series — email leaves the institution and lands in mailboxes the SGDEA does not govern. It also states that **coming due is not deleting**.
+  Failures isolated per tenant **and per recipient**. A form guardian verifies the job **executes no disposition**. 808 archive-service tests, lint green, migrations `045`/`046` applied and verified on the demo tenant. Three mutations verified.
+  *Why*: a queue you must remember to visit does not satisfy "alert authorized users" — *Impact*: a third background loop that sends email; it requires `NOTIFICATION_INTERNAL_TOKEN` and refuses to alert without it. **Still nothing is deleted.**
+
 - `feat(archive,frontend)`: **the authorized user's confirmation — "no destruction is automatic"** (RF-TRD-06)
   Third step of the increment that **destroys nothing**, and the one that turns the due-disposition queue into more than information: an authorized user now **decides**. It is rule 4 of the TRD requirements — "no destruction is automatic without an authorized user's confirmation" — and until today it existed nowhere.
   **Confirming still deletes nothing, and the response says so.** `ejecutada: false` travels explicitly with a note, because a `201` on an endpoint called "decide" invites the belief that something happened; the screen's modal repeats it before the person clicks.
