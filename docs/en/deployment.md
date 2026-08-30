@@ -4,15 +4,15 @@
 
 ## Table of contents
 
-- [Prerequisites](#requisitos-previos)
-- [Infrastructure configuration](#configuracion-de-infraestructura)
-- [Secrets and environment variables](#secretos-y-variables-de-entorno)
-- [Deployment with Docker Compose](#despliegue-con-docker-compose)
-- [Clustering and scalability](#clustering-y-escalabilidad)
-- [Backups and recovery](#respaldos-y-recuperacion)
+- [Prerequisites](#prerequisites)
+- [Infrastructure configuration](#infrastructure-configuration)
+- [Secrets and environment variables](#secrets-and-environment-variables)
+- [Deployment with Docker Compose](#deployment-with-docker-compose)
+- [Clustering and scalability](#clustering-and-scalability)
+- [Backups and recovery](#backups-and-recovery)
 - [Upgrades and rollback](#upgrades-and-rollback)
-- [Monitoring and logs](#monitoreo-y-logs)
-- [Security](#seguridad)
+- [Monitoring and logs](#monitoring-and-logs)
+- [Security](#security)
 - [Troubleshooting](#troubleshooting)
 
 ---

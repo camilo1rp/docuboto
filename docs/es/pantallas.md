@@ -33,10 +33,12 @@ botones.
 
 El barrido negativo con un usuario de permisos reducidos (B13) confirmó lo que más importaba:
 **los controles de acceso no viven solo en el navegador**. Todo lo que la interfaz esconde se
-invocó además por el proxy BFF, y el backend respondió 403 en todos los casos de escritura. Queda
-declarada una **decisión de producto abierta**: las lecturas de TRD y PINAR no exigen permiso,
-mientras la interfaz esconde esas pantallas — ver el
-[plan de pruebas](plan-pruebas.md#4bis-decisión-de-producto-abierta-resultado-de-b13).
+invocó además por el proxy BFF, y el backend respondió 403 en todos los casos de escritura. La decisión
+de producto que dejó abierta —lecturas de TRD y PINAR sin permiso, con la interfaz escondiendo
+esas pantallas— se **resolvió el 2026-08-28**, y por partes: el vocabulario de clasificación
+queda abierto a cualquier autenticado del tenant (lo consume `/radicar`), el circuito de
+versiones del instrumento pasa a exigir `USUA_PERM_TRD` y PINAR entero `USUA_PERM_ADMIN` — ver el
+[plan de pruebas](plan-pruebas.md#4bis-decision-de-producto-resuelta-resultado-de-b13-cerrada-el-2026-08-28).
 
 ## Pantallas públicas (`(public)/`)
 
