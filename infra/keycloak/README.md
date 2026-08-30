@@ -29,6 +29,23 @@ el *access token* en su valor por defecto: la renovación transparente de
 ampliaría la ventana de un token robado. En producción **no** se copia este
 bloque.
 
+**Y una advertencia que costó encontrarla (2026-08-30): un sondeo del navegador
+puede anular esta política sin que nadie lo decida.** `ssoSessionIdleTimeout`
+se reinicia cada vez que se usa el *refresh token*, y la renovación transparente
+de `hooks.server.js` se dispara con CUALQUIER petición al servidor de SvelteKit
+— también con las que la aplicación se hace a sí misma. La bandeja de correo
+sondeaba cada 12 s mientras la pestaña estuviera abierta: **una pestaña olvidada
+en una mesa mantenía la sesión viva hasta el tope absoluto** (`ssoSessionMaxLifespan`,
+10 h) con la pantalla desbloqueada. El servidor tenía la política correcta y el
+cliente la desactivaba.
+
+La corrección **no** es cerrar la sesión desde el navegador —eso sería un control
+falso, se salta desactivando JavaScript— sino **dejar de fingir actividad**: el
+sondeo se detiene tras unos minutos sin interacción real
+(`$lib/utils/inactividad.js`), no hay renovación, y el temporizador de Keycloak
+hace su trabajo. Antes de añadir cualquier sondeo periódico nuevo, la pregunta
+es la misma: *¿esto renueva la sesión de alguien que no está delante?*
+
 ## `realm-prod.json.example` — plantilla de producción
 
 Cópiala a `realm-prod.json`, sustituye **todo** lo que aparece entre `<>` y

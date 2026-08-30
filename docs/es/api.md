@@ -610,6 +610,43 @@ Descarga de un anexo **mediada por document-service**, que es la decisión de fo
 
 ---
 
+### Terceros y actores de la comunicación (E01, RF-RAD-05) — document-service
+
+`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores`
+
+Gate `PERM_RADI` en el propio `APIRouter`, **por admisión**: quien radica es quien registra remitentes y destinatarios, y colgarlo del router cubre también las lecturas — un catálogo de ciudadanos con nombre, documento, dirección y teléfono no es un dato público de la entidad. Vincular actores exige además `crud≥3`.
+
+**La regla que gobierna el modelo: *identidad por referencia, datos de contacto por copia congelada*.** Sale de dos problemas reales del Orfeo del que deriva este sistema:
+
+1. **El mismo sujeto llegaba a aparecer treinta veces** en el catálogo, con direcciones distintas y variaciones de tildes o de escritura. La causa no era que faltara una restricción de unicidad: era **atar la identidad a los datos de contacto**, de modo que cada dirección nueva obligaba a crear un tercero nuevo.
+2. **La dirección con la que se envió una correspondencia no se puede cambiar después.** Si se actualizara la ficha, todos los envíos anteriores pasarían a decir que se enviaron a otra parte: información errónea sobre un acto hecho con un dato que **era verdad entonces**, sin importar que hoy sea otro.
+
+De ahí el modelo (migración `026`): `tercero` guarda **quién es** —con las cinco tipologías del requisito y su documento de identidad— y `radicado_actor` guarda **a dónde se envió**, con nombre, entidad, correo, teléfono y dirección **congelados** e **inmutables por trigger**. `tercero_id` viaja en el vínculo para poder responder «¿qué le hemos enviado a esta persona?» aunque su ficha cambie con los años.
+
+**Tres defensas contra el duplicado, y las tres hacen falta:**
+
+| Defensa | Dónde | Qué ataja |
+|---|---|---|
+| Índice único por documento de identidad | `ux_tercero_documento` | Dos fichas con la misma cédula, escritas distinto |
+| Búsqueda **sin acentos ni mayúsculas** | `spanish_unaccent` | La mayoría: los duplicados no se crean por saltarse un índice, se crean por **no encontrar lo que ya está** |
+| Único por **identidad + destino** | `ux_radicado_actor_sin_duplicado` | El mismo destinatario, en la misma dirección, dos veces en el mismo radicado |
+
+Nótese la tercera: deduplica por `(radicado, tercero, rol, dirección, correo)` y **no solo por identidad**. El mismo señor en dos direcciones distintas es un envío legítimo —pasa, y hay que poder hacerlo—; el mismo señor en la misma dirección dos veces es un duplicado. Añadirlo repetido es un **no-op**, no un error: el resultado que se quería ya se cumple.
+
+**Al vincular se puede corregir el contacto para ese envío** sin tocar el catálogo: al radicar se busca a alguien y se le ajusta el correo o la dirección, porque pasa. Ese ajuste es lo que se congela; actualizar la ficha es un acto aparte y explícito, y no arrastra nada hacia atrás. El asiento de auditoría anota **cuántos actores se congelaron con un contacto distinto al de la ficha**, que es la señal de que alguien cambió una dirección al radicar.
+
+El alta es **idempotente por documento**: si ya existe un tercero con esa cédula se devuelve ese, con `creado=false`, en vez de un conflicto — de paso cierra la puerta al duplicado por reintento.
+
+**El canal de envío es una condición material, no una preferencia.** Un destinatario se atiende por correo electrónico, en físico o por los dos, y **cada canal exige su dato**: sin correo no hay envío electrónico posible, sin dirección no hay envío físico posible. Lo imponen dos `CHECK` —**un envío imposible no se puede ni registrar**—, porque dejarlo anotado haría que el radicado prometiera algo incumplible y el fallo aparecería al despachar, cuando ya no hay a quién preguntarle el dato.
+
+`canal = NULL` significa **todavía sin decidir**, y se admite a propósito: obligar a elegirlo al vincular empujaría a poner un canal cualquiera para poder seguir, que es peor que decir que no se sabe. Se puede fijar después, y solo si el dato está.
+
+La comprobación va sobre la **copia congelada**, no sobre la ficha: el catálogo puede tener un correo que no se aportó a este envío, y despachar por un dato que no viaja en el radicado sería enviar a un sitio que el radicado no dice. El `422` **nombra al destinatario y el dato que falta** — uno genérico sobre una lista de veinte obliga a buscarlos de uno en uno.
+
+> **`sender_name` y `sender_entity` NO se tocan.** Cuarenta y tres archivos las leen (búsqueda, reportes, exportación, índice electrónico) y arrancarlas de golpe convertiría una mejora en una migración de riesgo. El modelo nuevo es **aditivo**.
+
+---
+
 ## storage-service — puerto 8005
 
 > Requiere header `X-Tenant-Slug`. Archivos almacenados en MinIO bucket `orpycamcp-{slug}-documents`.
@@ -709,6 +746,18 @@ Y una cuarta que la norma no dice y el oficio sí: **convertir a PDF/A y no comp
 El perfil se acota a las variantes **`b`** de PDF/A (`1b`/`2b`/`3b`, por defecto `2b`): las `a`/`u` exigen texto etiquetado o Unicode garantizado, y una conversión automática no puede prometerlo. `GET /migraciones/{file_id}` devuelve la cadena de procedencia **incluyendo los intentos fallidos**: «se intentó y no se pudo» es lo que dice qué documentos siguen esperando una migración que no sale.
 
 Puerta en la interfaz: acción **«Migrar a PDF/A»** por anexo en el workspace del expediente, solo sobre PDF, y el aviso de éxito dice que se creó una **copia** — no que el anexo «se convirtió», que es lo que se entendería si no se dijera.
+
+### `GET /api/v1/expedientes/{id}/historial-acceso`
+
+**Quién leyó y quién descargó** (RF-BUS-10; Ley 594/2000 art. 22; Ley 1712/2014). Gate `USUA_PERM_EXPEDIENTE` + **no-read-up**: un expediente por encima del clearance del llamante responde `404` —no `403`— antes de tocar `audit_log`.
+
+**Ampliado el 2026-08-29 con los accesos a los DOCUMENTOS del expediente.** Hasta entonces la consulta filtraba solo por el **código del expediente** (`object_type ∈ {expediente, expediente_indice}`), mientras las dos trazas de acceso a documentos —`document.radicado_consultado` y `document.anexo_descargado`, escritas por document-service con actor, canal y nivel de seguridad— usan `object_type='radicado'` y `object_ref=<número de radicado>`. El resultado era que **la pregunta «¿quién descargó los documentos de este expediente?» no tenía respuesta en la pantalla hecha para responderla, aunque el dato estuviera guardado desde el principio.**
+
+Las acciones de radicado admitidas son una **lista de admisión y solo de lecturas**: un radicado acumula además creación, anulación y reclasificación, y volcarlas aquí convertiría el historial de *acceso* en un historial de todo. Una acción nueva no entra sola — hay que decidir si es un acceso.
+
+No abre ninguna fuga: los números de radicado ya se listan en la vista del expediente para quien supera su gate, y de cada asiento se devuelven **actor, acción, instante y referencia**; el `payload` —que lleva el nivel de clasificación del documento— **no se pinta**.
+
+> El recuento y la página comparten **una sola condición**. Si vivieran separadas, el total podría contar entradas que la página no muestra, y nadie se enteraría.
 
 - `GET /api/v1/expedientes/{id}/aip` (archive-service) — el AIP del expediente tal y como lo consume la pantalla de preservación; delega en storage-service y **exige `USUA_PERM_EXPEDIENTE`**, así que respeta el no-read-up del expediente antes de exponer el PREMIS.
 - `GET /api/v1/expedientes/{id}/preservacion/eventos` (archive-service) — los eventos PREMIS del expediente (validaciones PDF/A, protecciones WORM, renovaciones, empaquetados), en orden. Mismo gate.

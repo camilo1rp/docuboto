@@ -2119,6 +2119,16 @@ async def test_historial_acceso_lists_paginated_and_scoped_by_tenant(
     assert "id" not in body[0]
     assert "hash" not in body[0]
     # Tenant scoping: la SQL de conteo/list filtra por tenant_slug + object_ref.
-    count_sql, tenant_arg, code_arg, _types = mock_conn.fetchval.call_args_list[-1].args
+    # Desde 2026-08-29 la consulta lleva DOS parámetros más —los números de
+    # radicado del expediente y la lista de acciones de acceso admitidas—
+    # porque el historial incluye ahora quién leyó y quién descargó SUS
+    # documentos, no solo lo que se hizo sobre el expediente como contenedor.
+    args = mock_conn.fetchval.call_args_list[-1].args
+    count_sql, tenant_arg, code_arg, _types, trackings, acciones = args
     assert tenant_arg == TENANT_HEADERS["X-Tenant-Slug"]
     assert code_arg == exp_record["code"]
+    # La lista de acciones es de ADMISIÓN y acotada a lecturas: un radicado
+    # acumula además creación, anulación y reclasificación, y volcarlas aquí
+    # convertiría el «historial de acceso» en un historial de todo.
+    assert set(acciones) == {"document.radicado_consultado", "document.anexo_descargado"}
+    assert isinstance(trackings, list)

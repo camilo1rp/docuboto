@@ -1833,9 +1833,24 @@ class ArchiveService:
                 },
             )
         offset = (page - 1) * size
-        total = await self._audit_read.count_for_expediente(self._tenant_slug, exp.code)
+        # Los números de radicado del expediente entran en la consulta para que
+        # el historial incluya QUIÉN LEYÓ Y QUIÉN DESCARGÓ sus documentos, no
+        # solo lo que se hizo sobre el expediente como contenedor. El asiento ya
+        # existía en document-service; lo que faltaba era pedirlo.
+        #
+        # No abre ninguna fuga: esos mismos números ya se listan en la vista del
+        # expediente para quien supera su gate, y de cada asiento solo se
+        # devuelven actor, acción, instante y referencia — el `payload` (que
+        # lleva el nivel de seguridad del radicado) NO se pinta.
+        # `exp` ya viene con sus vínculos cargados: `get_expediente_by_id` los
+        # resuelve. Pedirlos otra vez sería una consulta de más y, encima, por
+        # un método privado del repositorio.
+        trackings = [r.tracking_number for r in (exp.radicados or [])]
+        total = await self._audit_read.count_for_expediente(
+            self._tenant_slug, exp.code, trackings
+        )
         rows = await self._audit_read.list_for_expediente(
-            self._tenant_slug, exp.code, offset=offset, limit=size
+            self._tenant_slug, exp.code, trackings, offset=offset, limit=size
         )
         return [_to_historial_entry(r) for r in rows], total
 

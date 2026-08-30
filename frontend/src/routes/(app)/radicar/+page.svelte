@@ -37,6 +37,7 @@
   import { RADICADO_TIPO_LABEL, etiquetaEstadoRadicado } from "$lib/utils/radicado.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import Stepper from "$lib/components/ui/Stepper.svelte";
+  import DestinatariosPicker from "$lib/components/features/terceros/DestinatariosPicker.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -93,6 +94,12 @@
   // ---------------------------------------------------------------------------
   let subject = "";
   let senderName = "";
+  // Destinatarios del radicado (E01, RF-RAD-05). Uno o VARIOS, con su contacto
+  // congelado para este envío y su canal. Convive con `senderName`/`senderEntity`,
+  // que siguen alimentando búsqueda, reportes e índice electrónico: el modelo
+  // nuevo es aditivo y arrancar las columnas viejas de golpe convertiría una
+  // mejora en una migración de riesgo.
+  let destinatarios = [];
   let senderEntity = "";
   let originDeptCode = "";
   let destDeptCode = "";
@@ -155,6 +162,22 @@
 
   // Cuando cambia el tipo documental, cargamos la plantilla de metadatos.
   // Usa el endpoint local /radicar/api/templates que lee la cookie httpOnly en el servidor.
+  /**
+   * El PRIMER destinatario alimenta `sender_name`/`sender_entity`.
+   *
+   * No es un apaño: son las columnas que leen la búsqueda, los reportes, la
+   * exportación y el índice electrónico —cuarenta y tres archivos—, y dejarlas
+   * vacías rompería todo eso el día que alguien radique con el modelo nuevo.
+   * Se llenan con el principal y el resto de destinatarios vive en su propia
+   * tabla, cada uno con su contacto congelado.
+   */
+  function sincronizarDestinatarioPrincipal() {
+    const principal = destinatarios[0];
+    if (!principal) return;
+    senderName = principal.nombre ?? "";
+    senderEntity = principal.entidad ?? "";
+  }
+
   async function onDocClassChange() {
     activeTemplate = null;
     extraMetadata = {};
@@ -702,6 +725,16 @@
                 hint="1=Pública por defecto (RF-SEG-08)"
               />
             </div>
+
+            <!-- Destinatarios de una Salida: uno o varios, del catálogo -->
+            {#if docType === "S"}
+              <div class="radicar-step__field radicar-step__field--full">
+                <DestinatariosPicker
+                  bind:destinatarios
+                  on:cambio={sincronizarDestinatarioPrincipal}
+                />
+              </div>
+            {/if}
 
             <!-- Remitente / entidad (solo E y S) -->
             {#if docType === "E" || docType === "S"}

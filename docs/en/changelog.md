@@ -25,6 +25,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Added
 
+- `fix(frontend,infra)`: **a browser poll was defeating the idle-session timeout**
+  Keycloak closes the session after **30 minutes of inactivity** in production, and that control was correctly placed — on the server, not in the browser. What was not foreseen is that **the application itself would switch it off**.
+  `ssoSessionIdleTimeout` resets every time the refresh token is used, and the transparent refresh in `hooks.server.js` fires on **any** request to the SvelteKit server — including the ones the app makes to itself. The mail inbox polls every 12 s while the tab is open. Result: **a tab left open on a desk kept the session alive up to the absolute 10-hour cap, with the screen unlocked.** Nobody decided that; it emerged from two individually reasonable things.
+  **The fix is NOT to log out from the browser** — that would be a false control, bypassable by disabling JavaScript, and it would duplicate in the client a policy that already lives where it belongs. Instead the app **stops faking activity**: the poll halts after five minutes without real interaction, no refresh happens, and the server's timer does its job.
+  **Hiding the tab does not count as activity; returning to it does.** The pause is announced on screen — an inbox that silently stops updating reads as an inbox with no news, which is the opposite of what is happening.
+  *Impact*: the inbox poll pauses without real interaction; no change to the session policy, which was already correct.
+
+- `fix(archive,frontend)`: **the trail recorded who downloaded each document and the screen never asked for it** (RF-BUS-10)
+  The question was simple — "who accessed this document, who downloaded it?" — and the answer had been **stored all along**: `document.radicado_consultado` and `document.anexo_descargado`, written with actor, channel and security level.
+  **What failed was the door.** The expediente's access history queried `object_type ∈ {expediente, expediente_indice}` by the **expediente code**, while those two traces use `object_type='radicado'` and `object_ref=<tracking number>`. The question had no answer on the screen built to answer it.
+  The radicado actions admitted are an **admission list, reads only**, and the row now says **what it was about** — showing the reference and **not** the `payload`, which carries the document's classification level.
+  **The tab's label dictionary matched NO real action** (`read`, `download`, `verify`…): everything fell through to `humanize`, and the "Download" entry made it look as though downloads were already shown. The map moves out of the `.svelte` into its own module — inside a template it could not be tested, which is why it drifted silently — with a test requiring every key to be a backend action name.
+  **A stale comment denounced an already-closed hole**: the audit screen warned that `AuditQueryRepository` did not narrow by clearance. It does now (`_clearance_clause`, RF-SEG-08). The closure is written down rather than deleted — a warning about an open hole that is in fact plugged sends the next reader to audit what is already fine.
+  *Impact*: the expediente's access history now includes reads and downloads of its documents.
+
 - `feat(storage,frontend)`: **format migration against obsolescence — the system can now produce preservation copies** (RF-PRE-04)
   The last preservation requirement still in gap. PDF/A **validation** existed (real veraPDF since E10 C2b) and **migration** did not: the system could say a document was not PDF/A and do nothing about it.
   **THE ORIGINAL IS NEVER TOUCHED.** The migration produces a **derived** artifact alongside it — a system that replaces the original has lost the evidence the day someone disputes whether the conversion altered the content. The test proves it: the file repository is replaced by a double and the **only** call on the source must be the read.

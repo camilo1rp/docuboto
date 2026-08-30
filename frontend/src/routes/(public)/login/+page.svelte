@@ -44,7 +44,7 @@
       -->
       <img src="/brand/orpyca-mark.png" alt="" class="login-brand-panel__logo" />
       <p class="login-brand-panel__wordmark">Orpyca</p>
-      <p class="login-brand-panel__claim">orfeo pyme calidad</p>
+      <p class="login-brand-panel__claim">orfeo python calidad</p>
       <p class="login-brand-panel__tagline">
         La interfaz desaparece para que trabajes con tus documentos.
       </p>
@@ -54,7 +54,7 @@
   <div class="login-form-panel">
     <div class="login-card" aria-labelledby="login-heading">
       <!-- Sobre fondo claro sí entra el logotipo completo, con su marca denominativa. -->
-      <img src="/brand/orpyca-lockup.png" alt="Orpyca — orfeo pyme calidad" class="login-logo" />
+      <img src="/brand/orpyca-lockup.png" alt="Orpyca — orfeo python calidad" class="login-logo" />
 
       <h1 id="login-heading" class="login-title">OrpycaMCP</h1>
       <p class="login-subtitle">Sistema de Gestión Documental</p>
@@ -124,7 +124,7 @@
   }
 
   // El logotipo completo es apaisado (≈2,4:1). Se dimensiona por ANCHO y no por
-  // alto: a 56px de alto la línea "orfeo pyme calidad" bajaba de 9px y dejaba de
+  // alto: a 56px de alto la línea "orfeo python calidad" bajaba de 9px y dejaba de
   // leerse. A 240px de ancho el nombre queda holgado dentro de la tarjeta (380px).
   .login-logo {
     width: 240px;

@@ -32,6 +32,7 @@
   import { onDestroy, onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { vigilarInactividad } from "$lib/utils/inactividad.js";
   import { notifyError, notifySuccess, notifyWarning } from "$lib/stores/notifications.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import Button from "$lib/components/ui/Button.svelte";
@@ -60,8 +61,16 @@
   $: yo = data.yo ?? "";
 
   const SONDEO_MS = 12000;
+  // Umbral de inactividad REAL de la persona, muy por debajo del de Keycloak
+  // (30 min en producción): el sondeo tiene que parar con margen para que el
+  // temporizador del servidor llegue a expirar de verdad.
+  const INACTIVIDAD_MS = 5 * 60 * 1000;
 
   let sondeo = null;
+  // Se anuncia en pantalla cuando el sondeo se detiene por inactividad: una
+  // bandeja que deja de actualizarse en silencio se lee como una bandeja sin
+  // novedades, que es lo contrario de lo que pasa.
+  let sondeoPausadoPorInactividad = false;
   let marcaConocida = null;
   let sondeoCaido = false;
   let hayNovedades = false;
@@ -297,9 +306,39 @@
     // Sin bandeja que vigilar no se sondea: preguntaría cada 12 s por algo que
     // ya se sabe que no se alcanza.
     if (!bandejaInaccesible) sondeo = setInterval(mirarSiHayNovedades, SONDEO_MS);
+
+    // El sondeo PARA sin interacción real de la persona. No es un cierre de
+    // sesión desde el navegador —ese control vive en Keycloak y ahí debe
+    // quedarse—: es dejar de FINGIR actividad. Cada sondeo pasa por el
+    // `handle` del servidor, dispara el refresco transparente del token y
+    // reinicia el contador de inactividad de Keycloak, así que una pestaña
+    // olvidada mantenía la sesión viva hasta el tope absoluto de 10 h con la
+    // pantalla desbloqueada. El servidor tenía la política correcta y esta
+    // pantalla la desactivaba sin que nadie lo hubiera decidido.
+    const dejarDeVigilar = vigilarInactividad({
+      msSinActividad: INACTIVIDAD_MS,
+      alInactivo: () => {
+        if (sondeo) clearInterval(sondeo);
+        sondeo = null;
+        sondeoPausadoPorInactividad = true;
+      },
+      alActivo: () => {
+        sondeoPausadoPorInactividad = false;
+        if (!bandejaInaccesible && !sondeo) {
+          // Al volver, una pasada inmediata: si no, la primera novedad tardaría
+          // hasta 12 s en aparecer justo cuando alguien acaba de mirar.
+          mirarSiHayNovedades();
+          sondeo = setInterval(mirarSiHayNovedades, SONDEO_MS);
+        }
+      },
+    });
+
     // El intervalo se limpia en el RETORNO de onMount y no en onDestroy:
     // `onDestroy` corre también en SSR, donde no hay temporizador que limpiar.
-    return () => clearInterval(sondeo);
+    return () => {
+      clearInterval(sondeo);
+      dejarDeVigilar();
+    };
   });
 
   onDestroy(() => {});
@@ -338,6 +377,15 @@
         La bandeja cambió mientras trabajaba: otro funcionario radicó o tomó algún correo.
       </span>
       <Button size="sm" variant="ghost" on:click={recargarAhora}>Actualizar la lista</Button>
+    </div>
+  {/if}
+
+  {#if sondeoPausadoPorInactividad && !bandejaInaccesible}
+    <div class="bandeja__aviso" role="status">
+      <span>
+        La comprobación automática de novedades está <strong>en pausa</strong> por inactividad. Se reanuda
+        sola al usar la pantalla. Sin esta pausa, una pestaña olvidada mantendría la sesión abierta indefinidamente.
+      </span>
     </div>
   {/if}
 

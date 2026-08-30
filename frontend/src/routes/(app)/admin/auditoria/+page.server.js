@@ -19,17 +19,22 @@
  * cacheado), así que también se pide en el `load` inicial para que la
  * pantalla nazca con un veredicto verdadero, no un placeholder optimista.
  *
- * HALLAZGO DE DOMINIO (reportado, no corregido aquí — fuera de alcance del
- * front): `AuditQueryRepository` (auth-service) filtra el listado SOLO por
- * `tenant_slug` + los campos de `_FILTERABLE` (action/object_type/object_ref/
- * actor). NO aplica ningún filtro por nivel de clearance del llamante sobre
- * `object_ref` — un admin con clearance baja puede ver, en el propio
- * audit_log, la existencia y metadatos de acciones sobre documentos
- * clasificados que el resto de la aplicación le negaría. Esta pantalla NO
- * inventa un filtro de clearance en el cliente (sería una falsa sensación de
- * seguridad — el dato ya viajó al navegador antes de cualquier filtro JS):
- * se deja tal cual y se reporta como hallazgo para que el equipo de backend
- * decida si corresponde acotar `AuditQueryRepository` por clearance.
+ * HALLAZGO DE DOMINIO **CERRADO** (2026-08-29, al revisar la traza de
+ * lecturas). Este comentario decía que `AuditQueryRepository` (auth-service)
+ * filtraba el listado SOLO por `tenant_slug` + `_FILTERABLE`, sin acotar por
+ * clearance — de modo que un admin con clearance baja vería en el propio
+ * `audit_log` la existencia de acciones sobre documentos clasificados. **Ya no
+ * es cierto**: el repositorio aplica `_clearance_clause` (no-read-up,
+ * RF-SEG-08) resolviendo el nivel EN VIVO contra las tablas dueñas, con una
+ * lista de admisión para los tipos que no pueden referirse a un documento.
+ *
+ * Se deja escrito el cierre en vez de borrar el párrafo, porque el comentario
+ * obsoleto **ya había sido vector aquí antes**: un aviso de agujero abierto que
+ * en realidad está tapado manda al siguiente lector a auditar lo que ya está
+ * bien —o, peor, a "arreglarlo" otra vez—. Lo que esta pantalla sigue sin hacer
+ * es inventar un filtro de clearance en el cliente, y eso sí es a propósito: el
+ * dato ya viajó al navegador antes de cualquier filtro JS, así que sería una
+ * falsa sensación de seguridad. El recorte vive donde debe, en la fuente.
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";

@@ -27,32 +27,74 @@ import asyncpg
 _COLS = "tenant_slug, ts, service, actor, canal, action, object_type, object_ref, payload"
 _OBJECT_TYPES = ("expediente", "expediente_indice")
 
+# Acciones de ACCESO sobre los radicados del expediente (2026-08-29). La traza
+# existía y era buena —`document.radicado_consultado` y
+# `document.anexo_descargado`, con actor, canal y nivel de seguridad— pero se
+# escribe con `object_type='radicado'` y `object_ref=<número de radicado>`,
+# mientras esta consulta filtraba por el CÓDIGO DEL EXPEDIENTE. Resultado: la
+# pregunta «¿quién descargó los documentos de este expediente?» no tenía
+# respuesta en la pantalla hecha para responderla, aunque el dato estuviera
+# guardado. Otra vez el dato cargado que nadie lee.
+#
+# Lista de ADMISIÓN y no de exclusión, y acotada a LECTURAS: un radicado
+# acumula además creación, anulación, reclasificación… y volcarlas aquí
+# convertiría el «historial de acceso» en un historial de todo, que es otra
+# cosa. Una acción nueva no entra sola: hay que decidir si es un acceso.
+_ACCIONES_ACCESO_RADICADO = (
+    "document.radicado_consultado",
+    "document.anexo_descargado",
+)
+
 
 class AuditReadRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
         self._conn = conn
 
-    async def count_for_expediente(self, tenant_slug: str, code: str) -> int:
-        total: int = await self._conn.fetchval(
-            "SELECT COUNT(*) FROM public.audit_log "
-            "WHERE tenant_slug = $1 AND object_ref = $2 AND object_type = ANY($3::text[])",
+    # La condición es UNA sola y compartida por el recuento y la página. Si
+    # vivieran separadas, el total podría contar entradas que la página no
+    # muestra —o al revés— y nadie se enteraría: es el mismo cuidado que ya se
+    # tuvo con la cola de vencimientos.
+    _WHERE = (
+        "tenant_slug = $1 AND ("
+        "  (object_ref = $2 AND object_type = ANY($3::text[]))"
+        "  OR (object_type = 'radicado' AND object_ref = ANY($4::text[])"
+        "      AND action = ANY($5::text[]))"
+        ")"
+    )
+
+    def _params(self, tenant_slug: str, code: str, trackings: list[str]) -> list:
+        return [
             tenant_slug,
             code,
             list(_OBJECT_TYPES),
+            trackings,
+            list(_ACCIONES_ACCESO_RADICADO),
+        ]
+
+    async def count_for_expediente(
+        self, tenant_slug: str, code: str, trackings: list[str] | None = None
+    ) -> int:
+        total: int = await self._conn.fetchval(
+            f"SELECT COUNT(*) FROM public.audit_log WHERE {self._WHERE}",
+            *self._params(tenant_slug, code, trackings or []),
         )
         return total or 0
 
     async def list_for_expediente(
-        self, tenant_slug: str, code: str, *, offset: int, limit: int
+        self,
+        tenant_slug: str,
+        code: str,
+        trackings: list[str] | None = None,
+        *,
+        offset: int,
+        limit: int,
     ) -> list[asyncpg.Record]:
+        params = self._params(tenant_slug, code, trackings or [])
         return list(
             await self._conn.fetch(
-                f"SELECT {_COLS} FROM public.audit_log "
-                "WHERE tenant_slug = $1 AND object_ref = $2 AND object_type = ANY($3::text[]) "
-                "ORDER BY ts DESC, id DESC LIMIT $4 OFFSET $5",
-                tenant_slug,
-                code,
-                list(_OBJECT_TYPES),
+                f"SELECT {_COLS} FROM public.audit_log WHERE {self._WHERE} "
+                "ORDER BY ts DESC, id DESC LIMIT $6 OFFSET $7",
+                *params,
                 limit,
                 offset,
             )

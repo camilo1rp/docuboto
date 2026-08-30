@@ -223,3 +223,32 @@ describe("una bandeja que no se alcanza no finge ser una bandeja", () => {
     expect(fuente).toContain("disabled={bandejaInaccesible}");
   });
 });
+
+describe("el sondeo no puede fingir actividad", () => {
+  it("la pantalla usa el detector de inactividad para pausarlo", async () => {
+    // Guardián por FORMA, no por render: montar la bandeja entera aquí exigiría
+    // doblar media docena de cargas, y lo que hay que impedir es concreto —
+    // que alguien quite la pausa y el sondeo vuelva a correr indefinidamente.
+    //
+    // El sondeo de esta pantalla pasa por el `handle` del servidor, dispara el
+    // refresco transparente del token y REINICIA el contador de inactividad de
+    // Keycloak (30 min en producción). Sin pausa, una pestaña olvidada mantiene
+    // la sesión viva hasta el tope absoluto de 10 h con la pantalla
+    // desbloqueada: el servidor tiene la política correcta y el cliente la
+    // desactiva.
+    const { readFileSync } = await import("node:fs");
+    // Ruta desde la raíz del proyecto: el `URL` de `import.meta.url` no lo
+    // acepta `readFileSync` en este entorno de pruebas.
+    const fuente = readFileSync("src/routes/(app)/correo/[cuentaId]/+page.svelte", "utf-8");
+
+    expect(fuente).toContain("vigilarInactividad");
+    // Y el umbral tiene que quedar POR DEBAJO del de Keycloak con margen: si
+    // fuera mayor, el sondeo seguiría renovando la sesión hasta después de que
+    // el servidor debería haberla cerrado.
+    const umbral = fuente.match(/INACTIVIDAD_MS\s*=\s*([^;]+);/);
+    expect(umbral, "INACTIVIDAD_MS debe estar declarado").toBeTruthy();
+    const ms = Function(`"use strict"; return (${umbral[1]});`)();
+    expect(ms).toBeGreaterThan(0);
+    expect(ms).toBeLessThan(30 * 60 * 1000);
+  });
+});

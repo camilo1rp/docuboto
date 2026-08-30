@@ -90,7 +90,7 @@
     <div class="landing-nav__inner">
       <a href="/" class="landing-nav__brand">
         <!--
-          A la altura de una barra de navegación (32-36px) la línea "orfeo pyme
+          A la altura de una barra de navegación (32-36px) la línea "orfeo python
           calidad" del logotipo completo baja de 6px y deja de leerse. Aquí entra
           solo el isotipo, con el nombre en texto: se lee a cualquier tamaño y no
           obliga a servir un mapa de bits enorme para una franja de 36px.

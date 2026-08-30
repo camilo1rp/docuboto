@@ -53,6 +53,7 @@ from app.routers.reports import router as reports_router
 from app.routers.respuesta import router as respuesta_router
 from app.routers.search import router as search_router
 from app.routers.signatures import router as signatures_router
+from app.routers.terceros import router as terceros_router
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -122,6 +123,7 @@ app.include_router(documents_router)
 app.include_router(metadata_router)
 app.include_router(metadata_elements_router)
 app.include_router(search_router)
+app.include_router(terceros_router)
 app.include_router(reports_router)
 app.include_router(public_router)
 app.include_router(email_cuentas_router)

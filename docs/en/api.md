@@ -1439,6 +1439,43 @@ Gate: `PERM_DLQ_ADMIN` (**not** `USUA_PERM_ADMIN`) on all four.
 
 ---
 
+## Access history — who read and who downloaded (RF-BUS-10)
+
+`GET /api/v1/expedientes/{id}/historial-acceso` — gate `USUA_PERM_EXPEDIENTE` plus **no-read-up**: an expediente above the caller's clearance answers `404`, not `403`, before touching `audit_log`.
+
+**Extended on 2026-08-29 to cover accesses to the expediente's DOCUMENTS.** Until then the query filtered only by the **expediente code**, while the two document-access traces —`document.radicado_consultado` and `document.anexo_descargado`, written by document-service with actor, channel and security level— use `object_type='radicado'` and `object_ref=<tracking number>`. So **"who downloaded this expediente's documents?" had no answer on the screen built to answer it, even though the data had been stored all along.**
+
+The admitted radicado actions are an **admission list, reads only**: a radicado also accumulates creation, annulment and reclassification, and dumping those here would turn an *access* history into a history of everything.
+
+It opens no leak: those tracking numbers are already listed in the expediente view for anyone past its gate, and each entry returns **actor, action, timestamp and reference** — the `payload`, which carries the document's classification level, is **not rendered**.
+
+---
+
+## Third parties and communication actors (E01, RF-RAD-05) — document-service
+
+`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores` — gate `PERM_RADI` on the `APIRouter` itself (`crud≥3` to link actors).
+
+**The rule that governs the model: *identity by reference, contact data by frozen copy*.** It comes from two real problems in the Orfeo system this one derives from:
+
+1. **The same person could appear thirty times** in the catalogue, with different addresses and variations in accents or spelling. The cause was not a missing uniqueness constraint: it was **tying identity to contact data**, so every new address forced a new record.
+2. **The address a letter was actually sent to cannot change afterwards.** If the record were updated, every past dispatch would claim it went somewhere else — wrong information about an act performed with a datum that **was true at the time**.
+
+Hence the model (migration `026`): `tercero` holds **who** —with the requirement's five typologies and an identity document— and `radicado_actor` holds **where it was sent**, with name, entity, email, phone and address **frozen** and **immutable by trigger**. `tercero_id` travels on the link so "what have we sent to this person?" stays answerable even as the record changes over the years.
+
+**Three defences against duplication, all three needed**: a unique index on the identity document; **accent- and case-insensitive search** (duplicates are not created by bypassing an index, they are created by **not finding what is already there**); and uniqueness by **identity + destination** — the same person at two different addresses is a legitimate dispatch, the same person at the same address twice is a duplicate. Re-adding is a **no-op**, not an error.
+
+**Contact data can be corrected for that dispatch** without touching the catalogue: when registering, you look someone up and adjust their email or address, because that happens. That adjustment is what gets frozen; updating the record is a separate, explicit act that drags nothing backwards. The audit entry notes **how many actors were frozen with contact data differing from the record**.
+
+**The dispatch channel is a material condition, not a preference.** A recipient is served by email, physically, or both, and **each channel requires its datum**: no email, no electronic dispatch; no address, no physical dispatch. Two `CHECK`s enforce it — **an impossible dispatch cannot even be recorded** — because recording it would have the radicado promise something unfulfillable, with the failure surfacing at dispatch time, when there is no longer anyone to ask.
+
+`canal = NULL` means **not decided yet**, admitted on purpose: forcing the choice at link time would push people to pick any channel just to move on. It can be set later, and only if the datum is there.
+
+The check runs against the **frozen copy**, not the catalogue record: dispatching by a datum that does not travel in the radicado would mean sending somewhere the radicado does not state. The `422` **names the recipient and the missing datum**.
+
+> **`sender_name` and `sender_entity` are untouched**: forty-three files read them, so the new model is **additive**.
+
+---
+
 ## Format migration against obsolescence (E10, RF-PRE-04)
 
 `POST /api/v1/preservacion/migrar-formato` · `GET /api/v1/preservacion/migraciones/{file_id}` — gate `USUA_PERM_EXPEDIENTE` `crud≥3`.

@@ -40,6 +40,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import { ACCESO_ACCION_LABELS } from "./acceso-labels.js";
   import Button from "$lib/components/ui/Button.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -801,13 +802,6 @@
   function premisResultadoLabel(resultado) {
     return PREMIS_RESULTADO_LABELS[resultado] ?? humanize(resultado);
   }
-  const ACCESO_ACCION_LABELS = {
-    read: "Lectura",
-    read_index: "Lectura del índice",
-    download: "Descarga",
-    download_xml: "Descarga del XML",
-    verify: "Verificación de integridad",
-  };
   /** @param {string} action */
   function accesoAccionLabel(action) {
     return ACCESO_ACCION_LABELS[action] ?? humanize(action);
@@ -1999,7 +1993,7 @@
               <EmptyState
                 icon="fas fa-clock-rotate-left"
                 title="Sin lecturas registradas"
-                description="Todavía no hay lecturas auditadas de este expediente o su índice."
+                description="Todavía no hay lecturas ni descargas auditadas de este expediente, su índice o sus documentos."
               />
             {:else}
               {#if accesoState.historial.total > accesoState.historial.items.length}
@@ -2011,10 +2005,18 @@
                 </p>
               {/if}
               <ul class="exp-radicado-list" aria-label="Historial de acceso">
-                {#each accesoState.historial.items as entry (entry.ts + entry.action)}
+                {#each accesoState.historial.items as entry (entry.ts + entry.action + (entry.actor ?? "") + (entry.object_ref ?? ""))}
                   <li class="exp-radicado-list__item">
                     <span class="exp-uuid">{entry.actor ?? "sistema"}</span>
                     <span>{accesoAccionLabel(entry.action)}</span>
+                    <!-- SOBRE QUÉ. Sin esto, «Descarga de un anexo» no dice de
+                         qué documento — y esa es exactamente la pregunta que
+                         esta pestaña existe para responder. Se muestra el
+                         número de radicado y NO el `payload`, que lleva el
+                         nivel de clasificación del documento. -->
+                    {#if entry.object_type === "radicado"}
+                      <span class="exp-radicado-list__ref">{entry.object_ref}</span>
+                    {/if}
                     <span class="exp-radicado-list__date">{fmtDatetime(entry.ts)}</span>
                   </li>
                 {/each}
@@ -2538,6 +2540,12 @@
         outline-offset: 2px;
         border-radius: 2px;
       }
+    }
+
+    &__ref {
+      font-family: var(--op-font-family-mono);
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
     }
 
     &__date {
