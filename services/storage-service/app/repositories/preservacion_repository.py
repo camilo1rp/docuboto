@@ -152,6 +152,56 @@ class PreservacionRepository:
             )
         )
 
+    async def list_pendientes_migracion(
+        self, mime_types: list[str], *, formato_destino: str, limit: int
+    ) -> list[asyncpg.Record]:
+        """Ficheros de un formato en riesgo que todavía no tienen copia de
+        preservación — la cola del barrido periódico (E10, RF-PRE-04).
+
+        Tres exclusiones, y la tercera es la que evita que el job se convierta
+        en un bucle caro:
+
+        * los **eliminados** (`deleted_at`): migrar lo que ya no está sería
+          resucitarlo por la puerta de atrás;
+        * los que ya tienen una migración `migrado` a ese formato — el índice
+          único parcial de la migración 015 ya lo impide, pero llegar hasta la
+          conversión para chocar contra él costaría un subproceso por archivo
+          y barrida;
+        * los que ya fallaron. **`fallido` y `no_verificado` NO son lo mismo**:
+          `fallido` dice algo del ARCHIVO —no se pudo convertir, o el resultado
+          no era conforme— y reintentarlo cada día no lo va a arreglar; hace
+          falta que alguien mire. `no_verificado` dice algo del DESPLIEGUE —se
+          convirtió y no había validador con qué comprobarlo—, así que sí se
+          reintenta: el día que el validador esté instalado, la barrida
+          siguiente lo resuelve sola.
+        """
+        if not mime_types:
+            # Política sin declarar. Se responde vacío en vez de «todos»: la
+            # dirección segura es no convertir el archivo de nadie por omisión.
+            return []
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT f.id, f.filename, f.mime_type, f.sha256
+                  FROM files f
+                 WHERE f.deleted_at IS NULL
+                   AND f.mime_type = ANY($1::text[])
+                   AND NOT EXISTS (
+                       SELECT 1 FROM preservacion_migracion m
+                        WHERE m.file_id_origen = f.id
+                          AND m.formato_destino = $2
+                          AND m.estado IN ('migrado', 'fallido')
+                   )
+                 ORDER BY f.uploaded_at ASC
+                 LIMIT $3
+                """,
+                mime_types,
+                formato_destino,
+                limit,
+            )
+        )
+
     async def insert_evento(self, data: dict, *, agente: str | None) -> asyncpg.Record:
         await self._sp()
         row = await self._conn.fetchrow(

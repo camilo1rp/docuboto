@@ -109,6 +109,15 @@ export async function POST({ locals, request, fetch }) {
     direccion: body?.direccion || null,
     municipio: body?.municipio || null,
     departamento: body?.departamento || null,
+    // Los códigos DIVIPOLA se validan por FORMA aquí y por CATÁLOGO en el
+    // backend. La forma se comprueba antes para no gastar un viaje en «11001x»;
+    // que el código EXISTA solo lo sabe el catálogo, y ahí es donde se decide.
+    municipio_codigo: /^[0-9]{5}$/.test(body?.municipio_codigo ?? "")
+      ? body.municipio_codigo
+      : null,
+    departamento_codigo: /^[0-9]{2}$/.test(body?.departamento_codigo ?? "")
+      ? body.departamento_codigo
+      : null,
   };
 
   try {

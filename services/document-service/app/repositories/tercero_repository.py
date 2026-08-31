@@ -51,6 +51,8 @@ _CAMPOS = (
     "direccion",
     "municipio",
     "departamento",
+    "municipio_codigo",
+    "departamento_codigo",
     "pais",
     "activo",
     "creado_por",
@@ -117,8 +119,9 @@ class TerceroRepository:
             f"""
             INSERT INTO tercero (
                 tipo, nombre, entidad, tipo_documento, numero_documento,
-                email, telefono, direccion, municipio, departamento, pais, creado_por
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                email, telefono, direccion, municipio, departamento,
+                municipio_codigo, departamento_codigo, pais, creado_por
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             RETURNING {_COLS}
             """,
             datos["tipo"],
@@ -131,6 +134,8 @@ class TerceroRepository:
             datos.get("direccion"),
             datos.get("municipio"),
             datos.get("departamento"),
+            datos.get("municipio_codigo"),
+            datos.get("departamento_codigo"),
             datos.get("pais") or "CO",
             datos.get("creado_por"),
         )
@@ -168,10 +173,12 @@ class TerceroRepository:
             """
             INSERT INTO radicado_actor (
                 radicado_id, tercero_id, rol, orden, principal, canal,
-                nombre, entidad, email, telefono, direccion, municipio, departamento, pais
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                nombre, entidad, email, telefono, direccion, municipio, departamento,
+                municipio_codigo, departamento_codigo, pais
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
             ON CONFLICT (radicado_id, tercero_id, rol,
-                         coalesce(direccion, ''), coalesce(email, '')) DO NOTHING
+                         coalesce(direccion, ''), coalesce(email, ''),
+                         coalesce(municipio_codigo, '')) DO NOTHING
             """,
             radicado_id,
             tercero_id,
@@ -186,6 +193,8 @@ class TerceroRepository:
             contacto.get("direccion"),
             contacto.get("municipio"),
             contacto.get("departamento"),
+            contacto.get("municipio_codigo"),
+            contacto.get("departamento_codigo"),
             contacto.get("pais"),
         )
         return resultado.rsplit(" ", 1)[-1] != "0"
@@ -201,13 +210,74 @@ class TerceroRepository:
             await self._conn.fetch(
                 """
                 SELECT id, tercero_id, rol, orden, principal, canal, nombre, entidad,
-                       email, telefono, direccion, municipio, departamento, pais, creado_at
+                       email, telefono, direccion, municipio, departamento,
+                       municipio_codigo, departamento_codigo, pais, creado_at
                   FROM radicado_actor
                  WHERE radicado_id = $1
                  ORDER BY rol, orden ASC, nombre ASC
                 """,
                 radicado_id,
             )
+        )
+
+    # ── Catálogo DIVIPOLA (global, schema `public`) ─────────────────────────
+
+    async def list_departamentos(self) -> list[asyncpg.Record]:
+        """Los 33 departamentos vigentes, para el primer paso de la cascada.
+
+        Se califica `public.` a propósito: el `search_path` de la petición
+        apunta al schema del tenant, y el catálogo es nacional — no lo edita la
+        entidad ni varía entre entidades."""
+        return list(
+            await self._conn.fetch(
+                "SELECT codigo, nombre FROM public.divipola_departamento "
+                "WHERE vigente ORDER BY nombre ASC"
+            )
+        )
+
+    async def list_municipios(
+        self, departamento_codigo: str, *, texto: str | None = None
+    ) -> list[asyncpg.Record]:
+        """Los municipios de UN departamento. El departamento es obligatorio:
+        devolver los 1.135 de golpe sería una lista que nadie puede recorrer, y
+        es justo lo que la cascada existe para evitar.
+
+        El filtro por texto usa `public.unaccent` en la comparación —no en un
+        índice— porque `unaccent` no está marcada IMMUTABLE y PostgreSQL
+        rechazaría el índice de expresión. Sobre 1.135 filas no hace falta:
+        quien escribe «monteria» tiene que encontrar «Montería»."""
+        params: list[object] = [departamento_codigo]
+        condiciones = ["departamento_codigo = $1", "vigente"]
+        if texto and texto.strip():
+            params.append(f"%{texto.strip()}%")
+            condiciones.append(
+                f"public.unaccent(nombre) ILIKE public.unaccent(${len(params)})"
+            )
+        return list(
+            await self._conn.fetch(
+                "SELECT codigo, departamento_codigo, nombre FROM public.divipola_municipio "
+                f"WHERE {' AND '.join(condiciones)} ORDER BY nombre ASC",
+                *params,
+            )
+        )
+
+    async def get_municipio(self, codigo: str) -> asyncpg.Record | None:
+        """Un municipio por su código, VIGENTE O NO.
+
+        No se filtra por `vigente` aquí: esta consulta la usa la capa de
+        servicio para resolver el nombre oficial de un código ya guardado, y un
+        envío histórico a un municipio suprimido tiene que seguir pudiendo
+        decir cómo se llamaba."""
+        return await self._conn.fetchrow(
+            "SELECT codigo, departamento_codigo, nombre, vigente "
+            "FROM public.divipola_municipio WHERE codigo = $1",
+            codigo,
+        )
+
+    async def get_departamento(self, codigo: str) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(
+            "SELECT codigo, nombre, vigente FROM public.divipola_departamento WHERE codigo = $1",
+            codigo,
         )
 
     async def desvincular_actor(self, actor_id: uuid.UUID) -> bool:

@@ -141,6 +141,37 @@ class Settings(BaseSettings):
     ghostscript_timeout_seconds: int = 120
     ghostscript_max_concurrency: int = 1
 
+    # ── Barrido periódico de migración (E10, RF-PRE-04) ────────────────────
+    #
+    # **La política de obsolescencia la declara la ENTIDAD, no este código.**
+    # Qué formato está en riesgo es un juicio archivístico que depende del
+    # parque documental de cada institución y de su plan de preservación
+    # (PINAR); un barrido que lo decidiera solo estaría convirtiendo el archivo
+    # de alguien según una lista adivinada por el fabricante.
+    #
+    # De ahí que la lista venga **VACÍA por defecto**: con la política sin
+    # declarar el job recorre los tenants y no migra nada. Es el mismo criterio
+    # que el barrido de disposición —que cuenta y avisa, pero no elimina—, con
+    # una diferencia que conviene tener presente: migrar **no destruye**, el
+    # original se conserva intacto (Decreto 2609/2012 art. 32). Lo peligroso
+    # aquí no es convertir de más, es CREER que se convirtió.
+    format_migration_enabled: bool = False
+    format_migration_interval_seconds: int = 86400
+    # Tipos MIME que la entidad declara en riesgo de obsolescencia. Ejemplo de
+    # una política razonable, que NO se pone por defecto:
+    #   FORMAT_MIGRATION_MIME_TYPES=application/msword,application/vnd.ms-excel
+    format_migration_mime_types: str = ""
+    # Tope por barrida. Convertir es caro (un subproceso por archivo) y el
+    # archivo de una entidad puede tener cientos de miles de ficheros: sin tope,
+    # la primera barrida se comería la máquina. Lo que no entra en una barrida
+    # entra en la siguiente.
+    format_migration_batch_size: int = 50
+
+    @property
+    def format_migration_mime_list(self) -> list[str]:
+        """La política declarada, ya troceada. Vacía = no migrar nada."""
+        return [t.strip() for t in self.format_migration_mime_types.split(",") if t.strip()]
+
     @field_validator("pdfa_validator")
     @classmethod
     def _validate_pdfa_validator(cls, v: str) -> str:

@@ -13,7 +13,7 @@ Each institution (`tenant`) has its own database schema (`tenant_{slug}`), compl
 ## How do you add an institution?
 
 ```bash
-# Con token de superadmin
+# With a superadmin token
 curl -X POST 'http://localhost:19080/api/v1/tenants/' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \

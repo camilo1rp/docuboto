@@ -1453,7 +1453,7 @@ It opens no leak: those tracking numbers are already listed in the expediente vi
 
 ## Third parties and communication actors (E01, RF-RAD-05) — document-service
 
-`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores` — gate `PERM_RADI` on the `APIRouter` itself (`crud≥3` to link actors).
+`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores` · `GET /api/v1/terceros/divipola/departamentos` · `GET /api/v1/terceros/divipola/municipios?departamento=&q=` — gate `PERM_RADI` on the `APIRouter` itself (`crud≥3` to link actors).
 
 **The rule that governs the model: *identity by reference, contact data by frozen copy*.** It comes from two real problems in the Orfeo system this one derives from:
 
@@ -1471,6 +1471,20 @@ Hence the model (migration `026`): `tercero` holds **who** —with the requireme
 `canal = NULL` means **not decided yet**, admitted on purpose: forcing the choice at link time would push people to pick any channel just to move on. It can be set later, and only if the datum is there.
 
 The check runs against the **frozen copy**, not the catalogue record: dispatching by a datum that does not travel in the radicado would mean sending somewhere the radicado does not state. The `422` **names the recipient and the missing datum**.
+
+### Geography is CHOSEN, not typed — the DIVIPOLA cascade (2026-08-30)
+
+The three defences above tackle duplication of the **subject**. The other half stayed open, at the **destination**: while `municipio` and `departamento` were free text, "Bogotá", "BOGOTA", "Bogota D.C." and "Santa Fe de Bogotá" were **four different municipalities** to every query, report and export. A uniqueness constraint does not close that, because the four spellings ARE different and all of them pass. The only thing that closes it is the municipality no longer being something you type.
+
+`GET /terceros/divipola/departamentos` returns the **33 departments**; `GET /terceros/divipola/municipios?departamento=05` returns that department's municipalities, with an optional `q` that **ignores accents** (typing "monteria" finds "Montería"). The department is mandatory for municipalities: all 1,135 at once would be the list nobody scrolls. Both inherit the router's `PERM_RADI` gate.
+
+The catalogue (**global** migration `003`, `public` schema) is **national**: the institution does not edit it, it does not vary between institutions, and replicating it per schema would copy data nobody can diverge. It comes from the source Orfeo dump —correct DIVIPOLA codes, accented names— with a **2017 cut-off date**, declared because it matters: 94343 appears as "Guaviare" and is today the municipality of Barrancominas, created in 2019. Updating it is an `INSERT ... ON CONFLICT` over the same tables, which is why the load is idempotent. A suppressed municipality is **not deleted** —historical dispatches name it— but flagged `vigente = false`.
+
+**Two guarantees against silent incoherence** (migration `027`): the municipality code **contains** its department's, and a `CHECK (left(codigo,2) = departamento_codigo)` enforces it — the error a badly written cascade produces without warning; and the department is **derived** from the municipality in the service layer rather than accepted from the client, so a contradiction cannot arrive in the first place.
+
+And **a deliberate asymmetry between the two tables**: in `tercero` the codes carry foreign keys to the catalogue — a live record must point at a municipality that exists; in `radicado_actor` they **do not**. That row is the frozen copy of where something was sent and has to survive the catalogue changing, including the municipality ceasing to exist: tying it would turn a territorial reorganisation into a corruption of the historical record. Same reason contact data is copied rather than read by reference.
+
+The stored name becomes the catalogue's **official** one rather than what was typed, so search, reports, the electronic index and export —which still read the text columns— stop seeing four spellings of the same municipality without any of them changing. The code is **optional**: an address abroad has no DIVIPOLA and records predating the catalogue remain valid — requiring it would have closed the mail room over a presentation detail. For the same reason the municipality joined the identity+destination deduplication: "Calle 10 #5-20" exists in half the country, and without it two legitimate dispatches to that address in two municipalities were rejected as duplicates.
 
 > **`sender_name` and `sender_entity` are untouched**: forty-three files read them, so the new model is **additive**.
 
@@ -1491,6 +1505,16 @@ And a fourth the rule does not state and practice does: **converting to PDF/A wi
 > **`503` when the deployment has no converter, and there is no "stub migrator".** The PDF/A validator's twin factory degrades to an honest stub because "not evaluated" is a real result; here there is no equivalent — a stub would have to **produce a file**, and the only file it can produce without the tool is an invented one. Same deliberate asymmetry as voice transcription. The production image installs `ghostscript` and sets `FORMAT_MIGRATOR=ghostscript`.
 
 The profile is limited to the **`b`** variants of PDF/A (`1b`/`2b`/`3b`, default `2b`): the `a`/`u` ones require tagged text or guaranteed Unicode, which an automatic conversion cannot promise. `GET /migraciones/{file_id}` returns the provenance chain **including failed attempts**: "it was tried and it did not work" is what tells you which documents are still waiting for a migration that never comes.
+
+### The periodic sweep, and whose decision it is (2026-08-30)
+
+Until now conversion could **only be triggered by hand, one file at a time**. An institutional archive holds hundreds of thousands of files: a capability you have to invoke one by one is a capability built and not offered. The sweep (`FORMAT_MIGRATION_ENABLED`, cadence `FORMAT_MIGRATION_INTERVAL_SECONDS`, daily by default) walks the active tenants and queues whatever is missing.
+
+**Which format is obsolete is declared by the institution, not by this code.** That is an archival judgement depending on each institution's holdings and its PINAR (Ac. AGN 003/2015), so the job carries no list of its own: it reads `FORMAT_MIGRATION_MIME_TYPES`, and **empty means migrate nothing**. With the policy undeclared the sweep walks the tenants and touches not a single file. Same criterion as the disposition sweep —which counts and warns but never deletes— with one difference worth keeping in mind: **migrating destroys nothing**; the original is kept intact and the derivative lives alongside it. The danger here is not converting too much, it is believing something was converted — which is why the sweep promotes nothing that did not pass the validator.
+
+**`fallido` and `no_verificado` are not treated alike, and the distinction decides what gets retried**: `fallido` speaks about the **file** —it could not be converted, or the result was non-conformant— and is **not** retried, because retrying it nightly costs a subprocess per file and fixes nothing; someone has to look. `no_verificado` speaks about the **deployment** —it converted and there was no validator to check it— and **is** retried, so the day veraPDF is installed the next sweep resolves it on its own.
+
+`FORMAT_MIGRATION_BATCH_SIZE` (50 by default) bounds each sweep: converting is expensive and without a cap the first one would eat the machine. What does not fit in one sweep fits in the next. A failure stays contained in its file and a failed sweep in its tenant; with no converter available the **whole** sweep stops at the first attempt rather than spending a download per file to reach the same `503`.
 
 ---
 

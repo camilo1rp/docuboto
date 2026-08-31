@@ -42,6 +42,12 @@ class TerceroCreate(BaseModel):
     direccion: str | None = Field(default=None, max_length=500)
     municipio: str | None = Field(default=None, max_length=120)
     departamento: str | None = Field(default=None, max_length=120)
+    municipio_codigo: str | None = Field(
+        default=None, min_length=5, max_length=5, pattern=r"^[0-9]{5}$"
+    )
+    departamento_codigo: str | None = Field(
+        default=None, min_length=2, max_length=2, pattern=r"^[0-9]{2}$"
+    )
     pais: str = Field(default="CO", max_length=2)
 
     @model_validator(mode="after")
@@ -66,6 +72,8 @@ class TerceroResponse(BaseModel):
     direccion: str | None
     municipio: str | None
     departamento: str | None
+    municipio_codigo: str | None
+    departamento_codigo: str | None
     pais: str
     activo: bool
     creado_por: uuid.UUID | None
@@ -100,6 +108,12 @@ class ActorVincular(BaseModel):
     direccion: str | None = Field(default=None, max_length=500)
     municipio: str | None = Field(default=None, max_length=120)
     departamento: str | None = Field(default=None, max_length=120)
+    municipio_codigo: str | None = Field(
+        default=None, min_length=5, max_length=5, pattern=r"^[0-9]{5}$"
+    )
+    departamento_codigo: str | None = Field(
+        default=None, min_length=2, max_length=2, pattern=r"^[0-9]{2}$"
+    )
     pais: str | None = Field(default=None, max_length=2)
 
 
@@ -128,5 +142,26 @@ class ActorResponse(BaseModel):
     direccion: str | None
     municipio: str | None
     departamento: str | None
+    municipio_codigo: str | None
+    departamento_codigo: str | None
     pais: str | None
     creado_at: datetime
+
+
+class DepartamentoResponse(BaseModel):
+    """Un departamento del catálogo DIVIPOLA (DANE).
+
+    El catálogo es **cerrado** a propósito: mientras el municipio fuera texto
+    libre, «Bogotá», «BOGOTA» y «Bogota D.C.» eran tres municipios distintos
+    para cualquier consulta y cualquier reporte — la misma plaga de duplicados
+    del Orfeo original, vista desde el lado del destino en vez del sujeto.
+    """
+
+    codigo: str
+    nombre: str
+
+
+class MunicipioResponse(BaseModel):
+    codigo: str
+    departamento_codigo: str
+    nombre: str

@@ -32,6 +32,7 @@
 <script>
   import { createEventDispatcher } from "svelte";
 
+  import CascadaDivipola from "$lib/components/features/terceros/CascadaDivipola.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -69,6 +70,16 @@
   let enviando = false;
   let errorModal = "";
   let editandoIndice = null;
+
+  // Geografía DIVIPOLA. Se guarda el CÓDIGO, no el nombre: el nombre que
+  // acaba en la base lo resuelve el backend contra el catálogo, así que es
+  // indiferente cómo lo muestre esta pantalla.
+  let fDepartamentoCod = "";
+  let fMunicipioCod = "";
+  let cDepartamentoCod = "";
+  let cMunicipioCod = "";
+  let cDepartamento = null;
+  let cMunicipio = null;
 
   // Alta de un tercero nuevo.
   let fTipo = "ciudadano";
@@ -119,6 +130,8 @@
         direccion: tercero.direccion,
         municipio: tercero.municipio,
         departamento: tercero.departamento,
+        municipio_codigo: tercero.municipio_codigo ?? null,
+        departamento_codigo: tercero.departamento_codigo ?? null,
         canal: "",
       },
     ];
@@ -140,6 +153,8 @@
     fNumDoc = "";
     fEmail = "";
     fDireccion = "";
+    fDepartamentoCod = "";
+    fMunicipioCod = "";
   }
 
   async function crearTercero() {
@@ -157,6 +172,8 @@
           numero_documento: fNumDoc || null,
           email: fEmail || null,
           direccion: fDireccion || null,
+          departamento_codigo: fDepartamentoCod || null,
+          municipio_codigo: fMunicipioCod || null,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -188,6 +205,8 @@
     cEmail = d.email ?? "";
     cDireccion = d.direccion ?? "";
     cTelefono = d.telefono ?? "";
+    cDepartamentoCod = d.departamento_codigo ?? "";
+    cMunicipioCod = d.municipio_codigo ?? "";
   }
 
   function guardarContacto() {
@@ -197,6 +216,13 @@
       email: cEmail || null,
       direccion: cDireccion || null,
       telefono: cTelefono || null,
+      departamento_codigo: cDepartamentoCod || null,
+      municipio_codigo: cMunicipioCod || null,
+      // Los nombres viajan solo para poder MOSTRARLOS en la lista mientras se
+      // compone el radicado. Lo que se congela lo resuelve el backend desde el
+      // código, así que un nombre desactualizado aquí no ensucia el registro.
+      departamento: cDepartamento ?? copia[editandoIndice].departamento,
+      municipio: cMunicipio ?? copia[editandoIndice].municipio,
     };
     destinatarios = copia;
     modal = null;
@@ -360,6 +386,11 @@
   <FormField id="t-numdoc" name="numero_documento" label="Número" bind:value={fNumDoc} />
   <FormField id="t-email" name="email" label="Correo electrónico" bind:value={fEmail} />
   <FormField id="t-direccion" name="direccion" label="Dirección física" bind:value={fDireccion} />
+  <CascadaDivipola
+    idPrefijo="t"
+    bind:departamentoCodigo={fDepartamentoCod}
+    bind:municipioCodigo={fMunicipioCod}
+  />
   {#if (fTipoDoc && !fNumDoc) || (!fTipoDoc && fNumDoc)}
     <p class="dest__aviso" role="alert">
       El tipo y el número de documento van juntos o ninguno: uno sin el otro no identifica a nadie.
@@ -393,6 +424,15 @@
   <FormField id="c-email" name="email" label="Correo electrónico" bind:value={cEmail} />
   <FormField id="c-direccion" name="direccion" label="Dirección física" bind:value={cDireccion} />
   <FormField id="c-telefono" name="telefono" label="Teléfono" bind:value={cTelefono} />
+  <CascadaDivipola
+    idPrefijo="c"
+    bind:departamentoCodigo={cDepartamentoCod}
+    bind:municipioCodigo={cMunicipioCod}
+    on:cambio={(e) => {
+      cDepartamento = e.detail.departamento;
+      cMunicipio = e.detail.municipio;
+    }}
+  />
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (modal = null)}>Cancelar</Button>
     <Button variant="primary" on:click={guardarContacto}>Usar estos datos</Button>

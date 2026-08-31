@@ -31,6 +31,7 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
 from app.services.tercero_service import TerceroService
 from tests.conftest import _make_mock_conn
@@ -56,6 +57,8 @@ def _tercero(**kw):
         "direccion": "Calle 1 #2-3",
         "municipio": "Bogotá",
         "departamento": "Cundinamarca",
+        "municipio_codigo": None,
+        "departamento_codigo": None,
         "pais": "CO",
         "activo": True,
         "creado_por": None,
@@ -318,3 +321,113 @@ async def test_sin_canal_decidido_se_vincula_igual(mock_conn) -> None:
     )
 
     assert servicio._repo.vincular_actor.await_args.kwargs["canal"] is None
+
+
+# ── La cascada DIVIPOLA (E01, RF-RAD-05) ────────────────────────────────────
+#
+# El catálogo cerrado cierra la mitad del problema de duplicación que la
+# identidad por documento no toca: mientras el municipio fue texto libre,
+# «Bogotá», «BOGOTA» y «Bogota D.C.» eran tres municipios distintos para
+# cualquier consulta, cualquier reporte y cualquier exportación.
+#
+# Los invariantes duros —clave foránea, pertenencia, la copia congelada SIN
+# clave foránea— se ejercen contra PostgreSQL en
+# `tests/integration/test_divipola_integration.py`. Aquí se prueba la decisión
+# que vive en el servicio: **de dónde sale el departamento**.
+
+
+def _catalogo(servicio, *, municipio=None, departamento=None):
+    servicio._repo.get_municipio = AsyncMock(return_value=municipio)
+    servicio._repo.get_departamento = AsyncMock(return_value=departamento)
+
+
+@pytest.mark.asyncio
+async def test_el_departamento_se_DERIVA_del_municipio(mock_conn) -> None:
+    """Y no se le cree al cliente, aunque mande uno. El código de municipio
+    lleva dentro el de su departamento, así que aceptar el segundo por separado
+    sería aceptar una contradicción que hay que detectar; derivarlo la hace
+    imposible.
+
+    Aquí el cliente manda Medellín con el departamento de Bogotá — que es lo
+    que produce una cascada mal programada cuando se cambia el departamento y
+    queda el municipio del anterior."""
+    servicio = _servicio(mock_conn)
+    _catalogo(
+        servicio,
+        municipio={"codigo": "05001", "departamento_codigo": "05", "nombre": "Medellín"},
+        departamento={"codigo": "05", "nombre": "Antioquia"},
+    )
+
+    resuelto = await servicio._resolver_geografia(
+        {"municipio_codigo": "05001", "departamento_codigo": "11"}
+    )
+
+    assert resuelto["departamento_codigo"] == "05"
+    assert resuelto["departamento"] == "Antioquia"
+
+
+@pytest.mark.asyncio
+async def test_el_nombre_guardado_es_el_OFICIAL_no_el_tecleado(mock_conn) -> None:
+    """Lo que hace que las cuatro escrituras del mismo municipio dejen de ser
+    cuatro municipios para todo lo que lee esas columnas: búsqueda, reportes,
+    índice electrónico y exportación siguen leyendo texto, y el texto pasa a
+    ser el canónico."""
+    servicio = _servicio(mock_conn)
+    _catalogo(
+        servicio,
+        municipio={"codigo": "11001", "departamento_codigo": "11", "nombre": "Bogotá"},
+        departamento={"codigo": "11", "nombre": "Bogotá, D.C."},
+    )
+
+    resuelto = await servicio._resolver_geografia(
+        {"municipio_codigo": "11001", "municipio": "BOGOTA D.C", "departamento": "cundinamarca"}
+    )
+
+    assert resuelto["municipio"] == "Bogotá"
+    assert resuelto["departamento"] == "Bogotá, D.C."
+
+
+@pytest.mark.asyncio
+async def test_un_codigo_que_no_existe_se_rechaza_NOMBRANDOLO(mock_conn) -> None:
+    """Se comprueba antes de llegar a la clave foránea para poder decir cuál es
+    el código: una violación de restricción no nombra nada que quien registra
+    pueda corregir."""
+    servicio = _servicio(mock_conn)
+    _catalogo(servicio, municipio=None)
+
+    with pytest.raises(HTTPException) as exc:
+        await servicio._resolver_geografia({"municipio_codigo": "05999"})
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["error"] == "municipio_no_encontrado"
+    assert "05999" in exc.value.detail["detail"]
+
+
+@pytest.mark.asyncio
+async def test_sin_codigo_el_texto_libre_se_respeta(mock_conn) -> None:
+    """El control positivo, y no es un detalle: una dirección en el extranjero
+    no tiene DIVIPOLA. Forzar el código habría cerrado la ventanilla por un
+    dato de presentación — y el catálogo no se consulta siquiera."""
+    servicio = _servicio(mock_conn)
+    _catalogo(servicio, municipio=None)
+
+    resuelto = await servicio._resolver_geografia({"municipio": "Lyon", "pais": "FR"})
+
+    assert resuelto["municipio"] == "Lyon"
+    servicio._repo.get_municipio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_elegir_solo_departamento_BORRA_el_municipio_anterior(mock_conn) -> None:
+    """Dejar el municipio de un departamento anterior colgando del nuevo es la
+    incoherencia silenciosa: la base la rechazaría, pero con un mensaje que no
+    dice qué pasó. Se resuelve donde se origina."""
+    servicio = _servicio(mock_conn)
+    _catalogo(servicio, departamento={"codigo": "05", "nombre": "Antioquia"})
+
+    resuelto = await servicio._resolver_geografia(
+        {"departamento_codigo": "05", "municipio_codigo": None, "municipio": "Bogotá"}
+    )
+
+    assert resuelto["municipio_codigo"] is None
+    assert resuelto["departamento"] == "Antioquia"

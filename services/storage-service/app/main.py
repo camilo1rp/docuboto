@@ -17,6 +17,8 @@ Responsibilities:
 - Tenant-isolated storage: PostgreSQL schema per tenant + MinIO bucket per tenant
 """
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -28,16 +30,71 @@ from orpycamcp_common import secrets as common_secrets
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
-from app.core.minio_client import init_minio
+from app.core.minio_client import get_minio, init_minio
+from app.jobs.format_migration import run_once as _format_migration_once
 from app.routers.health import router as health_router
 from app.routers.preservacion import router as preservacion_router
 from app.routers.storage import router as storage_router
+from app.services.storage_service import StorageService
 
 logging.basicConfig(
     level=settings.log_level.upper(),
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+async def _descargar_para_migracion(record) -> bytes:
+    """Los bytes del origen. Mismo camino que la ruta manual del router: el job
+    decide a QUIÉN le toca migrar, no cómo se hablan MinIO y la tabla."""
+    minio = get_minio()
+    respuesta = await minio.get_object(record.bucket, record.object_key)
+    try:
+        return await respuesta.read()
+    finally:
+        close = getattr(respuesta, "close", None)
+        if close:
+            close()
+
+
+def _subir_para_migracion(conn, slug: str):
+    """El derivado entra como ARTEFACTO DE SISTEMA, no como anexo: nadie lo
+    aportó, lo produjo la preservación."""
+
+    async def _subir(origen, contenido: bytes, formato: str):
+        nombre = f"{origen.filename.rsplit('.', 1)[0]}-{formato.replace('/', '')}.pdf"
+        respuesta, _creado, _ = await StorageService(conn, slug).upload(
+            filename=nombre,
+            mime_type="application/pdf",
+            content=contenido,
+            uploaded_by=None,
+            formatos_admitidos=settings.allowed_system_mime_set,
+        )
+        return respuesta.id
+
+    return _subir
+
+
+async def _format_migration_loop() -> None:
+    """Barrido periódico de migración de formato (E10, RF-PRE-04).
+
+    Mismo molde que las barridas de archive-service: kill-switch propio,
+    cadencia propia y **nunca muere por una excepción**. La cadencia por defecto
+    es diaria porque la obsolescencia no llega de un día para otro; lo que la
+    barrida recorta cada vez es la cola de lo que entró nuevo.
+
+    **No decide qué está obsoleto.** Eso lo declara la entidad en
+    `FORMAT_MIGRATION_MIME_TYPES`, y vacío significa no migrar nada.
+    """
+    while True:
+        try:
+            await _format_migration_once(
+                descargar=_descargar_para_migracion,
+                subir_factory=_subir_para_migracion,
+            )
+        except Exception:
+            logger.warning("Fallo en la barrida de migración de formato", exc_info=True)
+        await asyncio.sleep(settings.format_migration_interval_seconds)
 
 
 @asynccontextmanager
@@ -84,8 +141,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.minio_secret_key,
         settings.minio_use_ssl,
     )
+    migracion_task: asyncio.Task[None] | None = None
+    if settings.format_migration_enabled:
+        migracion_task = asyncio.create_task(_format_migration_loop())
+
     yield
     logger.info("storage-service shutting down")
+    if migracion_task is not None:
+        migracion_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await migracion_task
     await close_pool()
 
 

@@ -62,6 +62,8 @@ _CAMPOS_CONTACTO = (
     "direccion",
     "municipio",
     "departamento",
+    "municipio_codigo",
+    "departamento_codigo",
     "pais",
 )
 
@@ -74,6 +76,79 @@ class TerceroService:
 
     async def buscar(self, texto: str | None, *, tipo: str | None, limit: int) -> list[dict]:
         return [dict(r) for r in await self._repo.buscar(texto, tipo=tipo, limit=limit)]
+
+    async def _resolver_geografia(self, datos: dict) -> dict:
+        """Convierte el código DIVIPOLA en los nombres OFICIALES, y **deriva el
+        departamento del municipio en lugar de creérselo al cliente**.
+
+        El código de municipio lleva dentro el de su departamento, así que
+        aceptar el segundo por separado sería aceptar una contradicción que hay
+        que detectar; derivarlo la hace imposible. La base lo comprueba además
+        con un CHECK, pero para entonces el error ya no sabe nombrar el
+        municipio.
+
+        Si no viene código —una dirección en el extranjero, una ficha anterior
+        al catálogo— el texto libre se respeta tal cual: forzar el código
+        cerraría la ventanilla por un dato de presentación.
+        """
+        resuelto = dict(datos)
+        codigo_mun = (datos.get("municipio_codigo") or "").strip() or None
+        codigo_dep = (datos.get("departamento_codigo") or "").strip() or None
+
+        if codigo_mun:
+            municipio = await self._repo.get_municipio(codigo_mun)
+            if municipio is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "municipio_no_encontrado",
+                        "detail": (
+                            f"El código DIVIPOLA '{codigo_mun}' no está en el catálogo."
+                        ),
+                        "status": 422,
+                    },
+                )
+            departamento = await self._repo.get_departamento(municipio["departamento_codigo"])
+            resuelto["municipio_codigo"] = municipio["codigo"]
+            resuelto["departamento_codigo"] = municipio["departamento_codigo"]
+            # El nombre pasa a ser el CANÓNICO. Es lo que hace que «Bogotá»,
+            # «BOGOTA» y «Bogota D.C.» dejen de ser tres municipios para todo
+            # lo que lee estas columnas: búsqueda, reportes, índice electrónico.
+            resuelto["municipio"] = municipio["nombre"]
+            if departamento is not None:
+                resuelto["departamento"] = departamento["nombre"]
+            return resuelto
+
+        if codigo_dep:
+            departamento = await self._repo.get_departamento(codigo_dep)
+            if departamento is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "departamento_no_encontrado",
+                        "detail": (
+                            f"El código DIVIPOLA '{codigo_dep}' no está en el catálogo."
+                        ),
+                        "status": 422,
+                    },
+                )
+            resuelto["departamento_codigo"] = departamento["codigo"]
+            resuelto["departamento"] = departamento["nombre"]
+            # Sin municipio no hay municipio: dejar el texto de uno anterior
+            # colgando de otro departamento es la incoherencia silenciosa.
+            resuelto["municipio_codigo"] = None
+            return resuelto
+
+        return resuelto
+
+    async def list_departamentos(self) -> list[dict]:
+        return [dict(r) for r in await self._repo.list_departamentos()]
+
+    async def list_municipios(self, departamento_codigo: str, *, texto: str | None) -> list[dict]:
+        return [
+            dict(r)
+            for r in await self._repo.list_municipios(departamento_codigo, texto=texto)
+        ]
 
     async def crear_o_recuperar(self, datos: dict, *, actor: uuid.UUID | None) -> tuple[dict, bool]:
         """Crea el tercero, o devuelve el que ya existe con ese documento.
@@ -94,7 +169,9 @@ class TerceroService:
             if existente is not None:
                 return dict(existente), False
 
-        fila = await self._repo.crear({**datos, "creado_por": actor})
+        fila = await self._repo.crear(
+            {**(await self._resolver_geografia(datos)), "creado_por": actor}
+        )
         await audit.append(
             self._conn,
             tenant_slug=self._tenant_slug,
@@ -168,6 +245,12 @@ class TerceroService:
             # se va a usar: la ficha del catálogo puede tener un correo que
             # aquí no se aportó, y enviar por un dato que no viaja en el
             # radicado sería enviar a un sitio que el radicado no dice.
+            # La geografía del contacto congelado se resuelve igual que la de
+            # la ficha: si el envío se dirige a un municipio del catálogo, lo
+            # que se congela es su nombre oficial y su código, no lo que se
+            # tecleó. Lo congelado es lo que se leerá dentro de diez años.
+            contacto = await self._resolver_geografia(contacto)
+
             falta = self._falta_para_el_canal(entrada.get("canal"), contacto)
             if falta is not None:
                 raise HTTPException(

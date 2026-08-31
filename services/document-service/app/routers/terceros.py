@@ -27,6 +27,8 @@ from app.core.database import get_tenant_conn
 from app.schemas.tercero import (
     ActoresVincularRequest,
     ActorResponse,
+    DepartamentoResponse,
+    MunicipioResponse,
     TerceroCreate,
     TerceroResponse,
 )
@@ -54,6 +56,51 @@ def _actor(request: Request) -> uuid.UUID | None:
         return uuid.UUID(raw)
     except ValueError:
         return None
+
+
+@router.get(
+    "/divipola/departamentos",
+    response_model=list[DepartamentoResponse],
+    summary="Departamentos DIVIPOLA",
+)
+async def listar_departamentos(
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[DepartamentoResponse]:
+    """Los 33 departamentos, primer paso de la cascada geográfica.
+
+    Cuelga del router de terceros y hereda su gate `PERM_RADI`: el catálogo es
+    público en su contenido —lo publica el DANE—, pero quien lo consume aquí es
+    la ventanilla, y un endpoint más sin gate es una puerta más que vigilar sin
+    que nadie la necesite.
+    """
+    servicio = TerceroService(conn, _tenant_slug(request))
+    return [DepartamentoResponse(**d) for d in await servicio.list_departamentos()]
+
+
+@router.get(
+    "/divipola/municipios",
+    response_model=list[MunicipioResponse],
+    summary="Municipios de un departamento",
+)
+async def listar_municipios(
+    request: Request,
+    departamento: str = Query(min_length=2, max_length=2, pattern=r"^[0-9]{2}$"),
+    q: str | None = Query(default=None, max_length=120),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[MunicipioResponse]:
+    """Los municipios de UN departamento, opcionalmente filtrados por nombre.
+
+    El departamento es **obligatorio**: devolver los 1.135 de una vez sería la
+    lista que nadie recorre, que es justo lo que la cascada evita. El filtro por
+    nombre ignora acentos — quien escribe «monteria» tiene que dar con
+    «Montería», por la misma razón que la búsqueda de terceros.
+    """
+    servicio = TerceroService(conn, _tenant_slug(request))
+    return [
+        MunicipioResponse(**m)
+        for m in await servicio.list_municipios(departamento, texto=q)
+    ]
 
 
 @router.get("", response_model=list[TerceroResponse], summary="Buscar terceros")

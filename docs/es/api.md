@@ -612,7 +612,7 @@ Descarga de un anexo **mediada por document-service**, que es la decisión de fo
 
 ### Terceros y actores de la comunicación (E01, RF-RAD-05) — document-service
 
-`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores`
+`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores` · `GET /api/v1/terceros/divipola/departamentos` · `GET /api/v1/terceros/divipola/municipios?departamento=&q=`
 
 Gate `PERM_RADI` en el propio `APIRouter`, **por admisión**: quien radica es quien registra remitentes y destinatarios, y colgarlo del router cubre también las lecturas — un catálogo de ciudadanos con nombre, documento, dirección y teléfono no es un dato público de la entidad. Vincular actores exige además `crud≥3`.
 
@@ -642,6 +642,25 @@ El alta es **idempotente por documento**: si ya existe un tercero con esa cédul
 `canal = NULL` significa **todavía sin decidir**, y se admite a propósito: obligar a elegirlo al vincular empujaría a poner un canal cualquiera para poder seguir, que es peor que decir que no se sabe. Se puede fijar después, y solo si el dato está.
 
 La comprobación va sobre la **copia congelada**, no sobre la ficha: el catálogo puede tener un correo que no se aportó a este envío, y despachar por un dato que no viaja en el radicado sería enviar a un sitio que el radicado no dice. El `422` **nombra al destinatario y el dato que falta** — uno genérico sobre una lista de veinte obliga a buscarlos de uno en uno.
+
+#### La geografía se ELIGE, no se escribe — cascada DIVIPOLA (2026-08-30)
+
+Las tres defensas de arriba atajan el duplicado del **sujeto**. Quedaba abierta la otra mitad, en el **destino**: mientras `municipio` y `departamento` fueron texto libre, «Bogotá», «BOGOTA», «Bogota D.C.» y «Santa Fe de Bogotá» eran **cuatro municipios distintos** para cualquier consulta, cualquier reporte y cualquier exportación. Una restricción de unicidad no lo cierra, porque las cuatro escrituras SON distintas y todas pasan. Lo único que lo cierra es que el municipio deje de ser algo que se escribe.
+
+`GET /terceros/divipola/departamentos` devuelve los **33 departamentos**; `GET /terceros/divipola/municipios?departamento=05` los de ese departamento, con `q` opcional que **ignora acentos** (quien escribe «monteria» encuentra «Montería»). El departamento es obligatorio para pedir municipios: los 1.135 de golpe serían la lista que nadie recorre. Ambos heredan el gate `PERM_RADI` del router.
+
+El catálogo (migración **global** `003`, schema `public`) es **nacional**: no lo edita la entidad, no varía entre entidades, y replicarlo por schema sería copiar un dato que nadie puede divergir. Procede del volcado del Orfeo de origen —códigos DIVIPOLA correctos, nombres acentuados— con **fecha de corte 2017**, que se declara porque importa: 94343 figura como «Guaviare» y hoy es el municipio de Barrancominas, erigido en 2019. Actualizarlo es un `INSERT ... ON CONFLICT` sobre las mismas tablas, y la carga es idempotente para eso. Un municipio suprimido **no se borra** —hay envíos históricos que lo nombran— sino que se marca `vigente = false`.
+
+**Dos garantías que impiden la incoherencia silenciosa** (migración `027`):
+
+| Garantía | Cómo | Qué evita |
+|---|---|---|
+| El código de municipio **lleva dentro** el de su departamento | `CHECK (left(codigo,2) = departamento_codigo)` | Un municipio colgado de otro departamento — el error que una cascada mal programada produce sin avisar |
+| El departamento se **deriva** del municipio, no se acepta del cliente | Capa de servicio | Aceptar una contradicción que luego hay que detectar |
+
+Y **una asimetría deliberada entre las dos tablas**: en `tercero` los códigos llevan clave foránea al catálogo —la ficha viva debe apuntar a un municipio que existe—; en `radicado_actor` **no la llevan**. Esa fila es la copia congelada de a dónde se envió y tiene que sobrevivir a que el catálogo cambie, incluido que el municipio deje de existir: atarla convertiría una reorganización territorial en una corrupción del registro histórico. Es la misma razón por la que el contacto se copia en vez de leerse por referencia.
+
+El nombre que se guarda pasa a ser el **oficial del catálogo**, no el tecleado, así que la búsqueda, los reportes, el índice electrónico y la exportación —que siguen leyendo las columnas de texto— dejan de ver cuatro escrituras del mismo municipio sin que ninguno tenga que cambiar. El código es **opcional**: una dirección en el extranjero no tiene DIVIPOLA y las fichas anteriores al catálogo siguen siendo válidas — exigirlo habría cerrado la ventanilla por un dato de presentación. Por lo mismo, el municipio entró en la deduplicación por identidad+destino: «Calle 10 #5-20» existe en medio país, y sin él dos envíos legítimos a esa dirección en dos municipios se rechazaban como duplicado.
 
 > **`sender_name` y `sender_entity` NO se tocan.** Cuarenta y tres archivos las leen (búsqueda, reportes, exportación, índice electrónico) y arrancarlas de golpe convertiría una mejora en una migración de riesgo. El modelo nuevo es **aditivo**.
 
@@ -746,6 +765,22 @@ Y una cuarta que la norma no dice y el oficio sí: **convertir a PDF/A y no comp
 El perfil se acota a las variantes **`b`** de PDF/A (`1b`/`2b`/`3b`, por defecto `2b`): las `a`/`u` exigen texto etiquetado o Unicode garantizado, y una conversión automática no puede prometerlo. `GET /migraciones/{file_id}` devuelve la cadena de procedencia **incluyendo los intentos fallidos**: «se intentó y no se pudo» es lo que dice qué documentos siguen esperando una migración que no sale.
 
 Puerta en la interfaz: acción **«Migrar a PDF/A»** por anexo en el workspace del expediente, solo sobre PDF, y el aviso de éxito dice que se creó una **copia** — no que el anexo «se convirtió», que es lo que se entendería si no se dijera.
+
+#### Barrido periódico, y de quién es la decisión (2026-08-30)
+
+Hasta aquí la conversión **solo se disparaba a mano, archivo por archivo**. Un archivo institucional tiene cientos de miles de ficheros: una capacidad que hay que invocar uno a uno es una capacidad construida y no ofrecida. El barrido (`FORMAT_MIGRATION_ENABLED`, cadencia `FORMAT_MIGRATION_INTERVAL_SECONDS`, diaria por defecto) recorre los tenants activos y encola lo que falte.
+
+**Qué formato está obsoleto lo declara la entidad, no este código.** Es un juicio archivístico que depende del parque documental de cada institución y de su PINAR (Ac. AGN 003/2015), así que el job no tiene lista propia: lee `FORMAT_MIGRATION_MIME_TYPES` y **vacía significa no migrar nada**. Con la política sin declarar el barrido recorre los tenants y no toca un solo archivo. Es el mismo criterio que el barrido de disposición —que cuenta y avisa pero no elimina— con una diferencia que conviene tener presente: **migrar no destruye**; el original se conserva intacto y el derivado convive con él. Lo peligroso aquí no es convertir de más, es creer que se convirtió — por eso el barrido tampoco promueve nada que no haya pasado el validador.
+
+**`fallido` y `no_verificado` no se tratan igual, y la distinción decide qué se reintenta:**
+
+| Estado | De qué habla | Qué hace el barrido |
+|---|---|---|
+| `migrado` | Hay copia verificada | No vuelve a la cola |
+| `fallido` | Del **archivo**: no se pudo convertir, o el resultado no era conforme | **No** se reintenta — reintentarlo cada noche cuesta un subproceso por archivo sin arreglar nada; hace falta que alguien lo mire |
+| `no_verificado` | Del **despliegue**: se convirtió y no había validador con qué comprobarlo | **Sí** se reintenta — el día que veraPDF esté instalado, la barrida siguiente lo resuelve sola |
+
+`FORMAT_MIGRATION_BATCH_SIZE` (50 por defecto) acota cada barrida: convertir es caro y sin tope la primera se comería la máquina. Lo que no entra en una barrida entra en la siguiente. Un fallo queda contenido en su archivo y una barrida fallida en su tenant; si no hay convertidor, la barrida **entera** se corta en el primer intento en vez de gastar una descarga por archivo para llegar al mismo `503`.
 
 ### `GET /api/v1/expedientes/{id}/historial-acceso`
 

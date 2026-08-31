@@ -50,18 +50,18 @@ For a small to medium institution (< 5000 users):
 ### 1. Prepare the server
 
 ```bash
-# Actualizar sistema operativo
+# Update the operating system
 sudo apt update && sudo apt upgrade -y
 
-# Instalar Docker
+# Install Docker
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 
-# Instalar Docker Compose
+# Install Docker Compose
 sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 sudo chmod +x /usr/local/bin/docker-compose
 
-# Crear directorio de datos (fuera del árbol del código)
+# Create the data directory (outside the source tree)
 sudo mkdir -p /srv/orpyca/{postgres,minio,redis,certs}
 sudo chown $USER:$USER /srv/orpyca -R
 ```
@@ -73,9 +73,9 @@ With Let's Encrypt (free, requires port 80 to be accessible):
 ```bash
 sudo apt install certbot
 sudo certbot certonly --standalone -d keycloak.yourdomain.com
-# Certificados en /etc/letsencrypt/live/keycloak.yourdomain.com/
+# Certificates land in /etc/letsencrypt/live/keycloak.yourdomain.com/
 
-# Copiar a la carpeta del proyecto (renovación automática)
+# Copy them into the project folder (automatic renewal)
 sudo cp /etc/letsencrypt/live/keycloak.yourdomain.com/fullchain.pem /srv/orpyca/certs/tls.crt
 sudo cp /etc/letsencrypt/live/keycloak.yourdomain.com/privkey.pem /srv/orpyca/certs/tls.key
 sudo chown $USER:$USER /srv/orpyca/certs/tls.*
@@ -86,18 +86,18 @@ With a corporate CA: provide `tls.crt` and `tls.key` in the certs folder.
 ### 3. Configure the firewall
 
 ```bash
-# Asumir UFW en Ubuntu
+# Assumes UFW on Ubuntu
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 
-# Permitir SSH (CRÍTICO: no bloquee tu acceso)
+# Allow SSH (CRITICAL: do not lock yourself out)
 sudo ufw allow ssh
 
-# Permitir Nginx (proxy reverso)
+# Allow Nginx (reverse proxy)
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 
-# Denegar acceso directo a servicios internos
+# Deny direct access to internal services
 sudo ufw deny 5432  # PostgreSQL
 sudo ufw deny 6379  # Redis
 sudo ufw deny 8080  # API Gateway sin proxy
@@ -111,7 +111,7 @@ sudo ufw enable
 ```bash
 sudo apt install nginx
 
-# Ver plantilla en infra/nginx.conf.example
+# Template at infra/nginx.conf.example
 sudo cp infra/nginx.conf.example /etc/nginx/sites-available/orpyca
 sudo ln -s /etc/nginx/sites-available/orpyca /etc/nginx/sites-enabled/
 sudo nginx -t
@@ -127,17 +127,17 @@ sudo systemctl restart nginx
 **NEVER** commit `.env` to Git. Each environment must have different secrets.
 
 ```bash
-# 1. Crear archivo .env en el servidor (local, no trackeado)
+# 1. Create the .env file on the server (local, never tracked)
 cd /srv/orpyca
 cp infra/.env.example .env
 
-# 2. Generar contraseñas fuertes
+# 2. Generate strong passwords
 openssl rand -base64 32  # PostgreSQL password
 openssl rand -base64 32  # Redis password
 openssl rand -base64 32  # MinIO password
 openssl rand -base64 32  # Keycloak admin password
 
-# 3. Editar .env con valores reales
+# 3. Edit .env with the real values
 nano .env
 ```
 
@@ -270,13 +270,13 @@ Keycloak.
 Every 90 days (or per corporate policy):
 
 ```bash
-# 1. Generar nueva contraseña
+# 1. Generate a new password
 NEW_PASSWORD=$(openssl rand -base64 32)
 
-# 2. Actualizar en PostgreSQL
+# 2. Update it in PostgreSQL
 docker compose exec postgres psql -U orpycamcp -c "ALTER USER orpycamcp PASSWORD '$NEW_PASSWORD';"
 
-# 3. Actualizar .env y reiniciar servicios
+# 3. Update .env and restart the services
 sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$NEW_PASSWORD/" .env
 docker compose restart document-service tenant-service auth-service
 ```
@@ -288,22 +288,22 @@ docker compose restart document-service tenant-service auth-service
 ### Using docker-compose.prod.yml
 
 ```bash
-# 1. Clonar repositorio
+# 1. Clone the repository
 git clone https://gitlab.com/orpyca/orfeo_mcp.git
 cd orfeo_mcp
 
-# 2. Crear estructura de directorios
+# 2. Create the directory structure
 mkdir -p infra/certs infra/logs
 
-# 3. Configurar variables de entorno
+# 3. Configure the environment variables
 cp infra/.env.example infra/.env
 nano infra/.env  # Editar con valores reales
 
-# 4. Levantar stack
+# 4. Bring the stack up
 cd infra
 docker compose -f docker-compose.prod.yml up -d
 
-# 5. Verificar estado
+# 5. Check the status
 docker compose ps
 docker compose logs -f api-gateway
 
@@ -318,18 +318,18 @@ COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
 ### Post-deployment verification
 
 ```bash
-# Revisar logs de cada servicio
-docker compose logs -f postgres      # Errores de conexión
+# Review each service's logs
+docker compose logs -f postgres      # Connection errors
 docker compose logs -f keycloak      # OIDC/realm issues
 docker compose logs -f api-gateway   # Errores de ruteo
 
-# Probar health check (a través de Nginx si está configurado)
+# Try the health check (through Nginx if it is configured)
 curl -k https://keycloak.yourdomain.com/health
 
-# Verificar que MinIO está funcionando
+# Verify MinIO is running
 docker compose exec minio mc ls minio
 
-# Verificar que Redis está funcionando
+# Verify Redis is running
 docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 ```
 
@@ -375,11 +375,11 @@ For large institutions (> 10,000 users):
 ### Option 1: Docker Swarm (simple)
 
 ```bash
-# Inicializar cluster
+# Initialise the cluster
 docker swarm init
 docker swarm join --token <TOKEN> manager-node-ip
 
-# Desplegar stack
+# Deploy the stack
 docker stack deploy -c docker-compose.prod.yml orpyca-mcp
 ```
 
@@ -388,10 +388,10 @@ docker stack deploy -c docker-compose.prod.yml orpyca-mcp
 Convert to Helm charts:
 
 ```bash
-# Convertir docker-compose a Kubernetes
+# Convert docker-compose to Kubernetes
 docker-compose -f docker-compose.prod.yml config | docker-to-k8s > orpycamcp-k8s.yaml
 
-# Desplegar en cluster K8s
+# Deploy on the K8s cluster
 kubectl apply -f orpycamcp-k8s.yaml
 ```
 
@@ -400,7 +400,7 @@ kubectl apply -f orpycamcp-k8s.yaml
 Stateless services can be scaled horizontally:
 
 ```yaml
-# En docker-compose.prod.yml
+# In docker-compose.prod.yml
 api-gateway:
   deploy:
     replicas: 3  # 3 instancias balanceadas por carga
@@ -411,7 +411,7 @@ storage-service:
 
 document-service:
   deploy:
-    replicas: 2  # Para búsquedas de radicados
+    replicas: 2  # For radicado searches
 ```
 
 ---
@@ -570,7 +570,7 @@ not optional, and why upgrades belong in a low-activity window.
 ### Centralizing logs with the ELK Stack
 
 ```yaml
-# docker-compose.prod.yml — agregar servicios ELK
+# docker-compose.prod.yml — add the ELK services
 elasticsearch:
   image: docker.elastic.co/elasticsearch/elasticsearch:8.0.0
   environment:
@@ -586,7 +586,7 @@ logstash:
 kibana:
   image: docker.elastic.co/kibana/kibana:8.0.0
   ports:
-    - "5601:5601"  # Acceso a través de Nginx
+    - "5601:5601"  # Access through Nginx
 ```
 
 ### Metrics with Prometheus
@@ -601,7 +601,7 @@ prometheus:
 grafana:
   image: grafana/grafana:latest
   ports:
-    - "3000:3000"  # A través de Nginx
+    - "3000:3000"  # Through Nginx
 ```
 
 ### Alerts
@@ -654,11 +654,11 @@ differently per browser.
 ### Security audit
 
 ```bash
-# Escanear imágenes Docker en busca de vulnerabilidades
+# Scan the Docker images for vulnerabilities
 docker scan api-gateway:latest
 docker scan postgres:15-alpine
 
-# Usar Trivy para análisis de vulnerabilidades
+# Use Trivy for vulnerability analysis
 trivy image api-gateway:latest
 ```
 
@@ -669,14 +669,14 @@ trivy image api-gateway:latest
 ### Services won't start
 
 ```bash
-# 1. Verificar logs
+# 1. Check the logs
 docker compose logs postgres
 docker compose logs keycloak
 
-# 2. Comprobar variables de entorno
+# 2. Check the environment variables
 docker compose config | grep -A 5 "environment"
 
-# 3. Verificar conectividad de red
+# 3. Check network connectivity
 docker network ls
 docker network inspect orpycamcp-net
 ```
@@ -684,10 +684,10 @@ docker network inspect orpycamcp-net
 ### PostgreSQL refuses connections
 
 ```bash
-# Verificar autenticación
+# Verify authentication
 docker compose exec postgres psql -U orpycamcp -d orpycamcp_db -c "SELECT version();"
 
-# Resetear contraseña si es necesario
+# Reset the password if needed
 docker compose exec postgres psql -U postgres -c \
   "ALTER USER orpycamcp PASSWORD 'new-password';"
 ```
@@ -695,13 +695,13 @@ docker compose exec postgres psql -U postgres -c \
 ### MinIO won't sync with buckets
 
 ```bash
-# Verificar estado de MinIO
+# Check MinIO's status
 docker compose exec minio mc status minio
 
-# Listar buckets
+# List the buckets
 docker compose exec minio mc ls minio/
 
-# Recrear bucket si está corrupto
+# Recreate the bucket if it is corrupted
 docker compose exec minio mc rb minio/orpycamcp-tenant-documents
 docker compose exec minio mc mb minio/orpycamcp-tenant-documents
 ```
@@ -709,9 +709,9 @@ docker compose exec minio mc mb minio/orpycamcp-tenant-documents
 ### High memory usage
 
 ```bash
-# Reducir buffer_pool_size en PostgreSQL
+# Lower buffer_pool_size in PostgreSQL
 docker compose down
-# Editar docker-compose.prod.yml
+# Edit docker-compose.prod.yml
 sed -i 's/-c shared_buffers=256MB/-c shared_buffers=128MB/' docker-compose.prod.yml
 docker compose up -d postgres
 ```
