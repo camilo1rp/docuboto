@@ -57,18 +57,65 @@ async def _preparar(conn: asyncpg.Connection, schema: str) -> uuid.UUID:
 
 
 @pytest.mark.asyncio
-async def test_el_catalogo_esta_cargado_y_es_el_de_Colombia(tenant_ctx) -> None:
-    """Control de la carga. 33 departamentos son los de DIVIPOLA —32 más
-    Bogotá, D.C.—; que Medellín sea 05001 confirma que los códigos son los
-    oficiales y no una numeración inventada por el volcado de origen."""
+async def test_el_catalogo_cargado_es_EL_DE_DIVIPOLA(tenant_ctx) -> None:
+    """**El guardián que faltaba, y la lección que costó una migración.**
+
+    La carga original se verificó contra cuatro casos conocidos, los cuatro
+    daban bien, y el resto no se comprobó: escondía 38 diferencias con el
+    catálogo del DANE —entre ellas **Pasto colgado de Antioquia**, con el código
+    que pertenece a Alejandría—. Cuatro aciertos no dicen nada de 1.135 filas.
+
+    Se cuenta, que es lo que un caso suelto no hace: DIVIPOLA tiene **1.122
+    entidades vigentes** (1.103 municipios, 18 áreas no municipalizadas y 1
+    isla) y 33 departamentos. Un recuento distinto significa que la carga se
+    quedó corta, se pasó, o volvió a mezclar corregimientos con municipios.
+    """
     _, conn = tenant_ctx
     assert await conn.fetchval("SELECT count(*) FROM public.divipola_departamento") == 33
     assert (
         await conn.fetchval(
-            "SELECT nombre FROM public.divipola_municipio WHERE codigo = $1", MEDELLIN
+            "SELECT count(*) FROM public.divipola_municipio WHERE vigente"
         )
-        == "Medellín"
+        == 1122
     )
+    # Ningún código puede colgar de un departamento que no es el suyo. El CHECK
+    # lo impide fila a fila; esto lo comprueba sobre el catálogo ENTERO, que es
+    # donde se vio el fallo.
+    assert (
+        await conn.fetchval(
+            "SELECT count(*) FROM public.divipola_municipio "
+            "WHERE left(codigo, 2) <> departamento_codigo"
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_los_municipios_que_estaban_MAL_quedaron_bien(tenant_ctx) -> None:
+    """Los tres tipos de defecto que el cotejo encontró, uno por fila: el
+    municipio equivocado, el que faltaba por ser posterior al corte, y el código
+    espurio — que no se borra, se retira de circulación."""
+    _, conn = tenant_ctx
+    filas = dict(
+        await conn.fetch(
+            "SELECT codigo, nombre FROM public.divipola_municipio WHERE vigente "
+            "AND codigo = ANY($1::text[])",
+            ["05021", "52001", "27493"],
+        )
+    )
+    assert filas["05021"] == "Alejandría"   # traía «Pasto»
+    assert filas["52001"] == "Pasto"        # su código de verdad
+    assert filas["27493"] == "Nuevo Belén de Bajirá"  # DANE, 2023
+
+    # 15695 «Sincelejo» en Boyacá: DIVIPOLA no lo reconoce. Puede seguir en la
+    # tabla —una ficha podría apuntarlo— pero **no debe llegar a la cascada**,
+    # que es lo que el usuario ve. Se comprueba sobre el listado y no sobre la
+    # columna `vigente`: así vale igual para un despliegue que aplicó 003 y 004
+    # que para uno que arrancó ya con el catálogo bueno.
+    from app.repositories.tercero_repository import TerceroRepository
+
+    boyaca = await TerceroRepository(conn, "itest").list_municipios("15")
+    assert "15695" not in {m["codigo"] for m in boyaca}
 
 
 @pytest.mark.asyncio

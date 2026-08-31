@@ -8,6 +8,19 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/) + [Conventiona
 
 ### Added
 
+- `fix(document)`: **el catálogo DIVIPOLA que cargué no era el del DANE** (RF-RAD-05)
+  Pregunta del usuario horas después de entregarlo: *«revisa si cambió la DIVIPOLA del DANE»*. No solo había cambiado — **lo que cargué nunca fue el catálogo oficial**.
+  La migración `003` lo tomó del volcado del Orfeo de ICETEX y lo verificó contra **cuatro casos conocidos**: 05001 Medellín, 11001 Bogotá, 27150 Carmen del Darién, 91001 Leticia. Los cuatro daban bien. El resto no se comprobó. **Cuatro aciertos no dicen nada de 1.135 filas**, y encima había una fuente oficial descargable que ni busqué.
+  El cotejo mecánico contra el DANE (Datos Abiertos, recurso `gdxc-w37w`) encontró **38 diferencias**:
+  **15 nombres distintos, y uno no era una variante de escritura sino un municipio EQUIVOCADO**: el volcado traía `(muni_codi=21, dpto=05, 'PASTO')` — **Pasto colgado de Antioquia**, con el código que pertenece a Alejandría. Pasto es 52001, en Nariño. Alejandría figuraba a su vez en 05076, que tampoco es su código. Verificado en el propio volcado: el dato de origen está corrupto, no fue un fallo de extracción — es la basura acumulada de una instalación real, irónicamente la misma clase de suciedad que este catálogo existe para impedir.
+  **18 códigos que DIVIPOLA no reconoce**: Sincelejo en el departamento 15 (Boyacá), Solano en 18765 en vez de 18756, corregimientos y veredas mezclados con municipios.
+  **5 municipios ausentes**, incluidos Tuchín (23815) y **Nuevo Belén de Bajirá** (27493), segregado de Riosucio e incorporado por el DANE en 2023.
+  Los 33 departamentos sí coincidían — se habían escrito a mano contra la denominación oficial, que es exactamente lo que no se hizo con los municipios.
+  **Migración `004` nueva, no se reescribe la `003`.** El libro `public.schema_migrations` identifica por `(servicio, nombre_archivo)` y **no guarda hash del contenido**: editar la `003` dejaría a cualquier despliegue que ya la aplicó con el catálogo malo y sin que nada avisara. Es el fallo mudo que este proyecto ya conoce.
+  Un código que el DANE no reconoce **no se borra**: se marca `vigente = false`. Borrarlo rompería una ficha que ya lo apuntara, y la política de no borrar un municipio suprimido la declaró la propia `003`. Desaparece de la cascada y sigue resolviendo el nombre de un envío histórico.
+  **El guardián que faltaba CUENTA, que es lo que un caso suelto no hace**: 1.122 entidades vigentes (1.103 municipios + 18 áreas no municipalizadas + 1 isla) y 33 departamentos, más la coherencia código↔departamento sobre el catálogo entero. Mutado dejando el catálogo sin corregir: los dos tests nuevos se ponen en rojo.
+  *Por qué*: un vocabulario cerrado con el municipio equivocado es peor que el texto libre — el texto libre al menos no afirma ser oficial — *Impacto*: migración `global/004`, 1.122 entidades desde la fuente del DANE, y dos tests que cuentan en vez de mirar cuatro filas.
+
 - `feat(document,storage,frontend)`: **la geografía se elige y ya no se escribe** (RF-RAD-05, cascada DIVIPOLA) **y la migración de formato deja de necesitar que alguien la invoque uno a uno** (RF-PRE-04, barrido periódico)
   Los dos pendientes que quedaron declarados al cerrar sus incrementos. No se parecen en nada salvo en la forma del defecto: **una capacidad construida a la que no había forma de llegar.**
   **1) La otra mitad del problema de duplicación.** Las tres defensas de RF-RAD-05 atajaban el duplicado del SUJETO. En el DESTINO seguía abierto: mientras `municipio` y `departamento` fueron texto libre, «Bogotá», «BOGOTA», «Bogota D.C.» y «Santa Fe de Bogotá» eran **cuatro municipios distintos** para cualquier consulta, cualquier reporte y cualquier exportación. Una restricción de unicidad no lo cierra —las cuatro escrituras SON distintas y todas pasan—; lo único que lo cierra es que el municipio deje de ser algo que se escribe.

@@ -25,6 +25,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Added
 
+- `fix(document)`: **the DIVIPOLA catalogue I loaded was not DANE's** (RF-RAD-05)
+  The user asked hours after delivery: *"check whether DANE's DIVIPOLA changed"*. It had not merely changed — **what I loaded was never the official catalogue**.
+  Migration `003` took it from the ICETEX Orfeo dump and verified it against **four known cases**: 05001 Medellín, 11001 Bogotá, 27150 Carmen del Darién, 91001 Leticia. All four were right. The rest was not checked. **Four hits say nothing about 1,135 rows**, and there was a downloadable official source I never even looked for.
+  A mechanical comparison against DANE (Colombian Open Data, resource `gdxc-w37w`) found **38 differences**:
+  **15 different names, and one was not a spelling variant but the WRONG municipality**: the dump carried `(muni_codi=21, dpto=05, 'PASTO')` — **Pasto attached to Antioquia**, under the code belonging to Alejandría. Pasto is 52001, in Nariño. Alejandría in turn appeared as 05076, which is not its code either. Verified in the dump itself: the source data is corrupt, it was not an extraction bug — it is the accumulated junk of a real installation, ironically the same kind of dirt this catalogue exists to prevent.
+  **18 codes DIVIPOLA does not recognise**: Sincelejo under department 15 (Boyacá), Solano as 18765 instead of 18756, corregimientos and villages mixed in with municipalities.
+  **5 missing municipalities**, including Tuchín (23815) and **Nuevo Belén de Bajirá** (27493), segregated from Riosucio and added by DANE in 2023.
+  The 33 departments did match — they had been written by hand against the official denomination, which is exactly what was not done for the municipalities.
+  **A new migration `004`; `003` is not rewritten.** The `public.schema_migrations` ledger identifies by `(service, file name)` and **stores no content hash**: editing `003` would leave any deployment that already applied it with the bad catalogue and nothing to warn about it. That is the silent failure this project already knows.
+  A code DANE does not recognise is **not deleted**: it is flagged `vigente = false`. Deleting it would break a record already pointing at it, and the policy of not deleting a suppressed municipality was declared by `003` itself. It drops out of the cascade and still resolves a historical dispatch's name.
+  **The missing guard COUNTS, which is what a single case does not do**: 1,122 current entities (1,103 municipalities + 18 non-municipalised areas + 1 island) and 33 departments, plus code↔department coherence across the whole catalogue. Mutated by leaving the catalogue uncorrected: both new tests go red.
+  *Why*: a closed vocabulary holding the wrong municipality is worse than free text — free text at least does not claim to be official — *Impact*: migration `global/004`, 1,122 entities from DANE's source, and two tests that count instead of looking at four rows.
+
 - `feat(document,storage,frontend)`: **geography is now chosen, not typed** (RF-RAD-05, DIVIPOLA cascade) **and format migration no longer needs to be invoked one file at a time** (RF-PRE-04, periodic sweep)
   The two items left declared as pending when their increments closed. They have nothing in common except the shape of the defect: **a capability that was built and had no door**.
   **1) The other half of the duplication problem.** RF-RAD-05's three defences tackled duplication of the SUBJECT. At the DESTINATION it stayed open: while `municipio` and `departamento` were free text, "Bogotá", "BOGOTA", "Bogota D.C." and "Santa Fe de Bogotá" were **four different municipalities** to every query, report and export. A uniqueness constraint does not close it — the four spellings ARE different and all of them pass; the only thing that closes it is the municipality no longer being something you type.
