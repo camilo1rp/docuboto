@@ -47,6 +47,7 @@ from app.schemas.cadena import (
     RechazoRequest,
     SolicitudCreate,
     SolicitudResponse,
+    VistoBuenoRequest,
 )
 from app.services.cadena_service import CadenaFirmaService
 
@@ -186,6 +187,40 @@ async def sign_turn(
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
     authorization = request.headers.get("Authorization")
     return await _service(conn, tenant_slug).firmar(solicitud_id, actor, body, authorization)
+
+
+# ---------------------------------------------------------------------------
+# Visto bueno del turno activo (E23, RF-PRO-10)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/requests/{solicitud_id}/vobo",
+    response_model=SolicitudResponse,
+    summary="Da el visto bueno del turno activo (rol='visto_bueno')",
+)
+async def visto_bueno_turn(
+    solicitud_id: uuid.UUID,
+    request: Request,
+    body: VistoBuenoRequest | None = None,
+    actor: uuid.UUID = Depends(get_actor),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> SolicitudResponse:
+    """Aprueba sin firmar.
+
+    Un visto bueno no compromete a la entidad: no produce `firma` ni genera el
+    documento definitivo. Lo que sí hace —y es lo que hoy falta— es quedar
+    anclado a la huella del texto exacto que se aprobó, así que un turno sobre
+    un documento ya modificado se rechaza con `409 documento_modificado` igual
+    que una firma.
+
+    Un turno de `rol='firma'` responde `409 turno_es_de_firma`: resolverlo por
+    aquí sería la vía para comprometer a la entidad sin firmar.
+    """
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    return await _service(conn, tenant_slug).dar_visto_bueno(
+        solicitud_id, actor, body.comentario if body else None
+    )
 
 
 # ---------------------------------------------------------------------------

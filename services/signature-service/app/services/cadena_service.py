@@ -39,7 +39,11 @@ from lxml import etree
 
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
-from app.core.constants import CADENA_NIVEL_AUTORITATIVO, CADENA_PAYLOAD_OBLIGATORIO
+from app.core.constants import (
+    CADENA_NIVEL_AUTORITATIVO,
+    CADENA_PAYLOAD_AUTORITATIVO,
+    CADENA_PAYLOAD_OBLIGATORIO,
+)
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
     BorradorDesaparecidoError,
@@ -270,6 +274,17 @@ class CadenaFirmaService:
                 },
             )
 
+        # ── La huella la fija el SERVIDOR donde hay productor ────────────────
+        #
+        # Gemelo de la resolución del nivel de arriba: para un `borrador`, la
+        # huella autoritativa es la que tiene document-service, no la que diga
+        # el cliente. Fail-closed — si no se puede resolver, no se abre el
+        # circuito: una cadena con la huella equivocada es peor que ninguna,
+        # porque parece que protege.
+        huella = payload.payload_sha256
+        if payload.objeto_tipo in CADENA_PAYLOAD_AUTORITATIVO:
+            huella = await self._resolver_huella(payload.objeto_id)
+
         if await self._repo.existe_abierta(payload.objeto_tipo, payload.objeto_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -289,12 +304,12 @@ class CadenaFirmaService:
                     "objeto_tipo": payload.objeto_tipo,
                     "objeto_id": payload.objeto_id,
                     "titulo": payload.titulo,
-                    "payload_sha256": payload.payload_sha256,
+                    "payload_sha256": huella,
                     "creado_por": actor,
                     "nivel_seguridad": nivel,
                 }
             )
-            await self._repo.crear_turnos(sol["id"], payload.firmantes)
+            await self._repo.crear_turnos(sol["id"], payload.firmantes, payload.roles)
             if _AUDIT_AVAILABLE:
                 await _audit.append(
                     self._conn,
@@ -594,6 +609,56 @@ class CadenaFirmaService:
             canal=canal_masked,
             expira_at=expira_at,
         )
+
+    async def _resolver_huella(self, objeto_id: str) -> str:
+        """Huella autoritativa del documento producido, desde su productor.
+
+        `409 documento_sin_producir` cuando el borrador todavía no tiene PDF/A:
+        abrir un circuito sobre un borrador sin documento dejaría a los
+        revisores aprobando un texto que nadie ha convertido en documento, y al
+        firmante sin nada que firmar. Es un error del orden de trabajo, no de la
+        herramienta, y decirlo así ahorra la búsqueda.
+        """
+        try:
+            vigente = await get_huella_borrador(str(objeto_id), self._tenant_slug)
+        except BorradorDesaparecidoError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "solicitud_not_found",
+                    "detail": "No existe la solicitud de firma",
+                    "status": 404,
+                },
+            ) from exc
+        except HuellaNoVerificableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "verificacion_documento_no_disponible",
+                    "detail": (
+                        "No se pudo resolver la huella del documento y sin ella "
+                        f"la cadena no vincularia a nadie: {exc}"
+                    ),
+                    "status": 503,
+                },
+            ) from exc
+
+        huella = vigente.get("documento_sha256")
+        if not huella:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "documento_sin_producir",
+                    "detail": (
+                        "Este borrador todavia no tiene documento generado: los "
+                        "revisores aprobarian un texto que nadie ha convertido en "
+                        "documento y el firmante no tendria que firmar. "
+                        "Previsualice o genere el documento antes de abrir el circuito."
+                    ),
+                    "status": 409,
+                },
+            )
+        return str(huella)
 
     async def _gate_documento_vigente(self, sol) -> None:
         """Lo que se firma tiene que seguir siendo lo que se aprobó (RF-PRO-11).
@@ -1581,6 +1646,129 @@ class CadenaFirmaService:
                         "solicitud_id": str(solicitud_id),
                         "orden": turno["orden"],
                         "motivo": motivo,
+                    },
+                )
+
+        return await self.get(solicitud_id, actor)
+
+    async def dar_visto_bueno(
+        self,
+        solicitud_id: uuid.UUID,
+        actor: uuid.UUID,
+        comentario: str | None = None,
+    ) -> SolicitudResponse:
+        """Resuelve un turno de `rol='visto_bueno'` (E23, RF-PRO-10).
+
+        ── Qué lo separa de `firmar`, y por qué ───────────────────────────────
+
+        Un visto bueno **no compromete a la entidad**: dice «he leído esto y me
+        parece bien», no «esto sale con mi firma». Por eso el turno se resuelve
+        sin producir una `firma`, y el documento definitivo lo genera solo el
+        turno de `rol='firma'`. Presentar los dos actos igual atribuiría a un
+        revisor un compromiso que no adquirió.
+
+        ── Sobre el segundo factor (D-6) ──────────────────────────────────────
+
+        **El anclaje al hash es obligatorio siempre; la PKI y el 2FA no.**
+        `_gate_documento_vigente` corre aquí igual que en `firmar`, así que un
+        visto bueno siempre sabe QUÉ texto aprobó — que es lo que hoy falta.
+        Exigir además credencial de firma y segundo factor a cada revisor es
+        viable en una entidad de tres personas y no en una de cuarenta; el
+        anclaje al hash más la auditoría inmutable ya prueban qué vio cada uno.
+        El firmante final sí firma con PKI: es quien compromete a la entidad.
+
+        Un turno de `rol='firma'` NO se puede resolver por aquí: sería
+        exactamente la vía para comprometer a la entidad sin firmar.
+        """
+        sol = await self._get_or_404(solicitud_id)
+        # No-read-up antes que cualquier otra guarda (RF-SEG-08, D-15).
+        await self._assert_can_read(sol, actor)
+
+        if sol["estado"] != "pendiente":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "solicitud_no_pendiente",
+                    "detail": f"La solicitud ya está en estado «{sol['estado']}»",
+                    "status": 409,
+                },
+            )
+
+        # El mismo gate que la firma: un visto bueno sobre un texto que ya
+        # cambió no dice nada de lo que hay ahora.
+        await self._gate_documento_vigente(sol)
+
+        if not await self._repo.es_firmante(solicitud_id, actor):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "no_es_firmante",
+                    "detail": "El actor no pertenece a esta cadena",
+                    "status": 403,
+                },
+            )
+
+        async with self._conn.transaction():
+            turno = await self._repo.turno_activo_for_update(solicitud_id)
+            if turno is None or turno["firmante_id"] != actor:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "solicitud_no_pendiente",
+                        "detail": "El turno activo cambió antes de registrar el visto bueno",
+                        "status": 409,
+                    },
+                )
+            if turno["rol"] != "visto_bueno":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "turno_es_de_firma",
+                        "detail": (
+                            "Este turno es de FIRMA, no de visto bueno: resolverlo "
+                            "por aquí comprometeria a la entidad sin firmar. Use "
+                            "POST /signature/requests/{id}/sign."
+                        ),
+                        "status": 409,
+                    },
+                )
+
+            ok = await self._repo.marcar_turno(
+                turno["id"], "firmado", comentario=comentario
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "solicitud_no_pendiente",
+                        "detail": "Otra petición ya resolvió este turno",
+                        "status": 409,
+                    },
+                )
+
+            # Si no quedan turnos, la cadena está completa. Solo puede ocurrir
+            # cuando el último es de firma —el schema exige al menos uno—, así
+            # que aquí siempre queda alguno; se comprueba igualmente para no
+            # dejar la cabecera 'pendiente' sobre una cadena sin turnos.
+            if await self._repo.turno_activo(solicitud_id) is None:
+                await self._repo.actualizar_estado_solicitud(solicitud_id, "firmado")
+
+            if _AUDIT_AVAILABLE:
+                await _audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="firma.visto_bueno_dado",
+                    object_type=sol["objeto_tipo"],
+                    object_ref=sol["objeto_id"],
+                    actor=str(actor),
+                    payload={
+                        "solicitud_id": str(solicitud_id),
+                        "orden": turno["orden"],
+                        # La huella va en el asiento: es lo que convierte
+                        # «aprobó» en «aprobó ESTE texto».
+                        "payload_sha256": sol["payload_sha256"],
+                        "comentario": comentario,
                     },
                 )
 

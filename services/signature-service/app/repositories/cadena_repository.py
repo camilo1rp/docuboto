@@ -18,6 +18,7 @@ que usa get_db_conn sin tenant). Todos los placeholders usan $N de asyncpg.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 import asyncpg
 
@@ -28,7 +29,9 @@ _SOL_COLS = (
     "nivel_seguridad, created_at, updated_at"
 )
 
-_CAD_COLS = "id, solicitud_id, orden, firmante_id, estado, firma_id, comentario, decidido_at"
+_CAD_COLS = (
+    "id, solicitud_id, orden, firmante_id, rol, estado, firma_id, comentario, decidido_at"
+)
 
 
 class CadenaRepository:
@@ -169,16 +172,26 @@ class CadenaRepository:
     # ------------------------------------------------------------------
 
     async def crear_turnos(
-        self, solicitud_id: uuid.UUID, firmantes: list[uuid.UUID]
+        self,
+        solicitud_id: uuid.UUID,
+        firmantes: list[uuid.UUID],
+        roles: Sequence[str] | None = None,
     ) -> None:
-        """Inserts all chain turns (orden 1..N) for the given solicitud."""
-        for orden, firmante_id in enumerate(firmantes, start=1):
+        """Inserta los turnos de la cadena (orden 1..N).
+
+        `roles` es paralelo a `firmantes`. Cuando falta, todos los turnos son
+        de `firma`: es lo que eran todas las cadenas antes de E23, y un default
+        distinto reescribiría su significado en silencio.
+        """
+        for indice, (orden, firmante_id) in enumerate(enumerate(firmantes, start=1)):
+            rol = roles[indice] if roles else "firma"
             await self._conn.execute(
-                "INSERT INTO firma_cadena (solicitud_id, orden, firmante_id) "
-                "VALUES ($1, $2, $3)",
+                "INSERT INTO firma_cadena (solicitud_id, orden, firmante_id, rol) "
+                "VALUES ($1, $2, $3, $4)",
                 solicitud_id,
                 orden,
                 firmante_id,
+                rol,
             )
 
     async def list_turnos(self, solicitud_id: uuid.UUID) -> list[asyncpg.Record]:

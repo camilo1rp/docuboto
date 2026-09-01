@@ -96,6 +96,20 @@ CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador", "document
 # canónico que firmar, entra aquí.
 CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador", "documento"})
 
+# Tipos cuya huella tiene FUENTE AUTORITATIVA fuera de este servicio: el
+# `payload_sha256` del body se IGNORA y se resuelve contra el productor.
+#
+# Es el gemelo exacto de `CADENA_NIVEL_AUTORITATIVO` de más abajo, y por el
+# mismo motivo: **una huella que el llamante elige no vincula a nadie**. Si el
+# cliente pudiera declararla, bastaría con enviar la del documento anterior para
+# que la cadena siguiera pareciendo válida después de editar el texto — el
+# fraude que todo esto existe para impedir, entrando por la puerta principal.
+#
+# `documento` NO está aquí: es un tipo genérico sin productor conocido, así que
+# la huella que declara su autor es la única verdad disponible. Por eso el
+# schema la sigue exigiendo — para ese caso es la única defensa.
+CADENA_PAYLOAD_AUTORITATIVO = frozenset({"borrador"})
+
 # Tipos de cadena cuyo nivel de seguridad tiene FUENTE AUTORITATIVA en el schema
 # del tenant: `objeto_tipo -> (tabla, columnas de identidad)`. Para estos, el
 # `nivel_seguridad` del body se IGNORA y, si el objeto no resuelve, la creación

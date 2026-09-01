@@ -1323,12 +1323,24 @@ async def test_radicado_que_no_resuelve_es_404_no_nivel_declarado() -> None:
 
 
 @pytest.mark.asyncio
-async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado() -> None:
+async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado(
+    monkeypatch,
+) -> None:
     """Contrapeso del test anterior: un borrador NO es un documento registrado, no
     hay tabla que consultar, y el nivel que declara su autor sigue siendo válido.
 
     Sin este test, endurecer de más pasaría inadvertido — el otro defecto posible.
+
+    La HUELLA sí tiene fuente autoritativa desde E23 (document-service), así que
+    se sustituye la consulta: lo que este test comprueba es el nivel, y dejar que
+    salga a la red lo convertiría en un test de integración encubierto.
     """
+    from app.services import cadena_service as _mod
+
+    async def _huella(borrador_id: str, tenant_slug: str) -> dict:
+        return {"version": 1, "documento_sha256": "a" * 64}
+
+    monkeypatch.setattr(_mod, "get_huella_borrador", _huella)
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=2)
     conn.fetchval.side_effect = [True, None, None, None]

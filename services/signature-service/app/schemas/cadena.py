@@ -42,6 +42,9 @@ class SolicitudCreate(BaseModel):
     payload_sha256: str | None = None
     # At least one signer required; the requester's identity comes from JWT (RF-FIR-11).
     firmantes: list[uuid.UUID] = Field(..., min_length=1)
+    #: Rol de cada turno, paralelo a `firmantes`. Omitirlo deja la cadena como
+    #: era antes de E23: todos los turnos de firma.
+    roles: list[Literal["visto_bueno", "firma"]] | None = None
     # Security level override for non-radicado objects (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA).
     # For objeto_tipo='radicado', the level is resolved from radicados.nivel_seguridad
     # and this field is ignored. For other types, defaults to 1 (PUBLICA) when omitted.
@@ -60,6 +63,26 @@ class SolicitudCreate(BaseModel):
         if v is not None and not re.fullmatch(r"[0-9a-f]{64}", v):
             raise ValueError("payload_sha256 must be exactly 64 lowercase hex characters")
         return v
+
+    @model_validator(mode="after")
+    def roles_paralelos_a_firmantes(self) -> SolicitudCreate:
+        """Las dos listas describen los mismos turnos: o casan, o no hay cadena.
+
+        Un desajuste silencioso repartiría los roles corridos —el revisor
+        quedaría de firmante— y nadie lo vería hasta que alguien firmara algo
+        que solo iba a revisar.
+        """
+        if self.roles is not None and len(self.roles) != len(self.firmantes):
+            raise ValueError(
+                f"roles ({len(self.roles)}) y firmantes ({len(self.firmantes)}) "
+                "deben tener la misma longitud: describen los mismos turnos"
+            )
+        if self.roles is not None and "firma" not in self.roles:
+            raise ValueError(
+                "la cadena necesita al menos un turno con rol='firma': un "
+                "circuito de solo vistos buenos no produce documento definitivo"
+            )
+        return self
 
     @model_validator(mode="after")
     def exigir_huella_donde_hay_documento(self) -> SolicitudCreate:
@@ -112,6 +135,10 @@ class TurnoItem(BaseModel):
 
     orden: int
     firmante_id: uuid.UUID
+    #: `visto_bueno` | `firma`. El turno de firma es el que compromete a la
+    #: entidad; los vistos buenos son evidencia del trámite. Presentarlos igual
+    #: atribuiría a un revisor un compromiso que no adquirió (E23, RF-PRO-10).
+    rol: str = "firma"
     estado: str
     firma_id: uuid.UUID | None = None
     comentario: str | None = None
@@ -149,6 +176,16 @@ class PendientesResponse(BaseModel):
     total: int
     page: int
     size: int
+
+
+class VistoBuenoRequest(BaseModel):
+    """Nota opcional del revisor.
+
+    El comentario es opcional, al revés que el motivo de un rechazo: aprobar no
+    exige explicación, detener el trámite de otro sí.
+    """
+
+    comentario: str | None = Field(default=None, max_length=2000)
 
 
 class RechazoRequest(BaseModel):
