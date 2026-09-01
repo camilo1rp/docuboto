@@ -32,6 +32,12 @@ def _plantilla_row(**kw) -> dict:
     return base
 
 
+#: Fila que devuelve `resolve_caller_clearance`. Crear un borrador la consulta
+#: SIEMPRE (E23): el contexto de combinación lee el radicado padre y sin
+#: clearance esa lectura sería fail-open.
+_CLEARANCE_ROW = {"is_root": False, "max_level": 3}
+
+
 def _borrador_row(**kw) -> dict:
     base = {
         "id": uuid.uuid4(),
@@ -71,8 +77,9 @@ async def test_crear_plantilla(client_with_conn) -> None:
 async def test_crear_borrador_desde_plantilla(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     pid = uuid.uuid4()
-    # get_plantilla (cuerpo) → insert_borrador
+    # clearance → get_plantilla (cuerpo) → insert_borrador
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _plantilla_row(id=pid, cuerpo="Cuerpo de plantilla"),
         _borrador_row(plantilla_id=pid, cuerpo="Cuerpo de plantilla"),
     ]
@@ -337,3 +344,210 @@ async def test_radicar_un_borrador_sin_aprobar_es_409(client_with_conn) -> None:
     assert resp.json()["detail"]["error"] == "borrador_sin_aprobar"
     # Nada de la secuencia de radicación llegó a ejecutarse.
     assert mock_conn.fetchrow.await_count == 1
+
+
+# ── E23 Inc.1: vocabulario, validación y combinación ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_el_vocabulario_se_puede_consultar(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    resp = await client.get("/api/v1/plantillas/campos", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    nombres = {c["nombre"] for c in resp.json()["campos"]}
+    assert {"NOM_R", "RAD_E", "F_HOY", "RAD_S"} <= nombres
+
+
+@pytest.mark.asyncio
+async def test_campos_no_se_confunde_con_un_id_de_plantilla(client_with_conn) -> None:
+    """FastAPI casa por orden de declaración.
+
+    Si `/plantillas/campos` quedara declarada DESPUÉS de `/plantillas/{id}`,
+    esta petición devolvería un 422 de UUID inválido en vez del vocabulario, y
+    el fallo solo aparecería al abrir la pantalla.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    resp = await client.get("/api/v1/plantillas/campos", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert "campos" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_una_plantilla_con_marcador_inventado_no_se_guarda(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    resp = await client.post(
+        "/api/v1/plantillas",
+        json={"nombre": "Mala", "cuerpo": "Señor *NOM_INVENTADO*, ..."},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    detalle = resp.json()["detail"]
+    assert detalle["error"] == "marcador_desconocido"
+    # La LISTA, no un «no válido» a secas: sin ella hay que buscarlo a ojo en un
+    # cuerpo de varias páginas, y el camino corto es borrar marcadores buenos.
+    assert detalle["marcadores"] == ["NOM_INVENTADO"]
+    mock_conn.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_una_plantilla_con_marcadores_validos_si_se_guarda(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _plantilla_row(cuerpo="Señor *NOM_P*: *ASUNTO*")
+    resp = await client.post(
+        "/api/v1/plantillas",
+        json={"nombre": "Buena", "cuerpo": "Señor *NOM_P*: *ASUNTO*"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_crear_desde_plantilla_combina_y_reporta_faltantes(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    pid = uuid.uuid4()
+    padre = uuid.uuid4()
+    registered = datetime(2026, 3, 4, tzinfo=UTC)
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _plantilla_row(id=pid, cuerpo="Señor *NOM_R*, sobre *RAD_E*. Tel: *TEL_R*"),
+        {  # radicado padre
+            "id": padre,
+            "tracking_number": "2026-DEMO-E-000001",
+            "subject": "Petición",
+            "pages": 2,
+            "registered_at": registered,
+            "sender_name": None,
+            "sender_entity": None,
+        },
+        {  # actor remitente (copia congelada), sin teléfono
+            "nombre": "Ana Ruiz",
+            "entidad": None,
+            "email": None,
+            "telefono": None,
+            "direccion": "Calle 1",
+            "municipio": "Bogotá",
+            "departamento": "Bogotá D.C.",
+            "numero_documento": "1000",
+        },
+        _borrador_row(plantilla_id=pid, cuerpo="Señor Ana Ruiz, sobre 2026-DEMO-E-000001. Tel: "),
+    ]
+    mock_conn.fetch.return_value = []
+    resp = await client.post(
+        "/api/v1/borradores",
+        json={
+            "doc_type": "S",
+            "subject": "Resp.",
+            "plantilla_id": str(pid),
+            "radicado_padre_id": str(padre),
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    # El teléfono no estaba: se vacía en el texto Y se declara.
+    assert resp.json()["faltantes"] == ["TEL_R"]
+    # Y lo que se INSERTA es el cuerpo ya combinado, no la plantilla literal.
+    insert = mock_conn.fetchrow.await_args_list[-1]
+    assert "*NOM_R*" not in insert.args[4]
+    assert "Ana Ruiz" in insert.args[4]
+
+
+@pytest.mark.asyncio
+async def test_el_padre_por_encima_del_clearance_no_aporta_contexto(client_with_conn) -> None:
+    """El gate va en el WHERE, y su efecto es indistinguible de «no existe».
+
+    Sin él, crear un borrador contra un radicado reservado escribiría su asunto
+    dentro del cuerpo de un documento legible por cualquiera: la combinación
+    sería una vía de exfiltración.
+    """
+    client, mock_conn = client_with_conn
+    pid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": False, "max_level": 1},
+        _plantilla_row(id=pid, cuerpo="Sobre *RAD_E*: *ASUNTO*"),
+        None,  # el WHERE nivel_seguridad <= 1 no devuelve fila
+        _borrador_row(plantilla_id=pid, cuerpo="Sobre : "),
+    ]
+    resp = await client.post(
+        "/api/v1/borradores",
+        json={
+            "doc_type": "S",
+            "subject": "Resp.",
+            "plantilla_id": str(pid),
+            "radicado_padre_id": str(uuid.uuid4()),
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    assert set(resp.json()["faltantes"]) == {"RAD_E", "ASUNTO"}
+    cuerpo = mock_conn.fetchrow.await_args_list[-1].args[4]
+    assert "Petición" not in cuerpo
+
+    # Y esto es lo que de verdad prueba el gate. Con un mock, quien decide que
+    # no hay fila es el mock, no el `WHERE`: borrar el filtro dejaría el test en
+    # verde. Así que se inspecciona el SQL **enviado** y su parámetro.
+    consulta_padre = mock_conn.fetchrow.await_args_list[2]
+    sql = " ".join(consulta_padre.args[0].split())
+    assert "nivel_seguridad <= $2" in sql, sql
+    assert consulta_padre.args[2] == 1
+
+
+@pytest.mark.asyncio
+async def test_combinar_plantilla_devuelve_texto_resuelto(client_with_conn) -> None:
+    """La pantalla pide el cuerpo YA combinado, no la plantilla cruda.
+
+    Si la interfaz precargara la plantilla literal en el editor y la enviara
+    tal cual, la combinación del servidor nunca se ejecutaría: el `cuerpo`
+    vendría lleno y la rama que combina no se tocaría nunca. Es el patrón del
+    dato cargado que nadie lee, y aquí acabaría con `*NOM_R*` impreso en el
+    oficio del ciudadano.
+    """
+    client, mock_conn = client_with_conn
+    pid = uuid.uuid4()
+    padre = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _plantilla_row(id=pid, cuerpo="Señor *NOM_R*: *ASUNTO*. Tel *TEL_R*"),
+        {
+            "id": padre,
+            "tracking_number": "2026-DEMO-E-000009",
+            "subject": "Queja",
+            "pages": 1,
+            "registered_at": datetime(2026, 5, 5, tzinfo=UTC),
+            "sender_name": None,
+            "sender_entity": None,
+        },
+        {
+            "nombre": "Luis Páez",
+            "entidad": None,
+            "email": None,
+            "telefono": None,
+            "direccion": None,
+            "municipio": None,
+            "departamento": None,
+            "numero_documento": None,
+        },
+    ]
+    mock_conn.fetch.return_value = []
+    resp = await client.post(
+        f"/api/v1/plantillas/{pid}/combinar",
+        json={"radicado_padre_id": str(padre)},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200
+    cuerpo = resp.json()["cuerpo"]
+    assert cuerpo == "Señor Luis Páez: Queja. Tel "
+    assert resp.json()["faltantes"] == ["TEL_R"]
+
+
+@pytest.mark.asyncio
+async def test_combinar_una_plantilla_inexistente_da_404(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, None]
+    resp = await client.post(
+        f"/api/v1/plantillas/{uuid.uuid4()}/combinar", json={}, headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 404

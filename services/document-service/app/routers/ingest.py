@@ -173,11 +173,31 @@ async def crear_cuenta(
 
 @cuentas_router.get(
     "", response_model=list[CuentaResponse],
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    # `PERM_RADI`, no `USUA_PERM_ADMIN`, y el cambio no afloja nada: **QUÉ cuentas
+    # devuelve esto no lo decide el gate, lo decide el `WHERE` del repositorio**
+    # (`_VISIBLE`), que reparte una cuenta personal a su dueño y una institucional
+    # a los funcionarios asignados. Ese `WHERE` recibe `es_admin` como PARÁMETRO
+    # —está escrito para servir también a quien no lo es— y el gate de
+    # administrador dejaba esa rama en código muerto.
+    #
+    # El efecto era que un funcionario de ventanilla **no podía llegar a su
+    # buzón**: la bandeja se gatea con `PERM_RADI` a propósito (quien trabaja el
+    # correo recibido es la unidad de correspondencia, no un administrador), pero
+    # la única forma de saber qué cuentas existen y con qué identificador era este
+    # listado, cerrado con un permiso que esa persona no tiene. Capacidad
+    # construida, gateada para su público y sin puerta — el mismo patrón que ya se
+    # corrigió en `liberar()`.
+    dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def listar_cuentas(
     request: Request, conn: asyncpg.Connection = Depends(get_tenant_conn)
 ) -> Any:
+    """Las cuentas de correo que ALCANZA quien pregunta, no todas las de la entidad.
+
+    Un administrador ve además las institucionales que no tiene asignadas —tiene
+    que poder configurarlas—, pero nunca las personales de nadie. No sale ningún
+    secreto: solo `tiene_credencial`, que dice si está configurada.
+    """
     slug = _tenant_slug(request)
     actor = _actor(request)
     return await EmailCuentaService(conn, slug).listar(

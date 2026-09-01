@@ -60,11 +60,23 @@ export async function load({ cookies, parent, fetch, params }) {
   const [cuentas] = await traer(`${API_V1}/email/cuentas`, []);
   const cuenta = Array.isArray(cuentas) ? cuentas.find((c) => c.id === cuentaId) : null;
 
+  // Los dos vocabularios que el funcionario elige al radicar. Antes se
+  // escribían a mano, y eso tenía dos costes distintos: la dependencia quedaba
+  // como texto libre —sin vínculo con el organigrama, así que el radicado no
+  // aparecía al repartir por código y «Jurídica» y «Juridica» eran dos áreas— y
+  // el tipo documental escrito a mano no casa con ninguna serie de la TRD, que
+  // es la que gobierna cuánto se conserva. Un radicado nacido en ventanilla
+  // nunca tuvo ese problema: `/radicar` siempre ofreció selectores.
+  const [dependencias] = await traer(`${API_V1}/dependencias?activo=true`, []);
+  const [tiposDocumentales] = await traer(`${API_V1}/tipos-documentales?activo=true`, []);
+
   return {
     cuentaId,
     cuenta: cuenta ?? null,
     correos: Array.isArray(correos) ? correos : [],
     correosError,
+    dependencias: Array.isArray(dependencias) ? dependencias : [],
+    tiposDocumentales: Array.isArray(tiposDocumentales) ? tiposDocumentales : [],
     // Quién soy, para distinguir «lo tengo yo» de «lo tiene otro» sin exponer la
     // identidad de los demás.
     //

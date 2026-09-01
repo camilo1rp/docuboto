@@ -17,23 +17,50 @@ Ciclo del borrador: crear (opc. desde plantilla) → editar → aprobar → RADI
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
 
+from app.core.combinacion import combinar, desconocidos
 from app.repositories.borrador_repository import BorradorRepository
 from app.schemas.borrador import (
     BorradorCreate,
     BorradorResponse,
     BorradorUpdate,
+    CombinarRequest,
+    CombinarResponse,
     PlantillaCreate,
     PlantillaResponse,
 )
 from app.schemas.document import DocumentCreate, DocumentResponse
+from app.services.contexto_combinacion import ContextoCombinacion
 
 
-def _bo(row) -> BorradorResponse:
-    return BorradorResponse(**dict(row))
+def _bo(row, faltantes: list[str] | None = None) -> BorradorResponse:
+    return BorradorResponse(**dict(row), faltantes=faltantes or [])
+
+
+def _marcadores_desconocidos(cuerpo: str) -> HTTPException:
+    """422 con la lista, no un 'no válido' a secas.
+
+    Quien escribe la plantilla necesita saber QUÉ marcador sobra: un rechazo sin
+    la lista obliga a buscarlo a ojo en un cuerpo de varias páginas, y el camino
+    corto entonces es borrar marcadores buenos hasta que pase.
+    """
+    faltan = desconocidos(cuerpo)
+    return HTTPException(
+        status_code=422,
+        detail={
+            "error": "marcador_desconocido",
+            "detail": (
+                "La plantilla usa marcadores que no existen en el vocabulario: "
+                + ", ".join(f"*{m}*" for m in faltan)
+            ),
+            "marcadores": faltan,
+            "status": 422,
+        },
+    )
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -43,17 +70,58 @@ def _not_found(detail: str) -> HTTPException:
 
 
 class BorradorService:
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(
+        self,
+        conn: asyncpg.Connection,
+        tenant_slug: str = "",
+        tenant_client: Any = None,
+    ) -> None:
+        self._conn = conn
         self._repo = BorradorRepository(conn)
+        self._slug = tenant_slug
+        self._tenant_client = tenant_client
 
     # -- plantillas ----------------------------------------------------
 
     async def crear_plantilla(self, payload: PlantillaCreate) -> PlantillaResponse:
+        # RF-PRO-01: el marcador desconocido se rechaza AL GUARDAR, no al usar.
+        # En el legado no fallaba nunca: se quedaba impreso en el oficio que
+        # recibía el ciudadano, y para entonces ya no había a quién preguntarle.
+        if desconocidos(payload.cuerpo):
+            raise _marcadores_desconocidos(payload.cuerpo)
         row = await self._repo.insert_plantilla(payload.model_dump())
         return PlantillaResponse(**dict(row))
 
     async def listar_plantillas(self, activo: bool | None) -> list[PlantillaResponse]:
         return [PlantillaResponse(**dict(r)) for r in await self._repo.list_plantillas(activo)]
+
+    async def combinar_plantilla(
+        self,
+        plantilla_id: uuid.UUID,
+        payload: CombinarRequest,
+        *,
+        max_clearance: int,
+        funcionario: dict[str, Any] | None = None,
+    ) -> CombinarResponse:
+        """Devuelve el cuerpo de la plantilla YA combinado, con sus faltantes.
+
+        Existe porque la pantalla necesita enseñar el texto resuelto en el
+        editor antes de guardar nada, y la combinación no puede bajar al
+        navegador: un marcador resuelto en el cliente es un dato que el cliente
+        puede cambiar, y el documento que da fe no puede depender de eso (D-05).
+        """
+        pl = await self._repo.get_plantilla(plantilla_id)
+        if pl is None:
+            raise _not_found("Plantilla no encontrada")
+        contexto = await ContextoCombinacion(self._conn, self._slug).construir(
+            radicado_padre_id=payload.radicado_padre_id,
+            max_clearance=max_clearance,
+            dependencia_codigo=payload.dest_dept_code,
+            funcionario=funcionario,
+            tenant_client=self._tenant_client,
+        )
+        resultado = combinar(pl["cuerpo"], contexto)
+        return CombinarResponse(cuerpo=resultado.texto, faltantes=resultado.faltantes)
 
     async def borrar_plantilla(self, plantilla_id: uuid.UUID) -> None:
         if not await self._repo.delete_plantilla(plantilla_id):
@@ -62,14 +130,39 @@ class BorradorService:
     # -- borradores ----------------------------------------------------
 
     async def crear(
-        self, payload: BorradorCreate, creado_por: uuid.UUID | None
+        self,
+        payload: BorradorCreate,
+        creado_por: uuid.UUID | None,
+        *,
+        max_clearance: int,
+        funcionario: dict[str, Any] | None = None,
     ) -> BorradorResponse:
+        """Crea el borrador y, si viene de plantilla, COMBINA los campos.
+
+        `max_clearance` es obligatorio y sin default a propósito: el contexto de
+        combinación lee el radicado padre, y un default que significara «sin
+        restricción» sería fail-OPEN — el mismo modo de fallo que dejó
+        `get/set_disposition` sin gate.
+        """
         cuerpo = payload.cuerpo
+        faltantes: list[str] = []
+
         if cuerpo is None and payload.plantilla_id is not None:
             pl = await self._repo.get_plantilla(payload.plantilla_id)
             if pl is None:
                 raise _not_found("Plantilla no encontrada")
-            cuerpo = pl["cuerpo"]
+            # Aquí estaba la brecha: `cuerpo = pl["cuerpo"]` copiaba la plantilla
+            # LITERAL, marcadores incluidos. La plantilla era texto muerto.
+            contexto = await ContextoCombinacion(self._conn, self._slug).construir(
+                radicado_padre_id=payload.radicado_padre_id,
+                max_clearance=max_clearance,
+                dependencia_codigo=payload.dest_dept_code,
+                funcionario=funcionario,
+                tenant_client=self._tenant_client,
+            )
+            resultado = combinar(pl["cuerpo"], contexto)
+            cuerpo, faltantes = resultado.texto, resultado.faltantes
+
         row = await self._repo.insert_borrador(
             {
                 "doc_type": payload.doc_type,
@@ -77,10 +170,11 @@ class BorradorService:
                 "dest_dept": payload.dest_dept,
                 "cuerpo": cuerpo,
                 "plantilla_id": payload.plantilla_id,
+                "radicado_padre_id": payload.radicado_padre_id,
                 "creado_por": creado_por,
             }
         )
-        return _bo(row)
+        return _bo(row, faltantes)
 
     async def get(self, borrador_id: uuid.UUID) -> BorradorResponse:
         row = await self._repo.get_borrador(borrador_id)

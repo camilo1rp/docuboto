@@ -588,8 +588,12 @@ class LocalSigner:
                 "tsa_token": b64encode(token.token_der).decode("ascii"),
                 "tsa_timestamp": token.gen_time.isoformat(),
                 "tsa_cert_fingerprint": token.tsa_cert_fingerprint,
-                # RF-FIR-15: TSA local sin CA acreditada ONAC — nunca True.
-                "tsa_acreditado": False,
+                # Lo decide `tsa.sello_acreditado()`, no un literal aquí: la TSA
+                # LOCAL nunca se acredita (par autofirmado del despliegue), pero
+                # una REMOTA contratada por la entidad sí puede estarlo, y era
+                # un `False` fijo el que impedía declararlo (RF-FIR-15 prohíbe
+                # sobre-declarar, no obliga a sub-declarar siempre).
+                "tsa_acreditado": tsa.sello_acreditado(),
             }
 
             # --- XAdES-LT/LTA (RT-16) — ver nota de módulo "XAdES-LT/LTA" ---
@@ -679,7 +683,18 @@ class LocalSigner:
                     archive_token = _insert_archive_timestamp(signed_root, unsigned_sig_props)
 
                     xades_level = SignatureFormat.XADES_LTA.value
-                    nivel_conformidad = "xades_lta_no_acreditado"
+                    # El sufijo lo decide el SELLO, no este bloque. Antes era el
+                    # literal "xades_lta_no_acreditado", y eso pisaba lo que
+                    # `load_seal` hubiera resuelto: una entidad con material de
+                    # un operador acreditado ONAC veía su firma degradada a
+                    # "no acreditado" en cuanto añadía material LT/LTA — es
+                    # decir, precisamente cuando la firma es MÁS fuerte.
+                    # Los dos valores están admitidos por el CHECK desde la
+                    # migración 017, y `tests/test_nivel_conformidad_admitido.py`
+                    # vigila que sigan estándolo.
+                    nivel_conformidad = (
+                        "xades_lta_acreditado" if signer.acreditado else "xades_lta_no_acreditado"
+                    )
                     extra.update(
                         {
                             "lt_material_present": True,

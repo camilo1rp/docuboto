@@ -142,9 +142,17 @@ def test_el_barrido_mira_de_verdad() -> None:
 #
 # `-ción`/`-sión`: toda palabra española con esa terminación lleva tilde, sin
 # excepción, así que la regla es de una precisión inusual.
+#
+# **`publica` es la excepción, y está aquí porque el guardián se equivocó una
+# vez.** «solo se publica un lote» es correcto —es el verbo—, y el guardián lo
+# marcó como si faltara la tilde de «pública». Por su propio criterio esa forma
+# no debería estar en la lista: no está mal siempre. Pero quitarla del todo sale
+# caro en un sistema que habla de «información pública» en cada pantalla, así
+# que se acota al único contexto que la desambigua a máquina: precedida de «se »
+# es verbo y no se marca. En cualquier otro sitio sigue siendo el adjetivo.
 SIN_TILDE = re.compile(
     r"\b(?:\w*ci[o]n|\w*si[o]n|numero|codigo|titulo|metodo|tramite|parametro|"
-    r"unico|unica|publico|publica|basico|basica|maximo|minimo|automatico|"
+    r"unico|unica|publico|(?<!se )publica|basico|basica|maximo|minimo|automatico|"
     r"electronico|electronica|juridico|juridica|dias|aqui|asi|estan|segun|"
     r"tambien|despues|ademas|invalido|invalida|analisis|pagina|telefono|"
     r"ultimo|ultima|proximo|proxima|deberia|version)\b",
@@ -182,3 +190,18 @@ def test_el_barrido_de_tildes_ve_el_defecto_original() -> None:
     assert not [
         m.group(0) for m in SIN_TILDE.finditer(correcta) if "_" not in m.group(0)
     ]
+
+
+def test_el_verbo_publicar_no_se_confunde_con_el_adjetivo() -> None:
+    """La excepción de `publica`, con sus dos lados.
+
+    Un guardián que se equivoca enseña a ignorarlo, así que la excepción se
+    escribe con su control positivo al lado: si alguien la ensancha hasta
+    apagar el adjetivo, este test lo dice.
+    """
+    verbo = "El lote no existe o ya no está en borrador: solo se publica un lote."
+    assert not SIN_TILDE.findall(verbo), "«se publica» es el verbo y está bien escrito"
+
+    adjetivo = "La informacion publica no requiere reserva."
+    hallado = {m.group(0).lower() for m in SIN_TILDE.finditer(adjetivo)}
+    assert "publica" in hallado, "el adjetivo «pública» sin tilde debe seguir marcándose"

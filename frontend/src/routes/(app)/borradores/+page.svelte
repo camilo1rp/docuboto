@@ -81,17 +81,49 @@
   let fCuerpo = "";
   let fPlantillaId = "";
   let fSubjectError = "";
+  /** Radicado de Entrada que se responde: fuente del contexto de combinación. */
+  let fRadicadoPadreId = "";
+  /** Campos del vocabulario que quedaron sin valor al combinar (RF-PRO-01). */
+  let combinacionFaltantes = [];
+  let combinacionError = "";
 
   /**
-   * Precarga el cuerpo del editor cuando el usuario selecciona una plantilla.
-   * Solo activo en modo creación; en edición el cambio de plantilla NO pisa el
-   * cuerpo existente del borrador (ALTO #1 — pérdida de datos).
+   * Carga en el editor el cuerpo de la plantilla con los campos YA COMBINADOS
+   * (E23, RF-PRO-02). Solo activo en modo creación; en edición el cambio de
+   * plantilla NO pisa el cuerpo existente del borrador (ALTO #1 — pérdida de
+   * datos).
+   *
+   * La combinación la hace el SERVIDOR, no esta función. Antes se sembraba el
+   * editor con `found.cuerpo_html` —la plantilla literal, con sus `*NOM_R*`
+   * dentro— y se enviaba tal cual al crear: como el `cuerpo` llegaba lleno, la
+   * rama que combina en el backend no se ejecutaba nunca. El marcador acababa
+   * impreso en el oficio que recibe el ciudadano.
+   *
+   * Si la combinación falla, se cae a la plantilla cruda y se avisa: es
+   * preferible poder redactar a quedarse con el editor vacío, pero el
+   * funcionario tiene que saber que los campos NO están resueltos.
    */
-  function handlePlantillaChange() {
+  async function handlePlantillaChange() {
     if (drawerMode !== "create" || !fPlantillaId) return;
     const found = plantillas.find((p) => p.id === fPlantillaId);
-    // BAJO #6: sembrar el editor desde el cuerpo YA saneado (cuerpo_html).
-    if (found) fCuerpo = found.cuerpo_html ?? found.cuerpo ?? "";
+    combinacionFaltantes = [];
+    combinacionError = "";
+    try {
+      const res = await fetch(`/borradores/api/plantillas/${fPlantillaId}/combinar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ radicado_padre_id: fRadicadoPadreId || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(mensajeError(data, "No se pudo combinar la plantilla."));
+      fCuerpo = data.cuerpo_html ?? data.cuerpo ?? "";
+      combinacionFaltantes = Array.isArray(data.faltantes) ? data.faltantes : [];
+    } catch (err) {
+      fCuerpo = found?.cuerpo_html ?? found?.cuerpo ?? "";
+      combinacionError =
+        "No se pudieron combinar los campos: el texto se cargó SIN resolver. " +
+        "Revise los marcadores antes de radicar.";
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -190,6 +222,7 @@
             dest_dept: fDestDept.trim() || null,
             cuerpo: fCuerpo || null,
             plantilla_id: fPlantillaId || null,
+            radicado_padre_id: fRadicadoPadreId || null,
           }),
         });
       } else {
@@ -519,9 +552,24 @@
         bind:value={fPlantillaId}
         disabled={!hasPerm}
         options={plantillaOptions}
-        hint="Al elegir una plantilla, su contenido se carga en el editor."
+        hint="Al elegir una plantilla, sus campos se combinan en el servidor y el resultado se carga en el editor."
         on:change={handlePlantillaChange}
       />
+
+      {#if combinacionError}
+        <p class="borrador-form__aviso borrador-form__aviso--error" role="alert">
+          {combinacionError}
+        </p>
+      {:else if combinacionFaltantes.length > 0}
+        <!-- Un campo vacío en silencio es el defecto que esta lista evita: el
+             oficio saldría con un hueco donde debía ir un dato, y nadie lo
+             sabría hasta que llegara al ciudadano. -->
+        <p class="borrador-form__aviso" role="status">
+          Sin datos para {combinacionFaltantes.length === 1 ? "el campo" : "los campos"}:
+          <strong>{combinacionFaltantes.join(", ")}</strong>. Complételos en el texto antes de
+          radicar.
+        </p>
+      {/if}
     {/if}
 
     <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper crear/editar

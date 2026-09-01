@@ -10,3 +10,8 @@ pytest-asyncio>=0.23.0
 pytest-timeout>=2.4.0
 httpx>=0.27.0
 bagit>=1.8.1
+weasyprint>=62.0
+# Solo para tests: EXTRAER el texto del PDF generado. Sin extracción no se
+# puede comprobar que el documento dice lo que debe — el texto va codificado
+# con la fuente subconjunteada, así que buscarlo en los bytes da falso negativo.
+pypdf>=4.2.0

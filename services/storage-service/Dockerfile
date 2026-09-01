@@ -26,6 +26,26 @@
 FROM python:3.11-slim AS base
 WORKDIR /app
 
+# 0) Librerías nativas de WeasyPrint (Pango, Cairo, HarfBuzz), que es como el
+# servicio GENERA los documentos de salida en PDF/A (E23, RF-PRO-03).
+#
+# **Van en `base` y no solo en `production`, al revés que veraPDF y Ghostscript,
+# y es deliberado.** El test que prueba que lo generado es de verdad un
+# documento de archivo tiene que EJECUTAR el renderizador y comprobar el PDF/A
+# resultante; con las librerías solo en producción, ese test no correría nunca
+# donde se corren los tests, y la única garantía sería un mock del renderizador
+# —es decir, una afirmación sobre él en vez de una comprobación—. Son ~40 MB
+# frente a los ~200 del JRE de veraPDF: proporcionado.
+#
+# Sin ellas el servicio ARRANCA igual: `render/factory.py` caza el fallo de
+# import y declara que este despliegue no genera documentos (503), en vez de
+# tumbar el proceso por una capacidad opcional.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libjpeg62-turbo \
+        libffi8 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # 1) Librería compartida (capa cacheable; cambia poco).
 COPY shared /shared
 RUN pip install --no-cache-dir /shared
@@ -137,7 +157,8 @@ COPY --from=verapdf-builder /opt/verapdf /opt/verapdf
 # Config de despliegue: ruta ABSOLUTA al binario (la factory exige eso para
 # activar `SubprocessVeraPdfValidator` en vez de degradar a stub, ver
 # `app/services/pdfa/factory.py::_resolve_verapdf_binary`).
-ENV VERAPDF_BINARY=/opt/verapdf/verapdf \
+ENV RENDER_ENGINE=weasyprint \
+    VERAPDF_BINARY=/opt/verapdf/verapdf \
     PDFA_VALIDATOR=verapdf \
     PRESERVATION_PDFA_VALIDATION_ENABLED=true \
     GHOSTSCRIPT_BINARY=/usr/bin/gs \

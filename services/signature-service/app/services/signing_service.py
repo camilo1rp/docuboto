@@ -381,12 +381,15 @@ async def sign_payload(
                     # "puro" — kill-switch `signer_timestamp_enabled=False`); el
                     # hecho del sellado queda en la traza inmutable, no solo en
                     # `firma` (append-only por convención, no el registro
-                    # inmutable). `tsa_acreditado` se fija explícitamente en
-                    # False para que la traza nunca sobre-declare conformidad
-                    # (RF-FIR-15) aunque `signed.extra` llegara incompleto.
+                    # inmutable). `tsa_acreditado` se lee de `signed.extra` con
+                    # DEFAULT False: si el firmador no lo declaró, la traza no
+                    # se lo inventa (RF-FIR-15, nunca sobre-declarar). Antes era
+                    # un `False` fijo, y eso hacía que la traza CONTRADIJERA a
+                    # la fila de `firma` en cuanto hubiera una TSA acreditada:
+                    # dos registros del mismo acto diciendo cosas distintas.
                     "tsa_timestamp": signed.extra.get("tsa_timestamp"),
                     "tsa_cert_fingerprint": signed.extra.get("tsa_cert_fingerprint"),
-                    "tsa_acreditado": False,
+                    "tsa_acreditado": signed.extra.get("tsa_acreditado", False),
                     # (XAdES-LT/LTA, RT-16) Presentes solo cuando LocalSigner
                     # escaló a XAdES-LTA — ausentes para 'nativa', XAdES-B/-T o
                     # cualquier degradación (ver el evento separado más abajo).

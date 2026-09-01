@@ -69,6 +69,20 @@ export const NAV_ITEMS = [
     permission: "SGD_PERM_ESTADISTICA",
   },
   {
+    label: "Correo",
+    href: ROUTES.correo,
+    icon: "fas fa-envelope-open-text",
+    // `PERM_RADI`, el MISMO permiso que la bandeja de correo del backend: quien
+    // trabaja el correo recibido es la unidad de correspondencia, no un
+    // administrador.
+    //
+    // Este ítem existe porque hasta ahora **no había ninguna forma de llegar**:
+    // la única entrada a `/correo/{id}` era un botón dentro de
+    // `/admin/correo`, que exige `USUA_PERM_ADMIN`. La pantalla estaba escrita
+    // y gateada para un público que no podía alcanzarla.
+    permission: "PERM_RADI",
+  },
+  {
     label: "Borradores",
     href: ROUTES.borradores,
     icon: "fas fa-file-alt",

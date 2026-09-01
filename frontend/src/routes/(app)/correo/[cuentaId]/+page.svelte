@@ -60,6 +60,46 @@
   $: cuenta = data.cuenta ?? null;
   $: yo = data.yo ?? "";
 
+  // Los dos vocabularios que se ELIGEN al radicar, con la misma forma que en
+  // `/radicar`: la dependencia se identifica por su CÓDIGO de organigrama y el
+  // tipo documental por su código de catálogo. Se leen `d.codigo` y `t.nombre`
+  // —los nombres reales de cada router, que no comparten convención— sin valor
+  // de cortesía detrás: un `?? algo` convertiría el próximo cambio de contrato
+  // en un desplegable de «undefined» en vez de en un fallo visible.
+  $: dependenciaOpciones = (data.dependencias ?? []).map((d) => ({
+    value: String(d.codigo ?? d.id),
+    label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
+  }));
+  $: tipoOpciones = (data.tiposDocumentales ?? []).map((t) => ({
+    value: String(t.code ?? t.id),
+    label: t.nombre,
+  }));
+
+  /**
+   * Preselección de la dependencia a partir de la que la cuenta trae escrita.
+   *
+   * `email_cuenta.dependencia_destino` es texto libre (columna heredada), así
+   * que se casa por nombre o sigla contra el organigrama. **Si no casa no se
+   * preselecciona nada**: preseleccionar la primera de la lista pondría un
+   * destino que nadie eligió en un acto que no se deshace.
+   */
+  function codigoPorNombre(escrito) {
+    const buscado = String(escrito ?? "")
+      .trim()
+      .toLowerCase();
+    if (!buscado) return "";
+    const hallado = (data.dependencias ?? []).find(
+      (d) =>
+        String(d.nombre ?? "")
+          .trim()
+          .toLowerCase() === buscado ||
+        String(d.sigla ?? "")
+          .trim()
+          .toLowerCase() === buscado,
+    );
+    return hallado ? String(hallado.codigo ?? hallado.id) : "";
+  }
+
   const SONDEO_MS = 12000;
   // Umbral de inactividad REAL de la persona, muy por debajo del de Keycloak
   // (30 min en producción): el sondeo tiene que parar con margen para que el
@@ -168,7 +208,7 @@
       formulario = {
         subject: correo.asunto ?? "",
         sender_name: correo.remitente_nombre ?? "",
-        dest_dept: cuenta?.dependencia_destino ?? "",
+        dest_dept_code: codigoPorNombre(cuenta?.dependencia_destino),
         doc_class: "",
       };
     } catch {
@@ -508,12 +548,26 @@
       </label>
       <label class="form__campo">
         <span>Dependencia competente</span>
-        <input class="input" bind:value={formulario.dest_dept} />
-        <small>A quién se reparte para su trámite.</small>
+        <div class="select is-fullwidth">
+          <select bind:value={formulario.dest_dept_code}>
+            <option value="">— seleccionar —</option>
+            {#each dependenciaOpciones as opcion (opcion.value)}
+              <option value={opcion.value}>{opcion.label}</option>
+            {/each}
+          </select>
+        </div>
+        <small>A quién se reparte para su trámite. Se elige del organigrama.</small>
       </label>
       <label class="form__campo">
         <span>Tipo documental <em>(opcional)</em></span>
-        <input class="input" bind:value={formulario.doc_class} />
+        <div class="select is-fullwidth">
+          <select bind:value={formulario.doc_class}>
+            <option value="">— sin clasificar —</option>
+            {#each tipoOpciones as opcion (opcion.value)}
+              <option value={opcion.value}>{opcion.label}</option>
+            {/each}
+          </select>
+        </div>
         <small>Gobierna la retención según la TRD; puede tipificarse después.</small>
       </label>
     </div>

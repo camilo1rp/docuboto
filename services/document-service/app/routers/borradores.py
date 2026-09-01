@@ -17,12 +17,15 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.core.clearance import require_permission
+from app.core.clearance import require_permission, resolve_caller_clearance
+from app.core.combinacion import vocabulario
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.borrador import (
     BorradorCreate,
     BorradorResponse,
     BorradorUpdate,
+    CombinarRequest,
+    CombinarResponse,
     PlantillaCreate,
     PlantillaResponse,
 )
@@ -50,6 +53,24 @@ def _user(request: Request) -> uuid.UUID | None:
 # -- plantillas --------------------------------------------------------
 
 
+@router.get(
+    "/api/v1/plantillas/campos",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
+async def listar_campos_plantilla() -> dict[str, Any]:
+    """Vocabulario de marcadores admitidos (E23, RF-PRO-01).
+
+    Va **antes** de `/api/v1/plantillas/{plantilla_id}` en el orden de
+    declaración a propósito: FastAPI casa por orden y `campos` encajaría en el
+    parámetro de ruta, devolviendo un 422 de UUID inválido en vez del
+    vocabulario.
+
+    Sin esta lista, escribir una plantilla es adivinar: el legado no la tenía y
+    por eso los marcadores mal escritos llegaban impresos al ciudadano.
+    """
+    return {"campos": vocabulario()}
+
+
 @router.post(
     "/api/v1/plantillas",
     response_model=PlantillaResponse,
@@ -73,6 +94,26 @@ async def listar_plantillas(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[PlantillaResponse]:
     return await BorradorService(conn).listar_plantillas(activo)
+
+
+@router.post(
+    "/api/v1/plantillas/{plantilla_id}/combinar",
+    response_model=CombinarResponse,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
+async def combinar_plantilla(
+    plantilla_id: uuid.UUID,
+    payload: CombinarRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    tenant_client: Any = Depends(get_tenant_client),
+) -> CombinarResponse:
+    """Cuerpo de la plantilla con los campos ya resueltos (E23, RF-PRO-02)."""
+    user_id = _user(request)
+    clearance = await resolve_caller_clearance(conn, user_id)
+    return await BorradorService(
+        conn, request.headers.get("X-Tenant-Slug", ""), tenant_client
+    ).combinar_plantilla(plantilla_id, payload, max_clearance=clearance)
 
 
 @router.delete(
@@ -100,8 +141,13 @@ async def crear_borrador(
     payload: BorradorCreate,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    tenant_client: Any = Depends(get_tenant_client),
 ) -> BorradorResponse:
-    return await BorradorService(conn).crear(payload, _user(request))
+    user_id = _user(request)
+    clearance = await resolve_caller_clearance(conn, user_id)
+    return await BorradorService(
+        conn, request.headers.get("X-Tenant-Slug", ""), tenant_client
+    ).crear(payload, user_id, max_clearance=clearance)
 
 
 @router.get(

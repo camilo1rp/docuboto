@@ -456,15 +456,29 @@ class EmailBandejaService:
         Los datos mínimos del Acuerdo 060/2001 art. 2 —remitente, asunto,
         anexos— salen del correo; el funcionario aporta lo que el correo no
         puede saber: el tipo documental y la dependencia competente.
+
+        **`dest_dept_code` y no solo `dest_dept`.** `dest_dept` es un nombre de
+        texto libre; `dest_dept_code` es el código del organigrama, que
+        document-service valida contra tenant-service y con el que denormaliza el
+        nombre (RF-RAD). Radicando solo con el nombre, un radicado nacido de un
+        correo quedaba SIN vínculo con la dependencia: no aparecía al repartir por
+        código, y bastaba una tilde de diferencia para que fueran dos áreas
+        distintas. Los radicados nacidos en ventanilla nunca tuvieron ese
+        problema porque el asistente de `/radicar` siempre mandó el código.
         """
         recibido: datetime = mensaje["fecha_recibo"]
+        codigo_destino: Any = datos.get("dest_dept_code")
         return DocumentCreate(
             doc_type="E",
             subject=(datos.get("subject") or mensaje["asunto"] or "(correo sin asunto)")[:2000],
             sender_name=(datos.get("sender_name") or correo.remitente_nombre or None),
             sender_entity=datos.get("sender_entity"),
+            # El nombre se conserva como respaldo para las cuentas que traen su
+            # `dependencia_destino` escrita: si viene el código, document-service
+            # denormaliza el nombre bueno y este queda sobrescrito.
             dest_dept=datos.get("dest_dept"),
-            doc_class=datos.get("doc_class"),
+            dest_dept_code=int(codigo_destino) if codigo_destino not in (None, "") else None,
+            doc_class=datos.get("doc_class") or None,
             observations=(correo.cuerpo or None) and correo.cuerpo[:4000],
             metadata={
                 "source": "email",

@@ -20,11 +20,10 @@ in-process, con el par de claves de la TSA del propio despliegue (ver
 --- Selección local vs remoto (``settings.tsa_url``) ---
 ``build_timestamp_token`` es el único punto de entrada público: si
 ``settings.tsa_url`` está vacío (default) construye el token LOCALMENTE; si
-está puesto, delega a :func:`_request_remote_timestamp`, que hoy es un STUB
-que falla explícitamente (``TsaUnavailableError`` — seguimiento, NO implementado
-en el Inc.4). Nunca cae en silencio al camino local si el operador configuró
-una URL: eso encubriría una TSA remota mal configurada declarando un sello que
-en realidad nunca se solicitó.
+está puesto, delega a :func:`_request_remote_timestamp`, un cliente RFC 3161
+sobre HTTP (§3.4) real. Nunca cae en silencio al camino local si el operador
+configuró una URL: eso encubriría una TSA remota mal configurada declarando un
+sello que en realidad nunca se solicitó.
 
 --- Por qué NO se firma el TSTInfo con SHA-256 "a secas" ---
 El ``messageImprint`` de la RFC 3161 va sobre el dato que se quiere sellar —
@@ -36,11 +35,16 @@ pre-firma. Esto ata el sello de tiempo a la firma concreta: alterar
 :func:`verify_timestamp_token`, comprobación (b) del contrato del incremento).
 
 --- Conformidad (RF-FIR-15) ---
-La TSA local de este incremento es un par autofirmado sin CA acreditada ONAC.
+La TSA LOCAL es un par autofirmado del propio despliegue, sin CA acreditada.
 Da FECHA CIERTA VERIFICABLE (criptográficamente atada al acto de firma), NO
-sellado de tiempo ACREDITADO/cualificado — por eso todo el material que
-produce este módulo se declara ``tsa_acreditado=False`` sin excepción, igual
-que el sello institucional del índice en el Incremento 1.
+sellado de tiempo ACREDITADO/cualificado, y por eso se declara siempre
+``tsa_acreditado=False`` — mire lo que mire ninguna variable de configuración.
+
+Una TSA REMOTA (``settings.tsa_url``) sí puede serlo, porque el sellado
+acreditado lo emite un prestador contratado por la entidad, no este software.
+Se declara con ``settings.tsa_acreditada`` y **solo cuenta cuando hay
+``tsa_url``**: el acoplamiento de las dos variables es deliberado, para que un
+despliegue no pueda acreditar su TSA de pruebas poniendo un booleano.
 """
 
 from __future__ import annotations
@@ -50,6 +54,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import httpx
 from asn1crypto import algos, cms, core, tsp
 from asn1crypto import x509 as asn1_x509
 from cryptography import x509
@@ -108,17 +113,134 @@ def _assert_timestamping_eku(cert: x509.Certificate) -> None:
         raise TsaUnavailableError("certificado_tsa_sin_eku_timestamping")
 
 
-def _request_remote_timestamp(signature_value_c14n: bytes) -> TimestampToken:
-    """Cliente RFC 3161 remoto — STUB, seguimiento (FUERA DE ALCANCE Inc.4).
+# Estados de `PKIStatusInfo` (RFC 3161 §2.4.2) en los que la petición produjo
+# un token utilizable. `granted_with_mods` significa que la TSA cambió algo de
+# lo pedido (típicamente la política): el token es válido y se acepta, pero
+# TODO lo que importa —el imprint, el nonce, el EKU, la firma— se comprueba
+# igual más abajo, así que aceptarlo no relaja ninguna garantía.
+_ESTADOS_CONCEDIDOS = frozenset({"granted", "granted_with_mods"})
 
-    ``settings.tsa_url`` está cableado en config para que un incremento futuro
-    solo tenga que reemplazar el cuerpo de esta función por un cliente
-    ``httpx`` real (``application/timestamp-query``/``-reply``, RFC 3161
-    §3.4) — el contrato de :func:`build_timestamp_token` ya no cambiaría.
+
+def _request_remote_timestamp(signature_value_c14n: bytes) -> TimestampToken:
+    """Cliente RFC 3161 sobre HTTP (§3.4) contra la TSA de ``settings.tsa_url``.
+
+    Existe porque el sello de tiempo ACREDITADO no lo puede dar una TSA local
+    por buena que sea: lo emite el prestador que la entidad contrata. Mientras
+    esto fue un stub, una instalación con TSA acreditada contratada no podía
+    enchufarla — la acreditación se declaraba "propia de la instalación" y la
+    instalación no tenía dónde conectarla.
+
+    Se piden **`cert_req=True`** y un **nonce**, y los dos son necesarios, no
+    cortesía:
+
+    * Sin `certReq`, la respuesta puede no incluir el certificado de la TSA, y
+      entonces el token no se puede verificar más tarde de forma autónoma —
+      :func:`verify_timestamp_token` exige el certificado embebido.
+    * Sin **nonce**, nada distingue una respuesta fresca de la REPRODUCCIÓN de
+      un token antiguo capturado en la red: la fecha cierta que se estaría
+      anotando sería la de otro acto. El nonce se compara al recibir y una
+      discrepancia aborta el sellado.
+
+    El token recibido se somete además a la MISMA verificación completa que se
+    le aplicará después (:func:`verify_timestamp_token`): estructura, imprint
+    contra los bytes que se quisieron sellar, EKU crítico, vigencia y firma. Un
+    token que no pase eso no se guarda — descubrirlo al verificar, meses
+    después, sería descubrirlo cuando ya no se puede corregir.
+
+    Es **síncrona** a propósito (ver ``settings.tsa_timeout_seconds``): el
+    contrato de :func:`build_timestamp_token` lo consumen dos helpers síncronos
+    del firmador, y hacerla asíncrona obligaría a propagar `async` hasta el
+    interior de la construcción del XML. El precio es un bloqueo acotado por el
+    timeout, en un camino que ya hace criptografía bloqueante en línea.
+
+    Raises:
+        TsaUnavailableError: la TSA no respondió, respondió un error de
+            protocolo, o devolvió un token que no verifica.
     """
-    raise TsaUnavailableError(
-        f"tsa_url={settings.tsa_url!r} configurado, pero el cliente RFC 3161 "
-        "remoto no está implementado en este incremento (seguimiento E06 Inc.4)."
+    imprint = hashlib.sha256(signature_value_c14n).digest()
+    # 64 bits basta y sobra para el propósito (RFC 3161 §2.4.1 no fija tamaño);
+    # se usa `secrets` por la misma higiene que el `serial_number` local.
+    nonce = int.from_bytes(secrets.token_bytes(8), "big")
+    peticion = tsp.TimeStampReq(
+        {
+            "version": 1,
+            "message_imprint": tsp.MessageImprint(
+                {
+                    "hash_algorithm": algos.DigestAlgorithm({"algorithm": "sha256"}),
+                    "hashed_message": imprint,
+                }
+            ),
+            "nonce": nonce,
+            "cert_req": True,
+        }
+    )
+
+    try:
+        respuesta = httpx.post(
+            settings.tsa_url,
+            content=peticion.dump(),
+            headers={
+                "Content-Type": "application/timestamp-query",
+                "Accept": "application/timestamp-reply",
+            },
+            timeout=settings.tsa_timeout_seconds,
+        )
+    except httpx.HTTPError as exc:
+        raise TsaUnavailableError(f"tsa_remota_inalcanzable: {exc}") from exc
+    if respuesta.status_code != 200:
+        raise TsaUnavailableError(f"tsa_remota_http_{respuesta.status_code}")
+
+    # La respuesta se abre como SECUENCIA GENÉRICA y no con
+    # `tsp.TimeStampResp.load`, y no es una manía: asn1crypto declara
+    # `timeStampToken` como campo OBLIGATORIO cuando la RFC 3161 §2.4.2 lo hace
+    # OPCIONAL — precisamente porque una respuesta de RECHAZO no lleva token. Con
+    # el parseo estricto, el rechazo de una TSA real reventaba al cargar y caía
+    # en la rama "respuesta ilegible", perdiendo el `failInfo`, que es lo único
+    # que dice qué hay que arreglar. Lo destapó el test del rechazo.
+    try:
+        envoltorio = core.Sequence.load(respuesta.content)
+        estado_info = tsp.PKIStatusInfo.load(envoltorio[0].dump())
+        estado = estado_info["status"].native
+    except Exception as exc:  # noqa: BLE001 — cualquier basura == respuesta inservible
+        raise TsaUnavailableError(f"tsa_remota_respuesta_ilegible: {exc}") from exc
+
+    if estado not in _ESTADOS_CONCEDIDOS:
+        # `failInfo` es opcional; cuando viene, dice POR QUÉ se rechazó
+        # (`badAlg`, `timeNotAvailable`, `systemFailure`…). Se propaga porque es
+        # lo único que permite a quien configuró la TSA saber qué arreglar.
+        fail = estado_info["fail_info"]
+        info = fail.native if not isinstance(fail, core.VOID.__class__) else None
+        raise TsaUnavailableError(f"tsa_remota_rechazo: estado={estado} fail_info={info}")
+
+    if len(envoltorio) < 2:
+        raise TsaUnavailableError("tsa_remota_sin_token")
+    try:
+        token = cms.ContentInfo.load(envoltorio[1].dump())
+        token_der = token.dump()
+        tst_info = tsp.TSTInfo.load(token["content"]["encap_content_info"]["content"].contents)
+    except Exception as exc:  # noqa: BLE001
+        raise TsaUnavailableError(f"tsa_remota_token_ilegible: {exc}") from exc
+    if tst_info["nonce"].native != nonce:
+        # Reproducción, o una TSA que no respeta el nonce. En los dos casos la
+        # fecha que se anotaría no es la de este acto.
+        raise TsaUnavailableError("tsa_remota_nonce_no_coincide")
+
+    certificados = token["content"]["certificates"]
+    if certificados is None or len(certificados) == 0:
+        raise TsaUnavailableError("tsa_remota_sin_certificado")
+    tsa_cert = x509.load_der_x509_certificate(certificados[0].chosen.dump())
+    huella = tsa_cert.fingerprint(hashes.SHA256()).hex()
+
+    # El token se verifica ENTERO antes de aceptarlo, con la misma función que
+    # lo verificará dentro de diez años.
+    resultado = verify_timestamp_token(
+        token_der, signature_value_c14n, expected_tsa_fingerprint=huella
+    )
+    if not resultado.valido or resultado.gen_time is None:
+        raise TsaUnavailableError(f"tsa_remota_token_invalido: {resultado.motivo}")
+
+    return TimestampToken(
+        token_der=token_der, gen_time=resultado.gen_time, tsa_cert_fingerprint=huella
     )
 
 
@@ -232,6 +354,18 @@ def _build_local_timestamp_token(signature_value_c14n: bytes) -> TimestampToken:
         gen_time=gen_time,
         tsa_cert_fingerprint=tsa_cert.fingerprint(hashes.SHA256()).hex(),
     )
+
+
+def sello_acreditado() -> bool:
+    """¿El sello de tiempo que produce este módulo es de un prestador acreditado?
+
+    **Las dos condiciones van juntas**, y ese acoplamiento es el control: una
+    TSA local acreditada no existe —es un par autofirmado del propio
+    despliegue—, así que el booleano por sí solo no puede acreditar nada. Sin
+    esto, `TSA_ACREDITADA=true` en un entorno de pruebas habría bastado para que
+    el sistema declarara fecha cierta oponible sobre sellos que emite él mismo.
+    """
+    return bool(settings.tsa_url) and settings.tsa_acreditada
 
 
 def build_timestamp_token(signature_value_c14n: bytes) -> TimestampToken:

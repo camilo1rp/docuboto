@@ -77,6 +77,7 @@ export const ROUTES = {
   transferencias: "/transferencias",
   borradores: "/borradores",
   envios: "/envios",
+  correo: "/correo",
   firmas: "/firmas",
   anulaciones: "/anulaciones",
   admin: "/admin",

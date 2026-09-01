@@ -34,12 +34,29 @@ class PlantillaResponse(BaseModel):
     created_at: datetime
 
 
+class CombinarRequest(BaseModel):
+    """Contexto con el que combinar una plantilla antes de editarla."""
+
+    radicado_padre_id: uuid.UUID | None = None
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
+
+
+class CombinarResponse(BaseModel):
+    cuerpo: str
+    faltantes: list[str] = Field(default_factory=list)
+
+
 class BorradorCreate(BaseModel):
     doc_type: Literal["S", "I"] = "S"
     subject: str = Field(..., min_length=1, max_length=2000)
     dest_dept: str | None = Field(default=None, max_length=100)
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
     cuerpo: str | None = None
     plantilla_id: uuid.UUID | None = None
+    #: Radicado de Entrada que este borrador responde. Es la fuente de la mitad
+    #: del contexto de combinación (E23, RF-PRO-02); sin él, `*RAD_E*` y
+    #: `*NOM_R*` no tienen de dónde salir.
+    radicado_padre_id: uuid.UUID | None = None
 
 
 class BorradorUpdate(BaseModel):
@@ -55,8 +72,14 @@ class BorradorResponse(BaseModel):
     dest_dept: str | None
     cuerpo: str | None
     plantilla_id: uuid.UUID | None
+    radicado_padre_id: uuid.UUID | None = None
     estado: str
     radicado_id: uuid.UUID | None
     creado_por: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+    #: Marcadores del vocabulario que quedaron SIN valor al combinar (RF-PRO-01).
+    #: No se persiste: se calcula en el acto de combinar y viaja para que la
+    #: interfaz los enseñe. Un oficio que sale con un campo vacío en silencio es
+    #: el defecto que esta lista existe para evitar.
+    faltantes: list[str] = Field(default_factory=list)

@@ -141,6 +141,21 @@ class Settings(BaseSettings):
     ghostscript_timeout_seconds: int = 120
     ghostscript_max_concurrency: int = 1
 
+    # ── Generación de documentos de salida (E23, RF-PRO-03) ───────────────
+    # "none" (default) | "weasyprint". **Tampoco hay opción "stub"**, por la
+    # misma razón que en el migrador: un renderizador de mentira tendría que
+    # PRODUCIR un documento, y el único que puede producir sin la herramienta es
+    # uno inventado. Sin renderizador, el endpoint responde 503 en vez de
+    # entregar un PDF vacío o degradar a texto plano fingiendo que hizo un oficio.
+    render_engine: str = "none"
+    render_timeout_seconds: int = 60
+    render_max_concurrency: int = 2
+    # Perfil de conservación con que NACE el documento (D-2): se genera PDF/A
+    # directamente, no PDF más una migración posterior. El barrido de
+    # preservación existe para el fondo heredado, no para lo que la entidad
+    # produce hoy.
+    render_pdfa_profile: str = "pdf/a-2b"
+
     # ── Barrido periódico de migración (E10, RF-PRE-04) ────────────────────
     #
     # **La política de obsolescencia la declara la ENTIDAD, no este código.**

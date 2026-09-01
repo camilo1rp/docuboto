@@ -34,6 +34,7 @@ from app.core.minio_client import get_minio, init_minio
 from app.jobs.format_migration import run_once as _format_migration_once
 from app.routers.health import router as health_router
 from app.routers.preservacion import router as preservacion_router
+from app.routers.render import router as render_router
 from app.routers.storage import router as storage_router
 from app.services.storage_service import StorageService
 
@@ -174,6 +175,7 @@ app.add_middleware(request_log.RequestLogMiddleware, servicio="storage-service")
 
 app.include_router(storage_router)
 app.include_router(preservacion_router)
+app.include_router(render_router)
 app.include_router(health_router)
 
 

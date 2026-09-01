@@ -598,6 +598,88 @@ PROCEDIMIENTOS: tuple[Procedimiento, ...] = (
             ),
         ),
     ),
+    Procedimiento(
+        name="atender_correo_del_buzon",
+        description=(
+            "Toma un correo de la bandeja y lo radica como documento de ENTRADA, en el "
+            "orden que exige el sistema: primero la reserva —sin ella el backend "
+            "rechaza radicar, y es lo que impide que dos funcionarios radiquen el mismo "
+            "correo dos veces— y luego la radicación. Consume un número de radicado, "
+            "que es inmutable; y sobre una Entrada la anulación no existe, así que "
+            "radicar el correo equivocado no se deshace."
+        ),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=True,
+        operacion="Atender un correo del buzón: reservarlo y radicarlo",
+        params=(
+            Param(
+                name="cuenta_id",
+                required=True,
+                format="uuid",
+                description="UUID del buzón, de 'listar_buzones_correo'.",
+                label="Buzón",
+            ),
+            Param(
+                name="mensaje_id",
+                required=True,
+                format="uuid",
+                description="UUID del correo, de 'listar_correos_pendientes'.",
+                label="Correo",
+            ),
+            Param(
+                name="subject",
+                description="Asunto del radicado. Si se omite, el del correo.",
+                label="Asunto",
+            ),
+            Param(
+                name="sender_name",
+                description="Remitente. Si se omite, el que trae el correo.",
+                label="Remitente",
+            ),
+            Param(
+                name="dest_dept_code",
+                type="integer",
+                required=True,
+                description=(
+                    "CÓDIGO de la dependencia competente, de 'listar_dependencias'. Se "
+                    "exige aquí aunque el endpoint lo admita vacío: un radicado sin "
+                    "dependencia no llega a nadie, y el trámite completo consiste "
+                    "precisamente en que llegue."
+                ),
+                label="Dependencia competente",
+            ),
+            Param(
+                name="doc_class",
+                description="Código del tipo documental (catálogo de la TRD).",
+                label="Tipo documental",
+            ),
+        ),
+        # Dos pasos y NO tres: liberar en caso de fallo no se encadena aquí. Si
+        # la radicación falla, la reserva queda puesta y caduca sola; soltarla
+        # automáticamente sería decidir por la persona que ya no quiere ese
+        # correo, cuando lo normal tras un fallo es volver a intentarlo.
+        pasos=(
+            Paso(
+                etiqueta="reservar",
+                tool="reservar_correo",
+                args={"cuenta_id": "@cuenta_id", "mensaje_id": "@mensaje_id"},
+            ),
+            Paso(
+                etiqueta="radicar",
+                tool="radicar_correo",
+                args={
+                    "cuenta_id": "@cuenta_id",
+                    "mensaje_id": "@mensaje_id",
+                    "subject": "@subject",
+                    "sender_name": "@sender_name",
+                    "dest_dept_code": "@dest_dept_code",
+                    "doc_class": "@doc_class",
+                },
+            ),
+        ),
+    ),
 )
 
 _POR_NOMBRE = {p.name: p for p in PROCEDIMIENTOS}

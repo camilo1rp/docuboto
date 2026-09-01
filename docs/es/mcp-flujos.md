@@ -45,13 +45,13 @@ el censo nunca vio.
 | **F5** Archivo físico | 14 | 11 | 79 % |
 | **F6** Transferencias | 11 | 9 | 82 % |
 | **F7** Disposición y eliminación | 11 | 10 | 91 % |
-| **F8** Preservación y firma | 11 | 8 | 73 % |
+| **F8** Preservación y firma | 11 | 6 | 55 % |
 | **F9** Instrumentos archivísticos | 69 | 38 | 55 % |
-| **F10** Correo institucional | 14 | 0 | 0 % |
+| **F10** Correo institucional | 14 | 8 | 57 % |
 | **F11** Consulta y reportes | 5 | 2 | 40 % |
-| **F12** Administración y seguridad | 59 | 0 | 0 % |
-| **F13** Notificaciones e integración | 10 | 0 | 0 % |
-| **TOTAL** | **367** | **146** | |
+| **F12** Administración y seguridad | 59 | 26 | 44 % |
+| **F13** Notificaciones e integración | 10 | 7 | 70 % |
+| **TOTAL** | **367** | **185** | |
 
 ## Qué queda FUERA, y por qué
 
@@ -127,7 +127,7 @@ manual del estado y envíos por radicado.
 declarado, no un defecto), alta y baja de plantillas (administración) y el FUID
 (pertenece a F5/F6).
 
-### F4 · Expediente — 61 %
+### F4 · Expediente — 68 %
 
 **Cubierto**: crear, listar, buscar, consultar, actualizar, vincular, excluir con
 causal, cerrar, foliado, índice (JSON y XML), verificación de integridad,
@@ -208,7 +208,13 @@ firmada. Lo que cambia es qué se le pone delante a quien decide.
 
 **Lo que falta de F7**: solo `ejecutar`, y por decisión.
 
-### F8 · Preservación — 73 % (8 de 11)
+### F8 · Preservación — 55 % (6 de 11)
+
+> Dos de las herramientas de este flujo —el AIP empaquetado y los eventos PREMIS
+> de un expediente— apuntan a las rutas **mediadas** de archive-service, porque
+> las de storage van selladas con `X-Internal-Token`. El censo las cuenta por su
+> ruta, así que aparecen en F4; conceptualmente pertenecen aquí. Se dice para que
+> el 55 % no se lea como un hueco que no existe.
 
 **Cubierto**: el plan de preservación (consultar, versiones y declarar una nueva
 —incluida la política de obsolescencia que consume el barrido de migración—), el
@@ -292,10 +298,77 @@ donde el mediador resuelve el clearance del llamante contra el nivel vigente del
 expediente. Lo cazó el guardián compartido al cruzar el permiso declarado con el
 real — el mismo que antes estaba medio ciego.
 
-### F10 · Correo institucional — 0 % · F13 · Notificaciones — 0 %
+### F10 · Correo institucional — 57 % (8 de 14)
 
-Configuración de buzones, credenciales OAuth y webhooks salientes. Es
-administración de plataforma, no trámite documental.
+Este flujo se parte en dos mitades que no se parecen en nada, y **el reparto es la
+decisión**:
+
+- **La bandeja es trabajo de ventanilla.** Un correo que entra por el buzón oficial es
+  una comunicación oficial recibida (Ac. AGN 060/2001 art. 3): decidir si se radica,
+  quién lo trabaja y a qué dependencia se reparte es exactamente lo que hace una unidad
+  de correspondencia. Se ofrece entera — listar buzones, ver la bandeja y su resumen,
+  sincronizar, reservar, liberar, radicar y descartar con motivo.
+- **La configuración de los buzones no.** Registrar la aplicación OAuth de la entidad,
+  dar de alta una cuenta o canjear una autorización es mover credenciales: el
+  `client_secret` del proveedor, la contraseña del buzón, el código de autorización.
+  Nada de eso puede viajar por un chat.
+
+Tampoco se ofrecen los **buzones personales**: su contraseña no se guarda a propósito
+—viaja en cada petición y muere con ella—, así que trabajarlos exigiría teclearla aquí.
+Por eso `sincronizar_buzon` y `radicar_correo` **no declaran el parámetro `password`**
+aunque la ruta lo admita; un buzón personal responde `password_requerida`, que es la
+respuesta correcta y no un fallo.
+
+La fricción está donde se consume algo: `radicar_correo` y `descartar_correo` piden
+`CONFIRMO` —radicar consume un número inmutable y **sobre una Entrada la anulación no
+existe**—, mientras que reservar, liberar y sincronizar no piden nada. Liberar es el
+acto de arrepentirse: parar tiene que ser barato.
+
+**No se pide teclear el identificador del correo.** Sería un UUID que la persona no
+puede contrastar con nada — el mismo motivo por el que no se ofrece sellar un artefacto
+en WORM. La tarjeta enseña el asunto y el remitente, que sí se contrastan.
+
+> **Dos defectos que aparecieron al construir esto**, ambos del patrón «capacidad
+> construida y no ofrecida»:
+>
+> 1. **El funcionario de ventanilla no podía llegar a su buzón.** La bandeja se gatea
+>    con `PERM_RADI` a propósito, pero `GET /email/cuentas` —la única forma de saber qué
+>    buzones existen y con qué identificador— exigía `USUA_PERM_ADMIN`, y la única
+>    entrada en la interfaz era un botón dentro de `/admin/correo`. Aflojar ese gate no
+>    afloja nada: **qué cuentas devuelve el listado no lo decide el permiso, lo decide
+>    el `WHERE` del repositorio**, que reparte la personal a su dueño y la institucional
+>    a los asignados — y que ya recibía `es_admin` como parámetro, es decir, estaba
+>    escrito para servir a quien no lo es. Corregido, con entrada de menú y pantalla
+>    índice `/correo`.
+> 2. **Se radicaba con la dependencia y el tipo documental escritos a mano.** La
+>    pantalla enviaba `dest_dept` (un nombre suelto) en vez de `dest_dept_code`, así que
+>    un radicado nacido de un correo quedaba sin vínculo con el organigrama y no
+>    aparecía al repartir por código; y un tipo documental tecleado no casa con ninguna
+>    serie de la TRD, que es la que gobierna cuánto se conserva. `/radicar` siempre
+>    ofreció selectores para los dos. Ahora esta pantalla también.
+
+### F13 · Notificaciones e integración — 70 % (7 de 10)
+
+Se ofrece **observar** y **desatascar**; no se ofrece **configurar**.
+
+**Cubierto**: el historial de notificaciones y una notificación concreta —«¿le llegó el
+aviso al ciudadano?» es la pregunta que aparece cuando alguien reclama—, los canales de
+salida configurados, y la cola de eventos fallidos entera: listar, consultar, reintentar
+y descartar con motivo.
+
+**No se ofrece** dar de alta ni retirar un webhook: manda los eventos documentales de la
+entidad a una URL de fuera, y abrir un canal de salida permanente hacia un tercero no se
+decide en una conversación.
+
+Los dos actos sobre la cola piden `CONFIRMO`, y en direcciones opuestas: reintentar
+tiene efecto **externo y no transaccional** —se manda correo—, así que puede duplicar
+avisos ya recibidos; descartar significa que lo que ese evento iba a producir no va a
+ocurrir nunca. Se prefiere el riesgo de duplicar al de perder un aviso en silencio, y
+por eso se dice en la descripción de la herramienta.
+
+`POST /notifications/send` no cuenta como pendiente: va **sellado con token interno**
+—lo llama signature-service para los códigos de segundo factor— y sin ese sello
+cualquier token válido podría enviar correo con la identidad de la institución.
 
 ### F11 · Consulta y reportes — 40 %
 
@@ -304,19 +377,52 @@ conocimiento (búsqueda semántica, antecedentes, redacción con citas).
 
 **Pendiente**: los reportes de tiempos de respuesta e inventario.
 
-### F12 · Administración y seguridad — 0 %
+### F12 · Administración y seguridad — 44 % (26 de 59)
 
-59 operaciones: usuarios, grupos, permisos, clearance, dependencias, parámetros,
-catálogos, días hábiles y auditoría. **Ninguna es urgente para el asistente y
-varias no deberían serlo nunca**: conceder permisos desde un chat es
-precisamente lo que un SGDEA no debe permitir. Lo que sí tiene sentido exponer
-es la **lectura**: días hábiles para calcular un plazo, dependencias para
-repartir, y la consulta de auditoría de un objeto concreto.
+Este flujo se resuelve casi entero **declarando lo que no se ofrece**, y las 26
+herramientas son todas de lectura. No hay ni una escritura, y no es una omisión
+por hacer.
+
+**Cubierto** — lo que se pregunta mientras se tramita:
+
+- **Plazos**: el vencimiento en días hábiles según el calendario de la entidad, y
+  los festivos que lo explican. Contar días corridos da una fecha equivocada, y
+  los términos de ley se cuentan así.
+- **Estructura orgánica**: dependencias en lista, en árbol y por código —el
+  código es el que piden las herramientas de reparto—.
+- **Vocabulario**: los catálogos y sus valores admitidos.
+- **Parámetros** de la entidad y su valor actual.
+- **Identidad, en lectura**: usuarios, grupos, permisos con su nivel, miembros,
+  clearance de un grupo, permisos efectivos de una persona y sus unidades de
+  reparto. Responde «¿quién puede radicar?» sin poder cambiar la respuesta.
+- **Estado de mis credenciales**: si el segundo factor está activo y si la llave
+  de firma está vigente. Nunca el secreto: sirve para saber, *antes* de intentar
+  una firma, si va a poder completarla.
+- **Auditoría**: la traza de un objeto y la verificación de la cadena de hash.
+
+**No se ofrece, por decisión** (declarado en `NO_OFRECIDAS`, con su vía
+alternativa, para que nadie descubra el límite fallando):
+
+| Acto | Por qué |
+|---|---|
+| Conceder o retirar permisos, cambiar clearance, crear personas y grupos | Es el acto que decide qué puede hacer todo el mundo, este asistente incluido. Si se pudiera ejecutar desde aquí, el marco de alcance dejaría de ser un límite: **una frontera alcanzable desde dentro no es una frontera** |
+| Dar de alta o revocar credenciales personales (TOTP, códigos de recuperación, llave de firma) | El secreto se revela **exactamente una vez**, por diseño; entregarlo aquí lo dejaría escrito en el historial de una conversación. Y revocar el segundo factor de otra persona es el paso previo a suplantarla |
+| Cambiar festivos o parámetros | Son la regla con la que se cuentan los términos de ley. Un festivo añadido hoy corre el vencimiento de todos los plazos que ya están andando, sin avisar y sin aparecer en la traza de ningún expediente |
+| Añadir valores de catálogo o cambiar la estructura de dependencias | El valor de un catálogo cerrado es que sea cerrado: en cuanto se le añaden entradas al vuelo aparecen «Bogotá», «BOGOTA» y «Bogotá D.C.» como tres cosas distintas, y ninguna búsqueda posterior las reúne |
+
+Las 33 operaciones restantes son escrituras de esos cuatro grupos, más la
+mecánica de sesión (`token`, `refresh`, `logout`, `validate`), que no es un acto
+de negocio: el servidor ya viaja con el token de quien pregunta.
+
+La decisión no vive solo en esta página. `test_el_flujo_de_administracion_no_ofrece_ninguna_escritura`
+recorre el catálogo por **prefijo de ruta**, no por lista de nombres, así que una
+herramienta nueva sobre `/auth/`, `/config/`, `/catalogos` o `/dependencias` entra
+en el guardián el día que se escribe.
 
 ## Los procedimientos que pide cada flujo
 
 Un procedimiento encadena herramientas en el orden del dominio y se confirma una
-sola vez. Los cuatro que existen y los que faltan:
+sola vez. Los ocho que existen y los que faltan:
 
 | Procedimiento | Flujos | Estado |
 |---|---|---|
@@ -327,8 +433,13 @@ sola vez. Los cuatro que existen y los que faltan:
 | `estado_del_expediente` (4 consultas en una) | F4 + F5 | ✅ |
 | `ubicar_expediente` (crear unidad → guardar expediente) | F5 | ✅ |
 | `preparar_transferencia` (crear → enviar) | F6 | ✅ |
+| `atender_correo_del_buzon` (reservar → radicar) | F10 + F1 | ✅ |
 | `despachar_respuesta` (responder → despachar por operador) | F3 | pendiente |
 | `archivar_expediente` (foliar → cerrar → índice → firma) | F4 + F8 | pendiente |
+
+**`atender_correo_del_buzon` son dos pasos y no tres**: si la radicación falla, la
+reserva queda puesta y caduca sola. Soltarla automáticamente sería decidir por la
+persona que ya no quiere ese correo, cuando lo normal tras un fallo es reintentar.
 
 **`preparar_transferencia` no recibe**, y es deliberado: recibir es del archivo
 receptor, y que una sola llamada hiciera las dos puntas convertiría una entrega

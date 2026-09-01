@@ -432,6 +432,59 @@ _P_PROYECTO_ID = Param(
 )
 
 
+# ── F12: identidad y estructura orgánica ────────────────────────────────────
+_P_DEPENDENCIA_ID = Param(
+    name="dependencia_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la dependencia.",
+    label="Dependencia",
+)
+_P_GROUP_ID = Param(
+    name="group_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del grupo (rol).",
+    label="Grupo",
+)
+_P_USER_ID = Param(
+    name="user_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la persona.",
+    label="Persona",
+)
+
+
+# ── F10/F13: correo institucional y cola de eventos ─────────────────────────
+_P_CUENTA_ID = Param(
+    name="cuenta_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del buzón de correo.",
+    label="Buzón",
+)
+_P_MENSAJE_ID = Param(
+    name="mensaje_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del correo en la bandeja.",
+    label="Correo",
+)
+_P_EVENT_ID = Param(
+    name="event_id",
+    required=True,
+    location="path",
+    description="Identificador del evento en la cola de fallos.",
+    label="Evento",
+)
+
+
 def _p_size(maximo: int) -> Param:
     return Param(
         name="size",
@@ -4395,6 +4448,947 @@ CATALOG: tuple[Tool, ...] = (
                 format="date",
                 description="Radicados registrados hasta esta fecha (AAAA-MM-DD).",
                 label="Hasta",
+            ),
+        ),
+    ),
+    # ── F12 · Administración y seguridad ────────────────────────────────
+    #
+    # Este flujo se resuelve casi entero DECLARANDO LO QUE NO SE OFRECE, y
+    # conviene decir por qué antes de la primera tool, porque a primera vista
+    # parece la sección más pobre del catálogo: 59 operaciones y ninguna
+    # escritura.
+    #
+    # La razón no es el riesgo genérico de escribir. Es que aquí viven las tres
+    # cosas de las que depende que todo lo demás signifique algo:
+    #
+    # 1. **Quién es quién y qué puede hacer** (usuarios, grupos, permisos,
+    #    clearance, URD). Conceder un permiso desde un chat rompe el propio
+    #    marco de alcance: el asistente pasaría de trabajar DENTRO de los
+    #    límites del usuario a poder ensancharlos. Un sistema en el que la
+    #    frontera de autorización es alcanzable por quien está dentro de ella
+    #    no tiene frontera.
+    # 2. **Las credenciales personales** (TOTP, llave de firma). El secreto y
+    #    los códigos de recuperación se revelan EXACTAMENTE UNA VEZ, por
+    #    diseño; entregarlos por este canal los dejaría escritos en el
+    #    historial de una conversación. Se ofrece el ESTADO —¿tengo el segundo
+    #    factor activo?— porque es justo lo que hace falta saber antes de
+    #    intentar una firma, y no revela nada.
+    # 3. **La regla con la que se cuentan los plazos** (festivos, parámetros) y
+    #    **el vocabulario cerrado** (catálogos, dependencias). Un festivo que
+    #    se añade hoy mueve el vencimiento de todos los términos que ya están
+    #    corriendo, hacia atrás y sin aviso; y un catálogo al que se le añaden
+    #    entradas desde una conversación deja de ser cerrado, que es lo único
+    #    que lo hacía útil (ya pasó con «Bogotá»/«BOGOTA»/«Bogotá D.C.»).
+    #
+    # Lo que sí se ofrece es la LECTURA, y no es un consuelo: calcular cuándo
+    # vence un término, saber a qué dependencia repartir, ver con qué
+    # vocabulario hay que rellenar un campo y consultar la traza de un objeto
+    # son las preguntas que de verdad aparecen mientras se tramita.
+    Tool(
+        name="calcular_dias_habiles",
+        description=(
+            "Fecha de vencimiento contando DÍAS HÁBILES desde una fecha, según el "
+            "calendario de festivos de la entidad. Es la forma correcta de responder "
+            "«¿cuándo vence?»: contar días corridos da una fecha equivocada, y los "
+            "términos de ley (p. ej. 15 días hábiles de una petición) se cuentan así."
+        ),
+        method="GET",
+        path="/api/v1/business-days/calculate",
+        # Solo autenticado, a propósito: el cálculo del plazo lo necesita
+        # cualquiera que tramite, no un administrador (tenant-service/config.py).
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Calcular el vencimiento en días hábiles",
+        params=(
+            Param(
+                name="from",
+                required=True,
+                format="date",
+                description="Fecha desde la que se cuenta (AAAA-MM-DD).",
+                label="Desde",
+            ),
+            Param(
+                name="days",
+                type="integer",
+                required=True,
+                minimum=0,
+                maximum=3650,
+                description="Cuántos días hábiles hay que contar.",
+                label="Días hábiles",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_festivos",
+        description=(
+            "Festivos registrados por la entidad, opcionalmente de un año. Sirve para "
+            "explicar un vencimiento: si el plazo cae más lejos de lo esperado, aquí "
+            "está el motivo."
+        ),
+        method="GET",
+        path="/api/v1/config/holidays",
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar los festivos de la entidad",
+        params=(
+            Param(
+                name="year",
+                type="integer",
+                minimum=2000,
+                maximum=2100,
+                description="Año a consultar. Sin él, todos.",
+                label="Año",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_dependencias",
+        description=(
+            "Dependencias (unidades organizativas) de la entidad: es a ellas a quien se "
+            "reparte y traslada un documento. Devuelve el código —el que piden las "
+            "tools de reparto— junto al nombre."
+        ),
+        method="GET",
+        path="/api/v1/dependencias",
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Listar las dependencias de la entidad",
+        params=(
+            Param(
+                name="activo",
+                type="boolean",
+                description="Solo las activas (true) o solo las inactivas (false).",
+                label="Activas",
+            ),
+            Param(
+                name="parent_id",
+                format="uuid",
+                description="Solo las hijas de esta dependencia.",
+                label="Dependencia padre",
+            ),
+        ),
+    ),
+    Tool(
+        name="arbol_dependencias",
+        description=(
+            "Estructura orgánica completa en árbol: cada dependencia con las que "
+            "cuelgan de ella. Es la vista que hace falta para decidir a quién escalar."
+        ),
+        method="GET",
+        path="/api/v1/dependencias/tree",
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar el árbol de dependencias",
+        params=(
+            Param(
+                name="activo",
+                type="boolean",
+                description="Solo las activas.",
+                label="Activas",
+            ),
+        ),
+    ),
+    Tool(
+        name="consultar_dependencia_por_codigo",
+        description=(
+            "Una dependencia a partir de su CÓDIGO numérico, que es como la nombran las "
+            "tools de reparto y como aparece en el número de radicado."
+        ),
+        method="GET",
+        path="/api/v1/dependencias/by-codigo/{codigo}",
+        path_params=("codigo",),
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar una dependencia por su código",
+        params=(
+            Param(
+                name="codigo",
+                type="integer",
+                required=True,
+                location="path",
+                description="Código numérico de la dependencia.",
+                label="Código",
+            ),
+        ),
+    ),
+    Tool(
+        name="consultar_dependencia",
+        description="Una dependencia por su identificador.",
+        method="GET",
+        path="/api/v1/dependencias/{dependencia_id}",
+        path_params=("dependencia_id",),
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar una dependencia",
+        params=(_P_DEPENDENCIA_ID,),
+    ),
+    Tool(
+        name="listar_catalogos",
+        description=(
+            "Nombres de los catálogos de vocabulario controlado de la entidad (tipos de "
+            "identificación, medios de recepción, causales…). Es el primer paso para "
+            "saber qué valores admite un campo antes de rellenarlo."
+        ),
+        method="GET",
+        path="/api/v1/catalogos",
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Listar los catálogos de vocabulario",
+    ),
+    Tool(
+        name="listar_items_catalogo",
+        description=(
+            "Valores admitidos por un catálogo. Estos catálogos son CERRADOS: el valor "
+            "hay que elegirlo de aquí, no escribirlo a mano, porque «Bogotá», «BOGOTA» y "
+            "«Bogotá D.C.» son tres valores distintos para el sistema y ninguna "
+            "búsqueda posterior los reúne. Si el valor que hace falta no está, se pide "
+            "al administrador; no se inventa."
+        ),
+        method="GET",
+        path="/api/v1/catalogos/{catalogo}",
+        path_params=("catalogo",),
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar los valores de un catálogo",
+        params=(
+            Param(
+                name="catalogo",
+                required=True,
+                location="path",
+                enum=(
+                    "tipos-identificacion",
+                    "tipos-remitente",
+                    "medios-recepcion",
+                    "tipos-anexo",
+                    "causales",
+                    "formas-envio",
+                    "soportes",
+                    "mensajes-rapidos",
+                ),
+                description="Nombre del catálogo.",
+                label="Catálogo",
+            ),
+            Param(
+                name="activo",
+                type="boolean",
+                description="Solo los valores vigentes.",
+                label="Vigentes",
+            ),
+            Param(
+                name="ambito",
+                description=(
+                    "Solo para «causales»: acota al acto (p. ej. la anulación o la "
+                    "devolución). En los demás catálogos el backend responde 422 en vez "
+                    "de ignorarlo, para que nadie use causales de un acto en otro."
+                ),
+                label="Ámbito",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_parametros",
+        description=(
+            "Parámetros de configuración de la entidad y su valor actual (formato del "
+            "número de radicado, plazos por defecto, etc.). Solo lectura: cambiarlos "
+            "altera cómo se comporta el sistema para todo el mundo."
+        ),
+        method="GET",
+        path="/api/v1/config/params",
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar los parámetros de la entidad",
+    ),
+    Tool(
+        name="consultar_parametro",
+        description="El valor de un parámetro concreto de la entidad.",
+        method="GET",
+        path="/api/v1/config/params/{key}",
+        path_params=("key",),
+        permission=None,
+        write=False,
+        epic="E14",
+        operacion="Consultar un parámetro de la entidad",
+        params=(
+            Param(
+                name="key",
+                required=True,
+                location="path",
+                description="Clave del parámetro.",
+                label="Parámetro",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_usuarios_asignables",
+        description=(
+            "Usuarios activos a los que se puede asignar un documento (identificador y "
+            "nombre de usuario, nada más). Es la lectura mínima pensada para elegir "
+            "destinatario, y por eso la habilita el permiso de radicación y no el de "
+            "administración."
+        ),
+        method="GET",
+        path="/api/v1/auth/users/pickable",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Listar usuarios a los que asignar",
+        params=(_p_size(500),),
+    ),
+    Tool(
+        name="listar_niveles_seguridad",
+        description=(
+            "Niveles de clasificación de la seguridad de la información que usa la "
+            "entidad (de Pública a Reservada, RF-SEG-08). Es el vocabulario con el que "
+            "se clasifica un documento."
+        ),
+        method="GET",
+        path="/api/v1/auth/security-levels",
+        permission=None,
+        write=False,
+        epic="E08",
+        operacion="Consultar los niveles de clasificación",
+    ),
+    Tool(
+        name="mi_contexto",
+        description=(
+            "Con qué dependencia está trabajando ahora la persona y entre cuáles puede "
+            "moverse. Importa porque la dependencia activa decide desde dónde se radica "
+            "y qué bandeja se ve."
+        ),
+        method="GET",
+        path="/api/v1/auth/context",
+        permission=None,
+        write=False,
+        epic="E08",
+        operacion="Consultar mi contexto de trabajo",
+    ),
+    Tool(
+        name="mi_clearance",
+        description=(
+            "Hasta qué nivel de clasificación puede ver esta persona. Lo que esté por "
+            "encima no aparece en sus consultas y el sistema no revela que exista, así "
+            "que un resultado vacío puede significar «no hay» o «no le corresponde»."
+        ),
+        method="GET",
+        path="/api/v1/auth/clearance",
+        permission=None,
+        write=False,
+        epic="E08",
+        operacion="Consultar mi nivel de acceso",
+    ),
+    Tool(
+        name="estado_mi_segundo_factor",
+        description=(
+            "Si la persona tiene el segundo factor (TOTP) activo y desde cuándo. NUNCA "
+            "devuelve el secreto. Sirve para saber, ANTES de intentar una firma, si va a "
+            "poder completarla; darla de alta se hace en «Mi perfil»."
+        ),
+        method="GET",
+        path="/api/v1/auth/me/totp",
+        permission=None,
+        write=False,
+        epic="E06",
+        operacion="Consultar el estado de mi segundo factor",
+    ),
+    Tool(
+        name="estado_mi_credencial_de_firma",
+        description=(
+            "Si la persona tiene credencial personal de firma, su vigencia y su estado "
+            "de revocación. NUNCA devuelve la llave privada."
+        ),
+        method="GET",
+        path="/api/v1/auth/me/signing-key",
+        permission=None,
+        write=False,
+        epic="E06",
+        operacion="Consultar el estado de mi credencial de firma",
+    ),
+    Tool(
+        name="listar_usuarios",
+        description="Usuarios de la entidad, con su estado. Solo lectura.",
+        method="GET",
+        path="/api/v1/auth/users",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Listar los usuarios de la entidad",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="listar_grupos",
+        description=(
+            "Grupos (roles) de la entidad. Los permisos se conceden al grupo, no a la "
+            "persona: para saber qué puede hacer alguien hay que mirar a qué grupos "
+            "pertenece."
+        ),
+        method="GET",
+        path="/api/v1/auth/groups",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Listar los grupos de la entidad",
+    ),
+    Tool(
+        name="listar_permisos_del_sistema",
+        description=(
+            "Catálogo de permisos que existen en el sistema, con su descripción. Es el "
+            "vocabulario con el que está escrita la seguridad de la entidad."
+        ),
+        method="GET",
+        path="/api/v1/auth/permissions",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Listar los permisos del sistema",
+    ),
+    Tool(
+        name="permisos_de_grupo",
+        description=(
+            "Permisos concedidos a un grupo, cada uno con su NIVEL (1 leer, 3 crear y "
+            "modificar, 5 total). Tener el permiso y tener el nivel no es lo mismo: un "
+            "permiso a nivel 1 deja ver y no deja escribir."
+        ),
+        method="GET",
+        path="/api/v1/auth/groups/{group_id}/permissions",
+        path_params=("group_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar los permisos de un grupo",
+        params=(_P_GROUP_ID,),
+    ),
+    Tool(
+        name="miembros_de_grupo",
+        description="Personas que pertenecen a un grupo.",
+        method="GET",
+        path="/api/v1/auth/groups/{group_id}/members",
+        path_params=("group_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar los miembros de un grupo",
+        params=(_P_GROUP_ID, _P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="clearance_de_grupo",
+        description=(
+            "Hasta qué nivel de clasificación alcanza un grupo. Si no hay nada "
+            "declarado, el sistema asume el nivel más bajo: nunca abre por omisión."
+        ),
+        method="GET",
+        path="/api/v1/auth/groups/{group_id}/clearance",
+        path_params=("group_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar el nivel de acceso de un grupo",
+        params=(_P_GROUP_ID,),
+    ),
+    Tool(
+        name="permisos_de_usuario",
+        description=(
+            "Permisos EFECTIVOS de una persona: la suma de los de todos sus grupos, "
+            "quedándose con el nivel más alto de cada uno. Es lo que de verdad se "
+            "comprueba al autorizar, y puede no coincidir con lo que dice un solo grupo."
+        ),
+        method="GET",
+        path="/api/v1/auth/users/{user_id}/permissions",
+        path_params=("user_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar los permisos efectivos de una persona",
+        params=(_P_USER_ID,),
+    ),
+    Tool(
+        name="listar_urd_usuario",
+        description=(
+            "Unidades de Reparto Documental de una persona: qué dependencias puede "
+            "atender, además de la suya. Es lo que explica por qué a alguien le llegan "
+            "documentos de otra área."
+        ),
+        method="GET",
+        path="/api/v1/auth/users/{user_id}/urd",
+        path_params=("user_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar las unidades de reparto de una persona",
+        params=(_P_USER_ID,),
+    ),
+    Tool(
+        name="consultar_auditoria",
+        description=(
+            "Traza de auditoría de la entidad, de lo más reciente a lo más antiguo, con "
+            "filtros. Para seguir un objeto concreto se filtra por 'object_ref' con su "
+            "número de radicado o su identificador: eso responde «¿quién hizo qué con "
+            "esto y cuándo?», que es la pregunta que exige la Ley 594 de 2000. "
+            "Recortada por el nivel de acceso de quien pregunta, y el total también: si "
+            "un objeto está por encima, sus asientos no se listan ni se cuentan."
+        ),
+        method="GET",
+        path="/api/v1/audit",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar la traza de auditoría",
+        params=(
+            Param(
+                name="object_ref",
+                description=(
+                    "Identificador del objeto a seguir (número de radicado, UUID de "
+                    "expediente…)."
+                ),
+                label="Objeto",
+            ),
+            Param(
+                name="object_type",
+                description="Clase de objeto (radicado, expediente, lote…).",
+                label="Tipo de objeto",
+            ),
+            Param(name="action", description="Acción registrada.", label="Acción"),
+            Param(name="actor", description="Quién actuó.", label="Actor"),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="verificar_cadena_auditoria",
+        description=(
+            "Recalcula la cadena de hash de la auditoría entera y dice si está íntegra. "
+            "Es la prueba de que nadie ha alterado ni borrado un asiento. La respuesta "
+            "no lleva contenido: solo si está bien y, si no, en qué asiento se rompe. "
+            "No se recorta por nivel de acceso, porque una cadena verificada a medias "
+            "siempre daría «rota»."
+        ),
+        method="GET",
+        path="/api/v1/audit/verify",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Verificar la integridad de la auditoría",
+    ),
+    # ── F10 · Correo institucional ──────────────────────────────────────
+    #
+    # Este flujo se parte en dos mitades que no se parecen en nada, y el reparto
+    # es la decisión:
+    #
+    # * **La bandeja ES trabajo de ventanilla.** Un correo que entra por el buzón
+    #   oficial es una comunicación oficial recibida (Ac. 060/2001 art. 3), y
+    #   decidir si se radica, quién lo trabaja y con qué dependencia competente es
+    #   exactamente lo que hace una unidad de correspondencia. Se ofrece entera.
+    # * **La configuración de los buzones NO.** Registrar la aplicación OAuth de
+    #   la entidad, dar de alta una cuenta o canjear una autorización significa
+    #   mover credenciales: el `client_secret` del proveedor, la contraseña del
+    #   buzón, el código de autorización. Nada de eso puede viajar por un chat.
+    #
+    # Y hay un tercer caso que tampoco se ofrece por la misma razón: **los buzones
+    # PERSONALES**. Su contraseña no se guarda a propósito —viaja en la petición y
+    # muere con ella—, así que trabajarlos exige teclearla cada vez. El backend
+    # responde `password_requerida` y la vía es la pantalla.
+    Tool(
+        name="listar_buzones_correo",
+        description=(
+            "Buzones de correo que esta persona puede trabajar, con su identificador. "
+            "Es el punto de partida del flujo: el resto de herramientas de correo piden "
+            "ese identificador. Devuelve solo los buzones a su alcance —el personal es "
+            "de su dueño, el institucional de los funcionarios asignados—, y NUNCA "
+            "ninguna credencial."
+        ),
+        method="GET",
+        path="/api/v1/email/cuentas",
+        # `PERM_RADI`, el mismo que la bandeja. Este listado exigía
+        # `USUA_PERM_ADMIN` y era la única forma de saber qué buzones existen: el
+        # funcionario al que la bandeja está dirigida no podía llegar a ella.
+        # Corregido en `document-service/app/routers/ingest.py` con su test.
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E19",
+        operacion="Listar los buzones de correo que puedo trabajar",
+    ),
+    Tool(
+        name="listar_correos_pendientes",
+        description=(
+            "Correos de un buzón, del más antiguo al más reciente por FECHA DE RECIBO "
+            "—una ventanilla atiende por orden de llegada, y la llegada es la del correo "
+            "al buzón, no la del sondeo que lo trajo—. Por defecto los pendientes; "
+            "también se pueden ver los ya radicados o los descartados."
+        ),
+        method="GET",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja",
+        path_params=("cuenta_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E19",
+        operacion="Ver los correos de un buzón",
+        params=(
+            _P_CUENTA_ID,
+            Param(
+                name="estado",
+                enum=("pendiente", "radicado", "descartado"),
+                description="Qué correos traer. Por defecto, los pendientes.",
+                label="Estado",
+            ),
+        ),
+    ),
+    Tool(
+        name="estado_bandeja_correo",
+        description=(
+            "Resumen barato de un buzón: cuántos correos hay pendientes, cuántos está "
+            "trabajando alguien y cuándo fue la última novedad. Responde «¿hay algo por "
+            "atender?» sin traerse la lista entera."
+        ),
+        method="GET",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja/estado",
+        path_params=("cuenta_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E19",
+        operacion="Consultar el resumen de un buzón",
+        params=(_P_CUENTA_ID,),
+    ),
+    Tool(
+        name="sincronizar_buzon",
+        description=(
+            "Trae del servidor de correo los mensajes que aún no están en la bandeja. "
+            "NO radica nada: solo trae. Qué se radica y con qué número lo decide una "
+            "persona después, correo a correo. Es idempotente: volver a ejecutarlo no "
+            "duplica lo que ya está."
+        ),
+        method="POST",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja/sincronizar",
+        path_params=("cuenta_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        # Traer correos no consume ningún número ni decide nada sobre ellos, y
+        # repetirlo es inofensivo. Poner aquí la fricción del acto irreversible
+        # sería gastarla donde no hay nada que lamentar.
+        destructive=False,
+        epic="E19",
+        operacion="Traer los correos nuevos de un buzón",
+        # `password` NO se declara. La ruta la admite para los buzones
+        # personales, cuya credencial no se guarda; pedirla por aquí la dejaría
+        # escrita en el historial de la conversación. Sin ella, un buzón personal
+        # responde `password_requerida` y la vía es la pantalla — que es la
+        # respuesta correcta, no un fallo.
+        params=(_P_CUENTA_ID,),
+    ),
+    Tool(
+        name="reservar_correo",
+        description=(
+            "Toma un correo para trabajarlo, de modo que nadie más lo radique al mismo "
+            "tiempo. Si otro lo tiene, responde 409 «correo ocupado» — que no es una "
+            "avería sino la reserva haciendo su trabajo. Hay que reservar ANTES de "
+            "radicar: sin reserva vigente, radicar se rechaza."
+        ),
+        method="POST",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja/{mensaje_id}/reservar",
+        path_params=("cuenta_id", "mensaje_id"),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E19",
+        operacion="Reservar un correo para trabajarlo",
+        params=(_P_CUENTA_ID, _P_MENSAJE_ID),
+    ),
+    Tool(
+        name="liberar_correo",
+        description=(
+            "Suelta la reserva propia sin decidir nada sobre el correo: vuelve a quedar "
+            "disponible para la ventanilla. Es el acto de ARREPENTIRSE, y por eso no "
+            "pide confirmación: parar tiene que ser barato."
+        ),
+        method="POST",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja/{mensaje_id}/liberar",
+        path_params=("cuenta_id", "mensaje_id"),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E19",
+        operacion="Liberar la reserva de un correo",
+        params=(_P_CUENTA_ID, _P_MENSAJE_ID),
+    ),
+    Tool(
+        name="radicar_correo",
+        description=(
+            "Convierte un correo reservado en un radicado de ENTRADA, con el mensaje "
+            "original y sus adjuntos como soportes. Consume un número de radicado, que "
+            "es inmutable y no se reutiliza; y sobre una Entrada la anulación no "
+            "existe, así que radicar el correo equivocado no se deshace. Exige reserva "
+            "vigente propia."
+        ),
+        method="POST",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja/{mensaje_id}/radicar",
+        path_params=("cuenta_id", "mensaje_id"),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=True,
+        # NO se pide teclear el identificador del mensaje. Sería un UUID que la
+        # persona no puede contrastar con nada —el mismo motivo por el que no se
+        # ofrece sellar un artefacto en WORM—: enseñaría rigor sin darlo. La
+        # tarjeta muestra el asunto y el remitente, que sí se contrastan.
+        epic="E19",
+        operacion="Radicar un correo como documento de entrada",
+        params=(
+            _P_CUENTA_ID,
+            _P_MENSAJE_ID,
+            Param(
+                name="subject",
+                description=(
+                    "Asunto del radicado. Si se omite, se toma el del correo; se corrige "
+                    "cuando el remitente lo escribió mal."
+                ),
+                label="Asunto",
+            ),
+            Param(
+                name="sender_name",
+                description="Remitente. Si se omite, el que trae el correo.",
+                label="Remitente",
+            ),
+            Param(name="sender_entity", description="Entidad remitente.", label="Entidad"),
+            Param(
+                name="dest_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description=(
+                    "CÓDIGO de la dependencia competente, del organigrama. Se obtiene con "
+                    "'listar_dependencias'; no se escribe el nombre a mano, porque un "
+                    "nombre suelto no vincula el radicado con la dependencia y no "
+                    "aparecería al repartir."
+                ),
+                label="Dependencia competente",
+            ),
+            Param(
+                name="doc_class",
+                description=(
+                    "Código del tipo documental, del catálogo ('listar_tipos_documentales'). "
+                    "Gobierna la retención según la TRD; puede tipificarse después."
+                ),
+                label="Tipo documental",
+            ),
+        ),
+    ),
+    Tool(
+        name="descartar_correo",
+        description=(
+            "Aparta un correo que llegó al buzón y no debía radicarse, dejando "
+            "constancia del motivo. No borra el correo del servidor: lo saca de la "
+            "bandeja. Es una decisión sobre una comunicación oficial recibida y la "
+            "unidad de correspondencia responde de ella (Ac. 060/2001 art. 3)."
+        ),
+        method="POST",
+        path="/api/v1/email/cuentas/{cuenta_id}/bandeja/{mensaje_id}/descartar",
+        path_params=("cuenta_id", "mensaje_id"),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        # Saca de la bandeja una comunicación oficial recibida y no hay acto que
+        # lo devuelva a «pendiente»: el estado solo avanza.
+        destructive=True,
+        epic="E19",
+        operacion="Descartar un correo sin radicarlo",
+        params=(
+            _P_CUENTA_ID,
+            _P_MENSAJE_ID,
+            Param(
+                name="motivo",
+                required=True,
+                min_length=5,
+                description="Por qué no se radica. Queda en la traza.",
+                label="Motivo",
+            ),
+        ),
+    ),
+    # ── F13 · Notificaciones e integración ──────────────────────────────
+    #
+    # Se ofrece **observar** y **desatascar**; no se ofrece **configurar**.
+    #
+    # Un webhook manda los eventos documentales de la entidad a una URL de fuera:
+    # crearlo es abrir un canal de salida permanente, y eso no se decide en una
+    # conversación. La cola de fallos, en cambio, es reconciliación operativa con
+    # traza completa, y dejarla solo mirable convertiría la mitad de la capacidad
+    # en decoración.
+    Tool(
+        name="historial_notificaciones",
+        description=(
+            "Últimas notificaciones que el sistema envió: a quién, por qué y si "
+            "salieron. Responde «¿le llegó el aviso al ciudadano?», que es la pregunta "
+            "que aparece cuando alguien reclama que no le avisaron."
+        ),
+        method="GET",
+        path="/api/v1/notifications/history",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E16",
+        operacion="Ver el historial de notificaciones",
+        params=(
+            Param(
+                name="limit",
+                type="integer",
+                minimum=1,
+                maximum=100,
+                description="Cuántas traer (máx. 100).",
+                label="Cantidad",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="consultar_notificacion",
+        description="Una notificación concreta: destinatario, asunto, estado y momento.",
+        method="GET",
+        path="/api/v1/notifications/{notification_id}",
+        path_params=("notification_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E16",
+        operacion="Consultar una notificación",
+        params=(
+            Param(
+                name="notification_id",
+                required=True,
+                location="path",
+                format="uuid",
+                description="UUID de la notificación.",
+                label="Notificación",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_webhooks",
+        description=(
+            "Canales de salida configurados: a qué URL de fuera se mandan los eventos "
+            "documentales de la entidad y qué eventos. Solo lectura — dar de alta o "
+            "retirar un canal no se hace por este medio."
+        ),
+        method="GET",
+        path="/api/v1/webhooks",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E11",
+        operacion="Listar los canales de salida configurados",
+    ),
+    Tool(
+        name="listar_eventos_atascados",
+        description=(
+            "Cola de fallos: eventos que el sistema no consiguió procesar tras sus "
+            "reintentos. Cada uno es una consecuencia que no llegó a ocurrir —un aviso "
+            "que no salió, una copia que no se actualizó—, así que una cola que crece "
+            "es una señal, no un detalle técnico."
+        ),
+        method="GET",
+        path="/api/v1/notification/admin/deadletter/",
+        permission="PERM_DLQ_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E16",
+        operacion="Ver la cola de eventos fallidos",
+        params=(
+            Param(
+                name="status",
+                enum=("pending", "resolved", "discarded"),
+                description="Qué eventos traer. Por defecto, los pendientes.",
+                label="Estado",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="consultar_evento_atascado",
+        description=(
+            "Un evento de la cola de fallos con su contenido y el error que lo dejó "
+            "ahí: lo que hace falta para decidir si se reintenta o se descarta."
+        ),
+        method="GET",
+        path="/api/v1/notification/admin/deadletter/{event_id}",
+        path_params=("event_id",),
+        permission="PERM_DLQ_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E16",
+        operacion="Consultar un evento fallido",
+        params=(_P_EVENT_ID,),
+    ),
+    Tool(
+        name="reintentar_evento_atascado",
+        description=(
+            "Vuelve a procesar un evento de la cola de fallos. El efecto es EXTERNO y "
+            "no transaccional —se manda correo—, así que si el fallo original ocurrió "
+            "después de un envío parcial, este reintento puede duplicar avisos ya "
+            "recibidos. Se prefiere ese riesgo al de perder un aviso en silencio, y por "
+            "eso se declara aquí."
+        ),
+        method="POST",
+        path="/api/v1/notification/admin/deadletter/{event_id}/replay",
+        path_params=("event_id",),
+        permission="PERM_DLQ_ADMIN",
+        min_crud=1,
+        write=True,
+        # Un correo enviado no se recoge.
+        destructive=True,
+        epic="E16",
+        operacion="Reintentar un evento fallido",
+        params=(_P_EVENT_ID,),
+    ),
+    Tool(
+        name="descartar_evento_atascado",
+        description=(
+            "Renuncia deliberadamente a procesar un evento de la cola, dejando "
+            "constancia del motivo. Lo que ese evento iba a producir —un aviso, una "
+            "actualización— NO va a ocurrir, y no hay acto que lo devuelva a la cola."
+        ),
+        method="POST",
+        path="/api/v1/notification/admin/deadletter/{event_id}/discard",
+        path_params=("event_id",),
+        permission="PERM_DLQ_ADMIN",
+        min_crud=1,
+        write=True,
+        destructive=True,
+        epic="E16",
+        operacion="Descartar un evento fallido",
+        params=(
+            _P_EVENT_ID,
+            Param(
+                name="reason",
+                required=True,
+                min_length=10,
+                description=(
+                    "Por qué se renuncia a procesarlo. Queda auditado, y por eso el "
+                    "backend exige un motivo sustantivo, no un carácter suelto."
+                ),
+                label="Motivo",
             ),
         ),
     ),

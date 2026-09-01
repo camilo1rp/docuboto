@@ -171,6 +171,23 @@ class Settings(BaseSettings):
     # explícitamente (TsaUnavailableError, seguimiento) — NUNCA cae en
     # silencio a la TSA local si el operador fijó una URL.
     tsa_url: str = ""
+    # Segundos de espera de la TSA remota (conexión + lectura). Acotado a
+    # propósito: `build_timestamp_token` es SÍNCRONO y se invoca desde el mismo
+    # hilo que firma, así que una TSA lenta bloquearía el bucle de eventos
+    # durante este tiempo. No se hizo asíncrono porque el firmador ya hace
+    # criptografía bloqueante en línea (signxml, RSA); lo que sí se hace es
+    # acotar la espera para que el bloqueo tenga un techo conocido.
+    tsa_timeout_seconds: float = 10.0
+    # Declara que la TSA remota configurada en `tsa_url` es de un prestador
+    # ACREDITADO (ONAC). Solo tiene efecto con `tsa_url` puesto: la TSA LOCAL
+    # es un par autofirmado del propio despliegue y jamás se acredita, mire lo
+    # que mire este flag.
+    #
+    # Es una variable de DESPLIEGUE y no per-tenant, a diferencia del sello
+    # institucional, porque la TSA también lo es (`tsa_cert_dir` es única del
+    # despliegue). Quien la fija es quien contrató el servicio de sellado, que
+    # es el mismo que despliega. No es un dato que ningún usuario pueda tocar.
+    tsa_acreditada: bool = False
     # --- Sello de la TSA local (app/core/keys.py::load_tsa_seal, Inc.4) ---
     # Directorio raíz montado como secreto/volumen Docker de solo lectura.
     # A diferencia del sello institucional (por tenant), la TSA es ÚNICA del

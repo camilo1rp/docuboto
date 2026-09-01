@@ -97,3 +97,89 @@ def test_un_uidvalidity_distinto_impide_operar() -> None:
     # Y sin expectativa declarada tampoco: es el caso de la propia
     # sincronización, que acaba de leerlo y no tiene con qué contrastar.
     adaptador._exigir_uidvalidity(111, None, "INBOX")
+
+
+# ── La puerta del buzón ──────────────────────────────────────────────────────
+
+
+def _gate_de(ruta: str, metodo: str) -> set[str]:
+    """Permisos que exige una ruta, leídos de la app MONTADA, no del fichero.
+
+    Un barrido por texto vería un solo gate cuando hay dos: los declarados en el
+    `APIRouter` y los del endpoint se ACUMULAN, y la pregunta «qué exige esta
+    ruta» solo la responde la suma. Por eso se leen los dos niveles.
+
+    FastAPI 0.141 pospone la inclusión —`app.routes` guarda `_IncludedRouter`, no
+    las rutas—, así que se baja al `original_router`. El nombre del permiso vive
+    en el cierre de la dependencia que fabrica `require_permission`.
+    """
+    from app.main import app
+
+    exigidos: set[str] = set()
+    for incluido in app.routes:
+        router = getattr(incluido, "original_router", None)
+        if router is None:
+            continue
+        for route in router.routes:
+            if getattr(route, "path", None) != ruta:
+                continue
+            if metodo not in (getattr(route, "methods", None) or ()):
+                continue
+            for dep in list(router.dependencies) + list(route.dependencies):
+                cierre = getattr(dep.dependency, "__closure__", None) or ()
+                exigidos |= {
+                    celda.cell_contents
+                    for celda in cierre
+                    if isinstance(celda.cell_contents, str)
+                    and celda.cell_contents.startswith(("PERM_", "USUA_", "SGD_"))
+                }
+    return exigidos
+
+
+def test_el_lector_de_gates_encuentra_algo() -> None:
+    """Sin esto, un `_gate_de` que devuelve siempre el conjunto vacío haría pasar
+    el test de «crear una cuenta sigue siendo de administrador» sin comprobarlo:
+    un guardián que no ve nada es indistinguible de un sistema abierto."""
+    assert _gate_de("/api/v1/email/cuentas", "POST"), "el lector de gates no ve ninguna ruta"
+
+
+def test_saber_que_buzones_tengo_es_la_misma_competencia_que_trabajarlos() -> None:
+    """El listado de cuentas y la bandeja se gatean IGUAL, y por una razón.
+
+    La bandeja exige `PERM_RADI` a propósito: quien trabaja el correo recibido es
+    la unidad de correspondencia, no un administrador. Pero el listado de cuentas
+    exigía `USUA_PERM_ADMIN`, y era **la única forma de saber qué buzones existen
+    y con qué identificador**. Resultado: el funcionario al que la bandeja está
+    dirigida no podía llegar a ella — capacidad construida, gateada para su
+    público y sin puerta.
+
+    Que se pueda aflojar el gate sin aflojar nada depende de un detalle del
+    diseño: **qué cuentas devuelve el listado no lo decide el permiso, lo decide
+    el `WHERE` del repositorio** (`_VISIBLE`), que reparte la personal a su dueño
+    y la institucional a los asignados. Ese `WHERE` recibe `es_admin` como
+    parámetro —está escrito para servir también a quien no lo es— y el gate de
+    administrador dejaba esa rama en código muerto. Sus casos viven en
+    `tests/integration/test_email_cuentas_integration.py`.
+    """
+    listado = _gate_de("/api/v1/email/cuentas", "GET")
+    bandeja = _gate_de("/api/v1/email/cuentas/{cuenta_id}/bandeja", "GET")
+
+    assert listado == {"PERM_RADI"}, (
+        f"el listado de cuentas exige {sorted(listado)}: si vuelve a pedir "
+        "USUA_PERM_ADMIN, el funcionario de ventanilla se queda otra vez sin "
+        "forma de encontrar su buzón"
+    )
+    assert listado == bandeja, (
+        f"listado {sorted(listado)} y bandeja {sorted(bandeja)} divergen: saber "
+        "qué buzones tengo y trabajarlos son la misma competencia"
+    )
+
+
+def test_crear_una_cuenta_sigue_siendo_de_administrador() -> None:
+    """Control positivo: aflojar el listado no aflojó la configuración.
+
+    Sin esto, el test anterior pasaría igual con todo el router abierto, que es
+    exactamente el error que no se quiere cometer al corregir un gate de más.
+    """
+    assert _gate_de("/api/v1/email/cuentas", "POST") == {"USUA_PERM_ADMIN"}
+    assert _gate_de("/api/v1/email/apps-oauth", "GET") == {"USUA_PERM_ADMIN"}

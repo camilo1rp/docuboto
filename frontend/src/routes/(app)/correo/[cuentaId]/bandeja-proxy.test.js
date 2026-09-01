@@ -252,3 +252,69 @@ describe("el sondeo no puede fingir actividad", () => {
     expect(ms).toBeLessThan(30 * 60 * 1000);
   });
 });
+
+describe("radicar un correo elige del catálogo, no escribe a mano", () => {
+  it("la dependencia va por CÓDIGO y el tipo documental por su código", async () => {
+    // Dos campos de texto libre donde el sistema tiene catálogos cerrados:
+    //
+    // - **Dependencia competente.** `dest_dept` es un nombre suelto;
+    //   `dest_dept_code` es el código del organigrama, que document-service
+    //   valida contra tenant-service y con el que denormaliza el nombre. Con el
+    //   nombre a mano, el radicado nacido de un correo quedaba SIN vínculo con
+    //   la dependencia —no aparecía al repartir por código— y «Jurídica» y
+    //   «Juridica» eran dos áreas distintas. Es la misma lección que costó la
+    //   corrección entera de la geografía DIVIPOLA.
+    // - **Tipo documental.** Escrito a mano no casa con ninguna serie de la
+    //   TRD, que es la que gobierna cuánto se conserva el documento.
+    //
+    // El asistente de `/radicar` siempre ofreció selectores para los dos; esta
+    // pantalla, que radica exactamente el mismo tipo de documento, no.
+    const { readFileSync } = await import("node:fs");
+    const fuente = readFileSync("src/routes/(app)/correo/[cuentaId]/+page.svelte", "utf-8");
+    const carga = readFileSync("src/routes/(app)/correo/[cuentaId]/+page.server.js", "utf-8");
+
+    // Los vocabularios se cargan del backend, no se inventan en el cliente.
+    expect(carga).toContain("/dependencias?activo=true");
+    expect(carga).toContain("/tipos-documentales?activo=true");
+
+    // Y se ELIGEN.
+    expect(fuente).toContain("bind:value={formulario.dest_dept_code}");
+    expect(fuente).toContain("bind:value={formulario.doc_class}");
+    expect(fuente).not.toContain("bind:value={formulario.dest_dept}");
+
+    // Control positivo del `not`: si los campos desaparecieran del formulario,
+    // la aserción de arriba pasaría igual y no quedaría nada que comprobar.
+    expect(fuente).toContain("Dependencia competente");
+    expect(fuente).toContain("Tipo documental");
+  });
+
+  it("una dependencia que no casa NO se preselecciona", async () => {
+    // `email_cuenta.dependencia_destino` es texto libre heredado, así que la
+    // preselección se hace casando por nombre. Cuando no casa, el desplegable
+    // tiene que quedarse vacío: preseleccionar la primera de la lista pondría
+    // un destino que nadie eligió en un acto que no se deshace.
+    const { readFileSync } = await import("node:fs");
+    const fuente = readFileSync("src/routes/(app)/correo/[cuentaId]/+page.svelte", "utf-8");
+    expect(fuente).toContain("codigoPorNombre");
+    expect(fuente).toMatch(/return hallado \? String\(hallado\.codigo \?\? hallado\.id\) : "";/);
+  });
+});
+
+describe("el buzón tiene puerta", () => {
+  it("hay una entrada de menú a /correo con el permiso de la bandeja", async () => {
+    // La bandeja se gatea con `PERM_RADI` a propósito —quien trabaja el correo
+    // recibido es la unidad de correspondencia—, pero la ÚNICA entrada a
+    // `/correo/{id}` era un botón dentro de `/admin/correo`, que exige
+    // `USUA_PERM_ADMIN`. El funcionario al que la pantalla está dirigida no
+    // podía llegar a ella ni conocer el identificador de su buzón: capacidad
+    // construida, gateada para su público y sin puerta.
+    const { NAV_ITEMS } = await import("$lib/utils/navItems.js");
+    const correo = NAV_ITEMS.find((i) => i.href === "/correo");
+    expect(correo, "falta la entrada de menú a /correo").toBeTruthy();
+    expect(correo.permission).toBe("PERM_RADI");
+
+    const { existsSync } = await import("node:fs");
+    expect(existsSync("src/routes/(app)/correo/+page.svelte")).toBe(true);
+    expect(existsSync("src/routes/(app)/correo/+page.server.js")).toBe(true);
+  });
+});

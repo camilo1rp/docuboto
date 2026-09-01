@@ -286,3 +286,75 @@ def test_los_grupos_excluyentes_nombran_parametros_reales_y_opcionales() -> None
                     f"{t.name}: '{nombre}' es obligatorio Y excluyente a la vez; "
                     "no existe ninguna llamada que satisfaga las dos cosas"
                 )
+
+
+# ---------------------------------------------------------------------------
+# F12: la frontera de autorización no se cruza desde dentro
+# ---------------------------------------------------------------------------
+
+# Prefijos de los endpoints que gobiernan **quién puede qué** (identidad,
+# permisos, clearance, credenciales) y la **regla con la que se mide el resto**
+# (calendario, parámetros, vocabulario cerrado, estructura orgánica).
+#
+# La lista se escribe por PREFIJO y no por nombre de tool a propósito: una tool
+# nueva sobre `/auth/groups/...` entra en el guardián el día que se escribe,
+# sin que nadie tenga que acordarse de añadirla. Un guardián por lista de
+# nombres se queda atrás justo cuando importa, que es cuando alguien añade algo.
+_RUTAS_DE_GOBIERNO = (
+    "/api/v1/auth/",
+    "/api/v1/config/",
+    "/api/v1/catalogos",
+    "/api/v1/dependencias",
+)
+
+
+def test_el_flujo_de_administracion_no_ofrece_ninguna_escritura() -> None:
+    """Ninguna tool escribe sobre identidad, permisos, calendario o vocabulario.
+
+    Son tres cosas distintas protegidas por el mismo guardián:
+
+    - **La frontera de autorización.** Todo el marco de alcance consiste en
+      trabajar dentro de los límites de quien pregunta; una tool que conceda un
+      permiso o suba un nivel de acceso los ensancha desde dentro, y entonces
+      dejan de ser límites.
+    - **Los secretos de un solo uso.** El TOTP y los códigos de recuperación se
+      revelan exactamente una vez: una tool que los devolviera los dejaría
+      escritos en el historial de la conversación.
+    - **La regla con la que se cuenta.** Un festivo o un parámetro nuevo mueve
+      vencimientos que ya corren, y un valor de catálogo añadido al vuelo rompe
+      lo único que hace útil a un catálogo cerrado.
+
+    Este test es la parte ejecutable de esa decisión. Sin él, la decisión vive
+    solo en un comentario, y un comentario no impide que la próxima tool se
+    escriba con `write=True`.
+    """
+    infractoras = [
+        t.name
+        for t in CATALOG
+        if t.write and any(t.path.startswith(p) for p in _RUTAS_DE_GOBIERNO)
+    ]
+    assert not infractoras, (
+        f"{infractoras} escriben sobre la administración de la seguridad, el "
+        "calendario o el vocabulario controlado. Si de verdad hay que ofrecerlo, "
+        "el cambio es de criterio y va documentado en NO_OFRECIDAS (scope.py), "
+        "no un `write=True` más"
+    )
+
+
+def test_ninguna_tool_alcanza_el_secreto_de_una_credencial() -> None:
+    """Control positivo del anterior: no basta con que no escriba.
+
+    `GET /auth/me/totp` es una lectura y se ofrece —dice si el segundo factor
+    está activo, que es lo que hace falta saber antes de firmar—, pero
+    `POST /auth/me/totp/enroll` **también devolvería** el secreto y es una
+    escritura. Lo que se comprueba aquí es que ninguna ruta del catálogo baja
+    de `/totp` o `/signing-key` a sus sub-recursos, que son los que revelan.
+    """
+    for t in CATALOG:
+        for credencial in ("/totp", "/signing-key"):
+            if credencial in t.path:
+                assert t.path.endswith(credencial), (
+                    f"{t.name} apunta a {t.path}: por debajo de «{credencial}» están "
+                    "el alta, la activación, los códigos de recuperación y la "
+                    "revocación, y el secreto se revela una sola vez"
+                )

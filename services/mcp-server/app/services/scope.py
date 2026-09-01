@@ -74,11 +74,29 @@ LIMITES_DECLARADOS = (
 # pidiendo algo que nunca va a ocurrir. Aquí se dice qué no se puede hacer por
 # este canal, por qué, y dónde sí se puede.
 #
-# El criterio para entrar en esta lista es uno solo: **actos cuya garantía
-# depende de que haya una persona presente, y que este canal no puede aportar.**
-# La tarjeta de confirmación encarece el descuido; no convierte a un modelo en
-# una persona. Cuando lo que está en juego es la destrucción de documentos de
-# archivo, esa diferencia deja de ser teórica.
+# Los criterios para entrar en esta lista son tres, y conviene tenerlos
+# separados porque protegen cosas distintas:
+#
+# 1. **Actos cuya garantía depende de que haya una persona presente**, y que
+#    este canal no puede aportar. La tarjeta de confirmación encarece el
+#    descuido; no convierte a un modelo en una persona. Cuando lo que está en
+#    juego es la destrucción de documentos de archivo, esa diferencia deja de
+#    ser teórica.
+# 2. **Actos que mueven la propia frontera de autorización.** Todo este marco
+#    consiste en trabajar DENTRO de los límites de quien pregunta; un acto que
+#    ensancha esos límites —conceder un permiso, subir un nivel de acceso,
+#    meter a alguien en un grupo— los deja de tener. Una frontera alcanzable
+#    desde dentro no es una frontera.
+# 3. **Actos que sacan un secreto de un solo uso a un canal que no lo
+#    custodia.** El secreto TOTP y los códigos de recuperación se revelan
+#    exactamente una vez, por diseño: entregarlos aquí los dejaría escritos en
+#    el historial de una conversación.
+#
+# Un cuarto motivo, más callado, gobierna el calendario y el vocabulario: no
+# son actos peligrosos, son la REGLA con la que se mide todo lo demás. Un
+# festivo añadido hoy mueve vencimientos que ya están corriendo, y un catálogo
+# al que se le añaden entradas desde una conversación deja de ser cerrado, que
+# era lo único que lo hacía servir para algo.
 NO_OFRECIDAS: tuple[dict[str, str], ...] = (
     {
         "operacion": "Ejecutar el borrado de un lote de eliminación",
@@ -138,6 +156,113 @@ NO_OFRECIDAS: tuple[dict[str, str], ...] = (
             "lo custodia"
         ),
         "via_alternativa": "Firme el acta desde la interfaz, en «Transferencias»",
+    },
+    {
+        "operacion": (
+            "Conceder o retirar permisos, cambiar el nivel de acceso de un grupo, o "
+            "crear personas y grupos"
+        ),
+        "motivo": (
+            "Es el acto que decide qué puede hacer todo el mundo, este asistente "
+            "incluido: si se pudiera ejecutar desde aquí, el marco de alcance dejaría "
+            "de ser un límite y pasaría a ser una sugerencia. La habilitación de una "
+            "persona necesita además quedar atribuida a quien la decidió, con su sesión "
+            "y su rastro"
+        ),
+        "via_alternativa": (
+            "Puede consultarlo todo —grupos, miembros, permisos con su nivel, unidades "
+            "de reparto y nivel de acceso— para preparar el cambio; concederlo se hace "
+            "en «Administración → Usuarios y grupos»"
+        ),
+    },
+    {
+        "operacion": (
+            "Dar de alta o revocar credenciales personales: segundo factor (TOTP), "
+            "códigos de recuperación y llave de firma"
+        ),
+        "motivo": (
+            "El secreto y los códigos de recuperación se revelan EXACTAMENTE UNA VEZ, "
+            "por diseño; entregarlos por este canal los dejaría escritos en el "
+            "historial de una conversación. Y revocar el segundo factor de otra persona "
+            "es el paso previo a suplantarla"
+        ),
+        "via_alternativa": (
+            "Puede consultar el ESTADO de sus credenciales —si el segundo factor está "
+            "activo, si la llave de firma vigente— para saber antes de intentar una "
+            "firma si va a poder completarla; darlas de alta se hace en «Mi perfil»"
+        ),
+    },
+    {
+        "operacion": (
+            "Cambiar el calendario de festivos o los parámetros de configuración de la "
+            "entidad"
+        ),
+        "motivo": (
+            "Son la regla con la que se cuentan los términos de ley. Un festivo que se "
+            "añade hoy corre el vencimiento de todos los plazos que ya están andando, "
+            "sin avisar a nadie y sin que aparezca en la traza de ningún expediente"
+        ),
+        "via_alternativa": (
+            "Puede consultar los festivos y calcular cualquier vencimiento en días "
+            "hábiles; cambiarlos se hace en «Administración → Parámetros»"
+        ),
+    },
+    {
+        "operacion": (
+            "Añadir o modificar valores de los catálogos, o cambiar la estructura de "
+            "dependencias"
+        ),
+        "motivo": (
+            "El valor de un catálogo cerrado es precisamente que sea cerrado: en cuanto "
+            "se le pueden añadir entradas sobre la marcha aparecen «Bogotá», «BOGOTA» y "
+            "«Bogotá D.C.» como tres cosas distintas, y ninguna búsqueda posterior las "
+            "vuelve a reunir. La estructura de dependencias, además, decide a quién le "
+            "llegan los documentos"
+        ),
+        "via_alternativa": (
+            "Puede consultar los catálogos y el árbol de dependencias para elegir el "
+            "valor correcto; si falta uno, se pide al administrador"
+        ),
+    },
+    {
+        "operacion": (
+            "Configurar los buzones de correo: registrar la aplicación OAuth de la "
+            "entidad, dar de alta una cuenta o autorizarla ante el proveedor"
+        ),
+        "motivo": (
+            "Todo eso es mover credenciales —el secreto de la aplicación ante Google o "
+            "Microsoft, la contraseña del buzón, el código de autorización—, y ninguna "
+            "puede viajar por un chat. Trabajar el correo recibido sí se ofrece entero: "
+            "lo que no se ofrece es enchufar el buzón"
+        ),
+        "via_alternativa": (
+            "Los buzones se configuran en «Administración → Correo»; una vez "
+            "conectados, puede sincronizar, reservar, radicar y descartar desde aquí"
+        ),
+    },
+    {
+        "operacion": "Trabajar un buzón PERSONAL",
+        "motivo": (
+            "La contraseña de un buzón personal no se guarda, a propósito: viaja en "
+            "cada petición y muere con ella. Trabajarlo desde aquí exigiría teclearla "
+            "en la conversación"
+        ),
+        "via_alternativa": (
+            "Los buzones institucionales sí se trabajan por este medio; el personal, "
+            "desde la pantalla de correo"
+        ),
+    },
+    {
+        "operacion": "Dar de alta o retirar un canal de salida (webhook)",
+        "motivo": (
+            "Un webhook manda los eventos documentales de la entidad a una URL de "
+            "fuera: crearlo es abrir un canal de salida permanente hacia un tercero, y "
+            "eso no se decide en una conversación. Consultar cuáles hay, sí"
+        ),
+        "via_alternativa": (
+            "Puede ver los canales configurados; darlos de alta o retirarlos se hace en "
+            "«Administración → Notificaciones»"
+        ),
     },
 )
 
