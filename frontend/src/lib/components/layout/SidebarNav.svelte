@@ -103,7 +103,7 @@
       sigue siendo legible cuando el usuario amplía el navegador — cosas que un
       logotipo rasterizado con el nombre incrustado no puede dar.
     -->
-    <img src="/brand/orpyca-mark.png" alt="" class="sidebar-nav__logo-icon" />
+    <img src="/brand/orpyca-mark.svg" alt="" class="sidebar-nav__logo-icon" />
     {#if !$sidebarCollapsed}
       <span class="sidebar-nav__logo-text">OrpycaMCP</span>
     {/if}

@@ -25,10 +25,10 @@ body.login-pf,
 }
 
 /* Cabecera: el ISOTIPO, no el logotipo completo.
- * El reparto no es de gusto: lo imponen dos límites del activo — la marca
+ * El reparto no es de gusto: lo impone un límite del activo — la marca
  * denominativa está dibujada en negro degradado y desaparece sobre fondo
- * oscuro, y la línea «orfeo python calidad» baja a la altura de un pelo. Aquí el
- * fondo es oscuro, así que va el isotipo y el nombre como TEXTO. */
+ * oscuro. Aquí el fondo es oscuro, así que va el isotipo y el nombre como
+ * TEXTO. */
 #kc-header-wrapper {
   padding: 24px 16px 8px;
   font-size: 0;
@@ -40,7 +40,7 @@ body.login-pf,
   width: 72px;
   height: 72px;
   margin: 0 auto 12px;
-  background: url("../img/orpyca-mark.png") center / contain no-repeat;
+  background: url("../img/orpyca-mark.svg") center / contain no-repeat;
 }
 #kc-header-wrapper::after {
   content: "OrpycaMCP";

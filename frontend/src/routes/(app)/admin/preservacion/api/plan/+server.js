@@ -21,6 +21,10 @@
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
+/** Tipo MIME `tipo/subtipo` — mismo juego de caracteres que valida el backend
+ * (`app/schemas/preservacion.py::_MIME_RE`, RFC 6838 §4.2). */
+const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
+
 export async function GET({ locals }) {
   const token = locals.accessToken ?? "";
   if (!token) {
@@ -61,6 +65,7 @@ export async function PUT({ locals, request }) {
 
   const {
     formatos_destino,
+    formatos_origen,
     num_copias,
     periodicidad_fixity_dias,
     politica_migracion,
@@ -74,6 +79,31 @@ export async function PUT({ locals, request }) {
     payload.formatos_destino = formatos_destino
       .filter((f) => typeof f === "string" && f.trim())
       .map((f) => f.trim().slice(0, 64));
+  }
+  // `formatos_origen` (RF-PRE-04): los tipos MIME que la entidad declara en
+  // riesgo de obsolescencia. Se valida la FORMA aquí y no solo en el backend
+  // porque un valor mal escrito —"msword", "application/ msword"— no casa con
+  // ningún archivo: el barrido no convertiría nada y la política aparecería
+  // como declarada en la pantalla. Lo peligroso no es convertir de más, es
+  // creer que se convirtió.
+  if (Array.isArray(formatos_origen)) {
+    const limpios = [];
+    for (const crudo of formatos_origen) {
+      if (typeof crudo !== "string") continue;
+      const valor = crudo.trim().toLowerCase();
+      if (!valor) continue;
+      if (!MIME_RE.test(valor)) {
+        return json(
+          {
+            error: "validation_error",
+            detail: `«${crudo}» no es un tipo MIME válido; se espera la forma tipo/subtipo (por ejemplo application/msword).`,
+          },
+          { status: 422 },
+        );
+      }
+      if (!limpios.includes(valor)) limpios.push(valor);
+    }
+    payload.formatos_origen = limpios;
   }
   if (num_copias !== undefined && num_copias !== null && num_copias !== "") {
     const n = Number(num_copias);

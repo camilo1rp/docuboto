@@ -24,7 +24,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.tools.catalog import ArgError, Tool, coerce_args
+from app.tools.catalog import ArgError, Invocable, Tool, coerce_args
 
 _SIN_CUERPO = ("GET", "DELETE", "HEAD")
 
@@ -60,7 +60,7 @@ def _forward_headers(authorization: str | None, tenant_slug: str | None) -> dict
 
 
 def authorize(
-    tool: Tool,
+    tool: Invocable,
     *,
     permissions: set[str],
     is_root: bool,

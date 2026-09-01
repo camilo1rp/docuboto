@@ -159,3 +159,28 @@ async def test_un_fichero_eliminado_no_se_migra(tenant_ctx) -> None:
     file_id = await _fichero(conn)
     await conn.execute("UPDATE files SET deleted_at = now() WHERE id = $1", file_id)
     assert await _cola(conn, slug) == []
+
+
+@pytest.mark.asyncio
+async def test_el_MIME_se_compara_SIN_distinguir_mayusculas(tenant_ctx) -> None:
+    """El tipo MIME guardado es el que mandó quien subió el archivo, y los
+    tipos MIME son case-insensitive (RFC 2045 §5.1). Comparando en crudo, un
+    "Application/MSWord" quedaba fuera de una política que sí lo nombra: la
+    barrida diría cero candidatos sin que nada pareciera roto — el fallo que
+    importa aquí, que es creer que se convirtió."""
+    slug, conn = tenant_ctx
+    await _en_el_tenant(conn, slug)
+    file_id = await _fichero(conn, mime="Application/MSWord")
+    assert await _cola(conn, slug) == [file_id]
+
+
+@pytest.mark.asyncio
+async def test_la_politica_declarada_tambien_se_normaliza(tenant_ctx) -> None:
+    """El otro extremo de lo mismo: lo que llega del plan o del despliegue."""
+    slug, conn = tenant_ctx
+    await _en_el_tenant(conn, slug)
+    file_id = await _fichero(conn)
+    filas = await PreservacionRepository(conn, slug).list_pendientes_migracion(
+        [" APPLICATION/MSWORD "], formato_destino=_DESTINO, limit=50
+    )
+    assert [f["id"] for f in filas] == [file_id]

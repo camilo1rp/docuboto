@@ -309,3 +309,92 @@ describe("grupos/api/[id]/clearance", () => {
     expect(capturedBody).toEqual({ max_level: 2 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Lecturas del drawer (miembros / permisos / clearance)
+//
+// La pantalla administraba a ciegas: daba de alta y de baja sin poder mostrar
+// lo guardado, y enseñaba en su lugar una lista "de esta sesión" con lo que
+// ella misma había hecho. Los tres GET existían en auth-service desde el
+// espejo de lectura de RBAC; faltaba consumirlos, y un comentario que afirmaba
+// que no existían mantuvo el hueco abierto.
+// ---------------------------------------------------------------------------
+
+describe("GET /admin/grupos/api/[id]/{members,permissions,clearance}", () => {
+  const GID = "11111111-2222-3333-4444-555555555555";
+
+  it("miembros: propaga la lista y el X-Total-Count del backend", async () => {
+    const { GET } = await import("./[id]/members/+server.js");
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([{ id: "u-1", username: "ana" }]), {
+          status: 200,
+          headers: { "X-Total-Count": "7" },
+        }),
+    );
+    const res = await GET({
+      locals: SESSION_LOCALS,
+      params: { id: GID },
+      url: new URL("http://x/"),
+    });
+    expect(res.status).toBe(200);
+    // El total viaja: un grupo grande no puede verse truncado en silencio.
+    expect(res.headers.get("X-Total-Count")).toBe("7");
+    expect(await res.json()).toEqual([{ id: "u-1", username: "ana" }]);
+  });
+
+  it("miembros: 401 sin sesión, sin llamar al gateway", async () => {
+    const { GET } = await import("./[id]/members/+server.js");
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("fetch no debió invocarse sin sesión");
+    });
+    const res = await GET({ locals: {}, params: { id: GID }, url: new URL("http://x/") });
+    expect(res.status).toBe(401);
+  });
+
+  it("miembros: id que no es UUID se rechaza antes del viaje", async () => {
+    const { GET } = await import("./[id]/members/+server.js");
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("fetch no debió invocarse con un id inválido");
+    });
+    const res = await GET({
+      locals: SESSION_LOCALS,
+      params: { id: "../../otro" },
+      url: new URL("http://x/"),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("permisos: devuelve lo YA concedido con su nivel", async () => {
+    // Sin esta lectura todos los selectores mostraban 0, y guardar un permiso
+    // cualquiera podía REBAJAR otro que ya estaba concedido con nivel 3.
+    const { GET } = await import("./[id]/permissions/+server.js");
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([{ permission_id: "p-1", crud: 3 }]), { status: 200 }),
+    );
+    const res = await GET({ locals: SESSION_LOCALS, params: { id: GID } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ permission_id: "p-1", crud: 3 }]);
+  });
+
+  it("clearance: se puede LEER el nivel vigente, no solo fijar uno nuevo", async () => {
+    const { GET } = await import("./[id]/clearance/+server.js");
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ group_id: GID, max_level: 2 }), { status: 200 }),
+    );
+    const res = await GET({ locals: SESSION_LOCALS, params: { id: GID } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).max_level).toBe(2);
+  });
+
+  it("clearance: un 404 del backend se propaga tal cual, no se disfraza de vacío", async () => {
+    const { GET } = await import("./[id]/clearance/+server.js");
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "not_found", status: 404 }), { status: 404 }),
+    );
+    const res = await GET({ locals: SESSION_LOCALS, params: { id: GID } });
+    expect(res.status).toBe(404);
+  });
+});

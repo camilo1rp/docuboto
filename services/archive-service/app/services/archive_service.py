@@ -27,6 +27,7 @@ from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.core.http_errors import motivo_de
+from app.core.huella_documento import huella_de_documento
 from app.core.trd_disposition import (
     assert_disposicion_final_autorizada,
     disposicion_final_autorizada,
@@ -1902,6 +1903,82 @@ class ArchiveService:
                 },
             )
 
+    async def _huellas_por_radicado(
+        self, radicado_ids: list[uuid.UUID]
+    ) -> dict[str, str]:
+        """La huella de cada radicado, resuelta EN EL SERVIDOR (E15 T-08).
+
+        El índice electrónico debe llevar la huella de cada documento (RT-15
+        art. 4.3.2.3) y el sistema siempre la ha tenido —storage-service la
+        calcula al subir el anexo—; lo que faltaba era quien la trajera. La
+        pantalla de vincular manda `radicado_id` y `tracking_number`, y el
+        campo quedaba nulo para TODO lo vinculado desde la interfaz: el índice
+        se autodeclaraba sin huellas teniendo los ficheros con SHA-256 al lado.
+
+        **No se le pide al cliente**, por el mismo motivo que el departamento
+        se deriva del municipio y no se acepta suelto: una huella que aporta
+        quien vincula no prueba nada sobre lo que el archivo custodia. El campo
+        `content_hash` del contrato sigue existiendo para el llamante que la
+        conoce de primera mano (importación con fixity, E11 INT-05), y lo que
+        llegue explícito MANDA sobre lo resuelto aquí.
+
+        **Inventario sin recorte de clearance** (`max_clearance=None`): es un
+        acto de sistema componiendo el índice, no una lectura de contenido por
+        una persona. Recortarlo dejaría la completitud del índice dependiendo
+        de quién vinculó — dos archivistas producirían índices distintos del
+        mismo expediente, que es justo lo que un índice no puede permitirse. La
+        huella no viaja en la respuesta al llamante; leer el índice se gatea
+        aparte (`IndexService.verify`, no-read-up).
+
+        **Best-effort**: cualquier fallo devuelve ``{}`` y la vinculación sigue
+        sin huella. Vincular no puede quedar preso de que otros dos servicios
+        estén en pie, y un documento sin huella el índice sabe declararlo.
+        """
+        if not radicado_ids:
+            return {}
+        from app.clients import storage_client
+
+        try:
+            anexos_por_rad = await document_client.fetch_anexos_internal(
+                tenant_slug=self._tenant_slug,
+                radicado_ids=radicado_ids,
+                max_clearance=None,
+            )
+        except DocumentClientError:
+            logger.warning(
+                "No se pudo inventariar los anexos de %d radicados al vincular; "
+                "quedan sin huella declarada en el índice",
+                len(radicado_ids),
+                exc_info=True,
+            )
+            return {}
+
+        file_ids = [
+            str(a["file_id"])
+            for anexos in anexos_por_rad.values()
+            for a in anexos
+            if a.get("file_id")
+        ]
+        if not file_ids:
+            return {}
+        huellas = await storage_client.fetch_file_hashes_internal(
+            tenant_slug=self._tenant_slug, file_ids=file_ids
+        )
+        if not huellas:
+            return {}
+
+        resultado: dict[str, str] = {}
+        for rad_id, anexos in anexos_por_rad.items():
+            propias = [
+                huellas[str(a["file_id"])]
+                for a in anexos
+                if a.get("file_id") and str(a["file_id"]) in huellas
+            ]
+            huella = huella_de_documento(propias)
+            if huella is not None:
+                resultado[str(rad_id)] = huella
+        return resultado
+
     async def link_radicado(
         self,
         expediente_id: uuid.UUID,
@@ -1984,6 +2061,16 @@ class ArchiveService:
                 added_at=None,
             )
 
+        # La huella se resuelve ANTES de abrir la transacción: el tramo
+        # transaccional es 100% BD a propósito (ver el comentario de abajo), y
+        # una llamada HTTP a mitad mantendría abierto el `pg_advisory_xact_lock`
+        # del tenant durante el viaje de red.
+        content_hash = payload.content_hash.lower() if payload.content_hash else None
+        if content_hash is None:
+            content_hash = (await self._huellas_por_radicado([payload.radicado_id])).get(
+                str(payload.radicado_id)
+            )
+
         # Atomicidad vínculo<->auditoría (mismo patrón que `create_expediente`):
         # la mutación, la regeneración del índice, el evento de la hoja de
         # ruta y el asiento forense son un único acto de negocio — si algo
@@ -1997,7 +2084,7 @@ class ArchiveService:
                 expediente_id,
                 payload.radicado_id,
                 payload.tracking_number,
-                content_hash=payload.content_hash.lower() if payload.content_hash else None,
+                content_hash=content_hash,
                 formato=payload.formato,
                 tamano_bytes=payload.tamano_bytes,
                 folios=payload.folios,
@@ -2086,6 +2173,12 @@ class ArchiveService:
             # No-lector, expediente no-open: sin mutar (M2 hallazgo #1).
             return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
 
+        # Un solo viaje para todo el lote, y fuera de la transacción (mismo
+        # criterio que `link_radicado`). Solo se pregunta por los que no traen
+        # huella explícita: lo que el llamante declara manda.
+        faltan = [it.radicado_id for it in items if not it.content_hash]
+        huellas = await self._huellas_por_radicado(faltan)
+
         # Atomicidad lote<->auditoría (mismo patrón que `link_radicado`): UN
         # expediente, N vínculos es una unidad todo-o-nada — si un vínculo del
         # lote falla a mitad, revierte TODO el lote (nada de vínculos
@@ -2103,7 +2196,11 @@ class ArchiveService:
                     expediente_id,
                     it.radicado_id,
                     it.tracking_number,
-                    content_hash=it.content_hash.lower() if it.content_hash else None,
+                    content_hash=(
+                        it.content_hash.lower()
+                        if it.content_hash
+                        else huellas.get(str(it.radicado_id))
+                    ),
                     formato=it.formato,
                     tamano_bytes=it.tamano_bytes,
                     folios=it.folios,

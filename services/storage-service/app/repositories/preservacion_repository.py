@@ -25,8 +25,8 @@ from app.core.database import TENANT_SLUG_RE
 from app.repositories.file_repository import InvalidTenantSlugError
 
 _PLAN_COLS = (
-    "id, version, formatos_destino, num_copias, periodicidad_fixity_dias, "
-    "politica_migracion, contingencia, creado_por, created_at"
+    "id, version, formatos_destino, formatos_origen, num_copias, "
+    "periodicidad_fixity_dias, politica_migracion, contingencia, creado_por, created_at"
 )
 _EVT_COLS = "id, object_ref, tipo, resultado, hash_before, hash_after, detalle, agente, ts"
 # E10 Increment B: `bagit` (columna legacy del stub) queda fuera — ya no se
@@ -78,6 +78,25 @@ class PreservacionRepository:
             "SELECT num_copias FROM preservacion_plan ORDER BY version DESC LIMIT 1"
         )
 
+    async def current_formatos_origen(self) -> list[str]:
+        """Los tipos MIME que la entidad declara en riesgo, del plan VIGENTE.
+
+        Lee con ``fetchval`` y no reutiliza ``current_plan`` por la misma razón
+        que ``current_num_copias``: el barrido consume una secuencia fija de
+        ``fetchrow`` que los tests fijan con ``side_effect``, y leer aquí con
+        ``fetchrow`` la desplazaría.
+
+        Sin plan, o con el campo vacío, devuelve ``[]`` — política no declarada
+        por la entidad. Quién decide entonces es el llamador (el barrido cae al
+        valor por defecto del despliegue, si lo hay); este método no inventa
+        una lista propia.
+        """
+        await self._sp()
+        valor = await self._conn.fetchval(
+            "SELECT formatos_origen FROM preservacion_plan ORDER BY version DESC LIMIT 1"
+        )
+        return list(valor or [])
+
     async def list_plan_versions(self) -> list[asyncpg.Record]:
         await self._sp()
         return list(
@@ -94,13 +113,14 @@ class PreservacionRepository:
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO preservacion_plan
-                (version, formatos_destino, num_copias, periodicidad_fixity_dias,
-                 politica_migracion, contingencia, creado_por)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (version, formatos_destino, formatos_origen, num_copias,
+                 periodicidad_fixity_dias, politica_migracion, contingencia, creado_por)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING {_PLAN_COLS}
             """,
             current + 1,
             data["formatos_destino"],
+            data.get("formatos_origen") or [],
             data["num_copias"],
             data["periodicidad_fixity_dias"],
             data.get("politica_migracion"),
@@ -175,6 +195,7 @@ class PreservacionRepository:
           reintenta: el día que el validador esté instalado, la barrida
           siguiente lo resuelve sola.
         """
+        mime_types = [m.strip().lower() for m in mime_types if m and m.strip()]
         if not mime_types:
             # Política sin declarar. Se responde vacío en vez de «todos»: la
             # dirección segura es no convertir el archivo de nadie por omisión.
@@ -186,7 +207,14 @@ class PreservacionRepository:
                 SELECT f.id, f.filename, f.mime_type, f.sha256
                   FROM files f
                  WHERE f.deleted_at IS NULL
-                   AND f.mime_type = ANY($1::text[])
+                   -- `lower(...)`: los tipos MIME son case-insensitive
+                   -- (RFC 2045 §5.1) y el valor guardado es el que mandó quien
+                   -- subió el archivo. Comparar en crudo dejaría un
+                   -- "Application/Msword" fuera de una política que sí lo
+                   -- nombra, y el barrido diría cero candidatos sin que nada
+                   -- pareciera roto. No cuesta índice: no hay ninguno sobre
+                   -- `mime_type`, la exploración ya era secuencial.
+                   AND lower(f.mime_type) = ANY($1::text[])
                    AND NOT EXISTS (
                        SELECT 1 FROM preservacion_migracion m
                         WHERE m.file_id_origen = f.id

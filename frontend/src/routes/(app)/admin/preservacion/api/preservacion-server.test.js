@@ -57,11 +57,12 @@ describe("PUT /admin/preservacion/api/plan", () => {
     expect(res.status).toBe(401);
   });
 
-  it("allowlist: solo los 5 campos del schema viajan, nunca el body íntegro", async () => {
+  it("allowlist: solo los campos del schema viajan, nunca el body íntegro", async () => {
     globalThis.fetch = vi.fn(async (url, opts) => {
       const body = JSON.parse(opts.body);
       expect(body).toEqual({
         formatos_destino: ["pdf/a-2b", "tiff"],
+        formatos_origen: ["application/msword"],
         num_copias: 2,
         periodicidad_fixity_dias: 90,
         politica_migracion: "migrar cada 5 años",
@@ -74,6 +75,7 @@ describe("PUT /admin/preservacion/api/plan", () => {
       request: {
         json: async () => ({
           formatos_destino: ["pdf/a-2b", " tiff "],
+          formatos_origen: [" Application/MSWord ", "application/msword"],
           num_copias: "2",
           periodicidad_fixity_dias: "90",
           politica_migracion: "migrar cada 5 años",
@@ -84,6 +86,20 @@ describe("PUT /admin/preservacion/api/plan", () => {
       },
     });
     expect(res.status).toBe(201);
+  });
+
+  it("un MIME mal escrito es 422, sin llamar al gateway", async () => {
+    // Un "msword" a secas no casa con ningún archivo: el barrido no
+    // convertiría nada y la política aparecería como declarada en la pantalla.
+    // Lo peligroso aquí no es convertir de más, es creer que se convirtió.
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("fetch no debió invocarse con un MIME inválido");
+    });
+    const res = await putPlan({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ formatos_origen: ["msword"] }) },
+    });
+    expect(res.status).toBe(422);
   });
 
   it("num_copias < 1: 422 validation_error, sin llamar al gateway", async () => {

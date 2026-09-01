@@ -32,6 +32,36 @@ _EXPEDIENTE_ID_WS_RE = re.compile(r"\s+")
 # inyectar líneas falsas en el manifiesto (hallazgo de auditoría Increment B).
 _SAFE_NOMBRE_RE = re.compile(r"^[^/\\\x00-\x1f]+$")
 
+# Tipo MIME `tipo/subtipo` (RFC 6838 §4.2, juego de caracteres restringido a lo
+# que de verdad aparece en un archivo documental). Se valida en el schema y no
+# solo se guarda porque un valor mal escrito —"msword", "application/ msword"—
+# NO casa con ningún archivo y el barrido no convertiría nada, con la política
+# apareciendo como declarada en la pantalla. Es justo el fallo que más importa
+# evitar aquí: lo peligroso no es convertir de más, es creer que se convirtió.
+_MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$")
+
+
+def normalizar_mimes(valores: list[str]) -> list[str]:
+    """Normaliza y valida una lista de tipos MIME declarada por la entidad.
+
+    Minúsculas (los tipos MIME son case-insensitive, la comparación del barrido
+    es exacta), sin espacios y sin repetidos, conservando el orden en que la
+    entidad los escribió.
+    """
+    vistos: list[str] = []
+    for crudo in valores:
+        valor = crudo.strip().lower()
+        if not valor:
+            continue
+        if not _MIME_RE.match(valor):
+            raise ValueError(
+                f"{valor!r} no es un tipo MIME válido; se espera la forma tipo/subtipo "
+                "(por ejemplo application/msword)"
+            )
+        if valor not in vistos:
+            vistos.append(valor)
+    return vistos
+
 
 def canonicalize_expediente_id(value: str) -> str:
     """Normaliza espacios en blanco de `expediente_id`.
@@ -55,16 +85,27 @@ def canonicalize_expediente_id(value: str) -> str:
 
 class PlanCreate(BaseModel):
     formatos_destino: list[str] = Field(default_factory=list)
+    # RF-PRE-04: qué formatos declara la entidad en riesgo de obsolescencia —
+    # el otro extremo de `formatos_destino`, que ya decía a qué se convierte.
+    # Vacío = política no declarada en el plan (el barrido no migra nada de
+    # esta entidad, salvo que el despliegue traiga un valor por defecto).
+    formatos_origen: list[str] = Field(default_factory=list, max_length=64)
     num_copias: int = Field(default=1, ge=1)
     periodicidad_fixity_dias: int = Field(default=180, ge=1)
     politica_migracion: str | None = None
     contingencia: str | None = None
+
+    @field_validator("formatos_origen")
+    @classmethod
+    def _normalizar_origen(cls, v: list[str]) -> list[str]:
+        return normalizar_mimes(v)
 
 
 class PlanResponse(BaseModel):
     id: uuid.UUID
     version: int
     formatos_destino: list[str]
+    formatos_origen: list[str]
     num_copias: int
     periodicidad_fixity_dias: int
     politica_migracion: str | None

@@ -776,3 +776,56 @@ async def list_eventos(*, tenant_slug: str, object_ref: str) -> list[dict]:
             f"{object_ref}: {resp.text[:300]!r}"
         )
     return resp.json()
+
+
+async def fetch_file_hashes_internal(
+    *, tenant_slug: str, file_ids: list[str]
+) -> dict[str, str]:
+    """SHA-256 de un LOTE de ficheros — `POST /storage/internal/files/hashes`.
+
+    Es la mitad que faltaba de E15 T-08. El índice electrónico debe llevar la
+    huella de cada documento (RT-15 art. 4.3.2.3) y el sistema SIEMPRE la ha
+    tenido —storage la calcula al subir el anexo—; lo que no había era quien la
+    trajera: la pantalla de vincular no la envía (ni debe: una huella que
+    aporta el cliente no prueba nada) y el campo quedaba nulo para todo lo
+    vinculado desde la interfaz.
+
+    **Best-effort a propósito.** Cualquier fallo devuelve ``{}`` y el vínculo se
+    hace igual, sin huella. Vincular un radicado a su expediente es un acto
+    archivístico que no puede quedar preso de que otros dos servicios estén en
+    pie; y un documento sin huella el índice ya sabe declararlo
+    (`sin_huella_declarada`) en vez de fingirla. Lo contrario —abortar la
+    vinculación— cambiaría un dato ausente por trabajo perdido.
+    """
+    if not file_ids:
+        return {}
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/storage/internal/files/hashes",
+                json={"file_ids": file_ids},
+                headers=headers,
+            )
+    except httpx.RequestError:
+        logger.warning(
+            "storage-service inalcanzable al pedir las huellas de %d anexos; "
+            "el vínculo queda sin huella declarada",
+            len(file_ids),
+            exc_info=True,
+        )
+        return {}
+    if resp.status_code != 200:
+        logger.warning(
+            "storage-service → HTTP %s al pedir las huellas de %d anexos; "
+            "el vínculo queda sin huella declarada",
+            resp.status_code,
+            len(file_ids),
+        )
+        return {}
+    return resp.json().get("hashes", {})

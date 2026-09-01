@@ -31,8 +31,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import settings
-from app.services import dispatcher, proposals
-from app.tools.catalog import ArgError, Tool, card_fields, coerce_args, get_tool
+from app.services import dispatcher, procedure_runner, proposals
+from app.tools.catalog import ArgError, Invocable, card_fields, coerce_args, get_tool
+from app.tools.procedures import Procedimiento, get_procedimiento
 
 # Frase que hay que TECLEAR para llevar a cabo un acto irreversible. Un clic no
 # basta cuando el acto no se deshace — es la convención que el proyecto ya usa
@@ -51,8 +52,40 @@ from app.tools.catalog import ArgError, Tool, card_fields, coerce_args, get_tool
 FRASE_IRREVERSIBLE = "CONFIRMO"
 
 
-def frase_valida(frase: Any) -> bool:
-    return isinstance(frase, str) and frase.strip().upper() == FRASE_IRREVERSIBLE
+def frase_requerida(tool: Invocable, args: dict[str, Any]) -> str | None:
+    """Qué hay que teclear para llevar a cabo este acto — o `None` si basta aprobar.
+
+    Tres niveles, y el salto entre el segundo y el tercero es el que importa:
+
+    * lectura o escritura reversible → nada que teclear;
+    * irreversible → la frase fija `CONFIRMO`;
+    * irreversible **sobre un objeto concreto que hay que identificar** →
+      el valor del parámetro que la tool declare en `confirmar_con`.
+
+    El tercero existe porque una frase fija se teclea de memoria antes de leer:
+    confirma «un acto», no «este acto». Reproducir el identificador del lote no
+    se puede anticipar — hay que haber mirado la tarjeta.
+
+    Si el parámetro no viene en los argumentos se cae a la frase fija en vez de
+    quedarse sin exigir nada: degradar hacia MÁS control y no hacia menos.
+    """
+    if tool.confirmar_con:
+        valor = args.get(tool.confirmar_con)
+        if valor not in (None, ""):
+            return str(valor)
+    return FRASE_IRREVERSIBLE if tool.destructive else None
+
+
+def frase_valida(frase: Any, esperada: str | None = None) -> bool:
+    """¿La frase tecleada es la que este acto exige?
+
+    La comparación es sin distinguir mayúsculas y sin espacios de sobra, y NO
+    porque dé igual: exigir una capitalización exacta convierte el control en un
+    acertijo de tecleo, y quien se pelea tres veces con un identificador termina
+    copiando y pegando sin leer — que es justo lo que esto quiere evitar.
+    """
+    objetivo = (esperada or FRASE_IRREVERSIBLE).strip().upper()
+    return isinstance(frase, str) and frase.strip().upper() == objetivo
 
 
 def secretos_vigentes() -> tuple[str, ...]:
@@ -91,7 +124,10 @@ async def ejecutar(
         ten=identidad.tenant_slug,
     )
 
-    tool = get_tool(propuesta.tool)
+    # Un procedimiento se propone y se confirma EXACTAMENTE igual que una tool:
+    # una sola tarjeta para el acto completo. Pedir una confirmación por paso
+    # enseñaría a confirmar sin leer, que es peor que no preguntar.
+    tool = get_tool(propuesta.tool) or get_procedimiento(propuesta.tool)
     if tool is None:
         # La tool desapareció del catálogo entre proponer y ejecutar (un
         # despliegue a mitad). Mejor negarse que despachar a ciegas.
@@ -114,14 +150,40 @@ async def ejecutar(
     # Qué acto es lo dice el TOKEN, no el cliente: `tool` sale de la propuesta
     # verificada. Por eso nadie puede saltarse esta puerta declarando que su
     # acto no era irreversible.
-    if tool.destructive and not frase_valida(frase):
+    # Qué frase exige lo dice el catálogo sobre los argumentos DEL TOKEN, no el
+    # cliente: nadie puede rebajar su propio control declarando que su acto era
+    # de los sencillos.
+    exigida = frase_requerida(tool, propuesta.args)
+    if exigida and not frase_valida(frase, exigida):
         raise proposals.ProposalError(
             "confirmacion_requerida",
             400,
-            f"Esta acción no se deshace. Para llevarla a cabo, escriba «{FRASE_IRREVERSIBLE}».",
+            f"Esta acción no se deshace. Para llevarla a cabo, escriba «{exigida}».",
         )
 
     proposals.consume(propuesta)
+
+    if isinstance(tool, Procedimiento):
+        parte = await procedure_runner.ejecutar(
+            client,
+            tool,
+            propuesta.args,  # del TOKEN, nunca del cuerpo de esta petición
+            authorization=authorization,
+            tenant_slug=tenant_slug,
+        )
+        return {
+            "kind": "result",
+            # `ejecutado` dice que el procedimiento CORRIÓ, y `completado` (dentro
+            # del parte) si llegó al final. Son dos cosas distintas y fundirlas
+            # haría que un trámite cortado a mitad se leyera como no ocurrido —
+            # justo lo que lleva a repetirlo y duplicar un radicado.
+            "ejecutado": True,
+            "proposal_id": propuesta.jti,
+            "tool": tool.name,
+            "operacion": tool.operacion or tool.name,
+            "status": 200 if parte["completado"] else 409,
+            "data": parte,
+        }
 
     resp = await dispatcher.dispatch(
         client,
@@ -146,7 +208,7 @@ async def ejecutar(
     }
 
 
-def preparar(tool: Tool, args: dict[str, Any], *, sub: str, ten: str) -> dict[str, Any]:
+def preparar(tool: Invocable, args: dict[str, Any], *, sub: str, ten: str) -> dict[str, Any]:
     """Valida el acto, lo firma y devuelve la tarjeta que se mostrará.
 
     Los argumentos se validan **aquí**, en la fase de propuesta, para que lo que
@@ -179,7 +241,7 @@ def preparar(tool: Tool, args: dict[str, Any], *, sub: str, ten: str) -> dict[st
             # al recibir un error, que es la misma forma de límite-descubierto-
             # fallando que este trabajo persigue.
             "irreversible": bool(tool.destructive),
-            "frase_requerida": FRASE_IRREVERSIBLE if tool.destructive else None,
+            "frase_requerida": frase_requerida(tool, limpio),
             "campos": card_fields(tool, limpio),
             "expira_en": propuesta.exp,
             "token": token,

@@ -63,7 +63,7 @@
 
 <main class="error-page">
   <div class="error-page__card">
-    <img src="/brand/orpyca-mark.png" alt="" class="error-page__icon" aria-hidden="true" />
+    <img src="/brand/orpyca-mark.svg" alt="" class="error-page__icon" aria-hidden="true" />
 
     <p class="error-page__code" aria-hidden="true">{status}</p>
 

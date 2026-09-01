@@ -15,7 +15,14 @@ Servicio del índice electrónico del expediente (E15, Acuerdo AGN 001/2024).
   documento+huella+orden no cambió, no crea versión).
 - consultas: vigente, por versión, XML, historial de versiones.
 
-El `valor_huella` por documento se poblará desde storage-service (fixity, E15 T-08).
+El `valor_huella` por documento lo resuelve `ArchiveService._huellas_por_radicado`
+al vincular, contra los anexos del radicado y sus SHA-256 en storage-service
+(E15 T-08). Un radicado sin anexos no tiene huella y el índice lo DECLARA
+(`sin_huella_declarada`): no es una discrepancia de integridad. La regla de qué
+significa «la huella de un documento» cuando trae varios anexos vive en
+`app/core/huella_documento.py`, en un solo sitio, para que quien la calcula y
+quien la comprueba no diverjan.
+
 La firma XAdES-B real al cierre (E06 Inc.1, RT-16) vive en `firmar_indice` /
 `firmar_indice_retry`: best-effort — si falla, el índice queda 'pendiente_firma'
 (no bloquea el cierre) y es reintentable. La validación XSD estricta (lxml)

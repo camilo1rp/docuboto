@@ -130,6 +130,7 @@
 
   let planForm = {
     formatos_destino: "",
+    formatos_origen: "",
     num_copias: "1",
     periodicidad_fixity_dias: "180",
     politica_migracion: "",
@@ -139,6 +140,7 @@
   $: if (plan && !planFormInit) {
     planForm = {
       formatos_destino: (plan.formatos_destino ?? []).join(", "),
+      formatos_origen: (plan.formatos_origen ?? []).join(", "),
       num_copias: String(plan.num_copias ?? 1),
       periodicidad_fixity_dias: String(plan.periodicidad_fixity_dias ?? 180),
       politica_migracion: plan.politica_migracion ?? "",
@@ -162,6 +164,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           formatos_destino: planForm.formatos_destino
+            .split(",")
+            .map((f) => f.trim())
+            .filter(Boolean),
+          formatos_origen: planForm.formatos_origen
             .split(",")
             .map((f) => f.trim())
             .filter(Boolean),
@@ -314,6 +320,16 @@
                 <dt>Formatos destino</dt>
                 <dd>{(planEfectivo.formatos_destino ?? []).join(", ") || "—"}</dd>
               </div>
+              <div class="prsv-meta-list__item prsv-meta-list__item--wide">
+                <dt>Formatos en riesgo (se migran)</dt>
+                <dd>
+                  {#if (planEfectivo.formatos_origen ?? []).length}
+                    {planEfectivo.formatos_origen.join(", ")}
+                  {:else}
+                    Sin declarar — el barrido periódico no migra nada de esta entidad.
+                  {/if}
+                </dd>
+              </div>
               <div class="prsv-meta-list__item">
                 <dt>Copias</dt>
                 <dd>{planEfectivo.num_copias}</dd>
@@ -390,6 +406,14 @@
                 type="text"
                 placeholder="pdf/a-2b, tiff"
                 bind:value={planForm.formatos_destino}
+              />
+              <FormField
+                id="prsv-origen"
+                label="Formatos en riesgo de obsolescencia (tipos MIME separados por coma)"
+                type="text"
+                placeholder="application/msword, application/vnd.ms-excel"
+                hint="El barrido periódico convierte a PDF/A los archivos de estos tipos. Vacío = no se migra nada. El original se conserva intacto."
+                bind:value={planForm.formatos_origen}
               />
               <FormField
                 id="prsv-copias"

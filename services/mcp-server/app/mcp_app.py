@@ -27,17 +27,18 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import mcp.types as types
 from mcp.server import Server
 
 from app.core.config import settings
-from app.services import dispatcher, proposals, write_gate
+from app.services import dispatcher, procedure_runner, proposals, write_gate
 from app.services.identity import IdentityError, resolve_identity
 from app.services.scope import build_scope
 from app.tools import catalog
+from app.tools.procedures import Procedimiento, get_procedimiento, procedimientos_visibles
 
 server: Server = Server("orpycamcp")
 
@@ -147,7 +148,7 @@ _CONFIRMAR_SCHEMA = {
 }
 
 
-def _annotations(t: catalog.Tool) -> types.ToolAnnotations:
+def _annotations(t: catalog.Invocable) -> types.ToolAnnotations:
     """Pistas MCP estándar para que el cliente ponga SU propia fricción.
 
     Son pistas, no controles: un cliente puede ignorarlas enteras y por eso la
@@ -184,6 +185,9 @@ async def build_tools(client: httpx.AsyncClient) -> list[types.Tool]:
     visibles = catalog.visible_tools(
         identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
     )
+    procs = procedimientos_visibles(
+        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+    )
     tools = [
         types.Tool(
             name=t.name,
@@ -191,7 +195,10 @@ async def build_tools(client: httpx.AsyncClient) -> list[types.Tool]:
             inputSchema=catalog.json_schema(t),
             annotations=_annotations(t),
         )
-        for t in visibles
+        # La anotación explícita evita que mypy infiera `object` del `[*a, *b]`
+        # de dos tipos distintos: los dos cumplen `Invocable`, que es justo el
+        # contrato que consumen `json_schema` y `_annotations`.
+        for t in cast(list[catalog.Invocable], [*visibles, *procs])
     ]
     tools.append(
         types.Tool(
@@ -374,7 +381,11 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
             ensure_ascii=False,
         )
 
-    tool = catalog.get_tool(name)
+    # Un procedimiento se resuelve, se autoriza, se propone y se ejecuta por el
+    # MISMO camino que una tool: para un cliente MCP externo la diferencia entre
+    # «radicar un documento» y «tramitar una petición» no debe exigir conocer la
+    # arquitectura de este servicio.
+    tool = catalog.get_tool(name) or get_procedimiento(name)
     if tool is None:
         raise dispatcher.DispatchError("tool_not_found", 404)
     # El binding ya NO auto-confirma. Antes daba la escritura por aprobada
@@ -431,6 +442,20 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
                 ensure_ascii=False,
             )
         return json.dumps(propuesta, ensure_ascii=False)
+
+    if isinstance(tool, Procedimiento):
+        # Procedimiento de solo lectura: se ejecuta directo. Los de escritura ya
+        # salieron arriba por la propuesta.
+        return json.dumps(
+            await procedure_runner.ejecutar(
+                client,
+                tool,
+                catalog.coerce_args(tool, arguments),
+                authorization=authorization,
+                tenant_slug=s["tenant"],
+            ),
+            ensure_ascii=False,
+        )
 
     resp = await dispatcher.dispatch(
         client,

@@ -62,11 +62,46 @@ def _normalizar(ruta: str) -> str:
     return ruta or "/"
 
 
-def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | None, int]]:
-    """(método, ruta normalizada) → (permiso, min_crud) según el decorador.
+def _routers_del_fichero(arbol: ast.AST) -> dict[str, tuple[str, tuple[str | None, int]]]:
+    """Variable del router → (prefijo, gate del propio router).
 
-    Un endpoint sin `require_permission` queda como `(None, 1)`: no es un vacío
-    de información, es la declaración de que no exige permiso atómico.
+    Antes se guardaba UN prefijo por fichero, el del último `APIRouter(...)` que
+    apareciera. Un fichero con dos routers —`anulacion.py` tiene el de
+    `/api/v1/documents` y el de la cola `/api/v1/anulaciones`— dejaba a los
+    endpoints del primero colgando de un prefijo ajeno, así que **no casaban con
+    ninguna tool y el cruce los daba por inexistentes**: cuatro tools quedaron
+    sin comprobar y el guardián no lo dijo hasta que el recuento total bajó.
+
+    Y se lee el gate del PROPIO router (`APIRouter(..., dependencies=[...])`),
+    que antes se ignoraba por completo. Ese olvido tenía las dos caras: acusaba
+    de «exigir de más» a una tool que declaraba el permiso correcto, y —lo
+    grave— **no habría cazado a una tool que declarara de MENOS** frente a un
+    gate de router, que es el caso que este guardián existe para impedir.
+    """
+    routers: dict[str, tuple[str, tuple[str | None, int]]] = {}
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Assign) or len(nodo.targets) != 1:
+            continue
+        destino = nodo.targets[0]
+        if not isinstance(destino, ast.Name):
+            continue
+        llamada = nodo.value
+        if not (isinstance(llamada, ast.Call) and getattr(llamada.func, "id", "") == "APIRouter"):
+            continue
+        prefijo = ""
+        for kw in llamada.keywords:
+            if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+                prefijo = str(kw.value.value)
+        routers[destino.id] = (prefijo, _leer_gate(llamada))
+    return routers
+
+
+def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | None, int]]:
+    """(método, ruta normalizada) → (permiso, min_crud) efectivo.
+
+    Efectivo = el del decorador si lo declara; si no, el del router que lo
+    contiene. Un endpoint sin ninguno queda como `(None, 1)`: no es un vacío de
+    información, es la declaración de que no exige permiso atómico.
     """
     gates: dict[tuple[str, str], tuple[str | None, int]] = {}
     for fichero in sorted(_SERVICIOS.glob("*/app/routers/*.py")):
@@ -75,12 +110,7 @@ def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | None, int]]:
         except SyntaxError:  # pragma: no cover — un router roto lo caza su lint
             continue
 
-        prefijo = ""
-        for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", "") == "APIRouter":
-                for kw in nodo.keywords:
-                    if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
-                        prefijo = str(kw.value.value)
+        routers = _routers_del_fichero(arbol)
 
         for nodo in ast.walk(arbol):
             if not isinstance(nodo, ast.AsyncFunctionDef | ast.FunctionDef):
@@ -93,8 +123,11 @@ def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | None, int]]:
                     continue
                 if not (deco.args and isinstance(deco.args[0], ast.Constant)):
                     continue
+                variable = getattr(deco.func.value, "id", "")
+                prefijo, gate_router = routers.get(variable, ("", (None, 1)))
                 ruta = _normalizar(prefijo + str(deco.args[0].value))
-                gates[(attr.upper(), ruta)] = _leer_gate(deco)
+                propio = _leer_gate(deco)
+                gates[(attr.upper(), ruta)] = propio if propio[0] else gate_router
     return gates
 
 

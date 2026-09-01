@@ -27,7 +27,10 @@ from app.core.clearance import require_permission
 from app.core.config import settings
 from app.core.database import get_db_conn
 from app.core.internal_auth import require_internal_token as _require_internal_token
+from app.repositories.file_repository import FileRepository
 from app.schemas.storage import (
+    FileHashesRequest,
+    FileHashesResponse,
     FileResponse,
     IntegrityResponse,
     PresignedUrlResponse,
@@ -444,6 +447,25 @@ async def get_file_metadata(
             },
         )
     return result
+
+
+@router.post(
+    "/internal/files/hashes",
+    response_model=FileHashesResponse,
+    summary="SHA-256 of a batch of files (internal only)",
+    # Sellado servicio-a-servicio como sus vecinos: no tiene llamante externo
+    # (el gateway solo enruta `/api/v1/storage/upload`) y la huella de un anexo
+    # dice qué documentos custodia un expediente clasificado. Quien pregunta es
+    # archive-service al componer el índice electrónico, no una persona.
+    dependencies=[Depends(_require_internal_token)],
+)
+async def file_hashes_batch(
+    payload: FileHashesRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> FileHashesResponse:
+    hashes = await FileRepository(conn, tenant_slug).hashes_for_ids(payload.file_ids)
+    return FileHashesResponse(hashes=hashes)
 
 
 @router.get(

@@ -25,6 +25,7 @@ def _plan_row(version: int = 1) -> dict:
         "id": uuid.uuid4(),
         "version": version,
         "formatos_destino": ["PDF/A-2b", "TIFF"],
+        "formatos_origen": ["application/msword"],
         "num_copias": 2,
         "periodicidad_fixity_dias": 180,
         "politica_migracion": "anual",
@@ -55,6 +56,52 @@ async def test_set_plan_versions(client_with_conn) -> None:
     body = resp.json()
     assert body["version"] == 1
     assert body["num_copias"] == 2
+
+
+@pytest.mark.asyncio
+async def test_la_politica_de_migracion_se_declara_EN_EL_PLAN(client_with_conn) -> None:
+    """RF-PRE-04: qué formatos están en riesgo lo dice la entidad, en su plan.
+
+    Antes esto solo se podía decir con una variable de entorno del despliegue
+    —la misma para todas las entidades de la instalación, intocable para el
+    archivista y sin versión ni autor—, lo que contradecía la regla que el
+    propio código declaraba. Aquí se comprueba que el valor llega hasta el
+    INSERT, normalizado (minúsculas, sin repetidos): que la pantalla lo muestre
+    no prueba que se haya guardado.
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [True, 0]
+    mock_conn.fetchrow.return_value = _plan_row(version=1)
+
+    resp = await client.put(
+        "/api/v1/preservacion/plan",
+        json={
+            "formatos_destino": ["PDF/A-2b"],
+            "formatos_origen": [" Application/MSWord ", "application/msword"],
+        },
+        headers={**TENANT_HEADERS, "X-Username": "ana"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["formatos_origen"] == ["application/msword"]
+    # El 3.er parámetro del INSERT es `formatos_origen` (tras version y destino).
+    assert mock_conn.fetchrow.await_args.args[3] == ["application/msword"]
+
+
+@pytest.mark.asyncio
+async def test_un_MIME_mal_escrito_se_rechaza_en_vez_de_guardarse(client_with_conn) -> None:
+    """Un "msword" a secas no casa con ningún archivo: el barrido no
+    convertiría nada y la política aparecería como declarada en la pantalla.
+    Lo peligroso aquí no es convertir de más, es creer que se convirtió."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [True, 0]
+
+    resp = await client.put(
+        "/api/v1/preservacion/plan",
+        json={"formatos_destino": [], "formatos_origen": ["msword"]},
+        headers={**TENANT_HEADERS, "X-Username": "ana"},
+    )
+    assert resp.status_code == 422
+    mock_conn.fetchrow.assert_not_called()
 
 
 @pytest.mark.asyncio

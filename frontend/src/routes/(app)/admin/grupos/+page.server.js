@@ -18,14 +18,13 @@
  *   - niveles de seguridad (GET /auth/security-levels) — catálogo, para el
  *     panel de clearance del drawer de detalle
  *
- * GAP DE BACKEND (verificado en `auth-service/app/routers/rbac.py` y
- * `clearance.py`): NO existe ningún endpoint de LECTURA de membresías de un
- * grupo, de sus permisos asignados ni de su clearance actual. Solo existen
- * altas/bajas ciegas (POST/DELETE members, PUT permissions, PUT clearance).
- * La página lo advierte explícitamente en el drawer de detalle — no es una
- * omisión de UI, es una limitación real del backend (ver rbac.py: no hay
- * `GET /groups/{id}/members` ni `GET /groups/{id}/permissions` ni
- * `GET /groups/{id}/clearance`).
+ * El estado del grupo —miembros, permisos concedidos y clearance vigente— lo
+ * carga el DRAWER al abrirse (`/admin/grupos/api/[id]/{members,permissions,
+ * clearance}`), no este `load`: son tres consultas por grupo y la lista puede
+ * traer decenas. Durante un tiempo esta pantalla administró a ciegas y este
+ * mismo comentario afirmaba que el backend no exponía esas lecturas; sí las
+ * exponía (espejos de lectura en `rbac.py` y `clearance.py`), y la frase falsa
+ * es lo que mantuvo el hueco abierto. Verificar antes de declarar un límite.
  *
  * El access_token NO se expone — las escrituras van a /admin/grupos/api/*
  * (D-05), que leen locals.accessToken.

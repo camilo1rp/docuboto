@@ -273,9 +273,21 @@ class Api:
         429 no es un fallo del demo, es el sistema funcionando. Abortar ahí
         dejaría el recorrido a medias por algo que se resuelve esperando.
         """
-        cabeceras = {**self.cabeceras, **kw.pop("headers", {})}
+        extra = kw.pop("headers", {})
+        renovado = False
         for intento in range(5):
+            cabeceras = {**self.cabeceras, **extra}
             r = await self._cliente.request(metodo, ruta, headers=cabeceras, **kw)  # type: ignore[union-attr]
+            # El token de Keycloak caduca en minutos y una siembra con volumen
+            # dura más que eso: sin renovarlo, el guion abortaba a mitad con un
+            # 401 que parecía un problema de permisos y era un reloj. Se renueva
+            # UNA vez por petición —si el token recién pedido tampoco vale, el
+            # problema no es la caducidad y reintentar en bucle solo lo esconde.
+            if r.status_code == 401 and not renovado:
+                renovado = True
+                aviso("el token caducó a mitad de la siembra: renovando sesión")
+                await self.autenticar()
+                continue
             if r.status_code != 429:
                 return r
             # Crece rápido: la ventana del limitador es de minutos, no de

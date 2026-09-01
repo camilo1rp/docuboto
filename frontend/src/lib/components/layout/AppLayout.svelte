@@ -198,7 +198,7 @@
       acciones de la derecha, para no ahogar el topbar.
     -->
     <img
-      src="/brand/orpyca-mark.png"
+      src="/brand/orpyca-mark.svg"
       alt=""
       class="app-layout__topbar-mark is-hidden-tablet"
       class:is-hidden-mobile={searchExpandedMobile}

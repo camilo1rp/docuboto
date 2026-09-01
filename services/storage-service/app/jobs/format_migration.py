@@ -18,9 +18,25 @@ uno a uno es una capacidad construida y no ofrecida.
 
 Qué formato está en riesgo de obsolescencia es un juicio archivístico que
 depende del parque documental de cada institución y de su plan de preservación
-(PINAR, Ac. AGN 003/2015). Por eso el job **no tiene una lista propia**: lee
-`FORMAT_MIGRATION_MIME_TYPES`, y **vacía significa no migrar nada**. Con la
-política sin declarar el barrido recorre los tenants y no toca un solo archivo.
+(PINAR, Ac. AGN 003/2015). Por eso el job **no tiene una lista propia** y
+**vacía significa no migrar nada**: con la política sin declarar el barrido
+recorre los tenants y no toca un solo archivo.
+
+Dónde está declarada, y en qué orden se lee:
+
+1. **El plan de preservación de la entidad** (`preservacion_plan.formatos_origen`,
+   RF-PRE-01) — el sitio propio. Lo escribe el archivista desde
+   `/admin/preservacion`, queda versionado append-only y dice quién lo declaró
+   y cuándo. Es el otro extremo de `formatos_destino`, que ya vivía ahí.
+2. **El despliegue** (`FORMAT_MIGRATION_MIME_TYPES`) — solo si el plan de esa
+   entidad no dice nada. Es un valor por defecto de la instalación: en una
+   instalación de una sola entidad, el que despliega ES la entidad; en una
+   compartida, cada entidad lo sustituye declarando su plan.
+
+Nunca al revés. Que la política viviera **solo** en una variable de entorno era
+justamente lo que contradecía el párrafo de arriba: una variable de entorno es
+la misma para todas las entidades de la instalación, no la puede tocar el
+archivista, no queda versionada y no dice quién la puso.
 
 Es el mismo criterio que el barrido de disposición —que cuenta y avisa pero no
 elimina— con una diferencia que conviene tener presente: **migrar no destruye**.
@@ -91,19 +107,15 @@ async def run_once(*, descargar, subir_factory) -> dict[str, int]:
     construida una vez fuera del bucle escribiría los archivos de todas las
     entidades en el schema de la primera.
     """
-    resumen = {"tenants": 0, "candidatos": 0, "migrados": 0, "fallidos": 0}
+    resumen = {
+        "tenants": 0,
+        "sin_politica": 0,
+        "candidatos": 0,
+        "migrados": 0,
+        "fallidos": 0,
+    }
 
-    formatos = settings.format_migration_mime_list
-    if not formatos:
-        # Política sin declarar: se dice UNA vez y no se hace nada. Un job que
-        # eligiera por su cuenta qué convertir estaría tomando una decisión
-        # archivística que no le corresponde.
-        logger.info(
-            "Migración de formato: sin política declarada "
-            "(FORMAT_MIGRATION_MIME_TYPES vacío). No se migra nada."
-        )
-        return resumen
-
+    por_defecto = settings.format_migration_mime_list
     destino = f"PDF/A-{settings.pdfa_profile}"
     pool = get_pool()
 
@@ -111,15 +123,38 @@ async def run_once(*, descargar, subir_factory) -> dict[str, int]:
         try:
             async with pool.acquire() as conn:
                 await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
-                pendientes = await PreservacionRepository(
-                    conn, slug
-                ).list_pendientes_migracion(
+                repo = PreservacionRepository(conn, slug)
+
+                # La política se resuelve POR ENTIDAD y en este orden: lo que
+                # diga su plan de preservación vigente manda; si su plan no
+                # declara nada, cae al valor del despliegue. Nunca al revés —
+                # el plan es donde el archivista de esa entidad puede escribir,
+                # y donde el cambio queda versionado y con autor.
+                formatos = await repo.current_formatos_origen()
+                fuente = "plan"
+                if not formatos:
+                    formatos, fuente = por_defecto, "despliegue"
+                if not formatos:
+                    # Ni el plan ni el despliegue dicen nada: esta entidad no
+                    # ha declarado política y no se le toca un solo archivo.
+                    resumen["sin_politica"] += 1
+                    continue
+
+                pendientes = await repo.list_pendientes_migracion(
                     formatos,
                     formato_destino=destino,
                     limit=settings.format_migration_batch_size,
                 )
                 if not pendientes:
                     continue
+
+                logger.info(
+                    "Migración de formato: tenant=%s política=%s (%s), %d candidatos",
+                    slug,
+                    fuente,
+                    ", ".join(formatos),
+                    len(pendientes),
+                )
 
                 resumen["tenants"] += 1
                 resumen["candidatos"] += len(pendientes)

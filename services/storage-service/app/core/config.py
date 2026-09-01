@@ -149,16 +149,25 @@ class Settings(BaseSettings):
     # (PINAR); un barrido que lo decidiera solo estaría convirtiendo el archivo
     # de alguien según una lista adivinada por el fabricante.
     #
-    # De ahí que la lista venga **VACÍA por defecto**: con la política sin
-    # declarar el job recorre los tenants y no migra nada. Es el mismo criterio
-    # que el barrido de disposición —que cuenta y avisa, pero no elimina—, con
-    # una diferencia que conviene tener presente: migrar **no destruye**, el
-    # original se conserva intacto (Decreto 2609/2012 art. 32). Lo peligroso
-    # aquí no es convertir de más, es CREER que se convirtió.
+    # El sitio propio de esa declaración es el **plan de preservación de cada
+    # entidad** (`preservacion_plan.formatos_origen`), que se escribe desde
+    # `/admin/preservacion`, queda versionado y dice quién lo declaró. Lo de
+    # aquí abajo es solo el **valor por defecto de la instalación**, para las
+    # entidades cuyo plan no diga nada: en un despliegue de una sola entidad,
+    # quien despliega ES la entidad; en uno compartido, cada entidad lo
+    # sustituye declarando su plan. El plan siempre gana.
+    #
+    # De ahí que la lista venga **VACÍA por defecto**: sin política —ni en el
+    # plan ni aquí— el job recorre los tenants y no migra nada. Es el mismo
+    # criterio que el barrido de disposición —que cuenta y avisa, pero no
+    # elimina—, con una diferencia que conviene tener presente: migrar **no
+    # destruye**, el original se conserva intacto (Decreto 2609/2012 art. 32).
+    # Lo peligroso aquí no es convertir de más, es CREER que se convirtió.
     format_migration_enabled: bool = False
     format_migration_interval_seconds: int = 86400
-    # Tipos MIME que la entidad declara en riesgo de obsolescencia. Ejemplo de
-    # una política razonable, que NO se pone por defecto:
+    # Valor por defecto de la INSTALACIÓN, para las entidades cuyo plan de
+    # preservación no declare `formatos_origen`. Ejemplo de una política
+    # razonable, que NO se pone por defecto:
     #   FORMAT_MIGRATION_MIME_TYPES=application/msword,application/vnd.ms-excel
     format_migration_mime_types: str = ""
     # Tope por barrida. Convertir es caro (un subproceso por archivo) y el
@@ -169,8 +178,14 @@ class Settings(BaseSettings):
 
     @property
     def format_migration_mime_list(self) -> list[str]:
-        """La política declarada, ya troceada. Vacía = no migrar nada."""
-        return [t.strip() for t in self.format_migration_mime_types.split(",") if t.strip()]
+        """El valor por defecto de la instalación, ya troceado.
+
+        Vacía = la instalación no aporta nada; solo migran las entidades que lo
+        hayan declarado en su propio plan de preservación.
+        """
+        return [
+            t.strip().lower() for t in self.format_migration_mime_types.split(",") if t.strip()
+        ]
 
     @field_validator("pdfa_validator")
     @classmethod

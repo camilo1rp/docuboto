@@ -11,17 +11,50 @@
  * /admin/grupos/api/[id]/clearance — Proxy SSR: fija la clearance (nivel de
  * seguridad máximo) de un grupo (D-05, E08, RF-SEG-08).
  *
- * PUT → body { max_level: 1..3 }. USUA_PERM_ADMIN. Devuelve 204.
+ * GET → clearance VIGENTE del grupo. PUT → body { max_level: 1..3 }.
+ * USUA_PERM_ADMIN; el PUT devuelve 204.
  *
- * GAP DE BACKEND: no hay `GET /groups/{id}/clearance` — esta acción es
- * "ciega": el front no puede mostrar el nivel actual, solo fijar uno nuevo.
- * Ver aviso en +page.server.js y en la UI.
+ * El `GET` existía en el backend (espejo exacto del `PUT`) y esta pantalla no
+ * lo consumía: fijaba un nivel sin mostrar el que había. Un formulario que
+ * escribe sin leer convierte «subir la clearance de este grupo» en un acto a
+ * ciegas sobre lo que otro administrador dejó puesto.
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** @type {import('./$types').RequestHandler} */
+export async function GET({ locals, params }) {
+  const token = locals.accessToken ?? "";
+  if (!token) {
+    return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
+  }
+  const { id } = params;
+  if (!id || !UUID_RE.test(id)) {
+    return json(
+      { error: "validation_error", detail: "Identificador de grupo inválido." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const res = await fetch(`${API_V1}/auth/groups/${encodeURIComponent(id)}/clearance`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Tenant-Slug": locals.user?.tenant_slug ?? "",
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    return json(data, { status: res.status });
+  } catch {
+    return json(
+      { error: "connection_error", detail: "No se pudo obtener la clearance del grupo." },
+      { status: 503 },
+    );
+  }
+}
 
 /** @type {import('./$types').RequestHandler} */
 export async function PUT({ locals, params, request }) {

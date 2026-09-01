@@ -60,6 +60,12 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # OAuth que la entidad registró ante Google o Microsoft.
         ("/api/v1/email/", app_state.document_service_url),
         ("/api/v1/envios/", app_state.document_service_url),
+        # Terceros: catálogo de personas y entidades destinatarias, y la
+        # cascada DIVIPOLA que las geolocaliza (RF-RAD-05). SIN barra final
+        # —igual que `anulaciones`— porque `/api/v1/terceros` es una ruta
+        # exacta (el listado y el alta) y con barra el prefijo no casaría con
+        # ella: el alta de un destinatario respondía `route_not_found`.
+        ("/api/v1/terceros", app_state.document_service_url),
         # Cola del aprobador de anulaciones (recurso propio, no una subruta
         # de un documento). SIN barra final: la ruta es `/api/v1/anulaciones`
         # exacta, y con barra el prefijo no casaría con ella.

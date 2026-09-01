@@ -101,7 +101,14 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Drawer de detalle: miembros + permisos + clearance (todo ciego, sin GET)
+  // Drawer de detalle: miembros + permisos + clearance
+  //
+  // Antes esto era ciego: se daba de alta y de baja sin poder ver el estado
+  // guardado, y en su lugar se mostraba una lista "de esta sesión" con lo que
+  // el propio drawer había hecho — el recuerdo de los clics, no la membresía.
+  // Los tres GET existían en auth-service (espejos de lectura de las
+  // escrituras); lo que faltaba era consumirlos, y un comentario que afirmaba
+  // que no existían mantuvo el hueco abierto.
   // ---------------------------------------------------------------------------
   let drawerOpen = false;
   /** @type {Record<string, any>|null} */
@@ -113,18 +120,81 @@
   let pickableError = "";
   let fMemberToAdd = "";
   let memberActionLoading = false;
-  // Estado SOLO de sesión: usuarios que este drawer agregó/confirmó, para dar
-  // algo de feedback visual — NO es la membresía real del grupo (el backend
-  // no la expone). Se reinicia cada vez que se abre el drawer.
+  // Membresía REAL del grupo, leída del servidor al abrir el drawer y
+  // recargada tras cada alta o baja: lo que se ve es lo que está guardado.
   /** @type {Array<{id: string, username: string}>} */
-  let sessionMembers = [];
+  let members = [];
+  let membersLoading = false;
+  let membersError = "";
+  let membersTotal = 0;
+
+  /** Estado del grupo (miembros, permisos y clearance) desde el servidor. */
+  async function cargarDetalle(groupId) {
+    membersLoading = true;
+    membersError = "";
+    try {
+      const [resMiembros, resPermisos, resClearance] = await Promise.all([
+        fetch(`/admin/grupos/api/${groupId}/members`),
+        fetch(`/admin/grupos/api/${groupId}/permissions`),
+        fetch(`/admin/grupos/api/${groupId}/clearance`),
+      ]);
+
+      if (resMiembros.ok) {
+        members = await resMiembros.json();
+        membersTotal = Number(resMiembros.headers.get("X-Total-Count") ?? members.length);
+      } else {
+        members = [];
+        membersTotal = 0;
+        membersError = "No se pudieron cargar los miembros del grupo.";
+      }
+
+      // El catálogo se pinta entero; lo concedido llega con su nivel. Sin esto,
+      // todos los selectores mostraban 0 y guardar uno cualquiera podía REBAJAR
+      // en silencio un permiso que ya estaba concedido con nivel 3.
+      crudDraft = {};
+      if (resPermisos.ok) {
+        for (const p of await resPermisos.json()) {
+          const id = p.permission_id ?? p.id;
+          if (id) crudDraft[String(id)] = String(p.crud ?? 0);
+        }
+        crudDraft = { ...crudDraft };
+      }
+
+      if (resClearance.ok) {
+        const c = await resClearance.json();
+        fClearanceLevel = c?.max_level != null ? String(c.max_level) : "";
+      } else {
+        fClearanceLevel = "";
+      }
+    } catch {
+      membersError = "No se pudo conectar al servidor.";
+    } finally {
+      membersLoading = false;
+    }
+  }
+
+  async function recargarMiembros() {
+    if (!selectedGroup) return;
+    try {
+      const res = await fetch(`/admin/grupos/api/${selectedGroup.id}/members`);
+      if (res.ok) {
+        members = await res.json();
+        membersTotal = Number(res.headers.get("X-Total-Count") ?? members.length);
+      }
+    } catch {
+      // La escritura ya se confirmó; que la recarga falle no la deshace.
+      membersError = "El cambio se guardó, pero no se pudo releer la lista.";
+    }
+  }
 
   async function openDetail(group) {
     selectedGroup = group;
     drawerOpen = true;
     fMemberToAdd = "";
-    sessionMembers = [];
+    members = [];
+    membersTotal = 0;
     pickableError = "";
+    cargarDetalle(group.id);
 
     if (pickableUsers.length === 0) {
       pickableLoading = true;
@@ -148,7 +218,9 @@
     selectedGroup = null;
   }
 
-  $: availableToAdd = pickableUsers.filter((u) => !sessionMembers.some((m) => m.id === u.id));
+  // Ya no se ofrece agregar a quien YA está: el filtro se hace contra la
+  // membresía real, no contra lo que este drawer recuerda haber hecho.
+  $: availableToAdd = pickableUsers.filter((u) => !members.some((m) => m.id === u.id));
 
   async function agregarMiembro() {
     if (!selectedGroup || !fMemberToAdd) return;
@@ -160,9 +232,9 @@
         method: "POST",
       });
       if (res.status === 201 || res.ok) {
-        sessionMembers = [...sessionMembers, user];
         fMemberToAdd = "";
         notifySuccess(`${user.username} agregado al grupo.`);
+        await recargarMiembros();
       } else {
         const err = await res.json().catch(() => ({}));
         notifyError(mensajeError(err, "No se pudo agregar al miembro."));
@@ -182,8 +254,8 @@
         method: "DELETE",
       });
       if (res.status === 204 || res.ok) {
-        sessionMembers = sessionMembers.filter((m) => m.id !== user.id);
         notifySuccess(`${user.username} quitado del grupo.`);
+        await recargarMiembros();
       } else {
         const err = await res.json().catch(() => ({}));
         notifyError(mensajeError(err, "No se pudo quitar al miembro."));
@@ -196,8 +268,9 @@
   }
 
   // Permisos — un select de crud (0..5) por permiso del catálogo, guardado
-  // fila a fila. `crudDraft` guarda solo lo que el admin está por enviar,
-  // no un valor "actual" (que el backend no expone).
+  // fila a fila. `crudDraft` se INICIALIZA con lo que el grupo ya tiene
+  // concedido (`cargarDetalle`), así que el selector muestra el nivel vigente
+  // y no un cero que no significaba nada.
   /** @type {Record<string, string>} */
   let crudDraft = {};
   /** @type {Record<string, boolean>} */
@@ -345,16 +418,12 @@
   title={selectedGroup ? `Grupo: ${selectedGroup.name}` : "Grupo"}
   on:close={closeDrawer}
 >
-  <div class="grupos-drawer__gap-notice" role="note">
-    <i class="fas fa-circle-info" aria-hidden="true"></i>
-    El backend no expone lectura de miembros, permisos ni clearance ya asignados a este grupo — solo altas/bajas.
-    Las acciones de abajo se aplican de inmediato; lo que ves en "agregados en esta sesión" es solo lo
-    que hiciste aquí, no el estado real guardado en el servidor.
-  </div>
-
   <!-- Miembros -->
   <section class="grupos-drawer__section" aria-labelledby="miembros-heading">
-    <h3 id="miembros-heading" class="grupos-drawer__heading">Miembros</h3>
+    <h3 id="miembros-heading" class="grupos-drawer__heading">
+      Miembros{#if membersTotal}<span class="grupos-drawer__muted">&nbsp;({membersTotal})</span
+        >{/if}
+    </h3>
 
     {#if pickableLoading}
       <Loader type="skeleton" lines={2} label="Cargando usuarios…" />
@@ -386,11 +455,15 @@
         </Button>
       </form>
 
-      {#if sessionMembers.length === 0}
-        <p class="grupos-drawer__hint">Ningún miembro agregado en esta sesión todavía.</p>
+      {#if membersLoading}
+        <Loader type="skeleton" lines={2} label="Cargando miembros…" />
+      {:else if membersError}
+        <p class="grupos-drawer__error-inline" role="alert">{membersError}</p>
+      {:else if members.length === 0}
+        <p class="grupos-drawer__hint">Este grupo no tiene miembros.</p>
       {:else}
         <ul class="grupos-drawer__list">
-          {#each sessionMembers as member (member.id)}
+          {#each members as member (member.id)}
             <li class="grupos-drawer__list-item">
               <span>{member.username}</span>
               <Button
@@ -515,19 +588,6 @@
   }
 
   .grupos-drawer {
-    &__gap-notice {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--op-space-2);
-      padding: var(--op-space-3) var(--op-space-4);
-      background: var(--op-primary-light);
-      color: var(--op-text);
-      border-radius: var(--op-radius);
-      font-size: var(--op-font-xs);
-      line-height: var(--op-line-height);
-      margin-bottom: var(--op-space-5);
-    }
-
     &__section {
       margin-bottom: var(--op-space-5);
     }

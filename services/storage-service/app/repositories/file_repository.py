@@ -149,6 +149,25 @@ class FileRepository:
         )
         return _row_to_file_record(row) if row is not None else None
 
+    async def hashes_for_ids(self, file_ids: list[uuid.UUID]) -> dict[str, str]:
+        """SHA-256 de un LOTE de ficheros, por id — la huella que el índice
+        electrónico del expediente necesita por documento (E15 T-08, RT-15
+        art. 4.3.2.3).
+
+        Excluye los borrados (`deleted_at`), igual que `get_by_id`: la huella
+        de un fichero retirado no describe lo que hoy custodia el expediente.
+        Un id ausente del resultado significa exactamente eso —no hay huella
+        que dar—, y el llamante lo declara en vez de inventarla.
+        """
+        if not file_ids:
+            return {}
+        await self._set_search_path()
+        rows = await self._conn.fetch(
+            "SELECT id, sha256 FROM files WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL",
+            file_ids,
+        )
+        return {str(r["id"]): r["sha256"] for r in rows if r["sha256"]}
+
     async def get_by_id_any_state(self, file_id: uuid.UUID) -> FileRecord | None:
         """Returns the record regardless of its deleted_at state.
 

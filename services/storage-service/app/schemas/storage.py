@@ -44,6 +44,29 @@ class HealthResponse(BaseModel):
     storage: str
 
 
+class FileHashesRequest(BaseModel):
+    """`POST /api/v1/storage/internal/files/hashes` (E15 T-08).
+
+    Lote y no uno-a-uno: el índice electrónico se regenera al vincular y al
+    cerrar, y resolver la huella con una llamada por anexo convertiría el
+    cierre de un expediente de cien documentos en cien viajes de red.
+    """
+
+    file_ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+
+
+class FileHashesResponse(BaseModel):
+    """Huellas encontradas, por id de fichero.
+
+    Un id que no aparece **no es un error**: puede estar borrado o no existir.
+    Quien pregunta lo declara como «sin huella» en vez de inventar una — la
+    fixity se predica de lo que tiene huella, y lo que falta se dice
+    (ISO 16363; Ley 594/2000 art. 16).
+    """
+
+    hashes: dict[str, str]
+
+
 class PurgaDisposicionRequest(BaseModel):
     """`POST /api/v1/storage/internal/purgar-disposicion` (E04, RF-TRD-07 fase 5).
 

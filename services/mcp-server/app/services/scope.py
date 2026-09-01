@@ -67,6 +67,81 @@ LIMITES_DECLARADOS = (
 )
 
 
+# Actos que este servidor NO ofrece **por decisión**, no por falta de permiso.
+#
+# Van declarados y no simplemente ausentes por la misma razón que existe el resto
+# del marco: un catálogo recortado en silencio hace que el límite se descubra
+# pidiendo algo que nunca va a ocurrir. Aquí se dice qué no se puede hacer por
+# este canal, por qué, y dónde sí se puede.
+#
+# El criterio para entrar en esta lista es uno solo: **actos cuya garantía
+# depende de que haya una persona presente, y que este canal no puede aportar.**
+# La tarjeta de confirmación encarece el descuido; no convierte a un modelo en
+# una persona. Cuando lo que está en juego es la destrucción de documentos de
+# archivo, esa diferencia deja de ser teórica.
+NO_OFRECIDAS: tuple[dict[str, str], ...] = (
+    {
+        "operacion": "Ejecutar el borrado de un lote de eliminación",
+        "motivo": (
+            "Es el único acto del sistema que destruye documentos de archivo, y no se "
+            "deshace. Se ofrecen las cuatro fases previas —proponer, publicar, avalar y "
+            "el acta—, pero la ejecución exige una persona presente y responsable, y "
+            "este canal no puede garantizarla: quien teclea la confirmación puede ser el "
+            "modelo"
+        ),
+        "via_alternativa": (
+            "Deje el lote avalado y con su acta firmada; la ejecución se hace desde la "
+            "interfaz del sistema, con sesión propia"
+        ),
+    },
+    {
+        "operacion": "Sellar un artefacto en WORM (Object Lock)",
+        "motivo": (
+            "El sellado exige el identificador interno del artefacto firmado, que solo "
+            "conoce el servicio de archivo en el contexto del expediente: quien lo pidiera "
+            "por aquí tendría que inventárselo, y sellar el fichero equivocado bajo un "
+            "candado de diez años no se deshace —la retención no se acorta—. Una tarjeta "
+            "de confirmación no protege de esto: enseñaría un identificador que la persona "
+            "no tiene forma de contrastar. Por lo mismo tampoco lo ofrece la interfaz"
+        ),
+        "via_alternativa": (
+            "El sellado ocurre solo al cerrar el expediente. Puede consultar qué quedó "
+            "pendiente de firma o de renovación, y reintentar la firma del índice"
+        ),
+    },
+    {
+        "operacion": "Empaquetar manualmente el AIP de preservación",
+        "motivo": (
+            "Es un acto de reconciliación del sistema, no una decisión: exige la lista de "
+            "documentos que solo el servicio de archivo compone, y se dispara al cerrar el "
+            "expediente"
+        ),
+        "via_alternativa": "Consulte el AIP ya empaquetado del expediente",
+    },
+    {
+        "operacion": "Armar la estructura de un plan PINAR (objetivos, proyectos, priorización)",
+        "motivo": (
+            "Formular un Plan Institucional de Archivos es un ejercicio de planeación con "
+            "el Comité delante —qué aspectos críticos pesan más, qué se hace primero—, no "
+            "una secuencia de altas. Se ofrece consultarlo y registrar avance"
+        ),
+        "via_alternativa": (
+            "Consulte el tablero, el mapa de ruta y los proyectos, y anote el avance de "
+            "los que ya existen; la formulación se hace en «Administración → PINAR»"
+        ),
+    },
+    {
+        "operacion": "Firmar personalmente el acta de una transferencia",
+        "motivo": (
+            "La firma personal es un acto de identidad con segundo factor (TOTP): "
+            "pedirlo por un chat trasladaría el código de un solo uso a un canal que no "
+            "lo custodia"
+        ),
+        "via_alternativa": "Firme el acta desde la interfaz, en «Transferencias»",
+    },
+)
+
+
 def _nivel_legible(max_level: int) -> str:
     return _NIVELES.get(max_level, f"nivel {max_level}")
 
@@ -153,6 +228,15 @@ async def build_scope(
         "puede_hacer": puede_hacer,
         "puede_consultar": puede_consultar,
         "no_puede": no_puede,
+        # Clave APARTE en el JSON y JUNTAS en la prosa, y no es una
+        # inconsistencia: las entradas de `no_puede` llevan el nombre de su tool
+        # —hay consumidores que indexan por él— y un acto que no se ofrece no
+        # tiene tool que nombrar. Meterlo ahí con el nombre vacío rompería ese
+        # contrato. Lo que sí importa es que quien LEE el marco encuentre las
+        # dos cosas en el mismo sitio, porque para quien pregunta «¿puedo pedir
+        # esto?» la distinción entre «te falta permiso» y «este canal no lo
+        # hace» es irrelevante — y eso se resuelve en `marco_a_texto`.
+        "no_ofrecidas": [dict(x) for x in NO_OFRECIDAS],
         "limites_declarados": list(LIMITES_DECLARADOS),
     }
 
@@ -194,12 +278,13 @@ def marco_a_texto(marco: dict[str, Any]) -> str:
         lineas.append("Puede CONSULTAR:")
         lineas += [f"- {e['operacion']}" for e in marco["puede_consultar"]]
 
-    if marco.get("no_puede"):
+    negados = [*marco.get("no_puede", []), *marco.get("no_ofrecidas", [])]
+    if negados:
         lineas.append(
             "NO puede lo siguiente. Si lo pide, dilo de inmediato con su motivo y su vía "
             "alternativa, y NO intentes la acción ni inicies trabajo hacia ella:"
         )
-        for e in marco["no_puede"]:
+        for e in negados:
             via = f" Vía alternativa: {e['via_alternativa']}" if e.get("via_alternativa") else ""
             lineas.append(f"- {e['operacion']} — {e['motivo']}.{via}")
 

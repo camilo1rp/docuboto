@@ -146,6 +146,7 @@ nav:
     - ADR-026 TVD de fondo acumulado: adr/ADR-026-tvd-fondo-acumulado.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
+  - API por flujos (MCP): mcp-flujos.md
   - Referencia API: api.md
   - Despliegue: deployment.md
   - Integraciones externas: integraciones-externas.md

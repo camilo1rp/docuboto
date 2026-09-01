@@ -533,6 +533,14 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/config/params": "http://tenant:8002",
         "/api/v1/catalogos/tipos-anexo": "http://tenant:8002",
         "/api/v1/metadata/templates": "http://document:8003",
+        # RF-RAD-05: el catálogo de destinatarios y la cascada DIVIPOLA. La
+        # ruta EXACTA es la del listado y el alta; sin ella, dar de alta un
+        # destinatario devolvía `route_not_found` y la cascada de `/radicar`
+        # no tenía de dónde leer los municipios — construido y no ofrecido.
+        "/api/v1/terceros": "http://document:8003",
+        "/api/v1/terceros/divipola/departamentos": "http://document:8003",
+        "/api/v1/terceros/divipola/municipios": "http://document:8003",
+        "/api/v1/terceros/radicado/abc/actores": "http://document:8003",
         "/api/v1/search": "http://document:8003",
         "/api/v1/expedientes/abc": "http://archive:8004",
         # Batch API: mismo prefijo raíz "/api/v1/batch" en ambos servicios,

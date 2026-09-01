@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -93,6 +93,59 @@ class Param:
         return esquema
 
 
+class Invocable(Protocol):
+    """Lo que necesita algo para ser INVOCABLE: una tool o un procedimiento.
+
+    Se declara como Protocol —tipado estructural— y no como clase base porque
+    `Tool` y `Procedimiento` no comparten implementación: una traduce a un
+    endpoint y el otro encadena tools. Lo que sí comparten es el contrato que
+    consumen la validación de argumentos, la tarjeta de confirmación y el gate
+    de permisos, y ESE es el que hay que escribir una vez.
+
+    Sin esto la alternativa era duplicar `coerce_args` y `card_fields` para
+    procedimientos: dos validaciones que empiezan iguales y divergen al primer
+    cambio, ofreciendo o negando actos según por dónde entre la llamada.
+    """
+
+    # Declarados como propiedades de SOLO LECTURA a propósito: `Tool` y
+    # `Procedimiento` son dataclases congeladas, y un Protocol con atributos
+    # simples exige que sean asignables — mypy rechaza entonces las dos clases
+    # que precisamente cumplen el contrato. Nadie escribe estos campos: se
+    # declaran una vez en el catálogo y no cambian en ejecución.
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str: ...
+
+    @property
+    def params(self) -> tuple[Param, ...]: ...
+
+    @property
+    def exactly_one_of(self) -> tuple[tuple[str, ...], ...]: ...
+
+    @property
+    def permission(self) -> str | None: ...
+
+    @property
+    def min_crud(self) -> int: ...
+
+    @property
+    def write(self) -> bool: ...
+
+    @property
+    def destructive(self) -> bool | None: ...
+
+    @property
+    def confirmar_con(self) -> str | None: ...
+
+    @property
+    def operacion(self) -> str: ...
+
+    @property
+    def params_by_name(self) -> dict[str, Param]: ...
+
+
 @dataclass(frozen=True)
 class Tool:
     name: str
@@ -121,6 +174,20 @@ class Tool:
     # afirmación —«no es destructiva»— sin que nadie la hubiera hecho, que es la
     # forma en que un catálogo mantenido a mano se va volviendo mentira.
     destructive: bool | None = None
+    # Qué hay que TECLEAR para llevar a cabo el acto, cuando la frase fija no
+    # basta. Nombra un PARÁMETRO de la propia tool: la persona tiene que
+    # reproducir su valor, y ese valor solo se conoce leyendo la tarjeta.
+    #
+    # La diferencia con `CONFIRMO` no es de severidad, es de OBJETO: una frase
+    # fija confirma *un acto* y se puede teclear de memoria antes de leer nada;
+    # reproducir el identificador del lote confirma **este** acto y no hay forma
+    # de anticiparlo. Es lo que rompe el automatismo de confirmar sin mirar.
+    #
+    # Lo que NO hace, dicho aquí para que nadie lo suponga: no convierte a un
+    # cliente MCP en una persona. Si quien teclea es el modelo, esto encarece el
+    # descuido, no lo impide — por eso el acto que de verdad destruye no se
+    # ofrece por este canal (ver `NO_OFRECIDAS` en `app/services/scope.py`).
+    confirmar_con: str | None = None
     # El permiso REAL lo resuelve el servicio en tiempo de ejecución y no hay
     # decorador que leer. Hoy solo `ejecutar_transaccion`: cada tipo de
     # transacción declara el suyo en `transaction_types.requires_permission`, así
@@ -271,6 +338,97 @@ _P_ACTION_TRANSFER = Param(
     description='Siempre "transfer".',
     label="Acción",
     show_in_card=False,
+)
+
+
+_P_UNIDAD_ID = Param(
+    name="unidad_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la unidad de conservación.",
+    label="Unidad",
+)
+_P_TRANSFERENCIA_ID = Param(
+    name="transferencia_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la transferencia.",
+    label="Transferencia",
+)
+
+
+_P_LOTE_ID = Param(
+    name="lote_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del lote de eliminación.",
+    label="Lote",
+)
+
+
+_P_TRD_CODE = Param(
+    name="code",
+    required=True,
+    location="path",
+    max_length=50,
+    description="Código de la serie TRD (por ejemplo DEM-100).",
+    label="Serie",
+)
+_P_TVD_CODE = Param(
+    name="code",
+    required=True,
+    location="path",
+    max_length=50,
+    description="Código de la agrupación TVD.",
+    label="Agrupación",
+)
+_P_VERSION = Param(
+    name="version",
+    type="integer",
+    required=True,
+    location="path",
+    minimum=1,
+    description="Número de versión sobre la que se actúa.",
+    label="Versión",
+)
+
+
+_P_AGRUPACION_ID = Param(
+    name="agrupacion_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la agrupación de la TVD.",
+    label="Agrupación",
+)
+_P_TIPO_ID = Param(
+    name="tipo_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del tipo documental.",
+    label="Tipo documental",
+)
+
+
+_P_PLAN_ID = Param(
+    name="plan_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del plan PINAR.",
+    label="Plan",
+)
+_P_PROYECTO_ID = Param(
+    name="proyecto_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del proyecto del PINAR.",
+    label="Proyecto",
 )
 
 
@@ -1669,6 +1827,2538 @@ CATALOG: tuple[Tool, ...] = (
             ),
         ),
     ),
+    # ── F1 Ventanilla y radicación ──────────────────────────────────────
+    #
+    # Lo que faltaba del flujo que más se usa. Los permisos NO se declararon a
+    # ojo: se extrajeron de los `require_permission` de cada router, porque un
+    # permiso inventado hace la tool invisible para todo el mundo salvo ROOT y
+    # el fallo no se nota hasta que alguien la pide (ya pasó con `RADI_CREAR`).
+    Tool(
+        name="listar_radicados",
+        description=(
+            "Lista los radicados del tenant, con filtros por tipo y estado. Es la "
+            "puerta de entrada cuando no se conoce el número: para buscar por "
+            "contenido está `buscar_documentos`."
+        ),
+        method="GET",
+        path="/api/v1/documents",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Listar radicados",
+        params=(
+            Param(
+                name="doc_type",
+                enum=("E", "S", "I"),
+                description="Tipo: E=Entrada, S=Salida, I=Interno.",
+                label="Tipo",
+            ),
+            Param(name="status", description="Estado del radicado.", label="Estado"),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="buscar_terceros",
+        description=(
+            "Busca en el catálogo de terceros (ciudadanos, empresas, entidades). "
+            "**Búscalo SIEMPRE antes de registrar uno nuevo**: la plaga del sistema "
+            "de origen fueron treinta copias del mismo señor, y no se crearon por "
+            "saltarse una restricción sino por no encontrar lo que ya estaba."
+        ),
+        method="GET",
+        path="/api/v1/terceros",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Buscar un tercero en el catálogo",
+        params=(
+            Param(
+                name="q",
+                description="Texto a buscar: nombre, entidad o documento de identidad.",
+                label="Búsqueda",
+            ),
+            Param(
+                name="tipo",
+                enum=("ciudadano", "empresa", "entidad_publica", "usuario_interno", "direccion_libre"),
+                description="Tipología del tercero.",
+                label="Tipo",
+            ),
+            Param(
+                name="limit",
+                type="integer",
+                minimum=1,
+                maximum=100,
+                description="Máximo de resultados.",
+                label="Máximo",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="registrar_tercero",
+        description=(
+            "Registra un tercero. Es IDEMPOTENTE por documento de identidad: pedirlo "
+            "dos veces devuelve el que ya existe, no crea otro. El municipio se "
+            "aporta por su código DIVIPOLA (`municipio_codigo`) y el sistema deriva "
+            "el departamento y el nombre oficial — escribirlo a mano es lo que "
+            "convierte «Bogotá», «BOGOTA» y «Bogota D.C.» en tres municipios."
+        ),
+        method="POST",
+        path="/api/v1/terceros",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E01",
+        operacion="Registrar un tercero en el catálogo",
+        params=(
+            Param(
+                name="tipo",
+                required=True,
+                enum=("ciudadano", "empresa", "entidad_publica", "usuario_interno", "direccion_libre"),
+                description="Tipología del tercero.",
+                label="Tipo",
+            ),
+            Param(name="nombre", required=True, max_length=255, description="Nombre o razón social.", label="Nombre"),
+            Param(name="entidad", max_length=255, description="Entidad a la que pertenece.", label="Entidad"),
+            Param(name="tipo_documento", max_length=10, description="CC, NIT, CE, PA…", label="Tipo de documento"),
+            Param(
+                name="numero_documento",
+                max_length=50,
+                description="Número del documento de identidad.",
+                label="Documento",
+            ),
+            Param(name="email", max_length=255, description="Correo electrónico.", label="Correo"),
+            Param(name="telefono", max_length=50, description="Teléfono de contacto.", label="Teléfono"),
+            Param(name="direccion", max_length=500, description="Dirección física.", label="Dirección"),
+            Param(
+                name="municipio_codigo",
+                max_length=5,
+                description="Código DIVIPOLA del municipio (5 dígitos). El departamento se deriva de él.",
+                label="Municipio (DIVIPOLA)",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_departamentos",
+        description="Departamentos del catálogo oficial DIVIPOLA (DANE), para la cascada geográfica.",
+        method="GET",
+        path="/api/v1/terceros/divipola/departamentos",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar los departamentos DIVIPOLA",
+        params=(),
+    ),
+    Tool(
+        name="listar_municipios",
+        description=(
+            "Municipios de un departamento (DIVIPOLA). El departamento es obligatorio: "
+            "el catálogo nacional tiene 1.122 entidades y devolverlo entero no ayuda a nadie."
+        ),
+        method="GET",
+        path="/api/v1/terceros/divipola/municipios",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar los municipios de un departamento",
+        params=(
+            Param(
+                name="departamento",
+                required=True,
+                min_length=2,
+                max_length=2,
+                description="Código DIVIPOLA del departamento (2 dígitos).",
+                label="Departamento",
+            ),
+            Param(name="q", description="Filtra por nombre (sin distinguir tildes).", label="Búsqueda"),
+        ),
+    ),
+    Tool(
+        name="consultar_actores",
+        description=(
+            "Destinatarios y remitentes de un radicado, con el contacto CONGELADO en el "
+            "momento del envío. No es la ficha viva del tercero: dice a dónde se envió "
+            "de verdad, y no cambia aunque la ficha se actualice después."
+        ),
+        method="GET",
+        path="/api/v1/terceros/radicado/{radicado_id}/actores",
+        path_params=("radicado_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar los actores de un radicado",
+        params=(_P_RADICADO_ID,),
+    ),
+    Tool(
+        name="reclasificar_radicado",
+        description=(
+            "Cambia el nivel de seguridad de un radicado (pública, reservada, clasificada). "
+            "Exige MOTIVO y, al clasificar, el fundamento jurídico: reservar información "
+            "pública es un acto administrativo, no una etiqueta (Ley 1712/2014)."
+        ),
+        method="PATCH",
+        path="/api/v1/documents/{document_id}/security-level",
+        path_params=("document_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=3,
+        write=True,
+        # Cambia quién puede ver el documento a partir de ya: no destruye, pero
+        # no se «deshace» sin otro acto motivado y con su propio asiento.
+        destructive=True,
+        epic="E08",
+        operacion="Reclasificar el nivel de seguridad de un radicado",
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="nivel_seguridad",
+                type="integer",
+                required=True,
+                minimum=1,
+                maximum=3,
+                description="1=Pública, 2=Reservada, 3=Clasificada.",
+                label="Nivel",
+            ),
+            Param(
+                name="motivo",
+                required=True,
+                min_length=1,
+                max_length=500,
+                description="Por qué se reclasifica. Queda en el asiento de auditoría.",
+                label="Motivo",
+            ),
+            Param(name="causal_reserva", description="Causal de reserva invocada.", label="Causal"),
+            Param(
+                name="fundamento_juridico",
+                description="Norma que ampara la reserva (obligatoria al clasificar).",
+                label="Fundamento",
+            ),
+            Param(
+                name="plazo_reserva_meses",
+                type="integer",
+                description="Plazo de la reserva en meses.",
+                label="Plazo (meses)",
+            ),
+        ),
+    ),
+    Tool(
+        name="publicar_de_oficio",
+        description=(
+            "Publica un radicado en el portal de transparencia (Ley 1712/2014 art. 12) "
+            "o retira su publicación. Exige fundamento: publicar de oficio es una "
+            "decisión motivada."
+        ),
+        method="POST",
+        path="/api/v1/documents/{document_id}/publicacion",
+        path_params=("document_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E13",
+        operacion="Publicar de oficio un radicado",
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="publicar",
+                type="boolean",
+                required=True,
+                description="true publica, false retira la publicación.",
+                label="Publicar",
+            ),
+            Param(
+                name="fundamento",
+                required=True,
+                min_length=1,
+                max_length=500,
+                description="Fundamento de la decisión de publicar o de retirar.",
+                label="Fundamento",
+            ),
+        ),
+    ),
+    Tool(
+        name="solicitar_anulacion",
+        description=(
+            "Solicita la anulación de un radicado (paso 1 de 2). NO lo anula: la decide "
+            "después un supervisor. Sobre una Entrada la anulación **no existe** como "
+            "acto —el sistema responde 409— porque no se puede negar haber recibido algo."
+        ),
+        method="POST",
+        path="/api/v1/documents/{document_id}/anulacion",
+        path_params=("document_id",),
+        permission="PERM_SOL_ANULAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E01",
+        operacion="Solicitar la anulación de un radicado",
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="causal",
+                required=True,
+                min_length=1,
+                max_length=15,
+                description="Código de la causal de anulación.",
+                label="Causal",
+            ),
+            Param(name="motivo", max_length=2000, description="Explicación de la solicitud.", label="Motivo"),
+        ),
+    ),
+    Tool(
+        name="consultar_anulacion",
+        description="Estado de la solicitud de anulación de un radicado, si la tiene.",
+        method="GET",
+        path="/api/v1/documents/{document_id}/anulacion",
+        path_params=("document_id",),
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar la anulación de un radicado",
+        params=(_P_DOCUMENT_ID,),
+    ),
+    Tool(
+        name="cola_anulaciones",
+        description=(
+            "Solicitudes de anulación pendientes de decidir, la más antigua primero. "
+            "Mismo permiso que decidirlas: ofrecer una cola que luego rechaza cada acto "
+            "sería peor que no mostrarla."
+        ),
+        method="GET",
+        path="/api/v1/anulaciones",
+        permission="PERM_PANU_CODI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar la cola de anulaciones pendientes",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="aprobar_anulacion",
+        description=(
+            "Aprueba la anulación de un radicado (paso 2; supervisor). El radicado queda "
+            "ANULADO: conserva su número —que no se reutiliza— y deja de surtir efectos. "
+            "Quien solicitó no puede aprobar su propia solicitud."
+        ),
+        method="POST",
+        path="/api/v1/documents/{document_id}/anulacion/aprobar",
+        path_params=("document_id",),
+        permission="PERM_PANU_CODI",
+        min_crud=1,
+        write=True,
+        destructive=True,
+        epic="E01",
+        operacion="Aprobar la anulación de un radicado",
+        params=(
+            _P_DOCUMENT_ID,
+            Param(name="observacion", max_length=2000, description="Observación de la decisión.", label="Observación"),
+        ),
+    ),
+    Tool(
+        name="rechazar_anulacion",
+        description="Rechaza la solicitud de anulación (paso 2; supervisor). El radicado sigue vigente.",
+        method="POST",
+        path="/api/v1/documents/{document_id}/anulacion/rechazar",
+        path_params=("document_id",),
+        permission="PERM_PANU_CODI",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E01",
+        operacion="Rechazar la anulación de un radicado",
+        params=(
+            _P_DOCUMENT_ID,
+            Param(name="observacion", max_length=2000, description="Motivo del rechazo.", label="Observación"),
+        ),
+    ),
+    # ── F2 Trámite y reparto ────────────────────────────────────────────
+    Tool(
+        name="devolver_radicado",
+        description=(
+            "Devuelve el radicado a la dependencia de origen con una causal. Es el acto "
+            "que dice «esto no me corresponde» o «falta un requisito», y queda en la hoja "
+            "de ruta: devolver no es lo mismo que trasladar, y el archivo tiene que poder "
+            "distinguirlos."
+        ),
+        method="POST",
+        path="/api/v1/workflows/{radicado_id}/devolver",
+        path_params=("radicado_id",),
+        permission="PERM_TRAMITAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Devolver un radicado con causal",
+        params=(
+            _P_RADICADO_ID,
+            Param(
+                name="to_dept",
+                required=True,
+                min_length=1,
+                max_length=100,
+                description="Dependencia a la que se devuelve.",
+                label="Devolver a",
+            ),
+            Param(
+                name="causal",
+                required=True,
+                min_length=1,
+                max_length=15,
+                description="Código de la causal de devolución.",
+                label="Causal",
+            ),
+            Param(name="comentario", description="Explicación para quien lo recibe.", label="Comentario"),
+        ),
+    ),
+    Tool(
+        name="crear_cadena_vobo",
+        description=(
+            "Crea la cadena de vistos buenos de un radicado: quiénes deben revisarlo y "
+            "EN QUÉ ORDEN. El orden es el punto — una cadena sin orden no es una cadena, "
+            "y el siguiente revisor solo puede decidir cuando le llega el turno."
+        ),
+        method="POST",
+        path="/api/v1/workflows/{radicado_id}/vistos-buenos",
+        path_params=("radicado_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Crear la cadena de vistos buenos",
+        params=(
+            _P_RADICADO_ID,
+            Param(
+                name="revisores",
+                type="array",
+                item_type="string",
+                required=True,
+                description="UUID de cada revisor, EN el orden en que deben revisar.",
+                label="Revisores",
+            ),
+        ),
+    ),
+    Tool(
+        name="consultar_cadena_vobo",
+        description="Cadena de vistos buenos de un radicado: quién ha decidido y de quién es el turno.",
+        method="GET",
+        path="/api/v1/workflows/{radicado_id}/vistos-buenos",
+        path_params=("radicado_id",),
+        min_crud=1,
+        write=False,
+        epic="E05",
+        operacion="Consultar la cadena de vistos buenos",
+        params=(_P_RADICADO_ID,),
+    ),
+    Tool(
+        name="decidir_visto_bueno",
+        description=(
+            "Da o niega el visto bueno como revisor de turno. Solo puede hacerlo quien "
+            "tiene el turno: negarlo detiene la cadena."
+        ),
+        method="POST",
+        path="/api/v1/workflows/{radicado_id}/vistos-buenos/decidir",
+        path_params=("radicado_id",),
+        # El endpoint NO tiene gate de permiso: la autorización sale de la
+        # IDENTIDAD —ser el revisor de turno—, que ningún permiso sustituye. Aun
+        # así el catálogo declara `PERM_VOBO`, y por una razón concreta: una
+        # ESCRITURA sin permiso declarado es visible para cualquiera, y eso
+        # ofrece a todo el mundo un acto que solo puede ejecutar el revisor de
+        # turno. Entre exigir de más —esconderla a un revisor sin `PERM_VOBO`,
+        # caso que el reparto de permisos de este sistema no produce— y
+        # ofrecérsela a toda la entidad, se elige lo primero y se DICE aquí.
+        # `permiso_en_runtime` es la marca que declara justo eso al guardián
+        # compartido: aquí no hay decorador que comparar porque la autorización
+        # la resuelve el servicio con la identidad de quien llama.
+        permission="PERM_VOBO",
+        permiso_en_runtime=True,
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Dar o negar el visto bueno",
+        params=(
+            _P_RADICADO_ID,
+            Param(
+                name="aprobar",
+                type="boolean",
+                required=True,
+                description="true da el visto bueno, false lo niega y detiene la cadena.",
+                label="Aprobar",
+            ),
+            Param(name="comentario", description="Motivo, sobre todo si se niega.", label="Comentario"),
+        ),
+    ),
+    Tool(
+        name="eventos_radicado",
+        description=(
+            "Historial APPEND-ONLY de eventos de flujo de un radicado: cada movimiento, "
+            "quién lo hizo y cuándo. Es la traza probatoria, no un registro editable."
+        ),
+        method="GET",
+        path="/api/v1/workflows/{radicado_id}/events",
+        path_params=("radicado_id",),
+        min_crud=1,
+        write=False,
+        epic="E05",
+        operacion="Consultar los eventos de flujo de un radicado",
+        params=(_P_RADICADO_ID,),
+    ),
+    Tool(
+        name="revertir_asignacion",
+        description=(
+            "Revierte la ÚLTIMA asignación de un radicado, con motivo. Corrige un reparto "
+            "equivocado; no borra el historial — la reversión también queda anotada."
+        ),
+        method="POST",
+        path="/api/v1/workflows/{radicado_id}/rollback",
+        path_params=("radicado_id",),
+        permission="PERM_TRAMITAR",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E05",
+        operacion="Revertir la última asignación",
+        params=(
+            _P_RADICADO_ID,
+            Param(
+                name="motivo",
+                required=True,
+                min_length=1,
+                max_length=500,
+                description="Por qué se revierte.",
+                label="Motivo",
+            ),
+        ),
+    ),
+    # ── F3 Respuesta y despacho ─────────────────────────────────────────
+    Tool(
+        name="bandeja_envios",
+        description=(
+            "Envíos postales del tenant, con su estado. Es la bandeja de despacho: qué "
+            "salió, por qué operador y en qué va."
+        ),
+        method="GET",
+        path="/api/v1/envios",
+        permission="PERM_RADI_SALIDA",
+        min_crud=1,
+        write=False,
+        epic="E20",
+        operacion="Consultar la bandeja de envíos",
+        params=(
+            Param(
+                name="estado",
+                enum=("registrado", "en_transito", "entregado", "devuelto", "fallido"),
+                description="Filtra por estado del envío.",
+                label="Estado",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="despachar_envio",
+        description=(
+            "Registra el despacho postal de un radicado por un operador. El operador es "
+            "un vocabulario cerrado, no texto libre."
+        ),
+        method="POST",
+        path="/api/v1/documents/{document_id}/envios",
+        path_params=("document_id",),
+        permission="PERM_RADI_SALIDA",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E20",
+        operacion="Despachar un radicado por correo postal",
+        params=(
+            _P_DOCUMENT_ID,
+            Param(
+                name="operador",
+                required=True,
+                enum=("4-72", "servientrega", "otro"),
+                description="Operador postal.",
+                label="Operador",
+            ),
+            Param(name="destinatario", max_length=255, description="A quién se envía.", label="Destinatario"),
+            Param(name="direccion", max_length=500, description="Dirección de entrega.", label="Dirección"),
+        ),
+    ),
+    Tool(
+        name="actualizar_estado_envio",
+        description=(
+            "Actualiza a mano el estado de entrega de un envío (despacho humano). Una "
+            "notificación que implicaría retroceder, o sobre un estado terminal, se "
+            "registra sin mutar el estado."
+        ),
+        method="POST",
+        path="/api/v1/envios/{shipment_id}/estado",
+        path_params=("shipment_id",),
+        permission="PERM_RADI_SALIDA",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E20",
+        operacion="Actualizar el estado de un envío",
+        params=(
+            Param(
+                name="shipment_id",
+                required=True,
+                location="path",
+                format="uuid",
+                description="UUID del envío.",
+                label="Envío",
+            ),
+            Param(
+                name="estado",
+                required=True,
+                enum=("registrado", "en_transito", "entregado", "devuelto", "fallido"),
+                description="Nuevo estado de entrega.",
+                label="Estado",
+            ),
+            Param(name="descripcion", max_length=500, description="Detalle del evento.", label="Descripción"),
+            Param(name="motivo", max_length=200, description="Motivo, si fue devuelto o falló.", label="Motivo"),
+        ),
+    ),
+    Tool(
+        name="consultar_envios_radicado",
+        description="Envíos postales asociados a un radicado.",
+        method="GET",
+        path="/api/v1/documents/{document_id}/envios",
+        path_params=("document_id",),
+        permission="PERM_RADI_SALIDA",
+        min_crud=1,
+        write=False,
+        epic="E20",
+        operacion="Consultar los envíos de un radicado",
+        params=(_P_DOCUMENT_ID,),
+    ),
+    Tool(
+        name="consultar_borrador",
+        description="Un borrador por su identificador, con su estado de aprobación.",
+        method="GET",
+        path="/api/v1/borradores/{borrador_id}",
+        path_params=("borrador_id",),
+        # `PERM_RADI` porque es lo que exige el endpoint: declararlo de menos
+        # habría ofrecido la tool a quien recibe un 403 al usarla.
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Consultar un borrador",
+        params=(_P_BORRADOR_ID,),
+    ),
+    # ── F5 Archivo físico ───────────────────────────────────────────────
+    #
+    # El flujo que el asistente NO podía llevar: se veían los préstamos y nada
+    # más. Un archivista no puede trabajar si no puede ubicar una caja.
+    Tool(
+        name="listar_ubicaciones",
+        description=(
+            "Ubicaciones del depósito, del nivel que se pida. La jerarquía va de sede a "
+            "gaveta: una ubicación cuelga de otra, y por eso se filtra por nivel o por padre."
+        ),
+        method="GET",
+        path="/api/v1/ubicaciones",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Listar las ubicaciones del archivo físico",
+        params=(
+            Param(
+                name="nivel",
+                enum=("sede", "edificio", "piso", "deposito", "modulo", "estante", "entrepano", "gaveta", "custodia_externa"),
+                description="Nivel de la jerarquía física.",
+                label="Nivel",
+            ),
+            Param(name="parent_id", format="uuid", description="Ubicación padre.", label="Dentro de"),
+            Param(
+                name="tipo_archivo",
+                enum=("gestion", "central", "historico"),
+                description="Fase del archivo a la que pertenece.",
+                label="Tipo de archivo",
+            ),
+        ),
+    ),
+    Tool(
+        name="crear_ubicacion",
+        description=(
+            "Crea una ubicación física (sede, depósito, estante, entrepaño…). Cuelga de "
+            "otra por `parent_id`: sin padre queda suelta, y una ubicación suelta no "
+            "dice dónde está nada."
+        ),
+        method="POST",
+        path="/api/v1/ubicaciones",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E17",
+        operacion="Crear una ubicación en el archivo físico",
+        params=(
+            Param(
+                name="nivel",
+                required=True,
+                enum=("sede", "edificio", "piso", "deposito", "modulo", "estante", "entrepano", "gaveta", "custodia_externa"),
+                description="Nivel de la jerarquía física.",
+                label="Nivel",
+            ),
+            Param(name="codigo", required=True, max_length=50, description="Código único de la ubicación.", label="Código"),
+            Param(name="nombre", required=True, max_length=255, description="Nombre legible.", label="Nombre"),
+            Param(name="parent_id", format="uuid", description="Ubicación que la contiene.", label="Dentro de"),
+            Param(
+                name="tipo_archivo",
+                enum=("gestion", "central", "historico"),
+                description="Fase del archivo.",
+                label="Tipo de archivo",
+            ),
+            Param(name="capacidad_ml", type="number", description="Capacidad en metros lineales.", label="Capacidad (ml)"),
+        ),
+    ),
+    Tool(
+        name="consultar_ubicacion",
+        description="Una ubicación por su identificador, con su posición en la jerarquía.",
+        method="GET",
+        path="/api/v1/ubicaciones/{ubicacion_id}",
+        path_params=("ubicacion_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Consultar una ubicación",
+        params=(
+            Param(
+                name="ubicacion_id",
+                required=True,
+                location="path",
+                format="uuid",
+                description="UUID de la ubicación.",
+                label="Ubicación",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_unidades",
+        description=(
+            "Unidades de conservación (cajas, carpetas, legajos, tomos) con su ubicación "
+            "y su estado."
+        ),
+        method="GET",
+        path="/api/v1/unidades",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Listar las unidades de conservación",
+        params=(
+            Param(
+                name="tipo",
+                enum=("caja", "carpeta", "legajo", "libro", "tomo", "az", "folder"),
+                description="Tipo de unidad.",
+                label="Tipo",
+            ),
+            Param(name="ubicacion_id", format="uuid", description="Ubicación donde está.", label="Ubicación"),
+        ),
+    ),
+    Tool(
+        name="crear_unidad",
+        description=(
+            "Crea una unidad de conservación y la coloca en una ubicación. Es el "
+            "contenedor físico: lo que se presta y lo que se transfiere son unidades, "
+            "no expedientes sueltos."
+        ),
+        method="POST",
+        path="/api/v1/unidades",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E17",
+        operacion="Crear una unidad de conservación",
+        params=(
+            Param(
+                name="tipo",
+                required=True,
+                enum=("caja", "carpeta", "legajo", "libro", "tomo", "az", "folder"),
+                description="Tipo de unidad.",
+                label="Tipo",
+            ),
+            Param(name="codigo", required=True, max_length=50, description="Código único.", label="Código"),
+            Param(name="ubicacion_id", format="uuid", description="Dónde se coloca.", label="Ubicación"),
+            Param(name="parent_id", format="uuid", description="Unidad que la contiene.", label="Dentro de"),
+            Param(name="soporte", max_length=50, description="Soporte del material (papel, digital…).", label="Soporte"),
+            Param(name="num_folios", type="integer", minimum=0, description="Folios que contiene.", label="Folios"),
+        ),
+    ),
+    Tool(
+        name="contenido_unidad",
+        description="Qué expedientes contiene una unidad, con su rango de folios.",
+        method="GET",
+        path="/api/v1/unidades/{unidad_id}/expedientes",
+        path_params=("unidad_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Consultar el contenido de una unidad",
+        params=(_P_UNIDAD_ID,),
+    ),
+    Tool(
+        name="ubicar_expediente_en_unidad",
+        description=(
+            "Coloca un expediente dentro de una unidad de conservación, con su rango de "
+            "folios. Es lo que permite responder «¿dónde está físicamente este "
+            "expediente?», que en un archivo es la pregunta que más se hace."
+        ),
+        method="POST",
+        path="/api/v1/unidades/{unidad_id}/expedientes",
+        path_params=("unidad_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E17",
+        operacion="Ubicar un expediente en una unidad",
+        params=(
+            _P_UNIDAD_ID,
+            Param(
+                name="expediente_id",
+                required=True,
+                format="uuid",
+                description="Expediente que se coloca.",
+                label="Expediente",
+            ),
+            Param(name="folio_inicio", type="integer", minimum=0, description="Primer folio en la unidad.", label="Folio inicial"),
+            Param(name="folio_fin", type="integer", minimum=0, description="Último folio en la unidad.", label="Folio final"),
+        ),
+    ),
+    Tool(
+        name="movimientos_unidad",
+        description=(
+            "Historial APPEND-ONLY de movimientos físicos de una unidad: cada traslado, "
+            "préstamo y devolución. Es la cadena de custodia del soporte."
+        ),
+        method="GET",
+        path="/api/v1/unidades/{unidad_id}/movimientos",
+        path_params=("unidad_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Consultar los movimientos de una unidad",
+        params=(_P_UNIDAD_ID,),
+    ),
+    Tool(
+        name="registrar_prestamo",
+        description=(
+            "Presta una unidad del archivo a alguien, con fecha de devolución esperada. "
+            "Una unidad prestada bloquea su transferencia: el archivo no puede entregar "
+            "lo que no tiene."
+        ),
+        method="POST",
+        path="/api/v1/unidades/{unidad_id}/prestamos",
+        path_params=("unidad_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E17",
+        operacion="Registrar el préstamo de una unidad",
+        params=(
+            _P_UNIDAD_ID,
+            Param(name="prestado_a", required=True, max_length=255, description="Persona o dependencia que la recibe.", label="Prestado a"),
+            Param(name="prestado_por", max_length=255, description="Quién la entrega.", label="Entregado por"),
+            Param(
+                name="fecha_devolucion_esperada",
+                required=True,
+                format="date",
+                description="Fecha en que debe volver (AAAA-MM-DD).",
+                label="Devolución esperada",
+            ),
+        ),
+    ),
+    Tool(
+        name="devolver_prestamo",
+        description="Registra la devolución de una unidad prestada: vuelve a estar disponible.",
+        method="POST",
+        path="/api/v1/prestamos/{prestamo_id}/devolver",
+        path_params=("prestamo_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E17",
+        operacion="Registrar la devolución de un préstamo",
+        params=(
+            Param(
+                name="prestamo_id",
+                required=True,
+                location="path",
+                format="uuid",
+                description="UUID del préstamo.",
+                label="Préstamo",
+            ),
+        ),
+    ),
+    # ── F6 Transferencias ───────────────────────────────────────────────
+    #
+    # El ciclo de custodia entre fases del archivo. Cada acto cambia quién
+    # responde del acervo, y por eso los tres irreversibles lo declaran.
+    Tool(
+        name="listar_transferencias",
+        description="Transferencias del tenant, con su estado en el ciclo de custodia.",
+        method="GET",
+        path="/api/v1/transferencias",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E12",
+        operacion="Listar las transferencias",
+        params=(
+            Param(
+                name="estado",
+                enum=("borrador", "enviada", "recibida", "rechazada"),
+                description="Filtra por estado.",
+                label="Estado",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="crear_transferencia",
+        description=(
+            "Abre una transferencia de un expediente entre fases del archivo: primaria "
+            "(gestión → central) o secundaria (central → histórico). Nace en borrador; "
+            "enviarla es un acto aparte."
+        ),
+        method="POST",
+        path="/api/v1/transferencias",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E12",
+        operacion="Crear una transferencia",
+        params=(
+            Param(
+                name="tipo",
+                required=True,
+                enum=("primaria", "secundaria"),
+                description="Primaria: gestión→central. Secundaria: central→histórico.",
+                label="Tipo",
+            ),
+            Param(
+                name="expediente_id",
+                required=True,
+                format="uuid",
+                description="Expediente que se transfiere. Debe estar cerrado.",
+                label="Expediente",
+            ),
+            Param(name="ubicacion_origen_id", format="uuid", description="Ubicación de la que sale.", label="Origen"),
+            Param(name="ubicacion_destino_id", format="uuid", description="Ubicación a la que va.", label="Destino"),
+            Param(name="observacion", max_length=2000, description="Observaciones de la entrega.", label="Observación"),
+        ),
+    ),
+    Tool(
+        name="consultar_transferencia",
+        description="Una transferencia por su identificador: estado, expediente y ubicaciones.",
+        method="GET",
+        path="/api/v1/transferencias/{transferencia_id}",
+        path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E12",
+        operacion="Consultar una transferencia",
+        params=(_P_TRANSFERENCIA_ID,),
+    ),
+    Tool(
+        name="enviar_transferencia",
+        description=(
+            "Remite la transferencia al archivo receptor. A partir de aquí el expediente "
+            "está EN TRÁNSITO: deja de poder modificarse y espera a que el receptor lo "
+            "reciba o lo rechace."
+        ),
+        method="POST",
+        path="/api/v1/transferencias/{transferencia_id}/enviar",
+        path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        # Cambia la custodia del acervo: quien responde del expediente pasa a ser
+        # otro. No se «des-envía».
+        destructive=True,
+        epic="E12",
+        operacion="Enviar una transferencia al receptor",
+        params=(_P_TRANSFERENCIA_ID,),
+    ),
+    Tool(
+        name="recibir_transferencia",
+        description=(
+            "El archivo receptor acepta la transferencia: verifica la fixity del acervo y "
+            "CONGELA el acta de entrega. Es el acto que traslada la custodia — a partir "
+            "de aquí responde el receptor."
+        ),
+        method="POST",
+        path="/api/v1/transferencias/{transferencia_id}/recibir",
+        path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E12",
+        operacion="Recibir una transferencia",
+        params=(_P_TRANSFERENCIA_ID,),
+    ),
+    Tool(
+        name="rechazar_transferencia",
+        description=(
+            "El receptor rechaza la transferencia con motivo. El expediente vuelve a la "
+            "custodia del remitente; el motivo queda en la traza."
+        ),
+        method="POST",
+        path="/api/v1/transferencias/{transferencia_id}/rechazar",
+        path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E12",
+        operacion="Rechazar una transferencia",
+        params=(
+            _P_TRANSFERENCIA_ID,
+            Param(
+                name="motivo",
+                required=True,
+                min_length=1,
+                description="Por qué se rechaza. Queda en el acta y en la auditoría.",
+                label="Motivo",
+            ),
+        ),
+    ),
+    Tool(
+        name="consultar_acta_transferencia",
+        description=(
+            "Acta de entrega, CONGELADA al recibir (Ac. AGN 001/2024). Dice qué se "
+            "entregó, quién y cuándo — y no cambia después."
+        ),
+        method="GET",
+        path="/api/v1/transferencias/{transferencia_id}/acta",
+        path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E12",
+        operacion="Consultar el acta de una transferencia",
+        params=(_P_TRANSFERENCIA_ID,),
+    ),
+    Tool(
+        name="verificar_acta_transferencia",
+        description=(
+            "Verificación agregada del acta: el sello institucional y las firmas "
+            "personales de cada parte. Dice qué está firmado y qué falta."
+        ),
+        method="GET",
+        path="/api/v1/transferencias/{transferencia_id}/acta/verificacion",
+        path_params=("transferencia_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E12",
+        operacion="Verificar las firmas del acta",
+        params=(_P_TRANSFERENCIA_ID,),
+    ),
+    # ── F4 Expediente (lo que faltaba del flujo) ────────────────────────
+    Tool(
+        name="listar_expedientes",
+        description="Expedientes del tenant, filtrables por estado. Para buscar por texto, `buscar_expedientes`.",
+        method="GET",
+        path="/api/v1/expedientes",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E02",
+        operacion="Listar expedientes",
+        params=(
+            Param(
+                name="status",
+                enum=("open", "closed", "transferred"),
+                description="Estado del expediente.",
+                label="Estado",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="excluir_radicado",
+        description=(
+            "Excluye un radicado del expediente con causal. NO lo borra: el índice "
+            "conserva su lugar como hueco trazable con la causal a la vista — un "
+            "expediente del que desaparecen documentos sin dejar rastro no sirve como "
+            "prueba (RT-15 art. 4.3.2.3)."
+        ),
+        method="DELETE",
+        path="/api/v1/expedientes/{expediente_id}/radicados/{radicado_id}",
+        path_params=("expediente_id", "radicado_id"),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E02",
+        operacion="Excluir un radicado de un expediente",
+        params=(
+            _P_EXPEDIENTE_ID,
+            Param(
+                name="radicado_id",
+                required=True,
+                location="path",
+                format="uuid",
+                description="Radicado que se excluye.",
+                label="Radicado",
+            ),
+            Param(
+                name="causal",
+                required=True,
+                description="Causal de la exclusión. Queda visible en el índice.",
+                label="Causal",
+            ),
+        ),
+    ),
+    Tool(
+        name="indice_xml",
+        description=(
+            "Índice electrónico del expediente en XML, el formato que exige el Acuerdo "
+            "AGN 001/2024. Es el artefacto que se firma y se conserva, no una vista."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/indice.xml",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E15",
+        operacion="Obtener el índice electrónico en XML",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="verificar_indice",
+        description=(
+            "Verifica la integridad del índice: contrasta la huella de cada documento "
+            "con la actual y re-calcula la del propio índice. Un documento SIN huella no "
+            "es un documento alterado —se cuenta aparte y se dice— y no tumba la "
+            "verificación."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/indice/verify",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E15",
+        operacion="Verificar la integridad del índice electrónico",
+        params=(
+            _P_EXPEDIENTE_ID,
+            Param(name="version", type="integer", minimum=1, description="Versión a verificar (por defecto, la vigente).", label="Versión"),
+        ),
+    ),
+    Tool(
+        name="versiones_indice",
+        description=(
+            "Versiones del índice electrónico. Es append-only: cada cambio del conjunto "
+            "documental genera una versión nueva y las anteriores se conservan."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/indice/versions",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E15",
+        operacion="Listar las versiones del índice electrónico",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="firmar_indice",
+        description=(
+            "Reintenta el sellado XAdES del índice electrónico. El cierre del expediente "
+            "ya lo intenta; esto es para cuando quedó `pendiente_firma` porque el "
+            "servicio de firma no respondió."
+        ),
+        method="POST",
+        path="/api/v1/expedientes/{expediente_id}/indice/firmar",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E06",
+        operacion="Firmar el índice electrónico",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="publicar_expediente",
+        description=(
+            "Publica el expediente en el portal de transparencia, o retira su "
+            "publicación (Ley 1712/2014 art. 12). Exige fundamento."
+        ),
+        method="POST",
+        path="/api/v1/expedientes/{expediente_id}/publicacion",
+        path_params=("expediente_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E13",
+        operacion="Publicar de oficio un expediente",
+        params=(
+            _P_EXPEDIENTE_ID,
+            Param(name="publicar", type="boolean", required=True, description="true publica, false retira.", label="Publicar"),
+            Param(
+                name="fundamento",
+                required=True,
+                min_length=1,
+                max_length=500,
+                description="Fundamento de la decisión.",
+                label="Fundamento",
+            ),
+        ),
+    ),
+    Tool(
+        name="historial_acceso_expediente",
+        description=(
+            "Quién ha LEÍDO o descargado los documentos del expediente. Es la traza de "
+            "acceso, no la hoja de ruta: responde «¿quién vio esto?», que es la pregunta "
+            "de una investigación."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/historial-acceso",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E15",
+        operacion="Consultar el historial de acceso al expediente",
+        params=(_P_EXPEDIENTE_ID, _P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="roles_autorizados_expediente",
+        description="Qué grupos pueden leer el expediente ahora mismo (instantánea viva).",
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/roles-autorizados",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E15",
+        operacion="Consultar los grupos autorizados a leer el expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    # ── F7 Disposición y eliminación ────────────────────────────────────
+    #
+    # El único procedimiento del sistema que termina destruyendo documentos de
+    # archivo, en cinco fases: proponer → publicar → avalar → acta firmada →
+    # ejecutar. **La quinta NO se ofrece por este canal** (ver `NO_OFRECIDAS` en
+    # `app/services/scope.py`): es la que borra, y su garantía no puede depender
+    # de que un cliente ajeno haya preguntado a alguien.
+    #
+    # La fricción va repartida al revés de como suele hacerse: el acto que
+    # PROTEGE —retirar el lote del procedimiento— es el más barato de todos, y
+    # el que habilita la destrucción es el más caro. Si parar costara lo mismo
+    # que seguir, la fricción empujaría hacia adelante.
+    Tool(
+        name="listar_lotes_eliminacion",
+        description=(
+            "Lotes de eliminación y en qué fase está cada uno: propuesto, publicado, "
+            "avalado, ejecutado o anulado."
+        ),
+        method="GET",
+        path="/api/v1/eliminacion/lotes",
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Listar los lotes de eliminación",
+        params=(
+            Param(
+                name="estado",
+                enum=("propuesto", "publicado", "avalado", "ejecutado", "anulado"),
+                description="Fase del procedimiento.",
+                label="Estado",
+            ),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="consultar_lote_eliminacion",
+        description=(
+            "Un lote con su INVENTARIO CONGELADO: qué expedientes lo componen, con qué "
+            "fundamento y en qué fase va. El inventario se congela al proponerlo y es la "
+            "única fuente de qué se destruye — que no cambie entre la publicidad y la "
+            "ejecución es la garantía de que se destruyó lo que se anunció."
+        ),
+        method="GET",
+        path="/api/v1/eliminacion/lotes/{lote_id}",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar un lote de eliminación",
+        params=(_P_LOTE_ID,),
+    ),
+    Tool(
+        name="proponer_lote_eliminacion",
+        description=(
+            "Propone un lote de eliminación (fase 1 de 5) y CONGELA su inventario. No "
+            "destruye nada y todavía se puede retirar: lo que hace es fijar qué "
+            "expedientes entran, para que lo que se publique y lo que se destruya sean "
+            "lo mismo. Cada expediente debe cumplir las condiciones de admisión "
+            "(retención cumplida, disposición de eliminación, sin préstamo ni candado)."
+        ),
+        method="POST",
+        path="/api/v1/eliminacion/lotes",
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        # Proponer no destruye y `anular_lote_eliminacion` lo retira. La fricción
+        # se guarda para el acto que habilita la destrucción, no para el que la
+        # prepara: gastarla aquí la devalúa donde de verdad hace falta.
+        destructive=False,
+        epic="E04",
+        operacion="Proponer un lote de eliminación",
+        params=(
+            Param(
+                name="codigo",
+                required=True,
+                max_length=60,
+                description="Código del lote. Es como se le nombra en el acta y en la publicidad.",
+                label="Código del lote",
+            ),
+            Param(
+                name="expediente_ids",
+                type="array",
+                item_type="string",
+                required=True,
+                description="Expedientes que se proponen para eliminación.",
+                label="Expedientes",
+            ),
+            Param(name="observaciones", description="Observaciones de la propuesta.", label="Observaciones"),
+        ),
+    ),
+    Tool(
+        name="publicar_inventario_lote",
+        description=(
+            "Publica el inventario del lote para que cualquiera pueda oponerse (fase 2 "
+            "de 5, Ac. AGN 004/2019 art. 15). Abre un plazo con fecha de cierre: hasta "
+            "que venza, el lote no se puede avalar. La publicidad previa es lo que "
+            "convierte una eliminación en un acto legítimo y no en una pérdida."
+        ),
+        method="POST",
+        path="/api/v1/eliminacion/lotes/{lote_id}/publicar",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        # Lo publicado se vio: retirarlo no lo deshace.
+        destructive=True,
+        epic="E04",
+        operacion="Publicar el inventario de un lote de eliminación",
+        params=(
+            _P_LOTE_ID,
+            Param(
+                name="publicado_hasta",
+                required=True,
+                format="date",
+                description="Fecha de cierre del plazo para oponerse (AAAA-MM-DD).",
+                label="Publicado hasta",
+            ),
+        ),
+    ),
+    Tool(
+        name="avalar_lote_eliminacion",
+        description=(
+            "Registra el aval del Comité de Gestión Documental (fase 3 de 5). **Este es "
+            "el acto que habilita la destrucción**: a partir de aquí solo faltan el acta "
+            "y la ejecución. No decide la eliminación —eso lo hizo el Comité, fuera del "
+            "sistema— sino que deja constancia de su acto administrativo, y por eso pide "
+            "el número de acta, la fecha y la referencia del acto."
+        ),
+        method="POST",
+        path="/api/v1/eliminacion/lotes/{lote_id}/avalar",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        # El acto más caro del catálogo, y a propósito: para confirmarlo hay que
+        # reproducir el identificador del lote, que solo se conoce mirando la
+        # tarjeta. Una frase fija se teclea de memoria antes de leer nada.
+        confirmar_con="lote_id",
+        epic="E04",
+        operacion="Registrar el aval del Comité sobre un lote de eliminación",
+        params=(
+            _P_LOTE_ID,
+            Param(
+                name="acta_comite",
+                required=True,
+                max_length=200,
+                description="Número o referencia del acta del Comité que avaló el lote.",
+                label="Acta del Comité",
+            ),
+            Param(
+                name="fecha_aval",
+                required=True,
+                format="date",
+                description="Fecha del aval (AAAA-MM-DD).",
+                label="Fecha del aval",
+            ),
+            Param(
+                name="acto_administrativo",
+                required=True,
+                max_length=200,
+                description="Acto administrativo que respalda la eliminación.",
+                label="Acto administrativo",
+            ),
+        ),
+    ),
+    Tool(
+        name="anular_lote_eliminacion",
+        description=(
+            "Retira el lote del procedimiento con un motivo: los expedientes vuelven a "
+            "estar como estaban y ya no se eliminarán. Es el acto que PARA la "
+            "destrucción, y por eso es el más barato de confirmar de todo el "
+            "procedimiento."
+        ),
+        method="POST",
+        path="/api/v1/eliminacion/lotes/{lote_id}/anular",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        # Detener una eliminación no puede costar lo mismo que autorizarla:
+        # fricción simétrica sobre actos opuestos empuja al que destruye.
+        destructive=False,
+        epic="E04",
+        operacion="Retirar un lote del procedimiento de eliminación",
+        params=(
+            _P_LOTE_ID,
+            Param(
+                name="motivo",
+                required=True,
+                min_length=1,
+                max_length=500,
+                description="Por qué se retira. Queda en la traza del lote.",
+                label="Motivo",
+            ),
+        ),
+    ),
+    Tool(
+        name="generar_acta_eliminacion",
+        description=(
+            "Genera y sella el acta de eliminación (fase 4 de 5). El acta es de "
+            "CONSERVACIÓN PERMANENTE: cuando los documentos ya no estén, es lo único "
+            "que quedará para responder qué se destruyó, con qué fundamento y quién lo "
+            "autorizó. Pide el método de borrado porque el acta tiene que decir cómo se "
+            "destruyó, no solo que se destruyó."
+        ),
+        method="POST",
+        path="/api/v1/eliminacion/lotes/{lote_id}/acta",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E04",
+        operacion="Generar el acta de eliminación de un lote",
+        params=(
+            _P_LOTE_ID,
+            Param(
+                name="metodo_borrado",
+                required=True,
+                min_length=1,
+                max_length=1000,
+                description="Cómo se destruirá (borrado seguro, triturado, desmagnetizado…).",
+                label="Método de borrado",
+            ),
+            Param(name="observaciones", description="Observaciones del acta.", label="Observaciones"),
+        ),
+    ),
+    Tool(
+        name="consultar_acta_eliminacion",
+        description="El acta de eliminación de un lote, con su estado de firma.",
+        method="GET",
+        path="/api/v1/eliminacion/lotes/{lote_id}/acta",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar el acta de eliminación",
+        params=(_P_LOTE_ID,),
+    ),
+    Tool(
+        name="reintentar_firma_acta_eliminacion",
+        description=(
+            "Reintenta el sellado XAdES del acta. Existe porque la ejecución EXIGE el "
+            "acta firmada: si el servicio de firma estaba caído, el procedimiento se "
+            "detiene ahí a propósito — el último acto irreversible es exactamente el "
+            "momento de no seguir con una constancia a medias."
+        ),
+        method="POST",
+        path="/api/v1/eliminacion/lotes/{lote_id}/acta/firmar",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Reintentar la firma del acta de eliminación",
+        params=(_P_LOTE_ID,),
+    ),
+    Tool(
+        name="lapidas_lote",
+        description=(
+            "Lápidas de los expedientes ya eliminados: qué había, bajo qué acto se "
+            "destruyó y cuándo. Es lo que impide que la respuesta a «¿qué pasó con este "
+            "expediente?» sea el silencio, que es indistinguible de «nunca existió»."
+        ),
+        method="GET",
+        path="/api/v1/eliminacion/lotes/{lote_id}/lapidas",
+        path_params=("lote_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar las lápidas de un lote eliminado",
+        params=(_P_LOTE_ID,),
+    ),
+    # ── F8 Preservación ─────────────────────────────────────────────────
+    #
+    # **Sellar en WORM NO está aquí, y no es un olvido.** El acto exige el
+    # `file_id` del artefacto firmado, un identificador que solo conoce
+    # archive-service en el contexto del expediente — por eso la propia interfaz
+    # tampoco lo ofrece. Un modelo tendría que inventárselo, y sellar el fichero
+    # equivocado bajo un candado de diez años no se deshace: la retención no se
+    # acorta. La tarjeta de confirmación no protege de eso — enseñaría un UUID
+    # que la persona no tiene forma de contrastar. El sellado ocurre solo, al
+    # cerrar el expediente; lo que se ofrece aquí es VERLO y reintentar lo que
+    # quedó a medias (ver `NO_OFRECIDAS` en `app/services/scope.py`).
+    Tool(
+        name="indices_pendientes_firma",
+        description=(
+            "Índices electrónicos cerrados que quedaron SIN sellar porque el servicio de "
+            "firma no respondió. Es la cola de lo que hay que reintentar: un índice sin "
+            "firma no acredita nada."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/indices/pendientes-firma",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E06",
+        operacion="Consultar los índices pendientes de firma",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="artefactos_pendientes_renovacion",
+        description=(
+            "Artefactos protegidos cuya retención WORM está por vencer. Renovarla es un "
+            "disparo de sistema; esta lista existe para VERLO venir, no para actuar."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/indices/pendientes-renovacion",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar los artefactos pendientes de renovación WORM",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="consultar_plan_preservacion",
+        description=(
+            "Plan de preservación digital VIGENTE de la entidad: formatos destino, "
+            "formatos en riesgo de obsolescencia, número de copias y periodicidad de "
+            "verificación de fixity."
+        ),
+        method="GET",
+        path="/api/v1/preservacion/plan",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar el plan de preservación digital",
+        params=(),
+    ),
+    Tool(
+        name="versiones_plan_preservacion",
+        description=(
+            "Versiones del plan de preservación, con quién declaró cada una y cuándo. Es "
+            "append-only: cambiar la política crea una versión nueva y la anterior se "
+            "conserva."
+        ),
+        method="GET",
+        path="/api/v1/preservacion/plan/versions",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar las versiones del plan de preservación",
+        params=(),
+    ),
+    Tool(
+        name="declarar_plan_preservacion",
+        description=(
+            "Declara una versión NUEVA del plan de preservación. No edita la vigente: la "
+            "sustituye dejándola en el historial, así que un error se corrige declarando "
+            "otra — por eso se aprueba sin teclear nada.\n\n"
+            "`formatos_origen` es la política de obsolescencia de la entidad: los tipos "
+            "MIME que el barrido periódico convertirá a PDF/A. Vacío significa **no "
+            "migrar nada**; qué formato está en riesgo es un juicio archivístico del "
+            "PINAR, no una lista que traiga el fabricante."
+        ),
+        method="PUT",
+        path="/api/v1/preservacion/plan",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        # Versionado append-only: la corrección es declarar otra versión, y la
+        # anterior sigue ahí. Gastar fricción aquí la devalúa donde sí hace falta.
+        destructive=False,
+        epic="E10",
+        operacion="Declarar una versión del plan de preservación",
+        params=(
+            Param(
+                name="formatos_destino",
+                type="array",
+                item_type="string",
+                description="Formatos de conservación (por ejemplo PDF/A-2b).",
+                label="Formatos destino",
+            ),
+            Param(
+                name="formatos_origen",
+                type="array",
+                item_type="string",
+                description="Tipos MIME en riesgo de obsolescencia que se migrarán.",
+                label="Formatos en riesgo",
+            ),
+            Param(
+                name="num_copias",
+                type="integer",
+                minimum=1,
+                description="Copias de preservación que exige el plan.",
+                label="Copias",
+            ),
+            Param(
+                name="periodicidad_fixity_dias",
+                type="integer",
+                minimum=1,
+                description="Cada cuántos días se verifica la fixity.",
+                label="Periodicidad fixity",
+            ),
+            Param(name="politica_migracion", description="Política de migración declarada.", label="Política de migración"),
+            Param(name="contingencia", description="Plan de contingencia.", label="Contingencia"),
+        ),
+    ),
+    Tool(
+        name="consultar_aip",
+        description=(
+            "Paquete de archivo (AIP, BagIt + PREMIS) de un expediente: qué se empaquetó "
+            "para conservación a largo plazo y con qué huellas. El empaquetado lo dispara "
+            "el sistema al cerrar; esto lo consulta."
+        ),
+        method="GET",
+        # La ruta MEDIADA de archive-service, no la de storage. La de storage
+        # (`/preservacion/aip/{id}`) está sellada con `X-Internal-Token` y solo la
+        # alcanza el propio servicio: es el mediador quien resuelve el clearance
+        # del llamante contra el nivel VIGENTE del expediente, que storage no
+        # modela. Apuntar a la sellada habría dado 401 a todo el mundo — lo cazó
+        # el guardián compartido al cruzar el permiso declarado con el real.
+        path="/api/v1/expedientes/{expediente_id}/aip",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar el AIP de preservación de un expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="eventos_preservacion",
+        description=(
+            "Eventos PREMIS del expediente: ingesta, fijación, migración, validación "
+            "PDF/A, sellado WORM, réplica y renovación. Es el registro inmutable de toda "
+            "intervención de preservación sobre él."
+        ),
+        method="GET",
+        # Igual que `consultar_aip`: la ruta mediada, no la sellada de storage.
+        path="/api/v1/expedientes/{expediente_id}/preservacion/eventos",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar los eventos de preservación de un expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="registrar_evento_preservacion",
+        description=(
+            "Anota un evento de preservación en el registro PREMIS. **Es append-only: lo "
+            "anotado no se corrige ni se retira**, así que una intervención mal descrita "
+            "queda dicha para siempre. Se usa para dejar constancia de actos hechos "
+            "fuera del sistema (una migración de soporte, una réplica en sede alterna)."
+        ),
+        method="POST",
+        path="/api/v1/preservacion/eventos",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        # No destruye, pero se escribe en un registro que no admite corrección:
+        # lo irreversible aquí es la afirmación, no la pérdida.
+        destructive=True,
+        epic="E10",
+        operacion="Registrar un evento de preservación",
+        params=(
+            Param(
+                name="object_ref",
+                required=True,
+                max_length=255,
+                description="Objeto sobre el que se actuó.",
+                label="Objeto",
+            ),
+            Param(
+                name="tipo",
+                required=True,
+                enum=("INGESTA", "FIJACION", "MIGRACION", "VALIDACION_PDFA", "WORM", "REPLICA", "RENOVACION"),
+                description="Tipo de intervención (PREMIS).",
+                label="Tipo",
+            ),
+            Param(
+                name="resultado",
+                enum=("ok", "fallo", "no_evaluado"),
+                description=(
+                    "`no_evaluado` NO es un aprobado con reservas: dice que la "
+                    "comprobación no se hizo. Úsalo cuando no hubo con qué verificar."
+                ),
+                label="Resultado",
+            ),
+            Param(name="hash_before", description="Huella antes de la intervención.", label="Huella antes"),
+            Param(name="hash_after", description="Huella después.", label="Huella después"),
+        ),
+    ),
+    Tool(
+        name="migrar_formato",
+        description=(
+            "Convierte un archivo a PDF/A contra la obsolescencia (Decreto 2609/2012 "
+            "art. 32). **El original se conserva intacto** y el derivado convive con él: "
+            "migrar no destruye. Nada se promueve si no pasa el validador."
+        ),
+        method="POST",
+        path="/api/v1/preservacion/migrar-formato",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E10",
+        operacion="Migrar un archivo a PDF/A",
+        params=(
+            Param(
+                name="file_id",
+                required=True,
+                format="uuid",
+                description="Archivo a convertir.",
+                label="Archivo",
+            ),
+            Param(
+                name="perfil",
+                enum=("1b", "2b", "3b"),
+                description="Perfil PDF/A de destino.",
+                label="Perfil",
+            ),
+        ),
+    ),
+    Tool(
+        name="cadena_migraciones",
+        description=(
+            "Procedencia de un archivo: de qué se migró, con qué herramienta y con qué "
+            "resultado. Responde «¿este PDF/A de dónde salió?», que es la pregunta que "
+            "hace válida una copia de conservación."
+        ),
+        method="GET",
+        path="/api/v1/preservacion/migraciones/{file_id}",
+        path_params=("file_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar la cadena de migraciones de un archivo",
+        params=(
+            Param(
+                name="file_id",
+                required=True,
+                location="path",
+                format="uuid",
+                description="Archivo del que se pide la procedencia.",
+                label="Archivo",
+            ),
+        ),
+    ),
+    # ── F9 Instrumentos archivísticos ───────────────────────────────────
+    #
+    # La TRD es lo que fija cuánto se conserva cada cosa y qué se hace con ella
+    # al final: es el instrumento del que cuelga todo lo demás. Su circuito es
+    # append-only y tiene cinco estados (borrador → aprobada → convalidada →
+    # derogada, más la devolución con observaciones), y la fricción va donde el
+    # error es irreparable: **en el número de versión**.
+    #
+    # Convalidar y derogar cambian QUÉ TABLA GOBIERNA la clasificación de aquí
+    # en adelante. Equivocarse de versión —convalidar la v3 creyendo que era la
+    # v4— no se deshace con otro acto: hay que crear una versión nueva y volver
+    # a recorrer el circuito, con la tabla equivocada gobernando mientras tanto.
+    # Por eso ambos piden que se teclee el número de versión, que solo se conoce
+    # mirando la tarjeta.
+    Tool(
+        name="crear_serie_trd",
+        description=(
+            "Crea una serie documental de la TRD en estado BORRADOR. No gobierna nada "
+            "todavía: para que rija hay que aprobarla y convalidarla."
+        ),
+        method="POST",
+        path="/api/v1/trd",
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Crear una serie de la TRD",
+        params=(
+            Param(name="code", required=True, max_length=50, description="Código de la serie.", label="Código"),
+            Param(name="name", required=True, max_length=255, description="Nombre de la serie.", label="Nombre"),
+            Param(name="description", description="Alcance y contenido de la serie.", label="Descripción"),
+            Param(
+                name="retention_years",
+                type="integer",
+                minimum=0,
+                description="Años en archivo de gestión.",
+                label="Retención gestión",
+            ),
+            Param(
+                name="total_retention",
+                type="integer",
+                minimum=0,
+                description="Años totales (gestión + central).",
+                label="Retención total",
+            ),
+            Param(
+                name="disposition",
+                enum=("CT", "E", "S", "M"),
+                description=(
+                    "Disposición final: CT conservación total, E eliminación, "
+                    "S selección, M digitalización/microfilmación."
+                ),
+                label="Disposición final",
+            ),
+        ),
+    ),
+    Tool(
+        name="versiones_serie_trd",
+        description=(
+            "Historial completo de versiones de una serie TRD: quién aprobó cada una, "
+            "con qué acto administrativo se convalidó y cuál rige hoy. Es append-only: "
+            "las versiones anteriores no se borran."
+        ),
+        method="GET",
+        path="/api/v1/trd/{code}/versiones",
+        path_params=("code",),
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar el historial de versiones de una serie TRD",
+        params=(_P_TRD_CODE,),
+    ),
+    Tool(
+        name="nueva_version_serie_trd",
+        description=(
+            "Abre una versión BORRADOR de una serie ya existente. Es la única forma de "
+            "cambiar una TRD que ya rige: la vigente no se edita, se sustituye — así "
+            "queda constancia de qué reglas se aplicaron a lo que se clasificó antes."
+        ),
+        method="POST",
+        path="/api/v1/trd/{code}/versiones",
+        path_params=("code",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Crear una versión nueva de una serie TRD",
+        params=(
+            _P_TRD_CODE,
+            Param(name="name", max_length=255, description="Nombre de la serie en esta versión.", label="Nombre"),
+            Param(name="description", description="Alcance y contenido.", label="Descripción"),
+            Param(name="retention_years", type="integer", minimum=0, description="Años en gestión.", label="Retención gestión"),
+            Param(name="total_retention", type="integer", minimum=0, description="Años totales.", label="Retención total"),
+            Param(
+                name="disposition",
+                enum=("CT", "E", "S", "M"),
+                description="Disposición final de esta versión.",
+                label="Disposición final",
+            ),
+        ),
+    ),
+    Tool(
+        name="aprobar_version_trd",
+        description=(
+            "Aprueba una versión borrador y deja constancia del acta del Comité "
+            "(borrador → aprobada). Todavía NO rige: falta convalidarla. Y tiene "
+            "vuelta atrás — `devolver_version_trd` la regresa a borrador."
+        ),
+        method="POST",
+        path="/api/v1/trd/{code}/versiones/{version}/aprobar",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        # El propio sistema ofrece el camino de vuelta (`devolver`): poner aquí
+        # la fricción del acto irreversible sería gastarla donde hay remedio.
+        destructive=False,
+        epic="E04",
+        operacion="Aprobar una versión de la TRD",
+        params=(
+            _P_TRD_CODE,
+            _P_VERSION,
+            Param(
+                name="acta_comite",
+                required=True,
+                max_length=200,
+                description="Acta del Comité que aprobó la versión.",
+                label="Acta del Comité",
+            ),
+            Param(
+                name="fecha_aprobacion_comite",
+                required=True,
+                format="date",
+                description="Fecha del acta (AAAA-MM-DD).",
+                label="Fecha de aprobación",
+            ),
+        ),
+    ),
+    Tool(
+        name="devolver_version_trd",
+        description=(
+            "Devuelve una versión aprobada a borrador con observaciones. Es el camino de "
+            "vuelta del circuito, y por eso se aprueba sin teclear nada: corregir tiene "
+            "que costar menos que consumar."
+        ),
+        method="POST",
+        path="/api/v1/trd/{code}/versiones/{version}/devolver",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Devolver una versión de la TRD con observaciones",
+        params=(
+            _P_TRD_CODE,
+            _P_VERSION,
+            Param(
+                name="motivo",
+                required=True,
+                min_length=1,
+                description="Observaciones que motivan la devolución.",
+                label="Motivo",
+            ),
+        ),
+    ),
+    Tool(
+        name="convalidar_version_trd",
+        description=(
+            "Convalida una versión aprobada: **pasa a ser la que rige** y DEROGA a la "
+            "vigente en el mismo acto (aprobada → convalidada). Desde aquí, todo lo que "
+            "se clasifique se clasifica con esta tabla. Pide el acto administrativo y la "
+            "instancia convalidante porque una TRD rige por un acto, no por un clic."
+        ),
+        method="POST",
+        path="/api/v1/trd/{code}/versiones/{version}/convalidar",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        # La fricción sobre el dato cuyo error es irreparable: convalidar la
+        # versión equivocada no se corrige con otro acto —hay que abrir una
+        # versión nueva y recorrer el circuito entero, con la tabla equivocada
+        # gobernando mientras tanto—.
+        confirmar_con="version",
+        epic="E04",
+        operacion="Convalidar una versión de la TRD",
+        params=(
+            _P_TRD_CODE,
+            _P_VERSION,
+            Param(
+                name="acto_administrativo",
+                required=True,
+                max_length=200,
+                description="Acto administrativo que la convalida.",
+                label="Acto administrativo",
+            ),
+            Param(
+                name="fecha_convalidacion",
+                required=True,
+                format="date",
+                description="Fecha de la convalidación (AAAA-MM-DD).",
+                label="Fecha",
+            ),
+            Param(
+                name="instancia_convalidante",
+                required=True,
+                max_length=200,
+                description="Instancia que convalida (Consejo Departamental, AGN…).",
+                label="Instancia",
+            ),
+            Param(name="rusd_radicado", description="Radicado de inscripción en el RUSD.", label="RUSD"),
+        ),
+    ),
+    Tool(
+        name="derogar_version_trd",
+        description=(
+            "Deroga una versión convalidada. **Esa serie deja de servir para clasificar**, "
+            "así que si hay expedientes abiertos que dependan de ella el sistema se "
+            "niega y explica cómo proceder. No se deshace: para volver a tener una serie "
+            "vigente hay que recorrer el circuito otra vez."
+        ),
+        method="POST",
+        path="/api/v1/trd/{code}/versiones/{version}/derogar",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        confirmar_con="version",
+        epic="E04",
+        operacion="Derogar una versión de la TRD",
+        params=(_P_TRD_CODE, _P_VERSION),
+    ),
+    Tool(
+        name="registrar_rusd_trd",
+        description=(
+            "Anota la inscripción en el RUSD y/o la fecha de publicación de una versión "
+            "ya convalidada. Es constancia registral: no cambia qué tabla rige."
+        ),
+        method="POST",
+        path="/api/v1/trd/{code}/versiones/{version}/registrar-rusd",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Registrar la inscripción RUSD de una versión de la TRD",
+        params=(
+            _P_TRD_CODE,
+            _P_VERSION,
+            Param(name="rusd_radicado", description="Radicado de la inscripción.", label="RUSD"),
+            Param(name="fecha_publicacion", format="date", description="Fecha de publicación.", label="Fecha de publicación"),
+        ),
+    ),
+    Tool(
+        name="disposicion_vencida",
+        description=(
+            "Expedientes cuyo calendario de retención ya venció y esperan decisión. El "
+            "sistema los CUENTA y avisa; no ejecuta nada por su cuenta."
+        ),
+        method="GET",
+        path="/api/v1/trd/disposicion-vencida",
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar los expedientes con disposición vencida",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="decidir_disposicion_vencida",
+        description=(
+            "Decide sobre un vencimiento: confirmar que la disposición procede, o "
+            "aplazarla con motivo. **Confirmar no destruye nada** —la eliminación tiene "
+            "su propio procedimiento de cinco fases— pero sí deja el expediente listo "
+            "para entrar en él."
+        ),
+        method="POST",
+        path="/api/v1/trd/disposicion-vencida/{expediente_id}/decidir",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        epic="E04",
+        operacion="Decidir sobre una disposición vencida",
+        params=(
+            _P_EXPEDIENTE_ID,
+            Param(
+                name="fase",
+                required=True,
+                enum=("gestion", "central"),
+                description="Fase del archivo cuyo plazo venció.",
+                label="Fase",
+            ),
+            Param(
+                name="decision",
+                required=True,
+                enum=("confirmada", "aplazada"),
+                description="Confirmar la disposición o aplazarla.",
+                label="Decisión",
+            ),
+            Param(name="motivo", description="Motivo, obligatorio al aplazar.", label="Motivo"),
+        ),
+    ),
+    Tool(
+        name="revision_trd_pendiente",
+        description=(
+            "Expedientes marcados para revisar su clasificación porque la TRD que los "
+            "gobernaba cambió. Es la consecuencia práctica de convalidar una versión "
+            "nueva: alguien tiene que mirar qué queda descolocado."
+        ),
+        method="GET",
+        path="/api/v1/trd/revision-pendiente",
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar los expedientes pendientes de revisión de TRD",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    # ── F9 · TVD: el mismo circuito, para el fondo acumulado ────────────
+    #
+    # La TVD valora lo que se produjo SIN criterio archivístico —lo que dejó una
+    # entidad liquidada, una dependencia suprimida—. Su circuito es gemelo del de
+    # la TRD y la fricción va en el mismo sitio y por la misma razón.
+    Tool(
+        name="listar_tvd",
+        description=(
+            "Agrupaciones documentales de la TVD (Tabla de Valoración Documental): lo "
+            "que gobierna el fondo acumulado."
+        ),
+        method="GET",
+        path="/api/v1/tvd",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Listar las agrupaciones de la TVD",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="consultar_tvd",
+        description="Una agrupación de la TVD por su identificador.",
+        method="GET",
+        path="/api/v1/tvd/{agrupacion_id}",
+        path_params=("agrupacion_id",),
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar una agrupación de la TVD",
+        params=(_P_AGRUPACION_ID,),
+    ),
+    Tool(
+        name="retencion_tvd",
+        description=(
+            "Calendario de retención y disposición que le corresponde a una agrupación "
+            "del fondo acumulado."
+        ),
+        method="GET",
+        path="/api/v1/tvd/{agrupacion_id}/retention",
+        path_params=("agrupacion_id",),
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar la retención de una agrupación TVD",
+        params=(_P_AGRUPACION_ID,),
+    ),
+    Tool(
+        name="crear_agrupacion_tvd",
+        description="Crea una agrupación de la TVD en estado BORRADOR.",
+        method="POST",
+        path="/api/v1/tvd",
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Crear una agrupación de la TVD",
+        params=(
+            Param(name="code", required=True, max_length=50, description="Código de la agrupación.", label="Código"),
+            Param(name="name", required=True, max_length=255, description="Nombre.", label="Nombre"),
+            Param(name="description", description="Alcance de la agrupación.", label="Descripción"),
+            Param(
+                name="disposition",
+                enum=("CT", "E", "S", "M"),
+                description="Disposición final.",
+                label="Disposición final",
+            ),
+        ),
+    ),
+    Tool(
+        name="versiones_agrupacion_tvd",
+        description="Historial de versiones de una agrupación TVD. Append-only, igual que la TRD.",
+        method="GET",
+        path="/api/v1/tvd/{code}/versiones",
+        path_params=("code",),
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar el historial de versiones de una agrupación TVD",
+        params=(_P_TVD_CODE,),
+    ),
+    Tool(
+        name="nueva_version_agrupacion_tvd",
+        description="Abre una versión borrador de una agrupación TVD ya existente.",
+        method="POST",
+        path="/api/v1/tvd/{code}/versiones",
+        path_params=("code",),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Crear una versión nueva de una agrupación TVD",
+        params=(
+            _P_TVD_CODE,
+            Param(name="name", max_length=255, description="Nombre en esta versión.", label="Nombre"),
+            Param(name="description", description="Alcance.", label="Descripción"),
+            Param(
+                name="disposition",
+                enum=("CT", "E", "S", "M"),
+                description="Disposición final de esta versión.",
+                label="Disposición final",
+            ),
+        ),
+    ),
+    Tool(
+        name="aprobar_version_tvd",
+        description=(
+            "Aprueba una versión borrador de la TVD con el acta del Comité. Tiene vuelta "
+            "atrás: `devolver_version_tvd`."
+        ),
+        method="POST",
+        path="/api/v1/tvd/{code}/versiones/{version}/aprobar",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Aprobar una versión de la TVD",
+        params=(
+            _P_TVD_CODE,
+            _P_VERSION,
+            Param(name="acta_comite", required=True, max_length=200, description="Acta del Comité.", label="Acta del Comité"),
+            Param(
+                name="fecha_aprobacion_comite",
+                required=True,
+                format="date",
+                description="Fecha del acta (AAAA-MM-DD).",
+                label="Fecha de aprobación",
+            ),
+        ),
+    ),
+    Tool(
+        name="devolver_version_tvd",
+        description="Devuelve una versión aprobada de la TVD a borrador, con observaciones.",
+        method="POST",
+        path="/api/v1/tvd/{code}/versiones/{version}/devolver",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Devolver una versión de la TVD con observaciones",
+        params=(
+            _P_TVD_CODE,
+            _P_VERSION,
+            Param(name="motivo", required=True, min_length=1, description="Observaciones.", label="Motivo"),
+        ),
+    ),
+    Tool(
+        name="convalidar_version_tvd",
+        description=(
+            "Convalida una versión de la TVD: pasa a regir y deroga a la vigente en el "
+            "mismo acto."
+        ),
+        method="POST",
+        path="/api/v1/tvd/{code}/versiones/{version}/convalidar",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        confirmar_con="version",
+        epic="E04",
+        operacion="Convalidar una versión de la TVD",
+        params=(
+            _P_TVD_CODE,
+            _P_VERSION,
+            Param(name="acto_administrativo", required=True, max_length=200, description="Acto que la convalida.", label="Acto administrativo"),
+            Param(name="fecha_convalidacion", required=True, format="date", description="Fecha (AAAA-MM-DD).", label="Fecha"),
+            Param(name="instancia_convalidante", required=True, max_length=200, description="Instancia que convalida.", label="Instancia"),
+            Param(name="rusd_radicado", description="Radicado RUSD.", label="RUSD"),
+        ),
+    ),
+    Tool(
+        name="derogar_version_tvd",
+        description=(
+            "Deroga una versión convalidada de la TVD: esa agrupación deja de servir "
+            "para valorar el fondo acumulado."
+        ),
+        method="POST",
+        path="/api/v1/tvd/{code}/versiones/{version}/derogar",
+        path_params=("code", "version"),
+        permission="USUA_PERM_TRD",
+        min_crud=3,
+        write=True,
+        destructive=True,
+        confirmar_con="version",
+        epic="E04",
+        operacion="Derogar una versión de la TVD",
+        params=(_P_TVD_CODE, _P_VERSION),
+    ),
+    # ── F9 · Tipos documentales y metadatos ─────────────────────────────
+    Tool(
+        name="consultar_tipo_documental",
+        description="Un tipo documental por su identificador, con la serie de la que cuelga.",
+        method="GET",
+        path="/api/v1/tipos-documentales/{tipo_id}",
+        path_params=("tipo_id",),
+        min_crud=1,
+        write=False,
+        epic="E04",
+        operacion="Consultar un tipo documental",
+        params=(_P_TIPO_ID,),
+    ),
+    Tool(
+        name="crear_tipo_documental",
+        description=(
+            "Crea un tipo documental colgando de una serie de la TRD. Es el vocabulario "
+            "con el que se clasifica al radicar: lo que no está aquí, no se puede elegir."
+        ),
+        method="POST",
+        path="/api/v1/tipos-documentales",
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E04",
+        operacion="Crear un tipo documental",
+        params=(
+            Param(name="code", required=True, max_length=50, description="Código del tipo.", label="Código"),
+            Param(name="nombre", required=True, max_length=255, description="Nombre del tipo.", label="Nombre"),
+            Param(name="trd_serie_id", format="uuid", description="Serie de la TRD a la que pertenece.", label="Serie"),
+            Param(
+                name="obligatorio",
+                type="boolean",
+                description="Si el tipo es obligatorio en su serie.",
+                label="Obligatorio",
+            ),
+        ),
+    ),
+    Tool(
+        name="listar_elementos_metadato",
+        description=(
+            "Elementos de metadato declarados por la entidad: el vocabulario con el que "
+            "se describen los documentos más allá de los campos fijos."
+        ),
+        method="GET",
+        path="/api/v1/metadata/elements",
+        min_crud=1,
+        write=False,
+        epic="E03",
+        operacion="Listar los elementos de metadato",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="listar_plantillas_metadato",
+        description="Plantillas de metadatos, opcionalmente las de un tipo documental.",
+        method="GET",
+        path="/api/v1/metadata/templates",
+        min_crud=1,
+        write=False,
+        epic="E03",
+        operacion="Listar las plantillas de metadatos",
+        params=(
+            Param(name="tipo_documental", description="Filtra por tipo documental.", label="Tipo documental"),
+        ),
+    ),
+    # ── F9 · PINAR (Plan Institucional de Archivos) ─────────────────────
+    #
+    # Se ofrece la LECTURA y el registro de avance; la estructura del plan
+    # —crear objetivos, proyectos, aspectos, priorizar— NO. No es una cuestión de
+    # riesgo: es que armar un PINAR es un ejercicio de planeación con el Comité
+    # delante, no una secuencia de altas. Lo que un asistente aporta aquí es
+    # decir cómo va, no decidir qué se hace (ver `NO_OFRECIDAS` en
+    # `app/services/scope.py`).
+    Tool(
+        name="listar_planes_pinar",
+        description=(
+            "Planes Institucionales de Archivos de la entidad (Ac. AGN 003/2015), con su "
+            "estado: formulación, aprobado, en ejecución o cerrado."
+        ),
+        method="GET",
+        path="/api/v1/pinar/planes",
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Listar los planes PINAR",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="consultar_plan_pinar",
+        description="Un plan PINAR con su vigencia, su estado y su acto de aprobación.",
+        method="GET",
+        path="/api/v1/pinar/planes/{plan_id}",
+        path_params=("plan_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar un plan PINAR",
+        params=(_P_PLAN_ID,),
+    ),
+    Tool(
+        name="tablero_pinar",
+        description=(
+            "Tablero de un plan PINAR: cuánto ha avanzado cada proyecto y cómo va el "
+            "plan en conjunto. Es la respuesta a «¿cómo vamos?» sin tener que recorrer "
+            "proyecto por proyecto."
+        ),
+        method="GET",
+        path="/api/v1/pinar/planes/{plan_id}/tablero",
+        path_params=("plan_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar el tablero de un plan PINAR",
+        params=(_P_PLAN_ID,),
+    ),
+    Tool(
+        name="mapa_ruta_pinar",
+        description="Mapa de ruta del plan: qué proyecto va en qué tiempo.",
+        method="GET",
+        path="/api/v1/pinar/planes/{plan_id}/mapa-ruta",
+        path_params=("plan_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar el mapa de ruta de un plan PINAR",
+        params=(_P_PLAN_ID,),
+    ),
+    Tool(
+        name="objetivos_pinar",
+        description="Objetivos de un plan PINAR.",
+        method="GET",
+        path="/api/v1/pinar/planes/{plan_id}/objetivos",
+        path_params=("plan_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar los objetivos de un plan PINAR",
+        params=(_P_PLAN_ID,),
+    ),
+    Tool(
+        name="proyectos_pinar",
+        description="Proyectos de un plan PINAR, con su avance.",
+        method="GET",
+        path="/api/v1/pinar/planes/{plan_id}/proyectos",
+        path_params=("plan_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar los proyectos de un plan PINAR",
+        params=(_P_PLAN_ID,),
+    ),
+    Tool(
+        name="priorizacion_pinar",
+        description=(
+            "Priorización del plan: qué aspectos críticos pesan más, que es lo que "
+            "ordena los proyectos."
+        ),
+        method="GET",
+        path="/api/v1/pinar/planes/{plan_id}/priorizacion",
+        path_params=("plan_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar la priorización de un plan PINAR",
+        params=(_P_PLAN_ID,),
+    ),
+    Tool(
+        name="seguimiento_proyecto_pinar",
+        description="Historial de avance de un proyecto del PINAR.",
+        method="GET",
+        path="/api/v1/pinar/proyectos/{proyecto_id}/seguimiento",
+        path_params=("proyecto_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E14",
+        operacion="Consultar el seguimiento de un proyecto PINAR",
+        params=(_P_PROYECTO_ID,),
+    ),
+    Tool(
+        name="registrar_avance_pinar",
+        description=(
+            "Anota el avance de un proyecto del PINAR en una fecha. Es acumulativo: cada "
+            "anotación se suma al historial y las anteriores se conservan, así que un "
+            "porcentaje mal puesto se corrige anotando el correcto."
+        ),
+        method="POST",
+        path="/api/v1/pinar/proyectos/{proyecto_id}/seguimiento",
+        path_params=("proyecto_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=True,
+        destructive=False,
+        epic="E14",
+        operacion="Registrar el avance de un proyecto PINAR",
+        params=(
+            _P_PROYECTO_ID,
+            Param(
+                name="fecha",
+                required=True,
+                format="date",
+                description="Fecha del corte de avance (AAAA-MM-DD).",
+                label="Fecha",
+            ),
+            Param(
+                name="avance_pct",
+                type="integer",
+                required=True,
+                minimum=0,
+                maximum=100,
+                description="Porcentaje de avance acumulado.",
+                label="Avance (%)",
+            ),
+            Param(name="observacion", description="Qué se hizo en este periodo.", label="Observación"),
+        ),
+    ),
     Tool(
         name="reporte_radicacion",
         description=(
@@ -1720,7 +4410,7 @@ class ArgError(ValueError):
         super().__init__(detail)
 
 
-def json_schema(tool: Tool) -> dict[str, Any]:
+def json_schema(tool: Invocable) -> dict[str, Any]:
     """JSON Schema de los argumentos. Sirve a MCP y a Anthropic sin adaptador.
 
     `additionalProperties: False` es solo advisory para el modelo —no lo aplica
@@ -1744,7 +4434,7 @@ _TIPOS: dict[str, type | tuple[type, ...]] = {
 }
 
 
-def coerce_args(tool: Tool, raw: dict[str, Any]) -> dict[str, Any]:
+def coerce_args(tool: Invocable, raw: dict[str, Any]) -> dict[str, Any]:
     """Valida y acota los argumentos contra lo declarado.
 
     **Rechaza** las claves no declaradas en vez de descartarlas en silencio: el
@@ -1811,13 +4501,33 @@ def coerce_args(tool: Tool, raw: dict[str, Any]) -> dict[str, Any]:
     return limpio
 
 
-def card_fields(tool: Tool, args: dict[str, Any]) -> list[dict[str, Any]]:
-    """Campos legibles del acto, para la tarjeta de confirmación."""
-    return [
-        {"arg": p.name, "etiqueta": p.etiqueta, "valor": args[p.name], "tipo": p.type}
-        for p in tool.params
-        if p.show_in_card and p.name in args
-    ]
+def card_fields(tool: Invocable, args: dict[str, Any]) -> list[dict[str, Any]]:
+    """Campos legibles del acto, para la tarjeta de confirmación.
+
+    Una LISTA se resume por su tamaño y no se vuelca. Un lote de eliminación
+    lleva los identificadores de los expedientes que va a destruir: volcar
+    cuarenta UUID en la tarjeta no informa, **tapa** — quien tiene que decidir
+    acaba mirando un muro de texto en vez de la única cifra que importa, que es
+    cuántos. El detalle sigue viajando en la propuesta firmada; lo que cambia es
+    qué se le pone delante a la persona.
+    """
+    campos: list[dict[str, Any]] = []
+    for p in tool.params:
+        if not (p.show_in_card and p.name in args):
+            continue
+        valor = args[p.name]
+        if isinstance(valor, list):
+            campos.append(
+                {
+                    "arg": p.name,
+                    "etiqueta": p.etiqueta,
+                    "valor": f"{len(valor)} elemento{'s' if len(valor) != 1 else ''}",
+                    "tipo": p.type,
+                }
+            )
+            continue
+        campos.append({"arg": p.name, "etiqueta": p.etiqueta, "valor": valor, "tipo": p.type})
+    return campos
 
 
 _BY_NAME: dict[str, Tool] = {t.name: t for t in CATALOG}
@@ -1828,7 +4538,7 @@ def get_tool(name: str) -> Tool | None:
 
 
 def puede_usar(
-    tool: Tool,
+    tool: Invocable,
     permissions: set[str],
     *,
     is_root: bool = False,

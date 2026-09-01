@@ -22,10 +22,11 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Body, Header, HTTPException, Request, status
 
-from app.services import proposals, write_gate
+from app.services import procedure_runner, proposals, write_gate
 from app.services.dispatcher import DispatchError, authorize, dispatch
 from app.services.identity import IdentityError, resolve_identity
-from app.tools.catalog import get_tool, visible_tools
+from app.tools.catalog import ArgError, coerce_args, get_tool, visible_tools
+from app.tools.procedures import Procedimiento, get_procedimiento, procedimientos_visibles
 
 router = APIRouter(prefix="/api/v1/mcp", tags=["mcp"])
 
@@ -60,7 +61,14 @@ async def list_tools(
     tools = visible_tools(
         identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
     )
-    return {"tools": [t.to_schema() for t in tools]}
+    # Los procedimientos se listan JUNTO a las tools y no en un endpoint aparte:
+    # para quien consume esto, «radicar un documento» y «tramitar una petición»
+    # son dos cosas que puede pedir, y separarlas en dos catálogos obligaría a
+    # conocer la distinción interna para encontrar la segunda.
+    procs = procedimientos_visibles(
+        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+    )
+    return {"tools": [t.to_schema() for t in tools] + [p.to_schema() for p in procs]}
 
 
 @router.post("/proposals/execute", summary="Ejecuta una propuesta de escritura ya aprobada")
@@ -134,7 +142,7 @@ async def invoke_tool(
     «esto». Quien la envíe ahora recibirá una propuesta igualmente — el camino
     seguro es el que sale por defecto.
     """
-    tool = get_tool(name)
+    tool = get_tool(name) or get_procedimiento(name)
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -168,8 +176,29 @@ async def invoke_tool(
             return write_gate.preparar(
                 tool, args, sub=identidad.user_id, ten=identidad.tenant_slug
             )
+        if isinstance(tool, Procedimiento):
+            # Procedimiento de solo lectura (`write=False`): se ejecuta directo,
+            # igual que una tool de lectura. Los de escritura ya salieron arriba
+            # por el gate de propuesta.
+            parte = await procedure_runner.ejecutar(
+                client,
+                tool,
+                coerce_args(tool, args),
+                authorization=authorization,
+                tenant_slug=x_tenant_slug,
+            )
+            return {
+                "tool": name,
+                "status": 200 if parte["completado"] else 409,
+                "data": parte,
+            }
         resp = await dispatch(
             client, tool, args, authorization=authorization, tenant_slug=x_tenant_slug
+        )
+    except ArgError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": exc.code, "detail": exc.detail, "status": 400},
         )
     except DispatchError as exc:
         raise HTTPException(

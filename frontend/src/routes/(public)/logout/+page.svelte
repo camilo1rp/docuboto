@@ -29,7 +29,7 @@
 
 <main class="logout">
   <div class="logout__card">
-    <img src="/brand/orpyca-mark.png" alt="" class="logout__icon" aria-hidden="true" />
+    <img src="/brand/orpyca-mark.svg" alt="" class="logout__icon" aria-hidden="true" />
 
     <h1 class="logout__title">¿Cerrar la sesión?</h1>
 
