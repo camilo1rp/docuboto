@@ -395,3 +395,65 @@ async def get_signing_key_revocation_status_remote(fingerprint: str, tenant_slug
             f"revocation-status: {resp.text[:200]}"
         )
     return resp.json()
+
+
+# ── Huella vigente de un borrador (E23 Inc.4, RF-PRO-11) ────────────────────
+
+
+class HuellaNoVerificableError(Exception):
+    """No se pudo comprobar si el documento sigue siendo el mismo.
+
+    **Fail-closed, y esta es la decisión de fondo del guardián**: no poder
+    comprobar NO es lo mismo que «no ha cambiado». Si un fallo de red se
+    interpretara como «sigue igual», bastaría con que document-service estuviera
+    caído para que se pudiera firmar sobre un texto ya modificado — y ese es el
+    momento en que menos se querría poder.
+    """
+
+
+class BorradorDesaparecidoError(HuellaNoVerificableError):
+    """El borrador ya no existe. Subclase a propósito: el efecto es el mismo
+    (denegar), pero el mensaje puede ser más útil que «no se pudo comprobar»."""
+
+
+async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
+    """Huella VIGENTE del cuerpo y del documento de un borrador.
+
+    La mitad síncrona de la invalidación. La otra es un evento, y un consumidor
+    de eventos puede retrasarse: si la garantía viviera solo ahí, existiría una
+    ventana en la que alguien resuelve su turno sobre el texto viejo.
+
+    Sellado con `X-Internal-Token` y SIN reenviar el `Authorization` del
+    firmante: la respuesta es content-free (dos huellas, una versión, un
+    booleano), así que no hay nada que recortar por clearance y propagar la
+    identidad solo ampliaría la superficie.
+    """
+    headers = {
+        "X-Internal-Token": settings.signing_key_internal_token,
+        "X-Tenant-Slug": tenant_slug,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.document_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(
+                f"/api/v1/internal/documentos/borradores/{borrador_id}/huella",
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise HuellaNoVerificableError(f"document-service inalcanzable: {exc}") from exc
+
+    if resp.status_code == 404:
+        raise BorradorDesaparecidoError(f"el borrador {borrador_id} ya no existe")
+    if resp.status_code != 200:
+        raise HuellaNoVerificableError(
+            f"document-service -> HTTP {resp.status_code} al consultar la huella: "
+            f"{resp.text[:200]}"
+        )
+    try:
+        datos = resp.json()
+    except ValueError as exc:
+        raise HuellaNoVerificableError(f"respuesta ilegible: {exc}") from exc
+    if not isinstance(datos, dict):
+        raise HuellaNoVerificableError("respuesta ilegible: no es un objeto")
+    return datos

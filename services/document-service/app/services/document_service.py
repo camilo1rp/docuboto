@@ -523,6 +523,37 @@ class DocumentService:
         )
         return anexo
 
+    async def adjuntar_documento_producido(
+        self,
+        radicado_id: uuid.UUID,
+        *,
+        file_id: uuid.UUID,
+        filename: str,
+        file_size: int | None,
+    ) -> None:
+        """Anexa el PDF/A generado como soporte PRINCIPAL del radicado (E23).
+
+        `es_principal=True` no es cosmética: distingue el documento que ES la
+        comunicación de los adjuntos que la acompañan, y es lo que el índice
+        electrónico y el envío postal necesitan para saber qué pieza despachar.
+
+        No hay gate de clearance aquí y es correcto: el radicado se acaba de
+        crear en esta misma llamada por el mismo actor, así que no hay
+        descubrimiento posible de nada que el llamante no conociera ya. Es una
+        continuación del acto de radicar, no un acceso nuevo.
+
+        La huella SHA-256 no viaja aquí porque `anexos` no la guarda: la fixity
+        de los bytes vive en storage-service, y la del documento producido queda
+        en `borrador.documento_sha256`, que es donde la necesita el circuito de
+        firma (RF-PRO-09).
+        """
+        await self._repo.crear_anexo_producido(
+            radicado_id,
+            file_id=file_id,
+            filename=filename,
+            file_size=file_size,
+        )
+
     async def list_anexos(
         self, document_id: uuid.UUID, max_clearance: int
     ) -> builtins.list[Anexo]:

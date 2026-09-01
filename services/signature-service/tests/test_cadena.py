@@ -1282,6 +1282,7 @@ async def test_tipo_declarado_no_evita_la_resolucion_del_nivel_real() -> None:
                     "objeto_id": "2024-DEMO-S-CLASIF",
                     "nivel_seguridad": 1,  # declaración del cliente: se ignora
                     "firmantes": [str(USER)],
+                    "payload_sha256": "b" * 64,
                 },
                 headers=TENANT_HEADERS,
             )
@@ -1347,6 +1348,9 @@ async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado() -> N
                     "objeto_id": "borrador-local-42",
                     "nivel_seguridad": 2,
                     "firmantes": [str(USER)],
+                    # Obligatoria desde E23 (RF-PRO-09): un borrador se firma por
+                    # su contenido, no por su nombre.
+                    "payload_sha256": "a" * 64,
                 },
                 headers=TENANT_HEADERS,
             )

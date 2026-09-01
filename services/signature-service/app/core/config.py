@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     service_port: int = 8008
     log_level: str = "info"
 
+    # document-service: se consulta la huella VIGENTE de un borrador antes de
+    # resolver un turno de firma (E23, RF-PRO-11). Misma puerta interna que
+    # auth-service: `X-Internal-Token`, sin reenviar la identidad del firmante.
+    document_service_url: str = "http://document-service:8003"
+
     # Redis URL for stream consumption (document.radicado.reclassified events)
     # y publicación (firma.indice.firmado — app/core/events.py, Inc.1).
     redis_url: str = "redis://redis:6379/0"

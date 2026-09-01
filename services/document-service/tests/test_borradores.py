@@ -9,8 +9,10 @@
 
 """Tests de plantillas y borradores de Salida (paridad legado)."""
 
+import json
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +53,11 @@ def _borrador_row(**kw) -> dict:
         "creado_por": None,
         "created_at": NOW,
         "updated_at": NOW,
+        "radicado_padre_id": None,
+        "documento_file_id": None,
+        "documento_sha256": None,
+        "documento_formato": None,
+        "combinacion": None,
     }
     base.update(kw)
     return base
@@ -302,7 +309,8 @@ async def test_radicar_borrador_con_permiso_201(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True
     mock_conn.fetch.return_value = []  # _get_anexos
     mock_conn.fetchrow.side_effect = [
-        _borrador_row(id=bid, doc_type="S", estado="aprobado"),  # get_borrador
+        _CLEARANCE_ROW,                                            # resolve_caller_clearance
+        _borrador_row(id=bid, doc_type="S", estado="aprobado", cuerpo=None),  # get_borrador
         {"code": "DEMO"},                                          # get_tenant_code
         radicado,                                                  # repo.create
         _borrador_row(id=bid, doc_type="S", estado="radicado", radicado_id=rid),  # set_estado
@@ -333,7 +341,10 @@ async def test_radicar_un_borrador_sin_aprobar_es_409(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()
     mock_conn.fetchval.return_value = True  # permiso concedido: no es lo que se prueba
-    mock_conn.fetchrow.side_effect = [_borrador_row(id=bid, doc_type="S", estado="borrador")]
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _borrador_row(id=bid, doc_type="S", estado="borrador"),
+    ]
 
     resp = await client.post(
         f"/api/v1/borradores/{bid}/radicar",
@@ -342,8 +353,9 @@ async def test_radicar_un_borrador_sin_aprobar_es_409(client_with_conn) -> None:
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "borrador_sin_aprobar"
-    # Nada de la secuencia de radicación llegó a ejecutarse.
-    assert mock_conn.fetchrow.await_count == 1
+    # Nada de la secuencia de radicación llegó a ejecutarse: solo la resolución
+    # del clearance y la lectura del borrador.
+    assert mock_conn.fetchrow.await_count == 2
 
 
 # ── E23 Inc.1: vocabulario, validación y combinación ────────────────────────
@@ -551,3 +563,276 @@ async def test_combinar_una_plantilla_inexistente_da_404(client_with_conn) -> No
         f"/api/v1/plantillas/{uuid.uuid4()}/combinar", json={}, headers=TENANT_HEADERS
     )
     assert resp.status_code == 404
+
+
+# ── E23 Inc.3: el documento entra al archivo ────────────────────────────────
+
+
+def _radicar_side_effects(bid, rid, radicado, *, cuerpo, combinacion=None):
+    """Secuencia de `fetchrow` de una radicación desde borrador."""
+    return [
+        _CLEARANCE_ROW,
+        _borrador_row(
+            id=bid, doc_type="S", estado="aprobado", cuerpo=cuerpo, combinacion=combinacion
+        ),
+        {"code": "DEMO"},
+        radicado,
+        _borrador_row(id=bid, doc_type="S", estado="radicado", radicado_id=rid),
+    ]
+
+
+@pytest.fixture
+def render_falso(monkeypatch):
+    """Sustituye las dos llamadas a storage-service y REGISTRA el orden.
+
+    Registrar el orden es el punto: lo que hay que probar de este incremento no
+    es que se genere un PDF —eso lo prueba storage-service contra veraPDF real—
+    sino que nada irreversible ocurra antes de que el documento exista.
+    """
+    from app.services import borrador_service as svc
+
+    registro = {"renders": [], "subidas": 0, "fallo": None}
+
+    async def _render(*, tenant_slug, cuerpo_html, pagina, perfil=None):
+        registro["renders"].append({"html": cuerpo_html, "pagina": pagina})
+        if registro["fallo"] is not None:
+            raise registro["fallo"]
+        return SimpleNamespace(
+            contenido=b"%PDF-1.7 fake", formato="PDF/A-2B", herramienta="weasyprint"
+        )
+
+    async def _upload(*, tenant_slug, filename, mime_type, data):
+        registro["subidas"] += 1
+        return SimpleNamespace(file_id=uuid.uuid4(), sha256="a" * 64, file_size=len(data))
+
+    monkeypatch.setattr(svc, "render_documento", _render)
+    monkeypatch.setattr(svc, "upload_artefacto", _upload)
+    return registro
+
+
+@pytest.mark.asyncio
+async def test_un_fallo_de_render_no_consume_numero(client_with_conn, render_falso) -> None:
+    """El criterio de hecho del incremento.
+
+    Un número de radicado es inmutable por ley: no se devuelve. Un hueco en la
+    secuencia es permanente y hay que explicárselo a un auditor. Por eso el
+    render va ANTES de pedir el número, y por eso este test mira la secuencia,
+    no el código de estado.
+    """
+    from app.clients.storage_client import RenderNoDisponibleError
+
+    client, mock_conn = client_with_conn
+    bid, rid = uuid.uuid4(), uuid.uuid4()
+    radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
+    render_falso["fallo"] = RenderNoDisponibleError("sin motor")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = _radicar_side_effects(
+        bid, rid, radicado, cuerpo="<p>Cuerpo</p>"
+    )
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "render_no_disponible"
+    # Y esto es lo que importa: la secuencia NO se tocó. `next_sequence` usa
+    # fetchval; que no se llamara al `get_tenant_code` (3.er fetchrow) prueba
+    # que la creación del radicado ni empezó.
+    assert mock_conn.fetchrow.await_count == 2
+    assert render_falso["subidas"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sin_marcadores_diferidos_se_renderiza_una_sola_vez(
+    client_with_conn, render_falso
+) -> None:
+    # Renderizar dos veces cuando el cuerpo no lleva `*RAD_S*` sería trabajo
+    # tirado, y el segundo render ocurriría YA con el número consumido: menos
+    # pasos irreversibles es menos superficie de fallo.
+    client, mock_conn = client_with_conn
+    bid, rid = uuid.uuid4(), uuid.uuid4()
+    radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = _radicar_side_effects(
+        bid, rid, radicado, cuerpo="<p>Sin numero propio</p>"
+    )
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 201
+    assert len(render_falso["renders"]) == 1
+    assert render_falso["subidas"] == 1
+
+
+@pytest.mark.asyncio
+async def test_con_RAD_S_hay_segunda_pasada_con_el_numero(
+    client_with_conn, render_falso
+) -> None:
+    """El precio de que el documento lleve su propio número impreso.
+
+    El número no existe hasta que se consume, y se consume al final; así que
+    `*RAD_S*` obliga a renderizar otra vez. La primera pasada lo deja INTACTO
+    —si lo vaciara, la segunda no tendría qué sustituir—.
+    """
+    client, mock_conn = client_with_conn
+    bid, rid = uuid.uuid4(), uuid.uuid4()
+    radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = _radicar_side_effects(
+        bid, rid, radicado, cuerpo="<p>Radicado *RAD_S* del *F_RAD_S*</p>"
+    )
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 201
+    assert len(render_falso["renders"]) == 2
+    primero, segundo = render_falso["renders"]
+    assert "*RAD_S*" in primero["html"], "la 1.a pasada debe DEJAR el diferido intacto"
+    assert "2024-DEMO-S-000001" in segundo["html"]
+    assert segundo["pagina"]["radicado"] == "2024-DEMO-S-000001"
+
+
+@pytest.mark.asyncio
+async def test_el_documento_se_anexa_como_principal(client_with_conn, render_falso) -> None:
+    # `es_principal` distingue el documento que ES la comunicación de los
+    # adjuntos que la acompañan: el índice electrónico y el envío postal lo
+    # necesitan para saber qué pieza despachar.
+    client, mock_conn = client_with_conn
+    bid, rid = uuid.uuid4(), uuid.uuid4()
+    radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = _radicar_side_effects(
+        bid, rid, radicado, cuerpo="<p>Cuerpo</p>"
+    )
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 201
+    sentencias = [c.args[0] for c in mock_conn.execute.await_args_list]
+    anexo = [q for q in sentencias if "INSERT INTO anexos" in q]
+    assert anexo, "el documento producido no se anexó"
+    assert "documento_principal" in anexo[0]
+    congelado = [q for q in sentencias if "combinacion=$5::jsonb" in q]
+    assert congelado, "el contexto de combinación no se congeló"
+
+
+@pytest.mark.asyncio
+async def test_el_contexto_congelado_manda_sobre_el_actual(
+    client_with_conn, render_falso
+) -> None:
+    """Mismo principio que la dirección de un envío: el dato pertenece al ACTO.
+
+    Si el borrador ya trae contexto congelado, se usa ESE y no se vuelve a
+    resolver contra las fuentes vivas. Sin esta regla, cambiar mañana el nombre
+    de la entidad reescribiría la explicación de un documento ya producido.
+    """
+    client, mock_conn = client_with_conn
+    bid, rid = uuid.uuid4(), uuid.uuid4()
+    radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = _radicar_side_effects(
+        bid,
+        rid,
+        radicado,
+        cuerpo="<p>Para *NOM_P* de *NOM_E*</p>",
+        combinacion=json.dumps({"NOM_P": "Ana Ruiz", "NOM_E": "Nombre de entonces"}),
+    )
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 201
+    html = render_falso["renders"][0]["html"]
+    assert "Ana Ruiz" in html
+    assert "Nombre de entonces" in html
+
+
+@pytest.mark.asyncio
+async def test_previsualizar_devuelve_el_pdf_y_declara_los_faltantes(
+    client_with_conn, render_falso
+) -> None:
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _borrador_row(
+            id=bid,
+            cuerpo="<p>Para *NOM_P*, tel *TEL_P*</p>",
+            combinacion=json.dumps({"NOM_P": "Ana Ruiz"}),
+        ),
+    ]
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/previsualizar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF")
+    # Sin esta cabecera la pantalla enseñaría un documento con huecos y nadie
+    # sabría que son huecos.
+    assert resp.headers["X-Faltantes"] == "TEL_P"
+
+
+@pytest.mark.asyncio
+async def test_previsualizar_no_persiste_nada(client_with_conn, render_falso) -> None:
+    # Es lo que permite ver ANTES de gastar el número: si escribiera, dejaría de
+    # ser una previsualización.
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(id=bid, cuerpo="<p>x</p>")]
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/previsualizar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert mock_conn.execute.await_count == 0
+    assert render_falso["subidas"] == 0
+
+
+@pytest.mark.asyncio
+async def test_previsualizar_deja_RAD_S_a_la_vista(client_with_conn, render_falso) -> None:
+    """Sustituirlo por un número de ejemplo enseñaría un documento que no es el
+    que se va a producir — justo lo contrario de para qué sirve previsualizar."""
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _borrador_row(id=bid, cuerpo="<p>Radicado *RAD_S*</p>"),
+    ]
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/previsualizar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    assert "*RAD_S*" in render_falso["renders"][0]["html"]
+    assert "X-Faltantes" in resp.headers
+    assert "RAD_S" not in resp.headers["X-Faltantes"].split(",")
+
+
+@pytest.mark.asyncio
+async def test_previsualizar_sin_renderizador_es_503(client_with_conn, render_falso) -> None:
+    from app.clients.storage_client import RenderNoDisponibleError
+
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    render_falso["fallo"] = RenderNoDisponibleError("sin motor")
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(id=bid, cuerpo="<p>x</p>")]
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/previsualizar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "render_no_disponible"

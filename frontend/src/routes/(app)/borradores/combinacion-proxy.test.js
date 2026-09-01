@@ -120,3 +120,53 @@ describe("la pantalla de borradores no combina en el navegador", () => {
     expect(PAGINA).toContain("SIN resolver");
   });
 });
+
+describe("previsualización del documento (E23, RF-PRO-05)", () => {
+  it("la pantalla ofrece ver el documento antes de gastar el número", () => {
+    expect(PAGINA).toContain("/previsualizar");
+    expect(PAGINA).toContain("Previsualizar documento");
+  });
+
+  it("enseña los campos que el documento saca vacíos", () => {
+    // Sin esta lista la persona ve un hueco sin saber que es un hueco, y el
+    // oficio sale así al ciudadano.
+    expect(PAGINA).toContain("X-Faltantes");
+    expect(PAGINA).toContain("previsualizacionFaltantes");
+  });
+
+  it("el proxy reexpone X-Faltantes en vez de tragárselo", async () => {
+    const { POST: previsualizarPOST } = await import("./api/[id]/previsualizar/+server.js");
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "X-Faltantes": "TEL_R,DIR_P" }),
+      arrayBuffer: async () => new TextEncoder().encode("%PDF-1.7").buffer,
+    }));
+    try {
+      const res = await previsualizarPOST({
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+        params: { id: "b1" },
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("application/pdf");
+      expect(res.headers.get("X-Faltantes")).toBe("TEL_R,DIR_P");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("sin sesión no llama al gateway", async () => {
+    const { POST: previsualizarPOST } = await import("./api/[id]/previsualizar/+server.js");
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("fetch no debió invocarse");
+    });
+    try {
+      const res = await previsualizarPOST({ locals: {}, params: { id: "b1" } });
+      expect(res.status).toBe(401);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

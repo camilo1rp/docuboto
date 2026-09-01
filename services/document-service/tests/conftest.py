@@ -53,6 +53,9 @@ class FakeTenantClient:
         self.dependencias: dict[int, dict] = {}
         self.dep_calls: list[tuple[str, int]] = []
         self.dep_raise_error: bool = False
+        # Parámetros de la entidad (`sgd_param_admin`), que alimentan el
+        # membrete del documento de salida (E23, RF-PRO-04).
+        self.params: dict[str, str] = {}
 
     async def calculate_due_date(
         self, *, tenant_slug: str, from_date: date, business_days: int
@@ -61,6 +64,9 @@ class FakeTenantClient:
         if self.raise_error:
             raise TenantServiceError("simulated tenant-service failure")
         return self.due_date
+
+    async def get_params(self, *, tenant_slug: str) -> dict:
+        return self.params
 
     async def get_dependencia(self, *, tenant_slug: str, codigo: int) -> dict | None:
         self.dep_calls.append((tenant_slug, codigo))

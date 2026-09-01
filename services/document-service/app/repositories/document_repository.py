@@ -621,6 +621,31 @@ class DocumentRepository:
             )
         )
 
+    async def crear_anexo_producido(
+        self,
+        radicado_id: uuid.UUID,
+        *,
+        file_id: uuid.UUID,
+        filename: str,
+        file_size: int | None,
+    ) -> None:
+        """Anexo del documento que el SISTEMA produjo (E23, RF-PRO-03).
+
+        `es_principal = true` y `tipo_anexo = 'documento_principal'`: es la
+        comunicación misma, no un adjunto que la acompaña. El índice electrónico
+        y el envío postal necesitan poder distinguirlo para saber qué pieza
+        despachar.
+        """
+        await self._conn.execute(
+            "INSERT INTO anexos (radicado_id, file_id, filename, file_size, "
+            "mime_type, tipo_anexo, es_principal) "
+            "VALUES ($1, $2, $3, $4, 'application/pdf', 'documento_principal', true)",
+            radicado_id,
+            file_id,
+            filename,
+            file_size,
+        )
+
     async def list_anexos_for_document(
         self, document_id: uuid.UUID, max_clearance: int
     ) -> list[Anexo] | None:

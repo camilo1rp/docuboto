@@ -16,10 +16,10 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import settings
-from app.core.constants import CADENA_OBJETO_TIPOS
+from app.core.constants import CADENA_OBJETO_TIPOS, CADENA_PAYLOAD_OBLIGATORIO
 
 
 class SolicitudCreate(BaseModel):
@@ -34,7 +34,11 @@ class SolicitudCreate(BaseModel):
     # así que aceptar variantes ("Radicado") equivaldría a dejar que el llamante
     # elija si le aplican el control.
     # SHA-256 hex digest of the document content (64 lowercase hex chars).
-    # When present, each signing turn produces a firma bound to this digest.
+    # Each signing turn produces a firma bound to this digest.
+    #
+    # **Obligatorio para `borrador` y `documento`** (E23, RF-PRO-09): sin él la
+    # firma recaería sobre la cadena `"tipo:id"` —el nombre del objeto— y
+    # sobreviviría al cambio del texto. Ver `CADENA_PAYLOAD_OBLIGATORIO`.
     payload_sha256: str | None = None
     # At least one signer required; the requester's identity comes from JWT (RF-FIR-11).
     firmantes: list[uuid.UUID] = Field(..., min_length=1)
@@ -56,6 +60,22 @@ class SolicitudCreate(BaseModel):
         if v is not None and not re.fullmatch(r"[0-9a-f]{64}", v):
             raise ValueError("payload_sha256 must be exactly 64 lowercase hex characters")
         return v
+
+    @model_validator(mode="after")
+    def exigir_huella_donde_hay_documento(self) -> SolicitudCreate:
+        """Un objeto con fichero propio se firma por su CONTENIDO, no por su nombre.
+
+        La validación va en el modelo y no en el servicio a propósito: así el
+        rechazo es un `422` del contrato, visible en el OpenAPI, y ningún camino
+        de creación —presente o futuro— puede saltárselo por olvido.
+        """
+        if self.objeto_tipo in CADENA_PAYLOAD_OBLIGATORIO and not self.payload_sha256:
+            raise ValueError(
+                f"payload_sha256 es obligatorio para objeto_tipo={self.objeto_tipo!r}: "
+                "sin la huella, la firma recaeria sobre el nombre del objeto y "
+                "seguiria siendo valida despues de que el texto cambie"
+            )
+        return self
 
 
 def _validate_otp_digits(v: str) -> str:

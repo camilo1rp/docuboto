@@ -49,6 +49,12 @@ FORWARDED_REQUEST_HEADERS = {
 #     routers y la consume el frontend en ~115 puntos. Sin reenviarla, el
 #     total colapsa al tamaño de la página: TODA pantalla paginada cree que
 #     hay una sola página y las siguientes quedan inalcanzables.
+#   - `X-Faltantes` es la garantía equivalente de la previsualización de un
+#     documento de salida (E23, RF-PRO-01): dice qué campos del vocabulario
+#     quedaron SIN valor. El cuerpo de esa respuesta es el PDF, así que no hay
+#     otro sitio donde ponerla. Sin reenviarla, la pantalla enseña un documento
+#     con huecos y nadie sabe que son huecos — el oficio saldría con un espacio
+#     en blanco donde debía ir un dato, y el fallo llegaría al ciudadano.
 #   - `X-Truncated` es la garantía de honestidad de las tres DLQ (ADR-021):
 #     el backend avisa con ella de que hay eventos pendientes más antiguos que
 #     NO caben en la respuesta. Sin reenviarla, el banner que lo advierte es
@@ -66,6 +72,7 @@ FORWARDED_RESPONSE_HEADERS = {
     "location",
     "x-total-count",
     "x-truncated",
+    "x-faltantes",
     # La respuesta se reenvía **cruda** (`aiter_raw`), sin descomprimir: es lo que
     # permite no materializarla en memoria. Por eso `content-encoding` tiene que
     # viajar — sin ella el cliente recibiría bytes gzip anunciados como texto plano

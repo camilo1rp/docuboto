@@ -18,10 +18,13 @@ de tenant (X-Tenant-Slug), igual que lo inyecta el api-gateway.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class TenantServiceError(Exception):
@@ -70,3 +73,32 @@ class TenantServiceClient:
             return result
         except (httpx.HTTPError, ValueError) as exc:
             raise TenantServiceError(f"No se pudo resolver la dependencia {codigo}: {exc}") from exc
+
+    async def get_params(self, *, tenant_slug: str) -> dict[str, Any]:
+        """Parámetros de la entidad (`sgd_param_admin`, E14).
+
+        Alimentan el membrete y el pie del documento de salida (E23, RF-PRO-04).
+        **Devuelve `{}` ante cualquier fallo y NO lanza**, a diferencia de sus
+        dos hermanas de arriba, y la asimetría es deliberada: de un plazo mal
+        calculado depende un vencimiento legal, pero de un membrete depende que
+        el oficio salga con el nombre de la entidad o sin él. Tumbar la
+        radicación —que consume un número inmutable— porque el nombre de la
+        entidad no se pudo leer sería un remedio peor que la falta.
+
+        Lo que sí ocurre es que el campo aparece en `faltantes` y la interfaz lo
+        enseña: el hueco se declara, no se esconde.
+        """
+        try:
+            resp = await self._http.get(
+                "/api/v1/config/params", headers={"X-Tenant-Slug": tenant_slug}
+            )
+            resp.raise_for_status()
+            datos = resp.json()
+            return datos if isinstance(datos, dict) else {}
+        except (httpx.HTTPError, ValueError):
+            logger.warning(
+                "No se pudieron leer los parametros de la entidad %r: el documento "
+                "se produce sin membrete y el campo se reporta como faltante.",
+                tenant_slug,
+            )
+            return {}

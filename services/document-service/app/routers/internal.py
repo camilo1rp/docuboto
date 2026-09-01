@@ -22,6 +22,8 @@ el expediente vería. Único llamador legítimo: `archive-service`
 (`X-Tenant-Slug`, `get_tenant_conn`).
 """
 
+import uuid
+
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -128,3 +130,56 @@ async def purgar_radicados(
             },
         ) from exc
     return PurgaInternalResponse(**recuento)
+
+
+@router.get(
+    "/borradores/{borrador_id}/huella",
+    summary=(
+        "Huella VIGENTE del cuerpo y del documento de un borrador "
+        "(acto de sistema; lo consulta signature-service antes de resolver un turno)"
+    ),
+)
+async def huella_borrador(
+    borrador_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """Lo que hace falta para saber si una firma sigue recayendo sobre el texto.
+
+    **Es la mitad síncrona de la invalidación** (E23, RF-PRO-11). La otra mitad
+    es un evento, y un consumidor de eventos puede retrasarse: si la garantía
+    viviera solo ahí, existiría una ventana en la que alguien resuelve su turno
+    sobre el texto viejo. Por eso signature-service relee esto ANTES de firmar y
+    compara con el `payload_sha256` de la solicitud.
+
+    Sin gate de clearance, y hay que decir por qué: el llamante es
+    signature-service actuando como sistema, sellado con `X-Internal-Token`, y
+    la respuesta es **content-free** — dos huellas, una versión y un booleano.
+    No revela asunto, remitente ni cuerpo, así que no hay nada que recortar por
+    nivel de seguridad. Un gate aquí obligaría a propagar la identidad del
+    firmante a una consulta que no la necesita.
+
+    `404` si el borrador no existe: signature-service lo traduce a
+    «no se puede comprobar» y **deniega**, no a «no ha cambiado».
+    """
+    row = await conn.fetchrow(
+        "SELECT version, cuerpo_sha256, documento_sha256, "
+        "       documento_file_id IS NOT NULL AS tiene_documento "
+        "FROM borrador WHERE id = $1",
+        borrador_id,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "borrador_not_found",
+                "detail": f"Borrador {borrador_id} no encontrado",
+                "status": 404,
+            },
+        )
+    return {
+        "borrador_id": str(borrador_id),
+        "version": row["version"],
+        "cuerpo_sha256": row["cuerpo_sha256"],
+        "documento_sha256": row["documento_sha256"],
+        "tiene_documento": row["tiene_documento"],
+    }

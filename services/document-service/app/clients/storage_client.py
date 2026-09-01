@@ -26,9 +26,12 @@ MinIO directamente — mismo aislamiento que archive-service/signature-service.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -243,6 +246,93 @@ async def upload_artefacto(
             f"'{filename}': {resp.text[:300]!r}"
         )
     return ArchivoSubido.desde_respuesta(resp.json())
+
+
+# ── Generación del documento de salida (E23, RF-PRO-03) ────────────────────
+
+
+class RenderNoDisponibleError(Exception):
+    """Este despliegue no tiene renderizador (503 de storage-service).
+
+    Se separa de `RenderFallidoError` a propósito: son dos problemas con dos
+    soluciones distintas —configurar `RENDER_ENGINE` frente a mirar por qué un
+    cuerpo concreto no se deja pintar— y colapsarlos manda a depurar el sitio
+    equivocado. Es la misma separación que hace el propio `MigracionOutcome`.
+    """
+
+
+class RenderFallidoError(Exception):
+    """El renderizador existe y no pudo producir ESTE documento (422)."""
+
+
+@dataclass(frozen=True)
+class DocumentoRendido:
+    """El documento generado, ya decodificado.
+
+    Lleva `formato` y `herramienta` porque los dos van a la traza de
+    procedencia: dentro de diez años, saber con qué se produjo un documento de
+    archivo es parte de poder sostener que es el que se produjo.
+    """
+
+    contenido: bytes
+    formato: str
+    herramienta: str
+
+
+async def render_documento(
+    *,
+    tenant_slug: str,
+    cuerpo_html: str,
+    pagina: dict[str, Any],
+    perfil: str | None = None,
+) -> DocumentoRendido:
+    """Pide a storage-service el PDF/A del cuerpo ya combinado.
+
+    Sellado con `X-Internal-Token`: la autorización del funcionario ya ocurrió
+    aquí, antes de componer el cuerpo. Un `503` se traduce a
+    `RenderNoDisponibleError` y NO se degrada a «radicar sin documento» — un
+    oficio que la entidad cree haber producido y no existe es peor que un error
+    visible, porque el fallo aparece cuando el ciudadano reclama.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    cuerpo: dict[str, Any] = {"cuerpo_html": cuerpo_html, "pagina": pagina}
+    if perfil:
+        cuerpo["perfil"] = perfil
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=120.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/render/documento-internal", headers=headers, json=cuerpo
+            )
+        except httpx.RequestError as exc:
+            raise RenderNoDisponibleError(f"storage-service inalcanzable: {exc}") from exc
+
+    if resp.status_code == 503:
+        raise RenderNoDisponibleError(
+            "storage-service no tiene renderizador de documentos configurado"
+        )
+    if resp.status_code != 200:
+        raise RenderFallidoError(
+            f"storage-service → HTTP {resp.status_code} al generar el documento: "
+            f"{resp.text[:300]!r}"
+        )
+
+    datos = resp.json()
+    try:
+        contenido = base64.b64decode(datos["contenido_b64"], validate=True)
+    except (KeyError, ValueError, binascii.Error) as exc:
+        raise RenderFallidoError(
+            f"respuesta de render ilegible: {sorted(datos) if isinstance(datos, dict) else type(datos)}"
+        ) from exc
+    if not contenido:
+        raise RenderFallidoError("el renderizador devolvio un documento vacio")
+    return DocumentoRendido(
+        contenido=contenido,
+        formato=str(datos.get("formato", "")),
+        herramienta=str(datos.get("herramienta", "")),
+    )
 
 
 class StoragePurgaError(Exception):

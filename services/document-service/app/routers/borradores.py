@@ -15,8 +15,9 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from app.clients.storage_client import RenderFallidoError, RenderNoDisponibleError
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.combinacion import vocabulario
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
@@ -188,6 +189,55 @@ async def editar_borrador(
 
 
 @router.post(
+    "/api/v1/borradores/{borrador_id}/previsualizar",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+    responses={200: {"content": {"application/pdf": {}}}},
+)
+async def previsualizar_borrador(
+    borrador_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    tenant_client: Any = Depends(get_tenant_client),
+) -> Response:
+    """El documento tal como saldrá, sin persistir nada (E23, RF-PRO-05).
+
+    Los campos que no resolvieron viajan en `X-Faltantes` en vez de en el
+    cuerpo: el cuerpo es el PDF. Sin esa cabecera, la pantalla enseñaría un
+    documento con huecos y nadie sabría que son huecos.
+    """
+    clearance = await resolve_caller_clearance(conn, _user(request))
+    servicio = BorradorService(conn, _slug(request), tenant_client)
+    try:
+        pdf, faltantes = await servicio.previsualizar(borrador_id, max_clearance=clearance)
+    except RenderNoDisponibleError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "render_no_disponible",
+                "detail": f"No hay renderizador de documentos configurado. ({exc})",
+                "status": 503,
+            },
+        ) from exc
+    except RenderFallidoError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "render_fallido",
+                "detail": f"No se pudo generar la previsualizacion: {exc}",
+                "status": 422,
+            },
+        ) from exc
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "X-Faltantes": ",".join(faltantes),
+            "Content-Disposition": 'inline; filename="previsualizacion.pdf"',
+        },
+    )
+
+
+@router.post(
     "/api/v1/borradores/{borrador_id}/aprobar",
     response_model=BorradorResponse,
     dependencies=[Depends(require_permission("PERM_RADI"))],
@@ -220,4 +270,34 @@ async def radicar_borrador(
             status_code=400,
             detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
         )
-    return await BorradorService(conn).radicar(borrador_id, doc_service, _user(request))
+    user_id = _user(request)
+    clearance = await resolve_caller_clearance(conn, user_id)
+    servicio = BorradorService(conn, _slug(request), tenant_client)
+    try:
+        return await servicio.radicar(
+            borrador_id, doc_service, user_id, max_clearance=clearance
+        )
+    except RenderNoDisponibleError as exc:
+        # 503 y NO se radica. Degradar a «radicar sin documento» dejaría a la
+        # entidad creyendo que produjo un oficio que no existe, y el fallo
+        # aparecería cuando el ciudadano reclame.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "render_no_disponible",
+                "detail": (
+                    "No hay renderizador de documentos configurado: no se radica "
+                    f"para no consumir un numero sin documento. ({exc})"
+                ),
+                "status": 503,
+            },
+        ) from exc
+    except RenderFallidoError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "render_fallido",
+                "detail": f"No se pudo generar el documento de salida: {exc}",
+                "status": 422,
+            },
+        ) from exc

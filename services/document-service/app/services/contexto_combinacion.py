@@ -92,6 +92,12 @@ class ContextoCombinacion:
         if radicado_padre_id is not None:
             ctx.update(await self._del_padre(radicado_padre_id, max_clearance))
 
+        params = {}
+        if tenant_client is not None:
+            params = await tenant_client.get_params(tenant_slug=self._slug)
+        for marcador, clave in PARAMS_ENTIDAD.items():
+            ctx[marcador] = params.get(clave)
+
         if funcionario:
             ctx["FUNCIONARIO"] = funcionario.get("nombre")
             ctx["CARGO"] = funcionario.get("cargo")

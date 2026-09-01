@@ -39,13 +39,16 @@ from lxml import etree
 
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
-from app.core.constants import CADENA_NIVEL_AUTORITATIVO
+from app.core.constants import CADENA_NIVEL_AUTORITATIVO, CADENA_PAYLOAD_OBLIGATORIO
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
+    BorradorDesaparecidoError,
+    HuellaNoVerificableError,
     OtpEmailDeliveryError,
     SignerEmailError,
     SigningKeyStatusUnavailableError,
     TotpVerifyUnavailableError,
+    get_huella_borrador,
     get_signer_email,
     get_signing_key_status_remote,
     send_otp_email,
@@ -592,6 +595,83 @@ class CadenaFirmaService:
             expira_at=expira_at,
         )
 
+    async def _gate_documento_vigente(self, sol) -> None:
+        """Lo que se firma tiene que seguir siendo lo que se aprobó (RF-PRO-11).
+
+        **Es la defensa que manda**, y por una razón concreta: la invalidación
+        por evento es *at-least-once* y puede retrasarse. Si la garantía viviera
+        solo en la cola, existiría una ventana —corta, pero real— en la que un
+        firmante resuelve su turno sobre un texto ya modificado. Aquí se relee
+        la huella VIGENTE y se compara; el evento se queda como limpieza de
+        bandejas, no como garantía.
+
+        Solo aplica a los tipos con fichero propio (`borrador`, `documento`), que
+        son los que tienen `payload_sha256` obligatorio. Para los demás no hay
+        huella contra la que comparar y este gate no dice nada.
+
+        No poder comprobar **deniega**: si un fallo de red se interpretara como
+        «no ha cambiado», bastaría con que document-service estuviera caído para
+        poder firmar sobre un texto modificado — el momento en que menos se
+        querría poder.
+        """
+        if sol["objeto_tipo"] not in CADENA_PAYLOAD_OBLIGATORIO:
+            return
+        esperado = sol["payload_sha256"]
+        if not esperado:
+            # No debería ocurrir: el schema lo exige al crear. Si aparece, es una
+            # cadena anterior a E23 y NO se firma a ciegas.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "cadena_sin_huella",
+                    "detail": (
+                        "Esta cadena no fija la huella del documento: se creo antes "
+                        "de que fuera obligatoria y no se puede comprobar que el "
+                        "texto siga siendo el aprobado. Abra una cadena nueva."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        try:
+            vigente = await get_huella_borrador(str(sol["objeto_id"]), self._tenant_slug)
+        except BorradorDesaparecidoError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "documento_desaparecido",
+                    "detail": f"El objeto de esta cadena ya no existe: {exc}",
+                    "status": 409,
+                },
+            ) from exc
+        except HuellaNoVerificableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "verificacion_documento_no_disponible",
+                    "detail": (
+                        "No se pudo comprobar que el documento siga siendo el "
+                        f"aprobado, y sin esa comprobacion no se firma: {exc}"
+                    ),
+                    "status": 503,
+                },
+            ) from exc
+
+        if vigente.get("documento_sha256") != esperado:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "documento_modificado",
+                    "detail": (
+                        "El documento cambio despues de abrirse este circuito "
+                        f"(version actual {vigente.get('version')}). Las aprobaciones "
+                        "anteriores no se arrastran: hay que abrir el circuito de "
+                        "nuevo y volver a recogerlas."
+                    ),
+                    "status": 409,
+                },
+            )
+
     async def firmar(
         self,
         solicitud_id: uuid.UUID,
@@ -657,6 +737,8 @@ class CadenaFirmaService:
                     "status": 409,
                 },
             )
+
+        await self._gate_documento_vigente(sol)
 
         if not await self._repo.es_firmante(solicitud_id, actor):
             raise HTTPException(

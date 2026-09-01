@@ -79,6 +79,23 @@ XADES_ELIGIBLE_OBJETO_TIPOS = frozenset(
 # `/sign-xml` e `/internal/sign-indice`, con su propio allow-set arriba.
 CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador", "documento"})
 
+# Tipos para los que `payload_sha256` es OBLIGATORIO (E23, RF-PRO-09).
+#
+# Sin él, la firma se producía sobre la cadena `"{objeto_tipo}:{objeto_id}"` —el
+# NOMBRE del objeto, no su contenido—, y una firma sobre el nombre **sigue
+# siendo válida después de que el texto cambie**. Es justo el fraude que el
+# circuito de aprobación existe para impedir: varios dan visto bueno, alguien
+# edita, y la firma anterior sigue en pie.
+#
+# `borrador` y `documento` son los dos que producen un fichero con huella
+# propia, así que para ellos no hay excusa. `radicado` y `expediente` se quedan
+# fuera **a propósito y con reserva**: hoy se firman como conjunto (el índice
+# electrónico del expediente tiene su propio camino sellado, `/sign-xml`), y
+# exigirles una huella aquí rompería cadenas en curso sin cerrar ninguna fuga
+# que no cierre ya su propio circuito. Cuando cada uno tenga un artefacto
+# canónico que firmar, entra aquí.
+CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador", "documento"})
+
 # Tipos de cadena cuyo nivel de seguridad tiene FUENTE AUTORITATIVA en el schema
 # del tenant: `objeto_tipo -> (tabla, columnas de identidad)`. Para estos, el
 # `nivel_seguridad` del body se IGNORA y, si el objeto no resuelve, la creación

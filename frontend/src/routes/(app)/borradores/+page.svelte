@@ -360,6 +360,46 @@
   $: canEdit = editingBorrador?.estado === "borrador";
   $: canAprobar = editingBorrador?.estado === "borrador";
   $: canRadicar = editingBorrador?.estado === "aprobado";
+
+  // ── Previsualización (E23, RF-PRO-05) ──────────────────────────────────────
+  let previsualizando = false;
+  let previsualizacionFaltantes = [];
+  let previsualizacionError = "";
+
+  /**
+   * Abre el documento tal como saldrá, sin persistir nada.
+   *
+   * El PDF se abre en una pestaña por `blob:`; los campos que no resolvieron
+   * llegan en `X-Faltantes` y se enseñan aparte. Sin esa lista, la persona
+   * vería un hueco en el documento sin saber que es un hueco — y el oficio
+   * saldría así al ciudadano.
+   */
+  async function previsualizar() {
+    if (!editingBorrador) return;
+    previsualizando = true;
+    previsualizacionError = "";
+    previsualizacionFaltantes = [];
+    try {
+      const res = await fetch(`/borradores/api/${editingBorrador.id}/previsualizar`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(mensajeError(data, "No se pudo generar la previsualización."));
+      }
+      const crudo = res.headers.get("X-Faltantes") ?? "";
+      previsualizacionFaltantes = crudo ? crudo.split(",").filter(Boolean) : [];
+      const url = URL.createObjectURL(await res.blob());
+      window.open(url, "_blank", "noopener");
+      // Se revoca con retraso: revocarlo en el acto deja la pestaña recién
+      // abierta sin nada que mostrar.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      previsualizacionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      previsualizando = false;
+    }
+  }
   $: hasPerm = $permissions.includes("PERM_RADI");
 
   // Opciones de plantillas para el select
@@ -605,6 +645,31 @@
     <div class="borrador-form__flow-actions">
       <hr class="borrador-form__divider" aria-hidden="true" />
       <p class="borrador-form__flow-title">Acciones de flujo</p>
+
+      <!-- Previsualizar: ver ANTES de gastar el número (E23, RF-PRO-05) -->
+      {#if editingBorrador}
+        <Button
+          variant="secondary"
+          icon="fas fa-file-pdf"
+          loading={previsualizando}
+          on:click={previsualizar}
+        >
+          Previsualizar documento
+        </Button>
+        {#if previsualizacionFaltantes.length > 0}
+          <p class="borrador-form__aviso" role="status">
+            El documento sale sin {previsualizacionFaltantes.length === 1
+              ? "el campo"
+              : "los campos"}:
+            <strong>{previsualizacionFaltantes.join(", ")}</strong>.
+          </p>
+        {/if}
+        {#if previsualizacionError}
+          <p class="borrador-form__aviso borrador-form__aviso--error" role="alert">
+            {previsualizacionError}
+          </p>
+        {/if}
+      {/if}
 
       <!-- Aprobar -->
       {#if canAprobar}

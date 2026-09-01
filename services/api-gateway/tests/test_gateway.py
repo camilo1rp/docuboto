@@ -893,6 +893,7 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
                 "content-type": "application/json",
                 "X-Total-Count": "437",
                 "X-Truncated": "true",
+                "X-Faltantes": "TEL_R,DIR_P",
             },
         )
     )
@@ -910,6 +911,12 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
     assert response.headers.get("x-truncated") == "true", (
         "El gateway debe reenviar X-Truncated; sin ella el aviso de truncamiento "
         "de las DLQ (ADR-021) es codigo muerto y la pantalla miente por omision"
+    )
+    assert response.headers.get("x-faltantes") == "TEL_R,DIR_P", (
+        "El gateway debe reenviar X-Faltantes; el cuerpo de la previsualizacion "
+        "es el PDF, asi que no hay otro sitio donde decir que campos quedaron "
+        "sin valor (E23, RF-PRO-01) -- sin ella el oficio sale con un hueco y "
+        "el fallo llega al ciudadano"
     )
 
 

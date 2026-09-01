@@ -78,6 +78,10 @@ class BorradorResponse(BaseModel):
     creado_por: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+    #: El PDF/A producido, cuando ya se generó (E23, RF-PRO-03).
+    documento_file_id: uuid.UUID | None = None
+    documento_sha256: str | None = None
+    documento_formato: str | None = None
     #: Marcadores del vocabulario que quedaron SIN valor al combinar (RF-PRO-01).
     #: No se persiste: se calcula en el acto de combinar y viaja para que la
     #: interfaz los enseñe. Un oficio que sale con un campo vacío en silencio es
