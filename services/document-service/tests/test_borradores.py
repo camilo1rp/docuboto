@@ -90,6 +90,7 @@ async def test_crear_borrador_desde_plantilla(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [
         _CLEARANCE_ROW,
         _plantilla_row(id=pid, cuerpo="Cuerpo de plantilla"),
+        {"codigo": None},  # dependencia productora del llamante (E23)
         _borrador_row(plantilla_id=pid, cuerpo="Cuerpo de plantilla"),
     ]
     resp = await client.post(
@@ -449,6 +450,7 @@ async def test_crear_desde_plantilla_combina_y_reporta_faltantes(client_with_con
             "departamento": "Bogotá D.C.",
             "numero_documento": "1000",
         },
+        {"codigo": None},  # dependencia productora del llamante (E23)
         _borrador_row(plantilla_id=pid, cuerpo="Señor Ana Ruiz, sobre 2026-DEMO-E-000001. Tel: "),
     ]
     mock_conn.fetch.return_value = []
@@ -485,6 +487,7 @@ async def test_el_padre_por_encima_del_clearance_no_aporta_contexto(client_with_
         {"is_root": False, "max_level": 1},
         _plantilla_row(id=pid, cuerpo="Sobre *RAD_E*: *ASUNTO*"),
         None,  # el WHERE nivel_seguridad <= 1 no devuelve fila
+        {"codigo": None},  # dependencia productora del llamante (E23)
         _borrador_row(plantilla_id=pid, cuerpo="Sobre : "),
     ]
     resp = await client.post(
@@ -546,6 +549,7 @@ async def test_combinar_plantilla_devuelve_texto_resuelto(client_with_conn) -> N
             "departamento": None,
             "numero_documento": None,
         },
+        {"codigo": None},  # dependencia productora del llamante (E23)
     ]
     mock_conn.fetch.return_value = []
     resp = await client.post(
@@ -938,3 +942,99 @@ async def test_poner_global_borra_las_dependencias(client_with_conn) -> None:
         if "INSERT INTO plantilla_dependencia" in c.args[0]
     ]
     assert not insertados, "ninguna dependencia debe insertarse si es global"
+
+
+# --- Dependencia productora y funcionario (E23, revisión por navegador) -------
+
+
+@pytest.mark.asyncio
+async def test_la_dependencia_del_pie_es_la_que_produce_no_la_de_destino(
+    client_with_deps,
+) -> None:
+    """`*DEPENDENCIA*` es la del funcionario que firma, no la del destinatario.
+
+    Los tres marcadores del grupo Dependencia se resolvían desde
+    `dest_dept_code` —la dependencia DESTINO del documento—, cuando el
+    vocabulario los declara «dependencia productora». En una Salida eso es la
+    unidad que recibe, así que el pie de firma del oficio salía con el nombre
+    de otra dependencia. Un hueco se ve al releer; un valor equivocado no: el
+    oficio se firma y se envía con él.
+    """
+    client, mock_conn, fake = client_with_deps
+    pid = uuid.uuid4()
+    fake.dependencias = {
+        902: {"codigo": 902, "nombre": "Oficina Jurídica", "sigla": "JUR"},
+        999: {"codigo": 999, "nombre": "Ventanilla Única", "sigla": "VUR"},
+    }
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _plantilla_row(id=pid, cuerpo="Firma: *DEPENDENCIA* (*DEP_SIGLA*)"),
+        {"codigo": 902},  # dependencia principal del llamante
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/plantillas/{pid}/combinar",
+        json={"dest_dept_code": 999},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["cuerpo"] == "Firma: Oficina Jurídica (JUR)"
+    # Y la de destino no se consulta siquiera: si apareciera aquí, el valor
+    # correcto de arriba podría estar saliendo por casualidad del orden.
+    assert [codigo for _, codigo in fake.dep_calls] == [902]
+
+
+@pytest.mark.asyncio
+async def test_sin_dependencia_establecida_el_campo_se_declara_faltante(
+    client_with_deps,
+) -> None:
+    """Anti-vacuidad: no se inventa una dependencia cuando no se sabe cuál es."""
+    client, mock_conn, fake = client_with_deps
+    pid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _plantilla_row(id=pid, cuerpo="Firma: *DEPENDENCIA*"),
+        {"codigo": None},  # el usuario no tiene dependencia activa ni principal
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/plantillas/{pid}/combinar",
+        json={"dest_dept_code": 999},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["cuerpo"] == "Firma: "
+    assert resp.json()["faltantes"] == ["DEPENDENCIA"]
+    assert fake.dep_calls == []
+
+
+@pytest.mark.asyncio
+async def test_el_login_del_funcionario_llega_a_la_combinacion(client_with_conn) -> None:
+    """`funcionario` era un parámetro que NINGÚN router pasaba.
+
+    Estaba escrito en el servicio, con su test de unidad, y ningún camino
+    —previsualizar, crear ni radicar— lo rellenaba: `*LOGIN*` salía vacío
+    siempre. La cabecera la inyecta el gateway desde el token ya validado.
+    """
+    client, mock_conn = client_with_conn
+    pid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _plantilla_row(id=pid, cuerpo="Proyectó: *LOGIN*"),
+        {"codigo": None},
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        f"/api/v1/plantillas/{pid}/combinar",
+        json={},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER, "X-Username": "JEFE"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["cuerpo"] == "Proyectó: JEFE"
+    assert resp.json()["faltantes"] == []

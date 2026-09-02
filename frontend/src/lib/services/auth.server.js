@@ -164,6 +164,43 @@ export function decodeJwt(token) {
   }
 }
 
+/**
+ * Margen de seguridad para dar por agotado un access_token ANTES de que el
+ * emisor lo rechace. Cubre el desfase entre el reloj de Keycloak —que fija
+ * `exp` en el instante en que acuña el token— y el del navegador, que empieza a
+ * contar el `maxAge` de la cookie cuando la recibe: la cookie sobrevive
+ * siempre al token por, al menos, el viaje de ida y vuelta.
+ */
+export const MARGEN_EXPIRACION_S = 15;
+
+/**
+ * ¿Queda vida útil en este access_token?
+ *
+ * Toda la sesión del frontend descansaba en una premisa que nadie comprobaba:
+ * que la cookie desaparece exactamente cuando el token caduca. No es cierto —la
+ * cookie se fija con un `maxAge` relativo al reloj del navegador y `exp` es
+ * absoluto, del reloj de Keycloak— y la consecuencia se ve desde la primera
+ * pantalla: con la cookie presente y el token muerto, la guarda daba la sesión
+ * por buena, el refresco no se intentaba (solo corre si la cookie FALTA) y
+ * cada pantalla se dibujaba entera con «El token es inválido o expiró» dentro.
+ * El funcionario tenía un refresh_token vivo en el tarro y nadie lo usaba.
+ *
+ * Un token que no se puede decodificar se declara agotado: no se puede afirmar
+ * que sirve, y la respuesta segura es renovarlo o mandar a login.
+ *
+ * @param {string|undefined} token
+ * @param {number} [margenS] - segundos de antelación con que se da por agotado
+ * @returns {boolean}
+ */
+export function tokenVigente(token, margenS = MARGEN_EXPIRACION_S) {
+  if (!token) return false;
+  const claims = decodeJwt(token);
+  // Sin `exp` no hay forma de saberlo. Keycloak siempre lo emite; si un día
+  // faltara, tratarlo como vigente devolvería el defecto que esto corrige.
+  if (!claims || typeof claims.exp !== "number") return false;
+  return claims.exp * 1000 > Date.now() + margenS * 1000;
+}
+
 // ---------------------------------------------------------------------------
 // Extracción de claims relevantes para la UI
 // ---------------------------------------------------------------------------

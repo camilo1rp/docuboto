@@ -132,3 +132,4 @@ class TestFecha:
         # contenedor: con `locale` sin instalar saldría en inglés.
         assert fecha_en_letras(date(2026, 9, 1)) == "1 de septiembre de 2026"
         assert fecha_en_letras(date(2026, 12, 31)) == "31 de diciembre de 2026"
+

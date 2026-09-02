@@ -625,6 +625,7 @@
     <RichEditor
       id="borrador-cuerpo"
       label="Contenido del documento"
+      protegerMarcadores
       bind:value={fCuerpo}
       placeholder="Redacte el cuerpo del documento aquí…"
       disabled={!hasPerm || (editingBorrador !== null && !canEdit)}

@@ -37,9 +37,12 @@ vi.mock("$lib/services/auth.server.js", () => ({
   clearSessionCookies: vi.fn(),
   decodeJwt: () => ({ sub: "u-1" }),
   extractSessionUser: () => ({ ...claims, roles: [], permissions: [] }),
+  tokenVigente: vi.fn(() => true),
 }));
 
 const { load } = await import("./+layout.server.js");
+const { tokenVigente, refreshAccessToken, setSessionCookies } =
+  await import("$lib/services/auth.server.js");
 
 /** Respuestas por URL; lo no listado responde 200 con `[]`. */
 function fetchQue(mapa) {
@@ -54,8 +57,12 @@ function fetchQue(mapa) {
 const json = (cuerpo) =>
   new Response(JSON.stringify(cuerpo), { headers: { "content-type": "application/json" } });
 
-const evento = (fetch) => ({
-  cookies: { get: (n) => (n === "access_token" ? "tok" : undefined) },
+const evento = (fetch, cookies) => ({
+  cookies: cookies ?? {
+    get: (n) => (n === "access_token" ? "tok" : undefined),
+    set: vi.fn(),
+    delete: vi.fn(),
+  },
   url: new URL("http://app.local/bandeja"),
   fetch,
 });
@@ -109,5 +116,48 @@ describe("(app)/+layout.server.js — permisos", () => {
     );
 
     expect(resultado.user.sub).toBe("u-1");
+  });
+});
+
+describe("(app)/+layout.server.js — vigencia de la sesión", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Cookie presente: es el caso que la guarda anterior daba por bueno. */
+  const conAmbasCookies = () => ({
+    get: (n) => (n === "access_token" ? "tok-caducado" : "refresh-vivo"),
+    set: vi.fn(),
+    delete: vi.fn(),
+  });
+
+  it("con el access_token CADUCADO pero la cookie presente, renueva", async () => {
+    // El defecto que esto fija: la guarda miraba `!accessToken`, así que una
+    // cookie viva con un token muerto dentro saltaba el refresco entero y la
+    // pantalla se dibujaba con un 401 dentro.
+    tokenVigente.mockReturnValueOnce(false).mockReturnValue(true);
+    refreshAccessToken.mockResolvedValueOnce({ access_token: "tok-nuevo" });
+
+    await load(evento(fetchQue({}), conAmbasCookies()));
+
+    expect(refreshAccessToken).toHaveBeenCalledWith("refresh-vivo");
+    expect(setSessionCookies).toHaveBeenCalled();
+  });
+
+  it("si la renovación falla, manda a login en vez de servir la pantalla", async () => {
+    tokenVigente.mockReturnValue(false);
+    refreshAccessToken.mockResolvedValueOnce(null);
+
+    await expect(load(evento(fetchQue({}), conAmbasCookies()))).rejects.toMatchObject({
+      status: 302,
+    });
+  });
+
+  it("un token VIGENTE no dispara ninguna renovación", async () => {
+    // Anti-vacuidad: si el guardián renovara siempre, los dos casos de arriba
+    // pasarían igual y no probarían nada.
+    tokenVigente.mockReturnValue(true);
+
+    await load(evento(fetchQue({})));
+
+    expect(refreshAccessToken).not.toHaveBeenCalled();
   });
 });

@@ -32,6 +32,7 @@ import {
   refreshAccessToken,
   setSessionCookies,
   decodeJwt,
+  tokenVigente,
   extractSessionUser,
 } from "$lib/services/auth.server.js";
 
@@ -59,9 +60,14 @@ export async function handle({ event, resolve }) {
   let accessToken = cookies.get(COOKIE_ACCESS_TOKEN);
   const refreshToken = cookies.get(COOKIE_REFRESH_TOKEN);
 
-  // Refresh transparente: si no hay access_token pero hay refresh_token,
-  // intentar renovar antes de pasar a la ruta
-  if (!accessToken && refreshToken) {
+  // Refresh transparente: si el access_token falta O YA CADUCÓ, y hay
+  // refresh_token, renovar antes de pasar a la ruta.
+  //
+  // La condición era solo `!accessToken`. Una cookie presente con un token
+  // muerto dentro —que ocurre siempre, porque la cookie sobrevive al token—
+  // saltaba el refresco, poblaba `locals.user` con claims caducados y dejaba
+  // que cada llamada al gateway devolviera 401 con la pantalla ya dibujada.
+  if (!tokenVigente(accessToken) && refreshToken) {
     const tokenSet = await refreshAccessToken(refreshToken).catch(() => null);
     if (tokenSet?.access_token) {
       setSessionCookies(cookies, tokenSet);
@@ -69,8 +75,11 @@ export async function handle({ event, resolve }) {
     }
   }
 
-  // Poblar locals para evitar re-parseo en cada layout/page
-  if (accessToken) {
+  // Poblar locals para evitar re-parseo en cada layout/page. Un token caducado
+  // que no se pudo renovar NO puebla `locals`: la guarda del layout lo verá
+  // ausente y mandará a login, en vez de servir una sesión que el backend ya no
+  // reconoce.
+  if (tokenVigente(accessToken)) {
     event.locals.accessToken = accessToken;
     const claims = decodeJwt(accessToken);
     if (claims) {

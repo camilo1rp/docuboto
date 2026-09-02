@@ -191,6 +191,7 @@ class BorradorService:
         payload: CombinarRequest,
         *,
         max_clearance: int,
+        productor_id: uuid.UUID | None = None,
         funcionario: dict[str, Any] | None = None,
     ) -> CombinarResponse:
         """Devuelve el cuerpo de la plantilla YA combinado, con sus faltantes.
@@ -206,7 +207,7 @@ class BorradorService:
         contexto = await ContextoCombinacion(self._conn, self._slug).construir(
             radicado_padre_id=payload.radicado_padre_id,
             max_clearance=max_clearance,
-            dependencia_codigo=payload.dest_dept_code,
+            productor_id=productor_id,
             funcionario=funcionario,
             tenant_client=self._tenant_client,
         )
@@ -246,7 +247,7 @@ class BorradorService:
             contexto = await ContextoCombinacion(self._conn, self._slug).construir(
                 radicado_padre_id=payload.radicado_padre_id,
                 max_clearance=max_clearance,
-                dependencia_codigo=payload.dest_dept_code,
+                productor_id=creado_por,
                 funcionario=funcionario,
                 tenant_client=self._tenant_client,
             )
@@ -327,7 +328,7 @@ class BorradorService:
             contexto = await ContextoCombinacion(self._conn, self._slug).construir(
                 radicado_padre_id=row["radicado_padre_id"],
                 max_clearance=max_clearance,
-                dependencia_codigo=None,
+                productor_id=row["creado_por"],
                 tenant_client=self._tenant_client,
             )
         resultado = combinar(row["cuerpo"] or "", contexto)
@@ -403,7 +404,7 @@ class BorradorService:
             contexto = await ContextoCombinacion(self._conn, self._slug).construir(
                 radicado_padre_id=row["radicado_padre_id"],
                 max_clearance=max_clearance,
-                dependencia_codigo=None,
+                productor_id=row["creado_por"],
                 tenant_client=self._tenant_client,
             )
 

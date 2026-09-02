@@ -41,6 +41,7 @@ import {
   clearSessionCookies,
   decodeJwt,
   extractSessionUser,
+  tokenVigente,
 } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 
@@ -52,8 +53,13 @@ export async function load({ cookies, url, fetch }) {
   let accessToken = cookies.get(COOKIE_ACCESS_TOKEN);
   const refreshToken = cookies.get(COOKIE_REFRESH_TOKEN);
 
-  // --- Sin access_token: intentar refresh ---
-  if (!accessToken && refreshToken) {
+  // --- Sin access_token VIGENTE: intentar refresh ---
+  // Presencia no es vigencia. La cookie se fija con un `maxAge` que corre
+  // contra el reloj del navegador y el `exp` del token contra el de Keycloak:
+  // la cookie sobrevive al token, siempre. Comprobar solo la presencia dejaba
+  // pasar sesiones muertas hasta el gateway, que respondía 401 a todo con la
+  // pantalla ya montada.
+  if (!tokenVigente(accessToken) && refreshToken) {
     const tokenSet = await refreshAccessToken(refreshToken);
     if (tokenSet) {
       setSessionCookies(cookies, tokenSet);
@@ -62,7 +68,7 @@ export async function load({ cookies, url, fetch }) {
   }
 
   // --- Sin tokens válidos: redirect al login ---
-  if (!accessToken) {
+  if (!tokenVigente(accessToken)) {
     clearSessionCookies(cookies);
     const next = encodeURIComponent(url.pathname + url.search);
     redirect(302, `/login?next=${next}`);

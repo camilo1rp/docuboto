@@ -372,7 +372,8 @@ async def get_signing_key_revocation_status_remote(fingerprint: str, tenant_slug
     degradar según ``settings.verify_personal_revocation_require``.
     """
     headers = {
-        "X-Internal-Token": settings.signing_key_internal_token,
+        # El de DOCUMENT-service, no el de auth: cada servicio valida el suyo.
+        "X-Internal-Token": settings.document_internal_token,
         "X-Tenant-Slug": tenant_slug,
     }
     try:

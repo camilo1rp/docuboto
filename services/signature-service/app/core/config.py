@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # resolver un turno de firma (E23, RF-PRO-11). Misma puerta interna que
     # auth-service: `X-Internal-Token`, sin reenviar la identidad del firmante.
     document_service_url: str = "http://document-service:8003"
+    # Secreto de la puerta interna de DOCUMENT-SERVICE, que NO es el de
+    # auth-service. Tenerlos separados no es purismo: cada servicio valida el
+    # suyo, y reutilizar el de auth aquí hacía que la consulta de la huella
+    # respondiera 401 SIEMPRE — el guardián de documento vigente degradaba a
+    # 503 y el circuito de aprobación quedaba inoperativo entero, fail-closed
+    # pero inservible. No lo cazó ningún test porque todos sustituyen la
+    # llamada; apareció al abrir el navegador.
+    # Mismo valor que document-service.INTERNAL_SERVICE_TOKEN (D-02).
+    document_internal_token: str = ""
 
     # Redis URL for stream consumption (document.radicado.reclassified events)
     # y publicación (firma.indice.firmado — app/core/events.py, Inc.1).

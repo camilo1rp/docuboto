@@ -716,7 +716,7 @@ class CadenaFirmaService:
                     "error": "verificacion_documento_no_disponible",
                     "detail": (
                         "No se pudo comprobar que el documento siga siendo el "
-                        f"aprobado, y sin esa comprobacion no se firma: {exc}"
+                        f"aprobado, y sin esa comprobación no se firma: {exc}"
                     ),
                     "status": 503,
                 },
@@ -728,8 +728,8 @@ class CadenaFirmaService:
                 detail={
                     "error": "documento_modificado",
                     "detail": (
-                        "El documento cambio despues de abrirse este circuito "
-                        f"(version actual {vigente.get('version')}). Las aprobaciones "
+                        "El documento cambió después de abrirse este circuito "
+                        f"(versión actual {vigente.get('version')}). Las aprobaciones "
                         "anteriores no se arrastran: hay que abrir el circuito de "
                         "nuevo y volver a recogerlas."
                     ),

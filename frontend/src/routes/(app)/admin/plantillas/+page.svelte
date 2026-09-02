@@ -60,6 +60,33 @@
   let fNombreError = "";
   let fCuerpoError = "";
 
+  // ── Vocabulario de marcadores (E23, RF-PRO-01) ────────────────────────────
+  // El vocabulario es CERRADO: lo que no está en esta lista no se resuelve al
+  // combinar, se imprime literal en el oficio. Publicarlo aquí es lo que
+  // convierte «adivinar el nombre del campo» en «elegirlo».
+  /** @type {any[]} */
+  const campos = data.campos ?? [];
+
+  /** Marcadores agrupados, en el orden en que los declara el backend. */
+  const camposPorGrupo = campos.reduce((acc, c) => {
+    (acc[c.grupo ?? "Otros"] ??= []).push(c);
+    return acc;
+  }, /** @type {Record<string, any[]>} */ ({}));
+
+  let camposAbiertos = false;
+
+  /**
+   * Inserta el marcador al final del cuerpo.
+   *
+   * No se intenta insertar en la posición del cursor: RichEditor no expone ese
+   * punto de entrada y fingirlo —insertar «donde estaba» leyendo el DOM— es la
+   * clase de atajo que coloca el texto en el sitio equivocado sin avisar.
+   * Añadir al final es predecible, y el funcionario lo mueve.
+   */
+  function insertarCampo(marcador) {
+    fCuerpo = `${fCuerpo ?? ""}${marcador}`;
+  }
+
   // ── Alcance por dependencia (E23 Inc.5, RF-PRO-06) ────────────────────────
   /** @type {any[]} */
   let dependencias = data.dependencias ?? [];
@@ -366,6 +393,7 @@
       <RichEditor
         id="plantilla-cuerpo"
         label="Contenido de la plantilla"
+        protegerMarcadores
         bind:value={fCuerpo}
         placeholder="Escriba el contenido reutilizable de la plantilla…"
         ariaDescribedby={fCuerpoError ? "plantilla-cuerpo-error" : undefined}
@@ -379,6 +407,57 @@
       >
         {fCuerpoError || ""}
       </p>
+
+      {#if campos.length > 0}
+        <div class="plantilla-campos">
+          <button
+            type="button"
+            class="plantilla-campos__toggle"
+            aria-expanded={camposAbiertos}
+            aria-controls="plantilla-campos-lista"
+            on:click={() => (camposAbiertos = !camposAbiertos)}
+          >
+            <i class="fas fa-{camposAbiertos ? 'chevron-down' : 'chevron-right'}" aria-hidden="true"
+            ></i>
+            Campos que se pueden insertar ({campos.length})
+          </button>
+
+          {#if camposAbiertos}
+            <div id="plantilla-campos-lista" class="plantilla-campos__lista">
+              <p class="plantilla-campos__nota">
+                Solo estos campos se reemplazan al crear el borrador. Cualquier otro texto entre
+                asteriscos se imprime tal cual en el documento.
+              </p>
+              {#each Object.entries(camposPorGrupo) as [grupo, delGrupo] (grupo)}
+                <div class="plantilla-campos__grupo">
+                  <h4 class="plantilla-campos__grupo-titulo">{grupo}</h4>
+                  <ul class="plantilla-campos__items">
+                    {#each delGrupo as campo (campo.marcador)}
+                      <li>
+                        <button
+                          type="button"
+                          class="plantilla-campos__item"
+                          title={campo.descripcion}
+                          on:click={() => insertarCampo(campo.marcador)}
+                        >
+                          <code>{campo.marcador}</code>
+                          <span class="plantilla-campos__desc">{campo.descripcion}</span>
+                          {#if campo.diferido}
+                            <!-- Se resuelve al radicar, no al combinar: si no se
+                                 dice, el borrador parece incompleto y se
+                                 «arregla» escribiendo el número a mano. -->
+                            <span class="plantilla-campos__tag">al radicar</span>
+                          {/if}
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </form>
 
@@ -697,5 +776,97 @@
     font-size: var(--op-font-sm);
     color: var(--op-text-secondary);
     white-space: nowrap;
+  }
+
+  // ── Vocabulario de marcadores (E23, RF-PRO-01) ─────────────────────────────
+  .plantilla-campos {
+    margin-top: var(--op-space-3);
+    border-top: 1px solid var(--op-border);
+    padding-top: var(--op-space-2);
+
+    &__toggle {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      background: none;
+      border: none;
+      padding: var(--op-space-1) 0;
+      cursor: pointer;
+      color: var(--op-primary);
+      font-size: var(--op-font-sm);
+      font-weight: var(--op-weight-medium);
+    }
+
+    &__lista {
+      margin-top: var(--op-space-2);
+      max-height: 16rem;
+      overflow-y: auto;
+    }
+
+    &__nota {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+      line-height: var(--op-line-height);
+      margin-bottom: var(--op-space-3);
+    }
+
+    &__grupo-titulo {
+      font-size: var(--op-font-xs);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-text-secondary);
+      text-transform: uppercase;
+      margin-bottom: var(--op-space-1);
+    }
+
+    &__items {
+      list-style: none;
+      margin: 0 0 var(--op-space-3);
+      padding: 0;
+    }
+
+    &__item {
+      // Prosa y etiqueta en una fila: el texto envuelve dentro de su columna en
+      // vez de trocearse por palabras, que es lo que hace un flex sin `min-width`.
+      display: flex;
+      align-items: baseline;
+      gap: var(--op-space-2);
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      border-radius: var(--op-radius);
+      padding: var(--op-space-1) var(--op-space-2);
+      cursor: pointer;
+      color: var(--op-text);
+
+      &:hover,
+      &:focus-visible {
+        background: var(--op-primary-light);
+      }
+
+      code {
+        font-family: var(--op-font-family-mono);
+        font-size: var(--op-font-xs);
+        white-space: nowrap;
+        color: var(--op-primary);
+      }
+    }
+
+    &__desc {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+      line-height: var(--op-line-height);
+    }
+
+    &__tag {
+      flex: 0 0 auto;
+      font-size: var(--op-font-xs);
+      background: var(--op-warning-bg);
+      color: var(--op-warning-fg);
+      border-radius: var(--op-radius);
+      padding: 0 var(--op-space-1);
+    }
   }
 </style>

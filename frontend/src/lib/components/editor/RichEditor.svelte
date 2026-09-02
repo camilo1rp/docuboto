@@ -35,6 +35,7 @@
 -->
 <script>
   import { onMount, onDestroy } from "svelte";
+  import { crearProteccionDeMarcadores } from "./marcadores.js";
 
   export let id = "rich-editor";
   export let label = "";
@@ -43,6 +44,14 @@
   export let disabled = false;
   export let hint = "";
   export let ariaDescribedby = undefined;
+  /**
+   * Protege la sintaxis `*CAMPO*` de la cursiva de Markdown (E23, RF-PRO-01).
+   *
+   * Se activa SOLO en los editores cuyo texto alimenta la combinación
+   * —plantillas y borradores—: en el resto, `*texto*` debe seguir poniendo el
+   * texto en cursiva, que es lo que espera quien redacta prosa.
+   */
+  export let protegerMarcadores = false;
 
   /** @type {HTMLDivElement} */
   let host;
@@ -101,6 +110,7 @@
         element: host,
         editable: !disabled,
         extensions: [
+          ...(protegerMarcadores ? [crearProteccionDeMarcadores(core)] : []),
           StarterKit.configure({
             // El esquema de enlaces seguro lo refuerza el saneo server-side; aquí
             // limitamos a protocolos razonables y no abrir al hacer clic en edición.

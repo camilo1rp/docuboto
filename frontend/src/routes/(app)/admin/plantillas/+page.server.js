@@ -34,6 +34,7 @@ export async function load({ cookies, parent, fetch }) {
 
   let plantillas = [];
   let dependencias = [];
+  let campos = [];
   let loadError = null;
 
   const headers = { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant };
@@ -59,6 +60,22 @@ export async function load({ cookies, parent, fetch }) {
     loadError = "No se pudo conectar al servidor de plantillas.";
   }
 
+  // Vocabulario de marcadores (RF-PRO-01). El backend lo publica desde el día
+  // uno y esta pantalla —la única donde se ESCRIBEN plantillas— no lo pedía:
+  // el funcionario tenía que adivinar que el nombre del destinatario se escribe
+  // `*NOM_R*`, y un marcador mal escrito no se resuelve, se imprime tal cual en
+  // el oficio que recibe el ciudadano. Degrada a lista vacía: sin vocabulario
+  // se puede seguir redactando, solo que sin la ayuda.
+  try {
+    const res = await fetch(`${API_V1}/plantillas/campos`, { headers });
+    if (res.ok) {
+      const raw = await res.json().catch(() => ({}));
+      if (Array.isArray(raw?.campos)) campos = raw.campos;
+    }
+  } catch {
+    campos = [];
+  }
+
   // Organigrama para el selector de asignación. Degrada a lista vacía: sin él
   // no se puede restringir una plantilla, pero sí crearla y editarla — un fallo
   // del catálogo no debe dejar la pantalla inservible.
@@ -75,6 +92,7 @@ export async function load({ cookies, parent, fetch }) {
   return {
     plantillas,
     dependencias,
+    campos,
     loadError,
     // token y tenant NO se exponen: las llamadas cliente usan /admin/plantillas/api/* (D-05)
   };

@@ -327,7 +327,7 @@ async def render_documento(
             f"respuesta de render ilegible: {sorted(datos) if isinstance(datos, dict) else type(datos)}"
         ) from exc
     if not contenido:
-        raise RenderFallidoError("el renderizador devolvio un documento vacio")
+        raise RenderFallidoError("el renderizador devolvió un documento vacío")
     return DocumentoRendido(
         contenido=contenido,
         formato=str(datos.get("formato", "")),

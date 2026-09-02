@@ -266,6 +266,12 @@ services:
       # POST /api/v1/notifications/send (ahora sellado servicio-a-servicio).
       # Dev-only — NUNCA este valor en producción.
       - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
+      # E23 Inc.4: consulta de la huella VIGENTE de un borrador antes de abrir
+      # el circuito y antes de resolver cualquier turno. Mismo secreto que
+      # document-service.INTERNAL_SERVICE_TOKEN, que NO es el de auth-service
+      # — reutilizar aquel daba 401 en cada consulta y el circuito entero
+      # respondía 503 (fail-closed pero inservible). Dev-only.
+      - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
     volumes:
       # Solo lectura: signature-service nunca escribe en los sellos montados.
       # NUNCA se monta ./secrets/ca-authority (clave privada de la CA local de
@@ -582,6 +588,13 @@ services:
       # valor que STORAGE_INTERNAL_TOKEN en document/archive/signature-service.
       # Dev-only — NUNCA este valor en producción.
       - INTERNAL_SERVICE_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
+      # Generación del documento de salida (E23, RF-PRO-03). A diferencia de
+      # veraPDF y Ghostscript —que solo van en la imagen `production`—, las
+      # librerías nativas de WeasyPrint SÍ están en la imagen base, así que aquí
+      # se puede encender de verdad. Sin esto, `RENDER_ENGINE` cae a "none" y
+      # radicar un borrador responde 503: el circuito entero de producción
+      # documental queda inalcanzable en desarrollo.
+      - RENDER_ENGINE=${RENDER_ENGINE:-weasyprint}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:

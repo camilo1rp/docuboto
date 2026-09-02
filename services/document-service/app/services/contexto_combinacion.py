@@ -78,7 +78,7 @@ class ContextoCombinacion:
         *,
         radicado_padre_id: uuid.UUID | None,
         max_clearance: int,
-        dependencia_codigo: int | None = None,
+        productor_id: uuid.UUID | None = None,
         funcionario: dict[str, Any] | None = None,
         tenant_client: Any = None,
         hoy: date | None = None,
@@ -103,16 +103,49 @@ class ContextoCombinacion:
             ctx["CARGO"] = funcionario.get("cargo")
             ctx["LOGIN"] = funcionario.get("login")
 
-        if dependencia_codigo is not None and tenant_client is not None:
-            dep = await tenant_client.get_dependencia(
-                tenant_slug=self._slug, codigo=dependencia_codigo
-            )
+        # Dependencia PRODUCTORA — la de quien firma, no la de quien recibe.
+        #
+        # Estos tres marcadores se resolvían desde `dest_dept_code`, la
+        # dependencia DESTINO del documento. En una Salida eso es la unidad
+        # receptora, así que el bloque de firma del oficio salía con el nombre
+        # de la dependencia equivocada. Un campo vacío se ve; uno relleno con el
+        # valor de otro, no: el oficio se firma y se envía con él.
+        codigo = await self._dependencia_productora(productor_id)
+        if codigo is not None and tenant_client is not None:
+            dep = await tenant_client.get_dependencia(tenant_slug=self._slug, codigo=codigo)
             if dep:
                 ctx["DEPENDENCIA"] = dep.get("nombre")
                 ctx["DEP_SIGLA"] = dep.get("sigla")
                 ctx["DEP_CODIGO"] = dep.get("codigo")
 
         return ctx
+
+    async def _dependencia_productora(self, productor_id: uuid.UUID | None) -> int | None:
+        """Dependencia desde la que el funcionario produce el documento.
+
+        La activa del conmutador si la hay y, si no, su dependencia principal.
+        Devuelve `None` cuando no se puede establecer: los marcadores quedan sin
+        resolver y `combinar` los declara faltantes, que es lo correcto —
+        inventar una dependencia en el pie de un oficio es peor que dejar el
+        hueco a la vista de quien lo redacta.
+        """
+        if productor_id is None:
+            return None
+        try:
+            row = await self._conn.fetchrow(
+                "SELECT COALESCE(u.active_depe_id, urd.depe_id) AS codigo "
+                "FROM auth_users u "
+                "LEFT JOIN urd_usuaroldep urd "
+                "       ON urd.user_id = u.id AND urd.es_principal AND urd.is_active "
+                "WHERE u.id = $1",
+                productor_id,
+            )
+        except asyncpg.UndefinedTableError:
+            # Tablas de identidad del tenant ausentes (entorno no provisionado).
+            # Mismo criterio que `resolve_caller_clearance`: no se puede
+            # establecer la dependencia, así que no se pone ninguna.
+            return None
+        return int(row["codigo"]) if row and row["codigo"] is not None else None
 
     async def _del_padre(
         self, radicado_padre_id: uuid.UUID, max_clearance: int

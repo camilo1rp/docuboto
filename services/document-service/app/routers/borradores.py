@@ -63,6 +63,27 @@ def _user(request: Request) -> uuid.UUID | None:
         return None
 
 
+def _funcionario(request: Request) -> dict[str, Any] | None:
+    """Identidad del funcionario que produce, para el bloque de firma.
+
+    El parámetro `funcionario` existía en el servicio desde el primer día y
+    NINGÚN router lo pasaba: `*LOGIN*` salía vacío en todos los caminos —
+    previsualizar, crear y radicar por igual—, y como el hueco se reporta en
+    `faltantes` parecía un dato que la entidad no había configurado.
+
+    `X-Username` la inyecta el gateway a partir del token ya validado; el
+    navegador no puede ponerla (no está en `FORWARDED_REQUEST_HEADERS`).
+
+    `nombre` y `cargo` se dejan fuera a propósito: hoy no existe ningún sitio en
+    el sistema donde se guarde el nombre de pila ni el cargo de un funcionario
+    —`auth_users` solo tiene `username` y `email`—, así que `*FUNCIONARIO*` y
+    `*CARGO*` siguen declarándose faltantes en vez de rellenarse con el login,
+    que no es un nombre y quedaría impreso como tal en el pie del oficio.
+    """
+    login = request.headers.get("X-Username", "").strip()
+    return {"login": login} if login else None
+
+
 # -- plantillas --------------------------------------------------------
 
 
@@ -133,7 +154,7 @@ async def listar_plantillas(
                     "error": "forbidden",
                     "detail": (
                         "Ver todas las plantillas, incluidas las de otras "
-                        "dependencias, es una competencia de administracion."
+                        "dependencias, es una competencia de administración."
                     ),
                     "status": 403,
                 },
@@ -213,7 +234,13 @@ async def combinar_plantilla(
     clearance = await resolve_caller_clearance(conn, user_id)
     return await BorradorService(
         conn, request.headers.get("X-Tenant-Slug", ""), tenant_client
-    ).combinar_plantilla(plantilla_id, payload, max_clearance=clearance)
+    ).combinar_plantilla(
+        plantilla_id,
+        payload,
+        max_clearance=clearance,
+        productor_id=user_id,
+        funcionario=_funcionario(request),
+    )
 
 
 @router.delete(
@@ -247,7 +274,7 @@ async def crear_borrador(
     clearance = await resolve_caller_clearance(conn, user_id)
     return await BorradorService(
         conn, request.headers.get("X-Tenant-Slug", ""), tenant_client
-    ).crear(payload, user_id, max_clearance=clearance)
+    ).crear(payload, user_id, max_clearance=clearance, funcionario=_funcionario(request))
 
 
 @router.get(
@@ -322,7 +349,7 @@ async def previsualizar_borrador(
             status_code=422,
             detail={
                 "error": "render_fallido",
-                "detail": f"No se pudo generar la previsualizacion: {exc}",
+                "detail": f"No se pudo generar la previsualización: {exc}",
                 "status": 422,
             },
         ) from exc
@@ -386,7 +413,7 @@ async def radicar_borrador(
                 "error": "render_no_disponible",
                 "detail": (
                     "No hay renderizador de documentos configurado: no se radica "
-                    f"para no consumir un numero sin documento. ({exc})"
+                    f"para no consumir un número sin documento. ({exc})"
                 ),
                 "status": 503,
             },
