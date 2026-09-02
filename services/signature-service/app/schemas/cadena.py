@@ -19,7 +19,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import settings
-from app.core.constants import CADENA_OBJETO_TIPOS, CADENA_PAYLOAD_OBLIGATORIO
+from app.core.constants import (
+    CADENA_OBJETO_TIPOS,
+    CADENA_PAYLOAD_AUTORITATIVO,
+    CADENA_PAYLOAD_OBLIGATORIO,
+)
 
 
 class SolicitudCreate(BaseModel):
@@ -91,12 +95,22 @@ class SolicitudCreate(BaseModel):
         La validación va en el modelo y no en el servicio a propósito: así el
         rechazo es un `422` del contrato, visible en el OpenAPI, y ningún camino
         de creación —presente o futuro— puede saltárselo por olvido.
+
+        Se exige SOLO donde el servidor no puede resolverla por su cuenta. Para
+        los tipos autoritativos —hoy `borrador`— la huella se pide al productor y
+        la del cuerpo se ignora, así que reclamarla al llamante lo obligaba a
+        mandar un valor destinado a la basura. Y esa es la peor forma de
+        pedirla: la única manera de satisfacer al validador era inventarse una
+        huella, justo el gesto que todo esto existe para impedir. El proxy de la
+        pantalla, escrito a propósito sin dónde ponerla, se llevaba un 422 y el
+        circuito no se podía abrir desde el navegador.
         """
-        if self.objeto_tipo in CADENA_PAYLOAD_OBLIGATORIO and not self.payload_sha256:
+        exigible = CADENA_PAYLOAD_OBLIGATORIO - CADENA_PAYLOAD_AUTORITATIVO
+        if self.objeto_tipo in exigible and not self.payload_sha256:
             raise ValueError(
                 f"payload_sha256 es obligatorio para objeto_tipo={self.objeto_tipo!r}: "
-                "sin la huella, la firma recaeria sobre el nombre del objeto y "
-                "seguiria siendo valida despues de que el texto cambie"
+                "sin la huella, la firma recaería sobre el nombre del objeto y "
+                "seguiría siendo válida después de que el texto cambie"
             )
         return self
 

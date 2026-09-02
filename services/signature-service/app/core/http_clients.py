@@ -372,8 +372,11 @@ async def get_signing_key_revocation_status_remote(fingerprint: str, tenant_slug
     degradar según ``settings.verify_personal_revocation_require``.
     """
     headers = {
-        # El de DOCUMENT-service, no el de auth: cada servicio valida el suyo.
-        "X-Internal-Token": settings.document_internal_token,
+        # Habla con AUTH-service, así que va el suyo. Aquí se coló el token de
+        # document-service al corregir el de la huella: el arreglo entró en la
+        # función equivocada y rompió la comprobación de revocación, que estaba
+        # sana. Cada llamada lleva el token del servicio AL QUE VA.
+        "X-Internal-Token": settings.signing_key_internal_token,
         "X-Tenant-Slug": tenant_slug,
     }
     try:
@@ -430,7 +433,11 @@ async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
     identidad solo ampliaría la superficie.
     """
     headers = {
-        "X-Internal-Token": settings.signing_key_internal_token,
+        # El de DOCUMENT-service: es a él a quien se le pregunta. Mandar el de
+        # auth daba 403 en TODAS las consultas y, con ellas, 503 en abrir
+        # circuito, dar visto bueno y firmar: el circuito de aprobación entero
+        # quedaba inoperante — fail-closed, pero inútil.
+        "X-Internal-Token": settings.document_internal_token,
         "X-Tenant-Slug": tenant_slug,
     }
     try:

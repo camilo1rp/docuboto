@@ -44,9 +44,14 @@ COMMENT ON TABLE firma_solicitud IS
 
 COMMENT ON COLUMN firma_solicitud.payload_sha256 IS
     'SHA-256 del documento que se firma. Vincula cada turno al contenido exacto. '
-    'OBLIGATORIO para objeto_tipo borrador/documento desde E23 (RF-PRO-09): sin '
-    'huella la firma recaeria sobre el NOMBRE del objeto y sobreviviria al cambio '
-    'del texto. Los demas tipos aun admiten NULL (ver CADENA_PAYLOAD_OBLIGATORIO).';
+    'Nunca es NULL para borrador/documento desde E23 (RF-PRO-09): sin huella la '
+    'firma recaeria sobre el NOMBRE del objeto y sobreviviria al cambio del texto. '
+    'De donde sale, que no es lo mismo en los dos casos: para objeto_tipo '
+    'documento es OBLIGATORIO en el cuerpo de la peticion, porque no hay '
+    'productor a quien preguntarle; para borrador la '
+    'resuelve el SERVIDOR contra document-service y la del cuerpo se ignora '
+    '(fuente autoritativa, ver CADENA_PAYLOAD_AUTORITATIVO) — una huella que el '
+    'llamante elige no vincula a nadie. Los demas tipos aun admiten NULL.';
 
 -- ---------------------------------------------------------------------------
 

@@ -20,7 +20,7 @@ _PL = "id, nombre, tipo_documental, cuerpo, activo, created_at, es_global, cread
 _BO = (
     "id, doc_type, subject, dest_dept, cuerpo, plantilla_id, radicado_padre_id, "
     "estado, radicado_id, creado_por, created_at, updated_at, "
-    "documento_file_id, documento_sha256, documento_formato, combinacion"
+    "documento_file_id, documento_sha256, documento_formato, combinacion, faltantes"
 )
 
 
@@ -156,8 +156,8 @@ class BorradorRepository:
     async def insert_borrador(self, data: dict) -> asyncpg.Record:
         row = await self._conn.fetchrow(
             f"""INSERT INTO borrador (doc_type, subject, dest_dept, cuerpo, plantilla_id,
-                                     radicado_padre_id, creado_por)
-                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {_BO}""",
+                                     radicado_padre_id, creado_por, faltantes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {_BO}""",
             data["doc_type"],
             data["subject"],
             data.get("dest_dept"),
@@ -165,6 +165,7 @@ class BorradorRepository:
             data.get("plantilla_id"),
             data.get("radicado_padre_id"),
             data.get("creado_por"),
+            data.get("faltantes") or [],
         )
         assert row is not None
         return row

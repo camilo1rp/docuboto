@@ -1319,7 +1319,7 @@ batch status. Requires `USUA_PERM_EXPEDIENTE`.
 ### Output templates and drafts (legacy parity)
 
 - `GET/POST/DELETE /api/v1/plantillas` — reusable templates (`nombre`, `cuerpo`, `tipo_documental`).
-- `POST /api/v1/borradores` `{doc_type, subject, dest_dept?, cuerpo?, plantilla_id?}` — creates a draft (if `plantilla_id` is given and no `cuerpo`, it inherits the body from the template).
+- `POST /api/v1/borradores` `{doc_type, subject, dest_dept?, cuerpo?, plantilla_id?, radicado_padre_id?}` — creates a draft. With `plantilla_id`, the template body is **merged** server-side against the context (parent radicado, sender, producing dependencia, dates); the fields left without a value are stored on the draft and returned as `faltantes[]`. The client never supplies that list: it ends up printed on a document of record.
 - `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (edit only if not yet registered), `POST /{id}/aprobar` (draft→approved), `POST /{id}/radicar` (→ generates the real radicado and marks the draft `radicado`).
 
 ### Quick response (legacy parity)

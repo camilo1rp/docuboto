@@ -85,6 +85,17 @@
   let fRadicadoPadreId = "";
   /** Campos del vocabulario que quedaron sin valor al combinar (RF-PRO-01). */
   let combinacionFaltantes = [];
+  /**
+   * Campos que no tenían dato cuando se combinó la plantilla, tal y como los
+   * guarda el borrador (E23, RF-PRO-01).
+   *
+   * La lista se calculaba al combinar, se enseñaba una vez en el cajón de
+   * creación y se perdía. Como el cuerpo se guarda YA combinado —los huecos son
+   * cadenas vacías, no marcadores—, nada podía volver a deducirla: al reabrir el
+   * borrador no había aviso ninguno. El aviso existía justo en el instante en
+   * que el hueco todavía no importaba, y desaparecía antes de importar.
+   */
+  let faltantesGuardados = [];
   let combinacionError = "";
 
   /**
@@ -176,6 +187,7 @@
     fCuerpo = "";
     fPlantillaId = "";
     fSubjectError = "";
+    faltantesGuardados = [];
     drawerOpen = true;
   }
 
@@ -192,7 +204,9 @@
     fCuerpo = borrador.cuerpo_html ?? borrador.cuerpo ?? "";
     fPlantillaId = borrador.plantilla_id ?? "";
     fSubjectError = "";
+    faltantesGuardados = Array.isArray(borrador.faltantes) ? borrador.faltantes : [];
     drawerOpen = true;
+    cargarCircuito(borrador.id);
   }
 
   function closeDrawer() {
@@ -280,6 +294,98 @@
       notifyError("No se pudo conectar al servidor.");
     } finally {
       actionLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Circuito de aprobación y firma (E23 Inc.4, RF-PRO-10)
+  //
+  // El proxy `/borradores/api/[id]/circuito` existía y NINGUNA pantalla lo
+  // llamaba: el backend sabía componer cadenas de visto bueno y firma, y desde
+  // el navegador no había forma de crear ninguna. `/firmas` era una bandeja que
+  // firmaba lo que otro creaba, y no había otro.
+  //
+  // Lo que el circuito modela es el trámite real: varias personas dan su visto
+  // bueno sobre el mismo documento y UNA sola firma —la que produce el
+  // documento definitivo—. Si el texto cambia, las aprobaciones anteriores no
+  // se arrastran.
+  // ---------------------------------------------------------------------------
+  let modalCircuito = false;
+  /** @type {any[]} Usuarios elegibles, cargados al abrir el modal. */
+  let firmantesDisponibles = [];
+  /** @type {{firmante_id: string, rol: string}[]} Turnos EN ORDEN. */
+  let turnos = [];
+  let circuitoError = "";
+  let circuitoLoading = false;
+  /** @type {any|null} Circuito ya abierto sobre este borrador, si lo hay. */
+  let circuitoActual = null;
+
+  async function abrirModalCircuito() {
+    if (!editingBorrador) return;
+    modalCircuito = true;
+    circuitoError = "";
+    turnos = [];
+    try {
+      const res = await fetch("/borradores/api/firmantes");
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(mensajeError(data, "No se pudo cargar el listado."));
+      firmantesDisponibles = Array.isArray(data) ? data : (data?.items ?? []);
+    } catch (err) {
+      firmantesDisponibles = [];
+      circuitoError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /** Estado del circuito ya abierto, para enseñarlo en el cajón. */
+  async function cargarCircuito(borradorId) {
+    circuitoActual = null;
+    try {
+      const res = await fetch(`/borradores/api/${borradorId}/circuito`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      const lista = Array.isArray(data) ? data : (data?.items ?? []);
+      // Solo interesa el circuito vivo: uno cerrado o invalidado no gobierna
+      // nada, y enseñarlo como si mandara confundiría sobre qué falta.
+      circuitoActual = lista.find((c) => c.estado === "pendiente") ?? null;
+    } catch {
+      circuitoActual = null;
+    }
+  }
+
+  function agregarTurno() {
+    turnos = [...turnos, { firmante_id: "", rol: "visto_bueno" }];
+  }
+
+  function quitarTurno(idx) {
+    turnos = turnos.filter((_, i) => i !== idx);
+  }
+
+  $: turnosCompletos = turnos.length > 0 && turnos.every((t) => t.firmante_id);
+  $: hayFirma = turnos.some((t) => t.rol === "firma");
+  // Un mismo usuario dos veces en la cadena firmaría su propio visto bueno.
+  $: hayRepetidos =
+    new Set(turnos.map((t) => t.firmante_id).filter(Boolean)).size !==
+    turnos.filter((t) => t.firmante_id).length;
+
+  async function crearCircuito() {
+    if (!editingBorrador) return;
+    circuitoLoading = true;
+    circuitoError = "";
+    try {
+      const res = await fetch(`/borradores/api/${editingBorrador.id}/circuito`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ titulo: editingBorrador.subject, turnos }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(mensajeError(data, "No se pudo abrir el circuito."));
+      modalCircuito = false;
+      notifySuccess("Circuito abierto. Cada turno lo verá en su bandeja de firmas.");
+      await cargarCircuito(editingBorrador.id);
+    } catch (err) {
+      circuitoError = err instanceof Error ? err.message : String(err);
+    } finally {
+      circuitoLoading = false;
     }
   }
 
@@ -621,6 +727,24 @@
       on:insert={(e) => (fCuerpo = appendGeneratedHtml(fCuerpo, e.detail.html))}
     />
 
+    <!-- Aviso persistente de campos sin dato (E23, RF-PRO-01).
+         Se enseña SIEMPRE que el borrador los tenga guardados, no solo en el
+         momento de elegir la plantilla: quien abre el borrador al día siguiente
+         —o quien no es quien lo creó— vería un espacio en blanco en mitad del
+         oficio sin nada que le diga que ahí faltaba un dato.
+         Es un hecho sobre la combinación, no sobre el texto de ahora, y por eso
+         no desaparece al editar: borrarlo a la primera pulsación quitaría el
+         aviso justo cuando alguien empieza a tocar el documento sin haber
+         rellenado necesariamente los huecos. -->
+    {#if drawerMode === "edit" && faltantesGuardados.length > 0}
+      <p class="borrador-form__aviso" role="status">
+        Al combinar la plantilla no había datos para
+        {faltantesGuardados.length === 1 ? "el campo" : "los campos"}:
+        <strong>{faltantesGuardados.join(", ")}</strong>. Compruebe que el texto está completo antes
+        de radicar.
+      </p>
+    {/if}
+
     <!-- Editor de cuerpo -->
     <RichEditor
       id="borrador-cuerpo"
@@ -682,6 +806,47 @@
         >
           Aprobar borrador
         </Button>
+      {/if}
+
+      <!-- Circuito de aprobación y firma (E23 Inc.4, RF-PRO-10).
+           Va antes de Radicar porque ese es el orden del trámite: varios dan su
+           visto bueno, uno firma, y solo entonces sale el documento. -->
+      {#if canRadicar}
+        {#if circuitoActual}
+          <div class="borrador-circuito" role="status">
+            <p class="borrador-circuito__titulo">
+              Circuito abierto — turno {(circuitoActual.turno_actual ?? 0) + 1} de
+              {circuitoActual.turnos?.length ?? 0}
+            </p>
+            <ol class="borrador-circuito__turnos">
+              {#each circuitoActual.turnos ?? [] as turno, idx (turno.firmante_id + idx)}
+                <li
+                  class="borrador-circuito__turno"
+                  class:borrador-circuito__turno--hecho={turno.firmado_at}
+                  class:borrador-circuito__turno--actual={idx === circuitoActual.turno_actual}
+                >
+                  <span class="borrador-circuito__rol">
+                    {turno.rol === "firma" ? "Firma" : "Visto bueno"}
+                  </span>
+                  <span class="borrador-circuito__quien">
+                    {turno.firmante_nombre ?? turno.firmante_id}
+                  </span>
+                  {#if turno.firmado_at}
+                    <i class="fas fa-check" aria-label="cumplido"></i>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+            <p class="borrador-circuito__nota">
+              Si el texto del documento cambia, las aprobaciones recogidas dejan de valer y hay que
+              abrir el circuito de nuevo.
+            </p>
+          </div>
+        {:else}
+          <Button variant="secondary" icon="fas fa-user-check" on:click={abrirModalCircuito}>
+            Abrir circuito de firmas
+          </Button>
+        {/if}
       {/if}
 
       <!-- Radicar (solo si aprobado) -->
@@ -755,6 +920,91 @@
   </div>
   <svelte:fragment slot="footer">
     <Button on:click={() => (modalRadicadoOpen = false)}>Cerrar</Button>
+  </svelte:fragment>
+</Modal>
+
+<!-- =========================================================================
+     Modal: componer el circuito de aprobación y firma (E23 Inc.4, RF-PRO-10)
+     ========================================================================= -->
+<Modal
+  open={modalCircuito}
+  title="Circuito de firmas"
+  size="md"
+  on:close={() => (modalCircuito = false)}
+>
+  <p class="circuito-modal__intro">
+    Los turnos se cumplen <strong>en orden</strong>. Quien da visto bueno aprueba el documento;
+    quien firma produce el documento definitivo, y va el último.
+  </p>
+
+  {#if firmantesDisponibles.length === 0 && !circuitoError}
+    <p class="circuito-modal__vacio">Cargando personas…</p>
+  {/if}
+
+  {#each turnos as turno, idx (idx)}
+    <div class="circuito-modal__turno">
+      <span class="circuito-modal__orden" aria-hidden="true">{idx + 1}</span>
+
+      <label class="circuito-modal__campo">
+        <span class="circuito-modal__label">Persona</span>
+        <select bind:value={turno.firmante_id} class="circuito-modal__select">
+          <option value="">Elija una persona…</option>
+          {#each firmantesDisponibles as u (u.id ?? u.user_id)}
+            <option value={u.id ?? u.user_id}>{u.nombre ?? u.name ?? u.username}</option>
+          {/each}
+        </select>
+      </label>
+
+      <label class="circuito-modal__campo">
+        <span class="circuito-modal__label">Actúa como</span>
+        <select bind:value={turno.rol} class="circuito-modal__select">
+          <option value="visto_bueno">Visto bueno</option>
+          <option value="firma">Firma</option>
+        </select>
+      </label>
+
+      <button
+        type="button"
+        class="circuito-modal__quitar"
+        aria-label={`Quitar el turno ${idx + 1}`}
+        on:click={() => quitarTurno(idx)}
+      >
+        <i class="fas fa-times" aria-hidden="true"></i>
+      </button>
+    </div>
+  {/each}
+
+  <button type="button" class="circuito-modal__agregar" on:click={agregarTurno}>
+    <i class="fas fa-plus" aria-hidden="true"></i> Añadir turno
+  </button>
+
+  <!-- Las tres condiciones se dicen ANTES de pulsar, no como error después: el
+       backend las rechaza igual, pero enterarse por un 400 obliga a rehacer el
+       formulario entero para averiguar qué faltaba. -->
+  {#if turnos.length > 0 && !hayFirma}
+    <p class="borrador-form__aviso" role="status">
+      Falta el turno de firma: sin él no hay documento definitivo y el borrador no podría salir.
+    </p>
+  {/if}
+  {#if hayRepetidos}
+    <p class="borrador-form__aviso borrador-form__aviso--error" role="alert">
+      Una misma persona aparece dos veces: acabaría dando el visto bueno a su propia firma.
+    </p>
+  {/if}
+  {#if circuitoError}
+    <p class="borrador-form__aviso borrador-form__aviso--error" role="alert">{circuitoError}</p>
+  {/if}
+
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={() => (modalCircuito = false)}>Cancelar</Button>
+    <Button
+      icon="fas fa-user-check"
+      loading={circuitoLoading}
+      disabled={!turnosCompletos || !hayFirma || hayRepetidos}
+      on:click={crearCircuito}
+    >
+      Abrir circuito
+    </Button>
   </svelte:fragment>
 </Modal>
 
@@ -1043,6 +1293,148 @@
         color: var(--op-primary-dark);
         font-weight: var(--op-weight-bold);
       }
+    }
+  }
+
+  // ── Circuito de aprobación y firma (E23 Inc.4, RF-PRO-10) ──────────────────
+  .borrador-circuito {
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    padding: var(--op-space-3);
+    background: var(--op-surface);
+
+    &__titulo {
+      font-size: var(--op-font-sm);
+      font-weight: var(--op-weight-bold);
+      margin-bottom: var(--op-space-2);
+    }
+
+    &__turnos {
+      list-style: none;
+      margin: 0 0 var(--op-space-2);
+      padding: 0;
+      counter-reset: turno;
+    }
+
+    &__turno {
+      display: flex;
+      align-items: baseline;
+      gap: var(--op-space-2);
+      padding: var(--op-space-1) 0;
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+
+      &--hecho {
+        color: var(--op-success-fg);
+      }
+
+      &--actual {
+        color: var(--op-text);
+        font-weight: var(--op-weight-medium);
+      }
+    }
+
+    &__rol {
+      flex: 0 0 auto;
+      font-size: var(--op-font-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    &__quien {
+      // Sin `min-width: 0` el nombre se trocea por palabras dentro del flex.
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    &__nota {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+      line-height: var(--op-line-height);
+    }
+  }
+
+  .circuito-modal {
+    &__intro,
+    &__vacio {
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+      line-height: var(--op-line-height);
+      margin-bottom: var(--op-space-3);
+    }
+
+    &__turno {
+      display: flex;
+      align-items: flex-end;
+      gap: var(--op-space-2);
+      margin-bottom: var(--op-space-2);
+    }
+
+    &__orden {
+      flex: 0 0 auto;
+      width: 1.75rem;
+      height: 1.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--op-radius-full);
+      background: var(--op-primary-light);
+      color: var(--op-primary-dark);
+      font-size: var(--op-font-xs);
+      font-weight: var(--op-weight-bold);
+    }
+
+    &__campo {
+      flex: 1 1 0;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-1);
+    }
+
+    &__label {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+    }
+
+    &__select {
+      width: 100%;
+      padding: var(--op-space-2);
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      background: var(--op-bg);
+      color: var(--op-text);
+      font-family: var(--op-font-family);
+      font-size: var(--op-font-sm);
+    }
+
+    &__quitar {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--op-text-secondary);
+      padding: var(--op-space-2);
+
+      &:hover,
+      &:focus-visible {
+        color: var(--op-error-fg);
+      }
+    }
+
+    &__agregar {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      background: none;
+      border: 1px dashed var(--op-border);
+      border-radius: var(--op-radius);
+      padding: var(--op-space-2) var(--op-space-3);
+      cursor: pointer;
+      color: var(--op-primary);
+      font-family: var(--op-font-family);
+      font-size: var(--op-font-sm);
+      margin-bottom: var(--op-space-3);
     }
   }
 </style>

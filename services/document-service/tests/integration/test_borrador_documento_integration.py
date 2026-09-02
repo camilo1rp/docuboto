@@ -154,3 +154,62 @@ async def test_la_huella_del_documento_es_la_que_firmaria_una_cadena(tenant_ctx)
     fila = await repo.get_borrador(borrador["id"])
     assert fila["documento_sha256"] == "d" * 64
     assert len(fila["documento_sha256"]) == 64
+
+
+async def test_los_faltantes_sobreviven_a_la_peticion_que_los_calculo(tenant_ctx) -> None:
+    """RF-PRO-01: el aviso de campos sin dato no puede vivir un solo instante.
+
+    La lista se calculaba al combinar, viajaba en UNA respuesta y se perdía. Y
+    nada podía volver a deducirla: el cuerpo se guarda YA combinado —los huecos
+    son cadenas vacías, no marcadores—, así que recombinarlo no encuentra nada
+    que reportar. Al reabrir el borrador no había aviso ninguno.
+
+    Dicho de otro modo: el aviso existía justo en el instante en que el hueco
+    todavía no importaba, y desaparecía para siempre justo antes de importar.
+    Quien abriera el borrador al día siguiente vería un espacio en blanco en
+    mitad del oficio sin nada que le dijera que ahí faltaba un dato.
+    """
+    slug, conn = tenant_ctx
+    repo = await _preparar(conn, slug)
+
+    borrador = await repo.insert_borrador(
+        {
+            "doc_type": "S",
+            "subject": "Respuesta",
+            "dest_dept": None,
+            # El cuerpo ya combinado: donde iba *NOM_R* hay un hueco, no un marcador.
+            "cuerpo": "Señor(a) , en atención a su solicitud.",
+            "plantilla_id": None,
+            "radicado_padre_id": None,
+            "creado_por": None,
+            "faltantes": ["NOM_R", "ASUNTO"],
+        }
+    )
+
+    # Y siguen ahí en una LECTURA posterior, que es el caso que fallaba.
+    releido = await repo.get_borrador(borrador["id"])
+    assert releido is not None
+    assert list(releido["faltantes"]) == ["NOM_R", "ASUNTO"]
+
+
+async def test_un_borrador_sin_plantilla_no_arrastra_faltantes(tenant_ctx) -> None:
+    """Anti-vacuidad: la columna no puede quedarse en NULL ni inventar avisos.
+
+    Un `NOT NULL DEFAULT '{}'` es lo que permite a la vista hacer
+    `faltantes.length > 0` sin comprobar antes si existe.
+    """
+    slug, conn = tenant_ctx
+    repo = await _preparar(conn, slug)
+
+    borrador = await repo.insert_borrador(
+        {
+            "doc_type": "I",
+            "subject": "Memorando libre",
+            "dest_dept": None,
+            "cuerpo": "Texto redactado a mano",
+            "plantilla_id": None,
+            "radicado_padre_id": None,
+            "creado_por": None,
+        }
+    )
+    assert list(borrador["faltantes"]) == []

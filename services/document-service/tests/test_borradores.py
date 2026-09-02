@@ -60,6 +60,7 @@ def _borrador_row(**kw) -> dict:
         "documento_sha256": None,
         "documento_formato": None,
         "combinacion": None,
+        "faltantes": [],
     }
     base.update(kw)
     return base
@@ -1037,4 +1038,127 @@ async def test_el_login_del_funcionario_llega_a_la_combinacion(client_with_conn)
 
     assert resp.status_code == 200
     assert resp.json()["cuerpo"] == "Proyectó: JEFE"
+    assert resp.json()["faltantes"] == []
+
+
+@pytest.mark.asyncio
+async def test_la_previsualizacion_recuerda_los_huecos_de_la_combinacion(
+    client_with_conn, render_falso
+) -> None:
+    """El cuerpo guardado ya está combinado: los huecos no son marcadores.
+
+    `X-Faltantes` salía SIEMPRE vacía en la previsualización, y no por un fallo
+    de la cabecera: el cuerpo se guarda ya combinado —donde no había dato hay
+    una cadena vacía, no un `*NOM_R*`—, así que volver a combinarlo no encuentra
+    nada que reportar. El aviso existía solo en la respuesta que creó el
+    borrador y se perdía; a partir de ahí, el hueco del oficio era
+    indistinguible de un espacio escrito a propósito.
+    """
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _borrador_row(
+            id=bid,
+            cuerpo="<p>Señor(a) , tel *TEL_P*</p>",
+            combinacion=json.dumps({"NOM_P": ""}),
+            faltantes=["NOM_P", "ASUNTO"],
+        ),
+    ]
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/previsualizar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    # Los guardados primero, y los que siguen sin resolver AHORA detrás: el
+    # marcador que aún está en el texto también es un hueco.
+    assert resp.headers["X-Faltantes"] == "NOM_P,ASUNTO,TEL_P"
+
+
+@pytest.mark.asyncio
+async def test_un_borrador_sin_huecos_no_inventa_el_aviso(client_with_conn, render_falso) -> None:
+    # Anti-vacuidad: si la cabecera se llenara siempre, el test de arriba pasaría
+    # sin probar que los guardados llegan.
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _borrador_row(id=bid, cuerpo="<p>Texto completo</p>", faltantes=[]),
+    ]
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/previsualizar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Faltantes"] == ""
+
+
+@pytest.mark.asyncio
+async def test_los_huecos_se_calculan_aunque_la_pantalla_mande_el_cuerpo(
+    client_with_conn,
+) -> None:
+    """La pantalla manda el cuerpo YA combinado, y aun así hay que declarar los huecos.
+
+    La rama que combina solo corría con `cuerpo is None`. Pero la pantalla pide
+    el texto resuelto con `/plantillas/{id}/combinar` para enseñarlo en el
+    editor y lo envía tal cual: la rama no se ejecutaba nunca y la lista de
+    campos sin dato se guardaba vacía. El aviso desaparecía justo antes de
+    hacer falta.
+
+    Y no vale aceptar la lista que mande el cliente: es un dato que el cliente
+    elige y acaba impreso en un documento que da fe. El servidor rehace la misma
+    combinación y saca los faltantes de ahí.
+    """
+    client, mock_conn = client_with_conn
+    pid = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _plantilla_row(id=pid, cuerpo="Señor *NOM_R*, sobre *ASUNTO*"),
+        {"codigo": None},
+        _borrador_row(plantilla_id=pid, cuerpo="Señor Pedro Gómez, sobre nómina"),
+    ]
+    mock_conn.fetch.return_value = []
+
+    resp = await client.post(
+        "/api/v1/borradores",
+        json={
+            "doc_type": "S",
+            "subject": "Resp.",
+            "plantilla_id": str(pid),
+            # El cuerpo llega puesto y EDITADO a mano: es lo que se guarda.
+            "cuerpo": "Señor Pedro Gómez, sobre nómina",
+        },
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 201
+    assert set(resp.json()["faltantes"]) == {"NOM_R", "ASUNTO"}
+    # Lo que se INSERTA es el cuerpo del cliente, no el recombinado: la persona
+    # ya lo había rellenado a mano y pisarlo sería perder su trabajo.
+    insert = mock_conn.fetchrow.await_args_list[-1]
+    assert insert.args[4] == "Señor Pedro Gómez, sobre nómina"
+    # Y los faltantes viajan al INSERT, que es lo que los hace sobrevivir.
+    assert list(insert.args[8]) == ["NOM_R", "ASUNTO"]
+
+
+@pytest.mark.asyncio
+async def test_sin_plantilla_no_se_calculan_huecos(client_with_conn) -> None:
+    # Anti-vacuidad: un borrador redactado a mano no tiene marcadores que
+    # resolver, y no debe arrastrar avisos ni hacer lecturas de más.
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(cuerpo="Texto libre")]
+
+    resp = await client.post(
+        "/api/v1/borradores",
+        json={"doc_type": "I", "subject": "Memo", "cuerpo": "Texto libre"},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 201
     assert resp.json()["faltantes"] == []

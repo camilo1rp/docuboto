@@ -25,8 +25,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.core.constants import CADENA_OBJETO_TIPOS, CADENA_PAYLOAD_OBLIGATORIO
+from app.core.constants import (
+    CADENA_OBJETO_TIPOS,
+    CADENA_PAYLOAD_AUTORITATIVO,
+    CADENA_PAYLOAD_OBLIGATORIO,
+)
 from app.schemas.cadena import SolicitudCreate
+
+#: Tipos a los que se les exige la huella AL LLAMANTE: los que el servidor no
+#: puede resolver por su cuenta. Para los autoritativos la pide al productor.
+EXIGIBLE_AL_LLAMANTE = CADENA_PAYLOAD_OBLIGATORIO - CADENA_PAYLOAD_AUTORITATIVO
 
 HUELLA = "a" * 64
 
@@ -42,7 +50,7 @@ def _crear(**kw):
 
 
 class TestHuellaObligatoria:
-    @pytest.mark.parametrize("tipo", sorted(CADENA_PAYLOAD_OBLIGATORIO))
+    @pytest.mark.parametrize("tipo", sorted(EXIGIBLE_AL_LLAMANTE))
     def test_sin_huella_no_se_puede_crear_la_cadena(self, tipo: str) -> None:
         with pytest.raises(ValidationError) as exc:
             _crear(objeto_tipo=tipo)
@@ -51,6 +59,24 @@ class TestHuellaObligatoria:
     @pytest.mark.parametrize("tipo", sorted(CADENA_PAYLOAD_OBLIGATORIO))
     def test_con_huella_si(self, tipo: str) -> None:
         assert _crear(objeto_tipo=tipo, payload_sha256=HUELLA).payload_sha256 == HUELLA
+
+    @pytest.mark.parametrize("tipo", sorted(CADENA_PAYLOAD_AUTORITATIVO))
+    def test_al_tipo_autoritativo_no_se_le_pide_la_huella(self, tipo: str) -> None:
+        """La huella la resuelve el servidor, así que exigirla era pedir basura.
+
+        Estos tests fijaban antes lo contrario, y ese era el defecto: el
+        validador reclamaba `payload_sha256` para `borrador` mientras el
+        servicio lo IGNORA y pide la huella al productor. La única forma de
+        satisfacer al validador era inventarse un valor destinado a la papelera
+        —justo el gesto que la regla existe para impedir—, y el proxy de la
+        pantalla, escrito a propósito sin dónde ponerlo, se llevaba un 422: el
+        circuito no se podía abrir desde el navegador.
+
+        La garantía no se afloja, se muda de sitio: sigue siendo imposible
+        firmar el nombre del objeto, porque quien resuelve la huella es
+        `_resolver_huella` contra document-service, y si no puede, deniega.
+        """
+        assert _crear(objeto_tipo=tipo).payload_sha256 is None
 
     def test_una_cadena_vacia_no_cuela_como_huella(self) -> None:
         """Quién rechaza esto, exactamente.
@@ -68,9 +94,7 @@ class TestHuellaObligatoria:
         with pytest.raises(ValidationError):
             _crear(payload_sha256="")
 
-    @pytest.mark.parametrize(
-        "tipo", sorted(CADENA_OBJETO_TIPOS - CADENA_PAYLOAD_OBLIGATORIO)
-    )
+    @pytest.mark.parametrize("tipo", sorted(CADENA_OBJETO_TIPOS - CADENA_PAYLOAD_OBLIGATORIO))
     def test_los_demas_tipos_siguen_admitiendo_None(self, tipo: str) -> None:
         """Con reserva declarada, no por descuido.
 
@@ -102,6 +126,10 @@ def test_la_migracion_ya_no_documenta_el_fallback() -> None:
         / "003_firma_cadena.sql"
     ).read_text(encoding="utf-8")
     assert "Si no se provee, la firma se produce" not in sql
-    assert re.search(r"OBLIGATORIO para objeto_tipo borrador/documento", sql), (
+    assert re.search(r"documento es OBLIGATORIO", sql), (
         "el comentario tiene que decir la regla NUEVA, no solo callar la vieja"
+    )
+    assert "resuelve el SERVIDOR contra document-service" in sql, (
+        "y tiene que decir que la de `borrador` la resuelve el servidor: si solo "
+        "dijera que es obligatoria, describiría el contrato que se acaba de retirar"
     )

@@ -73,7 +73,16 @@ class _DocumentoProducido:
 
 
 def _bo(row, faltantes: list[str] | None = None) -> BorradorResponse:
-    return BorradorResponse(**dict(row), faltantes=faltantes or [])
+    """Fila → respuesta, con los faltantes que YA guarda la fila.
+
+    El argumento sigue existiendo para el camino de creación, que los acaba de
+    calcular en memoria; en todo lo demás salen de la columna. Antes se pasaba
+    `[]` por defecto en cada lectura, así que la lista se perdía en cuanto
+    terminaba la petición que la había producido.
+    """
+    datos = dict(row)
+    guardados = list(datos.pop("faltantes", None) or [])
+    return BorradorResponse(**datos, faltantes=faltantes if faltantes is not None else guardados)
 
 
 def _marcadores_desconocidos(cuerpo: str) -> HTTPException:
@@ -238,7 +247,20 @@ class BorradorService:
         cuerpo = payload.cuerpo
         faltantes: list[str] = []
 
-        if cuerpo is None and payload.plantilla_id is not None:
+        # La combinación se hace SIEMPRE que haya plantilla, aunque el cuerpo
+        # venga puesto.
+        #
+        # Antes solo corría con `cuerpo is None`, y la pantalla manda el cuerpo
+        # ya combinado —lo pide con `POST /plantillas/{id}/combinar` para
+        # enseñarlo en el editor—, así que la rama no se ejecutaba nunca y la
+        # lista de huecos se guardaba vacía. Quedarían dos salidas malas:
+        # aceptar la lista que mande el cliente (un dato que el cliente elige, y
+        # este acaba impreso en un documento que da fe) o dejar de enseñar el
+        # texto resuelto antes de guardar. La tercera es esta: el servidor
+        # rehace la MISMA combinación que ya hizo para `/combinar` y saca de ahí
+        # los faltantes, mientras que el cuerpo que se guarda sigue siendo el
+        # del cliente — que ha podido editarlo, y con razón.
+        if payload.plantilla_id is not None:
             pl = await self._repo.get_plantilla(payload.plantilla_id)
             if pl is None:
                 raise _not_found("Plantilla no encontrada")
@@ -252,7 +274,9 @@ class BorradorService:
                 tenant_client=self._tenant_client,
             )
             resultado = combinar(pl["cuerpo"], contexto)
-            cuerpo, faltantes = resultado.texto, resultado.faltantes
+            faltantes = resultado.faltantes
+            if cuerpo is None:
+                cuerpo = resultado.texto
 
         row = await self._repo.insert_borrador(
             {
@@ -263,6 +287,7 @@ class BorradorService:
                 "plantilla_id": payload.plantilla_id,
                 "radicado_padre_id": payload.radicado_padre_id,
                 "creado_por": creado_por,
+                "faltantes": faltantes,
             }
         )
         return _bo(row, faltantes)
@@ -337,7 +362,14 @@ class BorradorService:
             cuerpo_html=resultado.texto,
             pagina=self._pagina(contexto, row, numero=None),
         )
-        return rendido.contenido, resultado.faltantes
+        # A los que sigan sin resolver AHORA se suman los que ya no tenían dato
+        # cuando se combinó la plantilla. El cuerpo se guarda ya combinado, así
+        # que volver a combinarlo no encuentra ningún marcador que reportar: sin
+        # los guardados, esta lista salía siempre vacía y el hueco del oficio
+        # llegaba al ciudadano sin que nadie lo hubiera visto como hueco.
+        guardados = list(row["faltantes"] or [])
+        faltantes = guardados + [f for f in resultado.faltantes if f not in guardados]
+        return rendido.contenido, faltantes
 
     async def radicar(
         self,
