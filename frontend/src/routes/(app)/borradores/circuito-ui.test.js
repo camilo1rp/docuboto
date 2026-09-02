@@ -92,3 +92,59 @@ describe("proxy de firmantes elegibles", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("el panel lee el contrato REAL de signature-service", () => {
+  // Los nombres de campo se adivinaron en la primera versión —`turnos`,
+  // `firmado_at`, y la respuesta tratada como lista— y el panel salía
+  // «turno 1 de 0» con el circuito perfectamente creado en la base de datos.
+  // El contrato de un servicio se lee, no se supone.
+  const ESQUEMA = readFileSync("../services/signature-service/app/schemas/cadena.py", "utf-8");
+
+  /** Campos declarados en una clase Pydantic del esquema real. */
+  function camposDe(clase) {
+    const cuerpo = ESQUEMA.split(`class ${clase}(BaseModel):`)[1]?.split("\nclass ")[0] ?? "";
+    return new Set([...cuerpo.matchAll(/^ {4}(\w+):/gm)].map((m) => m[1]));
+  }
+
+  it("la lista de turnos se llama `items`, no `turnos`", () => {
+    expect(camposDe("SolicitudResponse").has("items")).toBe(true);
+    expect(PAGINA).toMatch(/circuitoActual\?\.items/);
+    expect(PAGINA).not.toMatch(/circuitoActual\?\.turnos/);
+  });
+
+  it("un turno cumplido se reconoce por `estado`, no por un `firmado_at` inventado", () => {
+    const campos = camposDe("TurnoItem");
+    expect(campos.has("estado")).toBe(true);
+    expect(campos.has("firmado_at")).toBe(false);
+    expect(PAGINA).toMatch(/turno\.estado !== "pendiente"/);
+    expect(PAGINA).not.toMatch(/turno\.firmado_at/);
+  });
+
+  it("la respuesta es UN objeto, no una colección", () => {
+    // El router declara `response_model=SolicitudResponse` y responde 404 si no
+    // hay circuito abierto. Tratarla como lista dejaba `circuitoActual` en null
+    // para siempre.
+    expect(PAGINA).toMatch(/circuitoActual = data\?\.estado === "pendiente"/);
+  });
+});
+
+describe("la vuelta atrás del ciclo", () => {
+  // El ciclo era de una sola dirección —borrador → aprobado → radicado— y el
+  // texto quedaba congelado al aprobar: la única salida era radicar. Eso dejaba
+  // inalcanzable la mitad del trámite que se pidió, porque un circuito de
+  // firmas se revierte cuando el documento cambia y no había forma de
+  // cambiarlo.
+  it("la pantalla ofrece devolver a edición y llama a su proxy", () => {
+    expect(PAGINA).toMatch(/Devolver a edición/);
+    expect(PAGINA).toMatch(
+      /fetch\(`\/borradores\/api\/\$\{editingBorrador\.id\}\/devolver`,\s*\{[\s\S]{0,120}?method:\s*"POST"/,
+    );
+  });
+
+  it("avisa de los turnos ya cumplidos antes de reabrir", () => {
+    // Reabrir no tira nada por sí solo; corregir el texto sí. Quien pidió las
+    // aprobaciones debería saberlo antes de tener que volver a pedirlas.
+    expect(PAGINA).toMatch(/turnosCumplidos > 0/);
+    expect(PAGINA).toMatch(/habrá que recogerlos de nuevo/);
+  });
+});

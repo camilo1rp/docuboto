@@ -63,12 +63,17 @@ def _turno_row(
     firmante_id: uuid.UUID = USER,
     estado: str = "pendiente",
     firma_id: uuid.UUID | None = None,
+    rol: str = "firma",
 ) -> dict:
+    # `rol` va aquí porque la consulta real lo trae (`_CAD_COLS`). Faltaba, y un
+    # doble incompleto es una AFIRMACIÓN falsa sobre la fila de verdad: mientras
+    # el servicio tampoco lo leía, los dos errores se tapaban y 29 tests pasaban.
     return {
         "id": TURNO_ID,
         "solicitud_id": SOL_ID,
         "orden": orden,
         "firmante_id": firmante_id,
+        "rol": rol,
         "estado": estado,
         "firma_id": firma_id,
         "comentario": None,
@@ -615,6 +620,9 @@ async def test_get_pending_with_items_and_x_total_count() -> None:
         "objeto_id": "2024-DEMO-E-000001",
         "titulo": "Oficio de prueba",
         "orden": 1,
+        # La bandeja trae el `rol` (E23, RF-PRO-10): quien la mira necesita
+        # saber si le piden revisar o comprometerse ANTES de abrir el detalle.
+        "rol": "visto_bueno",
         "created_at": NOW,
         "total_count": 3,
     }
@@ -634,6 +642,7 @@ async def test_get_pending_with_items_and_x_total_count() -> None:
         assert body["page"] == 1
         assert len(body["items"]) == 1
         assert body["items"][0]["solicitud_id"] == str(SOL_ID)
+        assert body["items"][0]["rol"] == "visto_bueno"
         assert resp.headers["x-total-count"] == "3"
     finally:
         _clear()
@@ -1338,7 +1347,7 @@ async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado(
     from app.services import cadena_service as _mod
 
     async def _huella(borrador_id: str, tenant_slug: str) -> dict:
-        return {"version": 1, "documento_sha256": "a" * 64}
+        return {"version": 1, "cuerpo_sha256": "a" * 64}
 
     monkeypatch.setattr(_mod, "get_huella_borrador", _huella)
     conn = _make_conn()

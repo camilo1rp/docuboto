@@ -334,6 +334,39 @@ class BorradorService:
             )
         return _bo(await self._repo.set_estado(borrador_id, "aprobado"))
 
+    async def devolver_a_borrador(self, borrador_id: uuid.UUID) -> BorradorResponse:
+        """Reabre un borrador aprobado para poder corregir el texto (RF-PRO-10).
+
+        Sin esto el ciclo era de una sola dirección —`borrador → aprobado →
+        radicado`— y el texto quedaba congelado al aprobar: la única salida era
+        radicar. Eso hacía inalcanzable la mitad del trámite que se pidió,
+        porque un circuito «a veces se revierte por cambios en el documento y
+        se necesitan de nuevo las firmas», y no había forma de introducir esos
+        cambios.
+
+        No toca el circuito de firma: reabrir no invalida nada por sí mismo, y
+        no debe hacerlo — devolver a borrador y volver a aprobar sin tocar una
+        letra deja las aprobaciones intactas, que es lo correcto. Lo que las
+        tira es **editar el texto**, porque el disparador de la 030 recalcula
+        `cuerpo_sha256` y la cadena deja de casar. La invalidación se deriva del
+        hecho, no del acto: si dependiera de que alguien pulse aquí, el caso en
+        que se olvida sería exactamente el caso del fraude.
+        """
+        row = await self._require_editable(borrador_id)
+        if row["estado"] != "aprobado":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "estado_invalido",
+                    "detail": (
+                        f"Solo se devuelve a borrador desde 'aprobado', y este esta "
+                        f"en '{row['estado']}'"
+                    ),
+                    "status": 409,
+                },
+            )
+        return _bo(await self._repo.set_estado(borrador_id, "borrador"))
+
     async def previsualizar(
         self, borrador_id: uuid.UUID, *, max_clearance: int
     ) -> tuple[bytes, list[str]]:

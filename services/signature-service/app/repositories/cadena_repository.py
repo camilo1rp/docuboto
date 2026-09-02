@@ -325,6 +325,10 @@ class CadenaRepository:
                 s.objeto_id,
                 s.titulo,
                 c.orden,
+                -- Qué le piden a esta persona, no solo que le piden algo: la
+                -- bandeja enseña «Visto bueno» o «Firma» ANTES de abrir el
+                -- detalle. Dar el visto bueno y firmar comprometen distinto.
+                c.rol,
                 s.created_at,
                 COUNT(*) OVER() AS total_count
             FROM firma_solicitud s

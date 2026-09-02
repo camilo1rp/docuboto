@@ -98,6 +98,18 @@ def _build_response(sol: asyncpg.Record, turnos: list[asyncpg.Record]) -> Solici
         TurnoItem(
             orden=t["orden"],
             firmante_id=t["firmante_id"],
+            # El `rol` se caía aquí: la consulta lo trae, el esquema lo declara y
+            # este constructor no lo pasaba, así que TODOS los turnos salían con
+            # el valor por defecto —«firma»— hacia todas las pantallas.
+            #
+            # Es la peor dirección posible para un defecto de este tipo: el
+            # propio esquema advierte que presentarlos igual «atribuiría a un
+            # revisor un compromiso que no adquirió». Y de rebote dejaba la
+            # mitad de la función inalcanzable: `/firmas` decide con este campo
+            # si ofrece «Dar visto bueno» en vez de «Firmar», así que la acción
+            # de visto bueno no aparecía nunca, por mucho que el endpoint, el
+            # proxy y la pantalla estuvieran escritos.
+            rol=t["rol"],
             estado=t["estado"],
             firma_id=t["firma_id"],
             comentario=t["comentario"],
@@ -375,6 +387,7 @@ class CadenaFirmaService:
                 objeto_id=r["objeto_id"],
                 titulo=r.get("titulo"),
                 orden=r["orden"],
+                rol=r["rol"],
                 created_at=r["created_at"],
             )
             for r in rows
@@ -611,13 +624,28 @@ class CadenaFirmaService:
         )
 
     async def _resolver_huella(self, objeto_id: str) -> str:
-        """Huella autoritativa del documento producido, desde su productor.
+        """Huella autoritativa de lo que la cadena vincula, desde su productor.
 
-        `409 documento_sin_producir` cuando el borrador todavía no tiene PDF/A:
-        abrir un circuito sobre un borrador sin documento dejaría a los
-        revisores aprobando un texto que nadie ha convertido en documento, y al
-        firmante sin nada que firmar. Es un error del orden de trabajo, no de la
-        herramienta, y decirlo así ahorra la búsqueda.
+        Para un borrador es la del **TEXTO** (`cuerpo_sha256`), no la del PDF/A.
+
+        Antes se anclaba al documento producido, y eso hacía el circuito
+        inalcanzable: el PDF/A de un borrador solo existe al radicar
+        —previsualizar no persiste nada, es su razón de ser—, así que el
+        circuito solo podía abrirse DESPUÉS de radicar, cuando recoger
+        aprobaciones ya no sirve de nada. El requisito es el contrario: varias
+        personas aprueban, y solo entonces sale el documento.
+
+        Anclar al texto es lo que corresponde al trámite real. Los turnos de
+        visto bueno aprueban un texto —es lo que leen y lo que discuten— y el
+        turno de firma es el que produce el documento definitivo con su número.
+        La garantía que se pidió se conserva entera y en el mismo sitio: si
+        alguien edita el cuerpo, el disparador de la 030 recalcula
+        `cuerpo_sha256`, este gate deja de casar y las aprobaciones recogidas
+        caen. No hay ventana: la comprobación es síncrona, en el momento de
+        resolver el turno.
+
+        `409 borrador_sin_texto` si el cuerpo está vacío: aprobar la nada no
+        vincula a nadie.
         """
         try:
             vigente = await get_huella_borrador(str(objeto_id), self._tenant_slug)
@@ -643,17 +671,15 @@ class CadenaFirmaService:
                 },
             ) from exc
 
-        huella = vigente.get("documento_sha256")
+        huella = vigente.get("cuerpo_sha256")
         if not huella:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
-                    "error": "documento_sin_producir",
+                    "error": "borrador_sin_texto",
                     "detail": (
-                        "Este borrador todavia no tiene documento generado: los "
-                        "revisores aprobarian un texto que nadie ha convertido en "
-                        "documento y el firmante no tendria que firmar. "
-                        "Previsualice o genere el documento antes de abrir el circuito."
+                        "Este borrador no tiene texto: no hay nada que aprobar ni "
+                        "que firmar. Redacte el cuerpo antes de abrir el circuito."
                     ),
                     "status": 409,
                 },
@@ -722,13 +748,13 @@ class CadenaFirmaService:
                 },
             ) from exc
 
-        if vigente.get("documento_sha256") != esperado:
+        if vigente.get("cuerpo_sha256") != esperado:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "documento_modificado",
                     "detail": (
-                        "El documento cambió después de abrirse este circuito "
+                        "El texto cambió después de abrirse este circuito "
                         f"(versión actual {vigente.get('version')}). Las aprobaciones "
                         "anteriores no se arrastran: hay que abrir el circuito de "
                         "nuevo y volver a recogerlas."

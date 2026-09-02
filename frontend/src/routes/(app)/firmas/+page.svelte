@@ -622,11 +622,22 @@
             </span>
           </td>
 
-          <!-- Turno (orden) -->
+          <!-- Turno (orden) + QUÉ se pide (E23, RF-PRO-10).
+               La bandeja decía en qué posición va el turno pero no si a esta
+               persona le piden revisar o comprometerse, y eso solo se sabía
+               abriendo el detalle. Dar el visto bueno y firmar no obligan
+               igual: la diferencia va donde se decide si abrir la fila. -->
           <td class="op-datatable__td firmas-table__orden">
-            <span class="firmas-table__turno" aria-label="Turno {row.orden}">
-              <i class="fas fa-user-check" aria-hidden="true"></i>
+            <span
+              class="firmas-table__turno"
+              aria-label={`Turno ${row.orden}, ${ROL_LABEL[row.rol] ?? row.rol}`}
+            >
+              <i class="fas fa-{row.rol === 'firma' ? 'pen-nib' : 'user-check'}" aria-hidden="true"
+              ></i>
               Turno {row.orden}
+            </span>
+            <span class="firmas-table__rol" class:firmas-table__rol--firma={row.rol === "firma"}>
+              {ROL_LABEL[row.rol] ?? row.rol}
             </span>
           </td>
 
@@ -1349,6 +1360,19 @@
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
       margin: 0;
+    }
+  }
+
+  .firmas-table__rol {
+    display: block;
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+
+    &--firma {
+      color: var(--op-primary-dark);
+      font-weight: var(--op-weight-bold);
     }
   }
 </style>

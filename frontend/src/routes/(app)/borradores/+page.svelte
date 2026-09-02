@@ -297,6 +297,37 @@
     }
   }
 
+  /**
+   * Devuelve un borrador aprobado a edición (E23, RF-PRO-10).
+   *
+   * El ciclo era de una sola dirección —`borrador → aprobado → radicado`— y el
+   * texto quedaba congelado al aprobar: la única salida era radicar. Con eso,
+   * la mitad del trámite era inalcanzable, porque un circuito de firmas se
+   * revierte cuando el documento cambia y no había forma de cambiarlo.
+   */
+  async function devolverABorrador() {
+    if (!editingBorrador) return;
+    actionLoading = true;
+    try {
+      const res = await fetch(`/borradores/api/${editingBorrador.id}/devolver`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notifyError(mensajeError(data, "No se pudo devolver el borrador a edición."));
+        return;
+      }
+      borradores = borradores.map((b) => (b.id === data.id ? data : b));
+      editingBorrador = data;
+      fCuerpo = data.cuerpo_html ?? data.cuerpo ?? fCuerpo;
+      notifySuccess("Borrador reabierto para edición.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Circuito de aprobación y firma (E23 Inc.4, RF-PRO-10)
   //
@@ -320,11 +351,7 @@
   /** @type {any|null} Circuito ya abierto sobre este borrador, si lo hay. */
   let circuitoActual = null;
 
-  async function abrirModalCircuito() {
-    if (!editingBorrador) return;
-    modalCircuito = true;
-    circuitoError = "";
-    turnos = [];
+  async function cargarFirmantes() {
     try {
       const res = await fetch("/borradores/api/firmantes");
       const data = await res.json().catch(() => []);
@@ -336,20 +363,54 @@
     }
   }
 
+  async function abrirModalCircuito() {
+    if (!editingBorrador) return;
+    modalCircuito = true;
+    circuitoError = "";
+    turnos = [];
+    await cargarFirmantes();
+  }
+
   /** Estado del circuito ya abierto, para enseñarlo en el cajón. */
   async function cargarCircuito(borradorId) {
     circuitoActual = null;
+    // El catálogo hace falta para poner NOMBRES a los turnos, no solo para
+    // componer: sin él la lista enseñaría UUID.
+    if (firmantesDisponibles.length === 0) await cargarFirmantes();
     try {
       const res = await fetch(`/borradores/api/${borradorId}/circuito`);
       if (!res.ok) return;
       const data = await res.json().catch(() => null);
-      const lista = Array.isArray(data) ? data : (data?.items ?? []);
+      // `GET /signature/requests` devuelve UN `SolicitudResponse`, no una lista
+      // (404 cuando no hay ninguno abierto). La primera versión lo trataba como
+      // colección y buscaba dentro con `.find`, así que `circuitoActual` era
+      // siempre `null` y el panel no aparecía nunca — con el circuito
+      // perfectamente creado en la base de datos.
+      //
       // Solo interesa el circuito vivo: uno cerrado o invalidado no gobierna
       // nada, y enseñarlo como si mandara confundiría sobre qué falta.
-      circuitoActual = lista.find((c) => c.estado === "pendiente") ?? null;
+      circuitoActual = data?.estado === "pendiente" ? data : null;
     } catch {
       circuitoActual = null;
     }
+  }
+
+  /** Turnos del circuito abierto, con los nombres de campo del contrato. */
+  $: turnosDelCircuito = circuitoActual?.items ?? [];
+  $: turnosCumplidos = turnosDelCircuito.filter((t) => t.estado !== "pendiente").length;
+  /** Orden del primer turno sin resolver: el que toca ahora. */
+  $: ordenActual = turnosDelCircuito.find((t) => t.estado === "pendiente")?.orden ?? null;
+
+  /**
+   * Nombre de una persona por su id, cayendo al id si no está en el catálogo.
+   *
+   * El catálogo solo se carga al abrir el modal de composición, así que al
+   * reabrir el borrador puede no estar: enseñar el UUID es feo, pero es
+   * honesto, y mejor que dejar el turno en blanco como si no hubiera nadie.
+   */
+  function nombreDe(id) {
+    const u = firmantesDisponibles.find((x) => (x.id ?? x.user_id) === id);
+    return u?.nombre ?? u?.name ?? u?.username ?? id;
   }
 
   function agregarTurno() {
@@ -815,24 +876,28 @@
         {#if circuitoActual}
           <div class="borrador-circuito" role="status">
             <p class="borrador-circuito__titulo">
-              Circuito abierto — turno {(circuitoActual.turno_actual ?? 0) + 1} de
-              {circuitoActual.turnos?.length ?? 0}
+              Circuito abierto — {turnosCumplidos} de {turnosDelCircuito.length} cumplidos
             </p>
             <ol class="borrador-circuito__turnos">
-              {#each circuitoActual.turnos ?? [] as turno, idx (turno.firmante_id + idx)}
+              <!-- Los nombres de campo salen del contrato REAL (`TurnoItem`):
+                   `items`, `estado`, `decidido_at`. Una primera versión los
+                   adivinó —`turnos`, `firmado_at`— y el panel salía «turno 1 de
+                   0» con el circuito perfectamente creado en la base de datos:
+                   el contrato de un servicio se lee, no se supone. -->
+              {#each turnosDelCircuito as turno (turno.orden)}
                 <li
                   class="borrador-circuito__turno"
-                  class:borrador-circuito__turno--hecho={turno.firmado_at}
-                  class:borrador-circuito__turno--actual={idx === circuitoActual.turno_actual}
+                  class:borrador-circuito__turno--hecho={turno.estado !== "pendiente"}
+                  class:borrador-circuito__turno--actual={turno.orden === ordenActual}
                 >
                   <span class="borrador-circuito__rol">
                     {turno.rol === "firma" ? "Firma" : "Visto bueno"}
                   </span>
                   <span class="borrador-circuito__quien">
-                    {turno.firmante_nombre ?? turno.firmante_id}
+                    {nombreDe(turno.firmante_id)}
                   </span>
-                  {#if turno.firmado_at}
-                    <i class="fas fa-check" aria-label="cumplido"></i>
+                  {#if turno.estado !== "pendiente"}
+                    <i class="fas fa-check" aria-label={`turno ${turno.estado}`}></i>
                   {/if}
                 </li>
               {/each}
@@ -846,6 +911,29 @@
           <Button variant="secondary" icon="fas fa-user-check" on:click={abrirModalCircuito}>
             Abrir circuito de firmas
           </Button>
+        {/if}
+      {/if}
+
+      <!-- Devolver a edición (solo si aprobado y sin radicar) -->
+      {#if canRadicar}
+        <Button
+          variant="secondary"
+          icon="fas fa-rotate-left"
+          loading={actionLoading}
+          on:click={devolverABorrador}
+        >
+          Devolver a edición
+        </Button>
+        {#if circuitoActual && turnosCumplidos > 0}
+          <!-- Decirlo ANTES de pulsar. Reabrir no tira nada por sí solo, pero
+               si se corrige el texto —que es para lo que se reabre— las
+               aprobaciones ya recogidas dejan de valer, y quien las pidió
+               debería saberlo antes de volver a pedirlas. -->
+          <p class="borrador-form__aviso" role="status">
+            Hay {turnosCumplidos}
+            {turnosCumplidos === 1 ? "turno cumplido" : "turnos cumplidos"} en el circuito. Si corrige
+            el texto habrá que recogerlos de nuevo.
+          </p>
         {/if}
       {/if}
 

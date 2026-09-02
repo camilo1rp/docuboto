@@ -1162,3 +1162,81 @@ async def test_sin_plantilla_no_se_calculan_huecos(client_with_conn) -> None:
 
     assert resp.status_code == 201
     assert resp.json()["faltantes"] == []
+
+
+# --- Devolver a borrador (E23, RF-PRO-10) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_un_aprobado_vuelve_a_borrador_para_poder_corregirlo(client_with_conn) -> None:
+    """El ciclo era de una sola dirección y el texto quedaba congelado al aprobar.
+
+    `borrador → aprobado → radicado`, sin vuelta: la única salida de un
+    aprobado era radicar. Eso dejaba inalcanzable la mitad del trámite que se
+    pidió — un circuito de firmas «a veces se revierte por cambios en el
+    documento y se necesitan de nuevo las firmas»— porque no había forma de
+    introducir esos cambios.
+    """
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _borrador_row(id=bid, estado="aprobado"),
+        _borrador_row(id=bid, estado="borrador"),
+    ]
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/devolver",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "borrador"
+
+
+@pytest.mark.asyncio
+async def test_un_radicado_no_se_devuelve(client_with_conn) -> None:
+    """Lo radicado tiene número inmutable: reabrirlo no es un acto que exista."""
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _borrador_row(id=bid, estado="radicado")
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/devolver",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "borrador_radicado"
+
+
+@pytest.mark.asyncio
+async def test_devolver_uno_que_ya_esta_en_borrador_es_409(client_with_conn) -> None:
+    # Anti-vacuidad: si el endpoint pusiera 'borrador' sin mirar el estado, los
+    # dos casos de arriba pasarían igual.
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _borrador_row(id=bid, estado="borrador")
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/devolver",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "estado_invalido"
+
+
+@pytest.mark.asyncio
+async def test_devolver_sin_permiso_403(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+
+    resp = await client.post(
+        f"/api/v1/borradores/{uuid.uuid4()}/devolver",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 403

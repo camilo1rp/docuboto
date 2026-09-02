@@ -376,6 +376,19 @@ async def aprobar_borrador(
 
 
 @router.post(
+    "/api/v1/borradores/{borrador_id}/devolver",
+    response_model=BorradorResponse,
+    summary="Devolver un borrador aprobado a edicion (RF-PRO-10)",
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
+async def devolver_borrador(
+    borrador_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> BorradorResponse:
+    return await BorradorService(conn).devolver_a_borrador(borrador_id)
+
+
+@router.post(
     "/api/v1/borradores/{borrador_id}/radicar",
     response_model=DocumentResponse,
     status_code=201,

@@ -19,6 +19,7 @@ columna y no una convención, y por eso cada acto tiene su propio endpoint.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -78,7 +79,7 @@ def _servicio(turno: dict, monkeypatch, *, sol: dict | None = None) -> CadenaFir
     svc._repo.actualizar_estado_solicitud = AsyncMock(return_value=None)
 
     async def _huella(borrador_id: str, tenant_slug: str) -> dict:
-        return {"version": 1, "documento_sha256": HUELLA}
+        return {"version": 1, "cuerpo_sha256": HUELLA}
 
     monkeypatch.setattr(mod, "get_huella_borrador", _huella)
     return svc
@@ -169,7 +170,7 @@ class TestResolucionDelVistoBueno:
         svc = _servicio(_turno("visto_bueno"), monkeypatch)
 
         async def _huella_distinta(borrador_id: str, tenant_slug: str) -> dict:
-            return {"version": 3, "documento_sha256": "b" * 64}
+            return {"version": 3, "cuerpo_sha256": "b" * 64}
 
         monkeypatch.setattr(mod, "get_huella_borrador", _huella_distinta)
         with pytest.raises(Exception) as exc:
@@ -225,20 +226,33 @@ class TestHuellaAutoritativa:
 
     @pytest.mark.asyncio
     async def test_la_huella_del_cliente_se_ignora(self, monkeypatch) -> None:
-        svc = self._svc(monkeypatch, respuesta={"documento_sha256": "c" * 64})
+        svc = self._svc(monkeypatch, respuesta={"cuerpo_sha256": "c" * 64})
         assert await svc._resolver_huella("b1") == "c" * 64
 
     @pytest.mark.asyncio
-    async def test_un_borrador_sin_documento_no_abre_circuito(self, monkeypatch) -> None:
-        """Los revisores aprobarían un texto que nadie ha convertido en documento.
+    async def test_la_cadena_ancla_al_TEXTO_y_no_al_pdf(self, monkeypatch) -> None:
+        """El PDF/A de un borrador no existe hasta que se radica.
 
-        Y el firmante no tendría qué firmar. Es un error del orden de trabajo, no
-        de la herramienta, y el mensaje lo dice para ahorrar la búsqueda.
+        Anclar al documento producido hacía el circuito inalcanzable: solo podía
+        abrirse DESPUÉS de radicar, cuando recoger aprobaciones ya no sirve de
+        nada. El trámite es el contrario — varios aprueban el TEXTO y el turno
+        de firma produce el documento definitivo—, así que la cadena se ata a
+        `cuerpo_sha256`. Si por lo que fuera llegara también la del PDF, se
+        ignora: la que vincula es la del texto.
         """
-        svc = self._svc(monkeypatch, respuesta={"documento_sha256": None})
+        svc = self._svc(
+            monkeypatch,
+            respuesta={"cuerpo_sha256": "c" * 64, "documento_sha256": None},
+        )
+        assert await svc._resolver_huella("b1") == "c" * 64
+
+    @pytest.mark.asyncio
+    async def test_un_borrador_sin_texto_no_abre_circuito(self, monkeypatch) -> None:
+        """Aprobar la nada no vincula a nadie."""
+        svc = self._svc(monkeypatch, respuesta={"cuerpo_sha256": None})
         with pytest.raises(Exception) as exc:
             await svc._resolver_huella("b1")
-        assert exc.value.detail["error"] == "documento_sin_producir"
+        assert exc.value.detail["error"] == "borrador_sin_texto"
 
     @pytest.mark.asyncio
     async def test_si_no_se_puede_resolver_no_se_abre(self, monkeypatch) -> None:
@@ -283,7 +297,7 @@ class TestHuellaAutoritativa:
         HUELLA_REAL = "9" * 64
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
-            return {"version": 1, "documento_sha256": HUELLA_REAL}
+            return {"version": 1, "cuerpo_sha256": HUELLA_REAL}
 
         monkeypatch.setattr(mod, "get_huella_borrador", _huella)
         async def _clearance(conn, actor) -> int:
@@ -330,3 +344,62 @@ class TestHuellaAutoritativa:
             "enviar la del documento anterior para que la cadena siguiera "
             "pareciendo valida despues de editar el texto"
         )
+
+
+class TestElRolLlegaALasPantallas:
+    """El `rol` estaba en la consulta, en el esquema, y NO se pasaba al construir.
+
+    `_build_response` creaba cada `TurnoItem` sin `rol`, así que todos caían al
+    valor por defecto —«firma»— hacia todas las pantallas. Es la peor dirección
+    posible: el propio esquema advierte que presentarlos igual «atribuiría a un
+    revisor un compromiso que no adquirió».
+
+    Y de rebote dejaba media función inalcanzable: `/firmas` decide con este
+    campo si ofrece «Dar visto bueno» en vez de «Firmar». Con el defecto puesto,
+    esa acción no aparecía nunca — por mucho que el endpoint, el proxy y la
+    pantalla estuvieran escritos y probados.
+    """
+
+    @staticmethod
+    def _sol():
+        return {
+            "id": uuid.uuid4(),
+            "objeto_tipo": "borrador",
+            "objeto_id": str(uuid.uuid4()),
+            "titulo": "Oficio",
+            "estado": "pendiente",
+            "nivel_seguridad": 1,
+            "created_at": datetime.now(tz=UTC),
+        }
+
+    @staticmethod
+    def _turno(orden: int, rol: str):
+        return {
+            "orden": orden,
+            "firmante_id": uuid.uuid4(),
+            "rol": rol,
+            "estado": "pendiente",
+            "firma_id": None,
+            "comentario": None,
+            "decidido_at": None,
+        }
+
+    def test_cada_turno_conserva_su_rol(self) -> None:
+        from app.services.cadena_service import _build_response
+
+        resp = _build_response(
+            self._sol(),
+            [self._turno(1, "visto_bueno"), self._turno(2, "visto_bueno"), self._turno(3, "firma")],
+        )
+
+        assert [t.rol for t in resp.items] == ["visto_bueno", "visto_bueno", "firma"]
+
+    def test_un_revisor_nunca_se_presenta_como_firmante(self) -> None:
+        # Anti-vacuidad por el lado que importa: si el defecto volviera, TODOS
+        # los turnos dirían «firma» y este caso lo cazaría aunque el de arriba
+        # cambiara de forma.
+        from app.services.cadena_service import _build_response
+
+        resp = _build_response(self._sol(), [self._turno(1, "visto_bueno")])
+
+        assert resp.items[0].rol != "firma"

@@ -67,7 +67,7 @@ class TestGateSincrono:
         await _gate(
             _sol(),
             monkeypatch,
-            respuesta={"version": 1, "documento_sha256": HUELLA_APROBADA},
+            respuesta={"version": 1, "cuerpo_sha256": HUELLA_APROBADA},
         )
 
     @pytest.mark.asyncio
@@ -78,7 +78,7 @@ class TestGateSincrono:
             await _gate(
                 _sol(),
                 monkeypatch,
-                respuesta={"version": 4, "documento_sha256": HUELLA_OTRA},
+                respuesta={"version": 4, "cuerpo_sha256": HUELLA_OTRA},
             )
         detalle = exc.value.detail
         assert detalle["error"] == "documento_modificado"
@@ -93,7 +93,7 @@ class TestGateSincrono:
         # vuelto a generar». Tratarlo como «igual» sería el peor de los fallos.
         with pytest.raises(Exception) as exc:
             await _gate(
-                _sol(), monkeypatch, respuesta={"version": 2, "documento_sha256": None}
+                _sol(), monkeypatch, respuesta={"version": 2, "cuerpo_sha256": None}
             )
         assert exc.value.detail["error"] == "documento_modificado"
 
@@ -181,7 +181,7 @@ class TestGateConectado:
         )
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
-            return {"version": 7, "documento_sha256": HUELLA_OTRA}
+            return {"version": 7, "cuerpo_sha256": HUELLA_OTRA}
 
         monkeypatch.setattr(mod, "get_huella_borrador", _huella)
 
@@ -215,7 +215,7 @@ class TestGateConectado:
         )
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
-            return {"version": 7, "documento_sha256": HUELLA_OTRA}
+            return {"version": 7, "cuerpo_sha256": HUELLA_OTRA}
 
         monkeypatch.setattr(mod, "get_huella_borrador", _huella)
 

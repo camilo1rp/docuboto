@@ -180,6 +180,10 @@ class PendienteItem(BaseModel):
     objeto_id: str
     titulo: str | None
     orden: int
+    #: `visto_bueno` | `firma` — lo que se le pide a ESTA persona en este turno.
+    #: Sin él, la bandeja no puede distinguir «revise esto» de «comprométase con
+    #: esto» hasta abrir el detalle.
+    rol: str = "firma"
     created_at: datetime
 
 
