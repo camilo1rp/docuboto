@@ -33,15 +33,17 @@ export async function load({ cookies, parent, fetch }) {
   const tenant = user?.tenant_slug ?? "";
 
   let plantillas = [];
+  let dependencias = [];
   let loadError = null;
 
+  const headers = { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant };
+
   try {
-    const res = await fetch(`${API_V1}/plantillas`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Tenant-Slug": tenant,
-      },
-    });
+    // `?todas=true` es OBLIGATORIO aquí y exige USUA_PERM_ADMIN en el backend.
+    // Sin él, el listado se recorta por la dependencia del llamante (E23,
+    // RF-PRO-06) y esta pantalla —cuyo trabajo es gestionar las plantillas de
+    // TODA la entidad— dejaría fuera precisamente las que hay que asignar.
+    const res = await fetch(`${API_V1}/plantillas?todas=true`, { headers });
 
     if (res.ok) {
       const raw = await res.json().catch(() => []);
@@ -57,8 +59,22 @@ export async function load({ cookies, parent, fetch }) {
     loadError = "No se pudo conectar al servidor de plantillas.";
   }
 
+  // Organigrama para el selector de asignación. Degrada a lista vacía: sin él
+  // no se puede restringir una plantilla, pero sí crearla y editarla — un fallo
+  // del catálogo no debe dejar la pantalla inservible.
+  try {
+    const res = await fetch(`${API_V1}/dependencias?activo=true`, { headers });
+    if (res.ok) {
+      const raw = await res.json().catch(() => []);
+      if (Array.isArray(raw)) dependencias = raw;
+    }
+  } catch {
+    dependencias = [];
+  }
+
   return {
     plantillas,
+    dependencias,
     loadError,
     // token y tenant NO se exponen: las llamadas cliente usan /admin/plantillas/api/* (D-05)
   };

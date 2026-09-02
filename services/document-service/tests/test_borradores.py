@@ -29,6 +29,8 @@ def _plantilla_row(**kw) -> dict:
         "cuerpo": "Cordial saludo, ...",
         "activo": True,
         "created_at": NOW,
+        "es_global": True,
+        "creado_por": None,
     }
     base.update(kw)
     return base
@@ -181,7 +183,9 @@ async def test_listar_plantillas_con_permiso_200(client_with_conn) -> None:
     """PERM_RADI concedido → listar plantillas devuelve 200."""
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = [_plantilla_row()]
+    # Desde E23 Inc.5 el listado consulta primero las URD del llamante para
+    # recortar por dependencia (RF-PRO-06).
+    mock_conn.fetch.side_effect = [[{"depe_id": 100}], [_plantilla_row()]]
     resp = await client.get(
         "/api/v1/plantillas",
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
@@ -836,3 +840,101 @@ async def test_previsualizar_sin_renderizador_es_503(client_with_conn, render_fa
     )
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "render_no_disponible"
+
+
+# ── E23 Inc.5: alcance de plantillas por dependencia ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ver_todas_las_plantillas_exige_administracion(client_with_conn) -> None:
+    """`?todas=true` no basta: hace falta el permiso.
+
+    Un recorte que el propio llamante puede apagar con un parámetro de consulta
+    no es un recorte. El gate se comprueba en el handler y no subiendo el del
+    endpoint, porque la lista normal la necesita cualquiera con `PERM_RADI`
+    para redactar.
+    """
+    client, mock_conn = client_with_conn
+    # 1.º fetchval: PERM_RADI del endpoint (concedido). 2.º: USUA_PERM_ADMIN (no).
+    mock_conn.fetchval.side_effect = [True, None]
+    resp = await client.get(
+        "/api/v1/plantillas?todas=true",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+    # Y no llegó a consultarse nada.
+    mock_conn.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_un_administrador_ve_todas(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [True, True]
+    mock_conn.fetch.return_value = [_plantilla_row()]
+    resp = await client.get(
+        "/api/v1/plantillas?todas=true",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    # Sin recorte: la consulta de URD del usuario NI SE HACE.
+    consultas = [c.args[0] for c in mock_conn.fetch.await_args_list]
+    assert not any("urd_usuaroldep" in q for q in consultas)
+
+
+@pytest.mark.asyncio
+async def test_el_listado_normal_SI_consulta_las_dependencias(client_with_conn) -> None:
+    # Control positivo del anterior: si el recorte no se aplicara, el test de
+    # arriba pasaría por casualidad.
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.side_effect = [[{"depe_id": 100}], [_plantilla_row()]]
+    resp = await client.get(
+        "/api/v1/plantillas",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    consultas = [c.args[0] for c in mock_conn.fetch.await_args_list]
+    assert any("urd_usuaroldep" in q for q in consultas)
+    # Y el SQL enviado lleva el recorte, no solo el parámetro.
+    listado = [q for q in consultas if "FROM plantilla" in q]
+    assert listado and "es_global OR EXISTS" in listado[0]
+
+
+@pytest.mark.asyncio
+async def test_fijar_alcance_es_de_administracion(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = None
+    resp = await client.put(
+        f"/api/v1/plantillas/{uuid.uuid4()}/alcance",
+        json={"es_global": False, "dependencias": [100]},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_poner_global_borra_las_dependencias(client_with_conn) -> None:
+    # Mantenerlas guardadas dejaría una asignación invisible que reaparecería al
+    # volver a restringir, y nadie recordaría de dónde salió.
+    client, mock_conn = client_with_conn
+    pid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _plantilla_row(id=pid, es_global=True)
+    mock_conn.fetch.return_value = []
+    resp = await client.put(
+        f"/api/v1/plantillas/{pid}/alcance",
+        json={"es_global": True, "dependencias": [100, 200]},
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+    assert resp.status_code == 200
+    borrados = [
+        c for c in mock_conn.execute.await_args_list
+        if "DELETE FROM plantilla_dependencia" in c.args[0]
+    ]
+    assert borrados, "poner global tiene que limpiar la asignación"
+    insertados = [
+        c for c in mock_conn.execute.await_args_list
+        if "INSERT INTO plantilla_dependencia" in c.args[0]
+    ]
+    assert not insertados, "ninguna dependencia debe insertarse si es global"

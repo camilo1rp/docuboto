@@ -241,7 +241,11 @@
  * @typedef {object} SignatureTurn
  * @property {number}      orden         — posición en la cadena (1-based)
  * @property {string}      firmante_id   — UUID del firmante asignado
- * @property {'pendiente'|'firmado'|'rechazado'} estado
+ * @property {'visto_bueno'|'firma'} rol — qué acto es este turno (E23, RF-PRO-10).
+ *   Un visto bueno APRUEBA; solo el turno de firma compromete a la entidad y
+ *   produce el documento definitivo. Presentarlos igual atribuiría a un revisor
+ *   un compromiso que no adquirió.
+ * @property {'pendiente'|'firmado'|'rechazado'|'invalidada'} estado
  * @property {string|null} firma_id      — UUID del registro de firma (si firmado)
  * @property {string|null} comentario    — nota o motivo de rechazo
  * @property {string|null} decidido_at   — ISO 8601 UTC (timestamp de firma/rechazo)

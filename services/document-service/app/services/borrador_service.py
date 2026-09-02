@@ -39,6 +39,7 @@ from app.schemas.borrador import (
     BorradorUpdate,
     CombinarRequest,
     CombinarResponse,
+    PlantillaAlcanceUpdate,
     PlantillaCreate,
     PlantillaResponse,
 )
@@ -117,17 +118,72 @@ class BorradorService:
 
     # -- plantillas ----------------------------------------------------
 
-    async def crear_plantilla(self, payload: PlantillaCreate) -> PlantillaResponse:
+    async def crear_plantilla(
+        self, payload: PlantillaCreate, creado_por: uuid.UUID | None = None
+    ) -> PlantillaResponse:
         # RF-PRO-01: el marcador desconocido se rechaza AL GUARDAR, no al usar.
         # En el legado no fallaba nunca: se quedaba impreso en el oficio que
         # recibía el ciudadano, y para entonces ya no había a quién preguntarle.
         if desconocidos(payload.cuerpo):
             raise _marcadores_desconocidos(payload.cuerpo)
-        row = await self._repo.insert_plantilla(payload.model_dump())
-        return PlantillaResponse(**dict(row))
+        datos = payload.model_dump()
+        dependencias = datos.pop("dependencias", [])
+        datos["creado_por"] = creado_por
+        row = await self._repo.insert_plantilla(datos)
+        if not payload.es_global and dependencias:
+            await self._repo.set_dependencias_plantilla(row["id"], dependencias)
+        return PlantillaResponse(**dict(row), dependencias=dependencias)
 
-    async def listar_plantillas(self, activo: bool | None) -> list[PlantillaResponse]:
-        return [PlantillaResponse(**dict(r)) for r in await self._repo.list_plantillas(activo)]
+    async def listar_plantillas(
+        self,
+        activo: bool | None,
+        *,
+        usuario: uuid.UUID | None = None,
+        sin_recorte: bool = False,
+    ) -> list[PlantillaResponse]:
+        """Plantillas que alcanza el llamante (RF-PRO-06).
+
+        `sin_recorte=True` es para la pantalla de administración: hay que poder
+        gestionar una plantilla que no se usa desde la propia dependencia. Lo
+        pide el router tras comprobar el permiso de administración, no el
+        cliente — un recorte que el llamante puede apagar no recorta.
+
+        Un usuario sin URD activa ve **solo las globales**, no todas: el vacío
+        no es un atajo a «sin restricción». Es la misma regla fail-closed que el
+        clearance, donde lo dudoso cae a Pública.
+        """
+        depe_codigos: list[int] | None = None
+        if not sin_recorte:
+            depe_codigos = (
+                await self._repo.dependencias_del_usuario(usuario) if usuario else []
+            )
+        filas = await self._repo.list_plantillas(activo, depe_codigos=depe_codigos)
+        return [
+            PlantillaResponse(
+                **dict(r),
+                dependencias=(
+                    [] if r["es_global"] else await self._repo.dependencias_de_plantilla(r["id"])
+                ),
+            )
+            for r in filas
+        ]
+
+    async def fijar_alcance(
+        self, plantilla_id: uuid.UUID, payload: PlantillaAlcanceUpdate
+    ) -> PlantillaResponse:
+        fila = await self._repo.get_plantilla(plantilla_id)
+        if fila is None:
+            raise _not_found(f"Plantilla {plantilla_id} no encontrada")
+        await self._repo.set_alcance_plantilla(plantilla_id, payload.es_global)
+        await self._repo.set_dependencias_plantilla(
+            plantilla_id, [] if payload.es_global else payload.dependencias
+        )
+        fila = await self._repo.get_plantilla(plantilla_id)
+        assert fila is not None
+        return PlantillaResponse(
+            **dict(fila),
+            dependencias=await self._repo.dependencias_de_plantilla(plantilla_id),
+        )
 
     async def combinar_plantilla(
         self,

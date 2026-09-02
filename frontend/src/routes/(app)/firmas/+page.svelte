@@ -328,6 +328,49 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Visto bueno (E23 Inc.4, RF-PRO-10)
+  // ---------------------------------------------------------------------------
+
+  let voboLoading = false;
+
+  /**
+   * Da el visto bueno del turno activo: aprueba SIN firmar.
+   *
+   * No lleva segundo factor, y su ausencia es la decisión D-6, no un olvido: lo
+   * obligatorio siempre es el anclaje a la huella del texto —que el backend
+   * comprueba— y exigir además credencial de firma y 2FA a cada revisor es
+   * viable en una entidad de tres personas y no en una de cuarenta.
+   */
+  async function darVistoBueno() {
+    if (!selectedDetail) return;
+    voboLoading = true;
+    try {
+      const res = await fetch(
+        `/firmas/api/${encodeURIComponent(selectedDetail.solicitud_id)}/vobo`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ comentario: fComentarioVobo.trim() || null }),
+        },
+      );
+      const result = await res.json();
+      if (res.ok) {
+        notifySuccess("Visto bueno registrado. El trámite pasa al siguiente turno.");
+        fComentarioVobo = "";
+        pendientes = pendientes.filter((p) => p.solicitud_id !== selectedDetail?.solicitud_id);
+        total = Math.max(0, total - 1);
+        selectedDetail = null;
+      } else {
+        handleSignError(res.status, result);
+      }
+    } catch {
+      notifyError("No se pudo conectar al servidor de firmas.");
+    } finally {
+      voboLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Mapeo de errores del gateway (403 no_es_su_turno, 409 solicitud_no_pendiente)
   // ---------------------------------------------------------------------------
 
@@ -432,6 +475,25 @@
    * @param {import('$lib/types/api.js').SignatureTurn} turno
    * @returns {boolean}
    */
+  /** Nota opcional del revisor al dar el visto bueno. */
+  let fComentarioVobo = "";
+
+  /** Etiqueta y matiz visual de cada rol de turno (E23, RF-PRO-10). */
+  const ROL_LABEL = /** @type {Record<string,string>} */ ({
+    visto_bueno: "Visto bueno",
+    firma: "Firma",
+  });
+
+  /**
+   * El turno activo del usuario, o `null`.
+   *
+   * De él depende QUÉ acto se ofrece: aprobar o firmar. Ofrecer los dos, o el
+   * equivocado, atribuiría a un revisor un compromiso que no adquirió — que es
+   * justo lo que el rol existe para separar.
+   */
+  $: turnoPropio = selectedDetail?.items?.find((t) => esTurnoActivo(t)) ?? null;
+  $: esTurnoDeVistoBueno = turnoPropio?.rol === "visto_bueno";
+
   function esTurnoActivo(turno) {
     if (turno.estado !== "pendiente") return false;
     // `firmante_id` es la identidad INTERNA del tenant (`auth_users.id`), NO el
@@ -664,6 +726,15 @@
                     label={TURNO_ESTADO_LABEL[turno.estado] ?? turno.estado}
                     dot
                   />
+                  <!-- El rol se enseña SIEMPRE, también en los turnos ya
+                       resueltos: quien lea la cadena dentro de diez años tiene
+                       que poder distinguir quién aprobó de quién firmó. -->
+                  <span
+                    class="firma-chain__rol"
+                    class:firma-chain__rol--firma={turno.rol === "firma"}
+                  >
+                    {ROL_LABEL[turno.rol] ?? turno.rol}
+                  </span>
                   {#if activo}
                     <span class="firma-chain__activo-label">
                       <i class="fas fa-hand-point-right" aria-hidden="true"></i>
@@ -701,10 +772,35 @@
       <div class="firma-detail__actions">
         <hr class="firma-detail__divider" aria-hidden="true" />
         <p class="firma-detail__actions-title">Acciones sobre tu turno</p>
+        {#if esTurnoDeVistoBueno}
+          <p class="firma-detail__rol-nota">
+            Tu turno es de <strong>visto bueno</strong>: apruebas el documento, no lo firmas. La
+            firma que compromete a la entidad la pone el último turno de la cadena.
+          </p>
+          <FormField
+            id="firma-comentario-vobo"
+            label="Comentario (opcional)"
+            type="textarea"
+            bind:value={fComentarioVobo}
+            placeholder="Observaciones sobre el documento…"
+            rows={2}
+          />
+        {/if}
         <div class="firma-detail__actions-row">
-          <Button variant="primary" icon="fas fa-signature" on:click={abrirConfirmSign}>
-            Firmar
-          </Button>
+          {#if esTurnoDeVistoBueno}
+            <Button
+              variant="primary"
+              icon="fas fa-check"
+              loading={voboLoading}
+              on:click={darVistoBueno}
+            >
+              Dar visto bueno
+            </Button>
+          {:else}
+            <Button variant="primary" icon="fas fa-signature" on:click={abrirConfirmSign}>
+              Firmar
+            </Button>
+          {/if}
           <Button
             variant="ghost"
             icon="fas fa-times-circle"
@@ -1192,6 +1288,40 @@
         color: var(--op-text);
       }
     }
+
+    // Rol del turno (E23, RF-PRO-10). Se distingue por FORMA (borde y peso),
+    // no solo por color: quien no distingue los dos tonos tiene que poder
+    // separar igualmente «aprobó» de «firmó», que es la diferencia entre una
+    // opinión y un compromiso de la entidad.
+    &__rol {
+      font-size: var(--op-font-xs);
+      padding: 0 var(--op-space-2);
+      border-radius: var(--op-radius-full);
+      border: 1px solid var(--op-border);
+      color: var(--op-text-secondary);
+      white-space: nowrap;
+
+      &--firma {
+        border-color: var(--op-primary);
+        color: var(--op-primary-dark);
+        font-weight: var(--op-weight-bold);
+      }
+
+      .firma-chain__item--activo & {
+        color: var(--op-text);
+      }
+    }
+  }
+
+  // Nota que explica QUÉ acto va a realizar el usuario en su turno.
+  .firma-detail__rol-nota {
+    font-size: var(--op-font-sm);
+    line-height: var(--op-line-height);
+    color: var(--op-info-fg);
+    background: var(--op-info-bg);
+    padding: var(--op-space-2) var(--op-space-3);
+    border-radius: var(--op-radius);
+    margin: 0 0 var(--op-space-3);
   }
 
   // ---------------------------------------------------------------------------

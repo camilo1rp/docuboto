@@ -15,11 +15,20 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from app.clients.storage_client import RenderFallidoError, RenderNoDisponibleError
-from app.core.clearance import require_permission, resolve_caller_clearance
-from app.core.combinacion import vocabulario
+from app.core.clearance import check_permission, require_permission, resolve_caller_clearance
+from app.core.combinacion import desconocidos, vocabulario
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.borrador import (
     BorradorCreate,
@@ -27,12 +36,15 @@ from app.schemas.borrador import (
     BorradorUpdate,
     CombinarRequest,
     CombinarResponse,
+    PlantillaAlcanceUpdate,
     PlantillaCreate,
     PlantillaResponse,
 )
 from app.schemas.document import DocumentResponse
 from app.services.borrador_service import BorradorService
 from app.services.document_service import DocumentService, InvalidTenantError
+from app.services.importar_ofimatico import ImportacionError
+from app.services.importar_ofimatico import importar as importar_ofimatico
 
 router = APIRouter(tags=["borradores"])
 
@@ -80,9 +92,10 @@ async def listar_campos_plantilla() -> dict[str, Any]:
 )
 async def crear_plantilla(
     payload: PlantillaCreate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> PlantillaResponse:
-    return await BorradorService(conn).crear_plantilla(payload)
+    return await BorradorService(conn).crear_plantilla(payload, _user(request))
 
 
 @router.get(
@@ -91,10 +104,96 @@ async def crear_plantilla(
     dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def listar_plantillas(
+    request: Request,
     activo: bool | None = Query(default=None),
+    todas: bool = Query(
+        default=False,
+        description=(
+            "Solo administración: devuelve también las plantillas que el "
+            "llamante no alcanza desde su dependencia."
+        ),
+    ),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[PlantillaResponse]:
-    return await BorradorService(conn).listar_plantillas(activo)
+    """Plantillas que alcanza el llamante desde sus dependencias (RF-PRO-06).
+
+    `?todas=true` **exige permiso de administración**, y se comprueba aquí en
+    vez de subir el gate del endpoint: la lista normal la necesita cualquiera
+    con `PERM_RADI` para redactar. Un recorte que el propio llamante puede
+    apagar con un parámetro no es un recorte, así que el parámetro no basta —
+    hace falta el permiso.
+    """
+    user_id = _user(request)
+    sin_recorte = False
+    if todas:
+        if not await check_permission(conn, user_id, "USUA_PERM_ADMIN"):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "forbidden",
+                    "detail": (
+                        "Ver todas las plantillas, incluidas las de otras "
+                        "dependencias, es una competencia de administracion."
+                    ),
+                    "status": 403,
+                },
+            )
+        sin_recorte = True
+    return await BorradorService(conn).listar_plantillas(
+        activo, usuario=user_id, sin_recorte=sin_recorte
+    )
+
+
+@router.put(
+    "/api/v1/plantillas/{plantilla_id}/alcance",
+    response_model=PlantillaResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def fijar_alcance_plantilla(
+    plantilla_id: uuid.UUID,
+    payload: PlantillaAlcanceUpdate,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> PlantillaResponse:
+    """Cambia a qué dependencias alcanza una plantilla, sin tocar su contenido.
+
+    Poner `es_global=true` **borra** la lista de dependencias: mantenerla
+    guardada dejaría una asignación invisible que reaparecería al volver a
+    restringir, y nadie recordaría de dónde salió.
+    """
+    return await BorradorService(conn).fijar_alcance(plantilla_id, payload)
+
+
+@router.post(
+    "/api/v1/plantillas/importar",
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def importar_plantilla(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Convierte un `.docx`/`.odt` en cuerpo HTML (E23, RF-PRO-07).
+
+    **No guarda nada.** Devuelve el cuerpo para que se revise en el editor antes
+    de crearlo: una plantilla del Orfeo legado llega con sus marcadores dentro y
+    puede traer alguno que aquí no exista, y guardar primero para descubrirlo
+    después obligaría a borrar y repetir.
+
+    Por eso la respuesta trae `marcadores_desconocidos`: los mismos que
+    rechazarían el guardado, dichos ANTES.
+
+    Gate de administración, el mismo que crear una plantilla: importar es la
+    primera mitad de ese acto.
+    """
+    datos = await file.read()
+    try:
+        resultado = importar_ofimatico(file.filename or "", datos)
+    except ImportacionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "importacion_fallida", "detail": str(exc), "status": 422},
+        ) from exc
+    return {
+        "cuerpo": resultado.cuerpo,
+        "perdido": resultado.perdido,
+        "marcadores_desconocidos": desconocidos(resultado.cuerpo),
+    }
 
 
 @router.post(

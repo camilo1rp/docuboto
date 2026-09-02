@@ -60,6 +60,63 @@
   let fNombreError = "";
   let fCuerpoError = "";
 
+  // ── Alcance por dependencia (E23 Inc.5, RF-PRO-06) ────────────────────────
+  /** @type {any[]} */
+  let dependencias = data.dependencias ?? [];
+  let fEsGlobal = true;
+  /** @type {number[]} */
+  let fDependencias = [];
+  let alcanceLoading = false;
+
+  /** Plantilla cuyo alcance se está editando, o `null`. */
+  let editandoAlcance = null;
+
+  function abrirAlcance(plantilla) {
+    editandoAlcance = plantilla;
+    fEsGlobal = plantilla.es_global !== false;
+    fDependencias = Array.isArray(plantilla.dependencias) ? [...plantilla.dependencias] : [];
+  }
+
+  function alternarDependencia(codigo) {
+    fDependencias = fDependencias.includes(codigo)
+      ? fDependencias.filter((c) => c !== codigo)
+      : [...fDependencias, codigo];
+  }
+
+  async function guardarAlcance() {
+    if (!editandoAlcance) return;
+    alcanceLoading = true;
+    try {
+      const res = await fetch(`/admin/plantillas/api/${editandoAlcance.id}/alcance`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ es_global: fEsGlobal, dependencias: fDependencias }),
+      });
+      const dataRes = await res.json();
+      if (!res.ok) {
+        notifyError(mensajeError(dataRes, "Error al guardar el alcance."));
+        return;
+      }
+      plantillas = plantillas.map((p) => (p.id === dataRes.id ? { ...p, ...dataRes } : p));
+      editandoAlcance = null;
+      notifySuccess("Alcance actualizado.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      alcanceLoading = false;
+    }
+  }
+
+  /** Texto del alcance de una plantilla, para la tabla. */
+  function textoAlcance(plantilla) {
+    if (plantilla.es_global !== false) return "Todas las dependencias";
+    const n = plantilla.dependencias?.length ?? 0;
+    // El cero se nombra: «0 dependencias» se leería como un dato que falta, y
+    // es un estado deliberado —plantilla retirada sin borrar su historial—.
+    if (n === 0) return "Ninguna (retirada de circulación)";
+    return n === 1 ? "1 dependencia" : `${n} dependencias`;
+  }
+
   function openCreate() {
     fNombre = "";
     fTipoDocumental = "";
@@ -210,6 +267,7 @@
             <th scope="col">Nombre</th>
             <th scope="col">Tipo documental</th>
             <th scope="col">Estado</th>
+            <th scope="col">Alcance</th>
             <th scope="col">Creada</th>
             {#if isAdmin}
               <th scope="col"><span class="sr-only">Acciones</span></th>
@@ -228,9 +286,19 @@
                   dot
                 />
               </td>
+              <td class="plantillas-table__alcance">{textoAlcance(plantilla)}</td>
               <td class="plantillas-table__date">{formatDate(plantilla.created_at)}</td>
               {#if isAdmin}
                 <td class="plantillas-table__actions">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="fas fa-sitemap"
+                    aria-label="Cambiar alcance de {plantilla.nombre}"
+                    on:click={() => abrirAlcance(plantilla)}
+                  >
+                    Alcance
+                  </Button>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -325,6 +393,73 @@
 <!-- =========================================================================
      Modal: confirmar borrado
      ========================================================================= -->
+<Modal
+  open={editandoAlcance !== null}
+  title="Alcance de la plantilla"
+  size="md"
+  on:close={() => (editandoAlcance = null)}
+>
+  {#if editandoAlcance}
+    <div class="plantilla-alcance">
+      <p class="plantilla-alcance__intro">
+        Quién ve <strong>{editandoAlcance.nombre}</strong> al redactar una respuesta. No es una restricción
+        de seguridad —una plantilla no contiene datos de nadie— sino de uso: con muchas plantillas en
+        la lista, la que hace falta no se encuentra.
+      </p>
+
+      <div class="plantilla-form__check-row">
+        <label class="plantilla-form__check-label" for="plantilla-global">
+          <input
+            id="plantilla-global"
+            type="checkbox"
+            class="plantilla-form__check"
+            bind:checked={fEsGlobal}
+          />
+          Disponible para todas las dependencias
+        </label>
+      </div>
+
+      {#if !fEsGlobal}
+        <fieldset class="plantilla-alcance__deps">
+          <legend class="plantilla-alcance__legend">Dependencias que la usan</legend>
+          {#if dependencias.length === 0}
+            <p class="plantilla-alcance__vacio" role="status">
+              No se pudo cargar el organigrama, así que no se puede restringir ahora mismo. Vuelva a
+              intentarlo o deje la plantilla disponible para todas.
+            </p>
+          {:else}
+            {#each dependencias as dep (dep.codigo)}
+              <label class="plantilla-alcance__dep" for={`dep-${dep.codigo}`}>
+                <input
+                  id={`dep-${dep.codigo}`}
+                  type="checkbox"
+                  class="plantilla-form__check"
+                  checked={fDependencias.includes(dep.codigo)}
+                  on:change={() => alternarDependencia(dep.codigo)}
+                />
+                {dep.nombre} <span class="plantilla-alcance__cod">({dep.codigo})</span>
+              </label>
+            {/each}
+          {/if}
+          {#if fDependencias.length === 0 && dependencias.length > 0}
+            <p class="plantilla-alcance__aviso" role="status">
+              Sin ninguna dependencia marcada, la plantilla deja de ofrecerse a todo el mundo. Es
+              válido para retirarla de circulación sin borrar los documentos ya producidos con ella.
+            </p>
+          {/if}
+        </fieldset>
+      {/if}
+    </div>
+  {/if}
+
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={() => (editandoAlcance = null)}>Cancelar</Button>
+    <Button icon="fas fa-save" loading={alcanceLoading} on:click={guardarAlcance}>
+      Guardar alcance
+    </Button>
+  </svelte:fragment>
+</Modal>
+
 <Modal
   open={modalDelete}
   title="Eliminar plantilla"
@@ -495,5 +630,72 @@
     color: var(--op-text);
     line-height: var(--op-line-height);
     margin: 0;
+  }
+  // ---------------------------------------------------------------------------
+  // Alcance por dependencia (E23 Inc.5, RF-PRO-06)
+  // ---------------------------------------------------------------------------
+  .plantilla-alcance {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-4);
+
+    &__intro {
+      font-size: var(--op-font-sm);
+      line-height: var(--op-line-height);
+      color: var(--op-text-secondary);
+      margin: 0;
+    }
+
+    &__deps {
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-2);
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      padding: var(--op-space-3);
+      // La lista puede ser larga: se desplaza dentro de su caja en vez de
+      // estirar el modal hasta que el botón de guardar queda fuera de pantalla.
+      max-height: 18rem;
+      overflow-y: auto;
+    }
+
+    &__legend {
+      font-size: var(--op-font-sm);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-text);
+      padding: 0 var(--op-space-2);
+    }
+
+    &__dep {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+      cursor: pointer;
+    }
+
+    &__cod {
+      color: var(--op-text-secondary);
+      font-family: var(--op-font-family-mono);
+      font-size: var(--op-font-xs);
+    }
+
+    &__aviso,
+    &__vacio {
+      font-size: var(--op-font-sm);
+      line-height: var(--op-line-height);
+      background: var(--op-warning-bg);
+      color: var(--op-warning-fg);
+      padding: var(--op-space-2) var(--op-space-3);
+      border-radius: var(--op-radius);
+      margin: 0;
+    }
+  }
+
+  .plantillas-table__alcance {
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+    white-space: nowrap;
   }
 </style>

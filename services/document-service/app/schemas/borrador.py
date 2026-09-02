@@ -23,6 +23,13 @@ class PlantillaCreate(BaseModel):
     cuerpo: str = Field(..., min_length=1)
     tipo_documental: str | None = Field(default=None, max_length=100)
     activo: bool = True
+    #: `True` = la ve cualquier dependencia. Se llama `es_global` y no `global`
+    #: porque esa palabra es reservada en Python (E23, RF-PRO-06).
+    es_global: bool = True
+    #: Dependencias que la alcanzan cuando NO es global. Vacía sobre una
+    #: plantilla no global significa que no la ve nadie — un estado válido:
+    #: una plantilla retirada de circulación sin borrar su historial.
+    dependencias: list[int] = Field(default_factory=list)
 
 
 class PlantillaResponse(BaseModel):
@@ -32,6 +39,16 @@ class PlantillaResponse(BaseModel):
     cuerpo: str
     activo: bool
     created_at: datetime
+    es_global: bool = True
+    creado_por: uuid.UUID | None = None
+    dependencias: list[int] = Field(default_factory=list)
+
+
+class PlantillaAlcanceUpdate(BaseModel):
+    """Cambia a quién alcanza una plantilla, sin tocar su contenido."""
+
+    es_global: bool
+    dependencias: list[int] = Field(default_factory=list)
 
 
 class CombinarRequest(BaseModel):

@@ -14,3 +14,9 @@ redis>=5.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-timeout>=2.4.0
+# Importación de plantillas ofimáticas (E23 Inc.5, RF-PRO-07). Python puro:
+# no hacen falta librerías nativas, así que NO van detrás de una factory como el
+# renderizador — una costura de degradación para algo que no puede faltar es
+# ceremonia. mammoth convierte DOCX a HTML conservando estructura; odfpy lee ODT.
+mammoth>=1.8.0
+odfpy>=1.4.1

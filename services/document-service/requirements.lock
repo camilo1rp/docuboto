@@ -21,10 +21,14 @@ certifi==2026.7.22
     #   httpx
 cffi==2.1.1
     # via cryptography
-click==8.4.2
+click==8.5.0
     # via uvicorn
-cryptography==50.0.0
+cobble==0.1.4
+    # via mammoth
+cryptography==50.0.1
     # via -r services/document-service/requirements.txt
+defusedxml==0.7.1
+    # via odfpy
 fastapi==0.141.1
     # via -r services/document-service/requirements.txt
 h11==0.16.0
@@ -47,17 +51,21 @@ jsonschema==4.26.0
     # via -r services/document-service/requirements.txt
 jsonschema-specifications==2025.9.1
     # via jsonschema
+mammoth==1.12.1
+    # via -r services/document-service/requirements.txt
+odfpy==1.4.1
+    # via -r services/document-service/requirements.txt
 packaging==26.3
     # via pytest
 pluggy==1.6.0
     # via pytest
 pycparser==3.0
     # via cffi
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   fastapi
     #   pydantic-settings
-pydantic-core==2.46.4
+pydantic-core==2.46.5
     # via pydantic
 pydantic-settings==2.15.0
     # via -r services/document-service/requirements.txt
@@ -113,5 +121,5 @@ uvloop==0.22.1
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn
-websockets==17.0.1
+websockets==17.1
     # via uvicorn
