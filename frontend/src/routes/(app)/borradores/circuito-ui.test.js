@@ -183,13 +183,13 @@ describe("radicar es el acto que de verdad hay que atar", () => {
   // se deshace devolviendo a edición; un consecutivo gastado no se devuelve.
   it("con el circuito abierto no se ofrece «Radicar»", () => {
     const iRadicar = PAGINA.indexOf("pedirConfirmacionRadicar}");
-    const iAviso = PAGINA.indexOf("No se puede radicar todavia");
+    const iAviso = PAGINA.indexOf("No se puede radicar todavía");
     expect(iAviso).toBeGreaterThan(-1);
     // El aviso está en la rama que precede al botón dentro del mismo bloque.
     expect(iAviso).toBeLessThan(iRadicar);
   });
 
   it("el aviso dice por qué importa, no solo que no se puede", () => {
-    expect(PAGINA).toMatch(/numero,?\s+y el numero\s+no se devuelve/);
+    expect(PAGINA).toMatch(/número,?\s+y el número\s+no se devuelve/);
   });
 });

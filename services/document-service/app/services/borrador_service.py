@@ -384,7 +384,7 @@ class BorradorService:
                     "error": "circuito_no_verificable",
                     "detail": (
                         "No se pudo comprobar si este borrador tiene un circuito "
-                        f"de aprobacion abierto, asi que no se {acto}. Reintenta "
+                        f"de aprobación abierto, así que no se {acto}. Reintenta "
                         "en unos segundos."
                     ),
                     "status": 503,
@@ -397,14 +397,14 @@ class BorradorService:
             cola = (
                 "se radica cuando lo firme quien responde por el documento, no antes"
                 if acto == "radicar"
-                else "se aprueba cuando lo resuelvan todos los turnos, no desde aqui"
+                else "se aprueba cuando lo resuelvan todos los turnos, no desde aquí"
             )
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "circuito_pendiente",
                     "detail": (
-                        f"Este borrador tiene un circuito de aprobacion abierto: {cola}."
+                        f"Este borrador tiene un circuito de aprobación abierto: {cola}."
                     ),
                     "status": 409,
                 },

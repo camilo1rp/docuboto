@@ -205,3 +205,86 @@ def test_el_verbo_publicar_no_se_confunde_con_el_adjetivo() -> None:
     adjetivo = "La informacion publica no requiere reserva."
     hallado = {m.group(0).lower() for m in SIN_TILDE.finditer(adjetivo)}
     assert "publica" in hallado, "el adjetivo «pública» sin tilde debe seguir marcándose"
+
+
+# ---------------------------------------------------------------------------
+# El mismo eje, en el sitio donde MÁS mensajes lee una persona: las pantallas
+# ---------------------------------------------------------------------------
+#
+# El guardián de arriba solo mira `services/*/app/**/*.py`, y ese recorte no se
+# había declarado nunca. Cuatro avisos escritos en un `.svelte` —«no se puede
+# radicar todavia», «Radicar consume el numero», «circuito de aprobacion
+# abierto»— pasaron enteros: el guardián estaba verde y el texto que ve el
+# funcionario estaba mal. Un guardián declara exactamente lo que demuestra, y
+# éste demostraba media cosa.
+#
+# Lo que se mira aquí es TEXTO LITERAL VISIBLE y nada más: el contenido entre
+# etiquetas que no lleva `{}` dentro. Un fragmento con interpolación se salta,
+# porque ahí los «errores» son nombres de variable (`abrirModalDevolucion`,
+# `causalesAnulacion`) y no prosa — marcarlos daría 102 falsos positivos y el
+# guardián acabaría desactivado, que es peor que no tenerlo.
+#
+# `publica` e `invalida` salen de la lista en este eje: en las pantallas
+# aparecen como VERBOS («esta entidad publica el inventario», «invalida el
+# actual») y el truco de `(?<!se )` que los desambigua en los servicios no
+# aplica. Preferir un guardián más corto y sin ruido a uno amplio que se ignora.
+
+FRONTEND = RAIZ / "frontend" / "src"
+
+SIN_TILDE_PANTALLA = re.compile(
+    SIN_TILDE.pattern.replace("publico|(?<!se )publica|", "publico|").replace(
+        "invalido|invalida|", ""
+    ),
+    re.IGNORECASE,
+)
+
+_NO_PROSA = re.compile(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<!--[\s\S]*?-->")
+
+
+#: Una interpolación `{...}` se BORRA, y el resto de la frase se conserva.
+#: Descartar el fragmento entero por llevar una variable dentro parecía lo
+#: prudente y era el punto ciego: los avisos que importan casi siempre llevan
+#: una («quedan {n} de {total} turnos»), así que el guardián se saltaba
+#: exactamente la familia de mensajes que existe para vigilar. Lo demostró una
+#: mutación: se le devolvió el error original —«consume el numero»— y pasó en
+#: verde. Un guardián que no cae bajo su propio defecto no vigila nada.
+_INTERPOLACION = re.compile(r"\{[^{}]*\}")
+
+
+def _texto_visible(ruta):
+    """Prosa literal entre etiquetas, con las interpolaciones descontadas."""
+    limpio = _NO_PROSA.sub("", ruta.read_text(encoding="utf-8"))
+    for frag in re.findall(r">([^<>]*)<", limpio):
+        # Dos pasadas: `{a{b}c}` (bloques anidados) queda limpio igualmente.
+        sin_vars = _INTERPOLACION.sub(" ", _INTERPOLACION.sub(" ", frag))
+        texto = " ".join(sin_vars.split())
+        if len(texto) >= 4 and re.search(r"[a-záéíóúñ]{3}", texto, re.IGNORECASE):
+            yield texto
+
+
+def test_el_censo_de_pantallas_ve_texto() -> None:
+    """Anti-vacuidad: si el extractor se rompe, cae aquí y no en el de abajo.
+
+    Un guardián que no encuentra nada que mirar pasa siempre, y pasa en verde.
+    """
+    total = sum(1 for r in FRONTEND.rglob("*.svelte") for _ in _texto_visible(r))
+    assert total > 500, f"solo {total} fragmentos de texto: el extractor está roto"
+
+
+def test_ningun_texto_de_pantalla_sin_tildes() -> None:
+    culpables = []
+    for ruta in sorted(FRONTEND.rglob("*.svelte")):
+        for texto in _texto_visible(ruta):
+            palabras = sorted(
+                {
+                    m.group(0).lower()
+                    for m in SIN_TILDE_PANTALLA.finditer(texto)
+                    if "_" not in m.group(0)
+                }
+            )
+            if palabras:
+                culpables.append(f"{ruta.relative_to(RAIZ)} {palabras} → {texto[:80]!r}")
+    assert not culpables, (
+        "Texto de pantalla en español pero sin tildes (lo lee un funcionario):\n"
+        + "\n".join(culpables)
+    )
