@@ -75,8 +75,17 @@
   let selectedIds = new Set();
 
   $: selectedCount = selectedIds.size;
+  //  La firma en lote solo alcanza los turnos de FIRMA.
+  //
+  //  La casilla se ofrecía en TODA fila, así que un «seleccionar todas»
+  //  mandaba también los turnos de visto bueno a firmar: un revisor
+  //  comprometía a la entidad en bloque con un acto que para él era «lo he
+  //  leído y me parece bien». El backend ya lo rechaza (409
+  //  `turno_es_de_visto_bueno`), pero ofrecer el gesto y luego negarlo es
+  //  enseñar un camino que no existe.
+  $: firmables = pendientes.filter((p) => p.rol === "firma");
   $: allPageSelected =
-    pendientes.length > 0 && pendientes.every((p) => selectedIds.has(p.solicitud_id));
+    firmables.length > 0 && firmables.every((p) => selectedIds.has(p.solicitud_id));
   $: allIndeterminate = selectedCount > 0 && !allPageSelected;
 
   function toggleRow(/** @type {string} */ id) {
@@ -90,14 +99,61 @@
 
   function toggleAll() {
     if (allPageSelected) {
-      pendientes.forEach((p) => selectedIds.delete(p.solicitud_id));
+      firmables.forEach((p) => selectedIds.delete(p.solicitud_id));
     } else {
-      pendientes.forEach((p) => selectedIds.add(p.solicitud_id));
+      firmables.forEach((p) => selectedIds.add(p.solicitud_id));
     }
     selectedIds = selectedIds;
   }
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Ver el documento que se pide aprobar
+  // ---------------------------------------------------------------------------
+  let viendoDocumento = false;
+  let verDocumentoError = "";
+
+  /**
+   * Abre la previsualización del borrador en una pestaña nueva.
+   *
+   * Reutiliza el proxy de `/borradores` en vez de abrir un camino propio: la
+   * previsualización no persiste nada y ya está gateada por clearance en el
+   * servidor, así que el revisor no ve nada que no pudiera ver de todos modos.
+   *
+   * Límite declarado: el endpoint exige `PERM_RADI`. Un revisor que solo tenga
+   * `PERM_FIRMA` recibe un 403 y lo verá dicho, no en silencio — que su turno
+   * le dé derecho a leer lo que se le pide aprobar es lo correcto y hoy no
+   * está resuelto en el backend.
+   */
+  async function verDocumento() {
+    if (!selectedDetail) return;
+    viendoDocumento = true;
+    verDocumentoError = "";
+    try {
+      const res = await fetch(`/borradores/api/${selectedDetail.objeto_id}/previsualizar`, {
+        method: "POST",
+      });
+      if (res.status === 403) {
+        throw new Error(
+          "No tienes permiso para ver este documento. Pide acceso de radicación " +
+            "a quien administre los permisos: tu turno no basta hoy para leerlo.",
+        );
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(mensajeError(data, "No se pudo abrir el documento."));
+      }
+      const url = URL.createObjectURL(await res.blob());
+      window.open(url, "_blank", "noopener");
+      // Con retraso: revocarlo en el acto deja la pestaña recién abierta vacía.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      verDocumentoError = err instanceof Error ? err.message : String(err);
+    } finally {
+      viendoDocumento = false;
+    }
+  }
+
   // Firma en lote
   // ---------------------------------------------------------------------------
   let batchLoading = false;
@@ -560,7 +616,7 @@
   {/if}
 
   <!-- Select-all de página -->
-  {#if !loading && pendientes.length > 0 && hasFirma}
+  {#if !loading && firmables.length > 0 && hasFirma}
     <div class="firmas-selectall">
       <label class="firmas-selectall__label">
         <input
@@ -594,7 +650,7 @@
         <svelte:fragment slot="row" let:row>
           <!-- Checkbox de selección (batch) -->
           <td class="op-datatable__td firmas-table__check">
-            {#if hasFirma}
+            {#if hasFirma && row.rol === "firma"}
               <label class="firmas-table__check-label">
                 <input
                   type="checkbox"
@@ -650,14 +706,19 @@
 
           <!-- Acciones -->
           <td class="op-datatable__td firmas-table__actions">
+            <!-- El boton nombra el acto REAL del turno. «Firmar» sobre un
+                 visto bueno describe mal lo que va a pasar, y describe de mas:
+                 firmar compromete a la entidad, revisar no. -->
             <Button
               variant="ghost"
               size="sm"
               icon="fas fa-eye"
               on:click={() => openDetail(row)}
-              aria-label="Ver y firmar solicitud {row.titulo ?? row.solicitud_id}"
+              aria-label={row.rol === "firma"
+                ? `Ver y firmar solicitud ${row.titulo ?? row.solicitud_id}`
+                : `Ver y dar visto bueno a ${row.titulo ?? row.solicitud_id}`}
             >
-              Ver / Firmar
+              {row.rol === "firma" ? "Ver / Firmar" : "Ver / Dar visto bueno"}
             </Button>
           </td>
         </svelte:fragment>
@@ -776,6 +837,29 @@
           {/each}
         </ol>
       </section>
+    {/if}
+
+    <!-- Ver el documento que se pide aprobar o firmar.
+         El detalle mostraba identificador, tipo y fecha, y ni el texto ni una
+         forma de llegar a él: se aprobaba a ciegas. El circuito ancla la
+         aprobación al hash del cuerpo —«aprobó ESTE texto»—, y esa garantía es
+         hueca si quien aprueba nunca lo vio. La previsualización no persiste
+         nada: es exactamente la lectura que hacía falta. -->
+    {#if selectedDetail.objeto_tipo === "borrador"}
+      <div class="firma-detail__ver">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="fas fa-file-pdf"
+          loading={viendoDocumento}
+          on:click={verDocumento}
+        >
+          Ver documento
+        </Button>
+        {#if verDocumentoError}
+          <p class="firma-detail__ver-error" role="alert">{verDocumentoError}</p>
+        {/if}
+      </div>
     {/if}
 
     <!-- Acciones de firma (solo si la solicitud está pendiente y el usuario tiene permiso) -->
@@ -1321,6 +1405,25 @@
       .firma-chain__item--activo & {
         color: var(--op-text);
       }
+    }
+  }
+
+  // Acceso al documento que se pide aprobar. Bloque propio, NO dentro de un
+  // contenedor flex: el mensaje de error es prosa y en flex se trocea en
+  // columnas de una palabra.
+  .firma-detail__ver {
+    display: block;
+    margin: var(--op-space-3) 0 0;
+
+    &-error {
+      display: block;
+      margin: var(--op-space-2) 0 0;
+      font-size: var(--op-font-sm);
+      line-height: var(--op-line-height);
+      color: var(--op-error-fg);
+      background: var(--op-error-bg);
+      padding: var(--op-space-2) var(--op-space-3);
+      border-radius: var(--op-radius);
     }
   }
 

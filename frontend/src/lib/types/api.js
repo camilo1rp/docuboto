@@ -232,6 +232,12 @@
  * @property {string} objeto_id       — UUID del objeto a firmar
  * @property {string} titulo          — título descriptivo del documento
  * @property {number} orden           — posición del turno activo en la cadena
+ * @property {'visto_bueno'|'firma'} rol — qué acto pide este turno (E23, RF-PRO-10).
+ *   El backend lo manda desde que `PendienteItem` lo declara; el typedef se
+ *   quedó atrás, así que la pantalla no podía distinguir «revise esto» de
+ *   «comprométase con esto» sin que `svelte-check` protestara. Con él, la
+ *   bandeja limita la firma en lote a los turnos de firma y nombra el acto
+ *   real en cada fila.
  * @property {string} created_at      — ISO 8601 UTC
  */
 

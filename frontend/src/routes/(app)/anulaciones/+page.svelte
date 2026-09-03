@@ -670,6 +670,23 @@
         </div>
       {/if}
     </dl>
+
+    <!-- Ver el radicado antes de decidir sobre él.
+         El detalle enseñaba la causal, el motivo alegado y las fechas: todo lo
+         que dijo QUIEN PIDIÓ la anulación, y nada del documento sobre el que
+         se decide. Anular no se deshace, así que resolver viendo solo la
+         versión del solicitante es la peor forma de decidir barata.
+         El deep-link ya existía y solo lo usaba /busqueda; `id` de la fila es
+         el UUID del RADICADO (no el de la solicitud — ver `abrirDesdeCola`). -->
+    {#if selectedRow?.id}
+      <a
+        class="anulacion-detail__ver"
+        href="/bandeja?radicado={encodeURIComponent(selectedRow.id)}"
+      >
+        <i class="fas fa-up-right-from-square" aria-hidden="true"></i>
+        Ver el radicado {selectedRow.tracking_number ?? ""}
+      </a>
+    {/if}
   {/if}
 
   <svelte:fragment slot="footer">
@@ -949,6 +966,23 @@
     flex-direction: column;
     gap: var(--op-space-1);
     margin: 0;
+
+    // Enlace al radicado sobre el que se decide. `&__ver` produce una clase
+    // propia (no un descendiente), y hace falta: el enlace va FUERA del <dl>.
+    &__ver {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      margin-top: var(--op-space-3);
+      font-size: var(--op-font-sm);
+      color: var(--op-primary);
+      text-decoration: none;
+
+      &:hover,
+      &:focus-visible {
+        text-decoration: underline;
+      }
+    }
 
     &__row {
       display: flex;

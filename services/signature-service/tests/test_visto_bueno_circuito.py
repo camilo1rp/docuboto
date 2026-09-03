@@ -403,3 +403,87 @@ class TestElRolLlegaALasPantallas:
         resp = _build_response(self._sol(), [self._turno(1, "visto_bueno")])
 
         assert resp.items[0].rol != "firma"
+
+
+class TestElGateSimetrico:
+    """El gate estaba puesto solo en una dirección, y en la inocua.
+
+    `dar_visto_bueno` rechazaba los turnos de firma desde el primer día. Firmar
+    un turno de VISTO BUENO, en cambio, no lo impedía nada — y es el lado que
+    importa: produce una firma electrónica que compromete a la entidad y genera
+    el documento definitivo, por un acto que su autor entendía como «lo he
+    leído y me parece bien».
+
+    La bandeja lo facilitaba activamente: ofrecía «Ver / Firmar» y la casilla de
+    firma en lote sobre las filas de visto bueno, así que bastaba un
+    «seleccionar todas» para comprometer a la entidad en bloque.
+    """
+
+    @pytest.mark.asyncio
+    async def test_un_turno_de_visto_bueno_NO_se_firma(self, monkeypatch) -> None:
+        from fastapi import HTTPException
+
+        turno = _turno("visto_bueno")
+        svc = _servicio(turno, monkeypatch)
+        # `firmar` mira PRIMERO el turno activo sin bloqueo; `_servicio` lo deja
+        # en None porque los otros tests cierran la cadena. Aquí el turno tiene
+        # que estar abierto: es lo que se intenta firmar.
+        svc._repo.turno_activo = AsyncMock(return_value=turno)
+
+        with pytest.raises(HTTPException) as exc:
+            await svc.firmar(uuid.uuid4(), REVISOR, None, None)
+
+        assert exc.value.status_code == 409
+        assert exc.value.detail["error"] == "turno_es_de_visto_bueno"
+
+    @pytest.mark.asyncio
+    async def test_el_rechazo_ocurre_ANTES_de_tocar_la_credencial(
+        self, monkeypatch
+    ) -> None:
+        """El orden importa, y una primera versión de este test no lo medía.
+
+        Afirmaba que no se registraba la firma — y pasaba igual con el gate
+        quitado, porque el flujo fallaba más adelante por otra razón. Un test
+        que sigue verde bajo su propia mutación no prueba nada.
+
+        Lo que sí discrimina es DÓNDE para: el gate va antes de consultar a
+        auth-service el estado de la credencial del firmante. Así ningún factor
+        2FA ni consulta de certificado se consume en un acto que va a
+        rechazarse — el mismo criterio que el código ya aplica al gate XAdES.
+        """
+        from fastapi import HTTPException
+
+        from app.services import cadena_service as mod
+
+        consultas = []
+
+        async def _espia(*a, **k):
+            consultas.append(a)
+            raise AssertionError("no debería llegar aquí con un turno de visto bueno")
+
+        monkeypatch.setattr(mod, "get_signing_key_status_remote", _espia)
+
+        turno = _turno("visto_bueno")
+        svc = _servicio(turno, monkeypatch)
+        svc._repo.turno_activo = AsyncMock(return_value=turno)
+
+        with pytest.raises(HTTPException) as exc:
+            await svc.firmar(uuid.uuid4(), REVISOR, None, None)
+
+        assert exc.value.detail["error"] == "turno_es_de_visto_bueno"
+        assert consultas == []
+        svc._repo.marcar_turno.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_el_turno_de_firma_sigue_firmandose(self, monkeypatch) -> None:
+        """Anti-vacuidad: un gate que rechaza todo también pasaría los de arriba."""
+        from fastapi import HTTPException
+
+        turno = _turno("firma")
+        svc = _servicio(turno, monkeypatch)
+        svc._repo.turno_activo = AsyncMock(return_value=turno)
+
+        try:
+            await svc.firmar(uuid.uuid4(), REVISOR, None, None)
+        except HTTPException as exc:  # puede fallar más adelante (2FA, proveedor)
+            assert exc.detail.get("error") != "turno_es_de_visto_bueno"

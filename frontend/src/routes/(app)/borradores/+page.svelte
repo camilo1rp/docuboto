@@ -965,8 +965,7 @@
             <i class="fas fa-hourglass-half" aria-hidden="true"></i>
             No se puede radicar todavía: quedan
             {turnosDelCircuito.length - turnosCumplidos} de {turnosDelCircuito.length}
-            turnos del circuito por resolver. Radicar consume el número, y el número
-            no se devuelve.
+            turnos del circuito por resolver. Radicar consume el número, y el número no se devuelve.
           </p>
         {:else}
           <Button

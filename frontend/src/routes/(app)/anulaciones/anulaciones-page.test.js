@@ -24,6 +24,8 @@
  *  - A1: aprobar usa la variante de alerta (rojo) y rechazar la conservadora
  *    — el color ya no contradice la gravedad del acto.
  */
+import { readFileSync } from "node:fs";
+
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
@@ -748,5 +750,31 @@ describe("/anulaciones — quien la pidió no la aprueba", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: /^aprobar$/i })).toBeTruthy());
     expect(screen.queryByText(/debe aprobarla otra persona/i)).toBeNull();
+  });
+});
+
+describe("se puede ver el radicado antes de decidir sobre él", () => {
+  // El detalle enseñaba la causal, el motivo alegado y las fechas: todo lo que
+  // dijo QUIEN PIDIÓ la anulación, y nada del documento sobre el que se decide.
+  // Anular no se deshace, así que resolver viendo solo la versión del
+  // solicitante es la peor forma de decidir barata.
+  const FUENTE = readFileSync("src/routes/(app)/anulaciones/+page.svelte", "utf-8");
+
+  it("el detalle enlaza al radicado", () => {
+    expect(FUENTE).toMatch(/href="\/bandeja\?radicado=\{encodeURIComponent\(selectedRow\.id\)\}"/);
+  });
+
+  it("usa el id del RADICADO, no el de la solicitud de anulación", () => {
+    // `abrirDesdeCola` ya documenta la trampa: en una fila de cola `id` es el
+    // de la solicitud. El enlace cuelga de `selectedRow`, que siempre lleva el
+    // del radicado — con el otro, el deep-link abriría un drawer vacío.
+    expect(FUENTE).toMatch(/id: pendiente\.radicado_id/);
+    expect(FUENTE).not.toMatch(/radicado=\{encodeURIComponent\(anulacion\./);
+  });
+
+  it("reutiliza el deep-link que ya existía en vez de abrir uno nuevo", () => {
+    // `/bandeja?radicado=` está implementado y probado desde antes; solo lo
+    // usaba /busqueda.
+    expect(FUENTE).toMatch(/\/bandeja\?radicado=/);
   });
 });

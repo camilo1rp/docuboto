@@ -897,6 +897,33 @@ class CadenaFirmaService:
                         "status": 409,
                     },
                 )
+            # El gemelo del gate de `dar_visto_bueno`, y es el que faltaba.
+            #
+            # Estaba puesto solo en una dirección, y precisamente en la inocua:
+            # resolver un turno de FIRMA por la vía del visto bueno no
+            # compromete a nadie. La que faltaba es la peligrosa — firmar un
+            # turno de VISTO BUENO produce una firma electrónica que compromete
+            # a la entidad y genera el documento definitivo, por un acto que su
+            # autor entendía como «lo he leído y me parece bien».
+            #
+            # La bandeja lo facilitaba activamente: ofrecía «Ver / Firmar» y la
+            # casilla de firma en lote sobre las filas de visto bueno, así que
+            # bastaba un «seleccionar todas» para comprometer a la entidad en
+            # bloque sin proponérselo.
+            if turno["rol"] != "firma":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "turno_es_de_visto_bueno",
+                        "detail": (
+                            "Este turno es de VISTO BUENO, no de firma: firmarlo "
+                            "comprometería a la entidad con un acto que solo era "
+                            "una revisión. Use POST "
+                            "/signature/requests/{id}/visto-bueno."
+                        ),
+                        "status": 409,
+                    },
+                )
 
             # Payload priority: solicitud.payload_sha256 > request.payload_xml > identifier fallback.
             # huella_de_contenido=False marca el caso de "sellado de identificador": se firma
