@@ -526,6 +526,11 @@
   // ¿El borrador activo se puede editar? Solo si estado === 'borrador'
   $: canEdit = editingBorrador?.estado === "borrador";
   $: canAprobar = editingBorrador?.estado === "borrador";
+  //  El panel del circuito solo se pintaba en estado «aprobado», así que
+  //  mientras el borrador estaba en edicion la pantalla no tenia forma de
+  //  saber que habia turnos pendientes: se cargaba igual, pero nadie lo
+  //  miraba. `circuitoAbierto` es esa misma carga leida donde hace falta.
+  $: circuitoAbierto = circuitoActual !== null && turnosCumplidos < turnosDelCircuito.length;
   $: canRadicar = editingBorrador?.estado === "aprobado";
 
   // ── Previsualización (E23, RF-PRO-05) ──────────────────────────────────────
@@ -857,16 +862,27 @@
         {/if}
       {/if}
 
-      <!-- Aprobar -->
+      <!-- Aprobar. El circuito ATA (E23, RF-PRO-09): con turnos sin resolver
+           el backend responde 409 `circuito_pendiente`, y ofrecer aquí un
+           botón que solo puede fallar convierte una regla en un tropiezo. -->
       {#if canAprobar}
-        <Button
-          variant="secondary"
-          icon="fas fa-check-circle"
-          loading={actionLoading}
-          on:click={aprobar}
-        >
-          Aprobar borrador
-        </Button>
+        {#if circuitoAbierto}
+          <p class="borrador-aviso" role="status">
+            <i class="fas fa-hourglass-half" aria-hidden="true"></i>
+            Este borrador tiene un circuito de aprobacion abierto: quedan
+            {turnosDelCircuito.length - turnosCumplidos} de {turnosDelCircuito.length}
+            turnos por resolver. Se aprueba solo cuando el circuito termine.
+          </p>
+        {:else}
+          <Button
+            variant="secondary"
+            icon="fas fa-check-circle"
+            loading={actionLoading}
+            on:click={aprobar}
+          >
+            Aprobar borrador
+          </Button>
+        {/if}
       {/if}
 
       <!-- Circuito de aprobación y firma (E23 Inc.4, RF-PRO-10).
@@ -937,15 +953,30 @@
         {/if}
       {/if}
 
-      <!-- Radicar (solo si aprobado) -->
+      <!-- Radicar (solo si aprobado Y con el circuito resuelto).
+           El circuito se abre sobre un borrador YA aprobado —ese es el orden
+           del trámite—, así que la vía real para saltárselo no era aprobar dos
+           veces: era radicar con los turnos sin resolver. Y radicar es peor,
+           porque consume el número inmutable: aprobar de más se deshace
+           devolviendo a edición, un consecutivo gastado no se devuelve nunca. -->
       {#if canRadicar}
-        <Button
-          icon="fas fa-paper-plane"
-          loading={actionLoading}
-          on:click={pedirConfirmacionRadicar}
-        >
-          Radicar
-        </Button>
+        {#if circuitoAbierto}
+          <p class="borrador-aviso" role="status">
+            <i class="fas fa-hourglass-half" aria-hidden="true"></i>
+            No se puede radicar todavia: quedan
+            {turnosDelCircuito.length - turnosCumplidos} de {turnosDelCircuito.length}
+            turnos del circuito por resolver. Radicar consume el numero, y el numero
+            no se devuelve.
+          </p>
+        {:else}
+          <Button
+            icon="fas fa-paper-plane"
+            loading={actionLoading}
+            on:click={pedirConfirmacionRadicar}
+          >
+            Radicar
+          </Button>
+        {/if}
       {/if}
 
       <!-- Radicado — estado final, tracking_number visible (MEDIO #4) -->
@@ -1385,6 +1416,25 @@
   }
 
   // ── Circuito de aprobación y firma (E23 Inc.4, RF-PRO-10) ──────────────────
+  //  Aviso en prosa: NO va dentro de un contenedor flex. Cinco avisos de esta
+  //  familia acabaron troceados en columnas de una palabra por heredar un
+  //  `display: flex` del padre — el texto se lee entero o no se lee.
+  .borrador-aviso {
+    display: block;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+    background: var(--op-surface);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    padding: var(--op-space-3);
+    line-height: 1.5;
+
+    i {
+      margin-right: var(--op-space-2);
+      color: var(--op-warning);
+    }
+  }
+
   .borrador-circuito {
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius);

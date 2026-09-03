@@ -159,6 +159,15 @@ RAIZ_REPO = Path(__file__).resolve().parents[2]
 CLIENTES_SIGNATURE = (
     RAIZ_REPO / "services" / "signature-service" / "app" / "core" / "http_clients.py"
 )
+#: La consulta que hace que el circuito de aprobacion ATE (E23, RF-PRO-09) va
+#: en la direccion contraria —document PREGUNTA a signature— y con el token de
+#: signature. Es el mismo par url/token que el resto, y por eso entra en el
+#: mismo censo: la lista de ficheros del guardian se escribe por ADMISION, o el
+#: dia que alguien anade un cliente nuevo el olvido es silencioso.
+CLIENTE_DOCUMENT_A_SIGNATURE = (
+    RAIZ_REPO / "services" / "document-service" / "app" / "clients" / "signature_client.py"
+)
+FICHEROS_CLIENTE = (CLIENTES_SIGNATURE, CLIENTE_DOCUMENT_A_SIGNATURE)
 
 #: `settings.<url>` → `settings.<token>` que ese destino valida.
 DESTINO_ESPERA = {
@@ -166,6 +175,7 @@ DESTINO_ESPERA = {
     "document_service_url": "document_internal_token",
     "notification_service_url": "notification_internal_token",
     "storage_service_url": "storage_internal_token",
+    "signature_service_url": "signature_internal_token",
 }
 
 
@@ -184,20 +194,21 @@ def _atributos_de_settings(nodo: ast.AST) -> set[str]:
 
 def _funciones_con_destino_y_token():
     """(función, url de destino, tokens que manda) por cada llamada saliente."""
-    arbol = ast.parse(CLIENTES_SIGNATURE.read_text(encoding="utf-8"))
-    for fn in ast.walk(arbol):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        usados = _atributos_de_settings(fn)
-        destinos = usados & set(DESTINO_ESPERA)
-        tokens = {u for u in usados if u.endswith("_internal_token")}
-        if len(destinos) == 1 and tokens:
-            yield fn.name, destinos.pop(), tokens
+    for fichero in FICHEROS_CLIENTE:
+        arbol = ast.parse(fichero.read_text(encoding="utf-8"))
+        for fn in ast.walk(arbol):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            usados = _atributos_de_settings(fn)
+            destinos = usados & set(DESTINO_ESPERA)
+            tokens = {u for u in usados if u.endswith("_internal_token")}
+            if len(destinos) == 1 and tokens:
+                yield fn.name, destinos.pop(), tokens
 
 
 def test_el_censo_ve_las_llamadas_salientes() -> None:
     """Anti-vacuidad: si el extractor se rompe, cae aquí y no en el de abajo."""
-    assert len(list(_funciones_con_destino_y_token())) >= 3
+    assert len(list(_funciones_con_destino_y_token())) >= 4
 
 
 def test_cada_llamada_manda_el_token_del_servicio_al_que_va() -> None:

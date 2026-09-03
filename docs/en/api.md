@@ -1165,7 +1165,7 @@ The current catalogue (45 tools, 16 of them writes). Every write returns a signe
 | `listar_borradores`         | `GET /borradores`                     | `PERM_RADI` (1)                 | R                                                 |
 | `crear_borrador`            | `POST /borradores`                    | `PERM_RADI` (1)                 | **W** no number yet; not an archival act          |
 | `editar_borrador`           | `PATCH /borradores/{id}`              | `PERM_RADI` (1)                 | **W**                                             |
-| `aprobar_borrador`          | `POST /borradores/{id}/aprobar`       | `PERM_RADI` (1)                 | **W** _not_ required before radicar               |
+| `aprobar_borrador`          | `POST /borradores/{id}/aprobar`       | `PERM_RADI` (1)                 | **W** required before radicar; `409` if a circuit is open |
 | `radicar_borrador`          | `POST /borradores/{id}/radicar`       | `PERM_RADI` (1)                 | **W** consumes an immutable number                |
 | `consultar_serie`           | `GET /trd/{id}`                       | _no permission_                 | R                                                 |
 | `consultar_retencion`       | `GET /trd/{id}/retention`             | _no permission_                 | R a computation, not the recorded disposition     |
@@ -1320,7 +1320,8 @@ batch status. Requires `USUA_PERM_EXPEDIENTE`.
 
 - `GET/POST/DELETE /api/v1/plantillas` — reusable templates (`nombre`, `cuerpo`, `tipo_documental`).
 - `POST /api/v1/borradores` `{doc_type, subject, dest_dept?, cuerpo?, plantilla_id?, radicado_padre_id?}` — creates a draft. With `plantilla_id`, the template body is **merged** server-side against the context (parent radicado, sender, producing dependencia, dates); the fields left without a value are stored on the draft and returned as `faltantes[]`. The client never supplies that list: it ends up printed on a document of record.
-- `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (edit only if not yet registered), `POST /{id}/aprobar` (draft→approved), `POST /{id}/radicar` (→ generates the real radicado and marks the draft `radicado`).
+- `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (edit only if not yet registered), `POST /{id}/radicar` (→ generates the real radicado and marks the draft `radicado`).
+- `POST /api/v1/borradores/{id}/aprobar` (`draft → approved`) — **the approval circuit binds** (RF-PRO-09). Before setting the state, document-service asks signature-service whether an approval circuit is open on this draft (`GET /api/v1/signature/internal/circuitos/{type}/{id}`, sealed with `X-Internal-Token`); if one is, `409 circuito_pendiente`. The gate is **binding if present, not mandatory**: with no open circuit, approval works exactly as before. `503 circuito_no_verificable` if signature-service is unreachable — and the draft is **not** approved: assuming "no circuit" would reopen the hole through the back door, precisely while the system is degraded. When the last turn is resolved, signature-service approves the draft itself (`POST /api/v1/internal/documentos/borradores/{id}/aprobar`, idempotent); that notice is **best-effort by design** and can be, because the authority is the query, not the notice.
 
 ### Quick response (legacy parity)
 

@@ -488,6 +488,14 @@ services:
       # POST /api/v1/internal/documentos/anexos — único llamador legítimo:
       # archive-service (ver el comentario en ese bloque más abajo). Dev-only.
       - INTERNAL_SERVICE_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
+      # E23 RF-PRO-09 (el circuito de aprobacion tiene que atar): secreto que
+      # signature-service exige en X-Internal-Token en
+      # GET /api/v1/signature/internal/circuitos/{tipo}/{id} — este servicio lo
+      # consulta antes de aprobar un borrador, para no dejar saltar un circuito
+      # de visto bueno abierto. Mismo valor que
+      # signature-service.SIGNATURE_INTERNAL_TOKEN. Dev-only.
+      - SIGNATURE_SERVICE_URL=http://signature-service:8008
+      - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
       - TENANT_SERVICE_URL=http://tenant-service:8002
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp

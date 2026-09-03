@@ -52,6 +52,7 @@ from app.core.http_clients import (
     SignerEmailError,
     SigningKeyStatusUnavailableError,
     TotpVerifyUnavailableError,
+    aprobar_borrador_remote,
     get_huella_borrador,
     get_signer_email,
     get_signing_key_status_remote,
@@ -623,6 +624,22 @@ class CadenaFirmaService:
             expira_at=expira_at,
         )
 
+    async def _avisar_circuito_completo(self, sol: dict) -> None:
+        """Cerrada la cadena de un borrador, deja el borrador aprobado.
+
+        Solo aplica a `borrador`: es el único objeto cuyo circuito decide un
+        estado en otro servicio. Un radicado o un expediente ya existen cuando
+        se firman, y su cadena no los promueve a nada.
+
+        No levanta nunca (ver `aprobar_borrador_remote`): el visto bueno ya
+        está dado y auditado en este servicio, y revertirlo porque
+        document-service no contesta castigaría al firmante por una avería que
+        no es suya. Lo que se pierde si falla es un clic, no la garantía.
+        """
+        if sol["objeto_tipo"] != "borrador":
+            return
+        await aprobar_borrador_remote(str(sol["objeto_id"]), self._tenant_slug)
+
     async def _resolver_huella(self, objeto_id: str) -> str:
         """Huella autoritativa de lo que la cadena vincula, desde su productor.
 
@@ -1116,6 +1133,7 @@ class CadenaFirmaService:
                 next_active = await self._repo.turno_activo(solicitud_id)
                 if next_active is None:
                     await self._repo.actualizar_estado_solicitud(solicitud_id, "firmado")
+                    await self._avisar_circuito_completo(sol)
 
                 if _AUDIT_AVAILABLE:
                     await _audit.append(
@@ -1778,6 +1796,7 @@ class CadenaFirmaService:
             # dejar la cabecera 'pendiente' sobre una cadena sin turnos.
             if await self._repo.turno_activo(solicitud_id) is None:
                 await self._repo.actualizar_estado_solicitud(solicitud_id, "firmado")
+                await self._avisar_circuito_completo(sol)
 
             if _AUDIT_AVAILABLE:
                 await _audit.append(

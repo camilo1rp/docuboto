@@ -370,9 +370,14 @@ async def previsualizar_borrador(
 )
 async def aprobar_borrador(
     borrador_id: uuid.UUID,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> BorradorResponse:
-    return await BorradorService(conn).aprobar(borrador_id)
+    # El slug NO es decorativo aquí: `aprobar` consulta a signature-service si
+    # hay un circuito de visto bueno abierto, y esa consulta viaja con
+    # `X-Tenant-Slug`. Sin slug la consulta se hace contra el schema
+    # equivocado, que es la forma silenciosa de que el gate no vea nada.
+    return await BorradorService(conn, _slug(request)).aprobar(borrador_id)
 
 
 @router.post(

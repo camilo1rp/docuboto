@@ -16,7 +16,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.clients import signature_client as signature_client_mod
 from tests.conftest import TENANT_HEADERS, make_radicado_record
+
+
+async def _sin_circuito(borrador_id: str, tenant_slug: str) -> dict:
+    """Doble de `signature_client.get_estado_circuito`: no hay circuito abierto."""
+    return {"pendiente": False, "completo": False, "solicitud_id": None}
 
 NOW = datetime.now(tz=UTC)
 
@@ -117,9 +123,17 @@ async def test_editar_borrador_radicado_409(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aprobar_borrador(client_with_conn) -> None:
+async def test_aprobar_borrador(client_with_conn, monkeypatch) -> None:
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()
+    # Aprobar consulta a signature-service si hay un circuito abierto (E23,
+    # RF-PRO-09). Sin este doble la consulta saldría de verdad y daría 503:
+    # fail-closed, que es lo correcto, pero no es lo que mide este test.
+    monkeypatch.setattr(
+        signature_client_mod,
+        "get_estado_circuito",
+        _sin_circuito,
+    )
     # _require_editable (get) → set_estado (RETURNING aprobado)
     mock_conn.fetchrow.side_effect = [
         _borrador_row(id=bid, estado="borrador"),

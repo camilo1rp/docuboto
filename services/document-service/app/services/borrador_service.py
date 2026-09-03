@@ -25,6 +25,8 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException
 
+from app.clients import signature_client as signature_client_mod
+from app.clients.signature_client import CircuitoNoVerificableError
 from app.clients.storage_client import (
     RenderFallidoError,
     RenderNoDisponibleError,
@@ -119,11 +121,16 @@ class BorradorService:
         conn: asyncpg.Connection,
         tenant_slug: str = "",
         tenant_client: Any = None,
+        signature_client: Any = None,
     ) -> None:
         self._conn = conn
         self._repo = BorradorRepository(conn)
         self._slug = tenant_slug
         self._tenant_client = tenant_client
+        # El módulo real por defecto; los tests inyectan un doble. No es
+        # opcional en el sentido de «si no está, no se consulta»: sin él la
+        # aprobación no puede comprobar el circuito y el gate desaparecería.
+        self._signature_client = signature_client or signature_client_mod
 
     # -- plantillas ----------------------------------------------------
 
@@ -322,6 +329,27 @@ class BorradorService:
         return _bo(row)
 
     async def aprobar(self, borrador_id: uuid.UUID) -> BorradorResponse:
+        """Marca el borrador como aprobado — si nadie tiene un turno pendiente.
+
+        **El circuito de visto bueno tiene que atar** (E23, RF-PRO-09). Antes
+        de este gate no ataba: se abría una cadena de tres turnos sobre el
+        borrador, nadie resolvía ninguno, y quien tuviera `PERM_RADI` pulsaba
+        «Aprobar» y radicaba. El visto bueno de los funcionarios era
+        decorativo, y de paso el gate `documento_modificado` que protege cada
+        turno no protegía nada: nadie estaba obligado a pasar por él.
+
+        El gate es **vinculante si existe**, no obligatorio: sin circuito
+        abierto, aprobar directo sigue funcionando igual que siempre — hay
+        entidades donde una salida no pasa por visto bueno, y exigirlo a todas
+        convertiría en requisito un paso que nadie pidió. Lo que no puede pasar
+        es abrir un circuito deliberadamente y luego ignorarlo.
+
+        Al completarse la cadena el turno final aprueba solo (signature-service
+        lo pide al cerrar); si esa llamada se pierde, este botón vuelve a estar
+        disponible porque la consulta ve el circuito ya cerrado. Por eso el
+        aviso automático puede ser best-effort sin abrir ninguna ventana: la
+        autoridad es la consulta, no el aviso.
+        """
         row = await self._require_editable(borrador_id)
         if row["estado"] != "borrador":
             raise HTTPException(
@@ -332,7 +360,55 @@ class BorradorService:
                     "status": 409,
                 },
             )
+        await self._gate_circuito_pendiente(borrador_id)
         return _bo(await self._repo.set_estado(borrador_id, "aprobado"))
+
+    async def _gate_circuito_pendiente(
+        self, borrador_id: uuid.UUID, *, acto: str = "aprobar"
+    ) -> None:
+        """409 si hay un circuito de aprobación abierto; 503 si no se puede saber.
+
+        El 503 es deliberado y es el lado seguro: la única consecuencia de no
+        poder preguntar es no poder aprobar. Suponer «no hay circuito» cuando
+        signature-service no responde reabriría el mismo agujero por la puerta
+        de atrás, y lo haría justo cuando el sistema está degradado.
+        """
+        try:
+            estado = await self._signature_client.get_estado_circuito(
+                str(borrador_id), self._slug
+            )
+        except CircuitoNoVerificableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "circuito_no_verificable",
+                    "detail": (
+                        "No se pudo comprobar si este borrador tiene un circuito "
+                        f"de aprobacion abierto, asi que no se {acto}. Reintenta "
+                        "en unos segundos."
+                    ),
+                    "status": 503,
+                },
+            ) from exc
+        if estado.get("pendiente"):
+            # El mensaje nombra el acto que se intentaba: «no se aprueba desde
+            # aqui» delante de un boton de radicar manda a buscar un problema
+            # que no existe.
+            cola = (
+                "se radica cuando lo firme quien responde por el documento, no antes"
+                if acto == "radicar"
+                else "se aprueba cuando lo resuelvan todos los turnos, no desde aqui"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "circuito_pendiente",
+                    "detail": (
+                        f"Este borrador tiene un circuito de aprobacion abierto: {cola}."
+                    ),
+                    "status": 409,
+                },
+            )
 
     async def devolver_a_borrador(self, borrador_id: uuid.UUID) -> BorradorResponse:
         """Reabre un borrador aprobado para poder corregir el texto (RF-PRO-10).
@@ -450,6 +526,20 @@ class BorradorService:
                     "status": 409,
                 },
             )
+        # Y el circuito abierto tampoco se salta AQUÍ (E23, RF-PRO-09).
+        #
+        # El gate de `aprobar` no basta, y creerlo suficiente fue un error de
+        # análisis: en la pantalla el circuito se abre sobre un borrador **ya
+        # aprobado** —es el orden del trámite: se aprueba el texto, se manda a
+        # visto bueno, firma quien responde, y entonces sale—. Así que la vía
+        # que de verdad se usaba para saltárselo no era aprobar dos veces:
+        # era radicar con los turnos sin resolver. Y radicar es peor, porque
+        # consume el número inmutable: aprobar de más se deshace devolviendo a
+        # edición, un consecutivo gastado no se devuelve nunca.
+        #
+        # Se comprobó en `tenant_demo`: dos borradores aprobados con su
+        # circuito abierto, a un clic de radicarse.
+        await self._gate_circuito_pendiente(borrador_id, acto="radicar")
         # ── EL ORDEN, y es la mitad del diseño ─────────────────────────────
         #
         #   1. combinar (1.ª pasada)

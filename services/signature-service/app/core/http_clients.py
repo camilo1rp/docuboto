@@ -465,3 +465,36 @@ async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
     if not isinstance(datos, dict):
         raise HuellaNoVerificableError("respuesta ilegible: no es un objeto")
     return datos
+
+
+async def aprobar_borrador_remote(borrador_id: str, tenant_slug: str) -> bool:
+    """Avisa a document-service de que el circuito de este borrador se completó.
+
+    **Best-effort a propósito**: devuelve `False` en cualquier fallo y no
+    levanta. Puede permitírselo porque no es la garantía — la garantía es que
+    `BorradorService.aprobar` (document-service) consulta el estado real del
+    circuito antes de aprobar, así que si este aviso se pierde el borrador
+    simplemente se aprueba con un clic más, nunca se salta el circuito.
+
+    Lo contrario sería peor de las dos maneras: levantar aquí haría que un
+    document-service caído revirtiera un visto bueno ya dado y ya auditado, y
+    fiarle la garantía convertiría este aviso en una copia que se queda rancia.
+
+    Sellado con el `X-Internal-Token` de DOCUMENT-service, que es a quien se
+    llama.
+    """
+    headers = {
+        "X-Internal-Token": settings.document_internal_token,
+        "X-Tenant-Slug": tenant_slug,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.document_service_url, timeout=10.0
+        ) as client:
+            resp = await client.post(
+                f"/api/v1/internal/documentos/borradores/{borrador_id}/aprobar",
+                headers=headers,
+            )
+    except httpx.RequestError:
+        return False
+    return resp.status_code == 200

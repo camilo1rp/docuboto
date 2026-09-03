@@ -183,3 +183,52 @@ async def huella_borrador(
         "documento_sha256": row["documento_sha256"],
         "tiene_documento": row["tiene_documento"],
     }
+
+
+@router.post(
+    "/borradores/{borrador_id}/aprobar",
+    summary=(
+        "Aprobar un borrador porque su circuito se completó "
+        "(acto de sistema; lo pide signature-service al resolverse el último turno)"
+    ),
+)
+async def aprobar_borrador_internal(
+    borrador_id: uuid.UUID,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """Cierra el circuito en la única marca que radicar mira.
+
+    Cuando el último turno de una cadena de visto bueno se resuelve, quien
+    aprobó el borrador fue el circuito, no una persona pulsando un botón: si el
+    estado se quedara en `borrador`, alguien tendría que ir a marcarlo a mano y
+    el acto de aprobar volvería a estar separado del acto que lo justifica.
+
+    **Es best-effort por diseño, y puede serlo sin abrir ninguna ventana.** Si
+    esta llamada se pierde, el borrador se queda en `borrador` y el botón
+    «Aprobar» de la pantalla vuelve a funcionar — porque el gate de
+    `BorradorService.aprobar` consulta a signature-service el estado real y ve
+    el circuito ya cerrado. La autoridad es la consulta; esto solo ahorra el
+    paso manual. Lo contrario —fiarlo todo a este aviso— sería la copia rancia
+    que el gate existe para no tener.
+
+    Idempotente y sin efecto fuera del estado inicial: solo promueve desde
+    `borrador`. Un borrador ya `aprobado` o ya `radicado` se queda como está,
+    porque un aviso repetido no puede deshacer una radicación.
+    """
+    row = await conn.fetchrow("SELECT estado FROM borrador WHERE id = $1", borrador_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "borrador_not_found",
+                "detail": f"Borrador {borrador_id} no encontrado",
+                "status": 404,
+            },
+        )
+    if row["estado"] != "borrador":
+        return {"borrador_id": str(borrador_id), "estado": row["estado"], "cambiado": False}
+    await conn.execute(
+        "UPDATE borrador SET estado = 'aprobado', updated_at = now() WHERE id = $1",
+        borrador_id,
+    )
+    return {"borrador_id": str(borrador_id), "estado": "aprobado", "cambiado": True}

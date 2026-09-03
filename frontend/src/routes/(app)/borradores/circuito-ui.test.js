@@ -148,3 +148,48 @@ describe("la vuelta atrás del ciclo", () => {
     expect(PAGINA).toMatch(/habrá que recogerlos de nuevo/);
   });
 });
+
+describe("el circuito ata también en la pantalla", () => {
+  // El backend responde 409 `circuito_pendiente` (E23, RF-PRO-09). Un botón
+  // que solo puede fallar convierte una regla del trámite en un tropiezo: el
+  // funcionario descubre el límite estrellándose contra él.
+  it("con turnos sin resolver NO se ofrece «Aprobar borrador»", () => {
+    expect(PAGINA).toMatch(/\{#if circuitoAbierto\}/);
+    // El botón queda en la rama `:else`, no antes del `if`.
+    const iAviso = PAGINA.indexOf("{#if circuitoAbierto}");
+    const iBoton = PAGINA.indexOf("Aprobar borrador");
+    expect(iAviso).toBeGreaterThan(-1);
+    expect(iBoton).toBeGreaterThan(iAviso);
+  });
+
+  it("el estado del circuito se lee también en edición, no solo en «aprobado»", () => {
+    // El panel del circuito solo se pintaba con el borrador ya aprobado, así
+    // que el dato se cargaba y nadie lo miraba mientras se editaba: justo
+    // cuando hace falta para no ofrecer el botón.
+    expect(PAGINA).toMatch(
+      /\$: circuitoAbierto = circuitoActual !== null && turnosCumplidos < turnosDelCircuito\.length/,
+    );
+  });
+
+  it("el aviso dice cuántos turnos faltan, no solo que hay circuito", () => {
+    expect(PAGINA).toMatch(/turnosDelCircuito\.length - turnosCumplidos/);
+  });
+});
+
+describe("radicar es el acto que de verdad hay que atar", () => {
+  // El circuito se abre sobre un borrador YA aprobado —ese es el orden del
+  // trámite—, así que la vía real para saltárselo nunca fue aprobar dos veces:
+  // era radicar con los turnos sin resolver. Y radicar es peor: aprobar de más
+  // se deshace devolviendo a edición; un consecutivo gastado no se devuelve.
+  it("con el circuito abierto no se ofrece «Radicar»", () => {
+    const iRadicar = PAGINA.indexOf("pedirConfirmacionRadicar}");
+    const iAviso = PAGINA.indexOf("No se puede radicar todavia");
+    expect(iAviso).toBeGreaterThan(-1);
+    // El aviso está en la rama que precede al botón dentro del mismo bloque.
+    expect(iAviso).toBeLessThan(iRadicar);
+  });
+
+  it("el aviso dice por qué importa, no solo que no se puede", () => {
+    expect(PAGINA).toMatch(/numero,?\s+y el numero\s+no se devuelve/);
+  });
+});

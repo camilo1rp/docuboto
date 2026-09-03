@@ -97,6 +97,22 @@ class Settings(BaseSettings):
     notification_service_url: str = "http://notification-service:8007"
     notification_internal_token: str = ""
 
+    # --- El circuito de aprobación tiene que atar (E23, RF-PRO-09) ---
+    #
+    # `BorradorService.aprobar` consulta
+    # `GET /api/v1/signature/internal/circuitos/borrador/{id}` antes de marcar
+    # un borrador como aprobado: si hay un circuito de visto bueno abierto, no
+    # se puede saltar. Sin esta consulta el circuito era decorativo — se abría,
+    # nadie firmaba, y cualquiera con `PERM_RADI` aprobaba y radicaba igual.
+    #
+    # Mismo secreto que `signature-service.SIGNATURE_INTERNAL_TOKEN`. Vacío
+    # (default) hace que signature-service responda 503 y que aprobar falle
+    # fail-closed: un despliegue mal configurado NO puede aprobar saltándose
+    # circuitos, que es exactamente el fallo que este gate existe para impedir.
+    # NUNCA commitear el valor real.
+    signature_service_url: str = "http://signature-service:8008"
+    signature_internal_token: str = ""
+
     # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
     # que el gateway declara público sin autenticación.
     #

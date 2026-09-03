@@ -46,6 +46,7 @@ from app.core.http_clients import (
 )
 from app.core.internal_auth import require_internal_token
 from app.providers.local import verify_xades
+from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.firma_repository import FirmaRepository
 from app.schemas.firma import (
     FirmaResponse,
@@ -425,3 +426,60 @@ async def get_firma(
         crl_next_update=d.get("crl_next_update"),
         ocsp_present=d.get("ocsp_present", False),
     )
+
+
+@router.get(
+    "/internal/circuitos/{objeto_tipo}/{objeto_id}",
+    dependencies=[Depends(require_internal_token)],
+    summary=(
+        "Estado del circuito de aprobación de un objeto "
+        "(acto de sistema; lo consulta document-service antes de aprobar un borrador)"
+    ),
+)
+async def estado_circuito_internal(
+    objeto_tipo: str,
+    objeto_id: str,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """Si hay un circuito abierto sobre este objeto, y si alguno se completó.
+
+    **El circuito tiene que atar** (E23, RF-PRO-09). Hasta aquí no ataba: se
+    abría una cadena de tres turnos sobre un borrador, nadie resolvía ninguno,
+    y quien tuviera `PERM_RADI` pulsaba «Aprobar» y radicaba. El visto bueno de
+    los funcionarios era decorativo, y el gate `documento_modificado` que
+    protege cada turno no protegía nada, porque nadie estaba obligado a pasar
+    por él.
+
+    La consulta va en esta dirección —document PREGUNTA— y no al revés
+    (signature avisando a document al cerrar la cadena) a propósito: una marca
+    copiada en `borrador` se queda rancia por caminos que no pasan por aquí
+    (borrar la cadena, restaurar la base, un consumidor de eventos retrasado),
+    y una copia rancia en el lado permisivo es una puerta abierta. Preguntar
+    devuelve siempre el estado de ahora.
+
+    Sin gate de clearance, por lo mismo que `GET
+    /internal/documentos/borradores/{id}/huella` en document-service: el
+    llamante es un servicio sellado con `X-Internal-Token` y la respuesta es
+    **content-free** —dos booleanos y un identificador—, sin asunto, firmantes
+    ni texto que recortar por nivel de seguridad.
+
+    `pendiente` y `completo` no son excluyentes ni opuestos: un objeto puede no
+    tener ningún circuito (ambos `false`, que es el camino directo de siempre),
+    tener uno abierto (`pendiente`), o haber cerrado uno y no tener ninguno
+    abierto (`completo`).
+    """
+    repo = CadenaRepository(conn)
+    abierta = await repo.get_solicitud_por_objeto(objeto_tipo, objeto_id, solo_abierta=True)
+    completo = await conn.fetchval(
+        "SELECT 1 FROM firma_solicitud "
+        "WHERE objeto_tipo = $1 AND objeto_id = $2 AND estado = 'firmado' LIMIT 1",
+        objeto_tipo,
+        objeto_id,
+    )
+    return {
+        "objeto_tipo": objeto_tipo,
+        "objeto_id": objeto_id,
+        "pendiente": abierta is not None,
+        "completo": completo is not None,
+        "solicitud_id": str(abierta["id"]) if abierta is not None else None,
+    }
