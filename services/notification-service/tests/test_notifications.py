@@ -49,7 +49,24 @@ async def test_send_notification_manual(client: AsyncClient, db_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_send_notification_failed_email_is_persisted(client: AsyncClient, db_conn) -> None:
-    """Si el SMTP falla (todos los reintentos), igual se radica con status 'failed'."""
+    """Si el SMTP falla, se persiste el intento **y se responde que falló**.
+
+    Este test afirmaba `202` — y con eso fijaba el defecto en su sitio. El
+    envío es síncrono: el servicio agota los reintentos, sabe que fracasó y lo
+    guarda como `failed`; contestar «aceptado» convertía ese conocimiento en
+    nada.
+
+    Lo que rompía está un servicio más allá: el único llamante de esta ruta es
+    el OTP de segundo factor de signature-service, que tiene escrito su
+    `503 canal_2fa_no_disponible`. Con el 202 incondicional ese gate no podía
+    dispararse nunca, y el firmante veía «Enviamos un código, vence en 4:48»
+    esperando un correo que nadie mandó. Se encontró recorriendo el sistema
+    con MailHog apagado.
+
+    Lo que sí medía este test y se conserva: la fila se persiste igual. El
+    historial tiene que registrar el intento fallido — es justamente lo que
+    permitió encontrarlo.
+    """
     with (
         patch(
             "app.services.notification_service.send_email",
@@ -67,7 +84,9 @@ async def test_send_notification_failed_email_is_persisted(client: AsyncClient, 
             },
             headers=INTERNAL_HEADERS,
         )
-    assert response.status_code == 202
+    assert response.status_code == 502
+    assert response.json()["detail"]["error"] == "envio_fallido"
+    # Y se persistió pese al error: el intento fallido es parte del historial.
     db_conn.execute.assert_awaited_once()
 
 

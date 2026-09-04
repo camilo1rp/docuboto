@@ -39,10 +39,13 @@ class FirmaRepository:
         Los campos XAdES (``certificado_pem``, ``minio_key_firmado``,
         ``nivel_conformidad``, ``xades_level``, ``certificado_fingerprint``)
         son ``None`` para firmas ``nativa`` — las columnas admiten NULL
-        (migración 008, aditiva). ``tipo_firma`` se fija explícitamente en
-        cada INSERT (``'nativa'`` o ``'sello_sistema'``) en vez de depender
-        del DEFAULT de columna, que quedó en ``'electronica-nativa'`` desde la
-        migración 002 por compatibilidad histórica. ``signed_xml_sha256``
+        (migración 008, aditiva). ``tipo_firma`` **se resuelve aquí**
+        (``or 'nativa'``), y no en cada llamante como decía esta frase: la
+        rama nativa de la cadena de firma no lo pasaba, y como la columna es
+        NOT NULL y un NULL explícito ignora el DEFAULT, firmar sin credencial
+        PKI personal reventaba con ``NotNullViolationError``. El DEFAULT de
+        columna, además, pertenecía a un vocabulario muerto
+        (``'electronica-nativa'``, migración 002) hasta la 019. ``signed_xml_sha256``
         (migración 010) ata ``/verify`` a esta firma_id concreta — ``None``
         para ``nativa``.
 
@@ -109,7 +112,22 @@ class FirmaRepository:
             data.get("minio_key_firmado"),
             data.get("nivel_conformidad"),
             data.get("xades_level"),
-            data.get("tipo_firma"),
+            # `or "nativa"`, y no `.get(...)` a secas: la columna es NOT NULL
+            # (migración 002) y un NULL **explícito** en el INSERT **ignora el
+            # DEFAULT** — el default solo actúa cuando la columna se omite. Y
+            # este INSERT la nombra siempre.
+            #
+            # Con eso, firmar por el camino NATIVO —el de cualquiera que no
+            # tenga credencial PKI personal— reventaba con
+            # `NotNullViolationError` y un 500 crudo en la cara del firmante.
+            # La rama personal sí fijaba el valor, así que el defecto solo
+            # existía para el caso más común.
+            #
+            # No lo vio ninguna suite porque todas doblan la conexión con
+            # `AsyncMock`: un mock acepta cualquier fila. En la base de
+            # demostración no hay una sola firma `nativa` — ese camino nunca
+            # llegó a Postgres.
+            data.get("tipo_firma") or "nativa",
             data.get("certificado_fingerprint"),
             data.get("signed_xml_sha256"),
             data.get("tsa_token"),

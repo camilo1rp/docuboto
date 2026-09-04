@@ -501,7 +501,7 @@ async def test_sign_without_active_cert_falls_back_to_native(
 
 
 @pytest.mark.asyncio
-async def test_sign_active_cert_without_totp_code_returns_409(
+async def test_sign_active_cert_without_totp_code_returns_409_totp_requerido(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_audit(monkeypatch)
@@ -527,7 +527,12 @@ async def test_sign_active_cert_without_totp_code_returns_409(
                 headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
             )
         assert resp.status_code == 409, resp.text
-        assert resp.json()["detail"]["error"] == "2fa_requerido"
+        # `totp_requerido`, NO `2fa_requerido`: el cliente tiene que poder
+        # distinguir «arranca el reto por correo» de «mándame el código de tu
+        # app autenticadora». Cuando los dos compartían nombre, un firmante con
+        # credencial activa no podía firmar ninguna cadena: la pantalla emitía
+        # OTP-correo en bucle y el `totp_code` no llegaba nunca.
+        assert resp.json()["detail"]["error"] == "totp_requerido"
         sign_digest_mock.assert_not_called()
     finally:
         _clear()

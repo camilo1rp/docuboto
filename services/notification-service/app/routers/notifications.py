@@ -53,7 +53,43 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     dependencies=[Depends(require_internal_token)],
 )
 async def send_notification(payload: NotificationSend) -> NotificationAccepted:
+    """Envía y **dice si se envió**.
+
+    El envío es síncrono: `send_notification` agota sus reintentos SMTP antes
+    de volver, y el resultado queda en `notification.status`. Aun así esta ruta
+    respondía `202 Accepted` pasara lo que pasara — el servicio sabía que había
+    fallado, lo guardaba como `failed` con sus tres intentos, y contestaba que
+    sí.
+
+    Lo que eso rompía está un servicio más allá. El único llamante de esta ruta
+    es el **OTP de segundo factor** de signature-service, que tiene escrito su
+    fail-closed: `503 canal_2fa_no_disponible` si el correo no sale. Con el 202
+    incondicional ese gate **no podía dispararse nunca por esta causa**: el
+    firmante veía «Enviamos un código, vence en 4:48» y esperaba un correo que
+    nadie había mandado. Un fail-closed inalcanzable es peor que no tenerlo,
+    porque se lee como una garantía.
+
+    Y para un OTP la entrega **es** la función: un código con cinco minutos de
+    vida que se reintenta en segundo plano no sirve de nada. Por eso aquí un
+    envío fallido es un error de la petición, no un aviso para el historial.
+
+    La notificación se persiste igual —el historial tiene que registrar el
+    intento fallido, que es justamente lo que permitió encontrar esto—; lo que
+    cambia es la respuesta.
+    """
     notification = await notification_service.send_notification(payload)
+    if notification.status != "sent":
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "envio_fallido",
+                "detail": (
+                    "No se pudo entregar el correo tras "
+                    f"{notification.attempts} intentos."
+                ),
+                "status": 502,
+            },
+        )
     return NotificationAccepted(id=notification.id)
 
 

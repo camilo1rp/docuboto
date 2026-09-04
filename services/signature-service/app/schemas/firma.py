@@ -116,6 +116,22 @@ class FirmaResponse(BaseModel):
     objeto_id: str | None
     formato_solicitado: str | None
     firmante_id: uuid.UUID | None
+    # SHA-256 de los BYTES FIRMADOS, que NO siempre son el documento, y que
+    # dependen TAMBIÉN del proveedor. Con `provider` nativa: para
+    # `borrador`/`documento` se firma el texto hexadecimal de la huella, así que
+    # este valor es el hash del hash; para `radicado`/`expediente`, que se firman
+    # como conjunto, es el digest de `"{objeto_tipo}:{objeto_id}"`. Con
+    # `provider` xades_personal esos mismos bytes van embebidos en el envoltorio
+    # XML `<acto xmlns="urn:orpyca:firma-personal" …>` que XAdES necesita (ver
+    # `cadena_service._build_personal_envelope`), y el valor es el digest del
+    # ENVOLTORIO, no el de los bytes que contiene.
+    #
+    # Consecuencia práctica, comprobada en la cadena de un expediente: dos
+    # turnos del MISMO acto sobre el MISMO objeto publican huellas distintas
+    # —una por firmante nativo, otra por firmante con certificado— sin que nada
+    # en el nombre lo advierta. Este campo solo es comparable entre firmas del
+    # mismo `provider`, y **no sirve para comprobar contra el SHA-256 de un PDF
+    # en la mano**. La huella del documento es `firma_solicitud.payload_sha256`.
     payload_sha256: str
     provider: str
     sello_tiempo: datetime

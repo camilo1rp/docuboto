@@ -179,6 +179,37 @@ def _xades_gate_activo(nivel_seguridad: int) -> bool:
     return False  # "off"
 
 
+def huella_para_desafio(sol: asyncpg.Record) -> str:
+    """A qué queda atado un desafío 2FA cuando la cadena no fija huella.
+
+    El desafío se ata al SHA-256 de exactamente los bytes que la firma va a
+    cubrir. Donde hay `payload_sha256` esos bytes son el contenido y la huella
+    ya está calculada. Donde no lo hay —`radicado` y `expediente`, que
+    `CADENA_PAYLOAD_OBLIGATORIO` deja fuera a propósito porque se firman como
+    conjunto— `firmar` sella el identificador `"{objeto_tipo}:{objeto_id}"`, y
+    esta función devuelve su digest: el desafío no promete más de lo que la
+    firma cumple, ni menos.
+
+    Antes esto no existía y `emitir_desafio` exigía la huella para TODOS los
+    tipos. Las dos reglas se escribieron aparte y nunca se encontraron: el
+    contrato deja crear una cadena sobre un radicado o un expediente sin
+    huella, y el desafío la reclamaba, así que esas cadenas eran **imposibles
+    de firmar**. La pantalla ofrecía el botón «Firmar», el paso 1 moría con un
+    `422` que nombraba una columna de la base, y el funcionario no tenía nada
+    que hacer con esa frase. Un gate que se dispara SIEMPRE sobre un tipo
+    válido no es una defensa: es una puerta tapiada con un cartel técnico.
+
+    La usan la emisión y la verificación —una sola función, dos llamadas— para
+    que no puedan volver a discrepar: si una calculara distinto de la otra,
+    todo desafío de estos tipos se rechazaría como «de otro documento».
+    """
+    huella = sol["payload_sha256"]
+    if huella:
+        return str(huella)
+    identificador = f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
+    return hashlib.sha256(identificador).hexdigest()
+
+
 class CadenaFirmaService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -413,8 +444,9 @@ class CadenaFirmaService:
            the turn, so the message never tells a non-member to wait their turn).
         2b. 403 no_es_su_turno — actor IS in the chain but the active turn is
            someone else's, or there is no active turn.
-        3. 422 payload_no_fijado — payload_sha256 must be fixed before a 2FA
-           challenge can be issued (Q1): the challenge is bound to a stable hash.
+        (No hay guard de huella: el desafío se ata a `huella_para_desafio(sol)`,
+        que devuelve `payload_sha256` donde existe y el digest del identificador
+        —los bytes que la firma sella— donde el tipo se firma como conjunto.)
 
         Idempotent reissue: a live challenge (pendiente|verificado) for the same
         (solicitud, firmante, hash_documento) is expired before inserting the
@@ -497,19 +529,12 @@ class CadenaFirmaService:
                     },
                 )
 
-            hash_documento = sol["payload_sha256"]
-            if not hash_documento:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "error": "payload_no_fijado",
-                        "detail": (
-                            "firma_solicitud.payload_sha256 debe fijarse antes de emitir "
-                            "un desafío de doble factor (RF-FIR-13)"
-                        ),
-                        "status": 422,
-                    },
-                )
+            # Ver `huella_para_desafio`: donde hay contenido con huella propia
+            # el desafío se ata a ella; donde el tipo se firma como conjunto se
+            # ata al digest del identificador —lo mismo que sellará la firma—.
+            # Aquí antes había un `422 payload_no_fijado` incondicional que
+            # dejaba `radicado` y `expediente` sin forma de firmarse.
+            hash_documento = huella_para_desafio(sol)
 
             challenge_repo = ChallengeRepository(self._conn)
             now = datetime.now(UTC)
@@ -815,7 +840,12 @@ class CadenaFirmaService:
         entirely for this path: ``body.totp_code`` is required and consumed
         ATOMICALLY at auth-service, together with the signature itself (see
         ``_firmar_personal``/``app.core.http_clients.sign_digest_remote``) —
-        not by this service's own TOTP verification.
+        not by this service's own TOTP verification. Its absence is
+        409 ``totp_requerido`` — deliberately NOT the ``2fa_requerido`` that
+        ``_gate_2fa`` returns: that one asks the client to start an e-mail
+        challenge, this one asks for an authenticator code and accepts
+        nothing else. Sharing the name made the only chain-signing client
+        answer this with an e-mail OTP forever.
 
         --- Gate XAdES (E17/F4, Incremento 3 — cierra Baja #3 del Inc.2) ---
         With ``settings.firma_personal_require_xades == "off"`` (default), a
@@ -967,10 +997,23 @@ class CadenaFirmaService:
             if personal_res.body is not None:
                 totp_code = payload_opcional.totp_code if payload_opcional else None
                 if not totp_code:
+                    # Código de error PROPIO, distinto del `2fa_requerido` que
+                    # devuelve `_gate_2fa`. Los dos significan cosas opuestas:
+                    # aquel pide «arranca el reto por correo», este pide «mándame
+                    # el código de tu app autenticadora, y solo ese». Mientras
+                    # compartieron nombre, el único cliente que firma cadenas
+                    # (`SignAssistant`) leía este como aquel, emitía otro
+                    # OTP-correo, y el firmante quedaba en un bucle sin salida:
+                    # cada vuelta gastaba un desafío y un correo, y el OTP nunca
+                    # llegaba a comprobarse (`intentos` se quedaba en 0). Un
+                    # firmante con credencial activa no podía firmar NINGUNA
+                    # cadena —tener certificado le quitaba la capacidad de
+                    # firmar—, y no lo veía ninguna suite porque cada regla, por
+                    # separado, es correcta.
                     otp_fail = HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail={
-                            "error": "2fa_requerido",
+                            "error": "totp_requerido",
                             "detail": "totp_code es obligatorio para la firma personal (RF-FIR-13)",
                             "status": 409,
                         },
@@ -990,7 +1033,7 @@ class CadenaFirmaService:
                         consumed_challenge = {
                             "challenge_id": None,
                             "factor_tipo": "totp",
-                            "hash_documento": sol["payload_sha256"],
+                            "hash_documento": huella_para_desafio(sol),
                             "consumido_at": datetime.now(UTC),
                         }
             elif gate_activo:
@@ -1179,7 +1222,20 @@ class CadenaFirmaService:
                             # Effective hash bound to this act — ties the audit
                             # entry to the exact document without needing to
                             # cross-reference firma_challenge (RF-FIR-13/14).
-                            "hash_documento": sign_result["payload_sha256"],
+                            # NO es el hash del documento, y por eso ya no se
+                            # llama así. `sign_result["payload_sha256"]` es el
+                            # SHA-256 de los BYTES QUE SE FIRMARON, y para un
+                            # `borrador` esos bytes son el TEXTO HEXADECIMAL de
+                            # la huella del documento — o sea, el hash del hash.
+                            # El asiento lo publicaba como `hash_documento`, así
+                            # que afirmaba algo falso justo donde hay que poder
+                            # demostrar qué se firmó (Ley 594). El valor no se
+                            # toca: el HMAC de las firmas ya emitidas cubre esos
+                            # bytes y reescribirlo las invalidaría. Lo que se
+                            # corrige es el nombre. La huella del documento vive
+                            # en `firma_solicitud.payload_sha256` y en el asiento
+                            # `firma.challenge.emitido`, que sí la lleva.
+                            "payload_firmado_sha256": sign_result["payload_sha256"],
                             # Derived from the challenge row actually
                             # verified-and-consumed by _gate_2fa (never from
                             # settings.firma_2fa_required nor from the
@@ -1425,7 +1481,7 @@ class CadenaFirmaService:
                     "status": 409,
                 },
             ), None
-        if challenge["hash_documento"] != sol["payload_sha256"]:
+        if challenge["hash_documento"] != huella_para_desafio(sol):
             return HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
@@ -1564,7 +1620,7 @@ class CadenaFirmaService:
             consumed = {
                 "challenge_id": None,
                 "factor_tipo": "totp",
-                "hash_documento": sol["payload_sha256"],
+                "hash_documento": huella_para_desafio(sol),
                 "consumido_at": now,
             }
             return None, consumed

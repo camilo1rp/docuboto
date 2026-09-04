@@ -868,7 +868,7 @@ CATALOG: tuple[Tool, ...] = (
         method="POST",
         path="/api/v1/expedientes",
         permission="USUA_PERM_EXPEDIENTE",
-        min_crud=1,
+        min_crud=3,
         write=True,
         destructive=False,
         epic="E02",
@@ -958,7 +958,7 @@ CATALOG: tuple[Tool, ...] = (
         path="/api/v1/expedientes/{expediente_id}/radicados",
         path_params=("expediente_id",),
         permission="USUA_PERM_EXPEDIENTE",
-        min_crud=1,
+        min_crud=2,
         write=True,
         # Desvincular existe (`DELETE`, crud 3) pero NO se expone: rompe la
         # foliación. Que la vuelta atrás exista no hace inocua la ida, así que
@@ -1010,7 +1010,7 @@ CATALOG: tuple[Tool, ...] = (
         path="/api/v1/expedientes/{expediente_id}",
         path_params=("expediente_id",),
         permission="USUA_PERM_EXPEDIENTE",
-        min_crud=1,
+        min_crud=2,
         write=True,
         destructive=False,
         epic="E02",

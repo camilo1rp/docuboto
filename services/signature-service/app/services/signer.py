@@ -11,7 +11,14 @@
 Firma electrónica nativa pluggable (E06, ADR-016, RF-FIR-12).
 
 La `firma_blob` es un HMAC-SHA256 que incorpora:
-  - El SHA-256 del contenido (payload_sha256).
+  - El SHA-256 de los BYTES QUE RECIBE (`payload_sha256`). Decía «del
+    contenido», y no siempre lo es: los llamantes pasan aquí lo que quieren
+    cubrir con la firma, y para un `borrador` pasan el TEXTO HEXADECIMAL de la
+    huella del documento, no el documento. El valor resultante es entonces el
+    hash del hash. Esta función es genérica y está bien —su `Args` ya admite
+    «XML, hash, etc.»—; lo que estaba mal era esta línea, que prometía una
+    correspondencia directa con el documento que no existe. La huella del
+    documento vive en `firma_solicitud.payload_sha256`.
   - La identidad verificada del firmante (firmante_id, derivado del JWT).
   - El sello de tiempo del servidor (sello_tiempo, en ISO 8601 UTC).
   - Un secreto de servicio (settings.signature_secret).

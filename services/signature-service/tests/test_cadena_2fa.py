@@ -33,6 +33,7 @@ sleep() is ever needed.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -45,6 +46,7 @@ from app.core.database import get_tenant_conn
 from app.core.http_clients import OtpEmailDeliveryError, SignerEmailError
 from app.core.otp import hmac_otp
 from app.main import app
+from app.services import cadena_service
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import FIRMANTE2, SOL_ID, _exec_sig, _make_conn, _turno_row
 
@@ -260,27 +262,77 @@ async def test_challenge_a_quien_no_esta_en_la_cadena_no_le_dice_que_espere_turn
 
 
 @pytest.mark.asyncio
-async def test_create_challenge_payload_no_fijado_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_challenge_sin_huella_se_ata_al_identificador(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una cadena sobre `radicado`/`expediente` SÍ se puede firmar.
+
+    Este test afirmaba lo contrario: exigía `422 payload_no_fijado`, y con eso
+    codificaba el defecto. `CADENA_PAYLOAD_OBLIGATORIO` deja esos dos tipos
+    fuera a propósito —se firman como conjunto—, así que el contrato permite
+    crear la cadena sin huella; y `emitir_desafio` la reclamaba igual. Las dos
+    reglas nunca se encontraron y el resultado era una cadena **imposible de
+    firmar**: la pantalla ofrecía «Firmar» y el paso 1 moría nombrando una
+    columna de la base.
+
+    Ahora el desafío se ata al SHA-256 del identificador —exactamente los
+    bytes que `firmar` sella cuando no hay huella de contenido—, así que no
+    promete más de lo que la firma cumple. La aserción fuerte es sobre el
+    `hash_documento` PERSISTIDO: comprobar solo el `201` pasaría también si la
+    huella se guardara en blanco o distinta de la que usa la verificación.
+    """
     _patch_audit(monkeypatch)
-    _patch_email(monkeypatch)
+    _, mock_send = _patch_email(monkeypatch)
     conn = _make_conn()
     sol = _sol_row(payload_sha256=None)
     turno = _turno_row(firmante_id=USER)
+    challenge_row = _challenge_row()
 
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [sol, {}, turno]
+    conn.fetchrow.side_effect = [sol, {}, turno, None, challenge_row]
 
     _override(conn)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
                 f"/api/v1/signature/requests/{SOL_ID}/challenge",
-                headers=TENANT_HEADERS,
+                headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
             )
-        assert resp.status_code == 422
-        assert resp.json()["detail"]["error"] == "payload_no_fijado"
+        assert resp.status_code == 201
+        mock_send.assert_awaited_once()
+
+        esperado = hashlib.sha256(
+            f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
+        ).hexdigest()
+        insert = [
+            c for c in conn.fetchrow.await_args_list if c.args and "firma_challenge" in c.args[0]
+        ]
+        assert insert, "no se ejecutó el INSERT del desafío"
+        assert esperado in insert[-1].args, (
+            "el desafío no quedó atado al digest del identificador: "
+            "la verificación lo rechazaría como «de otro documento»"
+        )
     finally:
         _clear()
+
+
+def test_huella_para_desafio_coincide_en_emision_y_verificacion() -> None:
+    """Emisión y verificación tienen que calcular lo MISMO.
+
+    Son dos puntos distintos del código y antes cada uno leía el campo por su
+    cuenta. Si divergieran, todo desafío de un tipo sin huella se rechazaría
+    como «de otro documento» — un fallo que solo aparecería al teclear el OTP.
+    Por eso hay una sola función, y por eso se comprueba que es determinista y
+    que respeta la huella de contenido cuando la hay.
+    """
+    sin_huella = _sol_row(payload_sha256=None)
+    assert cadena_service.huella_para_desafio(sin_huella) == hashlib.sha256(
+        b"radicado:2024-DEMO-E-000001"
+    ).hexdigest()
+    assert cadena_service.huella_para_desafio(sin_huella) == cadena_service.huella_para_desafio(
+        _sol_row(payload_sha256=None)
+    )
+    assert cadena_service.huella_para_desafio(_sol_row()) == DOC_HASH
 
 
 @pytest.mark.asyncio
@@ -753,14 +805,22 @@ async def test_sign_with_valid_otp_success(monkeypatch: pytest.MonkeyPatch) -> N
         assert payload["factor_tipo"] == "otp_email"
         assert payload["challenge_id"] == str(CHALLENGE_ID)
         assert payload["resultado_2fa"] == "verificado"
-        # Enriched with the effective document hash and the consumption
-        # instant (Media finding — audit self-containment, RF-FIR-13/14).
-        # The signer HMACs over sol["payload_sha256"]'s own bytes (existing
-        # behaviour, see app/services/signer.py), so the audited hash is the
-        # SHA-256 of that hex string, not the hex string itself.
-        import hashlib
-
-        assert payload["hash_documento"] == hashlib.sha256(DOC_HASH.encode()).hexdigest()
+        # El asiento lleva el SHA-256 de los BYTES FIRMADOS y el instante de
+        # consumo (RF-FIR-13/14, auto-contención del asiento). El firmante calcula
+        # el HMAC sobre los bytes del propio `sol["payload_sha256"]`, así que ese
+        # valor es el SHA-256 de la cadena hexadecimal — el hash del hash, NO el
+        # hash del documento.
+        #
+        # Este test ya lo sabía y lo describía con exactitud, y aun así la clave se
+        # llamaba `hash_documento`. El comportamiento era conocido y el nombre
+        # seguía afirmando otra cosa: quien leyera `audit_log` entendía «hash del
+        # documento» sobre un valor que no lo es. Se corrigió el nombre, no el
+        # valor — el HMAC de las firmas ya emitidas cubre esos bytes.
+        assert payload["payload_firmado_sha256"] == hashlib.sha256(DOC_HASH.encode()).hexdigest()
+        assert "hash_documento" not in payload, (
+            "el asiento del turno firmado no puede volver a publicar el hash del "
+            "payload firmado bajo un nombre que promete el del documento"
+        )
         assert payload["consumido_at"] is not None
         assert "otp" not in payload and "otp_hash" not in payload
     finally:

@@ -88,3 +88,33 @@ async def test_send_otp_email_raises_on_non_2xx_status() -> None:
             otp="654321",
             ttl_seconds=300,
         )
+
+
+@pytest.mark.asyncio
+async def test_send_otp_email_raises_on_502_envio_fallido() -> None:
+    """`502` es la respuesta de notification-service cuando el SMTP no entregó.
+
+    Antes esa ruta contestaba `202 Accepted` pasara lo que pasara: agotaba sus
+    tres reintentos, guardaba la notificación como `failed` y respondía que sí.
+    Con eso, el `503 canal_2fa_no_disponible` que este servicio tiene escrito
+    **no podía dispararse nunca** por un correo no entregado — el firmante veía
+    «Enviamos un código, vence en 4:48» esperando un correo que nadie mandó.
+    Un fail-closed inalcanzable es peor que no tenerlo: se lee como garantía.
+
+    Se encontró recorriendo el sistema con MailHog apagado. La fila del
+    historial lo decía —`status=failed, attempts=3`— y la pantalla decía lo
+    contrario.
+    """
+    cm = _mock_async_client(status_code=502)
+    with (
+        patch("app.core.http_clients.httpx.AsyncClient", return_value=cm),
+        pytest.raises(http_clients.OtpEmailDeliveryError),
+    ):
+        await http_clients.send_otp_email(
+            recipient_email="u@x.co",
+            tenant_slug="demo",
+            objeto_tipo="borrador",
+            solicitud_id=uuid.uuid4(),
+            otp="123456",
+            ttl_seconds=300,
+        )

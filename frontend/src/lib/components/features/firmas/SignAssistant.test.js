@@ -193,3 +193,91 @@ describe("SignAssistant — segundo factor OTP (E06 Inc.2)", () => {
     expect(screen.queryByText("Documento firmado correctamente.")).not.toBeInTheDocument();
   });
 });
+
+describe("SignAssistant — segundo factor TOTP (credencial personal activa)", () => {
+  it("409 totp_requerido NO pide ningún código por correo y firma con totp_code", async () => {
+    /** @type {string[]} */
+    const rutas = [];
+    /** @type {any[]} */
+    const cuerpos = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      rutas.push(String(input));
+      if (String(input).endsWith("/sign")) {
+        cuerpos.push(JSON.parse(String(init?.body ?? "{}")));
+        if (cuerpos.length === 1) {
+          return new Response(JSON.stringify({ error: "totp_requerido", status: 409 }), {
+            status: 409,
+          });
+        }
+        return new Response(JSON.stringify({ solicitud_id: SOLICITUD_ID, estado: "firmado" }), {
+          status: 200,
+        });
+      }
+      throw new Error(`petición inesperada: ${input}`);
+    });
+
+    const { component } = render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "Cierre de expediente" },
+    });
+    const onSigned = vi.fn();
+    component.$on("signed", onSigned);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    // La aserción que importa: NINGUNA llamada a /challenge. Emitir un OTP por
+    // correo aquí es justamente el bucle que dejaba sin firmar a todo firmante
+    // con credencial activa — el backend no lo iba a aceptar nunca.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Código de la app autenticadora")).toBeInTheDocument(),
+    );
+    expect(rutas.some((r) => r.endsWith("/challenge"))).toBe(false);
+
+    await fireEvent.input(screen.getByLabelText("Código de la app autenticadora"), {
+      target: { value: "123456" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Confirmar código/ }));
+
+    await waitFor(() => expect(onSigned).toHaveBeenCalledOnce());
+    expect(cuerpos[1]).toEqual({ totp_code: "123456" });
+    expect(rutas.some((r) => r.endsWith("/challenge"))).toBe(false);
+  });
+
+  it("401 totp_incorrecto deja al firmante en el mismo paso, sin emitir correo", async () => {
+    /** @type {string[]} */
+    const rutas = [];
+    let intentos = 0;
+    globalThis.fetch = vi.fn(async (input) => {
+      rutas.push(String(input));
+      if (String(input).endsWith("/sign")) {
+        intentos += 1;
+        if (intentos === 1) {
+          return new Response(JSON.stringify({ error: "totp_requerido", status: 409 }), {
+            status: 409,
+          });
+        }
+        return new Response(
+          JSON.stringify({ error: "totp_incorrecto", intentos_restantes: 2, status: 401 }),
+          { status: 401 },
+        );
+      }
+      throw new Error(`petición inesperada: ${input}`);
+    });
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "Cierre de expediente" },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Código de la app autenticadora")).toBeInTheDocument(),
+    );
+    await fireEvent.input(screen.getByLabelText("Código de la app autenticadora"), {
+      target: { value: "000000" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Confirmar código/ }));
+
+    await waitFor(() => expect(screen.getByText(/no es correcto/)).toBeInTheDocument());
+    expect(screen.getByText(/2 intentos restantes/)).toBeInTheDocument();
+    expect(rutas.some((r) => r.endsWith("/challenge"))).toBe(false);
+  });
+});

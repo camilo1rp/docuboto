@@ -94,7 +94,13 @@ def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     response_model=ExpedienteResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create an expediente",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # Nivel CRUD: `api.md` declara 1=leer 2=editar 3=crear/borrar, y el
+    # `min_crud` por defecto es 1 — así que omitirlo deja una ESCRITURA
+    # abierta a quien tiene el permiso en modo lectura. Destapado en B13:
+    # el usuario `consulta` (nivel 1) editó los metadatos de un expediente.
+    # Los pares del propio router lo delataban: excluir un radicado exigía
+    # 3 y vincularlo no exigía nada; cerrar exigía 3 y crear no.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def create_expediente(
     payload: ExpedienteCreate,
@@ -486,7 +492,13 @@ async def list_expediente_eventos(
     "/{expediente_id}",
     response_model=ExpedienteResponse,
     summary="Update expediente metadata (name/description/trd_serie_id) — does not transition status",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # Nivel CRUD: `api.md` declara 1=leer 2=editar 3=crear/borrar, y el
+    # `min_crud` por defecto es 1 — así que omitirlo deja una ESCRITURA
+    # abierta a quien tiene el permiso en modo lectura. Destapado en B13:
+    # el usuario `consulta` (nivel 1) editó los metadatos de un expediente.
+    # Los pares del propio router lo delataban: excluir un radicado exigía
+    # 3 y vincularlo no exigía nada; cerrar exigía 3 y crear no.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=2))],
 )
 async def update_expediente(
     expediente_id: uuid.UUID,
@@ -511,7 +523,13 @@ async def update_expediente(
     response_model=ExpedienteRadicadoResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Link a radicado to an expediente",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # Nivel CRUD: `api.md` declara 1=leer 2=editar 3=crear/borrar, y el
+    # `min_crud` por defecto es 1 — así que omitirlo deja una ESCRITURA
+    # abierta a quien tiene el permiso en modo lectura. Destapado en B13:
+    # el usuario `consulta` (nivel 1) editó los metadatos de un expediente.
+    # Los pares del propio router lo delataban: excluir un radicado exigía
+    # 3 y vincularlo no exigía nada; cerrar exigía 3 y crear no.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=2))],
 )
 async def link_radicado(
     expediente_id: uuid.UUID,
@@ -532,7 +550,13 @@ async def link_radicado(
     "/{expediente_id}/radicados/batch",
     response_model=BatchLinkResult,
     summary="Inclusión masiva de radicados a un expediente (paridad legado)",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # Nivel CRUD: `api.md` declara 1=leer 2=editar 3=crear/borrar, y el
+    # `min_crud` por defecto es 1 — así que omitirlo deja una ESCRITURA
+    # abierta a quien tiene el permiso en modo lectura. Destapado en B13:
+    # el usuario `consulta` (nivel 1) editó los metadatos de un expediente.
+    # Los pares del propio router lo delataban: excluir un radicado exigía
+    # 3 y vincularlo no exigía nada; cerrar exigía 3 y crear no.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=2))],
 )
 async def link_radicados_batch(
     expediente_id: uuid.UUID,

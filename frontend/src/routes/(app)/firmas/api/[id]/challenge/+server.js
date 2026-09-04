@@ -17,8 +17,10 @@
  *   → POST /api/v1/signature/requests/{id}/challenge
  *   → ChallengeResponse { challenge_id, factor_tipo, canal (correo enmascarado), expira_at }
  *
- * El backend exige `payload_sha256` ya fijado en la solicitud (422
- * payload_no_fijado si no lo está) y aplica un cooldown de reenvío (429
+ * El backend ata el desafío a la huella del documento cuando la cadena la fija,
+ * y al identificador del objeto cuando el tipo se firma como conjunto
+ * (`radicado`, `expediente`) — antes exigía la huella siempre y esas cadenas no
+ * se podían firmar. Aplica además un cooldown de reenvío (429
  * challenge_cooldown) — este proxy NO reintenta ni oculta esos códigos: los
  * reenvía tal cual para que la UI pueda explicar al usuario qué pasó y qué
  * hacer (ver SignAssistant.svelte).

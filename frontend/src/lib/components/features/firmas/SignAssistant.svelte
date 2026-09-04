@@ -23,6 +23,16 @@
   intenta firmar primero SIN segundo factor (camino rápido, objetos
   PUBLICA); solo si el backend lo exige pasa al paso de verificación.
 
+  Ese paso tiene DOS formas, y confundirlas dejaba un acto imposible:
+    - 409 `2fa_requerido` → OTP por correo (`POST .../challenge` + `otp`).
+    - 409 `totp_requerido` → el firmante tiene credencial personal ACTIVA, el
+      acto se firma con su certificado (XAdES) y el único factor admitido es
+      el de su app autenticadora (`totp_code`, sin `/challenge` previo).
+  Mientras el backend devolvía `2fa_requerido` en los dos casos, este
+  componente respondía al segundo con un correo: el firmante con certificado
+  pegaba el código, el backend volvía a pedir `totp_code`, y así sin fin —
+  tener credencial de firma quitaba la capacidad de firmar cadenas.
+
   Dos verdades del dominio que este componente respeta (frontend/CLAUDE.md):
     - El acto criptográfico ocurre en SERVIDOR — este componente nunca
       calcula ni maneja material de firma, solo reenvía el código OTP que el
@@ -70,6 +80,12 @@
   // Paso 1: verificación OTP (solo si el backend la exigió)
   // ---------------------------------------------------------------------------
   let requestingChallenge = false;
+  // Modo TOTP: el backend respondió `totp_requerido` porque el firmante tiene
+  // credencial personal ACTIVA. Ahí la firma NO es la nativa por HMAC sino
+  // XAdES con su certificado, y el único segundo factor admitido es el de su
+  // app autenticadora — el OTP-correo no vale, y pedirlo era exactamente el
+  // bucle que dejaba a ese firmante sin poder firmar ninguna cadena.
+  let modoTotp = false;
   /** @type {import('$lib/types/api.js').SignatureChallengeResponse|null} */
   let challenge = null;
   let otpValue = "";
@@ -124,6 +140,13 @@
     if (status_ === 409 && code === "2fa_requerido") {
       return { kind: "need_2fa" };
     }
+    // Hermano del anterior, y opuesto: aquel pide arrancar el reto por correo,
+    // este pide el código de la app autenticadora y no admite otra cosa.
+    // Compartieron nombre hasta que un firmante con certificado activo intentó
+    // firmar: la pantalla leía este como aquel y emitía OTP-correo sin fin.
+    if (status_ === 409 && code === "totp_requerido") {
+      return { kind: "need_totp" };
+    }
     if (status_ === 401 && code === "otp_incorrecto") {
       return {
         kind: "otp_error",
@@ -161,6 +184,27 @@
         expired: true,
       };
     }
+    if (status_ === 401 && code === "totp_incorrecto") {
+      return {
+        kind: "otp_error",
+        message: "El código de tu app autenticadora no es correcto.",
+        intentosRestantes: result?.intentos_restantes ?? null,
+      };
+    }
+    if (status_ === 423 && code === "totp_bloqueado") {
+      return {
+        kind: "fatal",
+        message:
+          "Se agotaron los intentos con tu app autenticadora. Contacta al administrador para desbloquear tu segundo factor.",
+      };
+    }
+    if (status_ === 422 && code === "totp_no_activo") {
+      return {
+        kind: "fatal",
+        message:
+          "Tu credencial de firma exige un segundo factor de app autenticadora que no tienes activo. Actívalo en Mi perfil para poder firmar.",
+      };
+    }
     if (status_ === 403 && (code === "no_es_su_turno" || code === "no_es_firmante")) {
       return {
         kind: "fatal",
@@ -191,7 +235,7 @@
    * Intenta firmar. `body` opcional lleva challenge_id/otp cuando ya se
    * resolvió el segundo factor.
    *
-   * @param {{challenge_id?: string; otp?: string}} [body]
+   * @param {{challenge_id?: string; otp?: string; totp_code?: string}} [body]
    */
   async function attemptSign(body) {
     try {
@@ -212,6 +256,16 @@
       const outcome = classifyError(res.status, result);
       if (outcome.kind === "need_2fa") {
         await solicitarChallenge();
+        return;
+      }
+      if (outcome.kind === "need_totp") {
+        // Sin `/challenge`: no hay nada que emitir ni que enviar por correo.
+        modoTotp = true;
+        challenge = null;
+        stopCountdown();
+        otpValue = "";
+        otpError = "";
+        step = 1;
         return;
       }
       if (outcome.kind === "otp_error") {
@@ -283,7 +337,15 @@
   async function confirmarOtp() {
     otpError = "";
     if (!otpValue.trim()) {
-      otpError = "Introduce el código recibido por correo.";
+      otpError = modoTotp
+        ? "Introduce el código de tu app autenticadora."
+        : "Introduce el código recibido por correo.";
+      return;
+    }
+    if (modoTotp) {
+      signing = true;
+      await attemptSign({ totp_code: otpValue.trim() });
+      signing = false;
       return;
     }
     if (!challenge) {
@@ -329,7 +391,38 @@
         Este documento requiere un segundo factor de verificación antes de firmarse.
       </p>
 
-      {#if requestingChallenge}
+      {#if modoTotp}
+        <p class="sign-assistant__status" aria-live="polite">
+          Tu credencial de firma electrónica exige el código de tu <strong>app autenticadora</strong
+          >. Este documento se firmará con tu certificado personal (XAdES), no con la firma nativa
+          del sistema.
+        </p>
+
+        <label class="sign-assistant__otp-label" for="sign-assistant-otp">
+          Código de la app autenticadora
+        </label>
+        <input
+          id="sign-assistant-otp"
+          class="sign-assistant__otp-input"
+          type="text"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          bind:value={otpValue}
+          disabled={signing}
+          aria-describedby={otpError ? "sign-assistant-otp-error" : undefined}
+          aria-invalid={!!otpError}
+        />
+
+        {#if otpError}
+          <p id="sign-assistant-otp-error" class="sign-assistant__error" role="alert">
+            {otpError}
+            {#if intentosRestantes !== null}
+              ({intentosRestantes}
+              {intentosRestantes === 1 ? "intento restante" : "intentos restantes"})
+            {/if}
+          </p>
+        {/if}
+      {:else if requestingChallenge}
         <p class="sign-assistant__status" aria-live="polite">Enviando código por correo…</p>
       {:else if challenge}
         <p class="sign-assistant__status" aria-live="polite">
@@ -414,7 +507,7 @@
         variant="primary"
         icon="fas fa-check"
         loading={signing}
-        disabled={!challenge || remainingSeconds <= 0}
+        disabled={modoTotp ? !otpValue.trim() : !challenge || remainingSeconds <= 0}
         on:click={confirmarOtp}
       >
         Confirmar código

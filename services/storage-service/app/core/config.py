@@ -324,7 +324,25 @@ class Settings(BaseSettings):
     # no es un soporte que aporte el ciudadano, es un artefacto que produce el
     # sistema al preservar. Admitirlo como anexo dejaría subir correos completos
     # —con sus adjuntos incrustados— por la puerta que valida formatos de anexo.
-    allowed_system_mime_types: str = "application/xml,message/rfc822"
+    # `application/pdf` (E23): el PDF/A del oficio de salida que produce
+    # `/borradores/{id}/radicar`. Es la TERCERA vez que esta lista se queda
+    # corta por el mismo motivo — nació para el XML del índice, se amplió para
+    # el `.eml` del correo, y cuando la producción documental empezó a generar
+    # PDF nadie volvió a mirarla—, y el efecto era el mismo que con el índice:
+    # el documento se combinaba y se renderizaba entero, y storage lo rechazaba
+    # al guardarlo con 415 «Formato no admitido: application/pdf». Radicar un
+    # borrador con documento NO funcionaba, y el error no nombraba a quien lo
+    # producía.
+    #
+    # Lo que salvó la situación fue el ORDEN de `radicar`: renderizar y subir
+    # van ANTES de pedir el consecutivo, así que el fallo no gastó ningún
+    # número. La garantía escrita para otra cosa —un fallo de render no consume
+    # un radicado— cubrió también ésta.
+    #
+    # No abre superficie: `application/pdf` ya está en la lista de ANEXOS, así
+    # que cualquiera podía subir un PDF por la puerta de usuario. Aquí solo se
+    # reconoce que el sistema también los produce.
+    allowed_system_mime_types: str = "application/xml,message/rfc822,application/pdf"
 
     @property
     def database_url_asyncpg(self) -> str:

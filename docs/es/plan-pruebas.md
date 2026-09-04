@@ -326,3 +326,349 @@ cruzando `docs/*/api.md` contra el OpenAPI del servicio en marcha, no navegando.
 > reimplementé el cálculo del hash a mano para verificarlo. La buena usa
 > `orpycamcp_common.audit.compute_hash`, la misma función que escribe los asientos: **no se
 > reimplementa la cosa que se está verificando** — se comprueba con ella, o se comprueba otra cosa.
+
+---
+
+## 7. Segunda ejecución (septiembre de 2026) — E23, producción documental
+
+Un recorrido acotado a la superficie más nueva: `/borradores`, `/firmas` y, de rebote,
+`/anulaciones`. Cuatro defectos, y los cuatro comparten una forma que el bloque de agosto no
+había producido:
+
+> **Cada pieza hacía bien lo suyo, y entre ellas no había nada.**
+
+No hay valor equivocado ni gate ausente dentro de una función. Lo que falta es la relación entre
+dos partes correctas — y un test por pieza no puede echar de menos una garantía que no vive en
+ninguna. La pregunta que los caza no es *«¿qué hace esta función?»* sino **«¿qué impide el acto
+indebido?»**.
+
+### 7.1 Los cuatro, y cómo se destapó cada uno
+
+| Defecto | Cómo apareció |
+|---|---|
+| El circuito de aprobación **no ataba**: se abría, se ignoraba y se radicaba igual | Leyendo `aprobar()` y viendo que no consulta nada |
+| Y el acto que había que atar era **radicar**, no aprobar | **Mirando la base**: dos borradores aprobados con circuito abierto |
+| Un turno de visto bueno **se podía firmar**, y la bandeja invitaba en lote | Recorriendo `/firmas` como `jefe` |
+| Se aprobaba y se anulaba **sin ver el documento** | Censo `grep` de señales de acceso al objeto por pantalla |
+
+Los dos del medio no salen leyendo código. El segundo apareció **consultando el estado real de
+`tenant_demo`**, y es la lección de método de esta tanda: el código dice lo que puede pasar, la
+base dice lo que **ya pasó**. El tercero solo aparece pulsando.
+
+### 7.2 Casos ejecutables
+
+```
+### E23-01 · El circuito abierto impide radicar
+Pantalla     /borradores → Abrir un borrador aprobado con circuito abierto
+Precondición Circuito de ≥2 turnos creado y sin resolver
+Pasos        1. Abrir el borrador  2. Bajar hasta las acciones de flujo
+Esperado     NO se ofrece «Radicar»; aviso «quedan N de M turnos por resolver»
+Fuera de pantalla  POST /borradores/{id}/radicar → 409 circuito_pendiente, y
+             el número NO se consume (el gate va antes de pedir el consecutivo)
+```
+
+```
+### E23-02 · Fail-closed cuando no se puede preguntar
+Pantalla     ninguna (servicio)
+Precondición `docker compose stop signature-service`
+Pasos        1. Aprobar o radicar un borrador
+Esperado     503 circuito_no_verificable; el estado en la base NO cambia
+Por qué      Suponer «no hay circuito» reabre el agujero justo cuando el
+             sistema está degradado
+```
+
+```
+### E23-03 · Un visto bueno no se puede firmar, ni suelto ni en lote
+Pantalla     /firmas con un turno de rol `visto_bueno`
+Pasos        1. Mirar la fila  2. Abrir el detalle
+Esperado     Sin casilla de selección y sin barra «seleccionar todas»;
+             la acción dice «Ver / Dar visto bueno»; el detalle ofrece
+             «Dar visto bueno» y «Rechazar», nunca «Firmar»
+Fuera de pantalla  POST /signature/requests/{id}/sign → 409
+             turno_es_de_visto_bueno, ANTES de consultar la credencial
+             (ningún factor 2FA se consume en un acto que se va a rechazar)
+```
+
+```
+### E23-04 · Se puede ver aquello sobre lo que se decide
+Pantalla     /firmas → detalle · /anulaciones → detalle
+Esperado     «Ver documento» abre el PDF del borrador;
+             «Ver el radicado {n.º}» lleva a /bandeja?radicado={id}
+Límite       La previsualización exige PERM_RADI: un revisor con solo
+             PERM_FIRMA recibe 403 y lo ve DICHO, no un botón mudo
+```
+
+### 7.3 Dos trampas del propio método, otra vez
+
+**Di por caído un servicio que estaba sano.** `wget` dentro del contenedor devolvía «Connection
+refused» sobre `/login`, y estuve podando disco y reconstruyendo imágenes. El rechazo era del
+**segundo salto**: `/login` responde 302 hacia Keycloak, wget sigue el redirect, y ese host no
+existe dentro del contenedor. La primera petición funcionaba. Tenía tres evidencias de que el
+servicio estaba vivo —socket en LISTEN, proceso en pie, healthcheck en verde— y las traté como una
+paradoja en vez de como una refutación. *Cuando el sistema insiste por tres vías en que está sano,
+la sospechosa es la herramienta de diagnóstico.*
+
+**Y un guardián que no caía bajo su propio defecto.** Al extender el detector de mensajes sin
+tildes a las pantallas, la primera versión descartaba todo fragmento con `{variable}` dentro —para
+no marcar nombres de variable como prosa—. Pero los avisos que importan casi siempre llevan una
+(«quedan {n} de {total} turnos»), así que se saltaba exactamente la familia de mensajes que
+existía para vigilar. Lo destapó devolverle el error original: **pasó en verde**. La mutación de un
+guardián se hace con el defecto **real** que motivó escribirlo; uno inventado tiende a caer en la
+parte que ya funciona.
+
+### 7.4 El cierre del recorrido, y los tres defectos que salieron de él
+
+El turno final de firma y la radicación se ejecutaron el 2026-09-03 como
+`operador`. **Cada paso destapó un defecto distinto, y ninguno era visible desde
+el código.**
+
+| Paso | Lo que apareció |
+|---|---|
+| Pedir el segundo factor | El correo falló tres veces y la pantalla dijo «Enviamos un código, vence en 4:48». El `503 canal_2fa_no_disponible` estaba escrito y **no podía dispararse nunca**: el servicio de correo respondía `202 Accepted` aunque el envío hubiera fallado |
+| Firmar | `NotNullViolationError` en `firma.tipo_firma` → **500 en la cara del firmante**. Firmar estaba roto para todo el que no tuviera credencial PKI personal, que es el caso común |
+| Radicar | `415 Formato no admitido: application/pdf` — storage rechazaba el PDF/A que el propio sistema produce |
+
+Los tres tienen la misma raíz de método: **son cruces entre servicios, y todos
+los tests de esos cruces usan dobles**. Un `AsyncMock` acepta cualquier fila, y
+un `202` simulado no distingue «lo he recibido» de «lo he entregado». La
+confirmación más dura: en la base de demostración **no había ni una firma
+`nativa`** — ese camino nunca había llegado a Postgres en toda la vida del
+servicio.
+
+De ahí salió el cambio de infraestructura de esta tanda: **`signature-service`
+estrena tier de integración** contra Postgres real, con el mismo gate
+`RUN_INTEGRATION=1` y schemas desechables que ya usaban document, archive y
+storage.
+
+**Y una garantía que sí funcionó, escrita para otra cosa.** El 415 ocurrió
+*después* de renderizar y *antes* de pedir el consecutivo, porque el orden de
+`radicar` es combinar → renderizar → subir → **número**. Resultado: **no se
+gastó ningún número**; el borrador se quedó en `aprobado` sin `tracking_number`.
+La regla «un fallo de render no consume un radicado» cubrió un fallo que nadie
+había previsto. Poner lo irreversible al final protege de lo que aún no se ha
+inventado.
+
+Resultado final: **`2026-DEMO-S-000066`**, con su PDF/A anexado como
+`documento_principal` (`2026-DEMO-S-000066.pdf`) — lo que prueba de paso la
+segunda pasada de combinación, que re-renderiza el documento con el número ya
+asignado.
+
+### 7.5 El quinto defecto: un acto válido que nadie podía ejecutar
+
+Quedaba una cosa por ver con los ojos: el `503 canal_2fa_no_disponible`. Estaba
+probado por test y por mutación, nunca en pantalla. Para provocarlo hace falta el
+correo caído, así que se apagó MailHog y se pidió firmar un turno pendiente.
+
+No llegó al `503`. Murió antes, en el paso 1 del asistente, con esto:
+
+> *firma_solicitud.payload_sha256 debe fijarse antes de emitir un desafío de
+> doble factor (RF-FIR-13)*
+
+El nombre de una columna de la base, en la cara de un funcionario que no tiene
+nada que hacer con esa frase. Debajo había un defecto entero.
+
+**Dos reglas escritas aparte que nunca se encontraron.**
+`CADENA_PAYLOAD_OBLIGATORIO` deja `radicado` y `expediente` fuera *a propósito, y
+con la reserva escrita en el comentario*: se firman como conjunto, no tienen un
+artefacto canónico propio. El contrato, por tanto, permite abrir la cadena sin
+huella. Y `emitir_desafio`, escrito en otro momento, la exigía para **todos** los
+tipos. Entre las dos, esas cadenas se podían abrir y no se podían cerrar.
+
+Es el **gemelo invertido** del defecto de 7.4: allí un `fail-closed` no podía
+dispararse nunca; aquí un gate se dispara *siempre* sobre dos tipos válidos. Los
+dos se leen como una defensa y ninguno lo es. Un gate que nadie puede satisfacer
+no protege un acto: lo suprime.
+
+**Por qué no lo vio nada.** Cada regla, por separado, es correcta y está probada.
+Lo que falla es que discrepan, y eso no vive en ninguna pieza. Además: *ninguna
+pantalla abre hoy cadenas de esos dos tipos* — solo `/borradores`, que sí resuelve
+la huella. Un tipo que el contrato admite y la interfaz nunca produce es un punto
+ciego estructural. Las dos cadenas que lo destaparon las había creado el `seed`,
+que es el único cliente real que ejercita ese camino.
+
+**La corrección.** `huella_para_desafio(sol)` devuelve `payload_sha256` donde
+existe y, donde no, el SHA-256 de `"{objeto_tipo}:{objeto_id}"` — que son
+exactamente los bytes que `firmar` sella en ese caso. El desafío no promete más de
+lo que la firma cumple, ni menos. El criterio ya estaba en el mismo archivo:
+`_gate_documento_vigente` retorna sin decir nada para estos tipos en vez de
+denegar. *Lo que no se puede comprobar no se afirma, pero tampoco se convierte en
+un veto.*
+
+Una sola función, dos llamadas —emisión y verificación—. Si al corregir solo una
+hubieran divergido, todo desafío de estos tipos se habría rechazado como «de otro
+documento», y ese fallo solo aparece al teclear el OTP, con el código ya gastado.
+
+**El test que había afirmaba el `422`.** Codificaba el defecto, igual que el `202`
+de 7.4. Tercera vez en esta ejecución que un test verde era la descripción fiel de
+un error. El nuevo aserta sobre el `hash_documento` *persistido*: comprobar solo el
+`201` pasaría también si la huella se guardara en blanco.
+
+**Lo que se comprobó en el sistema, no en un doble.** Con MailHog caído, la
+pantalla dijo «No se pudo enviar el correo con el código (notification-service)» —
+el `503` que faltaba por ver, alcanzado justo porque el `422` ya no lo tapaba. Los
+dos arreglos verificados de una pasada. Repuesto el correo, el turno se firmó, y la
+base lo confirma:
+
+| dato | valor |
+|---|---|
+| solicitud / turno | `firmado` / `firmado` |
+| `firma.tipo_firma` | `nativa` (la corrección de 7.4, otra vez en la base) |
+| `firma.payload_sha256` | `10988359…` |
+| `firma_challenge.hash_documento` | `10988359…` — **el mismo** |
+| digest de `radicado:f6377c02-…` | `10988359…` |
+
+El desafío quedó atado a los mismos bytes que la firma selló. Es la afirmación
+central de la corrección, confirmada por Postgres y no por un mock.
+
+Y una garantía ajena que se confirmó de paso: hay **dos** filas de desafío
+—`expirado` y `consumido`— y **ninguna** del intento con el correo caído. El `503`
+hizo el *rollback* completo que promete su docstring, sin dejar un desafío huérfano
+cuyo código nadie recibió.
+
+### 7.5.bis El sexto: un nombre que prometía otra cosa
+
+Salió del **campo «fuera de pantalla»** del propio plan — el que distingue *el
+botón respondió* de *el acto ocurrió*. Al comprobar los asientos de la firma
+recién hecha, dos consecutivos del mismo acto decían cosas distintas:
+
+| asiento | valor |
+|---|---|
+| `firma.challenge.emitido` | `49fff365…` |
+| `firma.turno_firmado` → `hash_documento` | `cd51626b…` |
+
+`cd51626b…` es el SHA-256 del **texto hexadecimal** de `49fff365…`. El hash del
+hash. El asiento publicaba bajo la clave `hash_documento` el `payload_sha256` que
+devuelve el firmante, que es el SHA-256 de *los bytes que se firmaron* — y para un
+`borrador` esos bytes son la huella, no el documento.
+
+**No rompe nada criptográfico**: la verificación recompone los mismos bytes y es
+coherente consigo misma. Por eso ninguna suite lo ve. Rompe la verificación *desde
+fuera*: quien tenga el PDF compara con `firma.payload_sha256`, no coincide, y nada
+en el nombre se lo advierte. Y es justo lo que la Ley 594 pide poder demostrar —
+**qué** se firmó.
+
+**Lo más incómodo del hallazgo**: el test que cubre ese asiento ya lo sabía. Su
+comentario decía, con precisión, *«the audited hash is the SHA-256 of that hex
+string, not the hex string itself»*. Alguien miró el comportamiento, lo describió
+fielmente y dejó la clave llamándose `hash_documento`. No era desconocido: era
+conocido y normalizado. Y el docstring del firmante prometía lo contrario — «el
+SHA-256 del contenido»—, séptima aparición en este proyecto del comentario que
+declara lo que el código no cumple.
+
+**Se corrigió el nombre, no el valor.** El HMAC de las firmas ya emitidas cubre
+esos bytes y reescribirlo las invalidaría; `audit_log` es *append-only* por ley y
+no se toca hacia atrás. El asiento pasa a `payload_firmado_sha256`, el docstring
+deja de prometer una correspondencia inexistente, y `FirmaResponse.payload_sha256`
+documenta que **no sirve para comprobar contra un PDF en la mano**. Lo que no se
+puede arreglar se declara.
+
+De paso: el registro del factor consumido por TOTP leía la huella directamente de
+la solicitud y salía **vacío** para `radicado`/`expediente`; ahora usa el mismo
+resolutor compartido.
+
+Cómo se encontró importa tanto como el qué: **mirando los datos que el sistema
+produce, no el código que los produce**. Leyendo el código no se ve — cada línea,
+por separado, es correcta.
+
+### 7.7 B6 ejecutado con los cuatro perfiles: el séptimo defecto
+
+El bloque B6 —«la cadena de 4 firmantes en orden»— nunca se había ejecutado. Al hacerlo, con un
+usuario distinto por turno, salió el defecto más grave del recorrido, y salió porque **un perfil
+tenía algo que ningún otro tiene**: `jefe` es el único con credencial de firma personal activa.
+
+| Perfil | 2FA | Credencial | Camino que solo él ejercita |
+|---|---|---|---|
+| `operador` | TOTP activo | `pendiente_emision` | firma `nativa` |
+| `jefe` | TOTP activo | **activa** | firma `personal` / `xades_personal` |
+| `secretaria` | ninguno | ninguna | OTP-correo, firma `nativa` |
+| `archivista` | ninguno | ninguna | cierre de la cadena |
+| `consulta` | — | — | barrido negativo (B13) |
+
+**El defecto: tener credencial de firma quitaba la capacidad de firmar cadenas.** El backend
+decide —y lo dice en un comentario— que un actor con certificado activo firma por la vía personal
+y solo por ella, y esa vía exige `totp_code`. `SignAssistant.svelte`, el único componente que
+firma cadenas, manda siempre `challenge_id` + `otp` y nunca `totp_code`. Cada regla, por
+separado, es correcta y está probada; el defecto vive entre las dos.
+
+Y era peor que un error: la rama personal devolvía `409 2fa_requerido`, **el mismo código** que
+significa lo contrario —«arranca el reto por correo»—. El asistente lo leía así, emitía otro OTP,
+llegaba el correo, el firmante lo pegaba, el backend volvía a pedir `totp_code`. Bucle sin salida
+y sin un mensaje veraz, gastando un desafío y un correo por vuelta. En la base quedaron cuatro
+desafíos de `jefe` con `intentos = 0`: el OTP nunca llegó siquiera a comprobarse.
+
+*Corrección*: código de error propio (`totp_requerido`) y un modo TOTP en el asistente, que al
+recibirlo **no emite ningún reto** y pide el código de la app autenticadora. Verificado por
+mutación y en el sistema corriendo.
+
+**El octavo, que es el sexto incompleto.** Con la vía personal por fin ejecutada, dos turnos de la
+misma cadena, sobre el mismo objeto y con `huella_de_contenido: false` en ambos, publicaron
+huellas distintas: `3727b474…` (nativa, digest de `expediente:<id>`) y `c4321d48…` (personal,
+digest del envoltorio `<acto xmlns="urn:orpyca:firma-personal" …>` que XAdES necesita).
+Comprobado reconstruyendo el envoltorio. La documentación que escribí la semana pasada para
+`payload_sha256` cubría solo la rama nativa —la escribí sin haber ejecutado nunca la de PKI—.
+Corregida: el campo queda declarado comparable **solo entre firmas del mismo `provider`**.
+
+*Resultado de B6*: cadena de 4 turnos cerrada en orden, `firma_solicitud` en `firmado`, por tres
+caminos distintos (nativa+correo, personal+TOTP, nativa+correo).
+
+### 7.7.bis Lo que el barrido de B6 confirmó de paso
+
+- **El orden se respeta en el backend, no solo en la lista.** `POST .../challenge` sobre un turno
+  que no es el tuyo → `403 no_es_su_turno` (RF-FIR-04), invocado desde la consola con la sesión
+  real, sin pasar por ningún botón. Y **sin gastar nada**: cero filas en `firma_challenge`, cero
+  correos.
+- **Inconsistencia menor, anotada y no corregida**: el mismo turno ajeno devuelve `403
+  no_es_su_turno` en `/challenge` y `409 documento_modificado` en `/sign`. Los dos extremos del
+  mismo acto comprueban las guardas en orden distinto.
+- **Observación sin conclusión**: un desafío emitido cuyo paso 2 no llegué a ver en pantalla. No
+  pude atribuirlo a ningún clic, y la explicación inocente —los desafíos vencen en 5 minutos y
+  buscar el código en MailHog tarda más— cubre igual de bien el patrón. Se anota como no
+  demostrado, no como defecto.
+- **El TOTP de `/perfil` no lo usa la bandeja de firmas.** `operador` tiene TOTP activo y su firma
+  salió igualmente por correo: la rama TOTP del backend solo se entra si el cliente manda el
+  código, y solo `/transferencias` lo hace. No es el defecto de arriba —aquí el correo sí funciona—
+  pero deja el segundo factor más fuerte sin usar, y ata toda firma de cadena a que el correo
+  salga.
+
+### 7.8 B13 con `consulta`: el control negativo hizo su trabajo
+
+El usuario `consulta` existe para una sola cosa: con un solo usuario que lo puede todo, un botón que
+debería desaparecer y un backend que debería negarse son indistinguibles de que no haya control.
+
+**Lo que salió bien, y no es poco.** El menú se recorta solo a lo concedido. `/envios` y
+`/admin/colas` no degradan a un EmptyState mentiroso: nombran el permiso que falta, y el de envíos
+además **desmiente la inferencia equivocada** — «Esto no significa que no haya envíos registrados».
+El `403` de cerrar y transferir dice *«Tiene el permiso `USUA_PERM_EXPEDIENTE` con nivel 1, y esta
+acción requiere nivel 3 o superior»*: distingue «te falta el permiso» de «te falta nivel», que es
+justo lo que el barrido anterior encontró roto. Y el no-read-up es **indistinguible de verdad**: el
+radicado reservado `2026-DEMO-E-000001` no aparece en búsqueda (`total: 0`) y su acceso directo
+devuelve un `404` **byte a byte idéntico** al de un UUID que no existe.
+
+**Lo que salió mal.** Invocando el proxy BFF desde la consola, sin pasar por ningún botón:
+`consulta` **editó los metadatos de un expediente**. `require_permission` tiene `min_crud=1` por
+defecto y cuatro escrituras de expedientes lo omitían. Censo derivado: **90 de 135** escrituras con
+gate no exigen nivel. Corregidas las cuatro que la caminata demostró; las 86 restantes quedan
+declaradas en `shared/tests/test_escritura_exige_nivel.py`, que impide que la lista crezca.
+
+**Dos hallazgos que resultaron NO serlo, comprobados antes de reportarlos** —y que son la mitad del
+valor de este bloque—:
+
+- `consulta` exporta el expediente entero en ZIP con `200`. Parece egreso masivo por un usuario de
+  lectura, pero la migración `018` ya **declara** que descargar un expediente exige
+  `USUA_PERM_EXPEDIENTE` y que `PERM_DESCARGAEXP` no restringe nada, con un test que vigila que esa
+  lista no caduque. Es la conducta escrita.
+- Editar un expediente `transferred` parece violar el cierre archivístico. Pero la guarda de estado
+  existe y es **por campo**: `trd_serie_id` —que decide la retención— devuelve
+  `409 expediente_not_open`; el nombre y la descripción se permiten a propósito, como corrección de
+  metadatos. Verificado ejecutándolo, no leyéndolo.
+
+### 7.6 Lo que esta ejecución NO cerró
+
+- ~~El turno final de firma y la radicación con el PDF/A adjunto~~ — **cerrado**, ver 7.4.
+- ~~El `503 canal_2fa_no_disponible` en pantalla~~ — **cerrado**, ver 7.5.
+- **Que tener un turno en un circuito dé por sí solo derecho a leer lo que se te pide aprobar.**
+  Hoy la lectura se apoya en `PERM_RADI`, que es un permiso de producción documental. Se declara
+  como límite, con su mensaje explícito en pantalla, en vez de disimularlo.
+- **Capacidades construidas sin puerta**, anotadas y no perseguidas:
+  `/firmas/api/documento/[documentId]` y su `/verify` existen, están probados y no los llama
+  ninguna pantalla.
