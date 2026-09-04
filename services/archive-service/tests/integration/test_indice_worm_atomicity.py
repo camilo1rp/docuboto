@@ -156,9 +156,9 @@ async def test_proteger_worm_indice_commits_mark_and_audit_together(
     assert audit_row is not None
     assert audit_row["canal"] == "system"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +218,9 @@ async def test_proteger_worm_indice_failure_after_audit_append_reverts_mark(
     assert indice_row["worm_object_id"] is None
     assert protegido_audit_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -316,9 +316,9 @@ async def test_concurrent_proteger_worm_indice_does_not_double_mark(
     assert protegido_audit_count == 1
     assert indice_row["worm_protegido_at"] is not None
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------

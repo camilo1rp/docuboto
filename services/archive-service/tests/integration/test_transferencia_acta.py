@@ -195,9 +195,9 @@ async def test_acta_se_congela_al_recibir_con_hash_y_roles(
     # calculó el SHA-256 -- ya no `now()` recalculado aparte.
     assert acta_row["congelada_at"].isoformat() in acta_row["acta_fuid_xml"]
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +271,9 @@ async def test_acta_atomicidad_fallo_natural_en_insert_acta_revierte_todo(
     assert recibida_audit == 0
     assert transferred_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -349,9 +349,9 @@ async def test_acta_consistente_con_ganador_de_carrera_recibir_vs_rechazar(
         # nunca un acta huérfana de una recepción que no ocurrió.
         assert acta_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +411,9 @@ async def test_acta_inmutable_tras_modificar_expediente(
     assert "DESPUES" in fuid_en_vivo.rows[0].asunto
     assert "ANTES" not in fuid_en_vivo.rows[0].asunto
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -462,9 +462,9 @@ async def test_acta_ortogonal_a_clearance_lectura_expediente_clasificada(
     # traspaso sí ocurrió.
     assert _num_registros(acta_xml) == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +514,6 @@ async def test_acta_lectura_no_read_up_pero_lector_legitimo_si(
         acta.acta_fuid_xml.encode("utf-8")
     ).hexdigest()
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

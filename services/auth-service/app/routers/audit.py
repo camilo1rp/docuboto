@@ -29,7 +29,7 @@ from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_tenant_conn, tenant_schema
 from app.repositories.audit_query_repository import MAX_LEVEL, AuditQueryRepository
 from app.repositories.clearance_repository import ClearanceRepository
-from app.schemas.audit import AuditEntry, AuditVerifyResponse
+from app.schemas.audit import AuditEntry, AuditVerifyResponse, RoturaCadenaOut
 
 router = APIRouter(
     prefix="/api/v1/audit",
@@ -53,12 +53,28 @@ async def verify_audit_chain(
 
     A diferencia del listado, la verificación **no** se recorta por clearance: la
     cadena solo tiene sentido probatorio si se recalcula entera, y sobre un
-    subconjunto siempre daría "rota". La respuesta es content-free (un booleano y,
-    si acaso, el id de la fila donde se rompe), así que no revela nada del objeto.
+    subconjunto siempre daría "rota". La respuesta es content-free (booleano,
+    conteos y los id de las filas que rompen), así que no revela nada del objeto:
+    ni actor, ni acción, ni referencia.
+
+    Reporta **todas** las roturas, no solo la primera. `audit_log` es append-only
+    por ley y una rotura no se puede reparar nunca: con la respuesta anterior,
+    una sola fila mala dejaba la verificación inservible para siempre, y decía
+    menos de lo que la entidad puede demostrar. `broken_id` se conserva —es
+    `roturas[0].id`— y el resto de campos son aditivos.
     """
     slug = _tenant_slug(request)
-    ok, broken_id = await audit_lib.verify_chain(conn, slug)
-    return AuditVerifyResponse(tenant_slug=slug, ok=ok, broken_id=broken_id)
+    res = await audit_lib.verify_chain(conn, slug)
+    return AuditVerifyResponse(
+        tenant_slug=slug,
+        ok=res.ok,
+        broken_id=res.primera_rota,
+        total=res.total,
+        verificados=res.verificados,
+        total_roturas=res.total_roturas,
+        roturas=[RoturaCadenaOut(id=r.id, motivo=r.motivo) for r in res.roturas],
+        roturas_omitidas=res.roturas_omitidas,
+    )
 
 
 @router.get("", response_model=list[AuditEntry])

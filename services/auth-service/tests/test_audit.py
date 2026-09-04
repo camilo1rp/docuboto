@@ -68,6 +68,26 @@ def _audit_row(*, ts=None, **kw) -> dict:
     return base
 
 
+def _hash_de(fila: dict, *, prev: str | None) -> str:
+    """El hash que le tocaría a esa fila encadenando con `prev`.
+
+    Se calcula con la MISMA función que verifica (`compute_hash`), no con una
+    copia del algoritmo: una réplica en el test podría divergir y dejaría el
+    test verde sobre una verificación rota.
+    """
+    return audit_lib.compute_hash(
+        prev,
+        tenant_slug="demo",
+        service=fila["service"],
+        actor=fila["actor"],
+        canal=fila["canal"],
+        action=fila["action"],
+        object_type=fila["object_type"],
+        object_ref=fila["object_ref"],
+        payload=fila["payload"],
+    )
+
+
 @pytest.mark.asyncio
 async def test_list_audit(client: AsyncClient) -> None:
     conn = AsyncMock()
@@ -120,6 +140,46 @@ async def test_verify_broken(client: AsyncClient) -> None:
     body = resp.json()
     assert body["ok"] is False
     assert body["broken_id"] == 7
+    assert body["total_roturas"] == 1
+    assert body["roturas"] == [{"id": 7, "motivo": "hash"}]
+    assert body["total"] == 1
+    assert body["verificados"] == 0
+
+
+@pytest.mark.asyncio
+async def test_verify_no_se_para_en_la_primera_rotura(client: AsyncClient) -> None:
+    """El defecto que este contrato vino a cerrar.
+
+    `audit_log` es append-only por ley: una rotura no se puede reparar nunca.
+    Cuando la verificación retornaba en la PRIMERA, una sola fila mala dejaba la
+    comprobación inservible para el resto de la vida del sistema — y decía menos
+    de lo que la entidad puede demostrar ante un juez: no «desde la 7 no sé
+    nada», sino «estas dos están rotas y estas otras verifican».
+
+    Las filas 8 y 10 son buenas: encadenan con el hash ALMACENADO de su
+    predecesora, que es como se recorre tras una rotura. Si se encadenara con el
+    recomputado, una fila mala pintaría de rotas todas las siguientes y el
+    recuento volvería a no significar nada.
+    """
+    conn = AsyncMock()
+    rota_7 = _audit_row(id=7, hash="tampered", prev_hash=None)
+    buena_8 = _audit_row(id=8, prev_hash="tampered")
+    buena_8 = {**buena_8, "hash": _hash_de(buena_8, prev="tampered")}
+    rota_9 = _audit_row(id=9, hash="tampered2", prev_hash=buena_8["hash"])
+    buena_10 = _audit_row(id=10, prev_hash="tampered2")
+    buena_10 = {**buena_10, "hash": _hash_de(buena_10, prev="tampered2")}
+    conn.fetch.return_value = [rota_7, buena_8, rota_9, buena_10]
+    _override(conn)
+
+    resp = await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["total"] == 4
+    assert body["total_roturas"] == 2, body["roturas"]
+    assert [r["id"] for r in body["roturas"]] == [7, 9]
+    # Lo que la entidad SÍ puede afirmar. Con la verificación anterior este
+    # número no existía: solo se sabía que a partir de la 7 no se miraba.
+    assert body["verificados"] == 2
 
 
 @pytest.mark.asyncio

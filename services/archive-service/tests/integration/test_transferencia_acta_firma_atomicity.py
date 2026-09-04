@@ -198,9 +198,9 @@ async def test_reconciliar_acta_failure_after_audit_append_reverts_mark_firmada(
     assert estado == "pendiente_firma"
     assert firmada_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -255,9 +255,9 @@ async def test_reconciliar_acta_commits_firmada_and_audit_together(
     payload = json.loads(audit_row["payload"])
     assert payload["origen"] == "reconciliation"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -349,9 +349,9 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
     assert firmada_audit_count == 1
     assert estado == "firmado"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +410,6 @@ async def test_reconciliar_acta_agotada_permanece_pendiente_firma(
     pending_after = await TransferenciaRepository(conn, slug).list_acta_firmas_pendientes(10)
     assert tid not in {r["transferencia_id"] for r in pending_after}
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

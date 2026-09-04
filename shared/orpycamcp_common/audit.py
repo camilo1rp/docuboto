@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
@@ -247,13 +248,75 @@ async def append_denial(
         )
 
 
-async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool, int | None]:
-    """Recalcula la cadena de un tenant.
+@dataclass(frozen=True, slots=True)
+class RoturaCadena:
+    """Una fila cuyo hash almacenado no cuadra con su contenido."""
 
-    Devuelve ``(ok, id_de_la_primera_fila_rota)``. ``ok=True`` y ``None`` si la
-    cadena es íntegra. Pensado para un job de verificación periódico (ADR-008).
+    id: int
+    #: "hash" (el contenido no produce el hash guardado), "prev_hash" (no
+    #: encadena con la fila anterior) o ambos.
+    motivo: str
 
-    **`timeout` explícito.** Los pools de los servicios fijan ahora un
+
+@dataclass(frozen=True, slots=True)
+class ResultadoCadena:
+    """Lo que se puede AFIRMAR sobre la cadena de un tenant, no solo si pasa.
+
+    `audit_log` es append-only por Ley 594: una rotura no se puede reparar
+    nunca. Con la verificación anterior —que retornaba en la PRIMERA— eso
+    significaba que una sola fila mala inutilizaba la comprobación para el resto
+    de la vida del sistema: la herramienta dejaba de servir exactamente en la
+    situación para la que existe, después de un incidente. Y decía menos de lo
+    que la entidad puede demostrar: ante un juez importa poder afirmar «2052
+    asientos íntegros y estas 4 filas rotas, aquí están sus id», no «desde la
+    41004 no sé nada».
+    """
+
+    total: int
+    roturas: tuple[RoturaCadena, ...]
+    #: Roturas que existen y no se enumeran (tope `MAX_ROTURAS_REPORTADAS`).
+    #: Se cuentan igual: un registro masivamente corrupto no puede parecer que
+    #: tiene exactamente 100 problemas.
+    roturas_omitidas: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return not self.roturas and not self.roturas_omitidas
+
+    @property
+    def primera_rota(self) -> int | None:
+        return self.roturas[0].id if self.roturas else None
+
+    @property
+    def total_roturas(self) -> int:
+        return len(self.roturas) + self.roturas_omitidas
+
+    @property
+    def verificados(self) -> int:
+        return self.total - self.total_roturas
+
+
+#: Tope de roturas ENUMERADAS. Recorrer entero no cuesta más memoria (la
+#: consulta ya traía todas las filas), pero devolver una lista sin tope sí:
+#: sobre un registro entero corrupto serían millones de ids en la respuesta.
+MAX_ROTURAS_REPORTADAS = 100
+
+
+async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> ResultadoCadena:
+    """Recalcula la cadena de un tenant ENTERA y reporta todas las roturas.
+
+    Devuelve un `ResultadoCadena`. Antes devolvía `(ok, id_de_la_primera_rota)`
+    y **retornaba en la primera** — ver el docstring de `ResultadoCadena` para
+    por qué eso era un problema y no una economía.
+
+    **Tras una rotura se sigue encadenando desde el hash ALMACENADO**, no desde
+    el recomputado. Es la decisión que hace que el recuento signifique algo: con
+    el recomputado, una sola fila mala pintaría de rotas todas las siguientes y
+    el resultado volvería a ser «desde aquí no sé nada» con más pasos. Así cada
+    fila se juzga contra su propio predecesor tal y como está escrito, y las
+    roturas quedan localizadas donde de verdad están.
+
+    **`timeout` explícito.** Los pools de los servicios fijan un
     `command_timeout` (120 s) para que una consulta atascada no retenga su
     conexión indefinidamente. Esta consulta es la excepción conocida: recorre el
     registro **entero** del tenant, que en una entidad con años de operación son
@@ -262,7 +325,9 @@ async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool
     hora.
 
     (Traer el registro completo a memoria es un problema de escala distinto y
-    anterior a este tope; queda declarado, no resuelto aquí.)
+    anterior a este tope; queda declarado, no resuelto aquí. Recorrer entero en
+    vez de parar en la primera rotura **no lo empeora**: las filas ya se traían
+    todas.)
     """
     rows = await conn.fetch(
         """
@@ -276,6 +341,8 @@ async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool
         timeout=3600.0,
     )
     prev_hash: str | None = None
+    roturas: list[RoturaCadena] = []
+    omitidas = 0
     for row in rows:
         payload = row["payload"]
         if isinstance(payload, str):
@@ -291,7 +358,15 @@ async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> tuple[bool
             object_ref=row["object_ref"],
             payload=payload,
         )
-        if expected != row["hash"] or row["prev_hash"] != prev_hash:
-            return False, row["id"]
+        motivos = []
+        if expected != row["hash"]:
+            motivos.append("hash")
+        if row["prev_hash"] != prev_hash:
+            motivos.append("prev_hash")
+        if motivos:
+            if len(roturas) < MAX_ROTURAS_REPORTADAS:
+                roturas.append(RoturaCadena(id=row["id"], motivo="+".join(motivos)))
+            else:
+                omitidas += 1
         prev_hash = row["hash"]
-    return True, None
+    return ResultadoCadena(total=len(rows), roturas=tuple(roturas), roturas_omitidas=omitidas)

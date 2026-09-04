@@ -205,9 +205,11 @@ async def test_intentar_empaquetar_commits_mark_and_audit_together(
     assert audit_row is not None
     assert audit_row["canal"] == "system"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    # `res.roturas` en el mensaje: si esto cae, dice CUÁLES, no solo que cayó.
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
+    assert res.verificados == res.total > 0
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +264,11 @@ async def test_intentar_empaquetar_failure_after_audit_append_reverts_mark(
     assert aip_row["aip_worm_object_id"] is None
     assert empaquetado_audit_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    # `res.roturas` en el mensaje: si esto cae, dice CUÁLES, no solo que cayó.
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
+    assert res.verificados == res.total > 0
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +354,11 @@ async def test_concurrent_intentar_empaquetar_does_not_double_mark(
     assert empaquetado_audit_count == 1
     assert aip_row["estado"] == "empaquetado"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    # `res.roturas` en el mensaje: si esto cae, dice CUÁLES, no solo que cayó.
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
+    assert res.verificados == res.total > 0
 
 
 # ---------------------------------------------------------------------------

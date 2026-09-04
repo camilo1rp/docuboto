@@ -129,9 +129,9 @@ async def test_reconciliar_indice_failure_after_audit_append_reverts_mark_signed
     assert estado == "pendiente_firma"
     assert firmado_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -181,9 +181,9 @@ async def test_reconciliar_indice_commits_signed_and_audit_together(
     payload = json.loads(audit_row["payload"])
     assert payload["origen"] == "reconciliation"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +242,9 @@ async def test_concurrent_reconciliar_indice_does_not_double_sign(
     assert firmado_audit_count == 1
     assert estado == "firmado"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -329,9 +329,9 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
     assert firmado_audit_count == 1
     assert estado == "firmado"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -384,9 +384,9 @@ async def test_reconciliar_indice_agotado_permanece_pendiente_firma(
     pending_after = await IndexRepository(conn).list_pending_signature(10)
     assert row["id"] not in {r["id"] for r in pending_after}
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +453,6 @@ async def test_reconciliar_indice_agotado_failure_after_audit_append_reverts_bum
     assert indice_row["reconcile_ultimo_error"] == "sin_actor_id"
     assert agotado_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

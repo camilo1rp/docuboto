@@ -112,9 +112,9 @@ async def test_acta_trigger_rechaza_update_directo(
     assert acta_row["acta_fuid_xml"] == xml_antes
     assert acta_row["acta_fuid_sha256"] == sha_antes
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +146,9 @@ async def test_acta_trigger_rechaza_delete_directo(
     )
     assert count == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -192,9 +192,9 @@ async def test_acta_trigger_rechaza_truncate(
         )
         assert exists == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +223,9 @@ async def test_acta_insert_de_recibir_y_lectura_siguen_verdes_con_trigger(
     assert acta.expediente_id == created.id
     assert acta.acta_fuid_xml.strip() != ""
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +293,6 @@ async def test_acta_sha256_anclado_en_asiento_recibida(
     # aunque el trigger fuera saltado por un superusuario.
     assert payload["acta_fuid_sha256"] == sha_acta
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

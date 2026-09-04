@@ -63,7 +63,23 @@
   let verifyState = data.verifyError ? "error" : data.verifyResult?.ok ? "ok" : "broken";
   let verifyDetail = data.verifyError ?? "";
   let brokenId = data.verifyResult?.broken_id ?? null;
+  // El recuento, no solo el veredicto: `audit_log` es append-only por ley, así
+  // que una rotura no se repara nunca y la pantalla la enseñaría para siempre.
+  // Lo que decide qué hacer es cuántas hay y cuántos asientos SÍ verifican.
+  let verifyStats = statsDe(data.verifyResult);
   let lastVerifiedAt = data.verifyError ? null : new Date();
+
+  /** @param {any} body */
+  function statsDe(body) {
+    if (!body) return null;
+    return {
+      total: body.total ?? 0,
+      verificados: body.verificados ?? 0,
+      totalRoturas: body.total_roturas ?? 0,
+      roturas: body.roturas ?? [],
+      omitidas: body.roturas_omitidas ?? 0,
+    };
+  }
 
   async function reverify() {
     verifyState = "checking";
@@ -74,6 +90,7 @@
       if (res.ok && body) {
         verifyState = body.ok ? "ok" : "broken";
         brokenId = body.broken_id ?? null;
+        verifyStats = statsDe(body);
         lastVerifiedAt = new Date();
       } else {
         verifyState = "error";
@@ -214,7 +231,8 @@
         {:else if verifyState === "ok"}
           <p class="integrity-panel__title">Cadena de auditoría íntegra</p>
           <p class="integrity-panel__desc">
-            La cadena de hash se recalculó y coincide extremo a extremo con lo almacenado.
+            La cadena de hash se recalculó y coincide extremo a extremo con lo almacenado{#if verifyStats?.total}
+              — <strong>{verifyStats.total.toLocaleString("es-CO")}</strong> asientos verificados{/if}.
             {#if lastVerifiedAt}Última verificación: {lastVerifiedAt.toLocaleString("es-CO")}.{/if}
           </p>
         {:else if verifyState === "broken"}
@@ -222,12 +240,41 @@
             CADENA DE AUDITORÍA COMPROMETIDA — posible manipulación del registro legal
           </p>
           <p class="integrity-panel__desc">
-            El recálculo de la cadena de hash NO coincide{brokenId !== null
-              ? ` a partir de la entrada con id ${brokenId}`
+            El recálculo NO coincide en
+            <strong>{(verifyStats?.totalRoturas ?? 1).toLocaleString("es-CO")}</strong>
+            {(verifyStats?.totalRoturas ?? 1) === 1 ? "asiento" : "asientos"}{brokenId !== null
+              ? `, el primero con id ${brokenId}`
               : ""}. Esto indica que uno o más registros de auditoría fueron alterados o eliminados
-            fuera del único punto de escritura permitido. Trátese como un incidente: no continúe
-            asumiendo que el resto del registro es confiable sin investigar.
+            fuera del único punto de escritura permitido. Trátese como un incidente e investigue
+            cada uno.
           </p>
+          {#if verifyStats}
+            <!--
+              Lo que la entidad SÍ puede demostrar. El registro es append-only por
+              ley: una rotura no se puede reparar, así que este aviso no se apaga
+              nunca. Presentar solo el veredicto convertía la verificación en una
+              alarma permanente que se aprende a ignorar —y entonces una rotura
+              NUEVA se lee igual que la vieja— y además decía menos de lo que hay:
+              los asientos verificados siguen siendo prueba.
+            -->
+            <p class="integrity-panel__desc">
+              Del total de <strong>{verifyStats.total.toLocaleString("es-CO")}</strong> asientos,
+              <strong>{verifyStats.verificados.toLocaleString("es-CO")}</strong> recalculan correctamente.
+              Un asiento roto NO invalida a los demás: cada uno se comprueba contra su predecesor tal
+              y como está escrito.
+            </p>
+            {#if verifyStats.roturas.length > 0}
+              <p class="integrity-panel__desc">
+                Asientos con discrepancia:
+                {#each verifyStats.roturas as r, i}<code>{r.id}</code>&nbsp;<span
+                    class="integrity-panel__motivo">({r.motivo})</span
+                  >{i < verifyStats.roturas.length - 1
+                    ? ", "
+                    : ""}{/each}{#if verifyStats.omitidas > 0}
+                  y {verifyStats.omitidas.toLocaleString("es-CO")} más sin enumerar{/if}.
+              </p>
+            {/if}
+          {/if}
         {:else}
           <p class="integrity-panel__title">No se pudo verificar la cadena</p>
           <p class="integrity-panel__desc">
@@ -418,6 +465,15 @@
     &__desc {
       margin: 0;
       color: var(--op-text-secondary);
+
+      + .integrity-panel__desc {
+        margin-top: var(--op-space-2);
+      }
+    }
+
+    &__motivo {
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-sm);
     }
 
     &__action {

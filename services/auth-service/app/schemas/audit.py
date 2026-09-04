@@ -28,7 +28,27 @@ class AuditEntry(BaseModel):
     hash: str
 
 
+class RoturaCadenaOut(BaseModel):
+    """Una fila de `audit_log` cuyo hash no cuadra. Content-free: solo el id y
+    el motivo técnico — nunca el objeto ni el actor de esa entrada."""
+
+    id: int
+    motivo: str
+
+
 class AuditVerifyResponse(BaseModel):
     tenant_slug: str
     ok: bool
+    #: Se conserva por compatibilidad con los consumidores existentes; es
+    #: `roturas[0].id`. Los campos nuevos son ADITIVOS: quien solo leía
+    #: `{ok, broken_id}` sigue funcionando igual.
     broken_id: int | None = None
+    #: Lo que la entidad puede AFIRMAR, que es más que «pasa o no pasa»: un
+    #: registro append-only no se puede reparar, así que tras una rotura lo
+    #: útil es saber cuántas hay, cuáles, y cuántos asientos SÍ verifican.
+    total: int = 0
+    verificados: int = 0
+    total_roturas: int = 0
+    roturas: list[RoturaCadenaOut] = []
+    #: Roturas contadas pero no enumeradas (tope del verificador).
+    roturas_omitidas: int = 0

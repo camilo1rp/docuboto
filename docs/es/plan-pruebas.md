@@ -662,6 +662,56 @@ valor de este bloque—:
   `409 expediente_not_open`; el nombre y la descripción se permiten a propósito, como corrección de
   metadatos. Verificado ejecutándolo, no leyéndolo.
 
+### 7.9 La verificación final del plan: la cadena de `audit_log`
+
+El plan la llama «la prueba más fuerte»: si la cadena de hashes valida tras cientos de actos reales
+encadenados, la integridad de Ley 594 queda probada con datos y no con mocks. Ejecutada al cierre de
+esta sesión, sobre `tenant_demo`.
+
+**`/admin/auditoria` declara «CADENA DE AUDITORÍA COMPROMETIDA» a partir del asiento `41004`.** No es
+una manipulación: los asientos `41004`–`41007` tienen `hash` con valor literal `h1`, `h2`, `h3`, `h4`
+y `prev_hash` vacío. Son filas que una suite de integración insertó por SQL en el `audit_log` de la
+base de desarrollo. La causa raíz **ya está cerrada** —la migración global 006 añadió
+`chk_audit_log_hash_forma`, que impide escribir un hash de juguete— y el propio test lo documenta.
+Pero las filas **no se pueden borrar, porque el registro es append-only por ley**.
+
+**Recuento propio, con las dos condiciones del verificador real** (hash recomputado *y* `prev_hash`
+encadenado) y sin su salida temprana:
+
+| | |
+|---|---|
+| Asientos del tenant | **2056** |
+| Discrepancias | **4** — `41004`, `41005`, `41006`, `41007` |
+| Asientos reales que verifican | **2052**, incluido todo lo que generó esta sesión |
+
+El asiento siguiente encadena correctamente sobre `h4`: la contaminación está *dentro* de la cadena,
+no pegada al final. **La garantía de integridad se sostiene sobre 2052 asientos reales encadenados.**
+
+**Y aquí está el hallazgo.** `verify_chain` (`shared/orpycamcp_common/audit.py`) **retorna en la
+primera rotura**: `(False, id)`. Nunca mira más allá. Combinado con un registro que por ley no se
+puede reparar, eso significa que **una sola rotura inutiliza la verificación para el resto de la vida
+del sistema** — la herramienta deja de servir exactamente en la situación para la que existe: después
+de un incidente. El aviso dice «no continúe asumiendo que el resto del registro es confiable sin
+investigar», y no ofrece ninguna forma de investigar: el recuento de esta tabla hubo que hacerlo a
+mano. Además subestima la posición probatoria de la entidad, que puede demostrar 2052 asientos
+íntegros y la pantalla presenta como un todo comprometido.
+
+Es la misma forma que el gate que se dispara siempre, invertida una vez más: **una alarma que no se
+puede apagar deja de ser una alarma**, y entonces una rotura genuina se lee igual que el ruido.
+
+**Corregido.** `verify_chain` recorre ahora la cadena entera y devuelve un `ResultadoCadena` con
+todas las roturas, el total y cuántos asientos verifican. La decisión de fondo: **tras una rotura se
+sigue encadenando desde el hash ALMACENADO**, no desde el recomputado — con el recomputado una sola
+fila mala pintaría de rotas todas las siguientes y el resultado volvería a ser «desde aquí no sé
+nada» con más pasos. Tope de 100 roturas enumeradas, pero **contadas todas**: un registro masivamente
+corrupto no puede parecer que tiene exactamente 100 problemas.
+
+Los campos de la respuesta son **aditivos** (`broken_id` se conserva), y la pantalla pasó de un
+veredicto binario a decir lo que la entidad puede demostrar. Verificado en el sistema: produce sola
+los mismos números que el recuento a mano — 4 roturas, 2052 asientos íntegros, los cuatro id
+enumerados con su motivo. Verificación por mutación con el defecto real (devolver en la primera
+rotura pone el test en rojo).
+
 ### 7.6 Lo que esta ejecución NO cerró
 
 - ~~El turno final de firma y la radicación con el PDF/A adjunto~~ — **cerrado**, ver 7.4.

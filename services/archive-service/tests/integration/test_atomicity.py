@@ -109,9 +109,9 @@ async def test_create_expediente_commits_and_chain_is_valid(
     assert audit_row == 1
     assert evento_row == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +218,9 @@ async def test_create_expediente_rollback_reverts_sequence_and_audit(
 
     # (iv) La cadena de auditoría del tenant sigue íntegra — ahora con
     # contenido real (la semilla), no una cadena vacía trivialmente íntegra.
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -285,9 +285,9 @@ async def test_create_expediente_failure_after_audit_append_reverts_audit_row(
     )
     assert audit_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +454,9 @@ async def test_batch_item_failure_does_not_corrupt_sibling_item(
     )
     assert audit_count == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -515,9 +515,9 @@ async def test_audit_log_trigger_rejects_update_and_delete(
     )
     assert still_there == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -602,9 +602,9 @@ async def test_link_radicado_rollback_reverts_link_index_and_audit_on_natural_fa
     assert regenerated_audit == 0
     assert linked_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -737,9 +737,9 @@ async def test_close_expediente_rollback_reverts_transition_and_audit_on_natural
     assert closed_audit == 0
     assert v1_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -783,9 +783,9 @@ async def test_close_expediente_commits_transition_and_audit(
     assert closed_audit == 1
     assert evento_cerrado == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -844,9 +844,9 @@ async def test_transfer_expediente_rollback_reverts_transition_and_audit_on_natu
     assert status_row == "closed"
     assert transferred_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -895,9 +895,9 @@ async def test_transfer_expediente_commits_transition_and_audit(
     assert transferred_audit == 1
     assert evento_transferido == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -1003,9 +1003,9 @@ async def test_close_expediente_concurrent_double_close_exactly_one_wins(
     assert closed_audit == 1
     assert evento_cerrado == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -1107,9 +1107,9 @@ async def test_transferencia_recibir_rollback_reverts_transferencia_and_expedien
     assert transferred_audit == 0
     assert evento_transferido == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -1165,9 +1165,9 @@ async def test_transferencia_recibir_commits_transferencia_and_expediente_with_a
     assert transferred_audit_row["actor"] == actor.audit_actor
     assert evento_transferido == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -1289,9 +1289,9 @@ async def test_transferencia_recibir_fixity_intacta_congela_expediente(
     assert payload["fixity"]["huella_indice_ok"] is True
     assert payload["fixity"]["num_documentos"] == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -1384,9 +1384,9 @@ async def test_transferencia_recibir_fixity_mismatch_revierte_sin_congelar(
     # lectura exige permiso de auditoría -- traza completa sin fuga en el 409.
     assert failed_payload["documentos_fallidos"] == [str(radicado_id)]
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -1444,9 +1444,9 @@ async def test_transferencia_recibir_fixity_ortogonal_a_clearance_lectura(
         await second_conn.close()
     assert expediente_status == "transferred"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -1580,9 +1580,9 @@ async def test_update_expediente_repository_has_no_status_parameter_and_service_
     assert closed_audit == 0
     assert transferred_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -1695,9 +1695,9 @@ async def test_update_expediente_reclasifica_trd_and_leaves_audit_trail(
 
     assert evento_count == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -1782,9 +1782,9 @@ async def test_update_expediente_reclasificacion_rollback_reverts_trd_and_audit_
     assert reclasificado_audit == 0
     assert evento_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -1858,9 +1858,9 @@ async def test_close_expediente_denied_already_closed_audits_failure_and_chain_s
     assert payload["motivo"] == "invalid_status_transition"
 
     # La cadena de auditoría del tenant sigue íntegra pese a la denegación.
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -1926,9 +1926,9 @@ async def test_transfer_expediente_denied_indice_no_firmado_audits_failure_and_c
     assert payload["status_actual"] == "closed"
     assert payload["motivo"] == "indice_no_firmado"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -1974,9 +1974,9 @@ async def test_transfer_expediente_denied_still_open_audits_failure_and_chain_st
     assert payload["status_actual"] == "open"
     assert payload["motivo"] == "invalid_status_transition"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -2159,9 +2159,9 @@ async def test_transferencia_recibir_vs_rechazar_concurrent_exactly_one_wins(
         assert recibida_audit == 0
         assert transferred_audit == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -2228,9 +2228,9 @@ async def test_transferencia_doble_enviar_concurrente_solo_uno_commitea(
     assert enviada_audit == 1
     assert enviada_failed_audit == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -2306,9 +2306,9 @@ async def test_transferencia_doble_recibir_concurrente_solo_uno_commitea(
     assert transferred_audit == 1
     assert evento_transferido == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -2372,9 +2372,9 @@ async def test_transferencia_create_rollback_reverts_insert_and_audit_on_natural
     assert preparada_audit == 0
     assert evento_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -2425,9 +2425,9 @@ async def test_transferencia_create_commits_with_unified_actor_and_hoja_de_ruta(
     assert evento_row is not None
     assert evento_row["actor"] == actor.id  # columna UUID tipada -- antes NULL (H-E)
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -2492,9 +2492,9 @@ async def test_transferencia_enviar_rollback_reverts_estado_and_audit_on_natural
     assert enviada_audit == 0
     assert evento_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -2539,9 +2539,9 @@ async def test_transferencia_enviar_commits_with_unified_actor_and_hoja_de_ruta(
     assert evento_row is not None
     assert evento_row["actor"] == actor.id
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -2612,9 +2612,9 @@ async def test_transferencia_rechazar_rollback_reverts_estado_and_audit_on_natur
     assert rechazada_audit == 0
     assert evento_count == 0
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -2691,6 +2691,6 @@ async def test_transferencia_rechazar_commits_with_unified_actor_and_hoja_de_rut
     assert evento_row is not None
     assert evento_row["actor"] == actor.id
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

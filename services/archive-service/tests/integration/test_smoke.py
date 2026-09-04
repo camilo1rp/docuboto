@@ -64,6 +64,6 @@ async def test_create_expediente_persists_and_chains(
     assert persisted_count == 1
     assert audit_count == 1
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

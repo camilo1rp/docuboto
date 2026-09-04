@@ -152,9 +152,9 @@ async def test_h_l_segunda_transferencia_activa_sobre_mismo_expediente_409(
     )
     assert payload["motivo"] == "transferencia_activa_existente"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +247,9 @@ async def test_h_l_concurrencia_dos_create_simultaneos_exactamente_uno_gana(
     )
     assert payload["motivo"] == "transferencia_activa_existente"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +306,9 @@ async def test_h_l_re_preparar_tras_rechazo_no_bloqueada_por_el_indice(
     assert estados[primera.id] == "rechazada"
     assert estados[segunda.id] == "preparada"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 # ---------------------------------------------------------------------------
@@ -342,9 +342,9 @@ async def test_h_m_primaria_coherente_con_ubicaciones_reales_201(
     assert resp.ubicacion_origen_id == origen.id
     assert resp.ubicacion_destino_id == destino.id
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None
 
 
 @pytest.mark.integration
@@ -395,6 +395,6 @@ async def test_h_m_secundaria_incoherente_con_ubicaciones_reales_422_y_audita(
     )
     assert payload["motivo"] == "ubicacion_incoherente_con_tipo"
 
-    ok, broken_id = await audit.verify_chain(conn, slug)
-    assert ok is True
-    assert broken_id is None
+    res = await audit.verify_chain(conn, slug)
+    assert res.ok is True, res.roturas
+    assert res.primera_rota is None

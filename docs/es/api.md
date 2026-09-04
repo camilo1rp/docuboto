@@ -232,13 +232,22 @@ Consulta la auditoría inmutable del tenant (ADR-008), más recientes primero. E
 
 ### `GET /api/v1/audit/verify`
 
-Recalcula la cadena de hash del tenant y reporta su integridad (ADR-008). Exige `USUA_PERM_ADMIN`. **No** se recorta por clearance: la cadena solo tiene valor probatorio si se recalcula entera, y sobre un subconjunto siempre daría «rota». La respuesta es content-free (un booleano y, si acaso, el id de la fila donde se rompe), así que no revela nada del objeto.
+Recalcula la cadena de hash del tenant y reporta su integridad (ADR-008). Exige `USUA_PERM_ADMIN`. **No** se recorta por clearance: la cadena solo tiene valor probatorio si se recalcula entera, y sobre un subconjunto siempre daría «rota». La respuesta es content-free (booleano, conteos y los id de las filas que rompen), así que no revela nada del objeto: ni actor, ni acción, ni referencia.
 
 ```json
-{ "tenant_slug": "icetex", "ok": true, "broken_id": null }
+{
+  "tenant_slug": "icetex", "ok": false, "broken_id": 41004,
+  "total": 2056, "verificados": 2052, "total_roturas": 4,
+  "roturas": [{ "id": 41004, "motivo": "hash+prev_hash" }],
+  "roturas_omitidas": 0
+}
 ```
 
-- `ok=false` con `broken_id` = id de la primera fila cuya cadena no concuerda.
+- **Reporta TODAS las roturas, no solo la primera.** `audit_log` es append-only por ley y una rotura no se puede reparar nunca: parando en la primera, una sola fila mala dejaba la verificación inservible para el resto de la vida del sistema —la herramienta dejaba de servir justo después de un incidente— y decía menos de lo que la entidad puede demostrar ante un juez.
+- Tras una rotura **se sigue encadenando desde el hash almacenado**, no desde el recomputado: así cada fila se juzga contra su predecesor tal como está escrito y las roturas quedan localizadas, en vez de que una fila mala pinte de rotas todas las siguientes.
+- `motivo` ∈ `hash` (el contenido no produce el hash guardado) · `prev_hash` (no encadena con la anterior) · `hash+prev_hash`.
+- `roturas` se topa en **100** entradas enumeradas; `roturas_omitidas` cuenta el resto — un registro masivamente corrupto no puede parecer que tiene exactamente 100 problemas. `total_roturas` es la suma.
+- `broken_id` (= `roturas[0].id`) se conserva por compatibilidad; los demás campos son **aditivos**.
 
 ---
 
