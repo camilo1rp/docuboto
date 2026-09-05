@@ -73,7 +73,7 @@ from seed_demo import (  # noqa: E402
     aviso,
     ok,
     paso,
-    pdf_minimo,
+    pdf_documento,
 )
 
 # La marca que distingue lo del corpus de lo que sembró el demo o de lo que
@@ -406,7 +406,14 @@ async def radicados(
                     files={
                         "file": (
                             f"anexo-{indice:04d}-{k}.pdf",
-                            pdf_minimo(f"Corpus {indice} anexo {k}"),
+                            # Tamaño VARIABLE, no constante: un corpus donde todo
+                            # pesa lo mismo esconde los problemas de tamaño —
+                            # límites de subida, tiempos de render, paginación del
+                            # visor— que solo aparecen en los extremos.
+                            pdf_documento(
+                                f"Corpus {indice} anexo {k}",
+                                paginas=RNG.choice([1, 2, 5, 12, 30]),
+                            ),
                             "application/pdf",
                         )
                     },

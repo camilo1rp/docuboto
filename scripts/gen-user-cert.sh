@@ -96,6 +96,32 @@ CA_PUBLIC_DIR="$PROJECT_ROOT/secrets/ca-users-public"
 if [ -f "$CA_KEY" ] && [ -f "$CA_CERT" ]; then
     echo "Reutilizando sub-CA de USUARIOS existente en: $CA_DIR"
 else
+    # Guarda contra el fallo SILENCIOSO más caro de este script: si $CA_DIR no
+    # contiene una CA, la genera. Con un ca-dir equivocado —un argumento de más,
+    # un comando pegado junto al siguiente— eso crea una raíz de confianza
+    # PARALELA y, peor, sobrescribe el espejo público que auth-service monta.
+    # El sistema deja de confiar en la CA que firmó las credenciales YA activas,
+    # y no lo dice: la emisión termina en verde.
+    #
+    # Ocurrió el 2026-09-05: `gen-user-cert.sh <csr> docker run …` interpretó
+    # "docker" como ca-dir, fabricó una CA nueva ahí, firmó con ella y dejó el
+    # espejo apuntando a esa — con el certificado ACTIVO de otro usuario colgando
+    # de la CA anterior.
+    #
+    # Regla: si ya hay un espejo público, ya hay una raíz en juego y este script
+    # no la reemplaza por iniciativa propia. Crear la primera sigue permitido
+    # (es el camino del clon limpio).
+    if [ -f "$CA_PUBLIC_DIR/ca-users.crt" ] && [ "${ORPYCA_PERMITIR_NUEVA_CA:-0}" != "1" ]; then
+        echo "ERROR: no hay sub-CA de usuarios en '$CA_DIR', pero YA existe un espejo" >&2
+        echo "       público en '$CA_PUBLIC_DIR/ca-users.crt'." >&2
+        echo "" >&2
+        echo "  Generar una CA nueva aquí reemplazaría la raíz de confianza y dejaría" >&2
+        echo "  sin validar los certificados ya emitidos. Casi siempre significa que el" >&2
+        echo "  ca-dir es incorrecto: revisa el segundo argumento." >&2
+        echo "" >&2
+        echo "  Si de verdad quieres una raíz nueva: ORPYCA_PERMITIR_NUEVA_CA=1 $0 ..." >&2
+        exit 1
+    fi
     echo "Generando sub-CA de USUARIOS de DESARROLLO (NO ACREDITADA) en: $CA_DIR"
     echo "(DISTINTA de la CA de sellos institucionales de gen-dev-ca.sh)"
     openssl req \

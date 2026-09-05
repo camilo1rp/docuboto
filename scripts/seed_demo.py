@@ -156,6 +156,21 @@ PERMISOS_DEMO = (
 # recorrido de clasificación quedaría enseñando una pantalla vacía.
 CLEARANCE_DEMO = 3  # 1=Pública 2=Reservada 3=Clasificada
 
+# Tercer grupo, con el MISMO juego de permisos y nivel CRUD que el demo pero
+# clearance **2**. Existe por una razón concreta: con solo los niveles 1 y 3, el
+# no-read-up se comprueba sobre un único salto, y el peldaño intermedio es justo
+# donde vive el error de comparación clásico (`>` donde va `>=`). Con `secretaria`
+# en 2 hay tres escalones y un documento RESERVADA (nivel 2) que ella SÍ ve y
+# `consulta` no, frente a uno CLASIFICADA (nivel 3) que no ve ninguna de las dos.
+#
+# Es un grupo aparte y no una excepción dentro del demo porque el clearance se
+# resuelve por grupo —`MAX(rc.max_level)` entre los del usuario—, así que
+# `secretaria` tiene que estar SOLO aquí: dejarla también en el grupo demo le
+# devolvería el 3 y el peldaño desaparecería sin que nada lo dijera.
+GRUPO_INTERMEDIO = "Gestión (permisos completos, nivel 2)"
+USUARIO_INTERMEDIO = "secretaria"
+CLEARANCE_INTERMEDIO = 2
+
 # Segundo usuario, deliberadamente pobre. No es un adorno del demo: es el único
 # modo de VER que los controles existen. Con un solo usuario que lo puede todo,
 # un botón que debería desaparecer y un backend que debería negarse son
@@ -168,28 +183,78 @@ CLEARANCE_CONSULTA = 1
 
 
 # ---------------------------------------------------------------------------
-# PDF mínimo, generado aquí y sin dependencias
+# PDF generado aquí y sin dependencias
 # ---------------------------------------------------------------------------
-def pdf_minimo(texto: str) -> bytes:
-    """Un PDF 1.4 válido de una página con una línea de texto.
+def _escapar_pdf(texto: str) -> str:
+    """`(`, `)` y `\\` son sintaxis dentro de una cadena PDF.
+
+    Sin esto, un asunto con paréntesis —«Solicitud (urgente)», que en ventanilla
+    es de lo más normal— produce un PDF que abre mal o no abre. Un corpus con
+    documentos rotos es peor que uno pequeño: enseña fallos que no existen.
+    """
+    return texto.replace("\\", r"\\\\").replace("(", r"\\(").replace(")", r"\\)")
+
+
+def pdf_documento(titulo: str, *, paginas: int = 1, lineas_por_pagina: int = 44) -> bytes:
+    """Un PDF 1.4 válido de `paginas` páginas con texto de verdad en cada una.
 
     Se genera en código y no se guarda un binario en el repositorio: un fichero
     de ejemplo versionado es algo que nadie vuelve a mirar y que engorda el clon
     para siempre. Aquí el contenido se ve, se entiende y se cambia editando una
     cadena.
 
+    **Por qué varias páginas.** Un anexo de una línea no ejercita nada: no hay
+    paginación en el visor, la descarga es instantánea, el hash se calcula sobre
+    cuatro bytes y cualquier problema de tamaño —límites de subida, tiempos de
+    render, el PDF/A que storage tiene que admitir— queda fuera del alcance. El
+    corpus necesita documentos con peso para que esas rutas se recorran.
+
     No pretende ser PDF/A — el demo enseña el flujo documental, no la
     conformidad de preservación, que tiene su propio circuito (veraPDF).
     """
-    contenido = f"BT /F1 12 Tf 72 720 Td ({texto}) Tj ET".encode("latin-1", "replace")
-    objetos = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-        b"<< /Length " + str(len(contenido)).encode() + b" >>\nstream\n" + contenido + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    paginas = max(1, paginas)
+    catalogo_id, pages_id = 1, 2
+    primer_pagina_id = 3
+    primer_contenido_id = primer_pagina_id + paginas
+    fuente_id = primer_contenido_id + paginas
+
+    contenidos: list[bytes] = []
+    for n in range(paginas):
+        lineas = [f"BT /F1 14 Tf 72 750 Td ({_escapar_pdf(titulo)}) Tj ET"]
+        lineas.append(
+            f"BT /F1 9 Tf 72 733 Td (Pagina {n + 1} de {paginas} "
+            f"- documento de prueba generado por seed_demo) Tj ET"
+        )
+        y = 706
+        for i in range(lineas_por_pagina):
+            # Texto con longitud variable para que las páginas no sean idénticas:
+            # un corpus donde todo pesa lo mismo esconde los problemas de tamaño.
+            relleno = "referencia " * (2 + ((i + n) % 5))
+            lineas.append(
+                f"BT /F1 10 Tf 72 {y} Td ({_escapar_pdf(f'{i + 1:02d}. {relleno.strip()}')}) Tj ET"
+            )
+            y -= 15
+            if y < 60:
+                break
+        flujo = "\n".join(lineas).encode("latin-1", "replace")
+        contenidos.append(
+            b"<< /Length " + str(len(flujo)).encode() + b" >>\nstream\n" + flujo + b"\nendstream"
+        )
+
+    kids = " ".join(f"{primer_pagina_id + n} 0 R" for n in range(paginas))
+    objetos: list[bytes] = [
+        f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode(),
+        f"<< /Type /Pages /Kids [{kids}] /Count {paginas} >>".encode(),
     ]
+    for n in range(paginas):
+        objetos.append(
+            f"<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {fuente_id} 0 R >> >> "
+            f"/Contents {primer_contenido_id + n} 0 R >>".encode()
+        )
+    objetos.extend(contenidos)
+    objetos.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
     salida = bytearray(b"%PDF-1.4\n")
     desplazamientos = []
     for i, cuerpo in enumerate(objetos, start=1):
@@ -201,10 +266,16 @@ def pdf_minimo(texto: str) -> bytes:
     for d in desplazamientos:
         salida += f"{d:010d} 00000 n \n".encode()
     salida += (
-        f"trailer\n<< /Size {len(objetos) + 1} /Root 1 0 R >>\nstartxref\n{inicio_xref}\n".encode()
-    )
+        f"trailer\n<< /Size {len(objetos) + 1} /Root {catalogo_id} 0 R >>\n"
+        f"startxref\n{inicio_xref}\n"
+    ).encode()
     salida += b"%%EOF\n"
     return bytes(salida)
+
+
+def pdf_minimo(texto: str) -> bytes:
+    """Compatibilidad: una página, como antes. Ver `pdf_documento`."""
+    return pdf_documento(texto, paginas=1, lineas_por_pagina=1)
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +589,35 @@ async def _montar_grupo(
         "INSERT INTO auth_memberships (user_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         [(fila["id"], grupo_id) for fila in filas],
     )
+    # Y quitar a quien ya NO debe estar. Sin esto la pertenencia es aditiva y el
+    # guion converge a un estado distinto según la historia de la instalación,
+    # que es lo contrario de idempotente: dejar de incluir a alguien en la lista
+    # no lo saca del grupo, así que su clearance —que se resuelve como el MÁXIMO
+    # de sus grupos— sigue siendo el viejo. Pasó al mover `secretaria` al grupo
+    # de nivel 2: se quedó también en el de nivel 3 y el peldaño intermedio que
+    # ese grupo existe para crear no llegó a existir, sin que nada lo dijera.
+    #
+    # Se acota a los usuarios que ESTE guion administra: sacar a alguien que una
+    # persona hubiera añadido a mano sería un borrado que nadie pidió.
+    administrados = [u.upper() for u in (USUARIO, *FIRMANTES, USUARIO_CONSULTA)]
+    sobrantes = await conn.fetch(
+        "SELECT m.user_id, u.username FROM auth_memberships m "
+        "JOIN auth_users u ON u.id = m.user_id "
+        "WHERE m.group_id = $1 AND upper(u.username) = ANY($2::text[]) "
+        "AND upper(u.username) <> ALL($3::text[])",
+        grupo_id,
+        administrados,
+        [u.upper() for u in miembros],
+    )
+    if sobrantes:
+        await conn.executemany(
+            "DELETE FROM auth_memberships WHERE user_id = $1 AND group_id = $2",
+            [(f["user_id"], grupo_id) for f in sobrantes],
+        )
+        aviso(
+            f"sacados de «{nombre}»: {', '.join(str(f['username']) for f in sobrantes)} "
+            "(ya no figuran entre sus miembros)"
+        )
     return int(concedidos or 0)
 
 
@@ -579,11 +679,25 @@ async def aprovisionar(api_base: str) -> None:
             # sistema, no cómo repartir competencias entre cargos. Un reparto de
             # roles realista es otra demostración, y probablemente otra decisión
             # de cada entidad.
-            miembros=(USUARIO, *FIRMANTES),
+            miembros=(USUARIO, *(f for f in FIRMANTES if f != USUARIO_INTERMEDIO)),
         )
         ok(
             f"«{GRUPO_DEMO}» con {n_demo} permisos, nivel CRUD 3, "
             f"clearance {CLEARANCE_DEMO}; «{USUARIO}» dentro"
+        )
+
+        n_med = await _montar_grupo(
+            conn,
+            nombre=GRUPO_INTERMEDIO,
+            permisos=PERMISOS_DEMO,
+            crud=3,
+            clearance=CLEARANCE_INTERMEDIO,
+            miembros=(USUARIO_INTERMEDIO,),
+        )
+        ok(
+            f"«{GRUPO_INTERMEDIO}» con {n_med} permisos, nivel CRUD 3, "
+            f"clearance {CLEARANCE_INTERMEDIO}; «{USUARIO_INTERMEDIO}» dentro "
+            "(el peldaño intermedio del no-read-up)"
         )
 
         n_cons = await _montar_grupo(
@@ -741,7 +855,10 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
     reparto = (
         (USUARIO, 901, GRUPO_DEMO),        # ventanilla: radica
         ("jefe", 902, GRUPO_DEMO),         # jurídica: recibe y da visto bueno
-        ("secretaria", 902, GRUPO_DEMO),   # jurídica: proyecta la respuesta
+        # Su URD apunta al grupo INTERMEDIO, que es el único al que pertenece:
+        # el rol de la URD tiene que ser un grupo suyo o la dependencia activa
+        # quedaría colgando de uno que no le da nada.
+        (USUARIO_INTERMEDIO, 902, GRUPO_INTERMEDIO),  # jurídica: proyecta la respuesta
         ("archivista", 903, GRUPO_DEMO),   # archivo: expedientes y transferencias
         (USUARIO_CONSULTA, 902, GRUPO_CONSULTA),
     )
@@ -831,7 +948,17 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
 
     anexo = await api.post(
         "/api/v1/storage/upload",
-        files={"file": ("peticion.pdf", pdf_minimo("Peticion ciudadana - documento de ejemplo"), "application/pdf")},
+        files={
+            "file": (
+                "peticion.pdf",
+                # Seis páginas y no una: el anexo del recorrido es el que alguien
+                # abre en el visor, descarga y verifica por hash. Con una línea no
+                # se ve paginación, la descarga es instantánea y el hash se calcula
+                # sobre cuatro bytes — ninguna de las rutas que importa se recorre.
+                pdf_documento("Peticion ciudadana - documento de ejemplo", paginas=6),
+                "application/pdf",
+            )
+        },
     )
     creado["anexo"] = anexo
     # Sin `.get(..., "?")`: el campo se llama `file_size` y el mensaje llevaba
@@ -1158,7 +1285,7 @@ async def purgar() -> int:
         await borrar(
             "grupos de permisos",
             "DELETE FROM auth_groups WHERE name = ANY($1::text[])",
-            [GRUPO_DEMO, GRUPO_CONSULTA],
+            [GRUPO_DEMO, GRUPO_INTERMEDIO, GRUPO_CONSULTA],
         )
 
         if borrados:

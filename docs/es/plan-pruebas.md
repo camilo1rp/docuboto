@@ -17,11 +17,28 @@
 
 ### 1.1 Preparación del entorno
 
+Un solo comando reconstruye el entorno entero desde cero:
+
 ```bash
-./scripts/dev-secrets.sh                       # idempotente; sin él signature-service no arranca
-docker compose --profile dev up -d --build     # + --profile assistant si se prueba el dictado
-python scripts/seed_demo.py --gateway http://localhost:19080
+./scripts/reset-entorno.sh                     # tamaño por defecto
+./scripts/reset-entorno.sh --radicados 400 --expedientes 30
 ```
+
+**Destruye los volúmenes** de Postgres, MinIO y Redis, y pide una frase tecleada antes de
+hacerlo. Recrear en vez de restaurar un *snapshot* es deliberado: `public.audit_log` es
+append-only por Ley 594 —ni el `--purge` del seed lo toca—, así que la única forma de dejarlo
+limpio es recrear la base; sembrar por la API hace que cada documento **nazca con su asiento y
+su índice**, mientras que un *snapshot* puede contener estados que el sistema ya no sabe
+producir; y un *snapshot* caduca contra las migraciones. Se paga en tiempo, a propósito.
+
+Los guiones corren **dentro de la red** (imagen `scripts/Dockerfile`), porque hablan con
+Postgres por asyncpg y con Keycloak por su API de administración, y desde el host ninguno de
+los dos se alcanza igual. La única pieza que corre en el **host** es
+`scripts/gen-user-cert.sh`: la clave de la sub-CA de usuarios no entra en ningún contenedor.
+
+Si el entorno ya está montado y solo se quiere volumen o perfiles, los pasos sueltos siguen
+existiendo (`seed_demo.py`, `seed_corpus.py`, `perfiles_prueba.py`) — el orquestador los
+encadena, no los sustituye.
 
 | Recurso       | URL                          | Para qué                                                    |
 | ------------- | ---------------------------- | ----------------------------------------------------------- |
@@ -31,13 +48,29 @@ python scripts/seed_demo.py --gateway http://localhost:19080
 | MinIO         | http://localhost:19901       | anexos, índices firmados, actas                             |
 | Keycloak      | http://localhost:19180/admin | identidad                                                   |
 
-El seed crea dos usuarios **a propósito distintos**, porque un solo perfil no permite observar
-ninguno de los dos ejes de autorización:
+El entorno crea **cinco perfiles deliberadamente distintos**. No son cinco copias con nombres
+distintos: cada uno ejercita un camino que ninguno de los otros toca, y la lista se diseñó
+después de comprobar en septiembre de 2026 que el peor defecto del recorrido —tener credencial
+de firma **impedía** firmar cadenas— solo apareció porque un usuario tenía, por accidente, algo
+que los demás no.
 
-| Usuario    | Permisos                                         | Nivel CRUD | Clearance       | Para qué                   |
-| ---------- | ------------------------------------------------ | ---------- | --------------- | -------------------------- |
-| `operador` | los 25 operativos (todos menos `USUA_PERM_ROOT`) | 3          | 3 (Reservada)   | ejecutar el plan           |
-| `consulta` | `PERM_RADI` + `USUA_PERM_EXPEDIENTE`             | **1**      | **1** (Pública) | el barrido negativo de B13 |
+| Usuario      | Permisos                              | CRUD  | Clearance | TOTP | Credencial   | Camino que solo él ejercita              |
+| ------------ | ------------------------------------- | ----- | --------- | ---- | ------------ | ---------------------------------------- |
+| `operador`   | los 25 operativos (todos menos ROOT)  | 3     | 3         | sí   | ninguna      | firma **nativa** (HMAC)                  |
+| `jefe`       | los 25                                | 3     | 3         | sí   | **activa**   | firma **personal XAdES**, `totp_requerido` |
+| `secretaria` | los 25                                | 3     | **2**     | no   | ninguna      | OTP-correo; el peldaño intermedio        |
+| `archivista` | los 25                                | 3     | 3         | sí   | **revocada** | credencial revocada ≠ ausente            |
+| `consulta`   | `PERM_RADI` + `USUA_PERM_EXPEDIENTE`  | **1** | **1**     | no   | ninguna      | el barrido negativo de B13               |
+
+Dos filas que no son de adorno. `secretaria` en clearance **2** da el peldaño intermedio: con
+solo 1 y 3 el no-read-up se comprueba sobre un único salto, y el escalón de en medio es donde
+vive el error de comparación clásico (`>` donde va `>=`). `archivista` con la credencial
+**revocada** cubre un tercer estado que el código distingue explícitamente de «sin
+certificado» y que no ejercitaba ninguna prueba.
+
+`reset-entorno.sh` imprime al final una tarjeta con los secretos TOTP en base32 y el código
+vigente, para cargarlos en una app autenticadora. Los OTP por correo de quien no tiene TOTP
+llegan a MailHog.
 
 ### 1.2 Forma de cada caso
 
