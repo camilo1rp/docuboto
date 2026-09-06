@@ -31,7 +31,10 @@ servicio, porque la idempotencia persistente vive en su propio schema.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
+import os
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -79,9 +82,89 @@ def build_event(
     }
 
 
+# ── Autenticidad del sobre ──────────────────────────────────────────────────
+#
+# Un sobre sin firma es una orden anónima. Los cuatro consumidores toman el
+# `tenant_slug` DEL PROPIO SOBRE y lo usan para elegir el schema sobre el que
+# escriben, así que quien pueda hacer `XADD` actúa como si fuera el productor
+# legítimo, para cualquier entidad alojada, sin pasar por el gateway ni por
+# ningún token: publicar una reclasificación a la baja bastaba para bajar de
+# nivel un radicado reservado de otra entidad.
+#
+# La regex de `tenant_schema` cerraba la inyección de schema, no la suplantación
+# del origen: son dos preguntas distintas y solo estaba respondida la primera.
+#
+# Se firma y se verifica AQUÍ porque `to_fields` y `parse_fields` son el paso
+# único: todo productor pasa por la primera y todo consumidor por la segunda.
+# Un control en el paso único no se puede olvidar al añadir el quinto consumidor.
+
+_CAMPOS_FIRMADOS = (
+    "event_id",
+    "event_type",
+    "version",
+    "tenant_slug",
+    "occurred_at",
+    "actor",
+    "correlation_id",
+    "dedup_key",
+    "payload",
+)
+
+
+class EventoNoAutentico(ValueError):
+    """El sobre no trae firma válida del productor."""
+
+
+def _secreto_de_eventos() -> str | None:
+    return os.environ.get("EVENT_SIGNING_SECRET") or None
+
+
+def _firma(campos: dict[str, str], secreto: str) -> str:
+    # Se firma la CONCATENACIÓN CANÓNICA de los campos en orden fijo, con un
+    # separador que no puede aparecer en un valor plano. Firmar el JSON tal cual
+    # dependería del orden de las claves, que no está garantizado entre
+    # versiones, y una firma que a veces no cuadra se acaba desactivando.
+    base = "\x1e".join(campos.get(c, "") for c in _CAMPOS_FIRMADOS)
+    return hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()
+
+
+def firmar_campos(campos: dict[str, str]) -> dict[str, str]:
+    """Añade `firma` a los campos del sobre, si hay secreto configurado."""
+    secreto = _secreto_de_eventos()
+    if secreto is None:
+        return campos
+    return {**campos, "firma": _firma(campos, secreto)}
+
+
+def verificar_campos(campos: dict[str, str]) -> None:
+    """Lanza `EventoNoAutentico` si el sobre no viene firmado por un productor.
+
+    **Sin secreto configurado no verifica**, y es una decisión explícita, no un
+    olvido: activarlo de golpe en un despliegue en marcha dejaría sin procesar
+    todos los eventos ya encolados, incluidos los avisos a ciudadanos con plazo
+    legal corriendo. El interruptor es la propia variable de entorno: quien la
+    pone, la exige. La comprobación de que está puesta pertenece al arranque del
+    servicio, no a cada mensaje.
+    """
+    secreto = _secreto_de_eventos()
+    if secreto is None:
+        return
+    recibida = campos.get("firma") or ""
+    esperada = _firma(campos, secreto)
+    if not hmac.compare_digest(recibida, esperada):
+        raise EventoNoAutentico(
+            f"El evento {campos.get('event_id')!r} de tipo "
+            f"{campos.get('event_type')!r} no trae firma válida del productor."
+        )
+
+
 def to_fields(event: dict[str, Any]) -> dict[str, str]:
-    """Aplana el sobre a campos string para ``XADD`` (Redis Streams)."""
-    return {
+    """Aplana el sobre a campos string para ``XADD`` (Redis Streams).
+
+    Los campos salen FIRMADOS si el despliegue tiene secreto de eventos: es el
+    paso único por el que pasa todo productor.
+    """
+    campos = {
         "event_id": event["event_id"],
         "event_type": event["event_type"],
         "version": str(event["version"]),
@@ -92,6 +175,7 @@ def to_fields(event: dict[str, Any]) -> dict[str, str]:
         "dedup_key": event.get("dedup_key") or "",
         "payload": json.dumps(event.get("payload") or {}, default=str),
     }
+    return firmar_campos(campos)
 
 
 def parse_fields(fields: dict[Any, Any]) -> dict[str, Any]:
@@ -104,6 +188,7 @@ def parse_fields(fields: dict[Any, Any]) -> dict[str, Any]:
         return v.decode() if isinstance(v, bytes | bytearray) else v
 
     norm = {_d(k): _d(v) for k, v in fields.items()}
+    verificar_campos(norm)
     return {
         "event_id": norm.get("event_id"),
         "event_type": norm.get("event_type"),

@@ -138,8 +138,13 @@ ASUNTOS_I = (
 # devuelve el servicio: no se adivinan).
 TIPOLOGIAS = ("ciudadano", "empresa", "entidad_publica", "usuario_interno", "direccion_libre")
 
+# OJO: ninguno de estos puede coincidir con la ciudadana del recorrido de
+# `seed_demo.py` («María Fernanda Ruiz»). Coincidía, y el resultado era un
+# duplicado ACCIDENTAL en `/admin/terceros` — indistinguible de los que se
+# siembran a propósito. Un detector que enseña ruido del propio seed es un
+# detector en el que nadie confía.
 NOMBRES = (
-    "María Fernanda Ruiz", "Carlos Andrés Gómez", "Luz Marina Peña", "Jorge Iván Restrepo",
+    "Beatriz Elena Quintero", "Carlos Andrés Gómez", "Luz Marina Peña", "Jorge Iván Restrepo",
     "Sandra Milena Ortiz", "Diego Alejandro Cárdenas", "Claudia Patricia Nieto",
     "Héctor Fabio Salazar", "Ana Lucía Bermúdez", "Óscar Eduardo Villamil",
     "Gloria Esperanza Rincón", "Julián David Mosquera", "Paola Andrea Ceballos",
@@ -322,7 +327,80 @@ async def terceros(api: Api, cuantos: int) -> list[dict[str, Any]]:
         # un no-op, no un error. Es la misma regla que impide que cambiar de
         # dirección cree un tercero nuevo.
         creados.append(await api.post("/api/v1/terceros", json=cuerpo, esperado=(200, 201)))
+
+    creados += await _duplicados_realistas(api)
     ok(f"{len(creados)} terceros ({len(municipios)} municipios distintos disponibles)")
+    return creados
+
+
+#: Los duplicados que de verdad aparecen en una ventanilla. NO son «Ana 2» y
+#: «Ana 3» —eso son nombres distintos y no los agrupa nadie—: son la misma
+#: persona tecleada dos veces, con las tildes puestas o no y en mayúsculas o en
+#: minúsculas.
+#:
+#: **Solo se puede sembrar el eje del NOMBRE, y eso es una buena noticia.** El
+#: otro eje de la detección —mismo documento de identidad— no se puede producir
+#: por la API: el alta es idempotente por documento, así que dos intentos con la
+#: misma cédula convergen a UNA ficha. Es decir, esa clase de duplicado ya no
+#: puede nacer; los que existan en una instalación real son residuo de antes de
+#: que la puerta se cerrara, o de fichas creadas sin documento y completadas
+#: después. Sembrarlo por SQL para «que se vea» enseñaría un estado que el
+#: sistema ya no sabe producir.
+#:
+#: Por eso la última pareja va con el MISMO NIT a propósito: no crea un
+#: duplicado, demuestra que no se puede: dos altas, una ficha.
+_DUPLICADOS = (
+    # (nombre, documento) — documento `None` = sin identificar, solo por nombre
+    ("José Pérez Gómez", None),
+    ("JOSE PEREZ GOMEZ", None),
+    ("María Ángel Rúa", None),
+    ("maria angel rua", None),
+    # Estas dos convergen a una sola: la idempotencia por documento en acción.
+    ("Sociedad Andina S.A.S.", "900111222"),
+    ("Sociedad Andina SAS", "900111222"),
+)
+
+
+async def _duplicados_realistas(api: Api) -> list[dict[str, Any]]:
+    """Siembra los duplicados que la pantalla de `/admin/terceros` debe detectar.
+
+    Sin esto el corpus no puede demostrar la función: se comprobó sobre el
+    corpus recién sembrado y `/terceros/duplicados` devolvía **cero grupos**,
+    porque «Ana Lucía Bermúdez 2» y «Ana Lucía Bermúdez 3» son nombres distintos.
+    Un entorno de pruebas que no puede enseñar el defecto tampoco puede enseñar
+    la corrección.
+
+    Solo se siembra el eje del NOMBRE: el del documento no se puede producir por
+    la API, porque el alta es idempotente por documento y dos intentos con la
+    misma cédula convergen a una ficha. Ver `_DUPLICADOS`.
+    """
+    creados = []
+    for nombre, documento in _DUPLICADOS:
+        # Converger a mano, buscando por nombre EXACTO antes de crear. El alta
+        # del backend es idempotente por DOCUMENTO, y estas fichas van sin él a
+        # propósito —son el eje del nombre—, así que sin esta comprobación cada
+        # corrida del corpus añadiría otra copia: cinco «José Pérez» tras tres
+        # ejecuciones. El corpus promete converger («volver a ejecutarlo deja el
+        # MISMO archivo, no uno más grande») y un seed que multiplica lo que
+        # siembra rompe esa promesa justo donde más se nota.
+        ya = [
+            t
+            for t in _items(await api.get("/api/v1/terceros", params={"q": nombre}))
+            if t.get("nombre") == nombre
+        ]
+        if ya:
+            creados.append(ya[0])
+            continue
+        cuerpo: dict[str, Any] = {"tipo": "ciudadano", "nombre": nombre}
+        if documento:
+            cuerpo["tipo_documento"] = "CC" if len(documento) == 10 else "NIT"
+            cuerpo["numero_documento"] = documento
+        creados.append(await api.post("/api/v1/terceros", json=cuerpo, esperado=(200, 201)))
+    distintas = len({c.get("id") for c in creados})
+    aviso(
+        f"{len(_DUPLICADOS)} altas de duplicados a propósito → {distintas} fichas "
+        "(las del mismo NIT convergen). Sin esto `/admin/terceros` no tiene qué detectar"
+    )
     return creados
 
 
@@ -392,6 +470,24 @@ async def radicados(
             "nivel_seguridad": nivel,
             "response_days": RNG.choice([10, 15, 30]),
         }
+        # El actor POR REFERENCIA al catálogo, no solo su nombre en texto.
+        # Hasta 2026-09 el corpus sembraba 40 terceros y CERO vínculos: la tabla
+        # `radicado_actor` quedaba vacía y el eje entero —copia congelada,
+        # historial de una ficha, herencia tras una fusión— no se podía observar
+        # en el entorno de pruebas. Un corpus que no ejercita una tabla no
+        # prueba lo que hay en ella.
+        #
+        # El rol depende del tipo: en una Entrada la persona ENVÍA, en una
+        # Salida RECIBE. Ponerlo siempre igual llenaría el sistema de radicados
+        # con el rol equivocado, que es peor que no ponerlo.
+        if persona and persona.get("id"):
+            cuerpo["actores"] = [
+                {
+                    "tercero_id": persona["id"],
+                    "rol": "remitente" if tipo == "E" else "destinatario",
+                    "principal": True,
+                }
+            ]
         if causal:
             cuerpo["clasificacion_fundamento"] = causal
             cuerpo["clasificacion_causal"] = causal

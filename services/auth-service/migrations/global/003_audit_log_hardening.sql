@@ -46,15 +46,29 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- 2. Rol de aplicación y permisos mínimos
---    El rol orpycamcp_app es el rol con el que deben conectar los microservicios
---    en producción. Tiene sólo INSERT + SELECT sobre audit_log; no puede
+--    El rol orpycamcp_app tiene sólo INSERT + SELECT sobre audit_log; no puede
 --    actualizar, borrar ni truncar.
+--
+--    OJO — esta migración decía «es el rol con el que deben conectar los
+--    microservicios en producción», y eso NO ocurre: en
+--    `infra/docker-compose.prod.yml` todos los servicios arman su DATABASE_URL
+--    con el rol de arranque, que Postgres crea SUPERUSUARIO. Con ese rol, las
+--    tres capas del guardián de solo-anexar (004) no se aplican: el superusuario
+--    salta el REVOKE. La frase se corrige aquí en vez de dejarla, porque una
+--    regla escrita que nadie implementa se lee como un control existente y hace
+--    que nadie lo busque. Migrar los servicios a este rol exige concederle
+--    permisos sobre TODAS las tablas de TODOS los schemas de entidad y sobre los
+--    que se creen después: es trabajo de despliegue pendiente, no un hecho.
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'orpycamcp_app') THEN
-        -- Contraseña placeholder: DEBE cambiarse antes del primer despliegue productivo.
-        CREATE ROLE orpycamcp_app LOGIN PASSWORD 'CHANGE_IN_PRODUCTION';
+        -- Nace SIN capacidad de conectar: cualquier contraseña escrita aquí
+        -- queda publicada en el repositorio el día del push, y una credencial
+        -- conocida sobre un rol con INSERT en la tabla GLOBAL de auditoría
+        -- permite fabricar asientos a nombre de cualquiera. El operador la
+        -- habilita con un secreto suyo (ver migración 007).
+        CREATE ROLE orpycamcp_app NOLOGIN;
     END IF;
 END;
 $$;

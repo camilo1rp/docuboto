@@ -167,6 +167,55 @@ class CadenaRepository:
             estado,
         )
 
+    async def invalidar_por_objeto(self, objeto_tipo: str, objeto_id: str, motivo: str) -> int:
+        """Deja sin efecto los circuitos de un objeto cuyo texto cambió.
+
+        La migración 018 creó el estado `invalidada` justamente para esto —«la
+        cadena seguía "pendiente" sobre un documento que ya no existe, o peor,
+        "firmado" sobre uno que cambió después»— y **ningún código lo escribía**.
+        El esquema anticipó el trámite y la lógica no lo conectó.
+
+        Alcanza a las solicitudes vivas (`pendiente`) y a las ya cerradas
+        (`firmado`), porque el problema es el mismo en ambas: las primeras piden
+        a alguien que firme un texto que ya no es, y las segundas atestiguan un
+        texto que dejó de estar. Los turnos aún sin resolver caen con ellas,
+        para que desaparezcan de la bandeja de quien los tenía; los ya resueltos
+        se conservan intactos, porque son el registro de un acto que sí ocurrió.
+
+        No bloquea el rehacer: el índice de unicidad filtra por `pendiente`, así
+        que una solicitud invalidada no impide abrir la que la sustituye — la
+        propia migración lo comprueba para que un cambio futuro no lo rompa.
+
+        Devuelve cuántas solicitudes se invalidaron.
+        """
+        filas = await self._conn.fetch(
+            """
+            UPDATE firma_solicitud
+               SET estado = 'invalidada',
+                   invalidada_at = now(),
+                   invalidada_motivo = $3,
+                   updated_at = now()
+             WHERE objeto_tipo = $1
+               AND objeto_id = $2
+               AND estado IN ('pendiente', 'firmado')
+            RETURNING id
+            """,
+            objeto_tipo,
+            objeto_id,
+            motivo,
+        )
+        for fila in filas:
+            await self._conn.execute(
+                """
+                UPDATE firma_cadena
+                   SET estado = 'invalidada'
+                 WHERE solicitud_id = $1
+                   AND estado = 'pendiente'
+                """,
+                fila["id"],
+            )
+        return len(filas)
+
     # ------------------------------------------------------------------
     # firma_cadena
     # ------------------------------------------------------------------

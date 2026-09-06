@@ -925,6 +925,26 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
     # justo lo que este sistema enseña a no malgastar.
     asunto = f"Solicitud de certificación laboral {MARCA}"
     ya = await buscar_radicado(api, asunto)
+
+    # La remitente entra al DIRECTORIO, no solo como texto en el radicado. Es lo
+    # que hace que el recorrido enseñe el modelo completo: su ficha se puede
+    # buscar, su contacto queda congelado en el radicado, y `/admin/terceros`
+    # tiene algo que mostrar. El alta es idempotente por documento, así que
+    # repetir el seed no crea una segunda María Fernanda.
+    remitente = await api.post(
+        "/api/v1/terceros",
+        json={
+            "tipo": "ciudadano",
+            "nombre": "María Fernanda Ruiz",
+            "tipo_documento": "CC",
+            "numero_documento": "52987654",
+            "email": "mfruiz@ejemplo.test",
+            "telefono": "3001234567",
+            "direccion": "Calle 45 #12-30",
+        },
+        esperado=(200, 201),
+    )
+
     entrada = ya or await api.post(
         "/api/v1/documents",
         json={
@@ -933,6 +953,9 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
             "doc_class": "DEM-PET",
             "sender_name": "María Fernanda Ruiz",
             "sender_entity": "Ciudadana",
+            "actores": [
+                {"tercero_id": remitente["id"], "rol": "remitente", "principal": True}
+            ],
             "origin_dept": DEPENDENCIAS[0][2],
             "dest_dept": DEPENDENCIAS[1][2],
             "pages": 2,

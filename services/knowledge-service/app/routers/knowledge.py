@@ -156,6 +156,13 @@ class SearchHit(BaseModel):
     texto: str
     metadata: dict[str, Any]
     score: float
+    #: Clasificación del fragmento. Se EXPONE, aunque `/search` no la use para
+    #: filtrar —el pre-filtro por clearance ya limitó lo que el usuario puede
+    #: ver—, porque quien decide si algo puede además SALIR a un proveedor de
+    #: generación externo es el consumidor que genera, y sin este campo no podía
+    #: decidirlo. El asistente obtenía por aquí los mismos fragmentos que `/rag`
+    #: retira deliberadamente del contexto de un LLM externo, y los reenviaba.
+    nivel_seguridad: int = 1
 
 
 @router.post(

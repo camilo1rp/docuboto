@@ -308,7 +308,13 @@ class BorradorService:
     async def listar(self, estado: str | None) -> list[BorradorResponse]:
         return [_bo(r) for r in await self._repo.list_borradores(estado)]
 
-    async def _require_editable(self, borrador_id: uuid.UUID):
+    async def _require_editable(self, borrador_id: uuid.UUID) -> Any:
+        """Devuelve la fila ANTES de editar; nunca `None` (404 si no existe).
+
+        El tipo de retorno se declara porque el llamante la usa: comparar la
+        huella de antes con la de después es lo que distingue «cambió el texto»
+        de «se guardó otro campo».
+        """
         row = await self._repo.get_borrador(borrador_id)
         if row is None:
             raise _not_found(f"Borrador {borrador_id} no encontrado")
@@ -324,8 +330,33 @@ class BorradorService:
         return row
 
     async def editar(self, borrador_id: uuid.UUID, payload: BorradorUpdate) -> BorradorResponse:
-        await self._require_editable(borrador_id)
-        row = await self._repo.update_borrador(borrador_id, payload.model_dump(exclude_unset=True))
+        antes = await self._require_editable(borrador_id)
+        cambios = payload.model_dump(exclude_unset=True)
+        row = await self._repo.update_borrador(borrador_id, cambios)
+        if row is None:
+            # La fila desapareció entre la guarda y la escritura. El caso ya
+            # existía —se dereferenciaba sin comprobar y habría reventado con un
+            # 500— y solo se hizo visible al necesitar la huella de después.
+            raise _not_found(f"Borrador {borrador_id} no encontrado")
+
+        # Si el TEXTO cambió, los circuitos anteriores dejan de valer.
+        #
+        # Rehacer un documento ya firmado es el trámite, no un abuso, así que
+        # editar no se impide. Lo que no puede quedar en pie son las firmas
+        # dadas sobre otro texto. La garantía dura de eso es la comparación de
+        # huellas en `radicar`; esto es lo que además mantiene honesta la
+        # bandeja: sin ello, los turnos de un circuito superado seguían
+        # pidiéndole a alguien firmar un documento que ya no existe, y luego
+        # desaparecían sin explicación.
+        #
+        # La condición mira la HUELLA, no el campo enviado: `cuerpo` puede venir
+        # en el payload con el mismo texto de siempre, y el disparador de la
+        # migración 030 solo recalcula la huella cuando el contenido cambia de
+        # verdad. Disparar por «vino el campo» invalidaría circuitos vivos al
+        # guardar un cambio de asunto.
+        if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
+            await self._signature_client.invalidar_circuitos(str(borrador_id), self._slug)
+
         return _bo(row)
 
     async def aprobar(self, borrador_id: uuid.UUID) -> BorradorResponse:

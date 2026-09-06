@@ -325,9 +325,64 @@ async def _execute_tool(
 
     return _tool_result(
         block.id,
-        {"status": resp.status_code, "data": data},
+        {"status": resp.status_code, "data": _recortar_por_residencia(data)},
         is_error=resp.status_code >= 400,
     )
+
+
+# ── Barrera de residencia hacia el proveedor externo ────────────────────────
+#
+# El proyecto decidió, y lo escribió sin excepciones (ADR-006): «material
+# `nivel_seguridad >= RESERVADA` NUNCA se envía a un proveedor de generación
+# EXTERNO, aunque el usuario solicitante esté autorizado a verlo — fail-closed,
+# SIN override configurable». Está implementado en knowledge-service y aplicado
+# en `/rag`, que EXCLUYE del contexto los fragmentos reservados.
+#
+# El asistente también es generación con proveedor externo —habla con la API de
+# Anthropic— y no replicaba la barrera. El cuerpo íntegro de cada respuesta del
+# gateway entraba en `state.messages` y viajaba entero en el turno siguiente, así
+# que lo que `/rag` retira con cuidado salía igualmente por aquí. ADR-019 daba
+# por hecho que esto no podía pasar («el MCP solo provee tools, no aloja
+# inferencia»); E18 aloja inferencia y esa premisa dejó de ser cierta.
+#
+# Se recorta el CONTENIDO, no la petición entera, que es el mismo criterio de
+# `/rag`: lo que el usuario puede ver sigue estando —se lo dice el sistema por
+# pantalla— y lo que no puede salir del país, no sale. El nivel es dato del
+# propio objeto, así que el recorte no depende de qué tool se llamó ni de que
+# alguien recuerde añadirla a una lista.
+
+#: Desde RESERVADA (2) no puede salir a un proveedor externo.
+_NIVEL_RESERVADA = 2
+
+#: Lo único que sobrevive al recorte: identificar el objeto sin revelarlo.
+_CAMPOS_QUE_SOBREVIVEN = frozenset({"id", "nivel_seguridad", "source_ref", "tracking_number"})
+
+_AVISO_RESIDENCIA = (
+    "Contenido no disponible para el asistente: está clasificado y su texto no "
+    "puede enviarse al proveedor de generación. Consúltelo directamente en el "
+    "sistema, donde su nivel de acceso sí lo permite."
+)
+
+
+def _recortar_por_residencia(dato: Any) -> Any:
+    """Sustituye el contenido de todo objeto clasificado por un aviso.
+
+    Recorre la respuesta completa porque un resultado puede ser un objeto, una
+    lista de ellos, o traerlos anidados; decidir por el nombre de la tool sería
+    una lista que se queda corta el día que se añade la siguiente.
+    """
+    if isinstance(dato, list):
+        return [_recortar_por_residencia(x) for x in dato]
+    if not isinstance(dato, dict):
+        return dato
+
+    nivel = dato.get("nivel_seguridad")
+    if isinstance(nivel, int) and nivel >= _NIVEL_RESERVADA:
+        recortado = {k: v for k, v in dato.items() if k in _CAMPOS_QUE_SOBREVIVEN}
+        recortado["_residencia"] = _AVISO_RESIDENCIA
+        return recortado
+
+    return {k: _recortar_por_residencia(v) for k, v in dato.items()}
 
 
 def _tool_result(tool_use_id: str, payload: dict[str, Any], *, is_error: bool) -> dict[str, Any]:

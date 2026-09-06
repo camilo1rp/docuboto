@@ -35,6 +35,7 @@ from orpycamcp_common import audit, events
 from app.clients.tenant_client import TenantServiceClient
 from app.core.clearance import resolve_caller_clearance
 from app.models.document import Anexo, Radicado
+from app.repositories.audit_read import AuditReadRepository
 from app.repositories.document_repository import (
     DocumentRepository,
     InvalidTenantSlugError,
@@ -46,6 +47,7 @@ from app.schemas.document import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
+    HistorialAccesoEntry,
     IndiceClasificadoItem,
     IndiceClasificadosResponse,
 )
@@ -69,11 +71,12 @@ _CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
 # 1081/2015): `object_type`/`object_ref` son constantes DEDICADAS, distintas
 # de `object_type="radicado"` que usa la lectura individual
 # (`document.radicado_consultado`) — un listado/búsqueda no es una lectura DE
-# un radicado concreto, es de un CONJUNTO. document-service no tiene hoy un
-# equivalente a `AuditReadRepository`/`GET /historial-acceso`
-# (archive-service sí), pero se reservan dedicadas para cuando exista, y
-# para que nadie las confunda con `object_type="radicado"` al filtrar
-# `audit_log`. Acción única para listado y búsqueda (a diferencia de
+# un radicado concreto, es de un CONJUNTO. Esa separación es la que permite que
+# `GET /documents/{id}/historial-acceso` (`AuditReadRepository`) responda «quién
+# ha visto ESTE radicado» sin contaminar la respuesta con cada vez que alguien
+# abrió la bandeja. Hasta 2026-09 este comentario decía que ese endpoint no
+# existía «pero se reservan dedicadas para cuando exista»: ya existe, y la
+# previsión resultó buena. Acción única para listado y búsqueda (a diferencia de
 # archive-service, que las distingue con dos acciones) — spec de este
 # incremento.
 _SEARCH_OBJECT_TYPE = "radicado_busqueda"
@@ -140,6 +143,10 @@ class ReclassifyForbiddenError(Exception):
     """El llamante intenta asignar un nivel de seguridad superior a su propio clearance."""
 
 
+class AnexoNoDisponibleError(Exception):
+    """Se intenta adjuntar un fichero que ya cuelga de un radicado fuera de alcance."""
+
+
 class DocumentAnuladoError(Exception):
     """Se intenta modificar un radicado ya anulado.
 
@@ -167,6 +174,37 @@ class DocumentService:
         self._tenant_client = tenant_client
         self._redis = redis
         self._metadata_repo = MetadataRepository(conn)
+
+    async def _rechazar_anexos_fuera_de_alcance(
+        self, anexos: list, clearance: int
+    ) -> None:
+        """422 si algún `file_id` ya es anexo de un radicado fuera del clearance.
+
+        El mensaje es NEUTRO a propósito, y es el mismo que correspondería a un
+        fichero inexistente: distinguir «no existe» de «pertenece a algo que no
+        puedes ver» convertiría este gate en un oráculo, y confirmar por fuerza
+        bruta qué ficheros cuelgan de un radicado reservado es justo lo que se
+        está evitando.
+        """
+        ids = [a.file_id for a in anexos if a.file_id is not None]
+        if not ids:
+            return
+        fuera = await self._conn.fetchval(
+            """
+            SELECT 1
+              FROM anexos a
+              JOIN radicados r ON r.id = a.radicado_id
+             WHERE a.file_id = ANY($1::uuid[])
+               AND r.nivel_seguridad > $2
+             LIMIT 1
+            """,
+            ids,
+            clearance,
+        )
+        if fuera:
+            raise AnexoNoDisponibleError(
+                "Alguno de los archivos indicados no está disponible para adjuntar."
+            )
 
     async def create(
         self,
@@ -222,6 +260,32 @@ class DocumentService:
             if template is not None:
                 validate_metadata(payload.metadata, template["json_schema"])
                 metadata_template_id = template["id"]
+
+        # El VÍNCULO anexo↔radicado no lo puede afirmar el cliente (RF-SEG-08).
+        #
+        # `AnexoInput.file_id` es un UUID que llega en el payload y se insertaba
+        # tal cual. El gate de la descarga mediada comprueba tres cosas —que el
+        # radicado exista, que esté dentro del clearance y que el `file_id` sea
+        # anexo DE ESE radicado— y las tres eran ciertas: la tercera porque el
+        # propio atacante acababa de escribirla. Adosando el `file_id` de un
+        # anexo clasificado a un radicado propio de nivel PUBLICA, la descarga
+        # devolvía sus bytes y quedaba auditada como lectura legítima.
+        #
+        # No se arregla con una unicidad sobre `file_id`: el almacén deduplica
+        # por SHA-256, así que dos radicados que llevan el mismo documento
+        # comparten fila de fichero de forma legítima, y esa restricción
+        # rompería el caso normal para atajar el abusivo.
+        #
+        # La regla es más estrecha: no se adjunta un fichero que ya es anexo de
+        # un radicado que el llamante NO puede leer. Adjuntar uno que sí puede
+        # leer sigue permitido, que es el caso deduplicado.
+        #
+        # Va AQUÍ, antes de `next_sequence`, y no dentro de la transacción: el
+        # rechazo no puede costar un consecutivo, porque un número gastado no se
+        # devuelve nunca.
+        if payload.anexos:
+            clearance_anexos = await resolve_caller_clearance(self._conn, registered_by)
+            await self._rechazar_anexos_fuera_de_alcance(payload.anexos, clearance_anexos)
 
         tenant_code = await self._repo.get_tenant_code()
         sequence = await self._repo.next_sequence(year, payload.doc_type)
@@ -640,6 +704,48 @@ class DocumentService:
             raise DocumentNotFoundError(tracking_number)
         await self._audit_read_access(radicado.tracking_number, user_id=user_id, canal=canal)
         return _to_response(radicado)
+
+    async def historial_acceso(
+        self,
+        radicado_id: uuid.UUID,
+        *,
+        user_id: uuid.UUID | None,
+        page: int,
+        size: int,
+        # `builtins.list` en el retorno y no `list`: la clase define un método
+        # `list` que lo sombrea dentro de su cuerpo. Lo advierte la cabecera del
+        # módulo, y aun así hay que acordarse.
+    ) -> tuple[builtins.list[HistorialAccesoEntry], int]:
+        """Quién leyó y quién descargó este radicado (RF-BUS-10).
+
+        **No-read-up ANTES de tocar `audit_log`** (RF-SEG-08): un radicado por
+        encima del clearance del llamante es 404, igual que en el resto de sus
+        lecturas. Sin esa guarda, el historial sería un oráculo — quien no puede
+        ver el radicado sabría igualmente que existe y cuánta gente lo ha
+        mirado, que en un documento RESERVADO es justo lo que hay que ocultar.
+
+        El filtro va por `tracking_number` y no por el UUID porque así se
+        escribió la traza (`object_ref = <número de radicado>`): es la
+        referencia estable y legible, la misma que aparece en el índice
+        electrónico.
+        """
+        max_clearance = await resolve_caller_clearance(self._conn, user_id)
+        radicado = await self._repo.get_by_id(radicado_id, max_clearance)
+        if radicado is None:
+            # Excepción de DOMINIO, no `HTTPException`: en este servicio la
+            # traducción a HTTP vive en el router. Es también lo que hace que el
+            # 404 del no-read-up sea indistinguible del de un radicado que no
+            # existe — que es justo la propiedad que se busca.
+            raise DocumentNotFoundError(str(radicado_id))
+        lector = AuditReadRepository(self._conn)
+        total = await lector.count_for_radicado(self._slug, radicado.tracking_number)
+        filas = await lector.list_for_radicado(
+            self._slug,
+            radicado.tracking_number,
+            offset=(page - 1) * size,
+            limit=size,
+        )
+        return [HistorialAccesoEntry(**dict(f)) for f in filas], total
 
     async def _audit_read_access(
         self, tracking_number: str, *, user_id: uuid.UUID | None, canal: str

@@ -50,6 +50,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { presentacionDelItem, detalleDelItem } from "$lib/utils/loteJob.js";
+  import { vigilarInactividad } from "$lib/utils/inactividad.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
@@ -304,6 +305,30 @@
   let docsJobPollError = "";
   let docsJobTimer = null;
 
+  // ── El sondeo no puede fingir que hay alguien delante ────────────────────
+  //
+  // Cada `pollJobStatusOnce` va al servidor de SvelteKit, dispara el refresco
+  // transparente del token y **reinicia el contador de inactividad de
+  // Keycloak** (30 min en producción). Esta pantalla sondea cada 2 s —seis
+  // veces más rápido que la bandeja de correo—, así que una pestaña olvidada
+  // aquí mantenía la sesión viva hasta el tope absoluto de 10 h, con la
+  // pantalla desbloqueada. Y no paraba nunca si el sondeo fallaba o si el
+  // trabajo se quedaba en un estado no terminal.
+  //
+  // Es el mismo defecto que se corrigió en `/correo` en agosto de 2026, en una
+  // pantalla que nadie volvió a mirar. El README de Keycloak deja escrita la
+  // pregunta que había que hacerse: «¿esto renueva la sesión de alguien que no
+  // está delante?».
+  //
+  // La corrección NO es cerrar sesión desde el navegador —sería un control
+  // falso, se salta desactivando JavaScript— sino dejar de fingir actividad:
+  // sin interacción real el sondeo para, y el temporizador del servidor hace
+  // su trabajo. Al volver, se reanuda con una pasada inmediata.
+  const INACTIVIDAD_MS = 5 * 60 * 1000;
+  //: Se anuncia en pantalla. Un seguimiento de trabajo que se congela en
+  //: silencio se lee como un trabajo atascado, que es otra cosa.
+  let sondeoPausadoPorInactividad = false;
+
   async function docsPollOnce() {
     if (!docsJobId) return;
     const result = await pollJobStatusOnce("documentos", docsJobId);
@@ -366,7 +391,44 @@
     }
   }
 
+  // Vigilancia de inactividad para los DOS sondeos: documentos y expedientes.
+  // Uno solo protegido dejaría el agujero abierto por el otro.
+  const dejarDeVigilarInactividad =
+    typeof window === "undefined"
+      ? () => {}
+      : vigilarInactividad({
+          msSinActividad: INACTIVIDAD_MS,
+          alInactivo: () => {
+            // Se paran los temporizadores pero se CONSERVAN los `jobId`: el
+            // trabajo sigue corriendo en el servidor y hay que poder retomar su
+            // seguimiento cuando la persona vuelva.
+            if (docsJobTimer) {
+              clearInterval(docsJobTimer);
+              docsJobTimer = null;
+            }
+            if (expJobTimer) {
+              clearInterval(expJobTimer);
+              expJobTimer = null;
+            }
+            sondeoPausadoPorInactividad = docsJobId !== null || expJobId !== null;
+          },
+          alActivo: () => {
+            sondeoPausadoPorInactividad = false;
+            // Una pasada inmediata al volver: si no, el estado tardaría hasta
+            // 2 s en refrescarse justo cuando alguien acaba de mirar.
+            if (docsJobId && !docsJobTimer) {
+              docsPollOnce();
+              docsJobTimer = setInterval(docsPollOnce, 2000);
+            }
+            if (expJobId && !expJobTimer) {
+              expPollOnce();
+              expJobTimer = setInterval(expPollOnce, 2000);
+            }
+          },
+        });
+
   onDestroy(() => {
+    dejarDeVigilarInactividad();
     docsJobStop();
     expJobStop();
   });
@@ -904,6 +966,22 @@
         {#if docsJobId}
           <div class="interop-job" aria-live="polite">
             <h3 class="interop-step__title">Progreso del lote</h3>
+            <!-- Un seguimiento que se congela en silencio se lee como un
+                 trabajo atascado, que es otra cosa. Se dice, y se dice por qué. -->
+            {#if sondeoPausadoPorInactividad}
+              <p class="interop-alert" role="status">
+                <i class="fas fa-pause" aria-hidden="true"></i>
+                <!-- La frase entera en UN solo hijo: `interop-alert` es un
+                     contenedor flex y mezclar texto suelto con <strong> reparte
+                     la frase en columnas. Ya troceó cinco avisos de actos
+                     irreversibles antes de que existiera el guardián. -->
+                <span>
+                  El seguimiento automático está <strong>en pausa</strong> por inactividad. El
+                  trabajo <strong>sigue corriendo en el servidor</strong>: mueva el ratón o pulse
+                  una tecla para reanudarlo.
+                </span>
+              </p>
+            {/if}
             {#if docsJobPollError}
               <p class="interop-alert interop-alert--error" role="alert">
                 <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>

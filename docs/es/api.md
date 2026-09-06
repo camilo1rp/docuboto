@@ -526,6 +526,18 @@ Lista plantillas; filtro opcional `?tipo_documental=Factura`.
 
 CRUD de definiciones reutilizables de campos de metadato (`POST`/`GET`/`GET {id}`/`PATCH {id}`/`DELETE {id}`). Atributos: `clave`, `etiqueta`, `tipo_dato` (text/number/date/boolean/select), `longitud`, `ocurrencia_min/max`, `modificable`, `valor_default`, `opciones`, `orden`, `searchable`, `mapeo_dublin_core` (gancho RF-MET-09). `409` si la clave ya existe. `POST`/`PATCH` exigen `USUA_PERM_TRD`; `DELETE` exige `USUA_PERM_TRD` con `crud≥3`.
 
+### `GET /api/v1/documents/{id}/historial-acceso`
+
+**Quién leyó y quién descargó** este radicado (RF-BUS-10; Ley 594/2000 art. 22). Paginado (`page`, `size`) con `X-Total-Count`.
+
+Devuelve solo `ts, service, actor, canal, action, object_ref`. **No** `payload` —lleva `nivel_seguridad` y el `file_id` del anexo, y no se filtra al serializar: **no se lee de la base**, que es la única forma de que no se escape el día que alguien le añada un campo— ni `id`/`prev_hash`/`hash`, que son la mecánica de la cadena y viven en `/admin/auditoria`.
+
+- **Solo ACCESOS**, por lista de admisión: `document.radicado_consultado` (abrió la ficha) y `document.anexo_descargado` (bajó un fichero). Crear, anular o reclasificar son actos **sobre** el documento, no lecturas **de** él; mezclarlos convertiría esto en un historial de todo y enterraría lo que se viene a buscar. Es la misma lista que usa archive-service para el historial del expediente — dos listas que respondieran distinto a «¿esto es un acceso?» darían dos historiales del mismo hecho.
+- **No-read-up ANTES de tocar `audit_log`**: un radicado por encima del clearance responde `404 document_not_found`, el mismo cuerpo que un id inexistente. Un 403 sería una confirmación: quien no puede ver el radicado sabría que existe y cuánta gente lo ha mirado.
+- Solo se registran los canales de persona (`api`, `ui`, `mcp`); las lecturas internas del sistema no ensucian la pista.
+
+La traza existía desde siempre. Hasta 2026-09 solo se podía consultar desde `/admin/auditoria` —que exige `USUA_PERM_ADMIN` y saber por qué acción filtrar— o, si el radicado estaba en un expediente, desde el historial de **ese** expediente; un radicado suelto, que son la mayoría, no tenía respuesta.
+
 ### `GET /api/v1/documents`
 
 Listar radicados. Filtros: `?doc_type=E&status=registered&page=1&size=20`. **Filtro por metadato** (RF-MET-02): `?meta.<campo>=valor` (uno o varios) usa contención JSONB sobre el índice GIN, p. ej. `?meta.area=juridica`. **Control de acceso (RF-SEG-08):** el listado se acota por la clasificación del radicado igual que la búsqueda — cada usuario solo ve los de `nivel_seguridad ≤` su _clearance_ (_fail-closed_ a PUBLICA).

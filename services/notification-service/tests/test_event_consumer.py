@@ -40,20 +40,29 @@ def _raw_fields(
     tenant_slug: str = TENANT,
     payload: dict | None = None,
 ) -> dict[str, str]:
-    """Build raw Redis Streams fields for a canonical envelope."""
-    import json
+    """Campos de un sobre canónico, tal como los deja un productor legítimo.
 
-    return {
-        "event_id": event_id,
-        "event_type": event_type,
-        "version": "1",
-        "tenant_slug": tenant_slug,
-        "occurred_at": "2026-06-30T10:00:00+00:00",
-        "actor": "user-001",
-        "correlation_id": "corr-001",
-        "dedup_key": "",
-        "payload": json.dumps(payload or {}),
-    }
+    Pasa por `to_fields` en vez de construir el diccionario a mano. La diferencia
+    importa desde que el sobre va firmado: un diccionario armado aquí es
+    exactamente lo que fabricaría quien escribiera en Redis por su cuenta, así
+    que estos tests estarían afirmando que el consumidor acepta sobres sin
+    origen — justo lo que se corrigió.
+    """
+    from orpycamcp_common.events import to_fields
+
+    return to_fields(
+        {
+            "event_id": event_id,
+            "event_type": event_type,
+            "version": 1,
+            "tenant_slug": tenant_slug,
+            "occurred_at": "2026-06-30T10:00:00+00:00",
+            "actor": "user-001",
+            "correlation_id": "corr-001",
+            "dedup_key": "",
+            "payload": payload or {},
+        }
+    )
 
 
 #: Nombre REAL de una dependencia, con espacio y tilde. Las fixtures usaban
@@ -171,9 +180,11 @@ async def test_process_event_sin_tenant_slug_raises() -> None:
     """Envelope sin tenant_slug → ValueError propaga (dead-letter R1 en el reclaim)."""
     from app.services import event_consumer
 
-    raw = _raw_fields(event_type="workflow.step.created")
-    # Remove tenant_slug to simulate a malformed envelope.
-    raw["tenant_slug"] = ""
+    # El sobre nace SIN entidad y se firma así: lo que se prueba es la guarda
+    # del consumidor ante un sobre incompleto pero legítimo, no la firma. Vaciar
+    # el campo DESPUÉS de firmar probaría otra cosa —un sobre manipulado— y esa
+    # ya tiene su propio test.
+    raw = _raw_fields(event_type="workflow.step.created", tenant_slug="")
 
     with pytest.raises(ValueError, match="tenant_slug"):
         await event_consumer.process_event(raw)
@@ -184,8 +195,8 @@ async def test_process_event_sin_event_id_raises() -> None:
     """Envelope sin event_id → ValueError propaga (no se puede deduplicar)."""
     from app.services import event_consumer
 
-    raw = _raw_fields(event_type="workflow.step.created")
-    raw["event_id"] = ""  # empty string is falsy
+    # Igual que el de arriba: nace sin identificador y se firma así.
+    raw = _raw_fields(event_type="workflow.step.created", event_id="")
 
     with pytest.raises(ValueError, match="event_id"):
         await event_consumer.process_event(raw)
@@ -289,8 +300,7 @@ async def test_process_document_event_sin_tenant_slug_raises() -> None:
     """document event sin tenant_slug → ValueError propaga."""
     from app.services import event_consumer
 
-    raw = _raw_fields(event_type="document.radicado.created")
-    raw["tenant_slug"] = ""
+    raw = _raw_fields(event_type="document.radicado.created", tenant_slug="")
 
     with pytest.raises(ValueError, match="tenant_slug"):
         await event_consumer.process_document_event(raw)

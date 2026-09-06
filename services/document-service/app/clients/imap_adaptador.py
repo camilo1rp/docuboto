@@ -158,10 +158,20 @@ class ImapAdaptador:
 
     # -- sesión ------------------------------------------------------------
 
+    #: Plazo máximo de la conexión, en segundos.
+    #:
+    #: Sin él, `imaplib` hereda el del socket —que por omisión NO existe— y un
+    #: destino que acepta la conexión y luego calla cuelga el hilo para siempre.
+    #: No hace falta malicia: basta un host mal escrito que resuelva a algo que
+    #: escucha. El sondeo institucional corre en un bucle con un cerrojo por
+    #: entidad, así que una sola cuenta así detiene la radicación automática de
+    #: TODOS los buzones de esa entidad, sin dejar ni una línea de error.
+    _PLAZO_CONEXION = 30
+
     def _abrir(self) -> imaplib.IMAP4:
         try:
             cls = imaplib.IMAP4_SSL if self._c.usa_ssl else imaplib.IMAP4
-            conn = cls(self._c.host, self._c.puerto)
+            conn = cls(self._c.host, self._c.puerto, timeout=self._PLAZO_CONEXION)
         except Exception as exc:  # noqa: BLE001 — cualquier fallo de red es el mismo caso
             raise ErrorDeCorreo(
                 f"No se pudo conectar a {self._c.host}:{self._c.puerto}",

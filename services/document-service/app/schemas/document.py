@@ -291,3 +291,29 @@ class IndiceClasificadosResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     database: str
+
+
+class HistorialAccesoEntry(BaseModel):
+    """Un acceso a un radicado: quién, cuándo, y de qué tipo (RF-BUS-10).
+
+    Contrato de SOLO LECTURA sobre `public.audit_log` (ADR-010). No expone
+    `id`/`prev_hash`/`hash`: quien mira este historial quiere el HECHO auditado,
+    no la mecánica de verificación de la cadena — para eso está
+    `/admin/auditoria`.
+
+    Tampoco expone `payload`. El de estos asientos lleva el `nivel_seguridad`
+    del radicado y el `file_id` del anexo descargado, y ninguna de las dos cosas
+    hace falta para responder «¿quién ha visto esto?». No se filtra al
+    serializar: **no se lee de la base**, que es la única forma de que no se
+    escape el día que alguien añada un campo al payload sin mirar quién lo pinta.
+    """
+
+    ts: datetime
+    service: str
+    actor: str | None = None
+    canal: str
+    #: `document.radicado_consultado` (leyó el metadato) o
+    #: `document.anexo_descargado` (bajó un fichero). Son hechos distintos y la
+    #: pantalla los distingue: ver la ficha no es llevarse el documento.
+    action: str
+    object_ref: str

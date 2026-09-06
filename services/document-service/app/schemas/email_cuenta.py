@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from orpycamcp_common.red_interna import DestinoNoPermitido, validar_destino
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -194,11 +195,30 @@ class CuentaCrear(BaseModel):
         return self
 
     def conexion_efectiva(self) -> tuple[str, int, bool]:
-        """Host, puerto y SSL, con el preset del proveedor como respaldo."""
+        """Host, puerto y SSL, con el preset del proveedor como respaldo.
+
+        El destino se valida contra la red interna. Era la ÚNICA salida
+        configurable del sistema sin ese filtro: los webhooks salientes ya lo
+        tenían, y un buzón es exactamente la misma capacidad —un host y un
+        puerto que el sistema marca por orden de alguien—. Sin él, quien
+        administra una entidad podía apuntar la cuenta a `postgres:5432` o a
+        `redis:6379` y usar el botón de «probar conexión» como escáner de
+        puertos de la red de contenedores, con el resultado servido por la
+        propia pantalla de administración.
+
+        Se valida SIN resolver DNS: aquí se está guardando una configuración y
+        lo que importa es dar el error de inmediato a quien la escribe. La
+        resolución vuelve a comprobarse antes de conectar, que es donde cierra
+        el reenlace.
+        """
         preset = PRESETS.get(self.proveedor)
         host = self.host or (preset.host if preset else "")
         if not host:
             raise ValueError("Una cuenta IMAP genérica necesita el servidor (host)")
+        try:
+            validar_destino(host, resolver=False)
+        except DestinoNoPermitido as exc:
+            raise ValueError(str(exc)) from exc
         puerto = self.puerto or (preset.puerto if preset else 993)
         if self.usa_ssl is not None:
             ssl = self.usa_ssl

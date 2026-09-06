@@ -28,7 +28,6 @@ from app.core.database import (
     get_tenant_client,
     tenant_schema,
 )
-from app.schemas.document import DocumentCreate
 from app.schemas.public import (
     PqrsCreate,
     PqrsResponse,
@@ -66,31 +65,38 @@ async def radicar_pqrs(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
             )
-        doc = DocumentCreate(
-            doc_type="E",
-            subject=payload.asunto,
-            sender_name=payload.nombre,
-            observations=payload.descripcion,
-            metadata={
-                "canal": "pqrs_ciudadano",
-                "tipo_pqrs": payload.tipo,
-                "ciudadano": {
-                    "nombre": payload.nombre,
-                    "identificacion": payload.identificacion,
-                    "email": payload.email,
-                },
-            },
+        # DELEGA en la ventanilla única, que es lo que su propio esquema dice
+        # que hace (`PqrsCreate`: «Delega en la ventanilla única mapeando `tipo`
+        # al tipo documental que la entidad haya declarado»).
+        #
+        # No lo hacía: construía el `DocumentCreate` a mano y llamaba directo a
+        # `DocumentService.create`, saltándose las tres decisiones que la
+        # ventanilla declara suyas —el tipo admisible del catálogo, la
+        # dependencia que recibe, y el enrutamiento a su bandeja—. El resultado
+        # era exactamente el defecto que el módulo de la ventanilla dice haber
+        # corregido: el radicado entraba con `dest_dept` nulo, fuera de la
+        # bandeja de todos, con el término de la Ley 1755 corriendo. Y en una
+        # entidad que deliberadamente NO habilitó la radicación en línea —la que
+        # por `/ventanilla` responde 503— esta puerta seguía admitiendo.
+        #
+        # Dos puertas para el mismo acto con reglas distintas no se parchean:
+        # se deja una sola fuente. La heredada se conserva porque es una
+        # superficie pública ya publicada, pero pasa por donde pasan las demás.
+        ventanilla = VentanillaRadicacion(
+            tipo_documental=payload.tipo,
+            nombre=payload.nombre,
+            identificacion=payload.identificacion,
+            email=payload.email,
+            asunto=payload.asunto,
+            descripcion=payload.descripcion,
         )
-        result = await service.create(doc, registered_by=None)
-        code = await conn.fetchval(
-            "SELECT verification_code FROM radicados WHERE id = $1", result.id
-        )
+        respuesta = await VentanillaService(conn, tenant).radicar(ventanilla, service)
     finally:
         await conn.execute("SET search_path = public")
     return PqrsResponse(
-        radicado_id=result.id,
-        tracking_number=result.tracking_number,
-        verification_code=code,
+        radicado_id=respuesta.radicado_id,
+        tracking_number=respuesta.tracking_number,
+        verification_code=respuesta.verification_code,
     )
 
 

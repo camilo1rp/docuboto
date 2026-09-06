@@ -51,54 +51,17 @@ from urllib.parse import urlsplit
 # Nombres de servicio de la red Docker interna `orpycamcp-net` (ver
 # docker-compose.yml) más sus `container_name`. Un webhook no debe poder
 # apuntar a un compañero de red interno.
-_DOCKER_SERVICE_HOSTNAMES = frozenset(
-    {
-        "postgres",
-        "redis",
-        "minio",
-        "keycloak",
-        "api-gateway",
-        "mcp-server",
-        "signature-service",
-        "knowledge-service",
-        "auth-service",
-        "tenant-service",
-        "document-service",
-        "archive-service",
-        "storage-service",
-        "workflow-service",
-        "notification-service",
-        "frontend",
-        "mailhog",
-        "orpycamcp-postgres",
-        "orpycamcp-redis",
-        "orpycamcp-minio",
-        "orpycamcp-keycloak",
-        "orpycamcp-mailhog",
-    }
+# La lista de compañeros de red y los rangos prohibidos viven en la librería
+# compartida: son los MISMOS para toda salida configurable (webhook, buzón IMAP,
+# sellado de tiempo). Tenerlos por duplicado hacía que las copias crecieran
+# aparte, y la que se queda corta no avisa: deja pasar.
+from orpycamcp_common.red_interna import (  # noqa: E402
+    _DOCKER_SERVICE_HOSTNAMES,
+    _classify_ip,
+    _try_parse_ip,
 )
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
-
-
-def _classify_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
-    """Devuelve el motivo de bloqueo si `ip` cae en un rango prohibido, si no None."""
-    if ip.is_loopback:
-        return "loopback"
-    if ip.is_link_local:
-        return "link-local"
-    if ip.is_private:
-        return "rango privado"
-    if ip.is_reserved or ip.is_unspecified or ip.is_multicast:
-        return "rango reservado/no enrutable"
-    return None
-
-
-def _try_parse_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    try:
-        return ipaddress.ip_address(host.strip("[]"))
-    except ValueError:
-        return None
 
 
 def validate_webhook_target(url: str, *, allow_private: bool, resolve: bool = True) -> None:

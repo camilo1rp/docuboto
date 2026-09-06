@@ -294,3 +294,72 @@ def test_con_el_texto_cambiado_el_gate_se_dispara():
     with _pytest.raises(HTTPException) as exc:
         _gate("huella-vieja", "huella-nueva")
     assert exc.value.detail["error"] == "texto_modificado_tras_firmar"
+
+
+@pytest.mark.asyncio
+async def test_editar_el_texto_invalida_los_circuitos_anteriores(client_with_conn, monkeypatch):
+    """Al cambiar el texto, los turnos del circuito superado dejan de pedirse.
+
+    Es la mitad humana de la corrección. La garantía dura es la comparación de
+    huellas al radicar; esto evita que la bandeja siga pidiéndole a alguien
+    firmar un documento que ya no existe, para después esfumarse sin motivo.
+    """
+    from app.clients import signature_client as sc
+
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    llamadas = []
+
+    async def _invalidar(borrador_id, tenant_slug):
+        llamadas.append((borrador_id, tenant_slug))
+        return 1
+
+    monkeypatch.setattr(sc, "invalidar_circuitos", _invalidar)
+    # Antes y después de editar: la huella CAMBIA.
+    mock_conn.fetchrow.side_effect = [
+        _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="huella-vieja"),
+        _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="huella-nueva"),
+    ]
+
+    resp = await client.patch(
+        f"/api/v1/borradores/{bid}",
+        json={"cuerpo": "texto corregido a última hora"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200, "editar un borrador firmado NO se bloquea: es el trámite"
+    assert [c[0] for c in llamadas] == [str(bid)], "no se invalidó el circuito anterior"
+
+
+@pytest.mark.asyncio
+async def test_guardar_sin_cambiar_el_texto_no_tira_un_circuito_vivo(
+    client_with_conn, monkeypatch
+):
+    """La condición mira la HUELLA, no el campo enviado.
+
+    `cuerpo` puede venir en el payload con el mismo texto de siempre —o cambiar
+    solo el asunto—, y tirar el circuito ahí obligaría a recoger las firmas otra
+    vez sin que nadie haya tocado el documento.
+    """
+    from app.clients import signature_client as sc
+
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    llamadas = []
+
+    async def _invalidar(borrador_id, tenant_slug):
+        llamadas.append(borrador_id)
+        return 1
+
+    monkeypatch.setattr(sc, "invalidar_circuitos", _invalidar)
+    mock_conn.fetchrow.side_effect = [
+        _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="la-misma"),
+        _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="la-misma"),
+    ]
+
+    resp = await client.patch(
+        f"/api/v1/borradores/{bid}", json={"subject": "Otro asunto"}, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 200
+    assert llamadas == [], "se tiró un circuito vivo sin que el texto cambiara"

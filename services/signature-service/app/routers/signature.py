@@ -428,6 +428,46 @@ async def get_firma(
     )
 
 
+@router.post(
+    "/internal/circuitos/{objeto_tipo}/{objeto_id}/invalidar",
+    dependencies=[Depends(require_internal_token)],
+    summary=(
+        "Dejar sin efecto los circuitos de un objeto cuyo texto cambió "
+        "(acto de sistema; lo pide document-service al editar un borrador ya sometido a firma)"
+    ),
+)
+async def invalidar_circuitos_internal(
+    objeto_tipo: str,
+    objeto_id: str,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """Rehacer un documento firmado es el trámite, no un abuso.
+
+    Se recogen los vistos buenos, alguien recuerda un anexo o corrige una cifra
+    a última hora, y hay que volver a empezar. Lo que no puede quedar en pie son
+    las firmas anteriores, que se dieron sobre otro texto.
+
+    La garantía DURA de eso vive en document-service, que al radicar compara la
+    huella firmada con la del texto vigente y se niega si no coinciden. Esto es
+    lo que hace humano el trámite: sin ello, los turnos de un circuito superado
+    seguían apareciendo en la bandeja de quien los tenía, pidiéndole firmar un
+    documento que ya no existe, y desaparecían después sin explicación. «Se
+    esfumó» sin motivo es lo que hace que la gente desconfíe de la herramienta.
+
+    Es **best-effort**, igual que el aviso de aprobación en sentido contrario, y
+    puede serlo sin abrir ninguna ventana: si esta llamada se pierde, la
+    comparación de huellas al radicar sigue impidiendo que salga el documento.
+    La autoridad es la comparación; esto solo mantiene honesta la bandeja.
+
+    Idempotente: sobre un objeto sin circuitos vivos no hace nada y devuelve 0.
+    """
+    repo = CadenaRepository(conn)
+    invalidadas = await repo.invalidar_por_objeto(
+        objeto_tipo, objeto_id, "el texto del documento cambió después de someterse a firma"
+    )
+    return {"objeto_tipo": objeto_tipo, "objeto_id": objeto_id, "invalidadas": invalidadas}
+
+
 @router.get(
     "/internal/circuitos/{objeto_tipo}/{objeto_id}",
     dependencies=[Depends(require_internal_token)],

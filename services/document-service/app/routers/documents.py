@@ -48,12 +48,14 @@ from app.schemas.document import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
+    HistorialAccesoEntry,
     PublicacionRequest,
     PublicacionResponse,
     ReclassifyRequest,
     ReclassifyResponse,
 )
 from app.services.document_service import (
+    AnexoNoDisponibleError,
     DocumentAnuladoError,
     DocumentNotFoundError,
     DocumentService,
@@ -162,6 +164,14 @@ async def create_document(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"error": "clasificacion_forbidden", "detail": str(exc), "status": 403},
+        )
+    except AnexoNoDisponibleError as exc:
+        # 422 y mensaje neutro: el mismo que daría un fichero inexistente. Un
+        # código distinto para «cuelga de algo que no puedes ver» sería un
+        # oráculo sobre el contenido de los radicados reservados.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "anexo_no_disponible", "detail": str(exc), "status": 422},
         )
     except MetadataValidationError as exc:
         raise HTTPException(
@@ -284,6 +294,60 @@ async def get_document(
                 "status": 404,
             },
         )
+
+
+@router.get(
+    "/{document_id}/historial-acceso",
+    response_model=list[HistorialAccesoEntry],
+    summary="Quién leyó y quién descargó este radicado (RF-BUS-10)",
+)
+async def get_historial_acceso(
+    document_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[HistorialAccesoEntry]:
+    """La traza de acceso existía; lo que faltaba era poder pedirla.
+
+    `document.radicado_consultado` y `document.anexo_descargado` se escriben
+    desde siempre, con actor, canal e instante. Pero solo se podían consultar
+    desde `/admin/auditoria` —que exige `USUA_PERM_ADMIN` y saber por qué
+    acción filtrar— o, si el radicado estaba en un expediente, desde el
+    historial de ESE expediente. Un radicado suelto, que son la mayoría, no
+    tenía respuesta.
+
+    Gate: el mismo del router (`PERM_RADI`) más **no-read-up dentro del
+    servicio**, comprobado ANTES de tocar `audit_log` — si no, el historial
+    sería un oráculo sobre radicados que el llamante no puede ver.
+
+    Solo ACCESOS, no todo lo ocurrido: crear, anular o reclasificar son actos
+    sobre el documento, no lecturas de él, y mezclarlos convertiría esto en un
+    historial de todo, que responde otra pregunta.
+    """
+    service = _build_service(conn, _tenant_slug(request))
+    try:
+        items, total = await service.historial_acceso(
+            document_id,
+            user_id=_get_registered_by(request),
+            page=page,
+            size=size,
+        )
+    except DocumentNotFoundError:
+        # Mismo cuerpo que el 404 de `get_document`, y a propósito: un radicado
+        # por encima del clearance del llamante tiene que ser INDISTINGUIBLE de
+        # uno que no existe, o el historial delataría lo que oculta.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "document_not_found",
+                "detail": "No existe el radicado solicitado",
+                "status": 404,
+            },
+        )
+    response.headers["X-Total-Count"] = str(total)
+    return items
 
 
 @router.get(

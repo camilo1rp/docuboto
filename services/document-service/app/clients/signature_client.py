@@ -29,9 +29,13 @@ nada que recortar por clearance.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitoNoVerificableError(RuntimeError):
@@ -81,3 +85,46 @@ async def get_estado_circuito(borrador_id: str, tenant_slug: str) -> dict:
         raise CircuitoNoVerificableError(
             "signature-service devolvió una respuesta ilegible"
         ) from exc
+
+
+async def invalidar_circuitos(borrador_id: str, tenant_slug: str) -> int:
+    """Deja sin efecto los circuitos de un borrador cuyo texto acaba de cambiar.
+
+    **Best-effort a propósito, y puede serlo sin abrir ninguna ventana.** La
+    garantía dura vive en `radicar`, que compara la huella firmada con la del
+    texto vigente y se niega si no coinciden: si esta llamada se pierde, el
+    documento cambiado sigue sin poder salir. Lo que esto aporta es que la
+    bandeja no mienta —los turnos de un circuito superado desaparecen con un
+    motivo escrito, en vez de seguir pidiendo firmar un texto que ya no existe—.
+
+    Por eso NO propaga el error. Fallar aquí volvería inservible la edición de
+    un borrador cada vez que signature-service esté degradado, y editar es un
+    acto ordinario del trámite: la consecuencia de no poder avisar no puede ser
+    no poder trabajar. Devuelve cuántas se invalidaron, o -1 si no se pudo
+    saber.
+    """
+    headers = {
+        "X-Internal-Token": settings.signature_internal_token,
+        "X-Tenant-Slug": tenant_slug,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.signature_service_url, timeout=10.0
+        ) as client:
+            resp = await client.post(
+                f"/api/v1/signature/internal/circuitos/borrador/{borrador_id}/invalidar",
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            logger.warning(
+                "No se pudieron invalidar los circuitos del borrador %s: %s",
+                borrador_id,
+                resp.status_code,
+            )
+            return -1
+        return int(dict(resp.json()).get("invalidadas", 0))
+    except (httpx.RequestError, ValueError) as exc:
+        logger.warning(
+            "No se pudieron invalidar los circuitos del borrador %s: %s", borrador_id, exc
+        )
+        return -1

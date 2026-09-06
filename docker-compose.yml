@@ -131,6 +131,7 @@ services:
       - "19080:8080"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - AUTH_SERVICE_URL=http://auth-service:8001
       # Dev: la red por defecto de Compose está en 172.16/12. Sin esto el gateway
       # ignora X-Forwarded-For (fail-closed) y todo el SSR comparte un cubo.
@@ -202,6 +203,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       # Corrige puerto interno de Keycloak (era 8180, inexistente en la red) → 8080.
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
@@ -344,6 +346,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       # --- E21: proveedores, SOLO override de esta máquina de desarrollo ------------------
       # Los defaults de `app/core/config.py` siguen siendo los SOBERANOS (`local_st` +
       # `ollama_local`) y no se tocan: un despliegue tenant local no necesita ninguna de
@@ -392,6 +395,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
       # Issuer público canónico (KC_HOSTNAME_URL): los tokens los emite el
@@ -453,6 +457,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -476,6 +481,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - STORAGE_SERVICE_URL=http://storage-service:8005
       # D-02 (remediación no-read-up en anexos, RF-SEG-08): secreto compartido
       # que storage-service exige en X-Internal-Token para servir bytes de un
@@ -538,6 +544,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       # D-02: mismo secreto compartido que document-service/signature-service
       # (ver el comentario en document-service más arriba) — archive-service
       # lo usa en `app/clients/storage_client.py` para descargar el índice
@@ -626,6 +633,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -654,6 +662,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - SMTP_HOST=mailhog
       - SMTP_PORT=1025
       - SMTP_FROM=noreply@orpycamcp.local

@@ -44,6 +44,7 @@
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
   // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
+  import HistorialAcceso from "$lib/components/features/radicados/HistorialAcceso.svelte";
   import Drawer from "$lib/components/ui/Drawer.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
@@ -1577,6 +1578,17 @@
         <h4 id="detail-hoja-ruta-heading" class="doc-detail__section-title">Hoja de ruta</h4>
         {#key selectedDoc.id}
           <HojaRuta radicadoId={selectedDoc.id} />
+        {/key}
+      </section>
+
+      <!-- Pista de acceso (RF-BUS-10). Va DESPUÉS de la hoja de ruta y plegado:
+           la hoja de ruta cuenta qué le ha pasado al documento, que es lo que se
+           viene a mirar; esto cuenta quién lo ha visto, que se pregunta menos y
+           cuesta una consulta más. -->
+      <section class="doc-detail__section" aria-labelledby="detail-acceso-heading">
+        <h4 id="detail-acceso-heading" class="doc-detail__section-title">Acceso</h4>
+        {#key selectedDoc.id}
+          <HistorialAcceso radicadoId={selectedDoc.id} />
         {/key}
       </section>
     </article>
