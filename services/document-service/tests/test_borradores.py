@@ -66,6 +66,12 @@ def _borrador_row(**kw) -> dict:
         "documento_sha256": None,
         "documento_formato": None,
         "combinacion": None,
+        # Columnas reales de `borrador` (migración 030). Faltaban aquí, y un
+        # fixture que omite una columna que existe es una afirmación falsa sobre
+        # el colaborador: los gates que la miran pasaban por caminos que en
+        # producción no existen.
+        "version": 1,
+        "cuerpo_sha256": None,
         "faltantes": [],
     }
     base.update(kw)

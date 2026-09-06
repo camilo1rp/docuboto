@@ -38,6 +38,62 @@ from app.clients.storage_client import ArchivoSubido
 
 BASE = "/api/v1/public/demo/ventanilla"
 
+_TERCERO_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+
+
+def _fetchval_por_consulta(tipo: str | None = "Derecho de petición", codigo: str = "cod-verif"):
+    """Igual que `_fetchrow_por_consulta`, y por la misma razón.
+
+    Una `side_effect` como LISTA fija el número y el orden de las consultas: se
+    agota con un `StopIteration` en cuanto el código hace una más, aunque esa
+    consulta nueva no tenga nada que ver con lo que el test comprueba. Responder
+    por el SQL sobrevive a que el código evolucione.
+    """
+
+    async def _fetchval(sql, *args, **kw):
+        bajo = sql.lower()
+        if "tipos_documentales" in bajo:
+            return tipo
+        if "verification_code" in bajo:
+            return codigo
+        return None
+
+    return _fetchval
+
+
+def _fetchrow_por_consulta(dependencia: dict | None = None):
+    """Un doble que responde a lo que se le PREGUNTA, no al orden de llamada.
+
+    `conn.fetchrow.return_value = {...}` devolvía el mismo dict a cualquier
+    consulta. Funcionó mientras la ventanilla hacía una sola —la de la
+    dependencia—, y se rompió el día que empezó a registrar también al remitente
+    en el directorio: la búsqueda del tercero recibía la fila de la dependencia,
+    sin `id`.
+
+    Responder por el SQL en vez de por el turno hace que el doble siga siendo
+    válido cuando el código gana una consulta más, que es justo lo que acaba de
+    pasar.
+    """
+    dep = dependencia if dependencia is not None else {"codigo": 901, "nombre": "VUR"}
+
+    async def _fetchrow(sql, *args, **kw):
+        if "depe_rad_tp2" in sql:
+            return dep
+        bajo = sql.lower()
+        if "insert into tercero" in bajo:
+            # El alta devuelve la ficha creada. Se responde con lo MÍNIMO que el
+            # llamante usa —su `id`—: inventar aquí una ficha completa afirmaría
+            # cosas que este test no comprueba. Que el directorio quede bien
+            # poblado lo prueban los tests de integración, contra Postgres real.
+            return {"id": _TERCERO_ID, "tipo": "ciudadano", "nombre": "quien sea"}
+        if "from tercero" in bajo:
+            return None  # no existía: se creará
+        return None
+
+    return _fetchrow
+
+
 
 def _multipart(cuerpo: dict, ficheros: list | None = None) -> dict:
     """El endpoint es multipart: los datos van en una parte JSON y los anexos en
@@ -119,8 +175,10 @@ async def test_sin_ventanilla_habilitada_la_radicacion_se_NIEGA(client_with_conn
 @pytest.mark.asyncio
 async def test_lo_radicado_LLEGA_a_la_dependencia_de_ventanilla(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Derecho de petición", "cod-verificacion"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "Ventanilla Única de Radicación"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Derecho de petición", "cod-verificacion")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta(
+        {"codigo": 901, "nombre": "Ventanilla Única de Radicación"}
+    )
 
     creado = _resultado_radicado()
     with patch(
@@ -138,8 +196,14 @@ async def test_lo_radicado_LLEGA_a_la_dependencia_de_ventanilla(client_with_conn
     assert doc.doc_type == "E"
     assert resp.json()["dependencia_destino"] == "Ventanilla Única de Radicación"
 
-    sql_dep = conn.fetchrow.await_args.args[0]
-    assert "depe_rad_tp2" in sql_dep, "la ventanilla se resuelve por la bandera del organigrama"
+    # Entre TODAS las consultas, no en la última: `await_args` es la más
+    # reciente, y desde que la ventanilla registra al remitente en el directorio
+    # la última es el alta del tercero. Lo que este test afirma es que en algún
+    # momento se preguntó por la bandera del organigrama, no en qué turno.
+    consultas = [c.args[0] for c in conn.fetchrow.await_args_list]
+    assert any("depe_rad_tp2" in q for q in consultas), (
+        "la ventanilla se resuelve por la bandera del organigrama"
+    )
 
 
 @pytest.mark.asyncio
@@ -153,8 +217,8 @@ async def test_una_ENTIDAD_remitente_no_se_escribe_en_el_campo_de_persona(
     en el campo de la persona natural.
     """
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Oficio", "cod"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "VUR"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Oficio", "cod")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with patch(
         "app.services.document_service.DocumentService.create",
@@ -190,8 +254,8 @@ async def test_una_radicacion_ANONIMA_es_legitima(client_with_conn) -> None:
     """Una denuncia anónima no espera contestación personal: exigir un canal la
     impediría. El código de verificación le sirve de seguimiento."""
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Denuncia", "cod"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "VUR"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Denuncia", "cod")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with patch(
         "app.services.document_service.DocumentService.create",
@@ -226,8 +290,8 @@ async def test_el_tipo_del_anexo_sale_del_CONTENIDO_no_de_lo_que_declare_el_clie
     deducido: así un fichero no queda registrado con un tipo que no es el suyo.
     """
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Petición", "cod"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "VUR"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with (
         patch(
@@ -262,8 +326,8 @@ async def test_un_formato_no_admitido_se_rechaza_y_NO_se_radica(client_with_conn
     """Sin radicar nada: un número de radicado es inmutable (Ley 594/2000), así
     que no puede quedar uno emitido al que le falten sus soportes."""
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Petición", "cod"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "VUR"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with (
         patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up,
@@ -300,8 +364,8 @@ async def test_mas_anexos_de_la_cuenta_se_rechazan_ANTES_de_leerlos(client_with_
 @pytest.mark.asyncio
 async def test_si_falla_el_almacen_NO_queda_un_radicado_sin_soportes(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Petición", "cod"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "VUR"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     from app.clients.storage_client import StorageContentError
 
@@ -328,8 +392,8 @@ async def test_si_falla_el_almacen_NO_queda_un_radicado_sin_soportes(client_with
 async def test_radicar_SIN_anexos_sigue_siendo_valido(client_with_conn) -> None:
     """El caso simple no necesita otra puerta: el multipart lleva una sola parte."""
     client, conn = client_with_conn
-    conn.fetchval.side_effect = ["Petición", "cod"]
-    conn.fetchrow.return_value = {"codigo": 901, "nombre": "VUR"}
+    conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
+    conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with patch(
         "app.services.document_service.DocumentService.create",

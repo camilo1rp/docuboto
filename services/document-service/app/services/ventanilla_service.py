@@ -57,6 +57,7 @@ from app.core.anexos_publicos import (
 )
 from app.schemas.document import AnexoInput, DocumentCreate
 from app.schemas.public import TipoVentanilla, VentanillaRadicacion, VentanillaRespuesta
+from app.services.tercero_service import TerceroService
 
 #: Canal con el que queda marcado lo que entra por aquí. Distingue en los
 #: metadatos —y en los informes— lo presentado desde fuera de lo radicado en
@@ -211,6 +212,42 @@ class VentanillaService:
                 detail={"error": "anexo_rechazado", "detail": str(exc), "status": 422},
             ) from exc
 
+        # ── El remitente entra al DIRECTORIO, si se identificó ──────────────
+        #
+        # Hasta ahora sus datos se guardaban como JSON suelto en
+        # `metadata.remitente` y no producían ninguna ficha: la ventanilla
+        # ciudadana, que es la puerta de más volumen, no alimentaba el catálogo.
+        # El mismo ciudadano que escribe tres veces era tres textos distintos.
+        #
+        # **Solo con identificación.** El alta es idempotente POR DOCUMENTO
+        # (`crear_o_recuperar`), así que quien se identifica converge siempre a
+        # la misma ficha. Sin documento no hay nada que reconocer, y crear una
+        # ficha por cada petición anónima sería una fábrica de duplicados —
+        # exactamente lo contrario de lo que esto persigue— además de construir
+        # un directorio de «anónimos» que no sirve a nadie. La petición anónima
+        # es legítima (Ley 1755/2015 art. 16, denuncia anónima) y se queda como
+        # está: con su `metadata.remitente` y sin ficha.
+        actores: list[dict[str, Any]] = []
+        if payload.identificacion and payload.identificacion.strip():
+            tercero, _ = await TerceroService(
+                self._conn, self._tenant
+            ).crear_o_recuperar(
+                {
+                    "tipo": "entidad_publica" if payload.entidad else "ciudadano",
+                    "nombre": payload.nombre,
+                    "entidad": payload.entidad,
+                    "tipo_documento": payload.tipo_identificacion,
+                    "numero_documento": payload.identificacion.strip(),
+                    "email": payload.email,
+                    "telefono": payload.telefono,
+                    "direccion": payload.direccion,
+                },
+                actor=None,
+            )
+            actores = [
+                {"tercero_id": tercero["id"], "rol": "remitente", "principal": True}
+            ]
+
         doc = DocumentCreate(
             doc_type="E",
             subject=payload.asunto,
@@ -220,6 +257,7 @@ class VentanillaService:
             sender_entity=payload.entidad,
             observations=payload.descripcion,
             anexos=anexos,
+            actores=actores,
             metadata={
                 "canal": CANAL,
                 "remitente": {

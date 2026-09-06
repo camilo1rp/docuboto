@@ -365,7 +365,7 @@ class BorradorService:
 
     async def _gate_circuito_pendiente(
         self, borrador_id: uuid.UUID, *, acto: str = "aprobar"
-    ) -> None:
+    ) -> dict:
         """409 si hay un circuito de aprobación abierto; 503 si no se puede saber.
 
         El 503 es deliberado y es el lado seguro: la única consecuencia de no
@@ -409,6 +409,60 @@ class BorradorService:
                     "status": 409,
                 },
             )
+        return estado
+
+    def _gate_texto_firmado(self, row, estado_circuito: dict) -> None:
+        """409 si el texto cambió DESPUÉS de que el circuito lo firmara.
+
+        Editar un documento ya firmado es parte del trámite, no un abuso: se
+        recogen los vistos buenos, alguien recuerda un anexo o corrige una cifra
+        a última hora, y hay que rehacerlo. El sistema no puede impedirlo —para
+        eso existe `devolver_a_borrador` (RF-PRO-10)—. Lo que no puede es dar
+        por buenas las firmas anteriores: el firmado deja de valer y las firmas
+        se recogen otra vez sobre el texto nuevo.
+
+        Y ahí estaba el hueco. `radicar` comprobaba dos cosas —estado
+        `aprobado` y ningún circuito ABIERTO— y ninguna de las dos se entera de
+        una edición posterior al cierre: la cadena queda en `firmado`, así que
+        no está pendiente, y el estado sigue en `aprobado` porque el disparador
+        de la migración 030 sube `version` y recalcula la huella pero no toca
+        `estado`. El gate `documento_modificado` de signature-service protege
+        cada TURNO mientras la cadena vive y desaparece justo cuando se cierra,
+        de modo que el acto irreversible —consumir el consecutivo y emitir el
+        oficio— era el único que se quedaba sin vigilancia. Salía un documento
+        oficial con número inmutable cuyo texto nadie aprobó, mientras los
+        asientos seguían atestiguando que tres funcionarios sí.
+
+        La comparación es la autoridad y se hace PREGUNTANDO, igual que el gate
+        de arriba: una marca copiada en `borrador` se queda rancia por caminos
+        que no pasan por aquí, y rancia del lado permisivo es una puerta
+        abierta. La migración 018 ya había previsto este caso al crear el estado
+        `invalidada` —«o peor, "firmado" sobre uno que cambió después»— y dejó
+        escrito que una solicitud invalidada no bloquea a la que la sustituye.
+        """
+        if not estado_circuito.get("completo"):
+            # Nunca se firmó: el camino directo de siempre, sin nada que comparar.
+            return
+
+        firmado = estado_circuito.get("payload_sha256")
+        vigente = row["cuerpo_sha256"]
+        if firmado is None or vigente is None or firmado == vigente:
+            return
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "texto_modificado_tras_firmar",
+                "detail": (
+                    "El texto de este borrador cambió después de que el circuito "
+                    "lo firmara, así que esas firmas ya no corresponden a lo que "
+                    "se radicaría. Devuelve el borrador a edición y abre un "
+                    "circuito nuevo para recoger las firmas sobre el texto "
+                    "vigente."
+                ),
+                "status": 409,
+            },
+        )
 
     async def devolver_a_borrador(self, borrador_id: uuid.UUID) -> BorradorResponse:
         """Reabre un borrador aprobado para poder corregir el texto (RF-PRO-10).
@@ -539,7 +593,9 @@ class BorradorService:
         #
         # Se comprobó en `tenant_demo`: dos borradores aprobados con su
         # circuito abierto, a un clic de radicarse.
-        await self._gate_circuito_pendiente(borrador_id, acto="radicar")
+        estado_circuito = await self._gate_circuito_pendiente(borrador_id, acto="radicar")
+        # Un circuito CERRADO tampoco basta: hay que comprobar que firmó ESTE texto.
+        self._gate_texto_firmado(row, estado_circuito)
         # ── EL ORDEN, y es la mitad del diseño ─────────────────────────────
         #
         #   1. combinar (1.ª pasada)

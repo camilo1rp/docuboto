@@ -308,6 +308,47 @@ class TerceroService:
     async def list_actores(self, radicado_id: uuid.UUID) -> list[dict]:
         return [dict(r) for r in await self._repo.list_actores(radicado_id)]
 
+    async def resolver_por_email(
+        self, email: str | None, *, nombre: str | None, actor: uuid.UUID | None
+    ) -> dict | None:
+        """La ficha del corresponsal de un correo: la existente, o una nueva.
+
+        Devuelve `None` —y el correo se radica sin ficha, como antes— cuando:
+
+        * **no hay dirección**: sin ella no hay nada que reconocer, y crear una
+          ficha por cada correo anónimo llenaría el directorio de entradas
+          irrepetibles, que es lo contrario de lo que esto persigue;
+        * **no hay nombre**: una ficha sin nombre no se puede buscar ni elegir
+          después, así que no sirve a nadie;
+        * **hay VARIAS fichas con ese correo**: eso es un duplicado sin
+          resolver, y elegir una sería decidir en silencio a quién pertenece el
+          documento. Lo resuelve una persona en `/admin/terceros`.
+
+        Cuando sí resuelve, el alta **no** pisa los datos de una ficha existente:
+        un remitente que cambia la firma de su correo no debe reescribir su
+        dirección postal en el catálogo.
+        """
+        if not (email and email.strip()) or not (nombre and nombre.strip()):
+            return None
+        candidatas = await self._repo.buscar_por_email(email.strip())
+        if len(candidatas) > 1:
+            # Varias fichas con el mismo correo: duplicado sin resolver. Ni se
+            # elige una —sería decidir en silencio a quién pertenece el
+            # documento— ni se crea otra, que era el defecto de la primera
+            # versión: empeoraba el problema que venía a resolver.
+            return None
+        if candidatas:
+            return dict(candidatas[0])
+        creado, _ = await self.crear_o_recuperar(
+            {
+                "tipo": "ciudadano",
+                "nombre": nombre.strip()[:255],
+                "email": email.strip()[:255],
+            },
+            actor=actor,
+        )
+        return creado
+
     # ── Duplicados y fusión ─────────────────────────────────────────────────
 
     async def grupos_duplicados(self, *, limit: int = 50) -> list[dict]:

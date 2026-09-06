@@ -39,7 +39,9 @@ async def test_circuito_abierto(client_with_conn, monkeypatch) -> None:
     client, conn = client_with_conn
     monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
     sid = uuid.uuid4()
-    conn.fetchrow.return_value = {"id": sid, "estado": "pendiente"}
+    # Dos consultas distintas: la cadena ABIERTA y la última CERRADA (de donde
+    # sale la huella firmada). Un `return_value` único las confundiría.
+    conn.fetchrow.side_effect = [{"id": sid, "estado": "pendiente"}, None]
     conn.fetchval.return_value = None
 
     resp = await client.get(f"{_RUTA}/{uuid.uuid4()}", headers=_headers())
@@ -55,7 +57,7 @@ async def test_sin_ningun_circuito_ambos_false(client_with_conn, monkeypatch) ->
     """El camino directo de siempre: sin circuito, aprobar no encuentra nada que respetar."""
     client, conn = client_with_conn
     monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
-    conn.fetchrow.return_value = None
+    conn.fetchrow.side_effect = [None, None]
     conn.fetchval.return_value = None
 
     resp = await client.get(f"{_RUTA}/{uuid.uuid4()}", headers=_headers())
@@ -64,6 +66,7 @@ async def test_sin_ningun_circuito_ambos_false(client_with_conn, monkeypatch) ->
     assert resp.json()["pendiente"] is False
     assert resp.json()["completo"] is False
     assert resp.json()["solicitud_id"] is None
+    assert resp.json()["payload_sha256"] is None
 
 
 @pytest.mark.asyncio
@@ -75,8 +78,8 @@ async def test_circuito_cerrado_no_es_pendiente(client_with_conn, monkeypatch) -
     """
     client, conn = client_with_conn
     monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
-    conn.fetchrow.return_value = None
-    conn.fetchval.return_value = 1
+    conn.fetchrow.side_effect = [None, {"payload_sha256": "huella-del-texto-firmado"}]
+    conn.fetchval.return_value = None
 
     resp = await client.get(f"{_RUTA}/{uuid.uuid4()}", headers=_headers())
 
@@ -86,6 +89,9 @@ async def test_circuito_cerrado_no_es_pendiente(client_with_conn, monkeypatch) -
         "pendiente": False,
         "completo": True,
         "solicitud_id": None,
+        # La huella viaja con el estado: sin ella, quien radica no puede notar
+        # que el texto cambió después de firmarse.
+        "payload_sha256": "huella-del-texto-firmado",
     }
 
 
@@ -125,3 +131,24 @@ async def test_sin_token_configurado_es_503_no_se_deja_pasar(
     resp = await client.get(f"{_RUTA}/{uuid.uuid4()}", headers=_headers())
 
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_completo_sale_de_la_cadena_cerrada_no_de_un_contador(
+    client_with_conn, monkeypatch
+) -> None:
+    """`completo` y la huella salen de la MISMA fila, o podrían contradecirse.
+
+    Si `completo` viniera de una consulta y la huella de otra, existiría el
+    estado imposible «se firmó, pero no sé qué se firmó», y quien radica
+    resolvería esa duda por el lado permisivo.
+    """
+    client, conn = client_with_conn
+    monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
+    conn.fetchrow.side_effect = [None, None]
+    conn.fetchval.return_value = 1  # un contador rancio no puede decidir esto
+
+    resp = await client.get(f"{_RUTA}/{uuid.uuid4()}", headers=_headers())
+
+    assert resp.json()["completo"] is False
+    assert resp.json()["payload_sha256"] is None

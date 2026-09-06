@@ -369,9 +369,47 @@
     fOperador = "";
     fDestinatario = "";
     fDireccion = "";
+    precargado = false;
     fRadicadoIdError = "";
     fOperadorError = "";
     modalCrear = true;
+  }
+
+  // Precarga desde el actor CONGELADO del radicado. Registrar un envío pedía
+  // teclear destinatario y dirección por TERCERA vez —tras el catálogo y tras
+  // el actor del radicado—, que son tres oportunidades de que la misma persona
+  // quede escrita de tres maneras.
+  //
+  // Solo rellena lo que está VACÍO: si alguien ya escribió una dirección
+  // alternativa, pisarla al salir del campo del radicado le borraría el trabajo
+  // sin avisar.
+  let precargado = false;
+
+  async function precargarDestinatario() {
+    const id = fRadicadoId.trim();
+    // Solo con el identificador interno: el endpoint de actores va por UUID, y
+    // el campo admite también el número de radicado. Quien teclea el número
+    // sigue rellenando a mano, que es lo que hacía antes — no se pierde nada.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return;
+    try {
+      const res = await fetch(`/envios/api/actores?radicado=${encodeURIComponent(id)}`);
+      if (!res.ok) return;
+      const actores = await res.json();
+      if (!Array.isArray(actores)) return;
+      const dest =
+        actores.find((a) => a.rol === "destinatario" && a.principal) ??
+        actores.find((a) => a.rol === "destinatario");
+      if (!dest) return;
+      if (!fDestinatario.trim()) fDestinatario = dest.nombre ?? "";
+      if (!fDireccion.trim()) {
+        fDireccion = [dest.direccion, dest.municipio, dest.departamento].filter(Boolean).join(", ");
+      }
+      precargado = Boolean(fDestinatario || fDireccion);
+    } catch {
+      // Silencioso a propósito: la precarga es una comodidad. Un aviso de error
+      // aquí interrumpiría a quien está tecleando por algo que no le impide
+      // seguir — puede rellenarlo a mano, como antes.
+    }
   }
 
   async function crearEnvio() {
@@ -981,7 +1019,15 @@
       required
       error={fRadicadoIdError}
       hint="El número que aparece en la Bandeja. También se admite el identificador interno."
+      on:blur={precargarDestinatario}
     />
+    {#if precargado}
+      <p class="envios-page__nota">
+        Destinatario y dirección vienen del radicado, tal y como se registraron al radicarlo. Puede
+        corregirlos para <strong>este envío</strong>: lo que escriba aquí no cambia el directorio ni
+        el radicado.
+      </p>
+    {/if}
     <FormField
       id="envio-operador"
       label="Operador postal"
@@ -1022,6 +1068,12 @@
   // Página
   // ---------------------------------------------------------------------------
   .envios-page {
+    &__nota {
+      color: var(--op-text-secondary);
+      font-size: var(--op-font-sm);
+      margin: 0 0 var(--op-space-2);
+    }
+
     padding: var(--op-space-5);
     max-width: 1100px;
 

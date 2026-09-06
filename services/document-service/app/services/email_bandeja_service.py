@@ -44,6 +44,7 @@ from app.schemas.document import AnexoInput, DocumentCreate
 from app.services import acuse_correo
 from app.services.document_service import DocumentService
 from app.services.email_cuenta_service import EmailCuentaService, ErrorDeCuenta
+from app.services.tercero_service import TerceroService
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +328,7 @@ class EmailBandejaService:
         anexos = await self._subir_soportes(correo, crudo, mensaje, actor=actor)
 
         # 2) El acto irreversible.
-        payload = self._componer(mensaje, correo, datos, anexos)
+        payload = await self._componer(mensaje, correo, datos, anexos)
         resultado = await servicio.create(payload, registered_by=actor)
 
         # 3) Cierre en la bandeja, exigiendo otra vez la reserva: entre la
@@ -444,7 +445,7 @@ class EmailBandejaService:
         await self._repo.guardar_crudo(mensaje["id"], file_id=original.file_id)
         return subidos
 
-    def _componer(
+    async def _componer(
         self,
         mensaje: asyncpg.Record,
         correo: CorreoLeido,
@@ -468,6 +469,22 @@ class EmailBandejaService:
         """
         recibido: datetime = mensaje["fecha_recibo"]
         codigo_destino: Any = datos.get("dest_dept_code")
+
+        # El remitente entra al DIRECTORIO. En este canal la dirección de correo
+        # ES la identidad del corresponsal —igual que el documento lo es en la
+        # ventanilla—, así que se reutiliza la ficha que ya la tenga en vez de
+        # dejar otro nombre suelto en `sender_name`. Es la puerta de más
+        # volumen: sin esto, el mismo remitente escribiendo cada semana eran
+        # cincuenta textos distintos y ninguna ficha.
+        #
+        # `resolver_por_email` devuelve `None` —y se radica como antes— si falta
+        # la dirección o el nombre, o si hay varias fichas con ese correo: ahí
+        # elegir una sería decidir en silencio a quién pertenece el documento.
+        nombre_remitente = datos.get("sender_name") or correo.remitente_nombre or None
+        ficha = await TerceroService(self._conn, self._tenant).resolver_por_email(
+            correo.remitente_email, nombre=nombre_remitente, actor=None
+        )
+
         return DocumentCreate(
             doc_type="E",
             subject=(datos.get("subject") or mensaje["asunto"] or "(correo sin asunto)")[:2000],
@@ -493,6 +510,11 @@ class EmailBandejaService:
             anexos=[
                 AnexoInput(file_id=a["file_id"], filename=a["filename"]) for a in anexos
             ],
+            actores=(
+                [{"tercero_id": ficha["id"], "rol": "remitente", "principal": True}]
+                if ficha
+                else []
+            ),
         )
 
     async def _mover(

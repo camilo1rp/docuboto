@@ -102,6 +102,33 @@ class TerceroRepository:
             )
         )
 
+    async def buscar_por_email(self, email: str) -> list[asyncpg.Record]:
+        """Fichas vivas con ese correo, **hasta dos**.
+
+        En la ingesta de correo la dirección **es** la identidad del
+        corresponsal, igual que el documento lo es en la ventanilla: es la única
+        clave estable que ese canal aporta.
+
+        Devuelve la LISTA y no «la primera», ni `None` cuando hay varias: al
+        llamante le hace falta distinguir **ninguna** (hay que crearla) de
+        **varias** (es un duplicado sin resolver y no se puede elegir sola).
+        Colapsar las dos respuestas en `None` fue un defecto real de la primera
+        versión de esto: caía a crear una TERCERA ficha, empeorando justo el
+        problema que venía a resolver. Es el mismo patrón que ya mordió en otros
+        sitios de este proyecto — si de la lectura depende una escritura, la
+        lectura no puede devolver «vacío» para dos situaciones distintas.
+
+        El `LIMIT 2` basta: nadie necesita saber si son dos o nueve, solo si hay
+        más de una.
+        """
+        return list(
+            await self._conn.fetch(
+                f"SELECT {_COLS} FROM tercero "
+                "WHERE activo AND fusionado_en IS NULL AND lower(email) = lower($1) LIMIT 2",
+                email,
+            )
+        )
+
     async def get_por_documento(
         self, tipo_documento: str, numero_documento: str
     ) -> asyncpg.Record | None:

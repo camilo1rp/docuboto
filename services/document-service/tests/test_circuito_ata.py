@@ -221,3 +221,76 @@ async def test_el_numero_no_se_consume_si_el_circuito_esta_abierto(
     # codigo del tenant, ni la secuencia, ni el INSERT del radicado.
     assert mock_conn.fetchrow.call_count == 2
     mock_conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_editar_tras_firmar_no_bloquea_pero_radicar_exige_firmar_de_nuevo(
+    client_with_conn, monkeypatch
+):
+    """El texto cambió después de firmarse: se puede, pero no se radica así.
+
+    Cambiar un documento ya firmado es parte del trámite —se recogen los vistos
+    buenos y alguien recuerda un anexo o corrige una cifra a última hora—, así
+    que el sistema NO lo impide: para eso existe `devolver_a_borrador`
+    (RF-PRO-10). Lo que no puede es dar por buenas las firmas anteriores.
+
+    Antes salía un documento oficial, con número inmutable, cuyo texto nadie
+    aprobó, mientras los asientos seguían atestiguando que sí. Como en el test
+    gemelo del circuito abierto, lo que importa no es el código de estado: es
+    que no se gastó el consecutivo.
+    """
+    client, mock_conn = client_with_conn
+    bid = uuid.uuid4()
+    _fija_circuito(
+        monkeypatch, pendiente=False, completo=True, payload_sha256="huella-firmada"
+    )
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
+        _borrador_row(
+            id=bid, doc_type="S", estado="aprobado", cuerpo_sha256="huella-DEL-TEXTO-NUEVO"
+        ),
+    ]
+
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar",
+        headers={**TENANT_HEADERS, "X-User-Id": _USER},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "texto_modificado_tras_firmar"
+    # El mensaje tiene que decir cómo seguir, no solo que no.
+    assert "circuito nuevo" in resp.json()["detail"]["detail"]
+    # Y el número no se gastó: ni la secuencia ni el INSERT del radicado.
+    assert mock_conn.fetchrow.call_count == 2
+    mock_conn.execute.assert_not_awaited()
+
+
+def _gate(payload_sha256, cuerpo_sha256, completo=True):
+    """Ejerce la DECISIÓN, sin el andamiaje de una radicación completa."""
+    from app.services.borrador_service import BorradorService
+
+    estado = {"pendiente": False, "completo": completo, "payload_sha256": payload_sha256}
+    BorradorService._gate_texto_firmado(
+        None, {"cuerpo_sha256": cuerpo_sha256}, estado
+    )
+
+
+def test_el_texto_que_se_firmo_si_se_radica():
+    """Si nadie tocó el texto, el gate calla. Un gate que nadie puede satisfacer suprime."""
+    _gate("la-misma-huella", "la-misma-huella")
+
+
+def test_sin_circuito_el_camino_directo_sigue_abierto():
+    """Sin circuito no hay nada que comparar: no se exige una firma que nadie pidió."""
+    _gate(None, "cualquiera", completo=False)
+
+
+def test_con_el_texto_cambiado_el_gate_se_dispara():
+    """El control positivo del par de arriba: si no distinguiera, no probaría nada."""
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    with _pytest.raises(HTTPException) as exc:
+        _gate("huella-vieja", "huella-nueva")
+    assert exc.value.detail["error"] == "texto_modificado_tras_firmar"

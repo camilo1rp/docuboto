@@ -470,9 +470,19 @@ async def estado_circuito_internal(
     """
     repo = CadenaRepository(conn)
     abierta = await repo.get_solicitud_por_objeto(objeto_tipo, objeto_id, solo_abierta=True)
-    completo = await conn.fetchval(
-        "SELECT 1 FROM firma_solicitud "
-        "WHERE objeto_tipo = $1 AND objeto_id = $2 AND estado = 'firmado' LIMIT 1",
+    # Se devuelve también la HUELLA que firmó el último circuito cerrado, no solo
+    # el booleano de que existió. Editar un borrador ya firmado es un acto
+    # legítimo y frecuente del trámite —alguien recuerda un anexo, cambia una
+    # cifra a última hora—, así que el sistema no puede impedirlo. Lo que no
+    # puede pasar es que el texto cambie y las firmas viejas sigan valiendo: el
+    # firmado deja de servir y hay que volver a recogerlas. Sin esta huella el
+    # lado de document no tenía forma de notar la diferencia, y radicaba un
+    # documento oficial cuyo texto nadie había aprobado mientras los asientos
+    # seguían atestiguando lo contrario.
+    cerrada = await conn.fetchrow(
+        "SELECT payload_sha256 FROM firma_solicitud "
+        "WHERE objeto_tipo = $1 AND objeto_id = $2 AND estado = 'firmado' "
+        "ORDER BY created_at DESC LIMIT 1",
         objeto_tipo,
         objeto_id,
     )
@@ -480,6 +490,9 @@ async def estado_circuito_internal(
         "objeto_tipo": objeto_tipo,
         "objeto_id": objeto_id,
         "pendiente": abierta is not None,
-        "completo": completo is not None,
+        "completo": cerrada is not None,
         "solicitud_id": str(abierta["id"]) if abierta is not None else None,
+        # Huella del texto que se firmó. Sigue siendo content-free: es un
+        # resumen, no revela asunto ni cuerpo.
+        "payload_sha256": cerrada["payload_sha256"] if cerrada is not None else None,
     }

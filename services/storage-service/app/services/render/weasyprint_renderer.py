@@ -94,6 +94,46 @@ def _documento(cuerpo_html: str, pagina: dict[str, Any]) -> str:
     )
 
 
+def _sin_red(url: str, *args: Any, **kwargs: Any) -> Any:
+    """Corta TODA resolución de URL del renderizador. Solo admite `data:`.
+
+    WeasyPrint, sin `url_fetcher` propio, resuelve lo que encuentre en el
+    marcado —`http(s)://`, `file://`, `//host`— al pintar la página. El
+    renderizador corre dentro de la red de contenedores y es el proceso que
+    custodia las credenciales de MinIO, así que un `<img src>` en el cuerpo del
+    oficio bastaba para hacerle peticiones a servicios internos o al servicio de
+    metadatos de la nube, y para incrustar un fichero local en el PDF oficial.
+
+    El cuerpo venía saneado, sí, pero **en otro proceso**: ese saneamiento vive
+    en el proxy de SvelteKit (`frontend/src/lib/server/sanitizeHtml.js`), y el
+    gateway enruta `PATCH /api/v1/borradores/{id}` directo a document-service,
+    que acepta el campo `cuerpo` sin tocarlo. Quien llama a la API no pasa por
+    el navegador. Es lo mismo que ya dejó escrito `borrador_service.py` sobre la
+    aprobación: un control que vive solo en el cliente no es un control.
+
+    Se corta aquí, en el renderizador, y no saneando mejor aguas arriba, porque
+    esta es la única capa por la que pasan TODAS las rutas de render: la
+    previsualización, la producción del oficio y cualquier llamante futuro. Un
+    filtro de marcado es una lista de lo prohibido y siempre se queda corta;
+    esto es una lista de lo admitido.
+
+    `data:` se conserva porque es la vía por la que se incrustan logos y firmas
+    ya embebidos en el propio documento, que no salen a la red.
+    """
+    if url.startswith("data:"):
+        from weasyprint.urls import default_url_fetcher  # noqa: PLC0415
+
+        # Se reenvían los argumentos tal cual: la firma del fetcher la fija
+        # WeasyPrint (hoy `timeout`, `ssl_context`, `http_headers`...) y fijarla
+        # aquí a mano rompería el render en la próxima versión que añada uno.
+        return default_url_fetcher(url, *args, **kwargs)
+
+    raise ValueError(
+        f"El renderizador no resuelve recursos externos (se pidió: {url[:80]!r}). "
+        "Incrusta la imagen en el propio documento con una URL 'data:'."
+    )
+
+
 class WeasyPrintRenderer:
     """Contrato `DocumentRenderer`: nunca lanza."""
 
@@ -143,7 +183,7 @@ class WeasyPrintRenderer:
                 pie=html.escape(str(pagina.get("pie", ""))).replace('"', "'"),
             )
         )
-        documento = HTML(string=_documento(cuerpo_html, pagina))
+        documento = HTML(string=_documento(cuerpo_html, pagina), url_fetcher=_sin_red)
         contenido = documento.write_pdf(stylesheets=[css], pdf_variant=perfil)
         if not contenido:
             return _fallido(perfil, "el renderizador devolvio un documento vacio")
