@@ -622,7 +622,15 @@ Descarga de un anexo **mediada por document-service**, que es la decisión de fo
 
 ### Terceros y actores de la comunicación (E01, RF-RAD-05) — document-service
 
-`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores` · `GET /api/v1/terceros/divipola/departamentos` · `GET /api/v1/terceros/divipola/municipios?departamento=&q=`
+`GET /api/v1/terceros?q=&tipo=&limit=` · `POST /api/v1/terceros` · `GET /api/v1/terceros/radicado/{id}/actores` · `POST /api/v1/terceros/radicado/{id}/actores` · `GET /api/v1/terceros/divipola/departamentos` · `GET /api/v1/terceros/divipola/municipios?departamento=&q=` · `GET /api/v1/terceros/duplicados?limit=` · `GET /api/v1/terceros/{id}/radicados?limit=` · `POST /api/v1/terceros/{id}/fusionar`
+
+**Los actores viajan en la radicación.** `POST /api/v1/documents` acepta `actores: [{tercero_id, rol, principal?, canal?, …contacto}]` y los congela **dentro de la misma transacción** que crea el radicado y su asiento: un `tercero_id` inexistente revierte la radicación entera (404), en vez de dejar un radicado sin remitente con el número ya consumido. `POST /terceros/radicado/{id}/actores` se conserva para añadirlos después. Hasta 2026-09 ninguna pantalla llamaba a ninguna de las dos y `radicado_actor` estaba **vacía** sobre 182 radicados — el directorio no aprendía de nadie.
+
+**Administración del directorio** (`/admin/terceros`):
+
+- `GET /terceros/duplicados` — fichas vivas que **probablemente** son la misma persona, por **dos ejes que no valen lo mismo**: `documento` es certeza (misma cédula = misma persona) y `nombre` —normalizado sin tildes ni mayúsculas— es **sospecha**, porque puede haber homónimos. Solo informa; el sistema nunca fusiona solo. Excluye las ya fusionadas, o la lista de pendientes no bajaría nunca.
+- `GET /terceros/{id}/radicados` — dónde aparece la ficha y con qué rol. **Incluye los de las fichas fusionadas en ella**: sin ese arrastre, consolidar dos fichas haría desaparecer de la vista los radicados de la absorbida.
+- `POST /terceros/{id}/fusionar` `{absorbe_id}` — consolida un duplicado; el de la ruta **sobrevive**. Exige `PERM_RADI` con **`min_crud=3`**. **No reescribe nada**: marca al absorbido con `fusionado_en` y nada más, porque `radicado_actor` es inmutable por trigger (migración 026) **incluido su `tercero_id`** — a qué ficha del catálogo se atendió a alguien también es parte de lo que ocurrió, ya que ese día existían dos. La fusión añade lo que se supo después y la resolución ocurre al leer. Devuelve `vinculos_heredados`. Errores: `422 fusion_consigo_mismo`, `404 tercero_no_encontrado`, `409 tercero_ya_fusionado` (no se encadenan: una cadena con un ciclo colgaría al lector). Asiento `document.tercero_fusionado` atómico y con los **nombres** de ambas — la absorbida deja de aparecer en los listados, y un id suelto no se podría resolver.
 
 Gate `PERM_RADI` en el propio `APIRouter`, **por admisión**: quien radica es quien registra remitentes y destinatarios, y colgarlo del router cubre también las lecturas — un catálogo de ciudadanos con nombre, documento, dirección y teléfono no es un dato público de la entidad. Vincular actores exige además `crud≥3`.
 

@@ -57,6 +57,10 @@ _CAMPOS = (
     "activo",
     "creado_por",
     "creado_at",
+    # La marca de fusión viaja con la ficha: el servicio la necesita para
+    # negarse a encadenar fusiones, y la pantalla para no ofrecer como
+    # superviviente algo que ya se consolidó en otra cosa.
+    "fusionado_en",
 )
 _COLS = ", ".join(_CAMPOS)
 
@@ -74,7 +78,10 @@ class TerceroRepository:
         Reutiliza `public.spanish_unaccent`, la misma configuración que la
         búsqueda de expedientes: un diccionario propio aquí se separaría del
         otro en cuanto alguien afinara uno de los dos."""
-        condiciones = ["activo"]
+        # `fusionado_en IS NULL`: una ficha ya consolidada en otra no puede
+        # volver a elegirse al radicar, o el duplicado que alguien acaba de
+        # resolver reaparecería en el siguiente radicado.
+        condiciones = ["activo", "fusionado_en IS NULL"]
         params: list[object] = []
         if texto and texto.strip():
             params.append(texto.strip())
@@ -288,3 +295,141 @@ class TerceroRepository:
             "DELETE FROM radicado_actor WHERE id = $1", actor_id
         )
         return resultado.rsplit(" ", 1)[-1] != "0"
+
+    # ── Duplicados y fusión ─────────────────────────────────────────────────
+
+    async def grupos_duplicados(self, *, limit: int) -> list[asyncpg.Record]:
+        """Fichas vivas que probablemente son la misma persona.
+
+        Dos ejes, y el orden importa porque no valen lo mismo:
+
+        * **mismo documento de identidad** — no hay discusión posible, son la
+          misma persona. Que existan es un residuo de antes de que el alta
+          fuera idempotente, o de fichas creadas sin documento y completadas
+          después.
+        * **mismo nombre normalizado** (sin tildes ni mayúsculas) — es una
+          *sospecha*, no un hecho: puede haber dos Juan Pérez distintos. Por eso
+          la pantalla los muestra para que alguien decida y nunca los fusiona
+          sola.
+
+        Se excluyen las ya fusionadas: reaparecerían como duplicado de aquello
+        en lo que se consolidaron, que es exactamente lo contrario de resolver.
+        """
+        return list(
+            await self._conn.fetch(
+                """
+                WITH vivos AS (
+                    SELECT id, nombre, entidad, tipo_documento, numero_documento,
+                           email, municipio, creado_at
+                    FROM tercero
+                    WHERE activo AND fusionado_en IS NULL
+                ),
+                por_documento AS (
+                    SELECT 'documento' AS eje,
+                           tipo_documento || ':' || numero_documento AS clave,
+                           count(*) AS cuantos
+                    FROM vivos
+                    WHERE numero_documento IS NOT NULL AND numero_documento <> ''
+                    GROUP BY 1, 2 HAVING count(*) > 1
+                ),
+                por_nombre AS (
+                    SELECT 'nombre' AS eje,
+                           lower(unaccent(nombre)) AS clave,
+                           count(*) AS cuantos
+                    FROM vivos
+                    GROUP BY 1, 2 HAVING count(*) > 1
+                ),
+                grupos AS (
+                    SELECT * FROM por_documento UNION ALL SELECT * FROM por_nombre
+                )
+                SELECT g.eje, g.clave, g.cuantos,
+                       jsonb_agg(
+                           jsonb_build_object(
+                               'id', v.id, 'nombre', v.nombre, 'entidad', v.entidad,
+                               'tipo_documento', v.tipo_documento,
+                               'numero_documento', v.numero_documento,
+                               'email', v.email, 'municipio', v.municipio,
+                               'creado_at', v.creado_at
+                           ) ORDER BY v.creado_at
+                       ) AS fichas
+                FROM grupos g
+                JOIN vivos v ON (
+                    (g.eje = 'documento'
+                     AND v.tipo_documento || ':' || v.numero_documento = g.clave)
+                 OR (g.eje = 'nombre' AND lower(unaccent(v.nombre)) = g.clave)
+                )
+                GROUP BY g.eje, g.clave, g.cuantos
+                -- El documento primero: es certeza, no sospecha.
+                ORDER BY (g.eje = 'documento') DESC, g.cuantos DESC, g.clave
+                LIMIT $1
+                """,
+                limit,
+            )
+        )
+
+    async def radicados_de(self, tercero_id: uuid.UUID, *, limit: int) -> list[asyncpg.Record]:
+        """En qué radicados aparece esta ficha, con el rol que tuvo.
+
+        Es lo que hace falta para decidir una fusión: quién ha escrito y qué se
+        le ha enviado. Sin esto, fusionar sería elegir a ciegas cuál de las dos
+        fichas sobrevive.
+        """
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT ra.rol, ra.creado_at, r.tracking_number, r.subject, r.doc_type
+                FROM radicado_actor ra
+                JOIN radicados r ON r.id = ra.radicado_id
+                -- Incluye los vínculos de las fichas ya FUSIONADAS en esta: el
+                -- pasado sigue apuntando a la ficha que se usó ese día —el
+                -- trigger de inmutabilidad lo impone—, y la fusión es
+                -- conocimiento posterior que se resuelve al leer, no
+                -- reescribiendo. Sin este OR, consolidar dos fichas haría
+                -- DESAPARECER de la vista los radicados de la absorbida.
+                WHERE ra.tercero_id = $1
+                   OR ra.tercero_id IN (SELECT id FROM tercero WHERE fusionado_en = $1)
+                ORDER BY ra.creado_at DESC
+                LIMIT $2
+                """,
+                tercero_id,
+                limit,
+            )
+        )
+
+    async def fusionar(
+        self, superviviente_id: uuid.UUID, absorbido_id: uuid.UUID, *, actor: uuid.UUID | None
+    ) -> int:
+        """Marca al absorbido como consolidado en el superviviente.
+
+        **No toca `radicado_actor`. Ni una fila.** El primer diseño repuntaba el
+        `tercero_id` de los vínculos, y la base lo impidió: el trigger
+        `radicado_actor` inmutable de la migración 026 incluye `tercero_id`
+        entre las columnas que no se editan, con este mensaje —
+
+            «los datos de contacto de un actor son los USADOS en el envío y no
+             se editan: cambiarlos daría información errónea sobre un acto ya
+             ocurrido»
+
+        — y tiene razón. A QUÉ FICHA del catálogo se atendió a alguien también
+        es parte de lo que ocurrió: el día del envío existían dos fichas y se
+        usó una. Reescribirlo diría que siempre hubo una sola.
+
+        Así que la fusión no reescribe el pasado, solo añade lo que se supo
+        después: estas dos fichas son la misma persona. Quien lee resuelve a
+        través de `fusionado_en` (ver `radicados_de`), y los vínculos siguen
+        diciendo la verdad de su momento.
+
+        Devuelve cuántos vínculos pasan a resolverse hacia el superviviente
+        —informativo, para que quien fusiona sepa el alcance de lo que hace—.
+        """
+        heredados: int = await self._conn.fetchval(
+            "SELECT count(*) FROM radicado_actor WHERE tercero_id = $1", absorbido_id
+        )
+        await self._conn.execute(
+            "UPDATE tercero SET fusionado_en = $1, fusionado_at = now(), "
+            "fusionado_por = $2, actualizado_at = now() WHERE id = $3",
+            superviviente_id,
+            actor,
+            absorbido_id,
+        )
+        return int(heredados)

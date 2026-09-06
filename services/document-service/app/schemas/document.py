@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.tercero import ActorVincular
+
 
 class AnexoInput(BaseModel):
     file_id: uuid.UUID
@@ -58,6 +60,22 @@ class DocumentCreate(BaseModel):
     # una plantilla activa, se validan contra su JSON Schema antes de radicar.
     metadata: dict[str, Any] = Field(default_factory=dict)
     anexos: list[AnexoInput] = []
+    # Remitente y destinatarios, POR REFERENCIA al catálogo de terceros
+    # (RF-RAD-05). Van en la creación y no en una llamada posterior porque un
+    # radicado sin sus actores es un medio-estado: se vinculan dentro de la
+    # MISMA transacción que crea el radicado y su asiento (ver
+    # `DocumentService.create`), igual que el proyecto trata mutación y
+    # auditoría como un solo acto.
+    #
+    # `sender_name`/`sender_entity` se siguen llenando —los leen la búsqueda,
+    # los reportes, la exportación y el índice electrónico— con el actor
+    # principal; estos actores NO los sustituyen, los explican: dicen a QUIÉN
+    # del catálogo corresponde ese nombre y con qué contacto se le atendió.
+    #
+    # Vacío es válido y no es un descuido: un Interno no tiene actores externos,
+    # y una Entrada radicada de urgencia puede completarse después con
+    # `POST /terceros/radicado/{id}/actores`.
+    actores: list[ActorVincular] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode="after")
     def _require_fundamento_when_classified(self) -> "DocumentCreate":

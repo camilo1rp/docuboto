@@ -28,7 +28,11 @@ from app.schemas.tercero import (
     ActoresVincularRequest,
     ActorResponse,
     DepartamentoResponse,
+    FusionRequest,
+    FusionResponse,
+    GrupoDuplicados,
     MunicipioResponse,
+    RadicadoDeTercero,
     TerceroCreate,
     TerceroResponse,
 )
@@ -185,4 +189,81 @@ async def vincular_actores(
         radicado_id,
         [a.model_dump() for a in payload.actores],
         actor=_actor(request),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Administración del directorio: duplicados y fusión (RF-RAD-05)
+# ---------------------------------------------------------------------------
+# Hasta ahora un tercero solo podía NACER —como efecto colateral de elegir un
+# destinatario al radicar— y no había dónde listarlos, revisarlos ni consolidar
+# los que sobraban. El Orfeo del que deriva este sistema acabó con el mismo
+# señor treinta veces; la búsqueda sin tildes evita que sigan apareciendo, pero
+# los que ya están necesitan una salida.
+@router.get(
+    "/duplicados",
+    response_model=list[GrupoDuplicados],
+    summary="Fichas que probablemente son la misma persona",
+)
+async def listar_duplicados(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[GrupoDuplicados]:
+    """Agrupa por documento (certeza) y por nombre normalizado (sospecha).
+
+    **Solo informa; no fusiona nada.** Dos fichas con el mismo nombre pueden ser
+    dos personas distintas, y consolidarlas automáticamente convertiría a dos
+    ciudadanos en uno sin que nadie lo hubiera decidido.
+    """
+    service = TerceroService(conn, _tenant_slug(request))
+    return [GrupoDuplicados(**g) for g in await service.grupos_duplicados(limit=limit)]
+
+
+@router.get(
+    "/{tercero_id}/radicados",
+    response_model=list[RadicadoDeTercero],
+    summary="En qué radicados aparece una ficha",
+)
+async def radicados_de_tercero(
+    tercero_id: uuid.UUID,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[RadicadoDeTercero]:
+    """Lo que hace falta para decidir una fusión: quién escribió y qué se envió.
+
+    Sin esto, elegir cuál de dos fichas sobrevive sería a ciegas.
+    """
+    service = TerceroService(conn, _tenant_slug(request))
+    return [RadicadoDeTercero(**r) for r in await service.radicados_de(tercero_id, limit=limit)]
+
+
+@router.post(
+    "/{tercero_id}/fusionar",
+    response_model=FusionResponse,
+    summary="Consolidar un duplicado en esta ficha (IRREVERSIBLE)",
+    # `crud>=3` y no el nivel de lectura por defecto: fusionar altera el
+    # catálogo de la entidad y reapunta vínculos de radicados ya existentes.
+    dependencies=[Depends(require_permission("PERM_RADI", min_crud=3))],
+)
+async def fusionar_terceros(
+    tercero_id: uuid.UUID,
+    payload: FusionRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> FusionResponse:
+    """El de la ruta SOBREVIVE; el del cuerpo se absorbe.
+
+    Los `radicado_actor` del absorbido pasan a apuntar a la superviviente, y la
+    absorbida queda marcada —no borrada— para no perder el rastro. **Las copias
+    congeladas no se tocan**: siguen diciendo con qué datos se atendió cada
+    envío, que es justo lo que la copia existe para conservar.
+
+    Irreversible: no hay «deshacer fusión». La pantalla lo confirma con una
+    frase tecleada antes de llamar aquí.
+    """
+    service = TerceroService(conn, _tenant_slug(request))
+    return FusionResponse(
+        **await service.fusionar(tercero_id, payload.absorbe_id, actor=_actor(request))
     )

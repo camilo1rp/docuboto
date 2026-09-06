@@ -167,6 +167,19 @@
       implemented: true,
     },
     {
+      label: "Directorio de terceros",
+      description:
+        "Remitentes y destinatarios del catálogo: buscar, revisar y consolidar duplicados.",
+      icon: "fas fa-address-book",
+      // `PERM_RADI` y no `USUA_PERM_ADMIN`: el directorio lo administra quien
+      // radica —es su herramienta de trabajo— y es el mismo permiso que gatea
+      // el resto del catálogo de terceros en el backend. La FUSIÓN, que sí
+      // altera el catálogo, exige además nivel 3.
+      permission: "PERM_RADI",
+      href: "/admin/terceros",
+      implemented: true,
+    },
+    {
       label: "Catálogos",
       description: "Catálogos institucionales: tipos documentales, series, causales.",
       icon: "fas fa-list",

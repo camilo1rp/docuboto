@@ -38,6 +38,7 @@ nombra a nadie.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -306,3 +307,115 @@ class TerceroService:
 
     async def list_actores(self, radicado_id: uuid.UUID) -> list[dict]:
         return [dict(r) for r in await self._repo.list_actores(radicado_id)]
+
+    # ── Duplicados y fusión ─────────────────────────────────────────────────
+
+    async def grupos_duplicados(self, *, limit: int = 50) -> list[dict]:
+        """Fichas que probablemente son la misma persona. Ver el repositorio.
+
+        `fichas` llega como TEXTO y no como lista: el pool de este servicio no
+        registra un códec de `jsonb`, así que asyncpg devuelve la cadena cruda.
+        Se decodifica aquí y no se da por hecho —`isinstance`, no un
+        `json.loads` a secas— porque el día que alguien registre el códec esto
+        seguiría funcionando en vez de romperse con un `TypeError`.
+        """
+        grupos = []
+        for fila in await self._repo.grupos_duplicados(limit=limit):
+            g = dict(fila)
+            if isinstance(g.get("fichas"), str):
+                g["fichas"] = json.loads(g["fichas"])
+            grupos.append(g)
+        return grupos
+
+    async def radicados_de(self, tercero_id: uuid.UUID, *, limit: int = 50) -> list[dict]:
+        return [dict(r) for r in await self._repo.radicados_de(tercero_id, limit=limit)]
+
+    async def fusionar(
+        self,
+        superviviente_id: uuid.UUID,
+        absorbido_id: uuid.UUID,
+        *,
+        actor: uuid.UUID | None,
+    ) -> dict:
+        """Consolida dos fichas en una. **Irreversible.**
+
+        Cuatro guardas, y ninguna es de adorno:
+
+        1. **No fusionar consigo mismo.** Un identificador repetido por error
+           marcaría la ficha como fusionada en sí misma y la haría desaparecer
+           de la búsqueda sin que nadie lo pidiera.
+        2. **Las dos tienen que existir** en este tenant. El repositorio ya
+           filtra por schema, así que un id de otra entidad simplemente no
+           aparece — y aquí se traduce a 404, no a un fallo interno.
+        3. **Ninguna puede estar ya fusionada.** Encadenar fusiones haría que
+           el destino de un vínculo dependiera de recorrer una cadena, y una
+           cadena con un ciclo colgaría al lector. Se fusiona siempre contra
+           una ficha viva.
+        4. **Atómico con su asiento**: repunte + marca + `audit.append` en una
+           sola transacción. Una fusión sin traza es un cambio en el catálogo de
+           una entidad sin autor ni fecha.
+        """
+        if superviviente_id == absorbido_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "fusion_consigo_mismo",
+                    "detail": "Una ficha no puede fusionarse consigo misma",
+                    "status": 422,
+                },
+            )
+
+        superviviente = await self._repo.get(superviviente_id)
+        absorbido = await self._repo.get(absorbido_id)
+        for ident, ficha in ((superviviente_id, superviviente), (absorbido_id, absorbido)):
+            if ficha is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "tercero_no_encontrado",
+                        "detail": f"No existe el tercero {ident}",
+                        "status": 404,
+                    },
+                )
+        for ficha in (superviviente, absorbido):
+            if ficha["fusionado_en"] is not None:  # type: ignore[index]
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "tercero_ya_fusionado",
+                        "detail": (
+                            f"La ficha «{ficha['nombre']}» ya se fusionó en otra; "  # type: ignore[index]
+                            "fusiona contra la que quedó viva"
+                        ),
+                        "status": 409,
+                    },
+                )
+
+        async with self._conn.transaction():
+            heredados = await self._repo.fusionar(
+                superviviente_id, absorbido_id, actor=actor
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="document-service",
+                action="document.tercero_fusionado",
+                object_type="tercero",
+                object_ref=str(superviviente_id),
+                actor=str(actor) if actor else None,
+                payload={
+                    "superviviente": str(superviviente_id),
+                    "absorbido": str(absorbido_id),
+                    # Los nombres viajan al asiento porque la ficha absorbida
+                    # deja de aparecer en cualquier listado: sin esto, quien
+                    # audite vería un identificador que no puede resolver.
+                    "superviviente_nombre": superviviente["nombre"],  # type: ignore[index]
+                    "absorbido_nombre": absorbido["nombre"],  # type: ignore[index]
+                    "vinculos_heredados": heredados,
+                },
+            )
+        return {
+            "superviviente_id": superviviente_id,
+            "absorbido_id": absorbido_id,
+            "vinculos_heredados": heredados,
+        }

@@ -112,6 +112,31 @@
  * @property {number|null}   [response_days]
  * @property {object}        [metadata]
  * @property {AnexoInput[]}  [anexos]
+ * @property {ActorVincular[]} [actores]
+ */
+
+/**
+ * Un actor del radicado POR REFERENCIA al catálogo de terceros (RF-RAD-05).
+ *
+ * Los campos de contacto son opcionales y **corrigen la ficha solo para ESTE
+ * radicado**: se congelan en `radicado_actor` y no tocan el catálogo, porque
+ * valen para este envío y no dicen nada sobre dónde vive esa persona.
+ *
+ * @typedef {object} ActorVincular
+ * @property {string}                     tercero_id
+ * @property {'remitente'|'destinatario'} rol
+ * @property {boolean}                    [principal]
+ * @property {'email'|'fisico'|'ambos'|null} [canal]
+ * @property {string|null}                [nombre]
+ * @property {string|null}                [entidad]
+ * @property {string|null}                [email]
+ * @property {string|null}                [telefono]
+ * @property {string|null}                [direccion]
+ * @property {string|null}                [municipio]
+ * @property {string|null}                [departamento]
+ * @property {string|null}                [municipio_codigo]
+ * @property {string|null}                [departamento_codigo]
+ * @property {string|null}                [pais]
  */
 
 // ---------------------------------------------------------------------------

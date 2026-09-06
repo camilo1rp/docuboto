@@ -37,7 +37,7 @@
   import { RADICADO_TIPO_LABEL, etiquetaEstadoRadicado } from "$lib/utils/radicado.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import Stepper from "$lib/components/ui/Stepper.svelte";
-  import DestinatariosPicker from "$lib/components/features/terceros/DestinatariosPicker.svelte";
+  import ActorPicker from "$lib/components/features/terceros/ActorPicker.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -100,6 +100,9 @@
   // nuevo es aditivo y arrancar las columnas viejas de golpe convertiría una
   // mejora en una migración de riesgo.
   let destinatarios = [];
+  // El remitente de una Entrada, elegido del directorio. Es una lista de uno
+  // para poder reutilizar el mismo componente y el mismo formato de actor.
+  let remitentes = [];
   let senderEntity = "";
   let originDeptCode = "";
   let destDeptCode = "";
@@ -163,19 +166,43 @@
   // Cuando cambia el tipo documental, cargamos la plantilla de metadatos.
   // Usa el endpoint local /radicar/api/templates que lee la cookie httpOnly en el servidor.
   /**
-   * El PRIMER destinatario alimenta `sender_name`/`sender_entity`.
+   * El actor PRINCIPAL alimenta `sender_name`/`sender_entity`.
    *
    * No es un apaño: son las columnas que leen la búsqueda, los reportes, la
    * exportación y el índice electrónico —cuarenta y tres archivos—, y dejarlas
    * vacías rompería todo eso el día que alguien radique con el modelo nuevo.
-   * Se llenan con el principal y el resto de destinatarios vive en su propia
-   * tabla, cada uno con su contacto congelado.
+   *
+   * Los actores NO las sustituyen, las explican: dicen a QUIÉN del catálogo
+   * corresponde ese nombre y con qué contacto se le atendió. Viajan en el
+   * cuerpo del POST y el backend los congela dentro de la MISMA transacción que
+   * crea el radicado.
+   *
+   * (Hasta 2026-09 este comentario afirmaba que los destinatarios adicionales
+   * «viven en su propia tabla, cada uno con su contacto congelado». Era falso:
+   * nadie llamaba a `/terceros/radicado/{id}/actores` y la tabla estaba vacía
+   * sobre 182 radicados. Los destinatarios a partir del segundo se perdían en
+   * silencio, contra la regla de negocio que dice que una Salida puede tener
+   * varios.)
    */
   function sincronizarDestinatarioPrincipal() {
     const principal = destinatarios[0];
     if (!principal) return;
     senderName = principal.nombre ?? "";
     senderEntity = principal.entidad ?? "";
+  }
+
+  /** Igual que el anterior, para el remitente de una Entrada. */
+  function sincronizarRemitente() {
+    const principal = remitentes[0];
+    if (!principal) return;
+    senderName = principal.nombre ?? "";
+    senderEntity = principal.entidad ?? "";
+  }
+
+  /** Los actores que viajan en el POST, con el primero marcado como principal. */
+  function actoresPayload() {
+    const lista = docType === "E" ? remitentes : docType === "S" ? destinatarios : [];
+    return lista.map((a, i) => ({ ...a, principal: i === 0 }));
   }
 
   async function onDocClassChange() {
@@ -418,6 +445,7 @@
       response_days: responseDays ? Number(responseDays) : null,
       metadata: cleanMetadata,
       anexos: anexosPayload,
+      actores: actoresPayload(),
     };
 
     try {
@@ -726,12 +754,24 @@
               />
             </div>
 
-            <!-- Destinatarios de una Salida: uno o varios, del catálogo -->
+            <!-- Actores del catálogo: el remitente de una Entrada, los
+                 destinatarios de una Salida. Un Interno no tiene actores
+                 externos, y eso es correcto. -->
             {#if docType === "S"}
               <div class="radicar-step__field radicar-step__field--full">
-                <DestinatariosPicker
+                <ActorPicker
                   bind:destinatarios
+                  rol="destinatario"
                   on:cambio={sincronizarDestinatarioPrincipal}
+                />
+              </div>
+            {:else if docType === "E"}
+              <div class="radicar-step__field radicar-step__field--full">
+                <ActorPicker
+                  bind:destinatarios={remitentes}
+                  rol="remitente"
+                  max={1}
+                  on:cambio={sincronizarRemitente}
                 />
               </div>
             {/if}

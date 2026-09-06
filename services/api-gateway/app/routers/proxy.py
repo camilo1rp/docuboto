@@ -184,6 +184,12 @@ async def _handle_proxy(request: Request, path: str) -> Response:
     if upstream_base == request.app.state.mcp_service_url:
         timeout = request.app.state.assistant_proxy_timeout
 
+    # Las rutas anónimas llevan su propio tope, mucho más estrecho: el general
+    # está dimensionado para el ZIP de importación, que exige autenticación.
+    max_body_bytes = request.app.state.max_request_body_bytes
+    if request.url.path.startswith("/api/v1/public/"):
+        max_body_bytes = min(max_body_bytes, request.app.state.max_public_body_bytes)
+
     try:
         return await proxy_request(
             http_client=http_client,
@@ -191,7 +197,7 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             request=request,
             extra_headers=extra_headers,
             timeout=timeout,
-            max_body_bytes=request.app.state.max_request_body_bytes,
+            max_body_bytes=max_body_bytes,
         )
     except httpx.TimeoutException:
         return JSONResponse(

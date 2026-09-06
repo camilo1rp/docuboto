@@ -78,7 +78,15 @@ def tipo_por_contenido(datos: bytes) -> str:
 
 
 def validar_conjunto(tamanos: list[int]) -> None:
-    """Comprueba número y tamaño ANTES de leer o trasladar nada."""
+    """Comprueba número y tamaño de un conjunto de anexos.
+
+    Recibe TAMAÑOS, no contenidos, precisamente para poder llamarse con los que
+    el parser declara —antes de traer ningún byte a memoria— y no solo con los ya
+    leídos. Durante un tiempo el docstring prometía ese orden mientras su único
+    llamante la invocaba sobre bytes ya materializados: la promesa la cumple
+    quien llama, así que el router la usa en los dos momentos, primero sobre los
+    tamaños declarados y después sobre los reales.
+    """
     if len(tamanos) > MAX_ANEXOS:
         raise AnexoRechazado(
             f"Se admiten como máximo {MAX_ANEXOS} archivos por radicación; "

@@ -188,3 +188,30 @@ async def test_content_encoding_y_disposition_llegan_al_cliente(test_client) -> 
 def _validate_ok(http_client) -> AsyncMock:
     """`GET /auth/validate` en verde — el middleware de JWT lo llama en toda ruta."""
     return AsyncMock(return_value=make_validate_response(valid=True))
+
+
+async def test_la_puerta_anonima_tiene_su_propio_tope_de_cuerpo(test_client):
+    """Una ruta pública no puede aceptar el cuerpo dimensionado para la importación.
+
+    El tope general son 512 MiB porque el ZIP de importación interoperable lo
+    necesita, pero esa es una carga AUTENTICADA y de administración. Aplicárselo
+    también a la puerta ciudadana dejaba que un anónimo hiciera escribir medio
+    giga en el disco del contenedor de destino en cada petición, para que el
+    servicio lo rechazara después: el coste se paga entero antes del rechazo.
+    """
+    client, http_client, _ = test_client
+    wire_upstream(http_client, httpx.Response(status_code=200, json={"ok": True}))
+
+    limite_publico = app.state.max_public_body_bytes
+    assert limite_publico < app.state.max_request_body_bytes, (
+        "la puerta anónima está aceptando el mismo cuerpo que la importación autenticada"
+    )
+
+    respuesta = await client.post(
+        "/api/v1/public/demo/ventanilla",
+        content=b"x" * (limite_publico + 1024),
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert respuesta.status_code == 413
+    assert respuesta.json()["error"] == "request_entity_too_large"

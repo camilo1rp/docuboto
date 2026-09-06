@@ -78,6 +78,10 @@ class TerceroResponse(BaseModel):
     activo: bool
     creado_por: uuid.UUID | None
     creado_at: datetime
+    # Si no es `None`, esta ficha se consolidó en la que apunta: es un duplicado
+    # ya resuelto. La búsqueda las excluye, así que aquí solo aparece al pedir
+    # una ficha concreta — y entonces conviene decirlo, no callarlo.
+    fusionado_en: uuid.UUID | None = None
     # `False` cuando la petición de alta devolvió un tercero que ya existía con
     # ese documento. Se dice en vez de callarlo: quien registra tiene derecho a
     # saber que está reutilizando una ficha y no creando una nueva.
@@ -165,3 +169,59 @@ class MunicipioResponse(BaseModel):
     codigo: str
     departamento_codigo: str
     nombre: str
+
+
+# ---------------------------------------------------------------------------
+# Duplicados y fusión (RF-RAD-05)
+# ---------------------------------------------------------------------------
+class FichaDuplicada(BaseModel):
+    """Una de las fichas de un grupo sospechoso, con lo justo para decidir."""
+
+    id: uuid.UUID
+    nombre: str
+    entidad: str | None = None
+    tipo_documento: str | None = None
+    numero_documento: str | None = None
+    email: str | None = None
+    municipio: str | None = None
+    creado_at: datetime
+
+
+class GrupoDuplicados(BaseModel):
+    """Fichas vivas que probablemente son la misma persona.
+
+    `eje` dice de qué tipo de coincidencia se trata, y no son equivalentes:
+    `documento` es certeza —dos fichas con la misma cédula son la misma
+    persona— y `nombre` es **sospecha**: puede haber dos Juan Pérez distintos.
+    Por eso el sistema nunca fusiona solo; muestra y deja decidir.
+    """
+
+    eje: Literal["documento", "nombre"]
+    clave: str
+    cuantos: int
+    fichas: list[FichaDuplicada]
+
+
+class FusionRequest(BaseModel):
+    """Cuál se absorbe. La superviviente va en la ruta."""
+
+    absorbe_id: uuid.UUID
+
+
+class FusionResponse(BaseModel):
+    superviviente_id: uuid.UUID
+    absorbido_id: uuid.UUID
+    #: Cuántos vínculos pasan a RESOLVERSE hacia la superviviente. No se
+    #: repunta ninguno: `radicado_actor` es inmutable y sigue nombrando la ficha
+    #: que se usó ese día; la resolución ocurre al leer.
+    vinculos_heredados: int
+
+
+class RadicadoDeTercero(BaseModel):
+    """Dónde aparece una ficha: lo que hace falta para decidir una fusión."""
+
+    tracking_number: str
+    subject: str
+    doc_type: str
+    rol: str
+    creado_at: datetime

@@ -73,6 +73,7 @@ async def test_client(mock_redis, mock_http_client):
         app.state.rate_limit_per_ip = 100
         app.state.rate_limit_global = 1000
         app.state.max_request_body_bytes = settings.max_request_body_bytes
+        app.state.max_public_body_bytes = settings.max_public_body_bytes
         app.state.trusted_proxies = settings.trusted_proxies
         app.state.rate_limit_pqrs_per_ip = settings.rate_limit_pqrs_per_ip
         app.state.auth_cache_ttl = settings.auth_cache_ttl

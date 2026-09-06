@@ -27,7 +27,7 @@ import { fireEvent, render, screen } from "@testing-library/svelte";
 
 vi.mock("$app/navigation", () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
-const { default: Picker } = await import("./DestinatariosPicker.svelte");
+const { default: Picker } = await import("./ActorPicker.svelte");
 
 const texto = () => document.body.textContent.replace(/\s+/g, " ");
 
@@ -124,5 +124,58 @@ describe("selector de destinatarios", () => {
       },
     });
     expect(texto()).toMatch(/Destinatarios de este radicado \(2\)/);
+  });
+});
+
+describe("el mismo selector sirve al REMITENTE de una Entrada", () => {
+  // Por qué existe este bloque: el componente solo cubría destinatarios, y esa
+  // asimetría era la causa de los duplicados. El remitente de una Entrada se
+  // tecleaba en dos campos de texto libre, así que el directorio solo podía
+  // aprender de las Salidas — y de 182 radicados, 104 eran Entradas.
+
+  it("habla de remitente, no de destinatario", () => {
+    render(Picker, { props: { destinatarios: [], rol: "remitente", max: 1 } });
+    expect(screen.getByLabelText(/Buscar remitente/i)).toBeInTheDocument();
+    expect(texto()).toMatch(/Toda Entrada tiene/i);
+  });
+
+  it("marca el actor añadido con el rol que se le pidió", async () => {
+    // La aserción que importa: lo que se emite, no lo que se pinta. El `rol`
+    // viaja al backend y decide si esa persona es de quien viene el documento o
+    // a quien va — pintarlo bien y emitir "destinatario" sería peor que no
+    // tener el selector.
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify([{ id: "33333333-3333-4333-8333-333333333333", nombre: "Luz Mora" }]),
+          {
+            status: 200,
+          },
+        ),
+    );
+    const { component } = render(Picker, {
+      props: { destinatarios: [], rol: "remitente", max: 1 },
+    });
+    /** @type {any[]} */
+    let emitido = [];
+    component.$on("cambio", (e) => (emitido = e.detail));
+
+    await fireEvent.input(screen.getByLabelText(/Buscar remitente/i), {
+      target: { value: "Luz" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /^Buscar$/i }));
+    const añadir = await screen.findByRole("button", { name: /Añadir/i });
+    await fireEvent.click(añadir);
+
+    expect(emitido).toHaveLength(1);
+    expect(emitido[0].rol).toBe("remitente");
+  });
+
+  it("con el cupo lleno RETIRA el buscador, en vez de dejar buscar y luego negar", () => {
+    render(Picker, {
+      props: { destinatarios: [destinatario()], rol: "remitente", max: 1 },
+    });
+    expect(screen.queryByLabelText(/Buscar remitente/i)).toBeNull();
+    expect(texto()).toMatch(/Ya hay remitente/i);
   });
 });

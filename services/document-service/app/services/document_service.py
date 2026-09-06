@@ -51,6 +51,7 @@ from app.schemas.document import (
 )
 from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
 from app.services.metadata_service import validate_metadata
+from app.services.tercero_service import TerceroService
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,7 @@ class DocumentService:
                 )
                 audit_payload["clasificacion_fundamento"] = payload.clasificacion_fundamento
                 audit_payload["clasificacion_causal"] = payload.clasificacion_causal
+
             await audit.append(
                 self._conn,
                 tenant_slug=self._slug,
@@ -269,6 +271,30 @@ class DocumentService:
                 actor=actor,
                 payload=audit_payload,
             )
+
+            # Actores (RF-RAD-05) DENTRO de la misma transacción: el radicado,
+            # sus actores y los dos asientos son un solo acto. Vincular después,
+            # en una segunda llamada, deja un radicado sin remitente si esa
+            # llamada falla — y como nada lo comprobaba, `radicado_actor` estaba
+            # vacía sobre 182 radicados mientras el catálogo tenía 40 terceros.
+            #
+            # Va DESPUÉS del asiento de creación para que la cadena cuente los
+            # hechos en el orden en que ocurren: primero nace el radicado,
+            # luego se le atan sus actores. `vincular_actores` escribe su propio
+            # asiento —con cuántos contactos se corrigieron al vuelo—, así que
+            # aquí no se duplica esa información.
+            #
+            # Se reutiliza `TerceroService.vincular_actores`, que es quien sabe
+            # congelar el contacto y resolver la geografía DIVIPOLA; aquí no se
+            # reimplementa nada. Un `tercero_id` inexistente aborta la
+            # radicación entera (404 y rollback): mejor no radicar que radicar
+            # sin saber de quién.
+            if payload.actores:
+                await TerceroService(self._conn, self._slug).vincular_actores(
+                    radicado.id,
+                    [a.model_dump() for a in payload.actores],
+                    actor=registered_by,
+                )
 
         # El evento de dominio se publica tras confirmar la transacción. Es
         # best-effort: un fallo de Redis no revierte la radicación (la BD es la

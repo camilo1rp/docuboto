@@ -10,7 +10,14 @@
 -->
 
 <!--
-  DestinatariosPicker — buscar, reutilizar y añadir destinatarios (E01, RF-RAD-05).
+  ActorPicker — buscar, reutilizar y añadir ACTORES de un radicado (E01, RF-RAD-05).
+
+  Sirve a los dos roles: el **remitente** de una Entrada y los **destinatarios**
+  de una Salida. Antes solo existía para destinatarios, y esa asimetría era la
+  causa de los duplicados: el remitente de una Entrada se tecleaba a mano en dos
+  columnas de texto libre, así que el directorio solo podía aprender de las
+  Salidas — y de esas tampoco, porque el vínculo no llegaba a persistirse.
+  De 182 radicados, 104 eran Entradas.
 
   **Buscar antes que crear, y por eso el buscador va primero.** El Orfeo del que
   deriva este sistema acabó con el mismo señor treinta veces en el catálogo, con
@@ -40,9 +47,19 @@
   import { notifyError } from "$lib/stores/notifications.js";
   import { mensajeError } from "$lib/utils/apiError.js";
 
-  /** Destinatarios ya elegidos, con su contacto para este envío. */
+  /** Actores ya elegidos, con su contacto congelado para ESTE radicado. */
   export let destinatarios = [];
   export let disabled = false;
+  /** `remitente` (quien lo envía) o `destinatario` (a quién va). */
+  export let rol = "destinatario";
+  /** Cuántos admite. Un radicado tiene UN remitente y puede tener varios
+      destinatarios; el tope se aplica ocultando el buscador, no rechazando
+      después, para que el límite se vea antes de chocar con él. */
+  export let max = 99;
+
+  $: esRemitente = rol === "remitente";
+  $: rotulo = esRemitente ? "remitente" : "destinatario";
+  $: completo = destinatarios.length >= max;
 
   const dispatch = createEventDispatcher();
 
@@ -122,7 +139,7 @@
       ...destinatarios,
       {
         tercero_id: tercero.id,
-        rol: "destinatario",
+        rol,
         nombre: tercero.nombre,
         entidad: tercero.entidad,
         email: tercero.email,
@@ -257,21 +274,34 @@
 
 <div class="dest">
   <p class="dest__intro">
-    Un radicado de salida puede tener <strong>uno o varios destinatarios</strong>. Busca antes de
-    crear: la mayoría de los duplicados aparecen por no encontrar la ficha que ya existe.
+    {#if esRemitente}Toda Entrada tiene <strong>un remitente</strong>, y buscarlo en el directorio
+      es lo que evita que la misma persona acabe treinta veces en el catálogo.{:else}Un radicado de
+      salida puede tener <strong>uno o varios destinatarios</strong>.{/if} Busca antes de crear: la mayoría
+    de los duplicados aparecen por no encontrar la ficha que ya existe.
   </p>
 
-  <div class="dest__buscador">
-    <FormField
-      id="tercero-buscar"
-      name="q"
-      label="Buscar destinatario"
-      bind:value={consulta}
-      {disabled}
-      hint="Por nombre o entidad. No distingue tildes ni mayúsculas."
-    />
-    <Button variant="secondary" loading={buscando} {disabled} on:click={buscar}>Buscar</Button>
-  </div>
+  <!--
+    Con el cupo lleno el buscador desaparece en vez de rechazar después: un
+    remitente es UNO, y dejar buscar para luego negar hace descubrir el límite
+    chocando con él.
+  -->
+  {#if !completo}
+    <div class="dest__buscador">
+      <FormField
+        id="tercero-buscar"
+        name="q"
+        label={esRemitente ? "Buscar remitente" : "Buscar destinatario"}
+        bind:value={consulta}
+        {disabled}
+        hint="Por nombre o entidad. No distingue tildes ni mayúsculas."
+      />
+      <Button variant="secondary" loading={buscando} {disabled} on:click={buscar}>Buscar</Button>
+    </div>
+  {:else}
+    <p class="dest__intro">
+      Ya hay {rotulo} para este radicado. Quítalo si quieres elegir otro.
+    </p>
+  {/if}
 
   {#if buscado}
     {#if resultados.length === 0}
@@ -311,7 +341,9 @@
   {/if}
 
   {#if destinatarios.length > 0}
-    <h4 class="dest__titulo">Destinatarios de este radicado ({destinatarios.length})</h4>
+    <h4 class="dest__titulo">
+      {esRemitente ? "Remitente" : "Destinatarios"} de este radicado ({destinatarios.length})
+    </h4>
     <ul class="dest__lista">
       {#each destinatarios as d, i (d.tercero_id + (d.direccion ?? ""))}
         <li class="dest__item">

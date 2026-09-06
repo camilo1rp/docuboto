@@ -106,5 +106,14 @@ class Settings(BaseSettings):
     # no vaya a rechazar igualmente.
     max_request_body_bytes: int = 512 * 1024 * 1024
 
+    # Tope propio para las rutas ANÓNIMAS (`/api/v1/public/`), muy por debajo del
+    # general. El de 512 MiB está dimensionado para el ZIP de importación, que es
+    # una carga autenticada y de administración; aplicárselo también a la puerta
+    # ciudadana significaba dejar que un anónimo hiciera escribir medio giga en el
+    # disco del contenedor de destino por cada petición, solo para que el servicio
+    # lo rechazara después. La radicación externa admite 25 MiB de anexos: 32 MiB
+    # deja holgura para el resto del multipart sin habilitar nada más.
+    max_public_body_bytes: int = 32 * 1024 * 1024
+
 
 settings = Settings()

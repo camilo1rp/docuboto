@@ -92,11 +92,11 @@ fi
 
 INICIO=$(date +%s)
 
-azul "1/7 · Derribando la pila y sus volúmenes"
+azul "1/8 · Derribando la pila y sus volúmenes"
 docker compose --profile dev --profile assistant down -v --remove-orphans
 verde "volúmenes eliminados"
 
-azul "2/7 · Secretos y material criptográfico de desarrollo"
+azul "2/8 · Secretos y material criptográfico de desarrollo"
 # Idempotente: respeta lo que ya esté en .env y los pares ya generados.
 ./scripts/dev-secrets.sh >/dev/null
 
@@ -116,45 +116,69 @@ azul "2/7 · Secretos y material criptográfico de desarrollo"
 mkdir -p secrets/ca-users-public
 verde "secretos, sello y TSA listos; espejo de la sub-CA preparado"
 
-azul "3/7 · Levantando la pila (perfiles dev + assistant)"
+azul "3/8 · Levantando la pila (perfiles dev + assistant)"
 docker compose --profile dev --profile assistant up -d --build
 docker build -q -t orpycamcp-scripts:dev -f scripts/Dockerfile scripts/ >/dev/null
 verde "contenedores arriba e imagen de guiones construida"
 
-azul "4/7 · Esperando a que el gateway responda"
-# Se espera al GATEWAY, no a `docker compose ps`: un contenedor «running» solo
-# dice que el proceso arrancó. Lo que hace falta es que la cadena entera
-# —gateway → auth → Keycloak → Postgres— conteste, que es lo que el seed usa.
-for i in $(seq 1 90); do
-  if curl -fsS "$GATEWAY/health" >/dev/null 2>&1 || curl -fsS "$GATEWAY/docs" >/dev/null 2>&1; then
-    verde "gateway respondiendo tras ${i}0s aprox."
-    break
-  fi
-  if [[ "$i" -eq 90 ]]; then
-    rojo "El gateway no respondió. Mira: docker compose logs api-gateway keycloak"
-    exit 1
-  fi
-  sleep 10
-done
-
-# ── Los guiones corren DENTRO de la red ────────────────────────────────────
-# No es comodidad: sus valores por defecto ya son nombres internos
-# (`postgres:5432`, `keycloak:8080`) porque `seed_demo.py` habla con Postgres por
-# asyncpg y con Keycloak por su API de administración. Desde el host ninguno de
-# los dos se alcanza igual.
-#
-# El repo se monta `:ro`. `secrets/perfiles-csr` es lo ÚNICO con escritura, y va
-# con `--user $(id -u):$(id -g)` para que los archivos salgan del contenedor
-# siendo del usuario y no de root — la trampa que documenta el CLAUDE.md.
-# El nombre se DERIVA de la red que compose acaba de crear, no se escribe a
-# mano: depende del nombre del proyecto (el del directorio, o COMPOSE_PROJECT_NAME),
-# así que un clon en otra carpeta tendría otro y el guion fallaría con un
-# «network not found» que no explica nada.
+# ── El nombre de la red ────────────────────────────────────────────────────
+# Se DERIVA de la que compose acaba de crear, no se escribe a mano: depende del
+# nombre del proyecto (el del directorio, o COMPOSE_PROJECT_NAME), así que un
+# clon en otra carpeta tendría otro y esto fallaría con un «network not found»
+# que no explica nada.
 RED="$(docker network ls --format '{{.Name}}' | grep -m1 'orpycamcp-net$' || true)"
 if [[ -z "$RED" ]]; then
   rojo "No encuentro la red de la pila (…orpycamcp-net). ¿Levantó bien el paso 3?"
   exit 1
 fi
+
+azul "4/8 · Esperando a que responda lo que la siembra necesita"
+# Esperar al gateway NO basta, y esto costó un reset entero: su `/health` no
+# depende de Keycloak, así que contestaba a los 10 s mientras Keycloak seguía
+# importando el realm sobre una base recién creada. La siembra arrancaba y moría
+# con un `ConnectError` que no nombra a nadie.
+#
+# Dos correcciones, y la segunda es la de fondo:
+#   · se comprueba lo que el seed usa PRIMERO —el realm de Keycloak— además del
+#     gateway y de auth-service;
+#   · se comprueba DESDE DENTRO de la red, por los mismos nombres y puertos que
+#     usará la siembra. Una comprobación de disponibilidad que recorre otra ruta
+#     que aquello a lo que da paso no prueba nada: desde el host, por el puerto
+#     publicado, es otro camino.
+espera_dependencias() {
+  docker run --rm --network "$1" orpycamcp-scripts:dev -c '
+import sys, time, httpx
+urls = [
+    "http://keycloak:8080/realms/orpycamcp/.well-known/openid-configuration",
+    "http://auth-service:8001/health",
+    "http://api-gateway:8080/health",
+]
+limite = time.time() + 600
+pendientes = list(urls)
+while pendientes and time.time() < limite:
+    for u in list(pendientes):
+        try:
+            if httpx.get(u, timeout=5.0).status_code == 200:
+                print(f"   listo: {u}")
+                pendientes.remove(u)
+        except Exception:
+            pass
+    if pendientes:
+        time.sleep(5)
+if pendientes:
+    print("NO responden a tiempo: " + ", ".join(pendientes), file=sys.stderr)
+    sys.exit(1)
+'
+}
+
+espera_dependencias "$RED" || { rojo "Las dependencias no respondieron. Mira: docker compose logs keycloak"; exit 1; }
+verde "gateway, auth y el realm de Keycloak responden"
+
+# Los guiones corren DENTRO de la red: sus valores por defecto ya son nombres
+# internos (`postgres:5432`, `keycloak:8080`) porque hablan con Postgres por
+# asyncpg y con Keycloak por su API de administración. El repo se monta `:ro`;
+# `secrets/perfiles-csr` es lo ÚNICO con escritura, con `--user` para que lo que
+# salga sea del usuario y no de root.
 GW_INTERNO="http://api-gateway:8080"
 CSR_DIR="$RAIZ/secrets/perfiles-csr"
 mkdir -p "$CSR_DIR"
@@ -169,14 +193,25 @@ guion() {
     orpycamcp-scripts:dev "$@"
 }
 
-azul "5/7 · Tenant y recorrido base (seed_demo)"
+azul "5/8 · Creando el tenant y aplicando sus migraciones"
+# Sobre un volumen nuevo NO existe `tenant_demo`, y `seed_demo.py` da por hecho
+# que sí —su propio mensaje de error lo dice—. Sin este paso la siembra muere
+# con un 500 al pedir el primer token, después de haber creado el usuario en
+# Keycloak: un estado a medias que se lee como «Keycloak está mal».
+#
+# Corre desde el HOST porque así está escrito `init-tenant.sh`, que orquesta
+# `docker compose exec` sobre los servicios.
+./scripts/init-tenant.sh demo "Demo" DEMO >/dev/null
+verde "tenant «demo» inicializado con todas las migraciones"
+
+azul "6/8 · Tenant y recorrido base (seed_demo)"
 guion scripts/seed_demo.py --gateway "$GW_INTERNO"
 
-azul "6/7 · Volumen y variedad (seed_corpus)"
+azul "7/8 · Volumen y variedad (seed_corpus)"
 guion scripts/seed_corpus.py --gateway "$GW_INTERNO" \
   --radicados "$RADICADOS" --expedientes "$EXPEDIENTES" --terceros "$TERCEROS"
 
-azul "7/7 · Segundo factor y credenciales de firma por perfil"
+azul "8/8 · Segundo factor y credenciales de firma por perfil"
 # Fase 1 (contenedor): TOTP de todos y CSR de quien lleva credencial.
 # `tee /dev/tty` NO: en CI (`--si`) o bajo `nohup` no hay terminal y el paso
 # entero se cae justo al final, después de haber reconstruido todo. Se usa un

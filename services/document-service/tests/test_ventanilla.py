@@ -32,6 +32,7 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from starlette.datastructures import UploadFile
 
 from app.clients.storage_client import ArchivoSubido
 
@@ -338,3 +339,42 @@ async def test_radicar_SIN_anexos_sigue_siendo_valido(client_with_conn) -> None:
 
     assert resp.status_code == 201, resp.text
     assert mock_create.await_args.args[0].anexos == []
+
+
+@pytest.mark.asyncio
+async def test_un_anexo_gigante_no_llega_entero_a_memoria(client_with_conn) -> None:
+    """El tope de tamaño se aplica ANTES de traer el fichero a memoria.
+
+    Es el gemelo del test de número, que ya existía. La puerta es anónima: si el
+    rechazo llega después de leer, un solo multipart grande basta para tumbar la
+    radicación de la entidad, y el 422 no evita nada porque el coste ya se pagó.
+
+    La aserción NO puede ser solo el 422 —el código defectuoso también respondía
+    422— así que se mide lo que de verdad distingue: cuántos bytes se leyeron.
+    """
+    from app.core.anexos_publicos import MAX_BYTES_POR_ANEXO
+
+    client, _ = client_with_conn
+    gigante = PDF + b"\x00" * (MAX_BYTES_POR_ANEXO + 4096)
+
+    leidos: list[int] = []
+    original = UploadFile.read
+
+    async def read_contando(self, size: int = -1):  # type: ignore[no-untyped-def]
+        datos = await original(self, size)
+        leidos.append(len(datos))
+        return datos
+
+    with patch.object(UploadFile, "read", read_contando):
+        with patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
+            resp = await client.post(
+                BASE, **_multipart(_cuerpo(), [("enorme.pdf", gigante, "application/pdf")])
+            )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "anexo_rechazado"
+    mock_up.assert_not_awaited()
+    assert all(n <= MAX_BYTES_POR_ANEXO + 1 for n in leidos), (
+        f"se trajo a memoria el anexo entero antes de rechazarlo: {leidos} bytes; "
+        "el tope llegó tarde y la puerta anónima sigue siendo un vector de caída"
+    )

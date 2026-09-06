@@ -235,23 +235,62 @@ async def radicar_en_ventanilla(
         ) from exc
 
     # Se leen aquí, dentro del request, porque `UploadFile` se cierra al
-    # terminar; y se acota el número ANTES de leer, para no pagar el traslado a
-    # memoria de una subida que se va a rechazar.
-    from app.core.anexos_publicos import MAX_ANEXOS
+    # terminar. El ORDEN es la mitad de la defensa: número y tamaño se comprueban
+    # ANTES de traer un solo byte a memoria, y la lectura va acotada.
+    #
+    # Antes se acotaba solo el NÚMERO y a continuación se hacía `await a.read()`
+    # sin tope: los cinco ficheros enteros entraban en RAM y el 422 por tamaño
+    # llegaba cuando el daño ya estaba hecho. Como la puerta es anónima, bastaba
+    # un multipart grande para tumbar la radicación de la entidad. El gemelo
+    # correcto ya existía en storage-service (`_reject_if_too_large`), que mira
+    # `file.size` antes de leer; ese criterio no había llegado hasta aquí.
+    from app.core.anexos_publicos import (
+        MAX_ANEXOS,
+        MAX_BYTES_POR_ANEXO,
+        AnexoRechazado,
+        validar_conjunto,
+    )
+
+    def _rechazar(mensaje: str) -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "anexo_rechazado", "detail": mensaje, "status": 422},
+        )
 
     if len(anexos) > MAX_ANEXOS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "anexo_rechazado",
-                "detail": (
-                    f"Se admiten como máximo {MAX_ANEXOS} archivos por radicación; "
-                    f"se enviaron {len(anexos)}."
-                ),
-                "status": 422,
-            },
+        raise _rechazar(
+            f"Se admiten como máximo {MAX_ANEXOS} archivos por radicación; "
+            f"se enviaron {len(anexos)}."
         )
-    ficheros = [(a.filename or "anexo", await a.read()) for a in anexos]
+
+    # Starlette ya spooled cada parte y conoce su tamaño, así que este chequeo es
+    # gratis y evita el traslado de una subida que se va a rechazar.
+    declarados = [a.size for a in anexos]
+    if all(t is not None for t in declarados):
+        try:
+            validar_conjunto([t for t in declarados if t is not None])
+        except AnexoRechazado as exc:
+            raise _rechazar(str(exc)) from exc
+
+    # Lectura ACOTADA. El chequeo anterior depende de que el parser declare el
+    # tamaño; este no depende de nada, así que el consumo de memoria queda
+    # limitado aunque `size` venga vacío. Se pide un byte de más justamente para
+    # poder distinguir «cabe justo» de «se pasa».
+    ficheros: list[tuple[str, bytes]] = []
+    for anexo in anexos:
+        contenido = await anexo.read(MAX_BYTES_POR_ANEXO + 1)
+        if len(contenido) > MAX_BYTES_POR_ANEXO:
+            raise _rechazar(
+                f"Cada archivo puede pesar como máximo "
+                f"{MAX_BYTES_POR_ANEXO // (1024 * 1024)} MB."
+            )
+        ficheros.append((anexo.filename or "anexo", contenido))
+
+    # El tope del conjunto se reafirma aquí sobre los bytes REALES leídos.
+    try:
+        validar_conjunto([len(contenido) for _, contenido in ficheros])
+    except AnexoRechazado as exc:
+        raise _rechazar(str(exc)) from exc
 
     schema = tenant_schema(tenant)
     await conn.execute(f'SET search_path = "{schema}", public')
