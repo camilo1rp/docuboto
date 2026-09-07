@@ -258,15 +258,18 @@ services:
 
   api-gateway:
     build:
-      context: ../services/api-gateway
-      dockerfile: Dockerfile
+      # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
     # Sin container_name fijo: este servicio escala (deploy.replicas), los nombres
     # deben ser únicos por réplica (Compose los genera como proyecto-servicio-N).
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
       KEYCLOAK_CLIENT_ID: api-gateway
@@ -324,9 +327,11 @@ services:
     container_name: orpycamcp-auth-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
       KEYCLOAK_CLIENT_ID: auth-service
@@ -391,6 +396,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -429,9 +435,19 @@ services:
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      # Custodia de las credenciales de los buzones institucionales. Sin ella el
+      # servicio arranca pero no puede descifrar lo que guardó, y la ingesta de
+      # correo queda muerta sin decirlo. Faltaba en este manifiesto por completo.
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:?EMAIL_ENCRYPTION_KEY es obligatorio}
+      # El AÑO del número de radicado se decide aquí, no en UTC: Colombia es
+      # UTC-5 y lo radicado el 31 de diciembre por la tarde recibía el número
+      # del año siguiente, contradiciendo la fecha de su propio acuse.
+      TZ_RADICACION: ${TZ_RADICACION:-America/Bogota}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       # D-02: secreto compartido con storage-service.INTERNAL_SERVICE_TOKEN.
       # document-service MEDIA la descarga de anexos (gate por clearance vigente)
       # y necesita este token para hablar con storage. Sin él, storage responde
@@ -486,9 +502,11 @@ services:
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -554,9 +572,11 @@ services:
     container_name: orpycamcp-workflow-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -595,9 +615,11 @@ services:
     container_name: orpycamcp-archive-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       # D-02, los tres pares emisor/receptor de este servicio:
       #  - storage:   AIP, protección WORM del índice y del acta
       #  - signature: POST /internal/sign-indice (reconciliación del sellado)
@@ -643,9 +665,11 @@ services:
     container_name: orpycamcp-notification-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       SMTP_HOST: ${SMTP_HOST:?SMTP host required}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:?SMTP user required}
@@ -692,7 +716,8 @@ services:
     container_name: orpycamcp-signature-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       # En prod el navegador y los servicios usan el MISMO hostname público de
       # Keycloak (DNS real), así que el `iss` coincide sin override: expected_issuer
       # se deriva de KEYCLOAK_URL. NO se setea KEYCLOAK_ISSUER (a diferencia de dev,
@@ -707,6 +732,7 @@ services:
       # reclasificaciones — y el gate de 2FA para nivel>=2 nunca se dispara.
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       # ── Sello institucional XAdES (E06) ─────────────────────────────────────
       # SIGNER_ALLOW_DEV_SEAL y TSA_ALLOW_DEV_SEAL NO se ponen a propósito: en
       # producción un tenant sin sello propio debe fallar cerrado (503), no
@@ -770,13 +796,15 @@ services:
     container_name: orpycamcp-knowledge-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       INTERNAL_SERVICE_TOKEN: ${KNOWLEDGE_INTERNAL_TOKEN:?Knowledge internal token required}
       # Faltaba, igual que en signature: la ingesta event-driven (E21) consume
       # orpycamcp.document.events. Sin esto el índice semántico nunca se puebla y
       # el fallo es silencioso.
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net

@@ -31,6 +31,16 @@ GLOBAL_RATE_KEY = "ratelimit:global"
 # anónima que consuma numeración oficial entra aquí el día que nace.
 _RADICACION_ANONIMA_RE = re.compile(r"^/api/v1/public/[^/]+/(pqrs|ventanilla)/?$")
 
+# Cosecha anónima de interoperabilidad (OAI-PMH y CMIS). Cada petición ASIENTA en
+# la cadena de auditoría, y esa escritura toma el cerrojo por entidad que
+# serializa la cadena entera: sin cubo propio, un anónimo repitiendo consultas
+# ponía a competir por ese cerrojo a todas las escrituras de auditoría de la
+# entidad — las radicaciones incluidas. No hace falta que consiga leer nada.
+#
+# Son lecturas, así que el tope es más holgado que el de la radicación, pero
+# existe: lo caro aquí no es lo que devuelven, es lo que escriben.
+_COSECHA_ANONIMA_RE = re.compile(r"^/api/v1/public/(oai|cmis)/")
+
 # El chequeo de salud es el comando del healthcheck del contenedor y del balanceador.
 # Queda fuera del cubo GLOBAL —no del suyo por IP— para que la saturación del
 # global no vuelva «no apto» a un gateway que está perfectamente sano.
@@ -90,6 +100,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if es_radicacion_anonima:
             per_ip_limit = request.app.state.rate_limit_pqrs_per_ip
             ip_key = f"ratelimit:pqrs:{ip}:{minute}"
+        elif _COSECHA_ANONIMA_RE.match(request.url.path):
+            per_ip_limit = request.app.state.rate_limit_cosecha_per_ip
+            ip_key = f"ratelimit:cosecha:{ip}:{minute}"
 
         try:
             # El cubo por IP se resuelve PRIMERO y, si rechaza, se sale sin tocar

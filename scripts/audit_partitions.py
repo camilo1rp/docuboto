@@ -42,7 +42,7 @@ import asyncpg
 
 
 def _dsn() -> str:
-    crudo = os.environ.get("DATABASE_URL", "")
+    crudo = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
     if not crudo:
         print(
             "ERROR: DATABASE_URL no está definida. Ej.: "

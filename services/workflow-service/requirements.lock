@@ -2,7 +2,7 @@ annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anyio==4.14.2
+anyio==4.15.1
     # via
     #   httpx
     #   starlette
@@ -15,7 +15,7 @@ certifi==2026.7.22
     # via
     #   httpcore
     #   httpx
-click==8.4.2
+click==8.5.0
     # via uvicorn
 fastapi==0.141.1
     # via -r services/workflow-service/requirements.txt
@@ -29,7 +29,7 @@ httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via -r services/workflow-service/requirements.txt
-idna==3.18
+idna==3.19
     # via
     #   anyio
     #   httpx
@@ -39,15 +39,15 @@ packaging==26.3
     # via pytest
 pluggy==1.6.0
     # via pytest
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   fastapi
     #   pydantic-settings
-pydantic-core==2.46.4
+pydantic-core==2.46.5
     # via pydantic
 pydantic-settings==2.15.0
     # via -r services/workflow-service/requirements.txt
-pygments==2.20.0
+pygments==2.21.0
     # via pytest
 pytest==9.1.1
     # via
@@ -58,13 +58,15 @@ pytest-asyncio==1.4.0
     # via -r services/workflow-service/requirements.txt
 pytest-timeout==2.4.0
     # via -r services/workflow-service/requirements.txt
-python-dotenv==1.2.2
+python-dotenv==1.2.3
     # via
     #   pydantic-settings
     #   uvicorn
 pyyaml==6.0.3
     # via uvicorn
 redis==8.1.0
+    # via -r services/workflow-service/requirements.txt
+regex==2026.9.3
     # via -r services/workflow-service/requirements.txt
 starlette==1.6.0
     # via fastapi
@@ -77,16 +79,16 @@ typing-extensions==4.16.0
     #   pytest-asyncio
     #   starlette
     #   typing-inspection
-typing-inspection==0.4.2
+typing-inspection==0.4.4
     # via
     #   fastapi
     #   pydantic
     #   pydantic-settings
-uvicorn==0.52.1
+uvicorn==0.52.4
     # via -r services/workflow-service/requirements.txt
 uvloop==0.22.1
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn
-websockets==17.0.1
+websockets==17.1
     # via uvicorn

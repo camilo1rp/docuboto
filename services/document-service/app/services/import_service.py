@@ -31,9 +31,11 @@ Limitación declarada (Seg #4, namespace de numeración): el radicado reingiere 
 —importar de OTRO SGD— el `tenant_code` difiere del nativo y no hay colisión con la
 secuencia local. Si el paquete trae el `tenant_code` propio (p.ej. re-importar el propio
 export), un número importado podría chocar a futuro con la numeración nativa: el
-`UNIQUE(tracking_number)` + el savepoint por-ítem evitan corrupción, pero reconciliar
-`tracking_sequences` para que la radicación nativa salte los números importados queda
-como follow-up."""
+`UNIQUE(tracking_number)` + el savepoint por-ítem evitan corrupción, pero `tracking_sequences` se RECONCILIA al importar (ver `_reconciliar_secuencia`): el
+contador nativo se adelanta al número importado, de modo que la siguiente radicación
+salta por encima en vez de chocar. Sin eso, la unicidad evitaba la corrupción al precio
+de que la radicación siguiente FALLARA sobre un consecutivo ya consumido — y un número
+de radicado es inmutable por Ley 594, no se devuelve."""
 
 import hashlib
 import io
@@ -263,6 +265,37 @@ class ImportService:
             "antecedentes_no_resueltos": no_resueltos,
         }
 
+    async def _reconciliar_secuencia(self, *, year: int, doc_type: str, sequence: int) -> None:
+        """Adelanta el contador nativo si el número importado lo alcanza o supera.
+
+        El radicado reingresa con su número de ORIGEN. Cuando el paquete viene de
+        otro sistema el código de entidad difiere y no hay colisión posible; pero
+        al reimportar un paquete propio —una restauración, un ensayo de
+        continuidad, una migración de servidor— los números importados caen en el
+        MISMO espacio que la radicación nativa va a entregar después.
+
+        La unicidad del número evita la corrupción, sí, pero al precio de que la
+        siguiente radicación FALLE al chocar, y falle sobre un consecutivo ya
+        consumido: en Colombia un número de radicado es inmutable por Ley 594 y
+        no se devuelve. Adelantar el contador convierte ese choque en un salto,
+        que es el resultado correcto: el número importado existe, luego el
+        siguiente nativo tiene que ir por detrás de él.
+
+        Se hace por MÁXIMO y no por suma, de modo que reimportar dos veces el
+        mismo paquete no adelanta el contador dos veces.
+        """
+        await self._conn.execute(
+            """
+            INSERT INTO tracking_sequences (year, doc_type, last_seq)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (year, doc_type)
+            DO UPDATE SET last_seq = GREATEST(tracking_sequences.last_seq, EXCLUDED.last_seq)
+            """,
+            year,
+            doc_type,
+            sequence,
+        )
+
     async def _insert(self, entity, m, subidos) -> uuid.UUID:
         sist = entity.get("metadata_sistema", {})
         clasif = entity.get("clasificacion") or {}
@@ -298,6 +331,13 @@ class ImportService:
                 file_size=anexo.get("tamano_bytes"),
                 mime_type=anexo.get("mime_type"),
             )
+        # El contador nativo se adelanta DESPUÉS de insertar y dentro de la misma
+        # transacción del ítem: si la inserción se revierte por su savepoint, el
+        # contador tampoco se mueve. Adelantarlo antes dejaría huecos por
+        # radicados que al final no entraron.
+        await self._reconciliar_secuencia(
+            year=int(m.group(1)), doc_type=entity["tipo"], sequence=int(m.group(4))
+        )
         return rid
 
     async def _audit(self, import_uuid, actor, importados, omit_ex, omit_cl, no_resueltos) -> None:

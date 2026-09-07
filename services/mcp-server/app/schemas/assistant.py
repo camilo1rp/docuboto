@@ -67,6 +67,18 @@ class Propuesta(BaseModel):
     campos: list[PropuestaCampo]
     expira_en: int
     token: str
+    #: ¿El acto es irreversible? Lo decide el catálogo, no el modelo.
+    #:
+    #: El preparador ya lo calculaba y lo ponía en la propuesta, y su comentario
+    #: explica para qué: «para que la tarjeta lo AVISE antes, no después». Este
+    #: esquema lo descartaba en silencio —Pydantic ignora las claves que no
+    #: declara— así que el aviso moría entre quien lo calcula y quien lo enseña.
+    #: La persona descubría que el acto no se deshace al ver la frase que se le
+    #: pedía teclear, es decir demasiado tarde para reconsiderar.
+    irreversible: bool = False
+    #: Frase exacta que hay que teclear para confirmar, cuando el acto la exige.
+    #: Se muestra en la tarjeta para que se sepa de antemano lo que se va a pedir.
+    frase_requerida: str | None = None
 
 
 class AssistantMessageResponse(BaseModel):

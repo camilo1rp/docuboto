@@ -173,9 +173,17 @@ class AnulacionRepository:
         """Aprueba/rechaza atómicamente; al aprobar marca el radicado como anulado."""
         estado = "aprobada" if aprobar else "rechazada"
         async with self._conn.transaction():
+            # La decisión se condiciona al estado PENDIENTE, dentro del propio
+            # UPDATE. Sin esa condición, dos aprobaciones simultáneas —o una
+            # aprobación sobre algo ya rechazado— se aplicaban las dos y la
+            # última ganaba, reescribiendo quién decidió y cuándo sobre un acto
+            # que ya estaba resuelto. Comprobar antes y actualizar después deja
+            # la ventana abierta entre las dos consultas; comprobar DENTRO del
+            # UPDATE hace que autorizar y mutar sean el mismo acto.
             row = await self._conn.fetchrow(
                 f"UPDATE radicado_anulacion SET estado=$2, decidido_por=$3, "
-                f"decidido_at=now(), observacion=$4 WHERE id=$1 RETURNING {_COLS}",
+                f"decidido_at=now(), observacion=$4 "
+                f"WHERE id=$1 AND estado = 'pendiente' RETURNING {_COLS}",
                 anulacion_id,
                 estado,
                 decidido_por,

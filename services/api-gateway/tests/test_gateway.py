@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.main import app
 from tests.conftest import make_validate_response, wire_upstream
 
 pytestmark = pytest.mark.asyncio
@@ -971,3 +972,31 @@ async def test_proxy_asistente_propaga_su_timeout_ampliado(test_client):
 
     assert http_client.build_request.call_args.kwargs["timeout"] == settings.assistant_proxy_timeout
     assert http_client.build_request.call_args.kwargs["timeout"] is not httpx.USE_CLIENT_DEFAULT
+
+
+async def test_el_catalogo_no_es_publico_por_omision(test_client):
+    """En producción el catálogo describe la superficie entera de la plataforma.
+
+    Incluye los siete servicios que agrega, sus esquemas y los endpoints
+    internos que el ruteo retira a propósito. Servirlo sin credenciales es
+    entregar el mapa que un atacante tendría que levantar a mano, y la plantilla
+    de nginx solo restringe la ruta de disponibilidad.
+    """
+    client, _, _ = test_client
+    app.state.openapi_publico = False
+    try:
+        for ruta in ("/api/v1/openapi.json", "/docs", "/openapi.json"):
+            respuesta = await client.get(ruta)
+            assert respuesta.status_code == 401, f"{ruta} se sirve sin credenciales"
+    finally:
+        app.state.openapi_publico = True
+
+
+async def test_la_disponibilidad_sigue_siendo_publica(test_client):
+    """El balanceador no tiene credenciales: cerrar de más lo dejaría fuera."""
+    client, _, _ = test_client
+    app.state.openapi_publico = False
+    try:
+        assert (await client.get("/health")).status_code == 200
+    finally:
+        app.state.openapi_publico = True

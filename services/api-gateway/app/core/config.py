@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     # trivial agujerea la numeración oficial de la entidad de forma permanente.
     rate_limit_pqrs_per_ip: int = 5
 
+    #: Tope para la cosecha anónima de interoperabilidad (OAI-PMH, CMIS).
+    #:
+    #: Son lecturas, pero cada una escribe un asiento de auditoría, y esa
+    #: escritura toma el cerrojo que serializa la cadena de la entidad. Sin tope
+    #: propio, repetirlas ponía a competir por ese cerrojo a todas las escrituras
+    #: de auditoría de la entidad, radicaciones incluidas.
+    rate_limit_cosecha_per_ip: int = 30
+
     # TTL (segundos) de la caché de `GET /auth/validate` en el gateway. Corto a
     # propósito: no hay invalidación por revocación, así que este número ES la
     # ventana durante la cual un token revocado seguiría siendo aceptado. Se acota
@@ -114,6 +122,28 @@ class Settings(BaseSettings):
     # lo rechazara después. La radicación externa admite 25 MiB de anexos: 32 MiB
     # deja holgura para el resto del multipart sin habilitar nada más.
     max_public_body_bytes: int = 32 * 1024 * 1024
+
+    # Tope para la SUBIDA de anexos. El destino acepta 100 MiB y rechaza el
+    # resto con 413, pero ese rechazo llega cuando el cuerpo entero ya se ha
+    # escrito en el disco del contenedor: el análisis del multipart vuelca la
+    # parte a un fichero temporal ANTES de que el endpoint pueda mirar su tamaño.
+    # Con el tope general de 512 MiB, cada petición rechazada costaba medio giga
+    # de disco, y el limitador permite cien por minuto. El gateway lo corta antes
+    # de reenviar, con el mismo número que el destino admite más un margen para
+    # el resto del multipart.
+    max_upload_body_bytes: int = 110 * 1024 * 1024
+
+    # ¿Se publica el catálogo agregado de la API sin autenticar?
+    #
+    # `/api/v1/openapi.json` describe la superficie ENTERA: los siete servicios
+    # que agrega, sus esquemas y los endpoints `/internal` que el ruteo retira a
+    # propósito. Servido a internet, es el mapa que un atacante tendría que
+    # levantar a mano. La plantilla de nginx solo restringe `/health/ready` por
+    # IP, así que en producción quedaba abierto.
+    #
+    # Por omisión NO. En desarrollo se enciende desde el compose, que es donde
+    # la documentación navegable hace falta.
+    openapi_publico: bool = False
 
 
 settings = Settings()

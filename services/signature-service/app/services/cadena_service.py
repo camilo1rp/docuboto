@@ -329,6 +329,14 @@ class CadenaFirmaService:
         if payload.objeto_tipo in CADENA_PAYLOAD_AUTORITATIVO:
             huella = await self._resolver_huella(payload.objeto_id)
 
+        # La comprobación previa se conserva porque da un mensaje útil, pero NO es
+        # la garantía: entre ella y el INSERT cabe otra petición. Quien de verdad
+        # impide dos cadenas abiertas sobre el mismo objeto es el índice único
+        # parcial `ux_firma_solicitud_objeto_abierta`, y su violación se traduce
+        # abajo al MISMO 409. Sin esa traducción, la carrera —dos personas
+        # abriendo el circuito a la vez, que es justo lo que pasa cuando un
+        # documento se manda a firmar desde dos pantallas— terminaba en un 500
+        # que se lee como avería del sistema en lugar de como «ya está abierto».
         if await self._repo.existe_abierta(payload.objeto_tipo, payload.objeto_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -343,16 +351,34 @@ class CadenaFirmaService:
             )
 
         async with self._conn.transaction():
-            sol = await self._repo.crear_solicitud(
-                {
-                    "objeto_tipo": payload.objeto_tipo,
-                    "objeto_id": payload.objeto_id,
-                    "titulo": payload.titulo,
-                    "payload_sha256": huella,
-                    "creado_por": actor,
-                    "nivel_seguridad": nivel,
-                }
-            )
+            try:
+                sol = await self._repo.crear_solicitud(
+                    {
+                        "objeto_tipo": payload.objeto_tipo,
+                        "objeto_id": payload.objeto_id,
+                        "titulo": payload.titulo,
+                        "payload_sha256": huella,
+                        "creado_por": actor,
+                        "nivel_seguridad": nivel,
+                    }
+                )
+            except asyncpg.UniqueViolationError as exc:
+                # Perdió la carrera contra otra petición: el índice único parcial
+                # hizo su trabajo. Se responde lo MISMO que la comprobación
+                # previa, porque para quien lo pidió es el mismo hecho —ya hay un
+                # circuito abierto— y un 500 le haría buscar una avería que no
+                # existe.
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "cadena_existente",
+                        "detail": (
+                            f"El objeto de tipo «{payload.objeto_tipo}» ya tiene una "
+                            "cadena de firma abierta"
+                        ),
+                        "status": 409,
+                    },
+                ) from exc
             await self._repo.crear_turnos(sol["id"], payload.firmantes, payload.roles)
             if _AUDIT_AVAILABLE:
                 await _audit.append(

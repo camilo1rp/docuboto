@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # transcripción — cualquiera tendría que inventarse lo que la persona dijo, y
     # ese texto acabaría en un documento oficial. Ver `app/services/stt.py`.
     stt_provider: str = "disabled"
+    # Token del gate D-02 de whisper-service. Sin él, la transcripción responde
+    # 403: ese servicio dejó de estar abierto a cualquiera de la red interna.
+    whisper_internal_token: str = ""
     # `whisper-service` corre bajo el perfil `assistant` de Compose y arranca
     # desactivado: es un servicio pesado y una instalación mínima no lo necesita.
     whisper_url: str = "http://whisper-service:8012"

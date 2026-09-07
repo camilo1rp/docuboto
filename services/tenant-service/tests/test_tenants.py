@@ -34,10 +34,11 @@ async def test_create_tenant_success(client_with_conn: tuple[AsyncClient, AsyncM
     client, mock_conn = client_with_conn
     record = make_tenant_record(slug="icetex", name="Instituto ICETEX", code="ICETEX")
 
-    # exists_slug → None (not taken), exists_code → None (not taken)
-    # fetchrow for INSERT RETURNING → record
-    # execute for CREATE SCHEMA → None
-    mock_conn.fetchval.side_effect = [None, None]
+    # exists_slug → None (libre), exists_code → None (libre), y la tercera es la
+    # consulta que pregunta si existe el rol de aplicación: al crear el esquema
+    # hay que concederle su USO, porque los privilegios por omisión cubren las
+    # tablas de dentro pero no el esquema en sí.
+    mock_conn.fetchval.side_effect = [None, None, 1]
     mock_conn.fetchrow.return_value = record
 
     response = await client.post(
@@ -402,3 +403,53 @@ async def test_sin_token_configurado_rechaza_todo(
 
     assert response.status_code == 401
     assert response.json()["detail"]["error"] == "internal_access_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_el_alta_concede_el_uso_del_esquema_al_rol_de_aplicacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Dar de alta una entidad sin este permiso la deja rota desde el primer uso.
+
+    Los privilegios por omisión alcanzan a las TABLAS que se crean dentro, no al
+    esquema en sí. Se comprobó ejecutándolo: con los permisos concedidos sobre
+    todo lo existente, cualquier esquema nuevo seguía siendo inaccesible.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [None, None, 1]  # libre, libre, el rol existe
+    mock_conn.fetchrow.return_value = make_tenant_record(slug="nueva", name="Entidad Nueva", code="NUEVA")
+
+    await client.post(
+        "/api/v1/tenants",
+        json={"slug": "nueva", "name": "Entidad Nueva", "code": "NUEVA"},
+        headers=INTERNAL_HEADERS,
+    )
+
+    sentencias = [c.args[0] for c in mock_conn.execute.await_args_list if c.args]
+    assert any("CREATE SCHEMA" in s for s in sentencias)
+    assert any(
+        "GRANT USAGE ON SCHEMA" in s and "orpycamcp_app" in s for s in sentencias
+    ), f"el esquema nuevo quedó sin permiso de uso: {sentencias}"
+
+
+@pytest.mark.asyncio
+async def test_sin_rol_de_aplicacion_el_alta_sigue_funcionando(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """El reparto de roles es opcional: un despliegue que aún no lo activó no se rompe.
+
+    Conceder a un rol inexistente abortaría el alta de la entidad.
+    """
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [None, None, None]  # libre, libre, NO existe el rol
+    mock_conn.fetchrow.return_value = make_tenant_record(slug="otra", name="Otra Entidad", code="OTRA")
+
+    resp = await client.post(
+        "/api/v1/tenants",
+        json={"slug": "otra", "name": "Otra Entidad", "code": "OTRA"},
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201
+    sentencias = [c.args[0] for c in mock_conn.execute.await_args_list if c.args]
+    assert not any("GRANT USAGE" in s for s in sentencias)

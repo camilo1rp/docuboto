@@ -186,6 +186,12 @@ async def invoke_tool(
                 coerce_args(tool, args),
                 authorization=authorization,
                 tenant_slug=x_tenant_slug,
+                # Cada paso se reautoriza con la identidad de quien pide: el
+                # permiso agregado del procedimiento sirve para ofrecerlo, no
+                # para dar por bueno todo lo que encadena.
+                permissions=identidad.permissions,
+                is_root=identidad.is_root,
+                levels=identidad.levels,
             )
             return {
                 "tool": name,

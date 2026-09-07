@@ -71,7 +71,7 @@ async def _acquire(request: Request, tenant: str):
         raise
 
 
-def _content_disposition(filename: str) -> str:
+def _content_disposition(filename: str, disposicion: str = "inline") -> str:
     """RFC 6266 a prueba de inyección: `filename` lo controla quien subió el anexo;
     un `"`/CR/LF sin sanear rompe la cabecera (patrón de storage-service). Seg #1."""
     ascii_name = (
@@ -79,13 +79,46 @@ def _content_disposition(filename: str) -> str:
         .replace('"', "").replace("\r", "").replace("\n", "").strip()
         or "download"
     )
-    return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename or 'download')}"
+    return (
+        f"{disposicion}; filename=\"{ascii_name}\"; "
+        f"filename*=UTF-8''{quote(filename or 'download')}"
+    )
+
+
+#: Tipos que se pueden mostrar EN LÍNEA sin que el navegador ejecute nada.
+#:
+#: El tipo lo declara quien subió el anexo, y esta puerta es pública y sin
+#: autenticar. Servir en línea con el tipo declarado significaba que un anexo
+#: `text/html` —o un SVG, que también ejecuta guion— se renderizaba en el origen
+#: del sitio: guion almacenado, ejecutándose para cualquiera que abriera el
+#: enlace. La lista va por ADMISIÓN: lo que no está, se descarga.
+_MIME_EN_LINEA = frozenset(
+    {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/gif",
+        "text/plain",
+    }
+)
 
 
 def _safe_mime(mime: str | None) -> str:
     """Un mime_type con CR/LF u otro contenido no válido inyectaría la cabecera
     Content-Type → se acota a un patrón estricto (Seg #1)."""
     return mime if mime and _MIME_RE.match(mime) else "application/octet-stream"
+
+
+def _tipo_y_disposicion(mime: str | None, filename: str) -> tuple[str, str]:
+    """Tipo servido y disposición, según lo que el navegador pueda ejecutar."""
+    limpio = _safe_mime(mime)
+    if limpio in _MIME_EN_LINEA:
+        return limpio, _content_disposition(filename, "inline")
+    # Todo lo demás se DESCARGA y se sirve como binario opaco: así ni el tipo
+    # declarado ni el olfateo del navegador pueden convertirlo en algo que
+    # ejecute.
+    return "application/octet-stream", _content_disposition(filename, "attachment")
 
 
 @router.get("/api/v1/public/cmis/{tenant}", summary="CMIS repositoryInfo (E11)")
@@ -194,9 +227,17 @@ async def _stream_content(tenant: str, anexo) -> Response:
         return _err(status.HTTP_503_SERVICE_UNAVAILABLE, "storage", str(exc))
     if stream is None:  # purgado en storage → mismo 404 neutro
         return _err(404, "objectNotFound", "Objeto sin contenido o no encontrado")
+    _tipo_servido, _disposicion = _tipo_y_disposicion(
+        anexo["mime_type"], anexo["filename"]
+    )
     return StreamingResponse(
         stream.aiter_bytes(),
-        media_type=_safe_mime(anexo["mime_type"]),
-        headers={"Content-Disposition": _content_disposition(anexo["filename"])},
+        media_type=_tipo_servido,
+        headers={
+            "Content-Disposition": _disposicion,
+            # Sin esto, el navegador puede olfatear el contenido y tratarlo como
+            # algo distinto de lo que se declara, deshaciendo el recorte.
+            "X-Content-Type-Options": "nosniff",
+        },
         background=BackgroundTask(stream.aclose),
     )

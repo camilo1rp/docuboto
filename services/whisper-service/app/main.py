@@ -41,12 +41,23 @@ dicta.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import logging
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 
 from app.core.config import settings
 
@@ -103,7 +114,44 @@ async def ready(request: Request) -> dict[str, object]:
     return {"status": "ok" if cargado else "loading", "model": settings.whisper_model}
 
 
-@app.post("/transcribe", summary="Audio → texto")
+def _exigir_token_interno(x_internal_token: str = Header(default="")) -> None:
+    """Gate D-02, fail-closed. Copia del criterio de los otros cinco servicios.
+
+    Este era el único servicio interno SIN ningún gate: el comentario daba por
+    hecho que bastaba con que el gateway no lo enrutara, y eso no es una
+    frontera de seguridad sino una tabla de ruteo. Dentro de la red de
+    contenedores cualquiera podía hacerle transcribir audio arbitrario, y lo
+    hacía además como root y sin tope de tamaño.
+
+    Sin token configurado se responde 401 y no se atiende: un servicio que
+    escucha sin saber quién debe llamarle está abierto, no «pendiente».
+    """
+    configurado = settings.internal_service_token
+    if not configurado:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "internal_token_no_configurado",
+                "detail": "El servicio no tiene token interno configurado.",
+                "status": 401,
+            },
+        )
+    if not hmac.compare_digest(x_internal_token, configurado):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "invalid_internal_token",
+                "detail": "Token de servicio interno inválido",
+                "status": 403,
+            },
+        )
+
+
+@app.post(
+    "/transcribe",
+    summary="Audio → texto",
+    dependencies=[Depends(_exigir_token_interno)],
+)
 async def transcribe(
     request: Request,
     file: UploadFile = File(...),
@@ -115,18 +163,47 @@ async def transcribe(
     había. Quien llama decide qué decirle a la persona. Inventar una frase
     plausible sería el único fallo grave posible en este servicio.
     """
+    # El tope va ANTES de traer los bytes: Starlette ya spooled la parte y
+    # conoce su tamaño, así que rechazar aquí es gratis. Leer primero y medir
+    # después sería pagar el coste entero de la subida que se va a rechazar.
+    tope = settings.max_audio_bytes
+    if file.size is not None and file.size > tope:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error": "audio_demasiado_grande",
+                "detail": f"El audio supera el máximo admitido ({tope} bytes).",
+                "status": 413,
+            },
+        )
+
+    # Lectura acotada: el chequeo anterior depende de que el parser declare el
+    # tamaño, éste no depende de nada.
+    audio = await file.read(tope + 1)
+    if len(audio) > tope:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error": "audio_demasiado_grande",
+                "detail": f"El audio supera el máximo admitido ({tope} bytes).",
+                "status": 413,
+            },
+        )
+    if not audio:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "audio_vacio", "detail": "No llegó audio."},
+        )
+
+    # El modelo se comprueba DESPUÉS del tope, y el orden importa: mientras el
+    # modelo carga —que tarda— el servicio ya está escuchando, y comprobarlo
+    # primero significaba aceptar y almacenar audios de cualquier tamaño durante
+    # justo la ventana en la que menos memoria libre hay. Lo barato va delante.
     modelo = getattr(request.app.state, "model", None)
     if modelo is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error": "modelo_no_cargado", "detail": "El modelo aún se está cargando."},
-        )
-
-    audio = await file.read()
-    if not audio:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "audio_vacio", "detail": "No llegó audio."},
         )
 
     # `faster-whisper` lee de una ruta o de un objeto tipo fichero; se escribe a

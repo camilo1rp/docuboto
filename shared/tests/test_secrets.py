@@ -12,7 +12,11 @@
 from __future__ import annotations
 
 import pytest
-from orpycamcp_common.secrets import SecretoNoConfigurado, require_secrets
+from orpycamcp_common.secrets import (
+    SecretoNoConfigurado,
+    reject_published_values,
+    require_secrets,
+)
 
 
 def test_secreto_definido_pasa():
@@ -75,3 +79,36 @@ def test_el_mensaje_nombra_todos_los_que_faltan_y_no_filtra_valores():
     # ...y ningún valor recibido acaba en el mensaje: iría a los registros.
     assert "change-me" not in mensaje
     assert "valor-bueno-y-secreto" not in mensaje
+
+
+# ---------------------------------------------------------------------------
+# `reject_published_values`: la mitad que ADMITE la ausencia
+# ---------------------------------------------------------------------------
+
+
+def test_el_secreto_ausente_es_una_postura_valida():
+    """El gate D-02 de `/api/v1/tenants` es fail-closed POR ausencia.
+
+    Sin token configurado, `require_internal_token` rechaza todas las llamadas y
+    el registro de instituciones queda inalcanzable desde la red. Exigir que
+    exista para poder arrancar invierte el modo de fallo: obliga a inventar un
+    secreto que nadie eligió, y una puerta cerrada por no tener llave pasa a
+    estar abierta con una llave de relleno.
+    """
+    reject_published_values({"TENANT_INTERNAL_TOKEN": ""}, servicio="tenant-service")
+    reject_published_values({"TENANT_INTERNAL_TOKEN": "   "}, servicio="tenant-service")
+
+
+def test_el_valor_publicado_sigue_abortando_aunque_se_admita_la_ausencia():
+    with pytest.raises(SecretoNoConfigurado) as exc:
+        reject_published_values(
+            {"TENANT_INTERNAL_TOKEN": "change-me-in-production"}, servicio="tenant-service"
+        )
+    assert "TENANT_INTERNAL_TOKEN" in str(exc.value)
+    assert "change-me-in-production" not in str(exc.value)
+
+
+def test_un_token_de_verdad_pasa():
+    reject_published_values(
+        {"TENANT_INTERNAL_TOKEN": "orpycamcp_tenant_internal_dev"}, servicio="tenant-service"
+    )

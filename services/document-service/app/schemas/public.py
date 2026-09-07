@@ -83,7 +83,12 @@ class VentanillaRadicacion(BaseModel):
     direccion: str | None = Field(default=None, max_length=500)
 
     asunto: str = Field(..., min_length=1, max_length=2000)
-    descripcion: str = Field(..., min_length=1)
+    # Tope de longitud, como el resto de campos de la misma clase. Sin él, una
+    # entrada ANÓNIMA escribía texto de cualquier tamaño en la tabla de
+    # radicados: no hay usuario a quien atribuirlo ni cuota que lo acote, y el
+    # asunto —que va al lado— sí lo tenía. 20.000 caracteres es más de lo que
+    # ocupa un derecho de petición extenso y deja el abuso fuera.
+    descripcion: str = Field(..., min_length=1, max_length=20000)
 
     @model_validator(mode="after")
     def _canal_de_respuesta_si_se_identifica(self) -> "VentanillaRadicacion":
@@ -131,7 +136,12 @@ class PqrsCreate(BaseModel):
     identificacion: str | None = Field(default=None, max_length=40)
     email: str | None = Field(default=None, max_length=255)
     asunto: str = Field(..., min_length=1, max_length=2000)
-    descripcion: str = Field(..., min_length=1)
+    # Tope de longitud, como el resto de campos de la misma clase. Sin él, una
+    # entrada ANÓNIMA escribía texto de cualquier tamaño en la tabla de
+    # radicados: no hay usuario a quien atribuirlo ni cuota que lo acote, y el
+    # asunto —que va al lado— sí lo tenía. 20.000 caracteres es más de lo que
+    # ocupa un derecho de petición extenso y deja el abuso fuera.
+    descripcion: str = Field(..., min_length=1, max_length=20000)
 
 
 class PqrsResponse(BaseModel):

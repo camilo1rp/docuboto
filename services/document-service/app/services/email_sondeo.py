@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 import asyncpg
 
 from app.core.config import settings
+from app.core.database import tenant_schema
 from app.services.email_bandeja_service import EmailBandejaService
 from app.services.email_cuenta_service import ErrorDeCuenta
 
@@ -266,7 +267,13 @@ async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str) -> None:
     while True:
         try:
             async with pool.acquire() as conn:
-                await conn.execute(f'SET search_path = "tenant_{tenant_slug}", public')
+                # El nombre del schema se compone por el ÚNICO sitio que valida
+                # el slug, no interpolando aquí. La expresión regular vive en
+                # `core.database` y es la que garantiza que el identificador cabe
+                # en los 63 bytes de PostgreSQL y no lleva nada raro; esta línea
+                # la esquivaba, así que el sondeo era el único camino del sistema
+                # que armaba un schema sin pasar por la comprobación.
+                await conn.execute(f'SET search_path = "{tenant_schema(tenant_slug)}", public')
                 resultado = await sondeo.una_vuelta(
                     conn, ahora=asyncio.get_running_loop().time()
                 )

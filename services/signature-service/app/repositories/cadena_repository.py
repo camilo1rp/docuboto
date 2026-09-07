@@ -129,6 +129,27 @@ class CadenaRepository:
             solicitud_id,
         )
 
+    async def get_solicitud_por_objeto_id(
+        self, objeto_id: str, solo_abierta: bool = True
+    ) -> asyncpg.Record | None:
+        """Busca la solicitud por el OBJETO, sin mirar el tipo que se declaró.
+
+        El identificador es un UUID y por sí solo identifica el objeto; el tipo
+        es una etiqueta del cliente. Los gates preguntan por aquí para que
+        cambiar la etiqueta no haga desaparecer un circuito abierto.
+        """
+        if solo_abierta:
+            return await self._conn.fetchrow(
+                f"SELECT {_SOL_COLS} FROM firma_solicitud "
+                "WHERE objeto_id = $1 AND estado = 'pendiente'",
+                objeto_id,
+            )
+        return await self._conn.fetchrow(
+            f"SELECT {_SOL_COLS} FROM firma_solicitud "
+            "WHERE objeto_id = $1 ORDER BY created_at DESC LIMIT 1",
+            objeto_id,
+        )
+
     async def get_solicitud_por_objeto(
         self,
         objeto_tipo: str,

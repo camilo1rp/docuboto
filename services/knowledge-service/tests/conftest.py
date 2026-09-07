@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
@@ -20,6 +21,17 @@ from httpx import ASGITransport, AsyncClient
 from app.core import config as cfg_module
 from app.core.database import get_tenant_conn
 from app.main import app
+
+# Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
+#
+# Desde que la identidad va firmada, eso es exactamente lo que el servicio
+# rechaza en producción: una petición con cabeceras de usuario que nadie firmó.
+# Aquí se corre en el modo «firma no activada», que es una configuración
+# legítima —la que tiene un despliegue que aún no puso el secreto— y no un
+# atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
+# y la comprobación contra la pila levantada.
+os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
 
 # E21 Inc.1: el default de DESPLIEGUE de `embedding_provider` es `local_st`
 # (sentence-transformers real, ver app/core/config.py) — pero la suite entera

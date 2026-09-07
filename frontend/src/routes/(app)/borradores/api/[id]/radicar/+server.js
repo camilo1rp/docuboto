@@ -19,6 +19,13 @@ import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
 /** @type {import('./$types').RequestHandler} */
+// El identificador va CODIFICADO al construir la ruta hacia el gateway.
+//
+// Sin codificar, un `?`, un `#` o un `%00` en el segmento reescriben la
+// consulta o el fragmento de la petición que este proxy emite CON EL TOKEN DEL
+// USUARIO: la ruta que el navegador pidió y la que el gateway recibe dejan de
+// ser la misma. El gateway ya rechaza esas rutas, pero eso es su defensa, no la
+// de aquí — quien construye una URL con datos de fuera la codifica.
 export async function POST({ locals, params }) {
   const token = locals.accessToken ?? "";
   if (!token) {
@@ -35,7 +42,7 @@ export async function POST({ locals, params }) {
   if (userId) headers["X-User-Id"] = userId;
 
   try {
-    const res = await fetch(`${API_V1}/borradores/${params.id}/radicar`, {
+    const res = await fetch(`${API_V1}/borradores/${encodeURIComponent(params.id)}/radicar`, {
       method: "POST",
       headers,
     });

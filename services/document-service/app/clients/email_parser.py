@@ -21,11 +21,23 @@ from __future__ import annotations
 
 import email
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import parseaddr
+
+logger = logging.getLogger(__name__)
+
+#: Topes del correo entrante. Lo escribe cualquiera de fuera y esto lo decodifica
+#: TODO a memoria; sin ellos, un solo mensaje detiene la ingesta de todos los
+#: buzones de la entidad. El cap de mensajes por vuelta no ayuda: acota cuántos
+#: se leen, no lo que cada uno pesa. Los valores acompañan a los de la ventanilla
+#: pública, que es la otra puerta por la que entra un documento sin credenciales.
+MAX_ADJUNTOS_POR_CORREO = 20
+MAX_BYTES_POR_ADJUNTO = 10 * 1024 * 1024
+MAX_BYTES_TOTAL_CORREO = 25 * 1024 * 1024
 
 # Nombre de fichero seguro para storage: sin rutas ni caracteres de control.
 # No se "limpia" un nombre peligroso conservando su forma — se sustituye, porque
@@ -141,13 +153,29 @@ def leer(crudo: bytes, *, respaldo_id: str) -> CorreoLeido:
     nombre, direccion = parseaddr(msg.get("From", ""))
 
     adjuntos: list[Adjunto] = []
+    total_bytes = 0
     if msg.is_multipart():
         for indice, parte in enumerate(msg.walk(), start=1):
             if parte.is_multipart() or not _es_adjunto(parte):
                 continue
+            if len(adjuntos) >= MAX_ADJUNTOS_POR_CORREO:
+                logger.warning(
+                    "Correo con más de %d adjuntos: se ignoran los restantes.",
+                    MAX_ADJUNTOS_POR_CORREO,
+                )
+                break
             contenido = parte.get_payload(decode=True)
             if not isinstance(contenido, bytes) or not contenido:
                 continue
+            if len(contenido) > MAX_BYTES_POR_ADJUNTO:
+                logger.warning(
+                    "Adjunto de %d bytes ignorado: supera el máximo admitido.", len(contenido)
+                )
+                continue
+            total_bytes += len(contenido)
+            if total_bytes > MAX_BYTES_TOTAL_CORREO:
+                logger.warning("El conjunto de adjuntos supera el máximo; se corta aquí.")
+                break
             adjuntos.append(
                 Adjunto(
                     nombre=_nombre_seguro(

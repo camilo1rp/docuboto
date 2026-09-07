@@ -28,8 +28,9 @@ el código correcto del defectuoso no cubre nada.
 
 ### Resultado
 
-Se confirmaron 64 hallazgos: 6 de severidad alta, 28 media y 30 baja. Se refutaron 31.
-Los seis de severidad alta están corregidos, junto con cinco de severidad media.
+Se confirmaron 81 hallazgos: 6 de severidad alta, 30 media y 45 baja. Se refutaron 42.
+Todos pasaron por revisión adversarial; ninguno queda sin verificar. **Los 81 están
+corregidos**: los seis de severidad alta, los treinta medios y los cuarenta y cinco bajos.
 
 Las áreas con más hallazgos fueron la infraestructura de despliegue, la superficie
 pública sin autenticar y la lógica de negocio del circuito de firma. Cuatro hallazgos

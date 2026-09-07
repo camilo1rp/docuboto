@@ -22,6 +22,13 @@
   cientos de asientos, y traerlos al abrir cada ficha pagaría esa consulta en
   todas las aperturas para una pregunta que casi nadie hace.
 
+  **Y dice un nombre, no un identificador.** El asiento guarda el id interno de
+  quien accedió —que es lo correcto: un `username` cambia y un asiento no se
+  toca nunca—, pero una sección titulada «quién ha visto este radicado» que
+  contesta con un UUID no contesta. El nombre se resuelve en el backend; si no
+  se puede resolver (un asiento del propio sistema, un usuario dado de baja del
+  catálogo) se cae al identificador, que dice poco pero no miente.
+
   **Si está truncado, lo dice.** Un historial de acceso incompleto presentado
   como completo es una afirmación falsa sobre quién ha visto un documento.
 -->
@@ -108,7 +115,7 @@
           <li class="hist__item">
             <span class="hist__accion">{ETIQUETA[e.action] ?? e.action}</span>
             <span class="hist__tenue">
-              {cuando(e.ts)} · {e.actor ?? "sin actor"} · vía {e.canal}
+              {cuando(e.ts)} · {e.actor_nombre ?? e.actor ?? "sin actor"} · vía {e.canal}
             </span>
           </li>
         {/each}

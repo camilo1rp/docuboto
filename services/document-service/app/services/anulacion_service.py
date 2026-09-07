@@ -218,6 +218,23 @@ class AnulacionService:
                 decidido_por=decidido_por,
                 observacion=payload.observacion,
             )
+            # Sin fila, la decisión NO ocurrió: alguien la resolvió entre la
+            # lectura y la escritura. Se corta ANTES del asiento, porque un
+            # asiento de auditoría afirmando una decisión que no se aplicó es
+            # peor que no tener ninguno: dice quién decidió qué, y es falso.
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "anulacion_ya_decidida",
+                        "detail": (
+                            "Esta solicitud de anulación ya fue resuelta por otra "
+                            "persona. Vuelva a consultarla antes de decidir."
+                        ),
+                        "status": 409,
+                    },
+                )
+
             tracking_number = await self._repo.get_tracking_number(radicado_id)
             await audit.append(
                 self._conn,

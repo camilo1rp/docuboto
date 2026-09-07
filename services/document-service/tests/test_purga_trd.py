@@ -22,6 +22,7 @@ El único camino de document-service que destruye. Lo que se prueba:
 * **El gate es `X-Internal-Token`**: nadie de fuera puede pedir una destrucción.
 """
 
+import contextlib
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -69,7 +70,16 @@ async def test_los_bytes_se_borran_ANTES_que_las_filas(mock_conn) -> None:
         return "DELETE 1"
 
     mock_conn.execute.side_effect = _execute
-    mock_conn.fetch.return_value = [{"id": RAD_A, "tracking_number": "2026-DEMO-E-000001"}]
+    # El doble responde a lo que se le PREGUNTA, no con un valor único para toda
+    # consulta. Dejó de valer el día que la purga ganó una segunda consulta —la
+    # que averigua qué anexos comparte otro radicado— y le llegaban las filas de
+    # la primera, sin la columna que esperaba.
+    async def _fetch(sql, *args, **kw):
+        if "anexos" in sql.lower() and "file_id" in sql.lower():
+            return []  # ningún fichero compartido fuera del lote
+        return [{"id": RAD_A, "tracking_number": "2026-DEMO-E-000001"}]
+
+    mock_conn.fetch.side_effect = _fetch
 
     with (
         patch(
@@ -201,3 +211,49 @@ async def test_un_radicado_que_ya_no_estaba_no_se_cuenta_ni_se_audita(mock_conn)
         if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
     ]
     assert "document.radicado_eliminado_trd" not in acciones
+
+
+@pytest.mark.asyncio
+async def test_no_se_destruyen_los_bytes_que_otro_expediente_sigue_usando(client_with_conn):
+    """El almacén deduplica por huella: dos radicados con el mismo documento
+    comparten fila de fichero, y no hay contador de referencias en ninguna parte.
+
+    Sin este recorte, disponer un expediente borraba el anexo de OTRO vigente que
+    lo referenciaba, y el segundo quedaba con una fila que ya no resuelve y una
+    descarga que devuelve el 404 neutro — indistinguible de «no existe», o sea ni
+    siquiera diagnosticable.
+    """
+    _, mock_conn = client_with_conn
+    compartido = uuid.uuid4()
+    propio = uuid.uuid4()
+    pedidos: list[list] = []
+
+    async def _fetch(sql, *args, **kw):
+        if "anexos" in sql.lower() and "file_id" in sql.lower():
+            return [{"file_id": compartido}]  # otro radicado lo referencia
+        return [{"id": RAD_A, "tracking_number": "2026-DEMO-E-000001"}]
+
+    mock_conn.fetch.side_effect = _fetch
+
+    async def _purgar(*, tenant_slug, file_ids, expediente_id, motivo, actor):
+        pedidos.append(list(file_ids))
+        return list(file_ids)
+
+    with (
+        patch(
+            "app.repositories.document_repository.DocumentRepository."
+            "list_anexos_for_radicados_internal",
+            AsyncMock(return_value={RAD_A: [_Anexo(compartido), _Anexo(propio)]}),
+        ),
+        patch("app.clients.storage_client.purgar_disposicion", _purgar),
+    ):
+        with contextlib.suppress(Exception):
+            await _servicio(mock_conn).purgar_radicados(
+                [RAD_A], expediente_id=EXP, motivo="TRD", actor=uuid.uuid4()
+            )
+
+    assert pedidos, "no se llegó a pedir la purga: la prueba no mide nada"
+    assert propio in pedidos[0], "no se purgó el anexo que sí correspondía"
+    assert compartido not in pedidos[0], (
+        "se destruyeron los bytes de un anexo que otro expediente vigente referencia"
+    )

@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 
-from app.services.dispatcher import build_request, execute
+from app.services.dispatcher import DispatchError, authorize, build_request, execute
 from app.tools.catalog import ArgError, coerce_args
 from app.tools.procedures import Procedimiento, ProcedureError, resolver_args, tool_de
 
@@ -50,8 +50,20 @@ async def ejecutar(
     *,
     authorization: str | None,
     tenant_slug: str | None,
+    permissions: set[str],
+    is_root: bool,
+    levels: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Ejecuta el procedimiento y devuelve el parte de lo ocurrido."""
+    """Ejecuta el procedimiento y devuelve el parte de lo ocurrido.
+
+    La identidad del solicitante entra aquí porque **cada paso se reautoriza**.
+    Antes se comprobaba el permiso declarado por el procedimiento COMO UN TODO, y
+    sus pasos se despachaban después sin volver a mirar nada: un procedimiento
+    con un permiso llano podía encadenar herramientas que exigen otro más alto, y
+    quien lo ejecutara haría por esa vía lo que no puede hacer directamente. El
+    permiso agregado es una comodidad para ofrecerlo, no una autorización para
+    todo lo que contiene.
+    """
     salidas: dict[str, Any] = {}
     parte: list[dict[str, Any]] = []
 
@@ -67,6 +79,28 @@ async def ejecutar(
             continue
 
         herramienta = tool_de(paso)
+
+        # Reautorización POR PASO, con la identidad de quien pidió el
+        # procedimiento. Un paso que el solicitante no podría invocar por su
+        # cuenta tampoco se ejecuta desde aquí.
+        try:
+            authorize(
+                herramienta, permissions=permissions, is_root=is_root, levels=levels
+            )
+        except DispatchError:
+            # Se devuelve un PARTE, no una excepción en bruto: quien pidió el
+            # procedimiento tiene que saber en qué paso se detuvo y por qué, y
+            # los pasos ya ejecutados quedan reflejados. El motivo no nombra el
+            # permiso que falta, por el mismo criterio de no-oráculo del resto.
+            parte.append(
+                {
+                    "paso": paso.etiqueta,
+                    "estado": "denegado",
+                    "motivo": "no tiene permiso para este paso del procedimiento",
+                }
+            )
+            return _parte(proc, parte, completado=False)
+
         try:
             crudos = resolver_args(paso, args, salidas)
             argumentos = coerce_args(herramienta, crudos)

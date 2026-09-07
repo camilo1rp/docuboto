@@ -59,6 +59,22 @@ class Settings(BaseSettings):
     service_port: int = 8003
     log_level: str = "info"
 
+    # Zona horaria con la que se decide el AÑO del número de radicado y la fecha
+    # base del plazo de respuesta.
+    #
+    # Se tomaba en UTC. Colombia es UTC-5 todo el año, así que entre las 19:00 y
+    # las 23:59 del 31 de diciembre el servidor ya estaba en el año siguiente: un
+    # radicado con fecha impresa 31/12/2026 recibía el número 2027-…-000001. El
+    # número y la fecha del acuse se contradicen, y el consecutivo del año que
+    # cierra queda cortado antes de tiempo — sobre un número que es inmutable por
+    # Ley 594.
+    #
+    # Es del DESPLIEGUE, no de la entidad, y se dice aquí para no repetir el
+    # error de declarar que algo «lo decide la entidad» y leerlo de una variable
+    # de entorno. Cuando el registro de entidades guarde su propia zona, este
+    # valor pasa a ser el respaldo.
+    tz_radicacion: str = "America/Bogota"
+
     # --- E19: cuentas de correo en base de datos ---
     #
     # Hubo una ruta heredada —las variables `IMAP_*`— que configuraba UNA sola

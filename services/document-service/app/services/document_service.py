@@ -26,14 +26,16 @@ from __future__ import annotations
 import builtins
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from orpycamcp_common import audit, events
 
 from app.clients.tenant_client import TenantServiceClient
 from app.core.clearance import resolve_caller_clearance
+from app.core.config import settings
 from app.models.document import Anexo, Radicado
 from app.repositories.audit_read import AuditReadRepository
 from app.repositories.document_repository import (
@@ -139,6 +141,25 @@ class InvalidDependenciaError(Exception):
     """El radicado referencia una dependencia inexistente o inactiva."""
 
 
+def _zona_de_radicacion() -> tzinfo:
+    """Zona horaria con la que se decide el año del radicado y la fecha base.
+
+    Un nombre inválido no puede tumbar la radicación —es un dato de despliegue,
+    no del documento—, así que se degrada a UTC dejando constancia. Lo que no se
+    hace es fallar en silencio con una zona equivocada.
+    """
+    nombre = settings.tz_radicacion
+    try:
+        return ZoneInfo(nombre)
+    except Exception:  # noqa: BLE001 — cualquier nombre inválido es el mismo caso
+        logger.warning(
+            "TZ_RADICACION=%r no es una zona horaria válida; se usa UTC. "
+            "El año del número de radicado se decidirá en UTC.",
+            nombre,
+        )
+        return UTC
+
+
 class ReclassifyForbiddenError(Exception):
     """El llamante intenta asignar un nivel de seguridad superior a su propio clearance."""
 
@@ -211,7 +232,11 @@ class DocumentService:
         payload: DocumentCreate,
         registered_by: uuid.UUID | None,
     ) -> DocumentResponse:
-        now = datetime.now(tz=UTC)
+        # El AÑO se decide en la zona horaria de radicación, no en UTC: ver
+        # `Settings.tz_radicacion`. `now` sigue siendo consciente de zona, así
+        # que lo que se guarda como instante no cambia; lo que cambia es qué día
+        # y qué año se consideran, que es lo que ve quien recibe el acuse.
+        now = datetime.now(tz=_zona_de_radicacion())
         year = now.year
 
         # No-write-up al radicar (RF-SEG-08, espejo del M3 de archive y de la

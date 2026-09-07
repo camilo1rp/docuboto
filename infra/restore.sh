@@ -45,6 +45,44 @@ if [ ! -f "$ORIGEN/OK" ]; then
     echo "El sello lo escribe backup.sh SOLO tras verificar el volcado." >&2
     exit 1
 fi
+# ── Un respaldo cifrado se descifra a un área temporal ─────────────────────
+#
+# El respaldo puede venir cifrado (ver `backup.sh`). Sin este paso, cifrar habría
+# convertido la copia en irrecuperable por el propio procedimiento de
+# restauración: media corrección, y de las peores, porque el fallo aparece el día
+# que hace falta restaurar.
+#
+# Se descifra a un directorio temporal con permisos restrictivos, que se borra
+# pase lo que pase — no se toca el respaldo original, que sigue cifrado.
+# El origen REAL se guarda antes de cualquier reasignación: el fichero de anclas
+# vive junto al respaldo, no junto a lo descifrado. Sin esto, un respaldo cifrado
+# haría buscar el ancla en un directorio temporal y la comprobación de retroceso
+# se saltaría en silencio — que es peor que no tenerla, porque parece hecha.
+ORIGEN_REAL="$ORIGEN"
+DESCIFRADO=""
+limpiar_descifrado() { [ -n "$DESCIFRADO" ] && rm -rf "$DESCIFRADO"; }
+trap limpiar_descifrado EXIT
+
+if [ -f "$ORIGEN/postgres.dump.gpg" ]; then
+    command -v gpg >/dev/null 2>&1 || { echo "ERROR: el respaldo está cifrado y falta gpg." >&2; exit 1; }
+    echo "── Descifrando el respaldo..."
+    umask 077
+    DESCIFRADO="$(mktemp -d)"
+    gpg --batch --quiet --decrypt "$ORIGEN/postgres.dump.gpg" > "$DESCIFRADO/postgres.dump" \
+        || { echo "ERROR: no se pudo descifrar el volcado." >&2; exit 1; }
+    [ -s "$DESCIFRADO/postgres.dump" ] || { echo "ERROR: el volcado descifrado está vacío." >&2; exit 1; }
+    if [ -f "$ORIGEN/minio.tar.gpg" ]; then
+        gpg --batch --quiet --decrypt "$ORIGEN/minio.tar.gpg" | tar -C "$DESCIFRADO" -xf - \
+            || { echo "ERROR: no se pudo descifrar el almacén." >&2; exit 1; }
+    fi
+    cp -p "$ORIGEN/minio-retencion.tsv" "$DESCIFRADO/" 2>/dev/null || true
+    cp -p "$ORIGEN/OK" "$DESCIFRADO/" 2>/dev/null || true
+    # A partir de aquí el resto del script trabaja sobre lo descifrado, sin
+    # saber que lo estaba: un solo camino, no dos.
+    ORIGEN="$DESCIFRADO"
+    echo "   descifrado en un área temporal"
+fi
+
 if [ ! -s "$ORIGEN/postgres.dump" ]; then
     echo "ERROR: no hay volcado de PostgreSQL en '$ORIGEN'." >&2
     exit 1
@@ -119,10 +157,84 @@ if [ -n "$RED" ]; then
     RED_ARG=(--network "${PROYECTO}_${RED}")
 fi
 
+# Credenciales por fichero, no por `-e`: con `-e` las lee cualquiera que pueda
+# hablar con el demonio de Docker.
+CREDENCIALES="$(mktemp)"
+chmod 600 "$CREDENCIALES"
+trap 'rm -f "$CREDENCIALES"; limpiar_descifrado' EXIT
+printf 'MC_HOST_orpyca=http://%s:%s@minio:9000\n' \
+    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" > "$CREDENCIALES"
+
+# ── El bloqueo se habilita ANTES del espejo, y el orden no es un detalle ────
+#
+# `mc mirror` copia objetos, no su inmutabilidad: ni el modo de retención, ni la
+# fecha hasta la que aplica, ni la retención legal. Restaurar devolvía el índice
+# electrónico firmado y las actas como objetos corrientes y borrables — y a
+# continuación el script imprimía «cadena íntegra», así que el operador terminaba
+# con un mensaje verde y una inmutabilidad que ya no existía.
+#
+# Reponerlo DESPUÉS no es posible, y esto se comprobó ejecutándolo: el bloqueo de
+# un bucket solo puede habilitarse AL CREARLO. Si el espejo llega primero, crea
+# un bucket corriente y ya no admite bloqueo nunca — habría que borrarlo y
+# empezar de cero. Por eso los buckets protegidos se crean aquí, antes.
+echo "── Rehabilitando el bloqueo de los buckets protegidos..."
+RETENCION_REPUESTA="no aplica"
+if [ ! -f "$ORIGEN/minio-retencion.tsv" ]; then
+    echo "   AVISO IMPORTANTE: este respaldo no incluye el estado de retención." >&2
+    echo "   Los objetos restaurados serán BORRABLES: la protección de solo-lectura" >&2
+    echo "   del índice electrónico y de las actas NO se restaurará. Verifíquelo" >&2
+    echo "   antes de dar el sistema por bueno." >&2
+    RETENCION_REPUESTA="NO (el respaldo no la incluía)"
+else
+    while IFS="$(printf '\t')" read -r TIPO BUCKET MODO _; do
+        [ "$TIPO" = "BUCKET" ] || continue
+        case "$MODO" in COMPLIANCE|GOVERNANCE) ;; *) continue ;; esac
+        docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
+            --entrypoint sh minio/mc -c \
+            "mc mb --with-lock orpyca/$BUCKET; mc retention set --default $MODO 1d orpyca/$BUCKET" \
+            >/dev/null 2>&1 || true
+        echo "   $BUCKET: bloqueo $MODO"
+    done < "$ORIGEN/minio-retencion.tsv"
+fi
+
+echo "── Restaurando MinIO..."
 docker run --rm "${RED_ARG[@]}" \
     -v "$ORIGEN/minio:/respaldo:ro" \
-    -e MC_HOST_orpyca="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+    --env-file "$CREDENCIALES" \
     --entrypoint sh minio/mc -c 'mc mirror --quiet --overwrite --remove /respaldo orpyca'
+
+# ── Y la retención de cada objeto ──────────────────────────────────────────
+#
+# La orden solo admite una DURACIÓN en días o años, no la fecha guardada. Se
+# calcula lo que falta desde ahora y se redondea HACIA ARRIBA: en modo de
+# cumplimiento una retención no se puede acortar, y redondear a la baja
+# debilitaría en silencio un plazo que la entidad fijó una vez. Un objeto cuya
+# retención ya venció se deja como está: reponerla sería inventar un plazo nuevo.
+if [ -f "$ORIGEN/minio-retencion.tsv" ]; then
+    echo "── Reponiendo la retención de cada objeto..."
+    REPUESTOS=0
+    while IFS="$(printf '\t')" read -r TIPO OBJETO MODO HASTA; do
+        [ "$TIPO" = "OBJETO" ] || continue
+        [ -n "$MODO" ] && [ -n "$HASTA" ] || continue
+        DIAS="$(python3 - "$HASTA" <<'PYDIAS'
+import datetime, math, sys
+try:
+    hasta = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+except ValueError:
+    raise SystemExit(0)
+faltan = (hasta - datetime.datetime.now(datetime.UTC)).total_seconds()
+if faltan > 0:
+    print(max(1, math.ceil(faltan / 86400)))
+PYDIAS
+)"
+        [ -n "$DIAS" ] || continue
+        docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
+            --entrypoint mc minio/mc retention set "$MODO" "${DIAS}d" "orpyca/$OBJETO" \
+            >/dev/null 2>&1 && REPUESTOS=$((REPUESTOS + 1)) || true
+    done < "$ORIGEN/minio-retencion.tsv"
+    echo "   $REPUESTOS objetos con su retención repuesta"
+    [ "$RETENCION_REPUESTA" = "no aplica" ] && RETENCION_REPUESTA="sí ($REPUESTOS objetos)"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Verificar la cadena de auditoría
@@ -185,6 +297,56 @@ async def main() -> int:
 
 sys.exit(asyncio.run(main()))
 PY
+
+# ---------------------------------------------------------------------------
+# 4b. ¿La traza restaurada está al día, o retrocedida?
+# ---------------------------------------------------------------------------
+#
+# La verificación de arriba comprueba que la cadena es COHERENTE consigo misma,
+# y un volcado de hace tres meses lo es perfectamente: sus hashes enlazan. Por
+# eso, restaurar un respaldo antiguo suprimía un periodo entero de la traza legal
+# y el propio script lo declaraba íntegro. Los tres controles de solo-anexar no
+# intervienen, porque protegen contra modificar y borrar, no contra reemplazar
+# la tabla.
+#
+# El ancla acumulativa que escribe el respaldo es lo que permite notar la
+# diferencia: si la cadena restaurada tiene MENOS asientos que el último extremo
+# anclado, ha retrocedido. Se dice, y el script termina en error.
+#
+# No es una garantía criptográfica frente a quien controla el host —puede
+# reescribir también el ancla—. Es lo que convierte un retroceso silencioso en
+# un segundo acto deliberado y detectable.
+
+ANCLAS="$(dirname "$ORIGEN_REAL")/anclas-auditoria.tsv"
+echo "── Comparando con el último extremo anclado..."
+if [ ! -f "$ANCLAS" ]; then
+    echo "   (sin fichero de anclas: no se puede saber si la traza retrocedió)"
+else
+    RETROCESO=0
+    # Una entidad por línea del ancla, sin la cabecera. Se toma el ÚLTIMO ancla
+    # de cada una, que es el extremo más reciente que llegó a registrarse.
+    for SLUG in $(tail -n +2 "$ANCLAS" | cut -f2 | sort -u); do
+        ULTIMO="$(grep -F "	$SLUG	" "$ANCLAS" | tail -1 | cut -f3)"
+        [ -n "$ULTIMO" ] || continue
+        AHORA="$("${COMPOSE[@]}" exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -At -c \
+            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = '$SLUG';" 2>/dev/null | tr -d '[:space:]')"
+        if [ -z "$AHORA" ]; then
+            echo "   ? $SLUG: no se pudo contar los asientos" >&2
+        elif [ "$AHORA" -lt "$ULTIMO" ]; then
+            echo "   ✗ $SLUG: la traza RETROCEDIÓ — $AHORA asientos; el último ancla decía $ULTIMO" >&2
+            RETROCESO=1
+        else
+            echo "   ✓ $SLUG: $AHORA asientos (último ancla: $ULTIMO)"
+        fi
+    done
+    if [ "$RETROCESO" = "1" ]; then
+        echo "" >&2
+        echo "   La cadena es coherente pero le FALTAN asientos respecto al último" >&2
+        echo "   respaldo registrado. Eso no es una restauración: es una supresión" >&2
+        echo "   de traza. Revise antes de dar el sistema por bueno." >&2
+        exit 1
+    fi
+fi
 
 echo "── Levantando servicios..."
 "${COMPOSE[@]}" up -d

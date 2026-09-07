@@ -19,6 +19,13 @@ import { API_V1 } from "$lib/utils/config.server.js";
 import { sanitizeHtml, attachSafeCuerpo } from "$lib/server/sanitizeHtml.js";
 
 /** @type {import('./$types').RequestHandler} */
+// El identificador va CODIFICADO al construir la ruta hacia el gateway.
+//
+// Sin codificar, un `?`, un `#` o un `%00` en el segmento reescriben la
+// consulta o el fragmento de la petición que este proxy emite CON EL TOKEN DEL
+// USUARIO: la ruta que el navegador pidió y la que el gateway recibe dejan de
+// ser la misma. El gateway ya rechaza esas rutas, pero eso es su defensa, no la
+// de aquí — quien construye una URL con datos de fuera la codifica.
 export async function GET({ locals, params }) {
   const token = locals.accessToken ?? "";
   if (!token) {
@@ -27,7 +34,7 @@ export async function GET({ locals, params }) {
   const tenant = locals.user?.tenant_slug ?? "";
 
   try {
-    const res = await fetch(`${API_V1}/borradores/${params.id}`, {
+    const res = await fetch(`${API_V1}/borradores/${encodeURIComponent(params.id)}`, {
       headers: {
         Authorization: `Bearer ${token}`,
         "X-Tenant-Slug": tenant,
@@ -72,7 +79,7 @@ export async function PATCH({ locals, params, request }) {
   payload.cuerpo = cleanCuerpo;
 
   try {
-    const res = await fetch(`${API_V1}/borradores/${params.id}`, {
+    const res = await fetch(`${API_V1}/borradores/${encodeURIComponent(params.id)}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",

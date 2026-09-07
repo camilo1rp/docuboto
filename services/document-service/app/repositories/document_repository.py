@@ -726,6 +726,37 @@ class DocumentRepository:
         )
         return tag.rsplit(" ", 1)[-1] != "0"
 
+    async def file_ids_referenciados_fuera(
+        self, file_ids: list[uuid.UUID], radicado_ids: list[uuid.UUID]
+    ) -> set[uuid.UUID]:
+        """De `file_ids`, cuáles siguen colgando de un radicado FUERA del lote.
+
+        El almacén deduplica por huella: dos radicados con el mismo documento
+        comparten fila de fichero, y no hay contador de referencias en ninguna
+        parte. La purga por disposición borraba los bytes mirando solo el
+        expediente que se dispone, así que destruía el anexo de OTRO expediente
+        vigente que lo referenciaba. El segundo quedaba con una fila que ya no
+        resuelve y una descarga que devuelve el 404 neutro — indistinguible de
+        «no existe», de modo que ni siquiera se puede diagnosticar.
+
+        La pregunta se responde AQUÍ y no en el almacén porque `anexos` es de
+        este servicio: el almacén no sabe quién referencia sus objetos, y
+        preguntárselo le exigiría mirar una tabla que no es suya.
+        """
+        if not file_ids:
+            return set()
+        filas = await self._conn.fetch(
+            """
+            SELECT DISTINCT a.file_id
+              FROM anexos a
+             WHERE a.file_id = ANY($1::uuid[])
+               AND a.radicado_id <> ALL($2::uuid[])
+            """,
+            file_ids,
+            radicado_ids,
+        )
+        return {f["file_id"] for f in filas}
+
     async def list_anexos_for_radicados_internal(
         self, radicado_ids: list[uuid.UUID], max_clearance: int | None = None
     ) -> dict[uuid.UUID, list[Anexo]]:

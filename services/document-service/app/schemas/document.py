@@ -311,6 +311,11 @@ class HistorialAccesoEntry(BaseModel):
     ts: datetime
     service: str
     actor: str | None = None
+    #: El `username` de quien accedió, resuelto desde el identificador del
+    #: asiento. Puede venir vacío —un asiento del propio sistema, o un usuario
+    #: dado de baja del catálogo— y entonces la pantalla cae al identificador:
+    #: decir menos es aceptable, inventar un nombre no.
+    actor_nombre: str | None = None
     canal: str
     #: `document.radicado_consultado` (leyó el metadato) o
     #: `document.anexo_descargado` (bajó un fichero). Son hechos distintos y la

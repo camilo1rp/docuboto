@@ -52,7 +52,14 @@ TENANT_DIR = MIGRATIONS_DIR / "tenant"
 # UNITARIO (mockeado, `--no-deps`) esa variable no está definida — la colección
 # entera de tests moría con un `KeyError: 'DATABASE_URL'` pelado, sin decir de
 # dónde venía. Al usarlo sí se exige, y con un mensaje que explica qué falta.
-_RAW_DSN = os.environ.get("DATABASE_URL", "")
+# Las migraciones se aplican con el rol PROPIETARIO, no con el de la aplicación.
+#
+# Crear tablas, índices y claves foráneas exige privilegios que el rol de la
+# aplicación no tiene ni debe tener: ése es justamente el punto de separarlos.
+# `MIGRATIONS_DATABASE_URL` es la conexión del propietario y tiene preferencia;
+# si no está, se cae a `DATABASE_URL`, que es como funcionaba antes y sigue
+# valiendo en desarrollo y en el carril de pruebas.
+_RAW_DSN = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
 DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
 
 

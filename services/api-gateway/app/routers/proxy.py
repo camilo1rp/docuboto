@@ -189,6 +189,11 @@ async def _handle_proxy(request: Request, path: str) -> Response:
     max_body_bytes = request.app.state.max_request_body_bytes
     if request.url.path.startswith("/api/v1/public/"):
         max_body_bytes = min(max_body_bytes, request.app.state.max_public_body_bytes)
+    elif request.url.path.startswith("/api/v1/storage/"):
+        # La subida de anexos no necesita el tope de la importación: acotarla
+        # aquí evita que cada rechazo por tamaño cueste medio giga de disco en
+        # el contenedor de destino, escrito antes de que nadie pueda mirarlo.
+        max_body_bytes = min(max_body_bytes, request.app.state.max_upload_body_bytes)
 
     try:
         return await proxy_request(

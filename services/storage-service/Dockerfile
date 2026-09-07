@@ -57,7 +57,13 @@ RUN pip install --no-cache-dir -r requirements.lock
 # 3) Código del servicio.
 COPY services/storage-service/ .
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005"]
+# `--no-access-log`: el registro de acceso de uvicorn incluye la CADENA DE
+# CONSULTA, y ahí viajan números de radicado, asuntos y términos de
+# búsqueda. El middleware propio de este proyecto la omite a propósito
+# —lo dice su docstring— y el de uvicorn la reponía por detrás, así que la
+# garantía escrita no se cumplía. Se apaga el de uvicorn, no el propio:
+# la traza estructurada sigue emitiéndose, sin el contenido documental.
+CMD ["uvicorn", "app.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8005"]
 
 # ─── Stage: verapdf-builder (SOLO alcanzado por el target "production") ───
 # Descarga e instala veraPDF con su instalador oficial (IzPack, modo

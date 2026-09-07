@@ -46,8 +46,18 @@ def _cliente(*respuestas: httpx.Response) -> AsyncMock:
 
 
 async def _correr(proc: Procedimiento, args: dict, cliente: AsyncMock) -> dict:
+    # La identidad entra porque cada paso se REAUTORIZA: el permiso agregado del
+    # procedimiento sirve para ofrecerlo, no para dar por bueno todo lo que
+    # contiene. Aquí se pasa como raíz para que las pruebas de este archivo sigan
+    # midiendo lo suyo —el encadenado de pasos— y no el permiso.
     return await procedure_runner.ejecutar(
-        cliente, proc, args, authorization="Bearer x", tenant_slug="demo"
+        cliente,
+        proc,
+        args,
+        authorization="Bearer x",
+        tenant_slug="demo",
+        permissions=set(),
+        is_root=True,
     )
 
 
@@ -272,3 +282,39 @@ def test_todo_argumento_del_procedimiento_SE_USA_en_algun_paso() -> None:
         declarados = {p.name for p in proc.params}
         huerfanos = declarados - usados
         assert not huerfanos, f"{proc.name}: {sorted(huerfanos)} se piden y no se usan."
+
+
+@pytest.mark.asyncio
+async def test_un_paso_que_no_puede_invocar_NO_se_ejecuta_desde_el_procedimiento():
+    """El permiso agregado sirve para OFRECER el procedimiento, no para dar por
+    bueno todo lo que contiene.
+
+    Antes se comprobaba el permiso declarado por el procedimiento como un todo y
+    sus pasos se despachaban después sin volver a mirar nada: un procedimiento
+    con un permiso llano podía encadenar herramientas que exigen otro más alto, y
+    quien lo ejecutara haría por esa vía lo que no puede hacer directamente.
+    """
+    from app.services import procedure_runner
+
+    proc = PROCEDIMIENTOS[0]
+    llamadas = []
+
+    class _Cliente:
+        async def request(self, *a, **k):
+            llamadas.append(a)
+            raise AssertionError("no debería haberse despachado ningún paso")
+
+    parte = await procedure_runner.ejecutar(
+        _Cliente(),
+        proc,
+        {},
+        authorization="Bearer x",
+        tenant_slug="demo",
+        permissions=set(),   # sin ningún permiso
+        is_root=False,
+    )
+
+    assert not llamadas, "se despachó un paso sin permiso"
+    assert parte["completado"] is False
+    estados = [p.get("estado") for p in parte.get("pasos", [])]
+    assert "denegado" in estados or "omitido" in estados, parte

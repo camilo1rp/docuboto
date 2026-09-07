@@ -40,6 +40,7 @@ Uso::
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 import json
 import logging
 from dataclasses import dataclass
@@ -76,8 +77,8 @@ def _validate_canal(canal: str) -> None:
 _INSERT_SQL = """
     INSERT INTO public.audit_log
         (tenant_slug, service, actor, canal, action, object_type, object_ref,
-         payload, prev_hash, hash)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+         payload, prev_hash, hash, ts)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
 """
 
 _LAST_HASH_SQL = """
@@ -92,6 +93,7 @@ _LAST_HASH_SQL = """
 def _canonical(
     prev_hash: str | None,
     *,
+    ts: str | None = None,
     tenant_slug: str,
     service: str,
     actor: str | None,
@@ -101,9 +103,25 @@ def _canonical(
     object_ref: str | None,
     payload: dict[str, Any],
 ) -> str:
-    """Representación determinista de la fila para el cálculo del hash."""
+    """Representación determinista de la fila para el cálculo del hash.
+
+    `ts=None` reproduce la forma ANTERIOR, la que no cubría la marca de tiempo.
+    Se conserva porque los asientos ya escritos se sellaron así y el registro es
+    de solo-anexar: no se pueden recalcular. `verify_chain` prueba la forma nueva
+    y, si no casa, la vieja — y deja constancia de cuáles siguen sin cubrir su
+    `ts`, en vez de dar por buena una garantía que esos asientos no tienen.
+
+    Por qué importa: en un registro archivístico el CUÁNDO es la mitad de la
+    prueba. Sin el `ts` dentro del sello, cambiar la fecha de un asiento —mover
+    una consulta a un documento reservado fuera del periodo que audita un
+    inspector— no rompía la cadena y la reverificación lo daba por íntegro.
+    """
+    campos: dict[str, Any] = {}
+    if ts is not None:
+        campos["ts"] = ts
     body = json.dumps(
         {
+            **campos,
             "tenant_slug": tenant_slug,
             "service": service,
             "actor": actor,
@@ -149,7 +167,16 @@ async def append(
     tenant = tenant_slug or SYSTEM_TENANT
     payload = payload or {}
 
+    # El instante lo fija la APLICACIÓN, no el DEFAULT de la tabla.
+    #
+    # No es un capricho: el sello tiene que cubrir el `ts`, y para eso lo que se
+    # sella y lo que se guarda han de ser el MISMO valor. Con `DEFAULT now()` el
+    # instante nacía después del cálculo, así que el sello no podía incluirlo —
+    # y sin él, cambiar la fecha de un asiento no rompía la cadena.
+    ts = datetime.now(UTC)
+
     fields = {
+        "ts": ts.isoformat(),
         "tenant_slug": tenant,
         "service": service,
         "actor": actor,
@@ -177,6 +204,7 @@ async def append(
             json.dumps(payload, default=str),
             prev_hash,
             row_hash,
+            ts,
         )
     return row_hash
 
@@ -278,6 +306,13 @@ class ResultadoCadena:
     #: Se cuentan igual: un registro masivamente corrupto no puede parecer que
     #: tiene exactamente 100 problemas.
     roturas_omitidas: int = 0
+    #: Asientos sellados con la forma ANTERIOR, la que no cubría su marca de
+    #: tiempo. No son roturas —su sello es correcto para la forma con que se
+    #: escribieron— pero sobre ellos no se puede afirmar que la fecha esté
+    #: protegida. Decir «cadena íntegra» sin distinguirlos daría por probado un
+    #: CUÁNDO que nadie selló, y en un registro archivístico el cuándo es la
+    #: mitad de la prueba.
+    sin_ts_sellado: int = 0
 
     @property
     def ok(self) -> bool:
@@ -329,44 +364,88 @@ async def verify_chain(conn: asyncpg.Connection, tenant_slug: str) -> ResultadoC
     vez de parar en la primera rotura **no lo empeora**: las filas ya se traían
     todas.)
     """
-    rows = await conn.fetch(
-        """
-        SELECT id, service, actor, canal, action, object_type, object_ref,
-               payload, prev_hash, hash
-        FROM public.audit_log
-        WHERE tenant_slug = $1
-        ORDER BY id ASC
-        """,
-        tenant_slug,
-        timeout=3600.0,
-    )
+    # Se recorre POR LOTES, con cursor, en vez de traer el registro entero.
+    #
+    # Antes se hacía un `fetch` de todas las filas del tenant —nueve columnas,
+    # incluido el `payload`— materializando la lista completa, y con un plazo
+    # explícito de una hora que anulaba a propósito el del pool. Sobre un archivo
+    # con años de historia eso es cientos de megabytes en el proceso de
+    # autenticación, y el endpoint que lo dispara está al alcance de cualquier
+    # administrador: una consulta barata pidiendo trabajo sin techo.
+    #
+    # El cursor mantiene la propiedad que importa —recorrer en orden y enlazar
+    # cada fila con la anterior— sin que el coste dependa del tamaño del
+    # registro. El plazo de una hora ya no hace falta y se retira: era la señal
+    # de que algo se estaba pidiendo mal.
     prev_hash: str | None = None
     roturas: list[RoturaCadena] = []
     omitidas = 0
-    for row in rows:
-        payload = row["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        expected = compute_hash(
-            prev_hash,
-            tenant_slug=tenant_slug,
-            service=row["service"],
-            actor=row["actor"],
-            canal=row["canal"],
-            action=row["action"],
-            object_type=row["object_type"],
-            object_ref=row["object_ref"],
-            payload=payload,
+    sin_ts_sellado = 0
+    total = 0
+
+    async with conn.transaction():
+        cursor = conn.cursor(
+            """
+            SELECT id, ts, service, actor, canal, action, object_type, object_ref,
+                   payload, prev_hash, hash
+            FROM public.audit_log
+            WHERE tenant_slug = $1
+            ORDER BY id ASC
+            """,
+            tenant_slug,
         )
-        motivos = []
-        if expected != row["hash"]:
-            motivos.append("hash")
-        if row["prev_hash"] != prev_hash:
-            motivos.append("prev_hash")
-        if motivos:
-            if len(roturas) < MAX_ROTURAS_REPORTADAS:
-                roturas.append(RoturaCadena(id=row["id"], motivo="+".join(motivos)))
-            else:
-                omitidas += 1
-        prev_hash = row["hash"]
-    return ResultadoCadena(total=len(rows), roturas=tuple(roturas), roturas_omitidas=omitidas)
+        async for row in cursor:
+            total += 1
+            payload = row["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            comunes = {
+                "tenant_slug": tenant_slug,
+                "service": row["service"],
+                "actor": row["actor"],
+                "canal": row["canal"],
+                "action": row["action"],
+                "object_type": row["object_type"],
+                "object_ref": row["object_ref"],
+                "payload": payload,
+            }
+            # Forma vigente: el sello cubre el instante.
+            expected = compute_hash(prev_hash, ts=row["ts"].isoformat(), **comunes)
+
+            if expected != row["hash"]:
+                # Forma ANTERIOR, la que no cubría el `ts`. Se acepta porque esos
+                # asientos se sellaron así y el registro es de solo-anexar: no se
+                # pueden recalcular. Pero se CUENTAN, para no afirmar sobre ellos
+                # una garantía que no tienen — decir «cadena íntegra» sin más
+                # daría por protegida una fecha que nadie selló.
+                legado = compute_hash(prev_hash, **comunes)
+                if legado == row["hash"]:
+                    expected = legado
+                    sin_ts_sellado += 1
+
+            motivos = []
+            if expected != row["hash"]:
+                motivos.append("hash")
+            if row["prev_hash"] != prev_hash:
+                motivos.append("prev_hash")
+            if motivos:
+                if len(roturas) < MAX_ROTURAS_REPORTADAS:
+                    roturas.append(RoturaCadena(id=row["id"], motivo="+".join(motivos)))
+                else:
+                    omitidas += 1
+            prev_hash = row["hash"]
+
+    if sin_ts_sellado:
+        logger.info(
+            "verify_chain %s: %d de %d asientos usan la forma anterior de sello, "
+            "que NO cubre su marca de tiempo.",
+            tenant_slug,
+            sin_ts_sellado,
+            total,
+        )
+    return ResultadoCadena(
+        total=total,
+        roturas=tuple(roturas),
+        roturas_omitidas=omitidas,
+        sin_ts_sellado=sin_ts_sellado,
+    )

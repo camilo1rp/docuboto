@@ -16,6 +16,7 @@ signatura topográfica derivada de la ruta + código, y vínculo N:M expediente�
 
 from __future__ import annotations
 
+import logging
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
@@ -105,6 +106,21 @@ def _not_found(detail: str) -> HTTPException:
         status_code=status.HTTP_404_NOT_FOUND,
         detail={"error": "not_found", "detail": detail, "status": 404},
     )
+
+
+logger = logging.getLogger(__name__)
+
+#: Tope de filas del inventario documental.
+#:
+#: El FUID no paginaba ni acotaba, y sobre un archivo real son decenas de miles
+#: de expedientes, cada uno con su recuento de consultas resuelto por una
+#: subconsulta sobre el registro de auditoría; la variante XML además construye
+#: el documento entero en memoria.
+#:
+#: Alto a propósito: un inventario legítimo es grande, y recortarlo de más
+#: produciría un FUID INCOMPLETO con aspecto de correcto, que en un instrumento
+#: archivístico es peor que negarse.
+MAX_FILAS_FUID = 50_000
 
 
 class FisicoService:
@@ -462,12 +478,23 @@ class FisicoService:
         # `CLEARANCE_SIN_RESTRICCION` explícito, sin resolver `caller_clearance`.
         if max_clearance is None:
             max_clearance = await self._archive.caller_clearance(user_id)
+        # Se pide UNA fila de más para poder distinguir «cabe justo» de «se
+        # pasa», y decirlo en la respuesta en vez de entregar un inventario
+        # recortado con aspecto de completo.
         rows = await self._repo.fuid_inventory(
             ubicacion_id=ubicacion_id,
             trd_serie_id=trd_serie_id,
             expediente_id=expediente_id,
             max_clearance=max_clearance,
+            limite=MAX_FILAS_FUID,
         )
+        truncado = len(rows) > MAX_FILAS_FUID
+        if truncado:
+            rows = rows[:MAX_FILAS_FUID]
+            logger.warning(
+                "FUID truncado a %d filas: el inventario completo es mayor.",
+                MAX_FILAS_FUID,
+            )
         fuid_rows = [FuidRow(orden=i, **dict(r)) for i, r in enumerate(rows, start=1)]
         return FuidResponse(
             cabecera=FuidCabecera(

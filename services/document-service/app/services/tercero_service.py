@@ -380,7 +380,7 @@ class TerceroService:
     ) -> dict:
         """Consolida dos fichas en una. **Irreversible.**
 
-        Cuatro guardas, y ninguna es de adorno:
+        Cinco guardas, y ninguna es de adorno:
 
         1. **No fusionar consigo mismo.** Un identificador repetido por error
            marcaría la ficha como fusionada en sí misma y la haría desaparecer
@@ -392,7 +392,15 @@ class TerceroService:
            el destino de un vínculo dependiera de recorrer una cadena, y una
            cadena con un ciclo colgaría al lector. Se fusiona siempre contra
            una ficha viva.
-        4. **Atómico con su asiento**: repunte + marca + `audit.append` en una
+        4. **Documentos distintos no se fusionan.** Si las dos fichas traen
+           número de documento, `ux_tercero_documento` (UNIQUE sobre tipo +
+           número entre las fichas vivas) garantiza que no coinciden — y dos
+           documentos distintos son dos personas. La base ya afirmaba que
+           coincidir en documento es ser la misma ficha; lo que faltaba era usar
+           la otra mitad de esa afirmación justo donde el acto no tiene vuelta. Si uno está mal capturado, se
+           corrige el documento y después se fusiona — parar es barato,
+           destruir una identidad no tiene vuelta.
+        5. **Atómico con su asiento**: repunte + marca + `audit.append` en una
            sola transacción. Una fusión sin traza es un cambio en el catálogo de
            una entidad sin autor ni fecha.
         """
@@ -431,6 +439,23 @@ class TerceroService:
                         "status": 409,
                     },
                 )
+
+        doc_sup = (superviviente["numero_documento"] or "").strip()  # type: ignore[index]
+        doc_abs = (absorbido["numero_documento"] or "").strip()  # type: ignore[index]
+        if doc_sup and doc_abs and doc_sup != doc_abs:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "documentos_distintos",
+                    "detail": (
+                        f"«{superviviente['nombre']}» tiene documento {doc_sup} y "  # type: ignore[index]
+                        f"«{absorbido['nombre']}» tiene {doc_abs}: son dos personas "
+                        "distintas, no un duplicado. Si uno está mal capturado, "
+                        "corrige el documento antes de fusionar"
+                    ),
+                    "status": 409,
+                },
+            )
 
         async with self._conn.transaction():
             heredados = await self._repo.fusionar(

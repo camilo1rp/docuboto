@@ -8,3 +8,11 @@ python-multipart>=0.0.18
 # que son varios GB de imagen para el mismo trabajo. Este corre en CPU y es lo
 # que permite que una entidad transcriba sin GPU.
 faster-whisper>=1.0.0
+
+# Pruebas. Este servicio no tenía ninguna, y esa ausencia es parte de por qué se
+# desvió del resto: fue el único que quedó sin gate servicio-a-servicio, sin tope
+# de tamaño y corriendo como root. Un servicio sin suite no tiene dónde caerse
+# cuando alguien lo cambia.
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0

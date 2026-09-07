@@ -113,9 +113,10 @@ class WhisperLocal(SttProvider):
 
     nombre = "whisper"
 
-    def __init__(self, url: str, timeout: float) -> None:
+    def __init__(self, url: str, timeout: float, token: str = "") -> None:
         self._url = url.rstrip("/")
         self._timeout = timeout
+        self._token = token
 
     async def transcribir(
         self, audio: bytes, *, nombre_fichero: str, mime: str, idioma: str
@@ -126,6 +127,7 @@ class WhisperLocal(SttProvider):
                     "/transcribe",
                     files={"file": (nombre_fichero, audio, mime)},
                     data={"language": idioma},
+                    headers={"X-Internal-Token": self._token},
                 )
         except httpx.RequestError as exc:
             # Se distingue de «no configurado»: aquí SÍ está activado y no
@@ -155,7 +157,9 @@ class WhisperLocal(SttProvider):
         )
 
 
-def build_stt_provider(nombre: str, *, whisper_url: str, timeout: float) -> SttProvider:
+def build_stt_provider(
+    nombre: str, *, whisper_url: str, timeout: float, whisper_token: str = ""
+) -> SttProvider:
     """Fábrica. Un nombre desconocido cae en `disabled`, no en el más capaz.
 
     Un error tipográfico en `STT_PROVIDER` tiene que dejar el sistema sin
@@ -163,5 +167,5 @@ def build_stt_provider(nombre: str, *, whisper_url: str, timeout: float) -> SttP
     eligió.
     """
     if nombre.strip().lower() == "whisper":
-        return WhisperLocal(whisper_url, timeout)
+        return WhisperLocal(whisper_url, timeout, whisper_token)
     return SttDeshabilitado()

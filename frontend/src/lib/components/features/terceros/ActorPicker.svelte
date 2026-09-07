@@ -284,6 +284,15 @@
     Con el cupo lleno el buscador desaparece en vez de rechazar después: un
     remitente es UNO, y dejar buscar para luego negar hace descubrir el límite
     chocando con él.
+
+    **Y los resultados YA LISTADOS desaparecen con él** (`{#if buscado &&
+    !completo}` más abajo). Ocultar solo el formulario dejaba en pantalla la
+    lista de la búsqueda anterior con sus botones «Añadir» vivos: pulsando ahí
+    se llegaba a «Remitente de este radicado (2)» sobre una Entrada, que es
+    justo lo que este comentario decía impedir. Lo peor era dónde se enteraba
+    uno: `ux_radicado_actor_remitente` es UNIQUE por radicado, así que el
+    segundo remitente no revienta al elegirlo sino al pulsar «Radicar», con los
+    anexos ya subidos y el formulario entero relleno.
   -->
   {#if !completo}
     <div class="dest__buscador">
@@ -303,7 +312,7 @@
     </p>
   {/if}
 
-  {#if buscado}
+  {#if buscado && !completo}
     {#if resultados.length === 0}
       <EmptyState
         icon="fas fa-user-slash"

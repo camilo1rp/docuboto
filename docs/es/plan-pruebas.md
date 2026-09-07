@@ -219,8 +219,11 @@ Se declara como límite, no se disimula:
 - ~~**Ingesta IMAP**~~ — **cubierta desde 2026-08-28**: es el bloque B14. Dejó de estar fuera
   el día que se levantó un servidor IMAP de pruebas, que era el único motivo por el que lo estaba.
 - **OAI-PMH y CMIS** (`public_interop_enabled=False`, sin pantalla).
-- **PQRS ciudadana y verificación pública por código** — endpoints públicos **sin pantalla** en
-  `(public)/`.
+- ~~**PQRS ciudadana y verificación pública por código** — endpoints públicos **sin pantalla**~~ —
+  **cerrado**: `(public)/radicacion` consume `/{tenant}/ventanilla` y `(public)/consulta` consume
+  `/{tenant}/verify/{code}`. Se deja tachado y no borrado porque este párrafo llegó a contradecir
+  al de abajo, que ya daba los tres hallazgos por cerrados: una lista de «lo que no se cubre» que
+  no se actualiza acaba afirmando lo contrario que el texto que la sigue.
 - Callback postal HMAC, protocolo MCP externo, `indice/rebuild`, `/auth/clearance`.
 
 De esa lista salieron **tres hallazgos de producto**: capacidades que existían en el backend
@@ -752,6 +755,28 @@ rotura pone el test en rojo).
 - **Que tener un turno en un circuito dé por sí solo derecho a leer lo que se te pide aprobar.**
   Hoy la lectura se apoya en `PERM_RADI`, que es un permiso de producción documental. Se declara
   como límite, con su mensaje explícito en pantalla, en vez de disimularlo.
-- **Capacidades construidas sin puerta**, anotadas y no perseguidas:
-  `/firmas/api/documento/[documentId]` y su `/verify` existen, están probados y no los llama
-  ninguna pantalla.
+- **Capacidad construida sin puerta**, anotada y no perseguida:
+  `/firmas/api/documento/[documentId]` y su `/verify` existen, están probados y **no los llama
+  ninguna pantalla** (comprobado de nuevo el 2026-09-06). El proxy dice en su propio docstring
+  para quién se hizo —«pantallas de detalle de documento que ya calculan el hash del
+  contenido»— y esa pantalla nunca se escribió.
+
+  **Y no basta con abrirle una puerta.** Se intentó el 2026-09-06 —una sección en el detalle del
+  radicado que hashea el archivo en el navegador con WebCrypto y pregunta al `/verify`— y se
+  revirtió antes de entregarla, al comprobar dos cosas:
+
+  1. La tabla `signatures` (firmas a nivel documento) está **vacía**, y **ninguna pantalla las
+     crea**: el `POST` hermano tampoco tiene puerta. No es una capacidad sin puerta, es una
+     funcionalidad entera sin usar.
+  2. Ese `/verify` consulta `signatures`, **no** la tabla `firma` de las cadenas. Un radicado
+     firmado por el circuito de `/firmas` no aparece ahí.
+
+  Juntas, la pantalla habría contestado **«No coincide» a todos los archivos, siempre**, incluidos
+  los de radicados que SÍ están firmados: le habría dicho a un funcionario que un documento firmado
+  no lo está. Una puerta a una habitación vacía que además miente es peor que ninguna puerta.
+
+  Así que la pregunta del sexto defecto —«¿este PDF que tengo es el que se firmó?»— **sigue sin
+  respuesta en todo el sistema**: `payload_sha256` no sirve para eso (y ya lo declara), y la vía
+  que existía para responderla no está conectada por ningún extremo. Cerrarlo de verdad es una
+  decisión de producto: qué significa que un radicado esté firmado, y cuál de los dos mecanismos
+  responde.

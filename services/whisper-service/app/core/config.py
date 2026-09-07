@@ -20,6 +20,20 @@ class Settings(BaseSettings):
     service_port: int = 8012
     log_level: str = "info"
 
+    # Token del gate servicio-a-servicio (D-02). Este servicio no lo tenía: era
+    # el ÚNICO interno sin ningún gate, y aunque el gateway no lo enruta, dentro
+    # de la red de contenedores cualquiera podía hacerle transcribir. Fail-closed
+    # como sus cinco gemelos: sin token configurado NO se atiende, en vez de
+    # quedar abierto por omisión.
+    internal_service_token: str = ""
+
+    # Tope del audio, en bytes. Sin él, `await file.read()` traía a memoria lo
+    # que llegara: el servicio carga además un modelo de reconocimiento, así que
+    # es el proceso con menos memoria libre del despliegue. Un minuto de dictado
+    # ronda el medio mega; 25 MiB deja holgura de sobra para lo que la interfaz
+    # envía y acota el resto.
+    max_audio_bytes: int = 25 * 1024 * 1024
+
     # `small` es el equilibrio para castellano en CPU: `tiny`/`base` confunden
     # nombres propios y números de radicado —justo lo que se dicta aquí— y
     # `medium`/`large` multiplican el tiempo sin GPU. Se puede cambiar por

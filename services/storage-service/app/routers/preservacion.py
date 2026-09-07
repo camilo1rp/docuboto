@@ -80,7 +80,22 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
 
 
 def _actor(request: Request) -> str | None:
-    return request.headers.get("X-Username") or request.headers.get("X-User-Id")
+    """Actor de un evento de preservación: identidad ESTABLE, con el nombre al lado.
+
+    Antes se sellaba el nombre de usuario a secas. No es forjable —lo inyecta el
+    gateway desde el token validado— pero sí es MUTABLE en el sentido que importa
+    aquí: un nombre se renombra y se reasigna, y estos eventos son metadatos de
+    preservación que han de sostenerse durante décadas. Dentro de diez años,
+    «jperez» puede ser otra persona.
+
+    Se sella el identificador, que no cambia nunca, y se acompaña del nombre para
+    que el registro siga siendo legible sin tener que resolver un UUID a mano.
+    """
+    uid = request.headers.get("X-User-Id")
+    nombre = request.headers.get("X-Username")
+    if uid and nombre:
+        return f"{uid} ({nombre})"
+    return uid or nombre
 
 
 def _actor_uuid(request: Request) -> uuid.UUID | None:

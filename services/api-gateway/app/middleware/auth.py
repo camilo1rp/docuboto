@@ -14,6 +14,7 @@ import logging
 import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+from orpycamcp_common import identidad
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.client_ip import resolve_client_ip
@@ -49,29 +50,46 @@ def derive_canal(path: str) -> str:
     return "api"
 
 
+#: Rutas del CATÁLOGO de la API. No están en `PUBLIC_PATHS` porque su
+#: publicidad no es incondicional: depende de `openapi_publico`, que en
+#: producción es falso. Describen la superficie entera —los siete servicios que
+#: se agregan, sus esquemas y los endpoints internos que el ruteo retira a
+#: propósito—, así que servirlas sin autenticar es entregar el mapa que un
+#: atacante tendría que levantar a mano.
+_RUTAS_OPENAPI = frozenset(
+    {
+        "/api/v1/openapi.json",
+        "/api/v1/docs",
+        "/api/v1/redoc",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    }
+)
+
 PUBLIC_PATHS = {
     "/api/v1/auth/token",
     "/api/v1/auth/refresh",
-    "/api/v1/openapi.json",
-    "/api/v1/docs",
-    "/api/v1/redoc",
     "/health",
     # Disponibilidad: la consulta el balanceador, que no tiene credenciales.
     # No publica detalle interno — el estado de cada servicio es una palabra y
     # el motivo del fallo solo va al log (ver `routers/health.py`).
     "/health/ready",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
 }
 
 
-def _is_public(path: str) -> bool:
+def _is_public(path: str, *, openapi_publico: bool = False) -> bool:
+    """¿Se atiende esta ruta sin credenciales?
+
+    `openapi_publico` NO tiene un valor por omisión permisivo a propósito: un
+    default que significa «abierto» es la forma en que estas listas se aflojan
+    sin que nadie lo decida.
+    """
     if path in PUBLIC_PATHS:
         return True
-    # FastAPI mounts docs under /docs with sub-paths like /docs/oauth2-redirect
-    if path.startswith("/docs/"):
-        return True
+    # El catálogo solo es público si el despliegue lo declara.
+    if path in _RUTAS_OPENAPI or path.startswith("/docs/"):
+        return openapi_publico
     # Consulta pública por código de verificación (E13) — sin login.
     if path.startswith("/api/v1/public/"):
         return True
@@ -80,7 +98,10 @@ def _is_public(path: str) -> bool:
 
 class JWTValidationMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if _is_public(request.url.path):
+        if _is_public(
+            request.url.path,
+            openapi_publico=bool(getattr(request.app.state, "openapi_publico", False)),
+        ):
             return await call_next(request)
 
         authorization = request.headers.get("Authorization", "")
@@ -223,5 +244,13 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
             request, getattr(request.app.state, "trusted_proxies", "")
         ),
     }
+    # Y se FIRMAN.
+    #
+    # Sin firma, estas cabeceras son una afirmación, no una identidad: el gateway
+    # no las reenvía si vienen del cliente, así que desde fuera no se pueden
+    # forjar, pero dentro de la red cualquiera que alcance el puerto de un
+    # servicio podía hablarle diciendo ser quien quisiera y de la entidad que
+    # quisiera. Es el mismo cierre que el sobre de eventos, en la otra dirección.
+    request.state.auth_headers = identidad.firmar(request.state.auth_headers)
 
     return await call_next(request)

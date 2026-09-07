@@ -68,8 +68,25 @@ class AppOAuthCrear(BaseModel):
     proveedor: str = Field(pattern="^(gmail|microsoft)$")
     client_id: str = Field(min_length=1, max_length=255)
     client_secret: str = Field(min_length=1)
-    azure_directory_id: str | None = Field(default=None, max_length=255)
-    redirect_uri: str = Field(min_length=1, max_length=500)
+    # El identificador de directorio entra en la URL del proveedor por
+    # interpolación, así que se acota a la forma que de verdad tiene: un UUID.
+    # Sin patrón, un valor con barras o con `..` reescribía la ruta del extremo
+    # al que este servicio va a pedir un token — el mismo tipo de desajuste que
+    # la guardia de rutas del gateway persigue, en el lado de salida.
+    azure_directory_id: str | None = Field(
+        default=None,
+        max_length=36,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
+    # La dirección de retorno se acota a `https://` (o `http://localhost` para
+    # desarrollo). Sin patrón admitía cualquier cadena, incluidos esquemas que no
+    # son de web: es el valor al que el proveedor devuelve el código de
+    # autorización, así que quien lo elige elige a dónde va ese código.
+    redirect_uri: str = Field(
+        min_length=1,
+        max_length=500,
+        pattern=r"^https://[^\s]+$|^http://localhost(:\d+)?(/[^\s]*)?$",
+    )
     notas: str | None = None
 
     @model_validator(mode="after")

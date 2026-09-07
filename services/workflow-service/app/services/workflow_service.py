@@ -879,12 +879,21 @@ class WorkflowService:
         await self._validate_dept_catalog(payload.to_dept, field="to_dept")
         if payload.from_dept is not None:
             await self._validate_dept_catalog(payload.from_dept, field="from_dept")
-        step_number = await self._repo.get_next_step_number(payload.radicado_id)
+        # El número de paso se resuelve DENTRO de la transacción, más abajo, y no
+        # aquí: calcularlo antes deja una ventana en la que dos peticiones
+        # simultáneas obtienen el mismo `MAX+1`, cierran el paso activo las dos y
+        # abren dos pasos con el mismo número. El radicado acaba con dos pasos
+        # activos, y a partir de ahí «quién lo tiene» deja de tener una respuesta.
         # Atomicidad (hallazgo 2.1): cerrar el paso activo, abrir el nuevo y dejar la
         # traza forense commitean juntos. Si audit.append falla, el cambio de paso no
         # queda persistido sin auditoría (las transacciones internas de los repos
         # actúan como savepoints dentro de esta externa).
         async with self._conn.transaction():
+            # Cerrojo por RADICADO, dentro de la transacción: serializa las
+            # aperturas de paso de ESTE radicado sin bloquear las de los demás.
+            # Es el mismo patrón con el que se serializa la cadena de auditoría.
+            await self._repo.lock_radicado(payload.radicado_id)
+            step_number = await self._repo.get_next_step_number(payload.radicado_id)
             # Complete whichever step is currently active before opening a new one.
             await self._repo.complete_active_step(payload.radicado_id)
             step = await self._repo.create(

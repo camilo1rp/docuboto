@@ -23,10 +23,12 @@ normalizar. Es el único punto desde el que el defecto es observable.
 from typing import Any
 from urllib.parse import unquote
 
+import httpx
 import pytest
 
 from app.main import app
 from app.middleware.path_guard import has_dot_segments
+from tests.conftest import wire_upstream
 
 # Solo los tests que invocan la app ASGI son async; los de `has_dot_segments` son
 # sincronos, asi que la marca va por test y no global (evita el warning de
@@ -172,3 +174,40 @@ def test_rutas_legitimas_no_tienen_segmentos_punto(path: str) -> None:
 )
 def test_rutas_con_salto_se_detectan(path: str) -> None:
     assert has_dot_segments(path) is True
+
+
+async def test_la_ruta_que_se_autoriza_es_la_que_se_sirve(test_client):
+    """Un `?` o un `#` codificados cambian la ruta DESPUÉS de autorizarla.
+
+    La dirección de destino se construye concatenando la ruta ya decodificada, y
+    el cliente HTTP la vuelve a analizar como URL: a partir de ahí esos
+    caracteres delimitan consulta o fragmento, así que la ruta que el gateway
+    autorizó y la que el servicio sirve dejan de ser la misma. El registro de
+    acceso guarda la primera y el efecto lo produce la segunda.
+
+    Es la misma clase de desajuste que motivó el filtro de segmentos punto,
+    dejada abierta para otros dos caracteres.
+    """
+    client, http_client, _ = test_client
+    # Se cablea el destino para que una ruta que pase la guardia produzca una
+    # aserción legible en vez de reventar: si revienta, no se sabe cuál pasó.
+    wire_upstream(http_client, httpx.Response(status_code=200, json={"ok": True}))
+
+    for ruta in (
+        "/api/v1/public/demo/ventanilla/tipos%3Fx=1",
+        "/api/v1/public/demo/ventanilla/tipos%23x",
+        "/api/v1/public/demo/tipos%00",
+    ):
+        respuesta = await client.get(ruta)
+        assert respuesta.status_code == 400, f"{ruta} atravesó la guardia"
+        assert respuesta.json()["error"] == "invalid_path"
+
+
+async def test_una_ruta_normal_sigue_pasando(test_client):
+    """La guardia no puede rechazar lo legítimo: se comprueba con el control positivo."""
+    client, http_client, _ = test_client
+    wire_upstream(http_client, httpx.Response(status_code=200, json={"ok": True}))
+
+    respuesta = await client.get("/api/v1/public/demo/ventanilla/tipos")
+
+    assert respuesta.status_code != 400

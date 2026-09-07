@@ -88,6 +88,37 @@ def _hash_de(fila: dict, *, prev: str | None) -> str:
     )
 
 
+def _conn_con_cursor(filas):
+    """Doble de conexión que sirve un CURSOR, como hace asyncpg de verdad.
+
+    `verify_chain` dejó de traer el registro entero a memoria y ahora recorre por
+    lotes. Eso exige dos cosas que un `AsyncMock` pelado no da: `transaction()`
+    devuelve un gestor de contexto asíncrono, no una corrutina, y `cursor()`
+    devuelve algo iterable con `async for`. Un doble que no las refleja está
+    afirmando sobre la biblioteca algo que no es cierto.
+    """
+    conn = AsyncMock()
+
+    class _Cursor:
+        def __aiter__(self):
+            async def _gen():
+                for f in filas:
+                    yield f
+
+            return _gen()
+
+    class _Tx:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    conn.transaction = MagicMock(return_value=_Tx())
+    conn.cursor = MagicMock(return_value=_Cursor())
+    return conn
+
+
 @pytest.mark.asyncio
 async def test_list_audit(client: AsyncClient) -> None:
     conn = AsyncMock()
@@ -117,8 +148,7 @@ async def test_verify_ok(client: AsyncClient) -> None:
         object_ref="jperez",
         payload={},
     )
-    conn = AsyncMock()
-    conn.fetch.return_value = [_audit_row(hash=good_hash, prev_hash=None)]
+    conn = _conn_con_cursor([_audit_row(hash=good_hash, prev_hash=None)])
     _override(conn)
 
     resp = await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)
@@ -131,8 +161,7 @@ async def test_verify_ok(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_verify_broken(client: AsyncClient) -> None:
-    conn = AsyncMock()
-    conn.fetch.return_value = [_audit_row(id=7, hash="tampered", prev_hash=None)]
+    conn = _conn_con_cursor([_audit_row(id=7, hash="tampered", prev_hash=None)])
     _override(conn)
 
     resp = await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)
@@ -161,14 +190,13 @@ async def test_verify_no_se_para_en_la_primera_rotura(client: AsyncClient) -> No
     recomputado, una fila mala pintaría de rotas todas las siguientes y el
     recuento volvería a no significar nada.
     """
-    conn = AsyncMock()
     rota_7 = _audit_row(id=7, hash="tampered", prev_hash=None)
     buena_8 = _audit_row(id=8, prev_hash="tampered")
     buena_8 = {**buena_8, "hash": _hash_de(buena_8, prev="tampered")}
     rota_9 = _audit_row(id=9, hash="tampered2", prev_hash=buena_8["hash"])
     buena_10 = _audit_row(id=10, prev_hash="tampered2")
     buena_10 = {**buena_10, "hash": _hash_de(buena_10, prev="tampered2")}
-    conn.fetch.return_value = [rota_7, buena_8, rota_9, buena_10]
+    conn = _conn_con_cursor([rota_7, buena_8, rota_9, buena_10])
     _override(conn)
 
     resp = await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)

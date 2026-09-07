@@ -324,3 +324,46 @@ async def test_escritura_sin_tenant_slug_falla_en_vez_de_auditar_al_sistema() ->
 
     with pytest.raises(RuntimeError, match="tenant_slug"):
         service._audit_tenant()
+
+
+@pytest.mark.asyncio
+async def test_decidir_dos_veces_no_escribe_un_asiento_falso(client_with_conn):
+    """Si otra persona resolvió la solicitud entremedias, la decisión NO ocurre.
+
+    Antes se comprobaba el estado en una consulta y se aplicaba en otra, así que
+    dos aprobaciones simultáneas se aplicaban las dos y la última reescribía
+    quién decidió y cuándo. Ahora la condición vive DENTRO del UPDATE, y si no
+    casa ninguna fila se corta ANTES del asiento: un asiento afirmando una
+    decisión que no se aplicó es peor que no tener ninguno, porque dice quién
+    decidió qué y es falso.
+    """
+    client, mock_conn = client_with_conn
+    aid = uuid.uuid4()
+    rid = uuid.uuid4()
+
+    asientos = []
+
+    async def _fetchrow(sql, *args, **kw):
+        bajo = sql.lower()
+        if "update radicado_anulacion" in bajo:
+            return None  # otra persona la resolvió: no casa ninguna fila
+        if "select" in bajo and "radicado_anulacion" in bajo:
+            return {"id": aid, "radicado_id": rid, "estado": "pendiente", "solicitado_por": None}
+        return _clearance_row()
+
+    mock_conn.fetchrow.side_effect = _fetchrow
+
+    with patch(
+        "orpycamcp_common.audit.append",
+        AsyncMock(side_effect=lambda *a, **k: asientos.append(k.get("action"))),
+    ):
+        resp = await client.post(
+            f"/api/v1/documents/{rid}/anulacion/decidir",
+            json={"aprobar": True},
+            headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        )
+
+    assert resp.status_code in (409, 403, 404), resp.status_code
+    assert not any(a and "anulacion" in a for a in asientos), (
+        "se escribió un asiento de una decisión que no se aplicó"
+    )

@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.stt_provider,
         whisper_url=settings.whisper_url,
         timeout=settings.stt_timeout,
+        whisper_token=settings.whisper_internal_token,
     )
     if settings.stt_provider.strip().lower() != "whisper":
         logger.info(

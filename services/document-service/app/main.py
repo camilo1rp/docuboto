@@ -27,7 +27,8 @@ import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from orpycamcp_common import request_log
+from orpycamcp_common import identidad, request_log
+from orpycamcp_common import secrets as common_secrets
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -64,6 +65,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # El token servicio-a-servicio no puede traer el marcador publicado.
+    #
+    # El guardián de secretos existía y cubría tres servicios de once, así que
+    # los tokens internos —que son los que abren los endpoints sellados— podían
+    # quedarse con el valor de ejemplo del repositorio sin que nada lo dijera.
+    # Una lista de admisión que crece aparte del sistema que vigila acaba
+    # cubriendo lo que alguien recordó, no lo que hace falta.
+    common_secrets.require_secrets(
+        {"DOCUMENT_INTERNAL_TOKEN": settings.internal_service_token}, servicio="document-service"
+    )
+
     logger.info("document-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     # Cliente HTTP compartido hacia tenant-service (cálculo de días hábiles).
@@ -116,6 +128,11 @@ app = FastAPI(
 # Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
 # el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
 # escribe, que es el mismo defecto de partida movido un salto más allá.
+# La identidad que inyecta el gateway viene FIRMADA: sin esto, cualquiera
+# que alcance el puerto de este servicio dentro de la red podía hablarle
+# diciendo ser quien quisiera y de la entidad que quisiera. Va el primero
+# —o sea el más externo— porque es la decisión que precede a todas.
+app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="document-service")
 
 app.include_router(batch_router)

@@ -20,7 +20,16 @@ VALID_STATUSES = {"active", "inactive", "suspended"}
 
 
 class TenantCreate(BaseModel):
-    slug: str = Field(..., min_length=2, max_length=100)
+    # 54 y no 100: el schema se llama `tenant_{slug}`, y PostgreSQL trunca los
+    # identificadores a 63 bytes SIN avisar. Con el tope anterior, dos entidades
+    # cuyos slugs coincidieran en los primeros 56 caracteres acababan en el MISMO
+    # schema —o sea compartiendo radicados, expedientes y auditoría— y el alta de
+    # la segunda no fallaba. `tenant_` ocupa 7, así que 54 es lo que cabe.
+    #
+    # El límite ya estaba puesto en los servicios que resuelven el schema en
+    # caliente; faltaba aquí, que es donde se decide el nombre. Un tope que vive
+    # solo aguas abajo llega tarde: la entidad ya existe.
+    slug: str = Field(..., min_length=2, max_length=54)
     name: str = Field(..., min_length=2, max_length=500)
     code: str = Field(..., min_length=1, max_length=20)
     status: str = Field(default="active")

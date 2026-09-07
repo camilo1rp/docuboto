@@ -43,6 +43,16 @@ from app.services.archive_service import ArchiveService
 router = APIRouter(prefix="/api/v1/public/archive/eliminacion", tags=["public"])
 
 
+async def _tenant_existe(conn: asyncpg.Connection, slug: str) -> bool:
+    """¿Está esa entidad alojada aquí? Se pregunta al registro, no al schema."""
+    try:
+        return bool(
+            await conn.fetchval("SELECT 1 FROM public.tenants WHERE slug = $1", slug)
+        )
+    except Exception:  # noqa: BLE001 — no poder saberlo se responde como «no»
+        return False
+
+
 @router.get(
     "/{tenant}/lotes",
     response_model=list[LoteEliminacionPublico],
@@ -52,6 +62,17 @@ async def listar_publicos(
     tenant: str,
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[LoteEliminacionPublico]:
+    # Una entidad que no existe devuelve LO MISMO que una sin inventarios
+    # publicados: la lista vacía.
+    #
+    # Antes, un slug inexistente hacía fallar la consulta con un 500 y uno real
+    # devolvía 200, así que cualquiera desde fuera podía averiguar qué entidades
+    # están alojadas en la instalación probando nombres. Es el mismo criterio de
+    # respuesta indistinguible que ya rige en el resto del sistema, aplicado a la
+    # única puerta pública que se había quedado fuera.
+    if not await _tenant_existe(conn, tenant):
+        return []
+
     # El tenant viaja en la RUTA, no en una cabecera: aquí no hay sesión de la
     # que derivarlo, y es el mismo patrón que el OAI público y el callback
     # postal.

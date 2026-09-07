@@ -386,6 +386,38 @@ async def run() -> None:
             except Exception:
                 logger.warning("Fallo en trim del DLQ de notificaciones", exc_info=True)
 
+            # Caducidad de los streams de DOMINIO.
+            #
+            # Los de dead-letter ya se recortaban; los de dominio no los recortaba
+            # nadie. Y son los que llevan el contenido: el asunto y el nombre del
+            # ciudadano de cada radicación quedaban en claro, sin caducar, fuera
+            # del schema de la entidad y fuera de la Tabla de Retención Documental
+            # que gobierna todo lo demás. Un solo `XRANGE` devolvía el historial
+            # completo de radicaciones del despliegue.
+            #
+            # Va aquí, junto a los otros tres, porque comparte cadencia y porque
+            # este proceso ya es el que sabe recortar. Cada uno con su try/except:
+            # un fallo no puede bloquear a los demás.
+            #
+            # AVISO OPERATIVO: un consumidor detenido más tiempo que esta ventana
+            # pierde los eventos recortados. Por eso el valor por defecto es
+            # generoso y configurable, y por eso el recorte es por TIEMPO y no por
+            # número de entradas: con un tope de entradas la ventana dependería del
+            # volumen, y una entidad con mucho tráfico conservaría minutos.
+            for _stream_dominio in (DOCUMENT_STREAM, WORKFLOW_STREAM):
+                try:
+                    await events.trim_stream(
+                        redis,
+                        _stream_dominio,
+                        max_age_ms=settings.retention_streams_days * 86_400_000,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Fallo en el recorte del stream %s", _stream_dominio, exc_info=True
+                    )
+
             # MVP-3: evento_dead_letter terminal-row purge (ADR-021 Fase 5 Inc.2).
             # 'pending' rows are never touched — this only prunes resolved/discarded
             # rows past their grace period; independent of the two tasks above so a

@@ -105,7 +105,16 @@ except (binascii.Error, ValueError):
   [ "$veredicto" = "si" ]
 }
 
+# El fichero nace SOLO legible por su dueño, y el umask se fija antes de crearlo.
+#
+# Aquí dentro acaban las claves que cifran en reposo las credenciales de los
+# buzones institucionales y el material de firma. Con el umask habitual (022) el
+# fichero quedaba 0644: legible por cualquier cuenta de la máquina. `chmod`
+# después no basta —deja una ventana en la que el fichero ya existe abierto— y
+# por eso el umask va delante.
+umask 077
 touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
 creados=0
 for entrada in "${SECRETOS[@]}"; do
   nombre="${entrada%%:*}"

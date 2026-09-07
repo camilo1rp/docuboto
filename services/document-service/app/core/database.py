@@ -94,15 +94,47 @@ def get_redis(request: Request) -> Any:
     return request.app.state.redis
 
 
+async def _tenant_activo(conn: asyncpg.Connection, slug: str) -> bool:
+    """¿Está la entidad activa en el registro? Fail-closed ante la duda."""
+    try:
+        estado = await conn.fetchval(
+            "SELECT status FROM public.tenants WHERE slug = $1", slug
+        )
+    except Exception:  # noqa: BLE001 — no poder saberlo se responde como «no»
+        return False
+    return estado == "active"
+
+
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión con search_path al schema del tenant (X-Tenant-Slug). ADR-002/012.
 
     Las tablas de radicación viven en tenant_{slug}; `public` queda en el
     search_path para resolver el registro de tenants y las extensiones globales.
     """
-    schema = tenant_schema(request.headers.get("X-Tenant-Slug", ""))
+    slug = request.headers.get("X-Tenant-Slug", "")
+    schema = tenant_schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
+        # El ESTADO de la entidad se mira en cada petición.
+        #
+        # El registro tiene una columna `status` y ningún camino la consultaba:
+        # suspender una entidad no le retiraba el acceso, porque el schema sigue
+        # ahí y las credenciales siguen siendo válidas. Un interruptor que no
+        # apaga nada es peor que no tenerlo, porque quien lo acciona cree haber
+        # cortado el acceso.
+        #
+        # Fail-CLOSED sobre el desconocido: si el registro no responde, no se
+        # atiende. La alternativa —seguir sirviendo ante la duda— convierte una
+        # degradación de la base en una suspensión ignorada.
+        if not await _tenant_activo(conn, slug):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "tenant_inactivo",
+                    "detail": "Esta entidad no está activa en la plataforma.",
+                    "status": 403,
+                },
+            )
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
             yield conn

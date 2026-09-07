@@ -12,6 +12,8 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+from datetime import datetime
+
 import pytest
 from orpycamcp_common import audit
 
@@ -83,8 +85,16 @@ async def test_append_inserts_and_returns_hash() -> None:
     insert_call = conn.execute.await_args_list[-1]
     assert "INSERT INTO public.audit_log" in insert_call.args[0]
     # El hash insertado coincide con el devuelto.
-    assert insert_call.args[-1] == row_hash
-    assert insert_call.args[-2] is None  # prev_hash
+    # El sello ya no es el último parámetro: detrás va el INSTANTE, que ahora se
+    # fija en la aplicación para que lo sellado y lo guardado sean el mismo
+    # valor. Se afirma lo que importa —que el sello devuelto es el que se
+    # escribe, y que el instante viaja— en vez de la posición.
+    assert row_hash in insert_call.args
+    assert isinstance(insert_call.args[-1], datetime), (
+        "el asiento se guarda sin instante explícito: el sello no puede cubrirlo"
+    )
+    # prev_hash: penúltimo antes del sello, o sea tercero por la cola.
+    assert insert_call.args[-3] is None
 
 
 @pytest.mark.asyncio

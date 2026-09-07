@@ -17,6 +17,7 @@ material Reservado/Clasificado no puede ir a proveedores externos de embeddings.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import uuid
 from datetime import datetime
 from typing import Any
@@ -92,7 +93,13 @@ def _require_internal_token(
                 "status": 401,
             },
         )
-    if x_internal_token != configured:
+    # Comparación en tiempo constante, como las otras cinco copias de este gate.
+    # Ésta era la única que usaba `!=`, que corta en el primer byte distinto y
+    # filtra por tiempo cuánto prefijo del token se acertó. No es la diferencia
+    # entre seguro e inseguro por sí sola, pero sí una divergencia dentro de un
+    # control replicado: la copia que se desvía no avisa, y la próxima que se
+    # escriba mirando a ésta hereda el desvío.
+    if not hmac.compare_digest(x_internal_token, configured):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={

@@ -508,8 +508,16 @@ async def estado_circuito_internal(
     tener uno abierto (`pendiente`), o haber cerrado uno y no tener ninguno
     abierto (`completo`).
     """
+    # El gate busca por OBJETO, no por el tipo que declare quien pregunta.
+    #
+    # El identificador es un UUID, así que identifica el objeto por sí solo; el
+    # tipo es una etiqueta que elige el cliente al abrir la cadena. Filtrando por
+    # ambos, una cadena declarada con otro tipo sobre el MISMO borrador quedaba
+    # invisible para este gate: el borrador aparecía sin circuito y se radicaba
+    # con el circuito abierto. Un gate que se puede esquivar cambiando una
+    # etiqueta del propio solicitante no es un gate.
     repo = CadenaRepository(conn)
-    abierta = await repo.get_solicitud_por_objeto(objeto_tipo, objeto_id, solo_abierta=True)
+    abierta = await repo.get_solicitud_por_objeto_id(objeto_id, solo_abierta=True)
     # Se devuelve también la HUELLA que firmó el último circuito cerrado, no solo
     # el booleano de que existió. Editar un borrador ya firmado es un acto
     # legítimo y frecuente del trámite —alguien recuerda un anexo, cambia una
@@ -521,9 +529,8 @@ async def estado_circuito_internal(
     # seguían atestiguando lo contrario.
     cerrada = await conn.fetchrow(
         "SELECT payload_sha256 FROM firma_solicitud "
-        "WHERE objeto_tipo = $1 AND objeto_id = $2 AND estado = 'firmado' "
+        "WHERE objeto_id = $1 AND estado = 'firmado' "
         "ORDER BY created_at DESC LIMIT 1",
-        objeto_tipo,
         objeto_id,
     )
     return {

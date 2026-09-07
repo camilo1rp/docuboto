@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     # so 30 days is a very generous operational buffer.
     retention_dlq_days: int = Field(default=30, ge=1)
 
+    #: Días que se conservan los streams de DOMINIO antes de recortarlos.
+    #:
+    #: Llevan el asunto y el nombre del ciudadano de cada radicación, así que sin
+    #: caducidad son un almacén paralelo de datos personales fuera de la Tabla de
+    #: Retención Documental. 30 días es holgado para cualquier consumidor que
+    #: funcione, y acota la ventana de exposición a un mes en vez de para siempre.
+    #:
+    #: Un consumidor detenido más tiempo que esto pierde los eventos recortados:
+    #: por eso el valor es generoso y configurable, no un tope de entradas.
+    retention_streams_days: int = Field(default=30, ge=1)
+
     # SSRF de webhooks salientes (hallazgo Media, auditoría de seguridad — no
     # bloqueante). `WebhookCreate.url` (app/schemas/webhook.py) validaba forma,
     # no destino: cualquier admin podía suscribir un webhook a un servicio

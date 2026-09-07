@@ -453,6 +453,12 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
                 catalog.coerce_args(tool, arguments),
                 authorization=authorization,
                 tenant_slug=s["tenant"],
+                # Cada paso se reautoriza con la identidad de quien pide: el
+                # permiso agregado del procedimiento sirve para ofrecerlo, no
+                # para dar por bueno todo lo que encadena.
+                permissions=identidad.permissions,
+                is_root=identidad.is_root,
+                levels=identidad.levels,
             ),
             ensure_ascii=False,
         )

@@ -81,3 +81,35 @@ def require_secrets(secretos: dict[str, str], *, servicio: str) -> None:
             f"y no pueden traer el valor de ejemplo del repositorio: "
             f"{', '.join(sorted(faltantes))}"
         )
+
+
+def reject_published_values(secretos: dict[str, str], *, servicio: str) -> None:
+    """Aborta el arranque si un secreto trae un valor de relleno, pero **admite que falte**.
+
+    Es la mitad de `require_secrets` que aplica a los secretos cuya AUSENCIA ya
+    es una postura segura, no un olvido. El caso que la trajo: el token interno
+    de tenant-service. Sus rutas (`/api/v1/tenants`) no tienen hoy ningún
+    consumidor legítimo por HTTP —el alta la hace `scripts/init_tenant.py`
+    escribiendo directo a `public.tenants`—, así que el gate D-02 es
+    fail-closed por ausencia: sin token configurado se rechaza TODA llamada y
+    el registro de instituciones queda inalcanzable desde la red. Es el mismo
+    criterio que knowledge-service documenta en `docker-compose.yml` para su
+    `/ingest`.
+
+    Exigir presencia ahí invierte el modo de fallo: obliga a poner un secreto
+    para poder ARRANCAR, y un secreto que se pone solo para arrancar es un
+    secreto que nadie elige — con lo que la puerta que estaba cerrada por no
+    existir pasa a estar abierta con una llave de relleno. Lo que sí hay que
+    impedir es justamente eso: que el valor venga del `.env.example`.
+    """
+    contaminados = [
+        nombre
+        for nombre, valor in secretos.items()
+        if (valor or "").strip().lower() in VALORES_PROHIBIDOS
+    ]
+    if contaminados:
+        raise SecretoNoConfigurado(
+            f"{servicio}: estas variables de entorno no pueden traer el valor de "
+            f"ejemplo del repositorio (déjelas SIN definir si no se usan): "
+            f"{', '.join(sorted(contaminados))}"
+        )

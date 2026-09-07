@@ -88,6 +88,29 @@ class PurgaService:
             if a.file_id is not None
         ]
 
+        # Los bytes COMPARTIDOS con un radicado que no se dispone NO se destruyen.
+        #
+        # El almacén deduplica por huella, así que dos radicados con el mismo
+        # documento apuntan a la misma fila de fichero y no hay contador de
+        # referencias en ninguna parte. Sin este recorte, disponer un expediente
+        # borraba el anexo de OTRO vigente que lo referenciaba: el segundo
+        # quedaba con una fila que ya no resuelve y una descarga que devuelve el
+        # 404 neutro, indistinguible de «no existe» y por tanto ni siquiera
+        # diagnosticable.
+        #
+        # No altera el recuento de la lápida: lo que se cuenta son RADICADOS
+        # eliminados, y esos se eliminan igual. Lo que sobrevive son unos bytes
+        # que otro expediente vigente sigue necesitando, y que se irán con él
+        # cuando le llegue su disposición.
+        compartidos = await self._repo.file_ids_referenciados_fuera(file_ids, radicado_ids)
+        if compartidos:
+            logger.info(
+                "Disposición: %d anexo(s) no se destruyen porque otro radicado "
+                "fuera del lote los referencia.",
+                len(compartidos),
+            )
+            file_ids = [f for f in file_ids if f not in compartidos]
+
         # 1. Los bytes primero (ver la cabecera del módulo).
         purgados = await storage_client.purgar_disposicion(
             tenant_slug=self._tenant_slug,

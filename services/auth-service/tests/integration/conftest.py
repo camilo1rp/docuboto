@@ -36,7 +36,12 @@ from migrations import runner
 
 RUN_INTEGRATION = os.environ.get("RUN_INTEGRATION") == "1"
 
-_RAW_DSN = os.environ.get("DATABASE_URL", "")
+# Este carril crea PARTICIONES y esquemas, que son actos del rol PROPIETARIO, no
+# del de la aplicación. Desde que ambos están separados, conectar con el de la
+# aplicación falla con «permission denied for schema public» — y hace bien: ése
+# es exactamente el privilegio que se le quitó. Se prefiere la conexión del
+# propietario, con la de siempre como respaldo.
+_RAW_DSN = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
 DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
 
 # (allowlist fail-closed) este tier crea/destruye schemas — nunca debe correr

@@ -41,6 +41,8 @@ percent-decodificado: así ``%2e%2e`` y ``..`` se detectan por igual, sin tener
 que enumerar codificaciones.
 """
 
+from urllib.parse import unquote
+
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -48,9 +50,34 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 _DOT_SEGMENTS = {".", ".."}
 
 
+#: Caracteres que NO pueden aparecer en una ruta ya percent-decodificada.
+#:
+#: La dirección de destino se construye concatenando esta ruta, y el cliente HTTP
+#: la vuelve a analizar como URL. Un `?` o un `#` decodificados pasan entonces a
+#: delimitar la consulta o el fragmento, de modo que la ruta que el gateway
+#: AUTORIZÓ y la que el servicio SIRVE dejan de ser la misma. El registro de
+#: acceso guarda la primera; el efecto lo produce la segunda.
+#:
+#: Es la misma clase de desajuste que motivó el filtro de segmentos punto, dejada
+#: abierta para otros dos caracteres. Se cierra por ADMISIÓN de lo que puede
+#: aparecer, no enumerando lo prohibido: `%00` y compañía caen solos.
+_CARACTERES_PROHIBIDOS = frozenset({"?", "#", "\x00"})
+
+
 def has_dot_segments(path: str) -> bool:
     """True si *path* contiene algún segmento `.` o `..`."""
     return any(segment in _DOT_SEGMENTS for segment in path.split("/"))
+
+
+def tiene_caracteres_prohibidos(path: str) -> bool:
+    """True si la ruta trae un carácter que cambiaría su significado al decodificarse.
+
+    Se comprueba sobre la forma DECODIFICADA, y ése era el detalle que fallaba en
+    la primera versión: `request.url.path` conserva el `%3F` tal cual, así que
+    buscar `?` ahí no encuentra nada. Quien decodifica es el enrutador de
+    FastAPI, más abajo, y para entonces la ruta ya cambió de significado.
+    """
+    return any(c in unquote(path) for c in _CARACTERES_PROHIBIDOS)
 
 
 class PathNormalizationMiddleware(BaseHTTPMiddleware):
@@ -62,12 +89,24 @@ class PathNormalizationMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if has_dot_segments(request.url.path):
+        # Se mira `scope["path"]`, NO `request.url.path`.
+        #
+        # `request.url` reconstruye la dirección como cadena y la vuelve a
+        # analizar, y en ese viaje de ida y vuelta un `?` que estaba DENTRO de la
+        # ruta se convierte en el separador de la consulta: la comprobación no lo
+        # encontraba nunca. Es exactamente el defecto que esta guardia persigue,
+        # cometido dentro de la guardia misma — se descubrió porque la prueba
+        # seguía en rojo con la función ya correcta.
+        ruta = request.scope.get("path", "")
+        if has_dot_segments(ruta) or tiene_caracteres_prohibidos(ruta):
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": "invalid_path",
-                    "detail": "La ruta no puede contener segmentos '.' ni '..'",
+                    "detail": (
+                        "La ruta no puede contener segmentos '.' ni '..' ni los "
+                        "caracteres '?', '#' o nulos codificados."
+                    ),
                     "status": 400,
                 },
             )

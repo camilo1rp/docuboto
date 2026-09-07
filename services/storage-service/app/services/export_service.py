@@ -31,6 +31,23 @@ from app.services.aip_builder import build_zip
 from app.services.aip_service import _download
 from app.services.preservation_worm_service import FileNotFoundForPreservationError
 
+#: Tope del paquete de exportación, en bytes.
+#:
+#: El ZIP se arma ÍNTEGRO en memoria, así que el límite tiene que ser de bytes.
+#: Contar radicados —como hace el otro exportador— no acota nada: lo que llena la
+#: memoria es el peso de los anexos, no cuántos son.
+MAX_EXPORT_BYTES = 512 * 1024 * 1024
+
+
+class ExportDemasiadoGrandeError(Exception):
+    """El paquete supera el tope de bytes; no se arma a medias."""
+
+    def __init__(self, acumulado: int) -> None:
+        self.acumulado = acumulado
+        super().__init__(
+            f"el paquete alcanzó {acumulado} bytes y supera el tope {MAX_EXPORT_BYTES}"
+        )
+
 
 class ExportService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
@@ -41,16 +58,37 @@ class ExportService:
         extra, y arma el ZIP. Un `file_id` inexistente → error (el expediente
         referenciaría un anexo que no está en storage — inconsistencia real)."""
         files: dict[str, bytes] = {}
+        acumulado = 0
+
+        def _acumular(nombre: str, datos: bytes) -> None:
+            """Acumula un fichero al paquete, con tope por BYTES.
+
+            El tope del otro exportador cuenta RADICADOS, que no es lo que llena
+            la memoria: cinco mil radicados de una línea caben, y doscientos con
+            un plano escaneado cada uno no. Aquí se arma el ZIP entero en memoria,
+            así que lo que hay que acotar son los bytes.
+
+            Se corta con un error explícito en vez de recortar el paquete: un
+            expediente exportado a medias, con aspecto de completo, es peor que
+            no exportarlo — quien lo recibe no tiene forma de saber qué falta.
+            """
+            nonlocal acumulado
+            acumulado += len(datos)
+            if acumulado > MAX_EXPORT_BYTES:
+                raise ExportDemasiadoGrandeError(acumulado)
+            files[nombre] = datos
         # Archivos generados por archive (índice XML, manifiesto CSV).
         for extra in payload.extra_files:
-            files[extra.arcname] = base64.b64decode(extra.contenido_b64)
+            _acumular(extra.arcname, base64.b64decode(extra.contenido_b64))
         if payload.items:
             minio = get_minio()
             for item in payload.items:
                 record = await self._file_repo.get_by_id_any_state(item.file_id)
                 if record is None:
                     raise FileNotFoundForPreservationError(str(item.file_id))
-                files[item.arcname] = await _download(minio, record.bucket, record.object_key)
+                _acumular(
+                    item.arcname, await _download(minio, record.bucket, record.object_key)
+                )
         # checksums.txt (SHA-256 por miembro) → el receptor puede validar la
         # integridad de cada archivo entregado (constitución §5.8, Ley 594 art. 19).
         # Formato `sha256sum`: "<hex>  <arcname>". Cubre TODOS los miembros salvo

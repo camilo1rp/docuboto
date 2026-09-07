@@ -178,4 +178,36 @@ describe("el mismo selector sirve al REMITENTE de una Entrada", () => {
     expect(screen.queryByLabelText(/Buscar remitente/i)).toBeNull();
     expect(texto()).toMatch(/Ya hay remitente/i);
   });
+
+  it("y RETIRA también los resultados ya listados, con sus botones «Añadir»", async () => {
+    // Este es el defecto que el test de arriba no veía, y se encontró pulsando:
+    // al llenarse el cupo desaparecía el formulario de búsqueda, pero la lista
+    // de la búsqueda ANTERIOR seguía en pantalla con sus «Añadir» vivos. Dos
+    // clics y se llegaba a «Remitente de este radicado (2)» sobre una Entrada.
+    //
+    // Y el sitio donde se enteraba uno era el peor posible:
+    // `ux_radicado_actor_remitente` es UNIQUE por radicado, así que el segundo
+    // remitente no falla al elegirlo sino al pulsar «Radicar», con los anexos
+    // subidos y el formulario entero relleno.
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify([
+            { id: "44444444-4444-4444-8444-444444444444", nombre: "Rosa Lima" },
+            { id: "55555555-5555-4555-8555-555555555555", nombre: "Rosa Lima" },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    render(Picker, { props: { destinatarios: [], rol: "remitente", max: 1 } });
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Buscar$/i }));
+    const anadir = await screen.findAllByRole("button", { name: /^Añadir$/i });
+    expect(anadir).toHaveLength(2);
+
+    await fireEvent.click(anadir[0]);
+
+    expect(texto()).toMatch(/Remitente de este radicado \(1\)/);
+    expect(screen.queryAllByRole("button", { name: /^Añadir$/i })).toHaveLength(0);
+  });
 });

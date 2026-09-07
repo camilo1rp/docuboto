@@ -56,7 +56,10 @@ from migrations import runner
 # `tests/` completo, y ese carril corre con `--no-deps` (sin Postgres arriba, sin
 # garantía de que `DATABASE_URL` esté definida). Calcular el DSN aquí sin reventar
 # la colección, y fallar ruidoso DENTRO de los fixtures que de verdad lo necesitan.
-_RAW_DSN = os.environ.get("DATABASE_URL", "")
+# El carril de integración crea esquemas y tablas: actos del rol PROPIETARIO.
+# Con el rol de la aplicación falla —y hace bien, es el privilegio que se le
+# quitó—. Se prefiere la conexión del propietario, con la de siempre de respaldo.
+_RAW_DSN = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
 DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
 
 _INTEGRATION_DIR = Path(__file__).parent

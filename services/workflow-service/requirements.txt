@@ -7,3 +7,12 @@ pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-timeout>=2.4.0
 httpx>=0.27.0
+
+# Motor de expresiones regulares CON TOPE DE TIEMPO.
+#
+# El de la biblioteca estándar retrocede sin límite y no admite plazo: una regla
+# de distribución con retroceso desmedido tarda 43 segundos sobre 28 caracteres,
+# medido. Y el texto lo trae quien radica, así que acotar su longitud no evita
+# nada — la explosión ocurre con textos diminutos. Lo único que la acota es un
+# plazo, y  es el motor de la familia que lo ofrece.
+regex>=2024.5.15

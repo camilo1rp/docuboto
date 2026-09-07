@@ -379,15 +379,20 @@ class FisicoRepository:
         # colar en la cabecera lo que sea que haya devuelto la consulta.
         return nombre if isinstance(nombre, str) and nombre.strip() else self._tenant_slug
 
-    async def fuid_inventory(
+    async def fuid_inventory(  # noqa: PLR0913
         self,
         *,
         ubicacion_id: uuid.UUID | None,
         trd_serie_id: uuid.UUID | None,
         max_clearance: int,
         expediente_id: uuid.UUID | None = None,
+        limite: int,
     ) -> list[asyncpg.Record]:
         """Inventario derivado: expediente ↔ unidad ↔ signatura ↔ serie TRD.
+
+        `limite` es OBLIGATORIO y sin valor por omisión, por la misma razón que
+        `max_clearance`: un tope con default es un tope que se olvida, y el
+        olvido aquí no falla — devuelve todo el archivo.
 
         `max_clearance` es OBLIGATORIO y solo por keyword — mismo patrón que
         `ArchiveRepository.get_expediente_by_id` (RF-SEG-08 / RF-BUS-04): el
@@ -411,6 +416,19 @@ class FisicoRepository:
         where = f"WHERE {' AND '.join(conds)}"
         params.append(self._tenant_slug)
         tenant_pos = len(params)
+
+        # Tope de filas. El inventario no paginaba ni acotaba: sobre un archivo
+        # real son decenas de miles de expedientes, cada uno con su recuento de
+        # consultas resuelto por una subconsulta correlacionada sobre el registro
+        # de auditoría. La variante XML además construye el documento entero en
+        # memoria. Una petición barata no puede pedir trabajo sin techo.
+        #
+        # El tope es alto a propósito: un FUID legítimo es grande, y recortarlo
+        # de más produciría un inventario INCOMPLETO con aspecto de correcto, que
+        # es peor que negarse. Quien lo supere lo sabrá por `truncado`.
+        params.append(limite + 1)
+        limite_pos = len(params)
+
         return list(
             await self._conn.fetch(
                 f"""
@@ -451,7 +469,8 @@ class FisicoRepository:
                   ) c ON TRUE
                   {where}
                  ORDER BY u.signatura NULLS LAST, e.code
-                """ % {"tenant": tenant_pos},
+                 LIMIT $%(limite)d
+                """ % {"tenant": tenant_pos, "limite": limite_pos},
                 *params,
             )
         )

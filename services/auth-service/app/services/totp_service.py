@@ -23,6 +23,7 @@ evento o entrada de auditoría lo contiene jamás.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -81,6 +82,21 @@ def _step_up_invalido() -> HTTPException:
             "status": 401,
         },
     )
+
+
+def _casar_codigo(code: str, candidatos: list) -> uuid.UUID | None:
+    """Compara el código contra TODOS los candidatos. Función pura, hilo aparte.
+
+    No corta en el primer acierto a propósito: cortar filtraría por tiempo
+    cuántos códigos quedan vivos y si alguno casó.
+    """
+    encontrado: uuid.UUID | None = None
+    for fila in candidatos:
+        if verify_recovery_code(
+            code, salt=fila["code_salt"], expected_hash=fila["code_hash"]
+        ):
+            encontrado = fila["id"]
+    return encontrado
 
 
 class TotpService:
@@ -186,12 +202,21 @@ class TotpService:
         if not code:
             return False
         candidatos = await self._repo.list_available_recovery_codes(user_id)
-        encontrado: uuid.UUID | None = None
-        for fila in candidatos:
-            if verify_recovery_code(
-                code, salt=fila["code_salt"], expected_hash=fila["code_hash"]
-            ):
-                encontrado = fila["id"]
+
+        # El barrido se hace FUERA del bucle de eventos.
+        #
+        # `verify_recovery_code` deriva con scrypt de 16 MiB, y se comparan los
+        # ~10 códigos vivos para no cortar en el primer acierto. Eso es de un
+        # cuarto a medio segundo de CPU por intento, ejecutándose hasta ahora en
+        # el hilo del bucle: mientras dura, este servicio no atiende NINGUNA otra
+        # petición, ni de este usuario ni de ninguna entidad. Un puñado de
+        # intentos concurrentes con un código inventado bastaba para dejar el
+        # servicio de autenticación sin responder, sin credenciales y sin acertar
+        # nada.
+        #
+        # La comparación de TODOS los candidatos se conserva tal cual: es lo que
+        # impide distinguir por tiempo «no hay códigos» de «el código no casa».
+        encontrado = await asyncio.to_thread(_casar_codigo, code, candidatos)
         if encontrado is None:
             return False
         return await self._repo.consume_recovery_code(encontrado)

@@ -12,7 +12,7 @@
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn as get_db
@@ -105,8 +105,11 @@ async def create_rule(
 )
 async def list_rules(
     active_only: bool = False,
-    page: int = 1,
-    size: int = 50,
+    # `page` y `size` sin cota dejaban pedir una página de cualquier tamaño: el
+    # resto de listados del sistema los acota con `Query(ge=..., le=...)` y éste
+    # se había quedado fuera. Una consulta barata no puede pedir trabajo caro.
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db),
 ) -> list[WorkflowRuleResponse]:

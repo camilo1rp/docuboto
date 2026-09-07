@@ -227,3 +227,20 @@ describe("sanitizeHtml — casos borde", () => {
     expect(sanitizeHtml("<p></p>")).toBe("");
   });
 });
+
+describe("una dirección sin esquema no puede navegar fuera", () => {
+  it("bloquea las dos formas de escribir lo mismo", () => {
+    // Los navegadores normalizan la barra invertida antes de resolver, así que
+    // `\\host` lleva al mismo sitio que `//host`. Bloquear solo una dejaba la
+    // puerta abierta con cambiar un carácter.
+    for (const href of ["//evil.example/x", "\\\\evil.example/x", "/\\evil.example/x"]) {
+      const salida = sanitizeHtml(`<a href="${href}">ir</a>`);
+      expect(salida).not.toContain("evil.example");
+    }
+  });
+
+  it("las relativas y absolutas legítimas siguen pasando", () => {
+    expect(sanitizeHtml('<a href="/bandeja">ir</a>')).toContain("/bandeja");
+    expect(sanitizeHtml('<a href="https://gov.co/x">ir</a>')).toContain("gov.co");
+  });
+});

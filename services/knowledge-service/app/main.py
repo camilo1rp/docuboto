@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import events, request_log
+from orpycamcp_common import events, identidad, request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -145,6 +145,11 @@ app = FastAPI(
 # Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
 # el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
 # escribe, que es el mismo defecto de partida movido un salto más allá.
+# La identidad que inyecta el gateway viene FIRMADA: sin esto, cualquiera
+# que alcance el puerto de este servicio dentro de la red podía hablarle
+# diciendo ser quien quisiera y de la entidad que quisiera. Va el primero
+# —o sea el más externo— porque es la decisión que precede a todas.
+app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service")
 
 app.include_router(knowledge_router)

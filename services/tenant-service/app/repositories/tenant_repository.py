@@ -40,6 +40,35 @@ class TenantRepository:
         schema_name = f"tenant_{slug.replace('-', '_')}"
         await self._conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
 
+        # El rol de la aplicación necesita USAR el esquema nuevo.
+        #
+        # Los privilegios por omisión (migración 008) cubren las TABLAS que se
+        # creen dentro, pero no el permiso de uso del esquema en sí: sin esta
+        # línea, la entidad se da de alta sin ruido y falla en su primera
+        # consulta, ya en producción. Se comprobó ejecutándolo — conceder sobre
+        # lo existente no alcanza a lo que aún no existe.
+        #
+        # Va aquí, en el mismo acto que crea el esquema, y no como paso aparte
+        # del despliegue: un permiso que depende de que alguien se acuerde es el
+        # que se olvida.
+        if await self._existe_rol_app():
+            await self._conn.execute(
+                f'GRANT USAGE ON SCHEMA "{schema_name}" TO orpycamcp_app'
+            )
+
+    async def _existe_rol_app(self) -> bool:
+        """¿Existe el rol de aplicación? No todos los despliegues lo han activado.
+
+        Conceder a un rol inexistente aborta el alta de la entidad, y el reparto
+        de roles es opcional: un despliegue que aún conecta con el propietario
+        debe poder seguir dando de alta entidades.
+        """
+        return bool(
+            await self._conn.fetchval(
+                "SELECT 1 FROM pg_roles WHERE rolname = 'orpycamcp_app'"
+            )
+        )
+
     async def get_by_id(self, tenant_id: uuid.UUID) -> Tenant | None:
         row = await self._conn.fetchrow(
             """

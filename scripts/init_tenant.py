@@ -137,6 +137,11 @@ async def provision_schema(conn: asyncpg.Connection, slug: str) -> None:
     schema = f"tenant_{slug.replace('-', '_')}"
     print(f"  [schema] CREATE SCHEMA IF NOT EXISTS {schema}")
     await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+    # El rol de la aplicación necesita USAR el esquema nuevo: los privilegios por
+    # omisión cubren sus tablas, no el esquema en sí (ver migración 008).
+    if await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = 'orpycamcp_app'"):
+        await conn.execute(f"GRANT USAGE ON SCHEMA {schema} TO orpycamcp_app")
+        print(f"  [schema] GRANT USAGE ON {schema} TO orpycamcp_app")
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +199,7 @@ async def register_tenant(
 # ---------------------------------------------------------------------------
 
 async def main(slug: str, name: str, code: str) -> None:
-    raw_dsn = os.environ.get("DATABASE_URL", "")
+    raw_dsn = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
     if not raw_dsn:
         print("ERROR: DATABASE_URL no está definido", file=sys.stderr)
         sys.exit(1)

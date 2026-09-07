@@ -170,6 +170,9 @@ async def ejecutar(
             propuesta.args,  # del TOKEN, nunca del cuerpo de esta petición
             authorization=authorization,
             tenant_slug=tenant_slug,
+            permissions=identidad.permissions,
+            is_root=identidad.is_root,
+            levels=identidad.levels,
         )
         return {
             "kind": "result",

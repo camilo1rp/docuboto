@@ -31,7 +31,7 @@ services:
       POSTGRES_PASSWORD: orpycamcp
       POSTGRES_DB: orpycamcp_db
     ports:
-      - "15432:5432"
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -47,13 +47,19 @@ services:
     image: redis:7-alpine
     container_name: orpycamcp-redis
     ports:
-      - "16379:6379"
+      # Solo el bucle local, y CON contraseña: en desarrollo Redis guarda los
+      # streams de eventos de todas las entidades y la caché de identidad del
+      # gateway. Abierto y sin credencial, cualquiera en la misma red podía
+      # leerlo o escribirle — que es la puerta de dos hallazgos de esta auditoría.
+      - "127.0.0.1:16379:6379"
+    command: >
+      redis-server --requirepass ${REDIS_PASSWORD:-orpycamcp_redis_dev}
     volumes:
       - redis-data:/data
     networks:
       - orpycamcp-net
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-orpycamcp_redis_dev}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -125,13 +131,21 @@ services:
   # ─── Application Services ──────────────────────────────────────────────────────
 
   api-gateway:
-    build: ./services/api-gateway
+    build:
+      # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
     container_name: orpycamcp-gateway
     ports:
       - "19080:8080"
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
+      # Documentación navegable, SOLO en desarrollo. En producción el catálogo
+      # describe la superficie entera —incluidos los endpoints internos que el
+      # ruteo retira a propósito— y no se sirve sin credenciales.
+      - OPENAPI_PUBLICO=${OPENAPI_PUBLICO:-true}
       - AUTH_SERVICE_URL=http://auth-service:8001
       # Dev: la red por defecto de Compose está en 172.16/12. Sin esto el gateway
       # ignora X-Forwarded-For (fail-closed) y todo el SSR comparte un cubo.
@@ -161,7 +175,7 @@ services:
       dockerfile: services/mcp-server/Dockerfile
     container_name: orpycamcp-mcp
     ports:
-      - "19009:8009"
+      - "127.0.0.1:19009:8009"
     environment:
       - GATEWAY_URL=http://api-gateway:8080
       # Asistente conversacional (E18). SIN la clave, el asistente degrada
@@ -180,6 +194,7 @@ services:
       # aproximar lo que se dijo. `whisper` exige levantar el perfil `assistant`.
       - STT_PROVIDER=${STT_PROVIDER:-disabled}
       - WHISPER_URL=${WHISPER_URL:-http://whisper-service:8012}
+      - WHISPER_INTERNAL_TOKEN=${WHISPER_INTERNAL_TOKEN:-orpycamcp_whisper_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:
@@ -199,11 +214,13 @@ services:
       dockerfile: services/signature-service/Dockerfile
     container_name: orpycamcp-signature
     ports:
-      - "19008:8008"
+      - "127.0.0.1:19008:8008"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       # Corrige puerto interno de Keycloak (era 8180, inexistente en la red) → 8080.
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
@@ -319,6 +336,7 @@ services:
       - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-es}
+      - INTERNAL_SERVICE_TOKEN=${WHISPER_INTERNAL_TOKEN:-orpycamcp_whisper_internal_dev}
       - LOG_LEVEL=info
     volumes:
       - whisper-models:/models
@@ -342,11 +360,13 @@ services:
         WITH_ML: "0"
     container_name: orpycamcp-knowledge
     ports:
-      - "19011:8011"
+      - "127.0.0.1:19011:8011"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       # --- E21: proveedores, SOLO override de esta máquina de desarrollo ------------------
       # Los defaults de `app/core/config.py` siguen siendo los SOBERANOS (`local_st` +
       # `ollama_local`) y no se tocan: un despliegue tenant local no necesita ninguna de
@@ -391,11 +411,13 @@ services:
       dockerfile: services/auth-service/Dockerfile
     container_name: orpycamcp-auth
     ports:
-      - "19001:8001"
+      - "127.0.0.1:19001:8001"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
       # Issuer público canónico (KC_HOSTNAME_URL): los tokens los emite el
@@ -453,11 +475,12 @@ services:
       dockerfile: services/tenant-service/Dockerfile
     container_name: orpycamcp-tenant
     ports:
-      - "19002:8002"
+      - "127.0.0.1:19002:8002"
     environment:
       - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -477,11 +500,13 @@ services:
       dockerfile: services/document-service/Dockerfile
     container_name: orpycamcp-documents
     ports:
-      - "19003:8003"
+      - "127.0.0.1:19003:8003"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - STORAGE_SERVICE_URL=http://storage-service:8005
       # D-02 (remediación no-read-up en anexos, RF-SEG-08): secreto compartido
       # que storage-service exige en X-Internal-Token para servir bytes de un
@@ -540,11 +565,13 @@ services:
       dockerfile: services/archive-service/Dockerfile
     container_name: orpycamcp-archive
     ports:
-      - "19004:8004"
+      - "127.0.0.1:19004:8004"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       # D-02: mismo secreto compartido que document-service/signature-service
       # (ver el comentario en document-service más arriba) — archive-service
       # lo usa en `app/clients/storage_client.py` para descargar el índice
@@ -590,9 +617,10 @@ services:
       target: base
     container_name: orpycamcp-storage
     ports:
-      - "19005:8005"
+      - "127.0.0.1:19005:8005"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=orpycamcp
       - MINIO_SECRET_KEY=orpycamcp_dev
@@ -629,11 +657,13 @@ services:
       dockerfile: services/workflow-service/Dockerfile
     container_name: orpycamcp-workflow
     ports:
-      - "19006:8006"
+      - "127.0.0.1:19006:8006"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -658,11 +688,13 @@ services:
       dockerfile: services/notification-service/Dockerfile
     container_name: orpycamcp-notifications
     ports:
-      - "19007:8007"
+      - "127.0.0.1:19007:8007"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - SMTP_HOST=mailhog
       - SMTP_PORT=1025
       - SMTP_FROM=noreply@orpycamcp.local

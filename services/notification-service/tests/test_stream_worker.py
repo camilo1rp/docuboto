@@ -335,3 +335,44 @@ async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
         call.args[0] for call in mock_logger.warning.call_args_list if call.args
     ]
     assert any("barrido" in msg for msg in warning_messages)
+
+
+@pytest.mark.asyncio
+async def test_los_streams_de_DOMINIO_tambien_se_recortan() -> None:
+    """Los de dead-letter ya caducaban; los de dominio no los recortaba nadie.
+
+    Y son los que llevan el contenido: el asunto y el nombre del ciudadano de
+    cada radicación quedaban en claro y sin caducar, fuera del schema de la
+    entidad y fuera de la Tabla de Retención Documental.
+
+    Probar la función de recorte aislada no prueba que se invoque: esto mira el
+    ciclo real, y comprueba además CUÁLES streams recibe.
+    """
+    from app.workers import stream_worker
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [[], asyncio.CancelledError()]
+
+    mock_trim_dominio = AsyncMock(return_value=0)
+    mock_time = MagicMock()
+    mock_time.monotonic.side_effect = [0.0, stream_worker.RETENTION_INTERVAL + 1.0]
+
+    with (
+        patch.object(stream_worker, "get_redis", return_value=fake_redis),
+        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("app.workers.stream_worker.retention.run_once", AsyncMock()),
+        patch("app.workers.stream_worker.events.trim_deadletter", AsyncMock(return_value=0)),
+        patch("app.workers.stream_worker.events.trim_stream", mock_trim_dominio),
+        patch("app.workers.stream_worker.time", mock_time),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await stream_worker.run()
+
+    recortados = {c.args[1] for c in mock_trim_dominio.await_args_list}
+    assert stream_worker.DOCUMENT_STREAM in recortados, (
+        "el stream que lleva el asunto y el ciudadano de cada radicación no caduca"
+    )
+    assert stream_worker.WORKFLOW_STREAM in recortados
+    for c in mock_trim_dominio.await_args_list:
+        assert c.kwargs["max_age_ms"] == 30 * 86_400_000

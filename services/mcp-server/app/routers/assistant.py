@@ -307,16 +307,31 @@ async def assistant_transcribe(
             detail={"error": "missing_tenant", "detail": "Falta X-Tenant-Slug.", "status": 400},
         )
 
-    audio = await file.read()
+    # El tope se aplica ANTES de traer los bytes, y el comentario anterior decía
+    # lo contrario: sostenía que había que leer primero porque el trasvase ya
+    # había ocurrido. Es cierto que el análisis del multipart ya escribió la
+    # parte, pero de ahí no se sigue que haya que copiarla a memoria: el tamaño
+    # se conoce sin leer, y leer es justamente lo que se quiere evitar. Un
+    # comentario que justifica el orden equivocado lo perpetúa.
+    tope = settings.stt_max_bytes
+    if file.size is not None and file.size > tope:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error": "audio_demasiado_grande",
+                "detail": f"El audio supera el máximo admitido ({tope} bytes).",
+                "status": 413,
+            },
+        )
+
+    # Lectura acotada: el chequeo anterior depende de que el analizador declare
+    # el tamaño; ésta no depende de nada.
+    audio = await file.read(tope + 1)
     if not audio:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "audio_vacio", "detail": "No llegó audio.", "status": 400},
         )
-    # El tope se comprueba tras leer porque `UploadFile` ya trasvasó a disco lo
-    # que excediera el buffer; el límite duro de tamaño de petición es del
-    # gateway. Aquí se acota lo que este servicio se lleva a memoria y se dice
-    # en qué unidades, para que el mensaje sirva de algo.
     if len(audio) > settings.stt_max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,

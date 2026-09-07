@@ -33,7 +33,16 @@ from __future__ import annotations
 
 import asyncpg
 
-_COLS = "ts, service, actor, canal, action, object_ref"
+_COLS = "a.ts, a.service, a.actor, a.canal, a.action, a.object_ref, u.username AS actor_nombre"
+
+#: **El actor se resuelve a un nombre aquí, no en la pantalla.** `audit_log`
+#: guarda el identificador interno, que es lo correcto —un `username` puede
+#: cambiar y el asiento no se toca nunca—, pero una sección titulada «quién ha
+#: visto este radicado» que responde con un UUID no responde nada. El JOIN es
+#: `LEFT` y por texto a propósito: `actor` no siempre es un usuario (hay asientos
+#: del propio sistema), y castear a `uuid` haría fallar la consulta entera por
+#: una fila que ni siquiera se estaba preguntando.
+_JOIN_ACTOR = "LEFT JOIN auth_users u ON u.id::text = a.actor"
 
 #: Lista de ADMISIÓN. Idéntica a la de
 #: `archive-service/app/repositories/audit_read.py` — ver el docstring.
@@ -54,8 +63,8 @@ class AuditReadRepository:
     # estuvieran separadas, el total podría contar entradas que la página no
     # muestra —o al revés— y nadie se enteraría hasta que alguien sumara a mano.
     _WHERE = (
-        "tenant_slug = $1 AND object_type = 'radicado' "
-        "AND object_ref = $2 AND action = ANY($3::text[])"
+        "a.tenant_slug = $1 AND a.object_type = 'radicado' "
+        "AND a.object_ref = $2 AND a.action = ANY($3::text[])"
     )
 
     def _params(self, tenant_slug: str, tracking_number: str) -> list:
@@ -63,7 +72,7 @@ class AuditReadRepository:
 
     async def count_for_radicado(self, tenant_slug: str, tracking_number: str) -> int:
         total = await self._conn.fetchval(
-            f"SELECT count(*) FROM public.audit_log WHERE {self._WHERE}",
+            f"SELECT count(*) FROM public.audit_log a WHERE {self._WHERE}",
             *self._params(tenant_slug, tracking_number),
         )
         return int(total or 0)
@@ -73,8 +82,9 @@ class AuditReadRepository:
     ) -> list[asyncpg.Record]:
         return list(
             await self._conn.fetch(
-                f"SELECT {_COLS} FROM public.audit_log WHERE {self._WHERE} "
-                "ORDER BY ts DESC, id DESC LIMIT $4 OFFSET $5",
+                f"SELECT {_COLS} FROM public.audit_log a {_JOIN_ACTOR} "
+                f"WHERE {self._WHERE} "
+                "ORDER BY a.ts DESC, a.id DESC LIMIT $4 OFFSET $5",
                 *self._params(tenant_slug, tracking_number),
                 limit,
                 offset,

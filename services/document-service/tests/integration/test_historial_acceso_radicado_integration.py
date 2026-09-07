@@ -85,12 +85,14 @@ async def _tablas_rbac(conn: asyncpg.Connection) -> None:
     )
 
 
-async def _clearance(conn: asyncpg.Connection, nivel: int) -> uuid.UUID:
+async def _clearance(
+    conn: asyncpg.Connection, nivel: int, *, username: str | None = None
+) -> uuid.UUID:
     """Un usuario con el clearance pedido, por SQL: aquí el sujeto es el acceso."""
     await _tablas_rbac(conn)
     user_id = await conn.fetchval(
         "INSERT INTO auth_users (username, email) VALUES ($1, $2) RETURNING id",
-        f"u{nivel}{uuid.uuid4().hex[:6]}",
+        username or f"u{nivel}{uuid.uuid4().hex[:6]}",
         f"u{uuid.uuid4().hex[:6]}@ejemplo.test",
     )
     group_id = await conn.fetchval(
@@ -191,3 +193,69 @@ async def test_el_historial_solo_trae_ACCESOS_no_todo_lo_ocurrido(
     # ...y el historial de ACCESO no lo incluye.
     _, total = await servicio.historial_acceso(doc_id, user_id=lector, page=1, size=20)
     assert total == 0, "crear un radicado no es acceder a él"
+
+
+@pytest.mark.asyncio
+async def test_el_historial_dice_un_NOMBRE_no_un_identificador(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """«Quién ha visto este radicado» tiene que responderse con un quién.
+
+    El asiento guarda el identificador interno, y así debe seguir: un `username`
+    cambia y un asiento no se toca nunca. Pero la pantalla enseñaba ese UUID en
+    crudo, de modo que la sección construida para responder la pregunta no la
+    respondía — el dato estaba guardado y nadie podía leerlo.
+    """
+    slug, conn = tenant_ctx
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    from app.services.document_service import DocumentService
+
+    doc_id, _ = await _radicar(conn, slug)
+    lector = await _clearance(conn, 3, username="ARCHIVISTA_DE_TURNO")
+    servicio = DocumentService(conn, slug)
+    await servicio.get_by_id(doc_id, 3, user_id=lector, canal="ui")
+
+    entradas, _ = await servicio.historial_acceso(doc_id, user_id=lector, page=1, size=20)
+    assert entradas[0].actor_nombre == "ARCHIVISTA_DE_TURNO"
+    # El identificador sigue viajando: es lo que permite cruzar este historial
+    # con `/admin/auditoria`, donde un nombre repetido no serviría.
+    assert entradas[0].actor == str(lector)
+
+
+@pytest.mark.asyncio
+async def test_un_actor_que_no_es_un_usuario_no_rompe_el_historial(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Control negativo del JOIN: sin nombre se cae al identificador, y ya.
+
+    `actor` no siempre es un usuario del catálogo —hay asientos escritos por el
+    propio sistema— y castear a `uuid` habría hecho fallar la consulta ENTERA
+    por una fila que ni siquiera se estaba preguntando. Con `LEFT JOIN` por
+    texto, la fila aparece con el nombre vacío: decir menos es aceptable,
+    perder el historial no.
+    """
+    slug, conn = tenant_ctx
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    from orpycamcp_common import audit
+
+    from app.services.document_service import DocumentService
+
+    doc_id, tracking = await _radicar(conn, slug)
+    lector = await _clearance(conn, 3)
+    await audit.append(
+        conn,
+        tenant_slug=slug,
+        service="document-service",
+        action="document.radicado_consultado",
+        object_type="radicado",
+        object_ref=tracking,
+        actor="proceso-de-migracion",
+        canal="api",
+    )
+
+    entradas, total = await DocumentService(conn, slug).historial_acceso(
+        doc_id, user_id=lector, page=1, size=20
+    )
+    assert total == 1
+    assert entradas[0].actor == "proceso-de-migracion"
+    assert entradas[0].actor_nombre is None

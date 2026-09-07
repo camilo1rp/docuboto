@@ -96,6 +96,14 @@ FORWARDED_RESPONSE_HEADERS = {
     # El UUID identifica el paquete en el asiento de auditoría de la
     # exportación: es lo que permite casar el fichero descargado con el acto.
     "x-export-uuid",
+    # `nosniff` de la descarga CMIS (`document-service/app/routers/cmis.py`).
+    # Ahí el tipo se sirve desde una lista de ADMISIÓN y lo que no está en ella
+    # sale como `application/octet-stream` + `attachment`. Si el gateway se
+    # comiera esta cabecera, el navegador volvería a adivinar el tipo por el
+    # contenido y un fichero subido por la ventanilla podría ejecutarse como
+    # HTML en el origen del sistema — justo lo que la lista vino a impedir.
+    # Nadie más la pone: ni el gateway ni nginx.
+    "x-content-type-options",
 }
 
 

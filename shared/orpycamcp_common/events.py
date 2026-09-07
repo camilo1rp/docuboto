@@ -386,6 +386,42 @@ async def trim_deadletter(redis: Redis, stream: str, *, max_age_ms: int) -> int:
     return count
 
 
+async def trim_stream(redis: Redis, stream: str, *, max_age_ms: int) -> int:
+    """Recorta un stream de DOMINIO por antigüedad. Gemelo de `trim_deadletter`.
+
+    Los streams de dominio se publicaban sin `maxlen`, sin caducidad y sin que
+    nadie los recortara nunca. El resultado era un almacén paralelo de datos
+    personales y de contenido documental —el asunto y el nombre del ciudadano de
+    cada radicación—, en claro, fuera del schema de la entidad, fuera de la Tabla
+    de Retención Documental que gobierna todo lo demás, y sin caducar jamás. Un
+    solo `XRANGE` devolvía el historial completo de radicaciones del despliegue.
+    Es la misma clase de exposición que el respaldo en claro, en otro sitio.
+
+    **Lo que esto NO arregla, y conviene tenerlo dicho**: reclasificar un
+    radicado hacia arriba no puede alcanzar la copia ya publicada en el stream.
+    Un registro de solo-anexar no se retracta. Lo que hace la caducidad es
+    acotar la VENTANA durante la cual esa copia existe, que es la mitigación
+    honesta; la otra mitad —no poner el contenido en el sobre— es un cambio de
+    contrato con los consumidores y queda declarado como pendiente.
+
+    El recorte es por antigüedad y no por número de entradas a propósito: con
+    `MAXLEN` la ventana depende del volumen del despliegue, así que una entidad
+    con mucho tráfico conservaría minutos y una tranquila, meses. Por tiempo la
+    promesa es la misma para todas.
+    """
+    cutoff_ms = max(0, int(datetime.now(UTC).timestamp() * 1000) - max_age_ms)
+    min_id = f"{cutoff_ms}-0"
+    trimmed = await redis.xtrim(stream, minid=min_id, approximate=True)
+    count = int(trimmed) if trimmed is not None else 0
+    logger.info(
+        "trim de stream de dominio: stream=%s min_id=%s entradas_eliminadas=%d",
+        stream,
+        min_id,
+        count,
+    )
+    return count
+
+
 async def reclaim_stale(
     redis: Redis,
     stream: str,

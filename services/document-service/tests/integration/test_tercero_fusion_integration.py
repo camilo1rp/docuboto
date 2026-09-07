@@ -44,6 +44,17 @@ async def _tercero(conn: asyncpg.Connection, nombre: str) -> uuid.UUID:
     )
 
 
+async def _tercero_con_documento(
+    conn: asyncpg.Connection, nombre: str, documento: str
+) -> uuid.UUID:
+    return await conn.fetchval(
+        "INSERT INTO tercero (nombre, tipo, tipo_documento, numero_documento) "
+        "VALUES ($1, 'ciudadano', 'CC', $2) RETURNING id",
+        nombre,
+        documento,
+    )
+
+
 async def _radicar_con(
     conn: asyncpg.Connection, slug: str, tercero_id: uuid.UUID, asunto: str
 ) -> uuid.UUID:
@@ -193,3 +204,67 @@ async def test_los_duplicados_se_detectan_sin_tildes_y_sin_mayusculas(
 
     await servicio.fusionar(vive, muere, actor=None)
     assert await servicio.grupos_duplicados() == []
+
+
+@pytest.mark.asyncio
+async def test_dos_documentos_DISTINTOS_no_son_un_duplicado(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Dos homónimos con documento distinto son dos personas, y no se fusionan.
+
+    El alta es idempotente **por documento**: dos números distintos nacieron de
+    dos altas legítimamente distintas. La pantalla ya decía que coincidir en
+    documento es certeza de que son la misma persona; diferir en documento es la
+    certeza contraria, y esa mitad no se estaba usando en el único punto donde
+    el acto no tiene vuelta atrás.
+    """
+    slug, conn = tenant_ctx
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    from fastapi import HTTPException
+
+    from app.services.tercero_service import TerceroService
+
+    a = await _tercero_con_documento(conn, "Juan Ruiz", "111")
+    b = await _tercero_con_documento(conn, "Juan Ruiz", "222")
+
+    with pytest.raises(HTTPException) as exc:
+        await TerceroService(conn, slug).fusionar(a, b, actor=None)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"] == "documentos_distintos"
+    # El mensaje nombra los DOS números: quien lo lee tiene que poder ver cuál
+    # es el mal capturado sin ir a buscarlo a otra pantalla.
+    assert "111" in exc.value.detail["detail"]
+    assert "222" in exc.value.detail["detail"]
+    # Y no dejó nada a medias.
+    assert await conn.fetchval("SELECT fusionado_en FROM tercero WHERE id = $1", b) is None
+
+
+# **No hay test de «mismo documento se fusiona», y no es un olvido.** Se escribió,
+# y falló al construir el escenario: `ux_tercero_documento` es UNIQUE sobre
+# (tipo_documento, numero_documento), así que dos fichas vivas NO PUEDEN
+# compartir documento. Eso refuerza la guarda en vez de debilitarla —si las dos
+# traen número, la base ya garantiza que son distintos, luego son dos personas—
+# y hace del test de abajo el control positivo real: el que demuestra que la
+# fusión sigue siendo posible en el caso por el que existe.
+
+
+@pytest.mark.asyncio
+async def test_si_solo_UNA_tiene_documento_la_fusion_sigue_siendo_posible(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """El caso más común del catálogo real, y el que la guarda NO debe cerrar.
+
+    Media entrada de ventanilla llega sin documento de identidad. Una ficha con
+    número y otra sin él no son evidencia de nada: no hay contradicción que
+    detectar, solo un dato que falta. Exigir el documento en las dos habría
+    convertido la guarda en «no se puede fusionar casi nunca».
+    """
+    slug, conn = tenant_ctx
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    from app.services.tercero_service import TerceroService
+
+    a = await _tercero_con_documento(conn, "Luis Paz", "777")
+    b = await _tercero(conn, "Luis Paz")
+
+    await TerceroService(conn, slug).fusionar(a, b, actor=None)
+    assert await conn.fetchval("SELECT fusionado_en FROM tercero WHERE id = $1", b) == a

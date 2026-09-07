@@ -85,6 +85,19 @@ class WorkflowRepository:
         await self._set_search_path()
         return await resolve_caller_clearance(self._conn, user_id)
 
+    async def lock_radicado(self, radicado_id: uuid.UUID) -> None:
+        """Serializa las aperturas de paso de un radicado dentro de la transacción.
+
+        `pg_advisory_xact_lock` y no un `SELECT ... FOR UPDATE` porque no hay una
+        fila natural que bloquear: lo que se protege es la SECUENCIA de pasos, no
+        un registro. Se libera solo al terminar la transacción, y solo afecta a
+        este radicado.
+        """
+        await self._set_search_path()
+        await self._conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))", str(radicado_id)
+        )
+
     async def get_next_step_number(self, radicado_id: uuid.UUID) -> int:
         await self._set_search_path()
         val = await self._conn.fetchval(
