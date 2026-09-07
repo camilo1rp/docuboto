@@ -16,6 +16,11 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ## [Unreleased]
 
+### Documentation
+
+- `docs(plan-pruebas)`: **B2 recorrido — el circuito de versiones de la TRD funciona de punta a punta**
+  *Por qué*: los instrumentos que gobiernan retención y disposición final nunca se habían recorrido desde la pantalla, y son los que la ley exige aprobar y convalidar antes de que rijan. *Cómo*: circuito completo sobre una serie —borrador, aprobación por acta del comité, convalidación con acto administrativo, versión nueva y relevo—, comprobando cada paso contra la base y contra el registro de auditoría, más el gate invocado sin pasar por el botón. *Impacto*: primer bloque del plan que cierra sin defectos; queda documentado por qué aguanta, un límite declarado y un falso positivo propio anotado a propósito.
+
 ### Fixed
 
 - `fix(gateway,tenant,shared)`: **el cierre de la auditoría dejó dos cabos: una cabecera de seguridad que el gateway se comía y un servicio que ya no arrancaba**

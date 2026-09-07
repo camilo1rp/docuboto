@@ -780,3 +780,64 @@ rotura pone el test en rojo).
   que existía para responderla no está conectada por ningún extremo. Cerrarlo de verdad es una
   decisión de producto: qué significa que un radicado esté firmado, y cuál de los dos mecanismos
   responde.
+
+---
+
+## 8. Tercera ejecución (2026-09-07) — B2, los instrumentos
+
+Primer bloque recorrido sobre el entorno reconstruido con `reset-entorno.sh`. **B2 cerró en
+verde, sin un solo defecto**, y eso merece explicarse tanto como un bloque en rojo: es el
+primero que lo hace en las tres ejecuciones.
+
+### 8.1 Alcance declarado antes de empezar
+
+`operador` tiene `USUA_PERM_TRD` y `USUA_PERM_EXPEDIENTE` con **nivel 3**, que es el que exigen
+crear y derogar versiones. Se comprobó **contra la base antes de pulsar nada**, siguiendo la
+regla de declarar los permisos por adelantado en vez de descubrir el límite chocando con él.
+
+### 8.2 Lo ejecutado
+
+| Caso | Qué se comprobó | Resultado |
+|---|---|---|
+| B2-02a | Aprobar v1 de `DEM-100` | `aprobada`; acta y fecha persistidas; asiento con actor y payload |
+| **B2-02a′** | **`PATCH` directo al proxy, sin pasar por el botón** | **409 `trd_version_inmutable`**, citando Ac. AGN 001/2024 y **ofreciendo la vía correcta**; la fila quedó intacta (5/10) |
+| B2-02b | Convalidar v1 | acto administrativo, fecha e instancia guardados; RUSD queda pendiente, como declara el diálogo |
+| B2-01 | Crear v2 | nace en `borrador`; la v1 **sigue rigiendo**; el vocabulario se queda con la v1 |
+| **B2-01′** | **Convalidar la v2: el relevo** | v1 → `derogada` con `valid_to`; **`DEM-PET` se re-apunta solo** a la v2 |
+| B2-03 | Vocabulario tras el relevo | los 6 tipos siguen sirviendo en `/radicar` |
+| B2-04 | `/admin/tvd`, `/admin/metadatos`, `/admin/catalogos`, `/admin/plantillas` | las cuatro sanas; **aislamiento TRD↔TVD intacto en ambas direcciones** |
+
+### 8.3 Las tres cosas que hacen que este bloque aguante
+
+1. **El gate no vive en el navegador.** Retirar «Editar» de la fila aprobada no prueba nada; el
+   `PATCH` invocado a mano contra el proxy responde 409. Y el mensaje **no se limita a negar**:
+   nombra la norma y dice qué hacer en su lugar.
+2. **El relevo es un solo acto.** `archive.trd_version_convalidada` y
+   `archive.trd_version_derogada` comparten segundo en `audit_log`: convalidar la N+1 y derogar
+   la N ocurren en la misma transacción. Si fueran dos pasos, un fallo entre medias dejaría al
+   código de serie con dos versiones vigentes o con ninguna.
+3. **El re-apuntado del vocabulario estaba previsto y comentado.** Los tipos documentales
+   cuelgan de la FILA, no del código, así que sin `repoint_tipos_documentales` la convalidación
+   de la N+1 los dejaría huérfanos de una versión recién derogada. Ocurre **al convalidar y no
+   al crear**, que es lo que permite a la v1 seguir rigiendo con su vocabulario mientras la v2
+   se prepara.
+
+### 8.4 Declarado y no perseguido
+
+- **Cinco de los seis tipos documentales cuelgan de series en `borrador`** y `/radicar` los
+  ofrece sin distinguirlos. El riesgo está contenido: `trd_disposition.py` exige
+  `estado == "convalidada"`, así que se puede clasificar contra un borrador pero **no destruir
+  nada** por él. Bloquearlo dejaría una instalación nueva sin poder radicar hasta recorrer el
+  circuito entero, que es peor. Lo que falta es que la pantalla lo diga.
+- **La v1 derogada sigue listándose** en `/admin/trd`. Es correcto —muestra su estado y el
+  historial del instrumento es parte del instrumento— pero conviene no confundirlo con vigencia.
+
+### 8.5 Falso positivo propio, anotado a propósito
+
+Di por perdida el acta del Comité al ver `acto_administrativo` vacío en la fila. Estaba guardada
+en `acta_comite`, una columna distinta que **no vi porque leí un `\d` truncado a 25 líneas**.
+`acto_administrativo` es el de la convalidación, otro acto y otro campo.
+
+Queda escrito porque el error es del mismo tipo que los que este plan busca —creerse una lectura
+parcial— y esta vez lo cometió quien revisaba. La corrección fue mirar el `UPDATE` real antes de
+reportar nada.
