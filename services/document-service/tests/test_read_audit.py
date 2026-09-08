@@ -60,6 +60,7 @@ def _hit_row(**kw) -> dict:
         "subject": "Acción de tutela",
         "sender_name": "Juan Pérez",
         "sender_entity": "Ciudadano",
+        "doc_class": "COR-PET",
         "dest_dept": "Jurídica",
         "status": "registered",
         "registered_at": datetime.now(tz=UTC),

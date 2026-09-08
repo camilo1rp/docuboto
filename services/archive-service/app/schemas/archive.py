@@ -133,6 +133,13 @@ class RadicadoLink(BaseModel):
     # <dependenciaProductora> cuando los dos existen.
     dependencia_productora_codigo: int | None = Field(default=None, ge=0)
     dependencia_productora_nombre: str | None = Field(default=None, max_length=255)
+    # Tipología documental (`doc_class` del radicado), aportada al vincular por
+    # la misma razón que las anteriores: archive-service no lee `radicados`.
+    # El elemento <tipologia> del índice es OBLIGATORIO en el XSD y de tipo
+    # `xs:string`, que admite cadena vacía — así que un índice sin este dato
+    # valida igual y no dice de qué clase es ningún documento. El esquema no
+    # puede cazarlo; solo puede cazarlo quien aporte el dato.
+    tipologia: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def _productora_codigo_y_nombre_van_juntos(self) -> RadicadoLink:

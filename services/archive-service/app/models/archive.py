@@ -88,6 +88,9 @@ class ExpedienteRadicado:
     # campos van juntos o ninguno (CHECK de pareja en BD + validador Pydantic).
     dependencia_productora_codigo: int | None = None
     dependencia_productora_nombre: str | None = None
+    #: Tipología documental aportada al vincular (Opción A, E15 perfil v4).
+    #: Se materializa como <tipologia> del índice; NULL = no declarada.
+    tipologia: str | None = None
 
 
 @dataclass

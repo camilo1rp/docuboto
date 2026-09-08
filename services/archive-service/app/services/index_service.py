@@ -108,6 +108,14 @@ class IndexService:
                 document_id=str(r.radicado_id),
                 orden=r.orden_documental if r.orden_documental is not None else 0,
                 titulo=r.tracking_number,
+                # **El campo que se caía al construir.** La columna existe en
+                # `expediente_indice_item` desde el perfil v2, el XSD declara
+                # <tipologia> OBLIGATORIA, y este constructor la omitía: se
+                # quedaba en su `None` por defecto y el índice se firmaba
+                # declarando tipología vacía para todos sus documentos. Como el
+                # tipo del XSD es `xs:string` —que admite cadena vacía— el
+                # índice validaba contra el perfil sin decir nada.
+                tipologia=r.tipologia,
                 fecha_archivado=r.added_at,  # -> <fechaIncorporacion> en v2
                 valor_huella=r.content_hash,  # SHA-256 aportado al vincular (T-08)
                 # Metadatos RT-15 (E15 Inc.3), aportados al vincular (Opción A);

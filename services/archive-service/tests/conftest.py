@@ -137,6 +137,7 @@ def make_radicado_link_record(
     excluido_causal: str | None = None,
     dependencia_productora_codigo: int | None = None,
     dependencia_productora_nombre: str | None = None,
+    tipologia: str | None = None,
 ) -> dict:
     return {
         "expediente_id": expediente_id or EXPEDIENTE_ID,
@@ -145,7 +146,11 @@ def make_radicado_link_record(
         "added_at": added_at or NOW,
         "content_hash": content_hash,
         # Metadatos RT-15 del índice electrónico (E15 Inc.3); NULL por defecto
-        # = no declarado al vincular.
+        # = no declarado al vincular. `tipologia` (perfil v4) entra por la misma
+        # puerta: la fila real la trae SIEMPRE tras la migración 051, así que la
+        # fixtura la trae también — un `.get` tolerante en el repositorio
+        # escondería justo el desajuste que esta fixtura existe para detectar.
+        "tipologia": tipologia,
         "formato": formato,
         "tamano_bytes": tamano_bytes,
         "folios": folios,

@@ -462,6 +462,7 @@ class ArchiveRepository:
         folios: int | None = None,
         dependencia_productora_codigo: int | None = None,
         dependencia_productora_nombre: str | None = None,
+        tipologia: str | None = None,
     ) -> ExpedienteRadicado:
         """Vincula un radicado al expediente, asignándole orden_documental ESTABLE.
 
@@ -507,8 +508,9 @@ class ArchiveRepository:
                 INSERT INTO expediente_radicados
                     (expediente_id, radicado_id, tracking_number, content_hash,
                      formato, tamano_bytes, folios, orden_documental, estado,
-                     dependencia_productora_codigo, dependencia_productora_nombre)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vinculado', $9, $10)
+                     dependencia_productora_codigo, dependencia_productora_nombre,
+                     tipologia)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vinculado', $9, $10, $11)
                 ON CONFLICT (expediente_id, radicado_id) DO UPDATE SET
                     tracking_number  = EXCLUDED.tracking_number,
                     content_hash     = EXCLUDED.content_hash,
@@ -521,7 +523,8 @@ class ArchiveRepository:
                     excluido_causal  = NULL,
                     added_at         = now(),
                     dependencia_productora_codigo = EXCLUDED.dependencia_productora_codigo,
-                    dependencia_productora_nombre  = EXCLUDED.dependencia_productora_nombre
+                    dependencia_productora_nombre  = EXCLUDED.dependencia_productora_nombre,
+                    tipologia        = EXCLUDED.tipologia
                  WHERE expediente_radicados.estado = 'excluido'
                 RETURNING *
                 """,
@@ -535,6 +538,7 @@ class ArchiveRepository:
                 next_orden,
                 dependencia_productora_codigo,
                 dependencia_productora_nombre,
+                tipologia,
             )
             if row is None:
                 # El único camino normal a un conflicto es reactivar un vínculo
@@ -2702,6 +2706,7 @@ def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
         excluido_causal=row["excluido_causal"],
         dependencia_productora_codigo=row["dependencia_productora_codigo"],
         dependencia_productora_nombre=row["dependencia_productora_nombre"],
+        tipologia=row["tipologia"],
     )
 
 

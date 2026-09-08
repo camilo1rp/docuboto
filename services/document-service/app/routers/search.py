@@ -34,7 +34,7 @@ _USER_HEADER = "X-User-Id"
 _TENANT_HEADER = "X-Tenant-Slug"
 
 _SELECT = (
-    "id, tracking_number, doc_type, subject, sender_name, sender_entity, "
+    "id, tracking_number, doc_type, subject, sender_name, sender_entity, doc_class, "
     "dest_dept, status, registered_at"
 )
 
@@ -166,6 +166,7 @@ async def search_documents(
             subject=r["subject"],
             sender_name=r["sender_name"],
             sender_entity=r["sender_entity"],
+            doc_class=r["doc_class"],
             dest_dept=r["dest_dept"],
             status=r["status"],
             registered_at=r["registered_at"],

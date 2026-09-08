@@ -25,6 +25,10 @@ def _hit_row(**kw) -> dict:
         "subject": "Acción de tutela",
         "sender_name": "Juan Pérez",
         "sender_entity": "Ciudadano",
+        # La proyección real la trae siempre: quien vincula un radicado a un
+        # expediente la necesita para aportar el <tipologia> del índice
+        # electrónico, porque archive-service no lee esta tabla.
+        "doc_class": "COR-PET",
         "dest_dept": "Jurídica",
         "status": "registered",
         "registered_at": datetime.now(tz=UTC),

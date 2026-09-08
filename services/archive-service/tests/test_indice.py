@@ -537,6 +537,91 @@ def test_item_valor_huella_from_link_hash() -> None:
     assert items[0].estado == "vinculado"
 
 
+def test_la_tipologia_del_vinculo_llega_al_indice() -> None:
+    """<tipologia> es OBLIGATORIA en el XSD y se emitía SIEMPRE vacía.
+
+    `expediente_indice_item.tipologia` existe desde el perfil v2 y
+    `_items_from` construía todos los demás campos —orden, título, fecha,
+    huella, formato, tamaño, folios, nivel, estado, dependencia productora— y
+    omitía este, que se quedaba en su `None` por defecto.
+
+    Lo que impidió que se notara: el XSD declara `<tipologia>` con `minOccurs`
+    implícito 1 y tipo `xs:string`, **que admite cadena vacía**. El índice se
+    generaba, validaba contra el perfil v4 y se firmaba, sin declarar la clase
+    documental de nada de lo que ampara. Un esquema no caza un elemento
+    obligatorio que se cumple con vacío.
+    """
+    from app.models.archive import Expediente, ExpedienteRadicado
+    from app.services.index_service import IndexService
+
+    rad = make_radicado_link_record()
+    exp = Expediente(
+        id=uuid.uuid4(),
+        code="EXP",
+        name="x",
+        description=None,
+        trd_serie_id=None,
+        status="open",
+        opened_by=None,
+        opened_at=NOW,
+        closed_at=None,
+        updated_at=NOW,
+        nivel_seguridad=1,
+        radicados=[
+            ExpedienteRadicado(
+                expediente_id=rad["expediente_id"],
+                radicado_id=rad["radicado_id"],
+                tracking_number=rad["tracking_number"],
+                added_at=NOW,
+                orden_documental=1,
+                estado="vinculado",
+                tipologia="COR-PET",
+            )
+        ],
+    )
+    items = IndexService.__new__(IndexService)._items_from(exp)
+    assert items[0].tipologia == "COR-PET"
+
+
+def test_sin_tipologia_declarada_el_item_no_la_inventa() -> None:
+    """Control negativo: NULL sigue significando «no declarada».
+
+    Sin este test, rellenar `tipologia` con un literal cualquiera —o con el
+    tracking_number, que está a mano en el mismo objeto— haría pasar al de
+    arriba mientras el índice miente sobre la clase documental. El vacío
+    honesto es una respuesta válida; un valor inventado no.
+    """
+    from app.models.archive import Expediente, ExpedienteRadicado
+    from app.services.index_service import IndexService
+
+    rad = make_radicado_link_record()
+    exp = Expediente(
+        id=uuid.uuid4(),
+        code="EXP",
+        name="x",
+        description=None,
+        trd_serie_id=None,
+        status="open",
+        opened_by=None,
+        opened_at=NOW,
+        closed_at=None,
+        updated_at=NOW,
+        nivel_seguridad=1,
+        radicados=[
+            ExpedienteRadicado(
+                expediente_id=rad["expediente_id"],
+                radicado_id=rad["radicado_id"],
+                tracking_number=rad["tracking_number"],
+                added_at=NOW,
+                orden_documental=1,
+                estado="vinculado",
+            )
+        ],
+    )
+    items = IndexService.__new__(IndexService)._items_from(exp)
+    assert items[0].tipologia is None
+
+
 @pytest.mark.asyncio
 async def test_link_to_closed_expediente_rejected(client_with_conn) -> None:
     """No se pueden añadir documentos a un expediente cerrado (inmutabilidad)."""

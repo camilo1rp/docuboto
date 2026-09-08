@@ -2090,6 +2090,7 @@ class ArchiveService:
                 folios=payload.folios,
                 dependencia_productora_codigo=payload.dependencia_productora_codigo,
                 dependencia_productora_nombre=payload.dependencia_productora_nombre,
+                tipologia=payload.tipologia,
             )
             await self._regenerate_index(expediente_id)
             await self._repo.insert_expediente_evento(
@@ -2206,6 +2207,7 @@ class ArchiveService:
                     folios=it.folios,
                     dependencia_productora_codigo=it.dependencia_productora_codigo,
                     dependencia_productora_nombre=it.dependencia_productora_nombre,
+                    tipologia=it.tipologia,
                 )
                 vinculados += 1
                 linked_ids.append(str(it.radicado_id))

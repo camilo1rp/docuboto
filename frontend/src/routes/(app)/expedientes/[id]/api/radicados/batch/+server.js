@@ -105,8 +105,20 @@ export async function POST({ locals, params, request }) {
         { status: 400 },
       );
     }
-    // Allowlist: solo estos dos campos por ítem (anti mass-assignment).
-    cleaned.push({ radicado_id: radicadoId, tracking_number: trackingNumber.trim() });
+    // Allowlist por ítem (anti mass-assignment). `tipologia` entra por la
+    // misma razón que en el proxy hermano: archive-service no lee la tabla de
+    // radicados, así que el <tipologia> del índice electrónico solo llega si
+    // lo aporta quien vincula (E15 perfil v4, RT-15).
+    const tipologiaRaw = item?.tipologia;
+    const tipologia =
+      typeof tipologiaRaw === "string" && tipologiaRaw.trim() && tipologiaRaw.length <= 100
+        ? tipologiaRaw.trim()
+        : null;
+    cleaned.push({
+      radicado_id: radicadoId,
+      tracking_number: trackingNumber.trim(),
+      ...(tipologia ? { tipologia } : {}),
+    });
   }
 
   const payload = { radicados: cleaned };

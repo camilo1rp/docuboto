@@ -86,7 +86,7 @@
 
   // Fuente de verdad de la selección — sobrevive a re-búsquedas y a cambios
   // de página (ver comentario del componente arriba).
-  /** @type {Map<string, {radicado_id: string, tracking_number: string}>} */
+  /** @type {Map<string, {radicado_id: string, tracking_number: string, tipologia: string|null}>} */
   let selectedMap = new Map();
   $: selectedList = [...selectedMap.values()];
   // Lo que le pasamos a DataTable: solo los ids de la página actual que ya
@@ -107,7 +107,15 @@
     const next = new Map(selectedMap);
     for (const row of results) {
       if (nowSelected.has(row.id)) {
-        next.set(row.id, { radicado_id: row.id, tracking_number: row.tracking_number });
+        // La tipología se captura AQUÍ, del resultado de búsqueda, porque es
+        // el único momento en que está a mano: archive-service no lee la tabla
+        // de radicados, así que el <tipologia> del índice electrónico solo
+        // puede llegar aportado por quien vincula (E15 perfil v4, RT-15).
+        next.set(row.id, {
+          radicado_id: row.id,
+          tracking_number: row.tracking_number,
+          tipologia: row.doc_class ?? null,
+        });
       } else {
         next.delete(row.id);
       }
@@ -186,6 +194,7 @@
       const items = selectedList.map((r) => ({
         radicado_id: r.radicado_id,
         tracking_number: r.tracking_number,
+        tipologia: r.tipologia,
       }));
 
       let res;

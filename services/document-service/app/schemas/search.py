@@ -22,6 +22,11 @@ class SearchHit(BaseModel):
     subject: str
     sender_name: str | None
     sender_entity: str | None
+    # Tipología documental. Viaja en el resultado de búsqueda porque quien
+    # vincula un radicado a un expediente la necesita para aportarla al índice
+    # electrónico (E15 perfil v4 / RT-15): archive-service no lee `radicados`,
+    # así que si no sale por aquí no hay forma de que llegue al <tipologia>.
+    doc_class: str | None = None
     dest_dept: str | None
     status: str
     registered_at: datetime

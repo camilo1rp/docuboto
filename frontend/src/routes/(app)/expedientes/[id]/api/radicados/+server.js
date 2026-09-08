@@ -58,7 +58,11 @@ export async function POST({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { radicado_id: radicadoId, tracking_number: trackingNumber } = body ?? {};
+  const {
+    radicado_id: radicadoId,
+    tracking_number: trackingNumber,
+    tipologia: tipologiaRaw,
+  } = body ?? {};
 
   if (!radicadoId || typeof radicadoId !== "string" || !UUID_RE.test(radicadoId)) {
     return json(
@@ -78,8 +82,20 @@ export async function POST({ locals, params, request }) {
     );
   }
 
-  // Allowlist: solo estos dos campos, nunca el body íntegro (anti mass-assignment).
-  const payload = { radicado_id: radicadoId, tracking_number: trackingNumber.trim() };
+  // Allowlist: solo estos campos, nunca el body íntegro (anti mass-assignment).
+  // `tipologia` (E15 perfil v4) viaja porque archive-service NO lee la tabla de
+  // radicados: si no la aporta quien vincula, el <tipologia> del índice
+  // electrónico se emite vacío — y como el XSD lo tipa `xs:string`, valida
+  // igual sin decir de qué clase es ningún documento.
+  const tipologia =
+    typeof tipologiaRaw === "string" && tipologiaRaw.trim() && tipologiaRaw.length <= 100
+      ? tipologiaRaw.trim()
+      : null;
+  const payload = {
+    radicado_id: radicadoId,
+    tracking_number: trackingNumber.trim(),
+    ...(tipologia ? { tipologia } : {}),
+  };
 
   /** @type {Record<string, string>} */
   const headers = {
