@@ -2007,7 +2007,10 @@
               <ul class="exp-radicado-list" aria-label="Historial de acceso">
                 {#each accesoState.historial.items as entry (entry.ts + entry.action + (entry.actor ?? "") + (entry.object_ref ?? ""))}
                   <li class="exp-radicado-list__item">
-                    <span class="exp-uuid">{entry.actor ?? "sistema"}</span>
+                    <!-- El nombre lo resuelve el backend; si no se puede
+                         resolver (asiento del sistema, usuario dado de baja) se
+                         cae al identificador, que dice poco pero no miente. -->
+                    <span class="exp-uuid">{entry.actor_nombre ?? entry.actor ?? "sistema"}</span>
                     <span>{accesoAccionLabel(entry.action)}</span>
                     <!-- SOBRE QUÉ. Sin esto, «Descarga de un anexo» no dice de
                          qué documento — y esa es exactamente la pregunta que

@@ -5420,6 +5420,7 @@ def _to_historial_entry(r: asyncpg.Record) -> HistorialAccesoEntry:
         ts=r["ts"],
         service=r["service"],
         actor=r["actor"],
+        actor_nombre=r["actor_nombre"],
         canal=r["canal"],
         action=r["action"],
         object_type=r["object_type"],

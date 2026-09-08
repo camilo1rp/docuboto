@@ -2098,6 +2098,9 @@ async def test_historial_acceso_lists_paginated_and_scoped_by_tenant(
         "ts": NOW,
         "service": "archive-service",
         "actor": str(USER_ID),
+        # La proyección real la trae siempre: el historial responde «quién», y
+        # un UUID no responde eso. NULL cuando el actor no es un usuario.
+        "actor_nombre": "OPERADOR",
         "canal": "api",
         "action": "archive.expediente_consultado",
         "object_type": "expediente",

@@ -1268,6 +1268,11 @@ class HistorialAccesoEntry(BaseModel):
     ts: datetime
     service: str
     actor: str | None = None
+    #: `username` de quien accedió, resuelto desde el identificador del asiento.
+    #: Puede venir vacío —un asiento del propio sistema, o un usuario dado de
+    #: baja— y entonces la pantalla cae al identificador: decir menos es
+    #: aceptable, inventar un nombre no. Gemelo del de document-service.
+    actor_nombre: str | None = None
     canal: str
     action: str
     object_type: str

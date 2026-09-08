@@ -24,7 +24,19 @@ from __future__ import annotations
 
 import asyncpg
 
-_COLS = "tenant_slug, ts, service, actor, canal, action, object_type, object_ref, payload"
+_COLS = (
+    "a.tenant_slug, a.ts, a.service, a.actor, a.canal, a.action, "
+    "a.object_type, a.object_ref, a.payload, u.username AS actor_nombre"
+)
+
+#: **El actor se resuelve a un nombre aquí, no en la pantalla.** Gemelo exacto
+#: de `document-service/app/repositories/audit_read.py`: `audit_log` guarda el
+#: identificador interno —correcto, porque un `username` cambia y un asiento no
+#: se toca nunca— pero un historial de acceso que contesta con un UUID no
+#: contesta quién. `LEFT JOIN` y por texto a propósito: `actor` no siempre es un
+#: usuario (hay asientos del propio sistema), y castear a `uuid` haría fallar la
+#: consulta entera por una fila que ni se estaba preguntando.
+_JOIN_ACTOR = "LEFT JOIN auth_users u ON u.id::text = a.actor"
 _OBJECT_TYPES = ("expediente", "expediente_indice")
 
 # Acciones de ACCESO sobre los radicados del expediente (2026-08-29). La traza
@@ -55,10 +67,10 @@ class AuditReadRepository:
     # muestra —o al revés— y nadie se enteraría: es el mismo cuidado que ya se
     # tuvo con la cola de vencimientos.
     _WHERE = (
-        "tenant_slug = $1 AND ("
-        "  (object_ref = $2 AND object_type = ANY($3::text[]))"
-        "  OR (object_type = 'radicado' AND object_ref = ANY($4::text[])"
-        "      AND action = ANY($5::text[]))"
+        "a.tenant_slug = $1 AND ("
+        "  (a.object_ref = $2 AND a.object_type = ANY($3::text[]))"
+        "  OR (a.object_type = 'radicado' AND a.object_ref = ANY($4::text[])"
+        "      AND a.action = ANY($5::text[]))"
         ")"
     )
 
@@ -75,7 +87,7 @@ class AuditReadRepository:
         self, tenant_slug: str, code: str, trackings: list[str] | None = None
     ) -> int:
         total: int = await self._conn.fetchval(
-            f"SELECT COUNT(*) FROM public.audit_log WHERE {self._WHERE}",
+            f"SELECT COUNT(*) FROM public.audit_log a WHERE {self._WHERE}",
             *self._params(tenant_slug, code, trackings or []),
         )
         return total or 0
@@ -92,8 +104,9 @@ class AuditReadRepository:
         params = self._params(tenant_slug, code, trackings or [])
         return list(
             await self._conn.fetch(
-                f"SELECT {_COLS} FROM public.audit_log WHERE {self._WHERE} "
-                "ORDER BY ts DESC, id DESC LIMIT $6 OFFSET $7",
+                f"SELECT {_COLS} FROM public.audit_log a {_JOIN_ACTOR} "
+                f"WHERE {self._WHERE} "
+                "ORDER BY a.ts DESC, a.id DESC LIMIT $6 OFFSET $7",
                 *params,
                 limit,
                 offset,
