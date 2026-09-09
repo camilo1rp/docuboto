@@ -6,6 +6,7 @@
 // Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+// @vitest-environment node
 
 /**
  * Guardián: un aviso en `display: flex` no puede llevar la frase suelta.

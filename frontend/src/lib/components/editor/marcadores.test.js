@@ -17,7 +17,20 @@
  * editor con las dos reglas montadas a la vez.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
+// Estos tests necesitan las DOS cosas: el DOM (montan nodos reales) y leer
+// ficheros del árbol. No pueden llevar la directiva de entorno «node» de
+// Vitest —perderían
+// `document`— y bajo jsdom el `import` de `node:fs` resuelve al sustituto del
+// navegador, que no exporta nada (`readFileSync is not a function`), porque
+// `vite.config.js` fuerza la condición "browser" bajo Vitest para que
+// `onMount` sea el real. `process.getBuiltinModule` devuelve el módulo de Node
+// auténtico sin pasar por la resolución de Vite, así que sirve para ambos.
+// Comprobado con una sonda: `document` disponible Y lectura de fichero OK.
+// Ojo al redactar aquí: Vitest busca el token de esa directiva por
+// expresión regular en TODO el archivo, comentarios incluidos. Escribirlo
+// literalmente —aunque sea para decir que NO se usa— se lo aplica al
+// archivo y le quita el DOM. Pasó al escribir esta misma nota.
+const { readFileSync } = process.getBuiltinModule("fs");
 import { crearProteccionDeMarcadores } from "./marcadores.js";
 
 /** @type {any} */ let core;

@@ -5439,6 +5439,7 @@ def _to_evento_response(r) -> ExpedienteEventoResponse:
         numero_expediente=r["numero_expediente"],
         accion=r["accion"],
         actor=r["actor"],
+        actor_nombre=r["actor_nombre"],
         comentario=r["comentario"],
         detalles=detalles or {},
         ts=r["ts"],

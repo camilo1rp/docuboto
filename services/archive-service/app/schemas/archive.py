@@ -191,6 +191,10 @@ class ExpedienteEventoResponse(BaseModel):
     numero_expediente: str | None = None
     accion: str
     actor: uuid.UUID | None = None
+    #: `username` de quien ejecutó el acto, resuelto al leer. Vacío cuando el
+    #: evento no tiene actor (lo escribió el sistema) o el usuario ya no está
+    #: en el catálogo: la pantalla cae entonces al identificador.
+    actor_nombre: str | None = None
     comentario: str | None = None
     detalles: dict[str, Any] = Field(default_factory=dict)
     ts: datetime

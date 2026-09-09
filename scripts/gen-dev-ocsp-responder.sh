@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+#
 # gen-dev-ocsp-responder.sh — Genera un par de responder OCSP DELEGADO de
 # DESARROLLO (RSA-2048, EKU id-kp-OCSPSigning + extensión
 # id-pkix-ocsp-nocheck 1.3.6.1.5.5.7.48.1.5), emitido OFFLINE por la CA local

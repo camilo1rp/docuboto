@@ -1752,7 +1752,7 @@
                   {#if evento.actor}
                     <span class="exp-timeline__actor">
                       <i class="fas fa-user" aria-hidden="true"></i>
-                      {evento.actor}
+                      {evento.actor_nombre ?? evento.actor}
                     </span>
                   {/if}
                   {#if evento.detalles && Object.keys(evento.detalles).length}
@@ -2067,7 +2067,16 @@
               <thead>
                 <tr>
                   <th scope="col">Signatura</th>
-                  <th scope="col">Unidad (ID)</th>
+                  <!-- La signatura topográfica dice en qué entrepaño mirar; el
+                       TIPO y el CÓDIGO dicen qué hay que sacar de ahí — «la caja
+                       CAJ-001». Aquí había una columna «Unidad (ID)» con el
+                       identificador interno, que no le sirve a nadie que vaya al
+                       depósito. El backend ya traía las dos por el JOIN y el
+                       docstring de `UnidadDeExpediente` ya narraba esta misma
+                       corrección hecha en `/archivo-fisico`: se arregló una
+                       pantalla y se dejó la otra, sobre la misma respuesta. -->
+                  <th scope="col">Tipo unidad</th>
+                  <th scope="col">Código unidad</th>
                   <th scope="col">Folio inicio</th>
                   <th scope="col">Folio fin</th>
                 </tr>
@@ -2076,7 +2085,8 @@
                 {#each facetas.ubicacion.data as unidad (unidad.unidad_id)}
                   <tr>
                     <td>{unidad.signatura ?? "—"}</td>
-                    <td class="exp-uuid">{unidad.unidad_id}</td>
+                    <td>{unidad.tipo ?? "—"}</td>
+                    <td><code>{unidad.codigo ?? "—"}</code></td>
                     <td>{unidad.folio_inicio ?? "—"}</td>
                     <td>{unidad.folio_fin ?? "—"}</td>
                   </tr>

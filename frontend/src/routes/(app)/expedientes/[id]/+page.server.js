@@ -66,6 +66,7 @@
 import { error } from "@sveltejs/kit";
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { resolverExpediente } from "$lib/server/expedienteRef.js";
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 // ---------------------------------------------------------------------------
@@ -113,7 +114,7 @@ async function gatewayGet(path, token, tenant, extraHeaders = {}) {
 // ---------------------------------------------------------------------------
 
 export async function load({ params, cookies, parent }) {
-  const { id } = params;
+  const referencia = params.id;
 
   // Sesión ya validada por (app)/+layout.server.js
   const { user } = await parent();
@@ -121,8 +122,28 @@ export async function load({ params, cookies, parent }) {
   const tenant = user?.tenant_slug ?? "";
   const userId = user?.sub ?? "";
 
-  if (!id) {
+  if (!referencia) {
     error(400, { message: "ID de expediente requerido" });
+  }
+
+  // El segmento de la ruta puede ser el UUID o el CÓDIGO del expediente.
+  //
+  // Esta pantalla exigía el UUID mientras enseñaba el código por todas partes
+  // —migas, título, carátula— y sus PROPIOS proxies hijos ya resolvían las dos
+  // formas con este mismo helper. Entrar por `/expedientes/EXP-2026-0002`, que
+  // es el identificador que el sistema imprime y que cualquiera copia o
+  // comparte, moría con una tarjeta que decía «500» en el título y «HTTP 422»
+  // en el cuerpo: dos códigos distintos, ninguno cierto y ninguno accionable.
+  // El 422 salía de archive-service al recibir un código donde espera un UUID,
+  // y el manejo de abajo lo colapsaba a 500 por no ser 404 ni 403.
+  //
+  // La coincidencia que hace el helper es EXACTA a propósito: abrir un
+  // expediente es un acto sobre uno concreto, no sobre el más parecido.
+  const id = await resolverExpediente(referencia, token, tenant);
+  if (!id) {
+    error(404, {
+      message: `No se encontró un expediente con la referencia «${referencia}». Revisa el código (ej. EXP-2026-0002).`,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -155,7 +176,9 @@ export async function load({ params, cookies, parent }) {
   if (resumenResult.status === "rejected") {
     const err = resumenResult.reason;
     if (err?.status === 404) {
-      error(404, { message: `Expediente ${id} no encontrado` });
+      // `referencia` y no `id`: la persona reconoce lo que escribió o pulsó
+      // —el código—, no el UUID al que se resolvió por dentro.
+      error(404, { message: `Expediente ${referencia} no encontrado` });
     }
     if (err?.status === 403) {
       error(403, { message: "Sin permisos para ver este expediente" });

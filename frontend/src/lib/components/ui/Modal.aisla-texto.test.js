@@ -6,6 +6,7 @@
 // Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+// @vitest-environment node
 
 /**
  * El modal no hereda el estilo de texto del sitio donde se montó.

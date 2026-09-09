@@ -211,14 +211,22 @@ class ArchiveRepository:
         return list(
             await self._conn.fetch(
                 """
-                SELECT id, expediente_id, numero_expediente, accion, actor,
-                       comentario, detalles, ts
-                FROM expediente_eventos
-                WHERE expediente_id = $1
+                SELECT e.id, e.expediente_id, e.numero_expediente, e.accion,
+                       e.actor, e.comentario, e.detalles, e.ts,
+                       -- El nombre se resuelve al LEER: `actor` guarda el id
+                       -- interno, que es lo correcto —un `username` cambia de
+                       -- dueño y un asiento no se toca nunca—, pero una hoja de
+                       -- ruta que dice quién abrió el expediente con un UUID no
+                       -- lo dice. `LEFT JOIN`: hay eventos sin actor (los que
+                       -- escribe el propio sistema) y no pueden desaparecer.
+                       u.username AS actor_nombre
+                FROM expediente_eventos e
+                LEFT JOIN auth_users u ON u.id = e.actor
+                WHERE e.expediente_id = $1
                   AND COALESCE(
                         (SELECT nivel_seguridad FROM expedientes WHERE id = $1), 1
                       ) <= $2
-                ORDER BY ts ASC, id ASC
+                ORDER BY e.ts ASC, e.id ASC
                 """,
                 expediente_id,
                 max_clearance,

@@ -41,6 +41,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
+PANTALLAS = RAIZ / "frontend" / "src"
 
 #: El JOIN que resuelve el identificador a un nombre. Se exige por FORMA y no
 #: por texto exacto: lo que importa es que se una con `auth_users` y que el
@@ -55,6 +56,71 @@ _CASTEA_A_UUID = re.compile(r"a\.actor\s*::\s*uuid|actor\s*=\s*u\.id\b")
 
 #: Lectores que NO resuelven el nombre, con su motivo. Vacía a propósito.
 EXCEPCIONES: dict[str, str] = {}
+
+#: Cualquier plantilla que PINTE un actor. El primer censo miraba solo los
+#: repositorios y por eso se le escapó la hoja de ruta del expediente, que lee
+#: otra tabla (`expediente_eventos`, no `audit_log`) y mostraba el UUID igual:
+#: un guardián que vigila la capa equivocada no vigila nada. Lo que importa no
+#: es de qué tabla sale, es qué lee la persona.
+#: Casa TAMBIÉN la forma ya corregida (`.actor_nombre`) a propósito. La primera
+#: versión solo casaba con el defecto, así que una pantalla arreglada SALÍA del
+#: censo y dejaba de vigilarse — y la prueba anti-vacuidad de abajo lo cazó al
+#: primer intento. Un censo que solo ve lo roto se vacía a medida que se
+#: arregla, y entonces el guardián deja de guardar justo cuando ya nadie mira.
+_PINTA_ACTOR = re.compile(r"\.actor(_nombre)?\b")
+_PINTA_NOMBRE = re.compile(r"\.actor_nombre\b")
+
+#: Pantallas que pintan el identificador a propósito, con su motivo.
+PANTALLAS_EXCEPTUADAS: dict[str, str] = {
+    "routes/(app)/admin/auditoria/+page.svelte": (
+        "Visor forense del registro de auditoría: ahí el identificador ES la "
+        "clave con la que se cruzan las entradas entre pantallas y con "
+        "`/audit/verify`, y el actor no siempre es un usuario del catálogo "
+        "(hay asientos del sistema y de otros servicios). Añadir el nombre "
+        "sería una mejora de legibilidad, no la corrección de un defecto: "
+        "esta pantalla no promete responder «quién», promete mostrar el "
+        "asiento tal como está guardado."
+    ),
+}
+
+
+def _pantallas_que_pintan_un_actor() -> dict[str, str]:
+    """Derivado del árbol: una pantalla nueva entra el día que existe."""
+    hallados: dict[str, str] = {}
+    for ruta in sorted(PANTALLAS.rglob("*.svelte")):
+        texto = ruta.read_text(encoding="utf-8")
+        if _PINTA_ACTOR.search(texto):
+            hallados[str(ruta.relative_to(PANTALLAS))] = texto
+    return hallados
+
+
+def test_toda_pantalla_que_dice_quien_tiene_un_nombre_que_decir() -> None:
+    """El defecto no vive en una tabla: vive en lo que lee la persona.
+
+    Se corrigió tres veces —el historial del radicado, el del expediente y la
+    hoja de ruta— y las tres veces el síntoma fue el mismo UUID en pantalla,
+    saliendo de dos tablas distintas. Por eso el censo mira las plantillas.
+    """
+    culpables = [
+        rel
+        for rel, texto in _pantallas_que_pintan_un_actor().items()
+        if rel not in PANTALLAS_EXCEPTUADAS and not _PINTA_NOMBRE.search(texto)
+    ]
+    assert not culpables, (
+        "Estas pantallas pintan el identificador del actor y no tienen ningún "
+        "`actor_nombre` a mano, así que contestan «quién» con un UUID que "
+        "nadie puede resolver. Resuelve el nombre en el backend y cae al "
+        "identificador solo cuando no exista, o declara la pantalla en "
+        "`PANTALLAS_EXCEPTUADAS` con su motivo:\n  " + "\n  ".join(sorted(culpables))
+    )
+
+
+def test_el_censo_de_pantallas_encuentra_algo() -> None:
+    """Anti-vacuidad: sin esto, cambiar la sintaxis vaciaría el censo en silencio."""
+    assert len(_pantallas_que_pintan_un_actor()) >= 2, (
+        "El censo de pantallas que pintan un actor se quedó casi vacío: el "
+        "patrón dejó de casar y este guardián ya no vigila nada."
+    )
 
 
 def _lectores_de_la_pista() -> dict[str, str]:

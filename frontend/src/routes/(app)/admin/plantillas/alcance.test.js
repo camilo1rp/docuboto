@@ -6,6 +6,7 @@
 // Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+// @vitest-environment node
 
 /**
  * Alcance de plantillas por dependencia (E23 Inc.5, T-14/T-15, RF-PRO-06).
