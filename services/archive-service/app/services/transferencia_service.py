@@ -304,6 +304,16 @@ class TransferenciaService:
                             "status": 422,
                         },
                     )
+            # Cabecera del FUID (migración 052, Anexo FUID Ac. AGN 001/2024): la
+            # dependencia de quien PREPARA, resuelta AQUÍ y congelada con la
+            # transferencia. Es quien ENTREGA los documentos —la oficina
+            # productora del Anexo—, no quien los recibe; y se captura ahora
+            # porque entre preparar y recibir pueden pasar semanas en las que el
+            # preparador cambie de dependencia o la dependencia se renombre.
+            # Lectura PLANA de identidad/organigrama, fuera de la tx: no es
+            # contenido del expediente, no hay concern de clearance.
+            depe = await self._repo.dependencia_de_usuario(actor.id)
+
             # Atomicidad preparación<->auditoría (mismo patrón que
             # `ArchiveService.create_expediente`): INSERT + evento de hoja de
             # ruta + asiento forense son un único acto de negocio; `audit.append`
@@ -325,6 +335,19 @@ class TransferenciaService:
                             "ubicacion_destino_id": payload.ubicacion_destino_id,
                             "observacion": payload.observacion,
                             "creada_por": actor.audit_actor,
+                            "objeto": payload.objeto,
+                            "oficina_productora_codigo": (
+                                depe["oficina_productora_codigo"] if depe else None
+                            ),
+                            "oficina_productora_nombre": (
+                                depe["oficina_productora_nombre"] if depe else None
+                            ),
+                            "unidad_administrativa_codigo": (
+                                depe["unidad_administrativa_codigo"] if depe else None
+                            ),
+                            "unidad_administrativa_nombre": (
+                                depe["unidad_administrativa_nombre"] if depe else None
+                            ),
                         }
                     )
                 except asyncpg.UniqueViolationError as uv:
@@ -714,11 +737,21 @@ class TransferenciaService:
                 # arriba): un archivista de depósito que recibe legítimamente
                 # un expediente reservado que no puede LEER debe poder
                 # producir el acta del traspaso.
+                # Cabecera del Anexo FUID (migración 052): los tres campos con
+                # los que el formato abre. Salen del SNAPSHOT tomado al
+                # preparar, no de quien recibe: el Anexo pide la oficina que
+                # PRODUJO los documentos. Antes iban los tres en blanco y el
+                # acta se congelaba, se le calculaba el SHA-256 y se sellaba en
+                # XAdES-T igual — un sello exacto sobre un documento que no
+                # identificaba la entrega.
                 fuid = await FisicoService(self._conn, self._tenant).generate_fuid(
                     ubicacion_id=None,
                     trd_serie_id=None,
                     expediente_id=existing["expediente_id"],
                     max_clearance=CLEARANCE_SIN_RESTRICCION,
+                    unidad_administrativa=existing["unidad_administrativa_nombre"],
+                    oficina_productora=existing["oficina_productora_nombre"],
+                    objeto=existing["objeto"],
                 )
                 acta_xml = _fuid_to_xml(fuid)
                 acta_sha = hashlib.sha256(acta_xml.encode("utf-8")).hexdigest()
@@ -1145,11 +1178,17 @@ class TransferenciaService:
                     "status": 404,
                 },
             )
+        # Misma cabecera que congelará el acta (migración 052): la vista previa
+        # del FUID y el acta definitiva tienen que decir lo mismo, o la previa
+        # no sirve para revisar antes de recibir.
         return await FisicoService(self._conn, self._tenant).generate_fuid(
             ubicacion_id=None,
             trd_serie_id=None,
             expediente_id=row["expediente_id"],
             user_id=user_id,
+            unidad_administrativa=row["unidad_administrativa_nombre"],
+            oficina_productora=row["oficina_productora_nombre"],
+            objeto=row["objeto"],
         )
 
     async def acta(

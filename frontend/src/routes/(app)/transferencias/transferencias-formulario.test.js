@@ -224,3 +224,52 @@ describe("/transferencias — el LISTADO tampoco muestra UUID", () => {
     expect(screen.getByText(UBICACIONES[0].id)).toBeTruthy();
   });
 });
+
+describe("/transferencias — el objeto y los filtros de la URL", () => {
+  it("el objeto de la transferencia se pide en el formulario", async () => {
+    // Encabeza el acta de entrega (Anexo FUID, Ac. AGN 001/2024) junto con la
+    // oficina productora. Iba en blanco: el acta se congelaba, se le calculaba
+    // la huella y se sellaba en XAdES-T sin identificar la entrega.
+    await abrirModal();
+    expect(document.getElementById("tr-objeto")).toBeTruthy();
+  });
+
+  it("sin objeto no se envía nada al servidor", async () => {
+    await abrirModal();
+    const { toasts } = await import("$lib/stores/notifications.js");
+    const vistos = [];
+    const off = toasts.subscribe((lista) => vistos.push(...lista.map((n) => n.message)));
+
+    await fireEvent.input(document.getElementById("tr-expte-id"), {
+      target: { value: "EXP-2026-0020" },
+    });
+    const tipo = /** @type {HTMLSelectElement} */ (document.getElementById("tr-tipo"));
+    await fireEvent.change(tipo, { target: { value: "primaria" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^crear transferencia$/i }));
+
+    await waitFor(() =>
+      expect(vistos.some((m) => /objeto de la transferencia/i.test(m))).toBe(true),
+    );
+    const envios = /** @type {any} */ (globalThis.fetch).mock.calls.filter(
+      ([url, init]) => String(url).includes("/transferencias/api") && init?.method === "POST",
+    );
+    expect(envios).toHaveLength(0);
+    off();
+  });
+
+  it("los desplegables muestran el filtro que el servidor ya aplicó", async () => {
+    // `/transferencias?estado=enviada` es el enlace que el panel principal
+    // produce. La lista llegaba filtrada y los desplegables decían «todos»: la
+    // pantalla se contradecía a sí misma y no había señal de que el filtro
+    // estuviera puesto.
+    render(TransferenciasPage, {
+      props: { data: datos({ filtros: { estado: "enviada", tipo: "secundaria" } }) },
+    });
+    const estado = /** @type {HTMLSelectElement} */ (
+      await waitFor(() => document.getElementById("tr-filtro-estado"))
+    );
+    const tipo = /** @type {HTMLSelectElement} */ (document.getElementById("tr-filtro-tipo"));
+    expect(estado.value).toBe("enviada");
+    expect(tipo.value).toBe("secundaria");
+  });
+});

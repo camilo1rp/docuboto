@@ -69,6 +69,29 @@ def _transfer_row(**kw) -> dict:
         "enviada_por": None,
         "recibida_at": None,
         "decidida_por": None,
+        # Cabecera del Anexo FUID (migración 052): el objeto que escribió quien
+        # preparó, y el snapshot de su dependencia. Van en el `_transfer_row`
+        # base y no solo en los tests que los miran: son columnas de `_COLS`, y
+        # una fixtura que omite una columna real esconde justo el desajuste que
+        # existe para detectar.
+        "objeto": "Transferencia de la serie de contratos de la vigencia",
+        "oficina_productora_codigo": 120,
+        "oficina_productora_nombre": "Oficina de Contratacion",
+        "unidad_administrativa_codigo": 100,
+        "unidad_administrativa_nombre": "Secretaria General",
+    }
+    base.update(kw)
+    return base
+
+
+def _depe_row(**kw) -> dict:
+    """Lo que devuelve `TransferenciaRepository.dependencia_de_usuario`: la
+    oficina productora del que prepara y su unidad administrativa (padre)."""
+    base = {
+        "oficina_productora_codigo": 120,
+        "oficina_productora_nombre": "Oficina de Contratacion",
+        "unidad_administrativa_codigo": 100,
+        "unidad_administrativa_nombre": "Secretaria General",
     }
     base.update(kw)
     return base
@@ -114,6 +137,7 @@ async def test_create_primaria_origen_incoherente_422(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -144,6 +168,7 @@ async def test_create_primaria_destino_incoherente_422(client_with_conn) -> None
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -179,6 +204,7 @@ async def test_create_secundaria_origen_incoherente_422(client_with_conn) -> Non
         "/api/v1/transferencias",
         json={
             "tipo": "secundaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -209,6 +235,7 @@ async def test_create_secundaria_destino_incoherente_422(client_with_conn) -> No
         "/api/v1/transferencias",
         json={
             "tipo": "secundaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -243,6 +270,7 @@ async def test_create_origen_igual_destino_422(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(same_id),
             "ubicacion_destino_id": str(same_id),
@@ -278,6 +306,7 @@ async def test_create_ubicacion_origen_not_found_422(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -306,6 +335,9 @@ async def test_create_primaria_coherente_201(client_with_conn) -> None:
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
         _ubicacion_row(id=origen_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(
             expediente_id=exp_id,
             ubicacion_origen_id=origen_id,
@@ -318,6 +350,7 @@ async def test_create_primaria_coherente_201(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -345,6 +378,9 @@ async def test_create_secundaria_coherente_201(client_with_conn) -> None:
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
         _ubicacion_row(id=origen_id, tipo_archivo="central"),
         _ubicacion_row(id=destino_id, tipo_archivo="historico"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(
             tipo="secundaria",
             expediente_id=exp_id,
@@ -358,6 +394,7 @@ async def test_create_secundaria_coherente_201(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "secundaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
             "ubicacion_destino_id": str(destino_id),
@@ -398,6 +435,7 @@ async def test_create_solo_origen_sin_destino_422(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_origen_id": str(origen_id),
         },
@@ -423,6 +461,7 @@ async def test_create_solo_destino_sin_origen_422(client_with_conn) -> None:
         "/api/v1/transferencias",
         json={
             "tipo": "primaria",
+            "objeto": "Transferencia de la serie de contratos de la vigencia",
             "expediente_id": str(exp_id),
             "ubicacion_destino_id": str(destino_id),
         },
@@ -443,13 +482,16 @@ async def test_create_sin_ninguna_ubicacion_201_topologia_opcional(client_with_c
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(expediente_id=exp_id),
     ]
     mock_conn.fetch.return_value = []
 
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        json={"tipo": "primaria", "expediente_id": str(exp_id), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 201

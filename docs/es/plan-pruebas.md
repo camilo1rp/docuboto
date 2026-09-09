@@ -1176,3 +1176,82 @@ proyección del buscador, o resolverlo en el servidor al vincular extendiendo el
 endpoint interno de document-service, que es lo que ya se hace con la huella
 (`content_hash`) y por el mismo motivo — un dato que aporta quien vincula no
 prueba nada sobre lo que el archivo custodia.
+
+---
+
+## 13. Cierre de los asuntos menores declarados (2026-09-09)
+
+Al cerrar el plan quedaban cuatro asuntos **declarados y no aplicados**. La
+entidad decidió sobre los cuatro; se recogen aquí la decisión y lo que se hizo.
+
+### 13.1 La cabecera del FUID (§10, límite declarado)
+
+**Decisión**: la oficina productora es la dependencia de **quien prepara** la
+transferencia —quien entrega los documentos, que es lo que pide el Anexo FUID—,
+la unidad administrativa es su dependencia **padre**, y el **objeto** lo escribe
+quien prepara, obligatorio.
+
+Lo que se aplicó (migración `052_transferencia_cabecera_fuid.sql`):
+
+- `objeto` obligatorio (3–500) en el formulario de preparar y en el contrato.
+- Oficina productora y unidad administrativa resueltas **en el servidor** desde
+  `auth_users.active_depe_id` —con caída a la URD principal activa— y
+  `dependencias.parent_id`. Una oficina raíz **es** su unidad administrativa;
+  repetirla dice la verdad, dejarla vacía no.
+- Se congelan como **instantánea al preparar**, no al recibir: entre las dos
+  cosas pueden pasar semanas en las que el preparador cambie de dependencia o la
+  dependencia se renombre. Un acta es autocontenida o no es un acta — mismo
+  criterio que los tres responsables (migración 022).
+- La vista previa del FUID y el acta definitiva llevan la MISMA cabecera, o la
+  previa no sirve para revisar antes de recibir.
+- Sin los catálogos de auth/tenant en el esquema, la cabecera queda vacía y la
+  preparación sigue. La guarda mira la **COLUMNA** y no la tabla: `auth_users`
+  puede existir con otra forma, y mirar solo la tabla es comprobar la mitad y
+  fallar igual (ya mordió una vez, §10).
+
+Verificado por mutación: la unidad administrativa apuntando a la propia oficina
+en vez de al padre, y una URD dada de baja contando como vigente, ponen en rojo
+las pruebas que les corresponden; quitar la cabecera de la congelación pone en
+rojo la prueba del acta.
+
+### 13.2 `formato` y `dependencia_productora` del manifiesto (§12.3)
+
+**Decisión**: salen del **origen del radicado**, resueltos en el servidor al
+vincular — la segunda de las dos salidas que §12.3 dejaba planteadas.
+
+- El endpoint interno de metadata de document-service devuelve además
+  `origin_dept`/`origin_dept_code` del radicado y el MIME y el tamaño de su
+  **primer anexo** por fecha (el documento principal).
+- `link_radicado` y la vinculación por lotes los resuelven en un solo viaje,
+  fuera de la transacción, y **solo para los que no los traen declarados**: lo
+  explícito manda (importación con metadatos propios, E11 INT-05).
+- Por qué en el servidor y no pidiéndoselos a la pantalla: alimentan un índice
+  que se **firma**, y quien vincula suele ser un archivista central y no la
+  oficina que produjo el documento. El dato que aportaría sería el equivocado
+  por construcción — no por mala fe.
+- Mejor esfuerzo: si document-service no responde, el vínculo se hace igual.
+- El manifiesto de exportación **cae a la metadata del origen** para los
+  vínculos anteriores, porque ya viene en el mismo viaje: dejar la columna vacía
+  teniendo el dato al lado es el patrón que se está cerrando. Lo guardado manda
+  — es la copia congelada del instante del vínculo.
+
+Verificado contra Postgres real y por mutación (tomar el destino en vez del
+origen, invertir el orden del anexo principal, y cambiar el `LEFT JOIN` por uno
+interno: las tres caen).
+
+### 13.3 La cadena de auditoría sin clave (§11)
+
+**Decisión**: se deja **declarado y no aplicado**. Ya está escrito en la
+migración `006` y en la documentación qué garantiza la cadena y qué no; el
+cierre real —HMAC con una clave fuera del rol de base de datos, o anclar el
+extremo de la cadena fuera del sistema— es una decisión de infraestructura de la
+entidad sobre dónde vive esa clave, no un cambio de este código.
+
+### 13.4 Los dos menores
+
+- **`?estado=` en `/transferencias`**: los filtros se siembran desde la
+  dirección en la carga del servidor, con lista de admisión. La primera pintada
+  ya viene filtrada y los desplegables muestran el filtro aplicado.
+- **`frontend/Dockerfile.dev`**: pasa a node:22, la misma versión mayor que la
+  imagen de producción. El desfase no era cosmético — la suite de pruebas no
+  carga siquiera en node:18 y producía siete fallos fantasma.

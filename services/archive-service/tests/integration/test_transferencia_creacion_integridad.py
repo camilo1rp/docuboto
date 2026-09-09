@@ -103,14 +103,14 @@ async def test_h_l_segunda_transferencia_activa_sobre_mismo_expediente_409(
 
     actor1 = Actor(id=uuid.uuid4(), username="itest-hl-primera")
     primera = await service.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor1
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor1
     )
     assert primera.estado == "preparada"
 
     actor2 = Actor(id=uuid.uuid4(), username="itest-hl-segunda")
     with pytest.raises(HTTPException) as exc_info:
         await service.create(
-            TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor2
+            TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor2
         )
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["error"] == "transferencia_activa_existente"
@@ -184,7 +184,7 @@ async def test_h_l_concurrencia_dos_create_simultaneos_exactamente_uno_gana(
             return await _labeled(
                 f"create-{i}",
                 own_service.create(
-                    TransferenciaCreate(tipo="primaria", expediente_id=expediente_id), actor
+                    TransferenciaCreate(tipo="primaria", expediente_id=expediente_id, objeto="Transferencia primaria de la serie de contratos"), actor
                 ),
             )
         finally:
@@ -271,7 +271,7 @@ async def test_h_l_re_preparar_tras_rechazo_no_bloqueada_por_el_indice(
 
     actor_prep1 = Actor(id=uuid.uuid4(), username="itest-hl-prep1")
     primera = await service.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor_prep1
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor_prep1
     )
     actor_envia = Actor(id=uuid.uuid4(), username="itest-hl-envia")
     await service.enviar(primera.id, actor_envia)
@@ -286,7 +286,7 @@ async def test_h_l_re_preparar_tras_rechazo_no_bloqueada_por_el_indice(
     # como activa.
     actor_prep2 = Actor(id=uuid.uuid4(), username="itest-hl-prep2")
     segunda = await service.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor_prep2
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor_prep2
     )
     assert segunda.estado == "preparada"
     assert segunda.id != primera.id
@@ -332,6 +332,7 @@ async def test_h_m_primaria_coherente_con_ubicaciones_reales_201(
     resp = await service.create(
         TransferenciaCreate(
             tipo="primaria",
+            objeto="Transferencia primaria de la serie de contratos",
             expediente_id=created.id,
             ubicacion_origen_id=origen.id,
             ubicacion_destino_id=destino.id,
@@ -365,6 +366,7 @@ async def test_h_m_secundaria_incoherente_con_ubicaciones_reales_422_y_audita(
         await service.create(
             TransferenciaCreate(
                 tipo="secundaria",
+                objeto="Transferencia primaria de la serie de contratos",
                 expediente_id=created.id,
                 ubicacion_origen_id=origen.id,
                 ubicacion_destino_id=destino.id,

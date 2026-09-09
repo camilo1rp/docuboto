@@ -38,10 +38,28 @@ class AnexoInternalItem(BaseModel):
 
 
 class RadicadoMetaItem(BaseModel):
-    """Metadata de un radicado para el manifiesto de exportación (E02/export)."""
+    """Metadata de un radicado para el manifiesto de exportación (E02/export) y
+    para la resolución EN EL SERVIDOR de la dependencia productora y el formato
+    al vincularlo a un expediente (E15 perfil v4 R1, Ac. AGN 001/2024 art.
+    4.3.2.3).
+
+    Los cuatro campos añadidos son OPCIONALES y su ausencia es una respuesta
+    legítima: un radicado puede no declarar dependencia de origen (ingesta
+    antigua, ventanilla ciudadana) y puede no tener ningún anexo. Rellenarlos
+    con un valor inventado sería peor que dejarlos vacíos — el manifiesto y el
+    índice electrónico son artefactos probatorios."""
 
     subject: str
     doc_type: str
+    # Dependencia PRODUCTORA del documento: la de origen del radicado, no la de
+    # quien lo archiva después. Nombre y código viajan JUNTOS porque el índice
+    # electrónico solo emite <dependenciaProductora> cuando tiene los dos.
+    origin_dept: str | None = None
+    origin_dept_code: int | None = None
+    # Formato (MIME) y tamaño del documento principal = su PRIMER anexo por
+    # `created_at`. Un radicado sin anexos no tiene formato que declarar.
+    formato: str | None = None
+    tamano_bytes: int | None = None
 
 
 class PurgaInternalRequest(BaseModel):

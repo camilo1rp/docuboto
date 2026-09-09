@@ -96,6 +96,7 @@ async def test_con_tenencia_origen_cotea_y_coherente_201(
     resp = await service.create(
         TransferenciaCreate(
             tipo="primaria",
+            objeto="Transferencia primaria de la serie de contratos",
             expediente_id=created.id,
             ubicacion_origen_id=ubicacion_actual.id,
             ubicacion_destino_id=destino.id,
@@ -135,6 +136,7 @@ async def test_con_tenencia_origen_no_cotea_422_y_audita(
         await service.create(
             TransferenciaCreate(
                 tipo="primaria",
+                objeto="Transferencia primaria de la serie de contratos",
                 expediente_id=created.id,
                 ubicacion_origen_id=origen_ajeno.id,
                 ubicacion_destino_id=destino.id,
@@ -183,7 +185,7 @@ async def test_con_tenencia_sin_origen_ni_destino_422_y_audita(
     actor = Actor(id=uuid.uuid4(), username="itest-tenencia-sin-par")
     with pytest.raises(HTTPException) as exc_info:
         await service.create(
-            TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+            TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
         )
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["error"] == "ubicaciones_requeridas_fisico"
@@ -224,7 +226,7 @@ async def test_electronico_sin_tenencia_sin_origen_ni_destino_201(
     service = TransferenciaService(conn, slug)
     actor = Actor(id=uuid.uuid4(), username="itest-tenencia-electronico")
     resp = await service.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
     )
     assert resp.estado == "preparada"
     assert resp.ubicacion_origen_id is None
@@ -256,6 +258,7 @@ async def test_multiplicidad_origen_cotea_con_cualquiera_de_las_dos_201(
     resp1 = await service.create(
         TransferenciaCreate(
             tipo="primaria",
+            objeto="Transferencia primaria de la serie de contratos",
             expediente_id=created.id,
             ubicacion_origen_id=ubicacion_1.id,
             ubicacion_destino_id=destino.id,
@@ -281,6 +284,7 @@ async def test_multiplicidad_origen_cotea_con_cualquiera_de_las_dos_201(
     resp2 = await service.create(
         TransferenciaCreate(
             tipo="primaria",
+            objeto="Transferencia primaria de la serie de contratos",
             expediente_id=created.id,
             ubicacion_origen_id=ubicacion_2.id,
             ubicacion_destino_id=destino.id,
@@ -309,6 +313,7 @@ async def test_multiplicidad_origen_ajeno_a_ambas_422(
         await service.create(
             TransferenciaCreate(
                 tipo="primaria",
+                objeto="Transferencia primaria de la serie de contratos",
                 expediente_id=created.id,
                 ubicacion_origen_id=origen_ajeno.id,
                 ubicacion_destino_id=destino.id,
@@ -348,6 +353,7 @@ async def test_regresion_h_m_cotejo_pasa_pero_coherencia_de_tipo_falla_422(
         await service.create(
             TransferenciaCreate(
                 tipo="primaria",
+                objeto="Transferencia primaria de la serie de contratos",
                 expediente_id=created.id,
                 ubicacion_origen_id=ubicacion_central.id,
                 ubicacion_destino_id=destino.id,

@@ -87,7 +87,8 @@ export async function POST({ locals, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  let { tipo, expediente_id, ubicacion_origen_id, ubicacion_destino_id, observacion } = body ?? {};
+  let { tipo, expediente_id, ubicacion_origen_id, ubicacion_destino_id, observacion, objeto } =
+    body ?? {};
 
   if (!tipo || !TIPOS_VALIDOS.includes(tipo)) {
     return json(
@@ -153,6 +154,23 @@ export async function POST({ locals, request }) {
   if (observacion && typeof observacion === "string" && observacion.trim()) {
     payload.observacion = observacion.trim().slice(0, 2000);
   }
+  // `objeto` es OBLIGATORIO (cabecera del Anexo FUID, Ac. AGN 001/2024): a
+  // diferencia de `observacion`, se valida aquí en vez de dejarlo caer en
+  // silencio — un 422 del backend con el detalle en inglés de Pydantic sería
+  // peor mensaje que este.
+  const objetoLimpio = typeof objeto === "string" ? objeto.trim() : "";
+  if (objetoLimpio.length < 3) {
+    return json(
+      {
+        error: "validation_error",
+        detail:
+          "El objeto de la transferencia es obligatorio (mínimo 3 caracteres): " +
+          "encabeza el acta de entrega y dice para qué se transfiere.",
+      },
+      { status: 422 },
+    );
+  }
+  payload.objeto = objetoLimpio.slice(0, 500);
 
   /** @type {Record<string, string>} */
   const headers = {

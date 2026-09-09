@@ -177,7 +177,7 @@ async def _seed_acta_firmada(
     actor = Actor(id=uuid.uuid4(), username="itest-seed-ct-filter")
     transferencia = TransferenciaService(conn, slug)
     resp = await transferencia.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
     )
     await transferencia.enviar(resp.id, actor)
     await transferencia.recibir(resp.id, actor)  # sellado post-commit no-opeado (autouse)

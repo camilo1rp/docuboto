@@ -21,8 +21,12 @@ import { API_V1 } from "$lib/utils/config.server.js";
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 import { anotarCodigoExpediente } from "$lib/server/transferenciaEtiquetas.js";
 
+/** Estados y tipos que el backend admite (E12). Allowlist de la semilla de URL. */
+const ESTADOS_VALIDOS = ["preparada", "enviada", "recibida", "rechazada"];
+const TIPOS_VALIDOS = ["primaria", "secundaria"];
+
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
-export async function load({ cookies, parent }) {
+export async function load({ cookies, parent, url }) {
   const { user } = await parent();
   const token = cookies.get(COOKIE_ACCESS_TOKEN) ?? "";
   const tenant = user?.tenant_slug ?? "";
@@ -59,9 +63,28 @@ export async function load({ cookies, parent }) {
     }
   }
 
+  // Filtros SEMBRADOS DESDE LA URL. `/transferencias?estado=enviada` es el
+  // enlace que el panel principal y los avisos ya producían, y la pantalla los
+  // ignoraba: pintaba la lista COMPLETA con los desplegables en «todos», así
+  // que quien llegaba por el enlace veía otra cosa de la que pidió y sin
+  // ninguna señal de que el filtro se hubiera perdido. Se resuelven en el
+  // servidor —no al montar— para que la primera pintada ya venga filtrada.
+  // Allowlist, no paso directo: un valor inventado en la URL se descarta en vez
+  // de viajar al gateway y volver como un 422.
+  const estadoSemilla = ESTADOS_VALIDOS.includes(url.searchParams.get("estado") ?? "")
+    ? (url.searchParams.get("estado") ?? "")
+    : "";
+  const tipoSemilla = TIPOS_VALIDOS.includes(url.searchParams.get("tipo") ?? "")
+    ? (url.searchParams.get("tipo") ?? "")
+    : "";
+  const consulta = new URLSearchParams();
+  if (estadoSemilla) consulta.set("estado", estadoSemilla);
+  if (tipoSemilla) consulta.set("tipo", tipoSemilla);
+  const sufijo = consulta.toString() ? `?${consulta}` : "";
+
   const [transferenciasResult, ubicacionesResult] = await Promise.allSettled([
     (async () => {
-      const res = await fetch(`${API_V1}/transferencias`, {
+      const res = await fetch(`${API_V1}/transferencias${sufijo}`, {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -115,6 +138,9 @@ export async function load({ cookies, parent }) {
   return {
     transferencias,
     ubicaciones,
+    // Semillas de los desplegables: la pantalla arranca mostrando el filtro que
+    // de verdad se aplicó, no «todos» sobre una lista recortada.
+    filtros: { estado: estadoSemilla, tipo: tipoSemilla },
     // token y tenant NO se exponen: las acciones usan /transferencias/api/* (D-05)
   };
 }

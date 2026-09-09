@@ -1041,7 +1041,7 @@ async def _seed_transferencia_lista_para_recibir(
     )
     transferencia = TransferenciaService(conn, slug)
     resp = await transferencia.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
     )
     await transferencia.enviar(resp.id, actor)
     return created, resp
@@ -1236,7 +1236,7 @@ async def _seed_transferencia_lista_para_recibir_con_documento(
     )
     transferencia = TransferenciaService(conn, slug)
     resp = await transferencia.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
     )
     await transferencia.enviar(resp.id, actor)
     return created, resp, radicado_id, content_hash
@@ -2023,7 +2023,10 @@ async def _seed_transferencia_preparada(
     transferencia = TransferenciaService(conn, slug)
     resp = await transferencia.create(
         TransferenciaCreate(
-            tipo="primaria", expediente_id=created.id, observacion=observacion
+            tipo="primaria",
+            expediente_id=created.id,
+            objeto="Transferencia primaria de la serie de contratos",
+            observacion=observacion,
         ),
         actor,
     )
@@ -2341,7 +2344,7 @@ async def test_transferencia_create_rollback_reverts_insert_and_audit_on_natural
     actor = Actor(id=uuid.uuid4(), username="itest-create-boom")
     with pytest.raises(asyncpg.exceptions.CheckViolationError):
         await service.create(
-            TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+            TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
         )
 
     second_conn = await asyncpg.connect(dsn=DSN)
@@ -2392,7 +2395,7 @@ async def test_transferencia_create_commits_with_unified_actor_and_hoja_de_ruta(
     # (el UUID), nunca "itest-create-humano".
     actor = Actor(id=uuid.uuid4(), username="itest-create-humano")
     resp = await service.create(
-        TransferenciaCreate(tipo="primaria", expediente_id=created.id), actor
+        TransferenciaCreate(tipo="primaria", expediente_id=created.id, objeto="Transferencia primaria de la serie de contratos"), actor
     )
     assert resp.estado == "preparada"
     assert resp.creada_por == actor.audit_actor

@@ -684,13 +684,42 @@ class DocumentRepository:
         Acto de sistema (D-02), scoped al tenant por `search_path`."""
         if not radicado_ids:
             return {}
+        # `origin_dept`/`origin_dept_code` (dependencia PRODUCTORA) y el
+        # formato/tamaño del documento principal se resuelven AQUÍ, en el
+        # servicio dueño de la tabla `radicados`, y no los aporta el cliente:
+        # alimentan el manifiesto de exportación y el índice electrónico que se
+        # FIRMA, y un dato probatorio que el llamante puede escribir a su gusto
+        # no prueba nada. El documento principal es el PRIMER anexo por
+        # `created_at` (desempate por `id` para que el resultado sea
+        # determinista cuando dos anexos comparten instante).
         rows = await self._conn.fetch(
-            "SELECT id, subject, doc_type FROM radicados "
-            "WHERE id = ANY($1::uuid[]) AND nivel_seguridad <= $2",
+            """
+            SELECT r.id, r.subject, r.doc_type, r.origin_dept, r.origin_dept_code,
+                   a.mime_type AS formato, a.file_size AS tamano_bytes
+              FROM radicados r
+              LEFT JOIN LATERAL (
+                    SELECT mime_type, file_size
+                      FROM anexos
+                     WHERE radicado_id = r.id
+                     ORDER BY created_at, id
+                     LIMIT 1
+              ) a ON TRUE
+             WHERE r.id = ANY($1::uuid[]) AND r.nivel_seguridad <= $2
+            """,
             radicado_ids,
             max_clearance,
         )
-        return {r["id"]: {"subject": r["subject"], "doc_type": r["doc_type"]} for r in rows}
+        return {
+            r["id"]: {
+                "subject": r["subject"],
+                "doc_type": r["doc_type"],
+                "origin_dept": r["origin_dept"],
+                "origin_dept_code": r["origin_dept_code"],
+                "formato": r["formato"],
+                "tamano_bytes": r["tamano_bytes"],
+            }
+            for r in rows
+        }
 
     async def list_tracking_numbers_internal(
         self, radicado_ids: list[uuid.UUID]

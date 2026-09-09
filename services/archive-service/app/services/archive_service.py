@@ -655,8 +655,16 @@ class ArchiveService:
                     _csv_safe(meta.get("subject", "")),
                     r.estado,
                     "" if r.folios is None else r.folios,
-                    _csv_safe(r.formato or ""),
-                    _csv_safe(r.dependencia_productora_nombre or ""),
+                    # Caída a la metadata del origen para los vínculos ANTERIORES
+                    # a que estas dos columnas se resolvieran en el servidor: el
+                    # dato ya viene en `meta_by_rad` (mismo viaje), y un
+                    # manifiesto que deja la columna vacía teniendo el dato al
+                    # lado es el patrón que este arreglo cierra. Lo GUARDADO
+                    # manda: es la copia congelada del instante del vínculo.
+                    _csv_safe(r.formato or meta.get("formato") or ""),
+                    _csv_safe(
+                        r.dependencia_productora_nombre or meta.get("origin_dept") or ""
+                    ),
                     r.added_at.isoformat() if r.added_at else "",
                     _csv_safe(causal),
                     num_anexos,
@@ -1993,6 +2001,71 @@ class ArchiveService:
                 resultado[str(rad_id)] = huella
         return resultado
 
+    async def _origen_por_radicado(
+        self, radicado_ids: list[uuid.UUID]
+    ) -> dict[str, dict]:
+        """Dependencia PRODUCTORA y formato de cada radicado, resueltos EN EL
+        SERVIDOR (E15 perfil v4 R1; Ac. AGN 001/2024 art. 4.3.2.3).
+
+        Mismo razonamiento que `_huellas_por_radicado`, y el mismo motivo por
+        el que la huella no se le pide al cliente: la dependencia productora y
+        el formato viajan al manifiesto de exportación y al índice electrónico
+        que se FIRMA. Un dato probatorio que escribe quien vincula no prueba
+        nada sobre quién produjo el documento — y quien vincula suele ser un
+        archivista central, no la oficina que lo produjo, así que ni siquiera
+        es un error de mala fe: es el dato equivocado por construcción.
+
+        `dependencia_productora_*` estaba en el contrato desde el perfil v4 y
+        ninguna pantalla lo mandaba: las dos columnas viajaban vacías al
+        manifiesto y el índice no emitía `<dependenciaProductora>` para nada.
+
+        **Lo explícito manda**: lo que el llamante aporte en el payload gana
+        sobre lo resuelto aquí (importación con metadatos propios, E11 INT-05).
+
+        **Sin recorte de clearance** (`max_clearance=3`, sin restricción): es
+        un acto de sistema componiendo el índice, no una lectura de contenido
+        — si se recortara, dos archivistas producirían índices distintos del
+        mismo expediente.
+
+        **Best-effort**: cualquier fallo devuelve ``{}`` y el vínculo se hace
+        igual, con esos campos vacíos. Vincular no puede quedar preso de que
+        document-service esté en pie, y tanto el índice como el manifiesto
+        saben declarar el hueco.
+        """
+        if not radicado_ids:
+            return {}
+        try:
+            meta = await document_client.fetch_radicado_metadata_internal(
+                tenant_slug=self._tenant_slug,
+                radicado_ids=radicado_ids,
+                max_clearance=CLEARANCE_SIN_RESTRICCION,
+            )
+        except DocumentClientError:
+            logger.warning(
+                "No se pudo resolver la dependencia productora de %d radicados al "
+                "vincular; quedan sin declarar en el índice y en el manifiesto",
+                len(radicado_ids),
+                exc_info=True,
+            )
+            return {}
+        return meta
+
+    @staticmethod
+    def _productora(meta: dict | None) -> tuple[int | None, str | None]:
+        """Código y nombre de la dependencia productora, o `(None, None)`.
+
+        Los dos JUNTOS o NINGUNO: el índice electrónico solo emite
+        `<dependenciaProductora>` cuando tiene ambos, y la BD lo exige con un
+        CHECK de pareja (migración 019). Media pareja sería una fila que la
+        base rechaza en el mejor caso y un elemento a medias en el peor."""
+        if not meta:
+            return None, None
+        codigo = meta.get("origin_dept_code")
+        nombre = meta.get("origin_dept")
+        if codigo is None or not nombre:
+            return None, None
+        return int(codigo), str(nombre)
+
     async def link_radicado(
         self,
         expediente_id: uuid.UUID,
@@ -2085,6 +2158,24 @@ class ArchiveService:
                 str(payload.radicado_id)
             )
 
+        # Origen y formato: mismo viaje único fuera de la transacción, y solo
+        # si el llamante no los trae ya (lo explícito manda, ver
+        # `_origen_por_radicado`).
+        dep_codigo = payload.dependencia_productora_codigo
+        dep_nombre = payload.dependencia_productora_nombre
+        formato = payload.formato
+        tamano_bytes = payload.tamano_bytes
+        if dep_codigo is None or formato is None or tamano_bytes is None:
+            meta = (await self._origen_por_radicado([payload.radicado_id])).get(
+                str(payload.radicado_id)
+            )
+            if dep_codigo is None:
+                dep_codigo, dep_nombre = self._productora(meta)
+            if formato is None:
+                formato = (meta or {}).get("formato")
+            if tamano_bytes is None:
+                tamano_bytes = (meta or {}).get("tamano_bytes")
+
         # Atomicidad vínculo<->auditoría (mismo patrón que `create_expediente`):
         # la mutación, la regeneración del índice, el evento de la hoja de
         # ruta y el asiento forense son un único acto de negocio — si algo
@@ -2099,11 +2190,11 @@ class ArchiveService:
                 payload.radicado_id,
                 payload.tracking_number,
                 content_hash=content_hash,
-                formato=payload.formato,
-                tamano_bytes=payload.tamano_bytes,
+                formato=formato,
+                tamano_bytes=tamano_bytes,
                 folios=payload.folios,
-                dependencia_productora_codigo=payload.dependencia_productora_codigo,
-                dependencia_productora_nombre=payload.dependencia_productora_nombre,
+                dependencia_productora_codigo=dep_codigo,
+                dependencia_productora_nombre=dep_nombre,
                 tipologia=payload.tipologia,
             )
             await self._regenerate_index(expediente_id)
@@ -2193,6 +2284,15 @@ class ArchiveService:
         # huella explícita: lo que el llamante declara manda.
         faltan = [it.radicado_id for it in items if not it.content_hash]
         huellas = await self._huellas_por_radicado(faltan)
+        # Origen/formato: un solo viaje para los que no lo traen declarado.
+        faltan_origen = [
+            it.radicado_id
+            for it in items
+            if it.dependencia_productora_codigo is None
+            or it.formato is None
+            or it.tamano_bytes is None
+        ]
+        origenes = await self._origen_por_radicado(faltan_origen)
 
         # Atomicidad lote<->auditoría (mismo patrón que `link_radicado`): UN
         # expediente, N vínculos es una unidad todo-o-nada — si un vínculo del
@@ -2207,6 +2307,12 @@ class ArchiveService:
                 if await self._repo.radicado_link_exists(expediente_id, it.radicado_id):
                     omitidos += 1
                     continue
+                meta = origenes.get(str(it.radicado_id)) or {}
+                if it.dependencia_productora_codigo is None:
+                    dep_codigo, dep_nombre = self._productora(meta)
+                else:
+                    dep_codigo = it.dependencia_productora_codigo
+                    dep_nombre = it.dependencia_productora_nombre
                 await self._repo.link_radicado(
                     expediente_id,
                     it.radicado_id,
@@ -2216,11 +2322,15 @@ class ArchiveService:
                         if it.content_hash
                         else huellas.get(str(it.radicado_id))
                     ),
-                    formato=it.formato,
-                    tamano_bytes=it.tamano_bytes,
+                    formato=it.formato if it.formato is not None else meta.get("formato"),
+                    tamano_bytes=(
+                        it.tamano_bytes
+                        if it.tamano_bytes is not None
+                        else meta.get("tamano_bytes")
+                    ),
                     folios=it.folios,
-                    dependencia_productora_codigo=it.dependencia_productora_codigo,
-                    dependencia_productora_nombre=it.dependencia_productora_nombre,
+                    dependencia_productora_codigo=dep_codigo,
+                    dependencia_productora_nombre=dep_nombre,
                     tipologia=it.tipologia,
                 )
                 vinculados += 1

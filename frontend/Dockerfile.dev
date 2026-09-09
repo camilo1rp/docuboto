@@ -10,7 +10,15 @@
 # Frontend OrpycaMCP — modo desarrollo (Vite dev server con HMR).
 # El código se sobreescribe por volúmenes en docker-compose; arranca en :5173
 # (el cliente Keycloak orpyca-frontend ya tiene este redirectUri).
-FROM node:18-alpine
+#
+# MISMA VERSIÓN MAYOR que `Dockerfile` (producción, node:22). Estaba en node:18
+# y el desfase no era cosmético: la suite de pruebas del frontend ni siquiera
+# CARGA en node:18 (`process.getBuiltinModule` y el `crypto` global no existen
+# allí), así que ejecutarla en la imagen de desarrollo producía siete fallos
+# fantasma que no tenían nada que ver con el código. Desarrollar sobre un
+# runtime distinto del que sirve la aplicación convierte cada diferencia entre
+# los dos en un defecto que solo aparece en producción.
+FROM node:22-alpine
 WORKDIR /app
 
 COPY package*.json ./

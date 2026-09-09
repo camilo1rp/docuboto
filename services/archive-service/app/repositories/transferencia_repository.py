@@ -30,7 +30,13 @@ _COLS = (
     "creada_por, observacion, created_at, enviada_at, enviada_por, recibida_at, decidida_por, "
     # H-K/H-J (migración 021): motivo propio del rechazo (nunca pisa
     # `observacion`) + sello temporal propio del acto.
-    "motivo_rechazo, rechazada_at"
+    "motivo_rechazo, rechazada_at, "
+    # Migración 052 (Anexo FUID, Ac. AGN 001/2024): cabecera del acta capturada
+    # en la PREPARACIÓN. Sí van en `_COLS` -- son cinco escalares cortos que
+    # `recibir()` necesita para congelar el acta y la ficha necesita para
+    # mostrarla, no un XML como el de `_ACTA_COLS`.
+    "objeto, oficina_productora_codigo, oficina_productora_nombre, "
+    "unidad_administrativa_codigo, unidad_administrativa_nombre"
 )
 
 # Migración 022 (E12 H-I): acta de entrega congelada, 1:1 con la transferencia
@@ -260,6 +266,60 @@ class TransferenciaRepository:
         return await self._conn.fetchrow(
             f"SELECT {_ACTA_COLS} FROM transferencia_acta a WHERE a.transferencia_id = $1",
             transferencia_id,
+        )
+
+    async def dependencia_de_usuario(self, user_id: uuid.UUID) -> asyncpg.Record | None:
+        """Oficina productora y unidad administrativa del usuario que actúa.
+
+        La oficina es su dependencia ACTIVA (`auth_users.active_depe_id`,
+        migración 006 de auth-service — el contexto que el propio usuario
+        eligió) y, si no tiene contexto activo, su URD PRINCIPAL
+        (`urd_usuaroldep.es_principal`). La unidad administrativa es la
+        dependencia PADRE (`dependencias.parent_id`); una oficina sin padre es
+        raíz y ES su propia unidad administrativa — repetirla dice la verdad,
+        dejarla vacía no.
+
+        `auth_users`, `urd_usuaroldep` y `dependencias` las crean auth-service
+        y tenant-service, no este servicio: viven en el MISMO schema del tenant
+        pero un despliegue parcial o un esquema de pruebas provisionado solo
+        con las migraciones de archivo no las tiene. Se comprueban las COLUMNAS
+        (no las tablas: `auth_users` puede existir con otra forma, ver
+        `get_acta`) y se degrada a `None` — la transferencia se prepara igual y
+        la cabecera del acta queda declaradamente vacía, que es lo que pasaba
+        siempre antes de esta migración.
+        """
+        await self._sp()
+        if not await self._conn.fetchval(
+            """SELECT
+                 (SELECT COUNT(*) FROM information_schema.columns
+                   WHERE table_schema = current_schema()
+                     AND (table_name, column_name) IN
+                         (('auth_users', 'active_depe_id'),
+                          ('urd_usuaroldep', 'es_principal'),
+                          ('dependencias', 'parent_id'))) = 3"""
+        ):
+            return None
+        return await self._conn.fetchrow(
+            """
+            WITH depe AS (
+                SELECT COALESCE(
+                         u.active_depe_id,
+                         (SELECT r.depe_id FROM urd_usuaroldep r
+                           WHERE r.user_id = u.id AND r.es_principal AND r.is_active
+                           LIMIT 1)
+                       ) AS codigo
+                  FROM auth_users u
+                 WHERE u.id = $1
+            )
+            SELECT d.codigo   AS oficina_productora_codigo,
+                   d.nombre   AS oficina_productora_nombre,
+                   COALESCE(p.codigo, d.codigo) AS unidad_administrativa_codigo,
+                   COALESCE(p.nombre, d.nombre) AS unidad_administrativa_nombre
+              FROM depe
+              JOIN dependencias d ON d.codigo = depe.codigo
+              LEFT JOIN dependencias p ON p.id = d.parent_id
+            """,
+            user_id,
         )
 
     # -----------------------------------------------------------------

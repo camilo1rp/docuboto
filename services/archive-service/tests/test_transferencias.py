@@ -89,6 +89,29 @@ def _transfer_row(**kw) -> dict:
         "enviada_por": None,
         "recibida_at": None,
         "decidida_por": None,
+        # Cabecera del Anexo FUID (migración 052): el objeto que escribió quien
+        # preparó, y el snapshot de su dependencia. Van en el `_transfer_row`
+        # base y no solo en los tests que los miran: son columnas de `_COLS`, y
+        # una fixtura que omite una columna real esconde justo el desajuste que
+        # existe para detectar.
+        "objeto": "Transferencia de la serie de contratos de la vigencia",
+        "oficina_productora_codigo": 120,
+        "oficina_productora_nombre": "Oficina de Contratacion",
+        "unidad_administrativa_codigo": 100,
+        "unidad_administrativa_nombre": "Secretaria General",
+    }
+    base.update(kw)
+    return base
+
+
+def _depe_row(**kw) -> dict:
+    """Lo que devuelve `TransferenciaRepository.dependencia_de_usuario`: la
+    oficina productora del que prepara y su unidad administrativa (padre)."""
+    base = {
+        "oficina_productora_codigo": 120,
+        "oficina_productora_nombre": "Oficina de Contratacion",
+        "unidad_administrativa_codigo": 100,
+        "unidad_administrativa_nombre": "Secretaria General",
     }
     base.update(kw)
     return base
@@ -103,7 +126,7 @@ async def test_create_requires_closed_expediente(client_with_conn) -> None:
 
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(uuid.uuid4())},
+        json={"tipo": "primaria", "expediente_id": str(uuid.uuid4()), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 409
@@ -118,13 +141,16 @@ async def test_create_transferencia(client_with_conn) -> None:
     # get_expediente (closed) + fetch radicados, insert transferencia
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(expediente_id=exp_id),
     ]
     mock_conn.fetch.return_value = []
 
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        json={"tipo": "primaria", "expediente_id": str(exp_id), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         headers={**TENANT_HEADERS, "X-Username": "ana"},
     )
     assert resp.status_code == 201
@@ -340,7 +366,7 @@ async def test_create_transferencia_sin_permiso_403(client_with_conn) -> None:
     mock_conn.fetchval.return_value = None  # sin fila en auth_users → sin permiso
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(uuid.uuid4())},
+        json={"tipo": "primaria", "expediente_id": str(uuid.uuid4()), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 403
@@ -401,13 +427,16 @@ async def test_create_transferencia_con_permiso_201(client_with_conn) -> None:
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(expediente_id=exp_id),
     ]
     mock_conn.fetch.return_value = []
 
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        json={"tipo": "primaria", "expediente_id": str(exp_id), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         headers={**TENANT_HEADERS, "X-Username": "ana"},
     )
     assert resp.status_code == 201
@@ -428,12 +457,12 @@ async def test_create_transferencia_audits_success(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # D-08 gate + audit.append prev_hash
     exp_id = uuid.uuid4()
     exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
-    mock_conn.fetchrow.side_effect = [exp_closed, _transfer_row(expediente_id=exp_id)]
+    mock_conn.fetchrow.side_effect = [exp_closed, _depe_row(), _transfer_row(expediente_id=exp_id)]
     mock_conn.fetch.return_value = []
 
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        json={"tipo": "primaria", "expediente_id": str(exp_id), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         # X-Username presente A PROPÓSITO: H-D exige que el actor escrito sea
         # el UUID (X-User-Id), NUNCA "ana" -- antes de este incremento
         # `_actor()` invertía la prioridad (X-Username primero).
@@ -471,7 +500,7 @@ async def test_create_transferencia_denied_audits_failure(client_with_conn) -> N
 
     resp = await client.post(
         "/api/v1/transferencias",
-        json={"tipo": "primaria", "expediente_id": str(exp_id)},
+        json={"tipo": "primaria", "expediente_id": str(exp_id), "objeto": "Transferencia de la serie de contratos de la vigencia"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 409
@@ -857,6 +886,16 @@ async def test_recibir_congela_acta_de_entrega(client_with_conn) -> None:
     ).hexdigest()
     # `congelada_at` == el `generado` embebido en el propio XML.
     assert data["congelada_at"].isoformat() in data["acta_fuid_xml"]
+    # Cabecera del Anexo FUID (migración 052): los tres campos con los que el
+    # formato abre salen del snapshot tomado AL PREPARAR, y viajan dentro del
+    # XML que se congela y se sella. Antes iban los tres en blanco: el sello era
+    # exacto sobre un acta que no identificaba la entrega.
+    assert (
+        "<ns0:objeto>Transferencia de la serie de contratos de la vigencia</ns0:objeto>"
+        in data["acta_fuid_xml"]
+    )
+    assert "Oficina de Contratacion" in data["acta_fuid_xml"]
+    assert "Secretaria General" in data["acta_fuid_xml"]
 
     # H-H (E06/F4): `insert_acta_firma_pendiente` DENTRO de la MISMA tx que
     # `insert_acta` -- toda acta recibida tiene su fila de firma-tracking.

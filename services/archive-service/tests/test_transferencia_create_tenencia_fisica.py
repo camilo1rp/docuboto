@@ -96,6 +96,29 @@ def _transfer_row(**kw) -> dict:
         "enviada_por": None,
         "recibida_at": None,
         "decidida_por": None,
+        # Cabecera del Anexo FUID (migración 052): el objeto que escribió quien
+        # preparó, y el snapshot de su dependencia. Van en el `_transfer_row`
+        # base y no solo en los tests que los miran: son columnas de `_COLS`, y
+        # una fixtura que omite una columna real esconde justo el desajuste que
+        # existe para detectar.
+        "objeto": "Transferencia de la serie de contratos de la vigencia",
+        "oficina_productora_codigo": 120,
+        "oficina_productora_nombre": "Oficina de Contratacion",
+        "unidad_administrativa_codigo": 100,
+        "unidad_administrativa_nombre": "Secretaria General",
+    }
+    base.update(kw)
+    return base
+
+
+def _depe_row(**kw) -> dict:
+    """Lo que devuelve `TransferenciaRepository.dependencia_de_usuario`: la
+    oficina productora del que prepara y su unidad administrativa (padre)."""
+    base = {
+        "oficina_productora_codigo": 120,
+        "oficina_productora_nombre": "Oficina de Contratacion",
+        "unidad_administrativa_codigo": 100,
+        "unidad_administrativa_nombre": "Secretaria General",
     }
     base.update(kw)
     return base
@@ -118,7 +141,12 @@ def _denial_motivo(mock_conn) -> str:
 
 
 async def _post(client, *, tipo="primaria", exp_id, origen_id=None, destino_id=None):
-    body = {"tipo": tipo, "expediente_id": str(exp_id)}
+    body = {
+        "tipo": tipo,
+        "expediente_id": str(exp_id),
+        # Obligatorio desde la migración 052 (cabecera del Anexo FUID).
+        "objeto": "Transferencia de la serie de contratos de la vigencia",
+    }
     if origen_id is not None:
         body["ubicacion_origen_id"] = str(origen_id)
     if destino_id is not None:
@@ -212,6 +240,9 @@ async def test_create_rama_a_origen_cotea_y_coherente_201(client_with_conn) -> N
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
         _ubicacion_row(id=origen_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(
             expediente_id=exp_id,
             ubicacion_origen_id=origen_id,
@@ -248,6 +279,9 @@ async def test_create_rama_a_multiplicidad_origen_cotea_con_cualquiera_201(
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
         _ubicacion_row(id=ubicacion_b, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(
             expediente_id=exp_id,
             ubicacion_origen_id=ubicacion_b,
@@ -343,6 +377,9 @@ async def test_create_rama_b_electronico_sin_unidades_201(client_with_conn) -> N
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(expediente_id=exp_id),
     ]
     mock_conn.fetch.return_value = []
@@ -364,6 +401,9 @@ async def test_create_rama_b_unidad_sin_ubicacion_resuelta_no_cuenta_como_tenenc
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # `dependencia_de_usuario` (migración 052): la oficina productora de
+        # quien prepara, resuelta antes del INSERT.
+        _depe_row(),
         _transfer_row(expediente_id=exp_id),
     ]
     mock_conn.fetch.side_effect = [[], [_unidad_de_expediente_row(ubicacion_id=None)]]

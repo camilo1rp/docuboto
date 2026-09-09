@@ -19,6 +19,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 
 const UUID_EXP = "7ce8f33d-0dd9-4ecc-9785-423f731032a8";
 const LOCALS = { accessToken: "tok", user: { tenant_slug: "demo", sub: "u-1" } };
+// Obligatorio desde la migración 052: encabeza el acta de entrega (Anexo FUID).
+const OBJETO = "Transferencia primaria de la serie de contratos";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -61,7 +63,7 @@ async function crear(cuerpo) {
 describe("POST /transferencias/api", () => {
   it("un código de expediente se resuelve y viaja como UUID", async () => {
     const llamadas = backend();
-    const res = await crear({ tipo: "primaria", expediente_id: "EXP-2026-0020" });
+    const res = await crear({ tipo: "primaria", expediente_id: "EXP-2026-0020", objeto: OBJETO });
 
     expect(res.status).toBe(201);
     const alBackend = llamadas.find((c) => c.url.includes("/transferencias"));
@@ -72,7 +74,7 @@ describe("POST /transferencias/api", () => {
     // Gemelo: no se puede resolver a medias ni mandar el texto crudo al
     // backend, que respondería un error sobre un campo que la persona no usó.
     backend({ resuelve: false });
-    const res = await crear({ tipo: "primaria", expediente_id: "EXP-NO-EXISTE" });
+    const res = await crear({ tipo: "primaria", expediente_id: "EXP-NO-EXISTE", objeto: OBJETO });
 
     expect(res.status).toBe(404);
     const cuerpo = await res.json();
@@ -83,9 +85,39 @@ describe("POST /transferencias/api", () => {
   it("un UUID sigue aceptándose sin consultar nada", async () => {
     // Las integraciones que ya mandan el identificador no pagan una búsqueda.
     const llamadas = backend();
-    const res = await crear({ tipo: "primaria", expediente_id: UUID_EXP });
+    const res = await crear({ tipo: "primaria", expediente_id: UUID_EXP, objeto: OBJETO });
 
     expect(res.status).toBe(201);
     expect(llamadas.some((c) => c.url.includes("/expedientes/search"))).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // `objeto`: cabecera del Anexo FUID (Ac. AGN 001/2024), migración 052.
+  // -------------------------------------------------------------------------
+
+  it("el objeto viaja al backend", async () => {
+    const llamadas = backend();
+    await crear({ tipo: "primaria", expediente_id: UUID_EXP, objeto: `  ${OBJETO}  ` });
+
+    const alBackend = llamadas.find((c) => c.url.includes("/transferencias"));
+    expect(alBackend.body.objeto).toBe(OBJETO);
+  });
+
+  it("sin objeto no se crea la transferencia", async () => {
+    // El acta se congela y se sella al recibirse: si la cabecera va vacía, el
+    // sello es exacto sobre un documento que no identifica la entrega. Se para
+    // aquí, cuando todavía hay alguien a quien pedírselo.
+    const llamadas = backend();
+    const res = await crear({ tipo: "primaria", expediente_id: UUID_EXP });
+
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe("validation_error");
+    expect(llamadas.some((c) => c.url.endsWith("/transferencias"))).toBe(false);
+  });
+
+  it("un objeto en blanco tampoco cuenta", async () => {
+    const res =
+      (backend(), await crear({ tipo: "primaria", expediente_id: UUID_EXP, objeto: "   " }));
+    expect(res.status).toBe(422);
   });
 });

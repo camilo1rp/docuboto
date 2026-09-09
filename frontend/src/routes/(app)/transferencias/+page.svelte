@@ -85,8 +85,11 @@
   // ---------------------------------------------------------------------------
   // Filtros dinámicos
   // ---------------------------------------------------------------------------
-  let filtroEstado = "";
-  let filtroTipo = "";
+  // Sembrados por el `load` desde la URL (`?estado=`/`?tipo=`): la lista que ya
+  // llegó viene filtrada por ellos, así que los desplegables tienen que decir
+  // lo mismo o la pantalla se contradice a sí misma.
+  let filtroEstado = data.filtros?.estado ?? "";
+  let filtroTipo = data.filtros?.tipo ?? "";
 
   async function cargarTransferencias() {
     loading = true;
@@ -116,6 +119,7 @@
     expediente_id: "",
     ubicacion_origen_id: "",
     ubicacion_destino_id: "",
+    objeto: "",
     observacion: "",
   };
   let nuevaLoading = false;
@@ -155,6 +159,13 @@
       notifyError("Indique el tipo de transferencia y el expediente.");
       return;
     }
+    // El objeto encabeza el acta de entrega (Anexo FUID, Ac. AGN 001/2024): se
+    // pide AQUÍ, al preparar, porque es quien prepara quien sabe para qué se
+    // transfiere — y para cuando alguien reciba, el acta ya estará congelada.
+    if (nuevaForm.objeto.trim().length < 3) {
+      notifyError("Escriba el objeto de la transferencia: encabeza el acta de entrega.");
+      return;
+    }
     nuevaLoading = true;
     try {
       const res = await fetch("/transferencias/api", {
@@ -165,6 +176,7 @@
           expediente_id: nuevaForm.expediente_id.trim(),
           ubicacion_origen_id: nuevaForm.ubicacion_origen_id.trim() || undefined,
           ubicacion_destino_id: nuevaForm.ubicacion_destino_id.trim() || undefined,
+          objeto: nuevaForm.objeto.trim(),
           observacion: nuevaForm.observacion.trim() || undefined,
         }),
       });
@@ -177,6 +189,7 @@
         expediente_id: "",
         ubicacion_origen_id: "",
         ubicacion_destino_id: "",
+        objeto: "",
         observacion: "",
       };
       await cargarTransferencias();
@@ -630,6 +643,22 @@
         bind:value={nuevaForm.ubicacion_destino_id}
       />
     {/if}
+    <FormField
+      id="tr-objeto"
+      label="Objeto de la transferencia"
+      type="textarea"
+      placeholder="Para qué se transfiere este expediente"
+      rows={2}
+      required
+      bind:value={nuevaForm.objeto}
+    />
+    <p class="tr-hint" role="note">
+      <i class="fas fa-circle-info" aria-hidden="true"></i>
+      <span>
+        El objeto encabeza el acta de entrega junto con la oficina productora, que se toma de su
+        dependencia actual. El acta se congela y se sella al recibirse: después no se corrige.
+      </span>
+    </p>
     <FormField
       id="tr-observacion"
       label="Observación"

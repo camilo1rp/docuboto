@@ -24,6 +24,22 @@ class TransferenciaCreate(BaseModel):
     ubicacion_origen_id: uuid.UUID | None = None
     ubicacion_destino_id: uuid.UUID | None = None
     observacion: str | None = Field(default=None, max_length=2000)
+    # `objeto` (migración 052, Anexo FUID del Ac. AGN 001/2024): el propósito de
+    # la transferencia, en la cabecera del acta de entrega. OBLIGATORIO y a
+    # diferencia de `observacion` -- que es una nota de trabajo y puede faltar
+    # -- este es uno de los tres campos con los que el Anexo FUID abre. Lo
+    # escribe quien prepara porque es un dato HUMANO: componerlo a partir del
+    # expediente y las ubicaciones produciría siempre la misma frase, que es
+    # tanto como dejarlo vacío con más letras.
+    objeto: str = Field(min_length=3, max_length=500)
+
+    @field_validator("objeto")
+    @classmethod
+    def _objeto_no_blank(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("objeto de la transferencia requerido (mín. 3 caracteres)")
+        return v
 
 
 class TransferenciaRechazo(BaseModel):
@@ -69,6 +85,16 @@ class TransferenciaResponse(BaseModel):
     # `enviada_at`/`recibida_at`.
     motivo_rechazo: str | None = None
     rechazada_at: datetime | None = None
+    # Cabecera del FUID (migración 052): `objeto` lo escribe quien prepara; la
+    # oficina productora y su unidad administrativa son el SNAPSHOT de la
+    # dependencia activa de esa misma persona en ese instante. `None` en las
+    # transferencias anteriores a la migración y cuando la dependencia no se
+    # pudo resolver -- vacío honesto, nunca un valor compuesto.
+    objeto: str | None = None
+    oficina_productora_codigo: int | None = None
+    oficina_productora_nombre: str | None = None
+    unidad_administrativa_codigo: int | None = None
+    unidad_administrativa_nombre: str | None = None
 
 
 class TransferenciaActaFirmaInfo(BaseModel):
