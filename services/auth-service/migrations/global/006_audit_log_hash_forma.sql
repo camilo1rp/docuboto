@@ -24,11 +24,35 @@
 -- protege contra la modificación deja abierta la puerta de la contaminación.
 --
 -- QUÉ NO CIERRA, dicho explícitamente: esto NO impide que alguien con acceso
--- SQL inserte una fila con un hash bien formado pero falso. Eso solo lo detecta
--- la reverificación de la cadena, que es el control de fondo. Lo que esta
--- restricción elimina es la contaminación ACCIDENTAL —la de los datos de prueba
--- y los scripts improvisados—, que es la que ha ocurrido y la que seguirá
--- ocurriendo mientras nada la rechace.
+-- SQL inserte una fila con un hash bien formado. Lo que esta restricción
+-- elimina es la contaminación ACCIDENTAL —la de los datos de prueba y los
+-- scripts improvisados—, que es la que ha ocurrido y la que seguirá ocurriendo
+-- mientras nada la rechace.
+--
+-- Aquí decía que una fila «con hash bien formado pero falso» la detecta la
+-- reverificación. **Es falso**, y comprobarlo fue el hallazgo de B12: el hash
+-- es un SHA-256 SIN SECRETO sobre los campos canónicos, así que quien puede
+-- insertar puede además calcular el hash CORRECTO —`compute_hash` vive en la
+-- librería compartida que importan los once servicios— y añadir un asiento
+-- perfectamente encadenado. Se demostró contra el registro real, dentro de una
+-- transacción revertida: 932 asientos íntegros, se añade uno forjado a nombre
+-- de un usuario real, y la reverificación sigue diciendo 933 verificados y
+-- CERO roturas.
+--
+-- Lo que la cadena SÍ garantiza, y no es poco: que la historia no se reescribe.
+-- Modificar y borrar están cerrados por privilegios (el rol de aplicación no
+-- los tiene) y la inserción RETROACTIVA es inalcanzable, porque colocar una
+-- fila en mitad de la historia exigiría recalcular las siguientes, que es un
+-- UPDATE. Lo que NO garantiza es la AUTENTICIDAD de un asiento nuevo, y ninguna
+-- cadena de hash sin clave puede garantizarla: añadir es justamente la
+-- operación que una cadena permite.
+--
+-- Cerrarlo es un cambio de diseño, no un parche, y queda declarado como tal:
+-- sellar cada asiento con un HMAC cuya clave no tenga el rol de base de datos
+-- —con la misma convivencia de formatos que ya se usa para los asientos que no
+-- cubren su `ts`—, o anclar el extremo de la cadena fuera del sistema, que es
+-- lo que ya hace el respaldo. Mientras tanto, «cadena íntegra» significa «no se
+-- ha reescrito», que es exactamente lo que la pantalla de auditoría afirma.
 --
 -- POR QUÉ `NOT VALID`. Las 25 filas ya existen y no se pueden borrar. Una
 -- restricción validada haría fallar la migración; `NOT VALID` se aplica a toda

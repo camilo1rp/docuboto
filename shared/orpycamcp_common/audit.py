@@ -139,7 +139,23 @@ def _canonical(
 
 
 def compute_hash(prev_hash: str | None, **fields: Any) -> str:
-    """Hash SHA-256 de una fila dado el hash previo (expuesto para verificación)."""
+    """Hash SHA-256 de una fila dado el hash previo (expuesto para verificación).
+
+    **Sin clave, y conviene saber qué significa eso.** La cadena prueba que la
+    historia no se reescribe: modificar y borrar están cerrados por privilegios
+    y la inserción retroactiva exigiría recalcular las filas siguientes, que es
+    un UPDATE. Lo que NO prueba es la AUTENTICIDAD de un asiento nuevo — quien
+    pueda insertar puede calcular su hash correcto con esta misma función y
+    dejar un asiento indistinguible de uno legítimo. Ninguna cadena de hash sin
+    secreto puede evitarlo: añadir es la operación que una cadena permite.
+
+    Comprobado contra el registro real (B12, transacción revertida): 932
+    asientos íntegros, se añade uno forjado y `verify_chain` sigue devolviendo
+    cero roturas. Cerrarlo sería sellar con HMAC bajo una clave que el rol de
+    base de datos no tenga, o anclar el extremo de la cadena fuera del sistema
+    —lo que ya hace el respaldo—; está declarado en
+    `auth-service/migrations/global/006_audit_log_hash_forma.sql`.
+    """
     canonical = _canonical(prev_hash, **fields)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

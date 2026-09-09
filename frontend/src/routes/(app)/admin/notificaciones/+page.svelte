@@ -257,6 +257,7 @@
           totalCount={history.length}
           pageSize={Math.max(history.length, 1)}
           disableNav
+          totalDesconocido
           loading={historyLoading}
           caption="Historial de envíos"
         >

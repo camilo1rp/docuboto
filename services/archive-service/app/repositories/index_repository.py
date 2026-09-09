@@ -21,6 +21,7 @@ from datetime import datetime
 
 import asyncpg
 
+from app.core.constants import SYSTEM_RECONCILER_ID
 from app.services.index_builder import XSD_VERSION, IndiceItemData
 
 _INDICE_COLS = (
@@ -251,6 +252,87 @@ class IndexRepository:
             proximo_at,
             ultimo_error,
             agotado,
+        )
+
+    async def expediente_code(self, expediente_id: uuid.UUID) -> str | None:
+        """El código del expediente — la referencia con la que se archiva un
+        asiento de auditoría sobre él.
+
+        Existe porque `object_ref` de los asientos del índice se escribía de
+        TRES formas distintas para el mismo tipo de objeto: el código, el
+        identificador del expediente y el identificador del índice. Ver
+        `IndexService._ref_de_expediente`.
+        """
+        return await self._conn.fetchval(
+            "SELECT code FROM expedientes WHERE id = $1", expediente_id
+        )
+
+    async def expediente_code_de_indice(self, indice_id: uuid.UUID) -> str | None:
+        """Igual, cuando lo único que hay a mano es el identificador del índice."""
+        return await self._conn.fetchval(
+            """SELECT e.code
+                 FROM expediente_indice i
+                 JOIN expedientes e ON e.id = i.expediente_id
+                WHERE i.id = $1""",
+            indice_id,
+        )
+
+    async def count_sellado_diferido(self, *, max_clearance: int) -> int | None:
+        """Cuántos índices los selló el JOB y no el acto del cierre.
+
+        La cola de pendientes solo dice qué falta AHORA, y el job de
+        reconciliación —al firmar— resetea `reconcile_intentos` a cero a
+        propósito, para no dejar basura en esa cola. La consecuencia, que no
+        estaba escrita: **una vez reparado, no queda ni rastro de que hubo que
+        reparar**. Durante dos días el sellado síncrono falló en TODOS los
+        cierres (identidad de persona sin firmar hacia signature-service, 401)
+        y el job lo arregló minutos después cada vez: la pantalla decía «sin
+        pendientes» con toda la razón, y nadie podía ver que el compensador
+        estaba trabajando a destajo. Un control que repara en silencio es
+        indistinguible de un sistema que no falla.
+
+        Este recuento es el instrumento que faltaba. Se deriva de QUIÉN firmó
+        —el sello del reconciliador lleva `SYSTEM_RECONCILER_ID`— y no de un
+        contador que haya que mantener: un contador nuevo se olvidaría de
+        incrementarse igual que el otro se olvidó de no borrarse.
+
+        No-read-up (RF-SEG-08): mismo `nivel_seguridad <= $1` que
+        `list_pending_signature_page`, porque el número dice cuántos
+        expedientes hay y eso ya es información sobre expedientes.
+        """
+        # `firma` la crea SIGNATURE-SERVICE. En el esquema de una entidad real
+        # está —todas las migraciones aterrizan en el mismo schema— pero un
+        # despliegue parcial no la tiene, y este recuento es un indicador
+        # operativo: que su ausencia tumbara la cola de pendientes sería cambiar
+        # un número que falta por una pantalla que no carga. Se comprueba la
+        # COLUMNA y no la tabla, por lo mismo que en
+        # `TransferenciaRepository.get_acta`: la tabla puede existir con otra
+        # forma. `None` (y no 0) cuando no se puede saber — la pantalla los
+        # distingue.
+        hay_catalogo_de_firmas = await self._conn.fetchval(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'firma'
+                      AND column_name = 'firmante_id')"""
+        )
+        if not hay_catalogo_de_firmas:
+            return None
+        return (
+            await self._conn.fetchval(
+                """
+                SELECT COUNT(*)
+                  FROM expediente_indice i
+                  JOIN expedientes e ON e.id = i.expediente_id
+                  JOIN firma f ON f.id = i.firma_id
+                 WHERE i.estado = 'firmado'
+                   AND e.nivel_seguridad <= $1
+                   AND f.firmante_id = $2
+                """,
+                max_clearance,
+                SYSTEM_RECONCILER_ID,
+            )
+            or 0
         )
 
     async def list_pending_signature_page(

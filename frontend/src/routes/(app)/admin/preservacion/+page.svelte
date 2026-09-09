@@ -198,6 +198,10 @@
 
   let pendientesFirmaLocal = null;
   $: pendientesFirmaEfectivas = pendientesFirmaLocal ?? pendientesFirma;
+  //  `null` = no se sabe (el gateway no reenvió la cabecera); `0` = se sabe que
+  //  ninguno. No se pintan igual: decir «0» sin saberlo sería afirmar que el
+  //  compensador nunca ha tenido que actuar.
+  $: selladoDiferido = data.selladoDiferido ?? null;
 
   /** @type {Record<string, boolean>} */
   let firmando = {};
@@ -470,6 +474,27 @@
         <h2 slot="header" class="op-card-title">
           Índices electrónicos pendientes de sellado XAdES
         </h2>
+        <!-- Una cola vacía no dice si nunca hubo cola o si el trabajo de
+             reconciliación la vació. Ese trabajo, al firmar, resetea el
+             contador de intentos a propósito para no dejar basura aquí — y
+             con eso borra el único rastro de que hubo que reparar. Durante dos
+             días el sellado del cierre falló SIEMPRE y esta pantalla dijo «sin
+             pendientes» con toda la razón. Este número es el instrumento que
+             faltaba: cuántos índices los acabó sellando el sistema y no el
+             acto del cierre. -->
+        {#if selladoDiferido !== null && selladoDiferido > 0}
+          <p class="prsv-diferido" role="status">
+            <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
+            <span>
+              <strong>{selladoDiferido.toLocaleString("es-CO")}</strong>
+              {selladoDiferido === 1 ? "índice" : "índices"}
+              {selladoDiferido === 1 ? "quedó sellado" : "quedaron sellados"} por el trabajo de reconciliación
+              y no en el acto del cierre: en esos casos el sellado inmediato falló y el sello quedó a
+              nombre del sistema, no de quien cerró el expediente. Un número que crece indica un fallo
+              del sellado síncrono, no un incidente puntual.
+            </span>
+          </p>
+        {/if}
         {#if pendientesFirmaError}
           <EmptyState
             icon="fas fa-exclamation-triangle"
@@ -833,5 +858,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .prsv-diferido {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    margin: 0 0 var(--op-space-4);
+    padding: var(--op-space-3) var(--op-space-4);
+    border-radius: var(--op-radius);
+    background: var(--op-warning-bg);
+    color: var(--op-warning-fg);
+    font-size: var(--op-font-sm);
+    line-height: var(--op-line-height);
+
+    i {
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
   }
 </style>

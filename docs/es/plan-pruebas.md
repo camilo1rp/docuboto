@@ -1040,3 +1040,139 @@ escribí para cubrirlo creó esa tabla sin escribir el esquema en la sentencia,
 así que aterrizó en `public` —el único esquema compartido por todas las
 entidades— y tumbó ocho pruebas de otros ficheros, con el fallo apareciendo
 lejos de donde estaba la causa.
+
+---
+
+## 11. Cierre del plan (2026-09-09) — B12, el instrumento que verifica todo lo demás
+
+Va el último a propósito: reverificar la cadena de asientos después de que ocho
+bloques hayan radicado, tramitado, cerrado expedientes, derogado instrumentos,
+firmado índices y cambiado custodias es la prueba más fuerte del plan.
+
+### 11.1 La cadena aguanta, y las defensas también
+
+**932 asientos, 932 verificados, cero roturas**, en 188 ms. Y las tres defensas
+del registro, probadas contra el sistema con `ROLLBACK` para no poder dañarlo:
+modificar un asiento → permiso denegado; borrarlo → permiso denegado; insertar
+uno con un hash mal formado → lo rechaza la restricción de forma.
+
+### 11.2 Lo que la cadena NO prueba, y su comentario decía que sí
+
+La cuarta prueba fue la que enseñó algo. La migración que añadió esa
+restricción declara que una fila «con hash bien formado pero falso» **la
+detecta la reverificación**. Es falso: el hash es un SHA-256 **sin secreto**,
+así que quien puede insertar puede calcular el hash correcto —`compute_hash`
+vive en la librería que importan los once servicios— y añadir un asiento
+perfectamente encadenado.
+
+Demostrado dentro de una transacción revertida: 932 asientos íntegros, se añade
+uno forjado a nombre de un usuario real (`archive.expediente_eliminado`), y la
+reverificación devuelve **933 verificados, cero roturas**. El registro quedó
+igual que estaba.
+
+Lo que la cadena **sí** garantiza —y no es poco— es que la historia no se
+reescribe: modificar y borrar están cerrados por privilegios, y la inserción
+retroactiva exigiría recalcular las filas siguientes, que es un UPDATE. Lo que
+no garantiza es la autenticidad de un asiento nuevo, y **ninguna cadena de hash
+sin clave puede darla**: añadir es justamente la operación que una cadena
+permite. Cerrarlo es un cambio de diseño —sellar con HMAC bajo una clave que el
+rol de base de datos no tenga, o anclar el extremo fuera del sistema, que es lo
+que ya hace el respaldo— y queda declarado como tal, no aplicado.
+
+**Comprobado y correcto**: la pantalla de auditoría no exagera. Dice «la cadena
+se recalculó y coincide extremo a extremo con lo almacenado», que es
+exactamente lo que se verifica, y su mensaje de rotura habla de registros
+«alterados o eliminados». El defecto estaba en el comentario del código, no en
+lo que se le dice al auditor.
+
+### 11.3 El control compensatorio que se disfrazaba de sistema sano
+
+La pestaña de índices pendientes de sellado decía «sin pendientes», con razón.
+Pero durante dos días el sellado del cierre falló en **todos** los casos y el
+trabajo de reconciliación lo reparaba minutos después — y al firmar pone a cero
+el contador de intentos, a propósito, para no dejar basura en esa cola. Con eso
+borra el único rastro de que hubo que reparar.
+
+El residuo era que el sello quedaba a nombre del sistema en vez de a nombre de
+quien cerró el expediente. Está en la base y en el registro de auditoría, y
+ninguna pantalla lo leía. Ahora la pestaña muestra el número, con su lectura
+escrita: **un número que crece indica un fallo del sellado inmediato, no un
+incidente puntual**.
+
+### 11.4 El registro archivaba el mismo objeto con tres nombres
+
+Filtrar la auditoría por `EXP-2026-0015` devolvía siete asientos y dejaba fuera
+`archive.indice_firmado` — el sellado de su índice electrónico—, archivado bajo
+el identificador interno. El mismo tipo de objeto usaba tres referencias
+distintas según el sitio: el código (4 llamadas), el identificador del
+expediente (6) y el del propio índice (2). El peor de los tres que salieron
+sobre el expediente en sí es el de su **destrucción** bajo la TRD: después del
+borrado la fila ya no existe y ese identificador no lo resuelve nadie nunca más.
+
+### 11.5 Las demás pantallas del bloque
+
+- **`/admin/colas`**: sin dead-letters. La tabla está vacía de verdad.
+- **`/admin/notificaciones`**: 420 avisos, todos entregados. Ninguno hoy, y es
+  correcto: solo dos tipos de evento notifican —radicado creado y paso de flujo
+  asignado— y el ciclo de vida archivístico no notifica a nadie, que es una
+  decisión de alcance declarada en el propio servicio. Sí tenía un defecto: el
+  resumen de la tabla decía «1–50 de 50» habiendo 420, porque recibía como
+  total el tamaño de su propia ventana.
+- **`/admin/preservacion`**: sin plan de preservación registrado — la política
+  la declara la entidad, ya declarado. Sin renovaciones WORM pendientes.
+
+### 11.6 Anotado y no perseguido
+
+- **La cabecera del FUID sigue vacía** (unidad administrativa, oficina
+  productora, objeto): la transferencia no captura la dependencia.
+- **El sellado con HMAC o el anclaje externo de la cadena**: declarado arriba,
+  es diseño y decisión de la entidad.
+- **`?estado=` en la dirección no siembra los filtros** de `/transferencias`.
+
+---
+
+## 12. El último pendiente (2026-09-09) — exportar ZIP de un expediente
+
+Quedaba sin ejecutar porque es una **descarga**, y esas las autoriza el usuario.
+Autorizada, se exportó `EXP-2026-0002` (7 radicados, 7 anexos) desde la ficha.
+
+### 12.1 Lo que trae, y aguanta
+
+11 archivos, 392 KB: `LEEME.txt`, `manifiesto.csv`, `indice-electronico.xml`,
+`checksums.txt` y los anexos bajo `documentos/<radicado>/`.
+
+**Los checksums se comprobaron de verdad**, no se leyeron: `sha256sum -c` sobre
+el paquete extraído da **10 de 10 correctos** — los diez archivos que el
+paquete cubre; `checksums.txt` no se cubre a sí mismo, que es lo correcto.
+
+El `LEEME.txt` es ejemplar en lo que declara: dice el estado del expediente al
+exportar, si el índice va firmado —«no (pendiente de firma)», cierto—, y acota
+el alcance sin ambigüedad: **no** es un paquete de preservación acreditado ni
+una transferencia formal con FUID, y los radicados excluidos figuran en el
+manifiesto sin sus bytes para preservar la trazabilidad (Ac. AGN 001/2024
+art. 4.3.2.3).
+
+### 12.2 Lo que confirmó de paso
+
+El índice exportado enseña la corrección de la tipología funcionando y su
+límite, uno al lado del otro: los cinco radicados vinculados antes salen con
+`<tipologia>` vacía y los dos vinculados después traen `DEM-PET` y `COR-PET`.
+Es exactamente lo que se declaró al corregirlo — no reescribe lo ya vinculado.
+
+### 12.3 Anotado y no perseguido
+
+El `manifiesto.csv` declara las columnas `formato` y `dependencia_productora` y
+las entrega **vacías en las siete filas**, mientras `radicados.origin_dept`
+tiene el dato para las siete («Dirección General», «Control Interno»,
+«Subdirección Financiera»…). Es la misma familia que la tipología: el servicio
+de archivo no lee la tabla de radicados, así que esos campos solo se llenan si
+los aporta quien vincula, y la pantalla de vinculación no los pide.
+
+No se corrige aquí porque **el arreglo barato no está disponible**: el buscador
+que alimenta esa pantalla expone `doc_class` y `dest_dept`, pero no
+`origin_dept` —la oficina que PRODUJO el documento, que es lo que pide el
+formato—. Las dos salidas son decisiones de diseño: ampliar otra vez la
+proyección del buscador, o resolverlo en el servidor al vincular extendiendo el
+endpoint interno de document-service, que es lo que ya se hace con la huella
+(`content_hash`) y por el mismo motivo — un dato que aporta quien vincula no
+prueba nada sobre lo que el archivo custodia.

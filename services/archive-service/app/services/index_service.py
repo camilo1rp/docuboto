@@ -525,7 +525,7 @@ class IndexService:
                 service=_SERVICE,
                 action="archive.indice_firma_pendiente",
                 object_type="expediente_indice",
-                object_ref=str(expediente_id),
+                object_ref=await self._ref_de_expediente(expediente_id),
                 actor=actor_id,
                 payload={"expediente_id": str(expediente_id), "motivo": motivo},
             )
@@ -635,7 +635,7 @@ class IndexService:
                     service=_SERVICE,
                     action="archive.indice_firmado",
                     object_type="expediente_indice",
-                    object_ref=str(expediente_id),
+                    object_ref=await self._ref_de_expediente(expediente_id),
                     actor=actor_id,
                     payload={
                         "expediente_id": str(expediente_id),
@@ -725,7 +725,7 @@ class IndexService:
                             service=_SERVICE,
                             action="archive.indice_firmado",
                             object_type="expediente_indice",
-                            object_ref=str(expediente_id),
+                            object_ref=await self._ref_de_expediente(expediente_id),
                             actor=actor_id,
                             payload={
                                 "expediente_id": str(expediente_id),
@@ -817,6 +817,42 @@ class IndexService:
                 },
             )
         return signed
+
+    async def _ref_de_expediente(self, expediente_id: uuid.UUID) -> str:
+        """La referencia con la que se archiva un asiento sobre un expediente.
+
+        **Es el CÓDIGO, siempre.** Para `object_type="expediente_indice"` se
+        escribía de tres formas según el sitio: el código (4 llamadas), el
+        identificador del expediente (6) y el identificador del propio índice
+        (2). El daño no es estético: la pantalla de auditoría filtra por
+        referencia, así que preguntar «qué le ha pasado a EXP-2026-0015»
+        devolvía siete asientos y **se dejaba fuera el del sellado de su índice
+        electrónico** —el más probatorio de todos—, archivado bajo el UUID. Una
+        respuesta incompleta que no se anuncia como incompleta.
+
+        El código es la convención del resto del servicio (`expediente_closed`,
+        `expediente_transferred`, `indice_regenerated`) y es lo que la persona
+        reconoce. Si no se pudiera resolver se cae al identificador antes que
+        perder el asiento: una traza con una referencia rara es mucho mejor que
+        ninguna traza.
+        """
+        return await self._index.expediente_code(expediente_id) or str(expediente_id)
+
+    async def _ref_de_indice(self, indice_id: uuid.UUID) -> str:
+        """Igual que `_ref_de_expediente`, cuando el sitio solo tiene a mano el
+        identificador del índice."""
+        return await self._index.expediente_code_de_indice(indice_id) or str(indice_id)
+
+    async def count_sellado_diferido(self, *, user_id: uuid.UUID | None) -> int | None:
+        """Cuántos índices acabó sellando el job en vez del acto del cierre.
+
+        Acompaña a `list_pendientes_firma`: aquella dice qué falta, esta dice
+        cuántas veces hizo falta el compensador. Una cola vacía no significa
+        que nunca haya habido cola — ver el docstring de
+        `IndexRepository.count_sellado_diferido`.
+        """
+        clearance = await self._archive.caller_clearance(user_id)
+        return await self._index.count_sellado_diferido(max_clearance=clearance)
 
     async def list_pendientes_firma(
         self, *, page: int, size: int, user_id: uuid.UUID | None
@@ -1271,7 +1307,7 @@ class IndexService:
                     service=_SERVICE,
                     action="archive.indice_worm_reconcile_agotado",
                     object_type="expediente_indice",
-                    object_ref=str(indice_id),
+                    object_ref=await self._ref_de_indice(indice_id),
                     # Acto de sistema (reconciliación): principal de sistema, no
                     # `None` (deuda E10, unificación de actor).
                     actor=str(SYSTEM_RECONCILER_ID),
@@ -1384,7 +1420,7 @@ class IndexService:
                             service=_SERVICE,
                             action="archive.indice_worm_protegido",
                             object_type="expediente_indice",
-                            object_ref=str(expediente_id),
+                            object_ref=await self._ref_de_expediente(expediente_id),
                             actor=actor_id,
                             canal="system" if origen == "reconciliation" else "api",
                             payload={
@@ -1453,7 +1489,7 @@ class IndexService:
                     service=_SERVICE,
                     action="archive.indice_worm_renovacion_agotado",
                     object_type="expediente_indice",
-                    object_ref=str(indice_id),
+                    object_ref=await self._ref_de_indice(indice_id),
                     actor=str(SYSTEM_RECONCILER_ID),
                     canal="system",
                     payload={"renovacion_intentos": intentos_tras_este, "motivo": motivo},
@@ -1516,7 +1552,7 @@ class IndexService:
                             service=_SERVICE,
                             action="archive.indice_worm_retencion_renovada",
                             object_type="expediente_indice",
-                            object_ref=str(expediente_id),
+                            object_ref=await self._ref_de_expediente(expediente_id),
                             actor=str(SYSTEM_RECONCILER_ID),
                             canal="system",
                             payload={

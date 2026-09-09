@@ -59,6 +59,12 @@ FORWARDED_REQUEST_HEADERS = {
 #     el backend avisa con ella de que hay eventos pendientes más antiguos que
 #     NO caben en la respuesta. Sin reenviarla, el banner que lo advierte es
 #     código muerto y la pantalla afirma en silencio que se ve todo.
+#   - `X-Sellado-Diferido-Count` dice cuántos índices electrónicos acabó
+#     sellando el job de reconciliación en vez del acto del cierre. La cola de
+#     pendientes solo dice qué falta AHORA, y el job borra su propio rastro al
+#     reparar: sin este número, un fallo permanente del sellado síncrono se ve
+#     igual que un sistema que nunca falla — que es exactamente lo que pasó
+#     durante dos días (ver `IndexRepository.count_sellado_diferido`).
 #
 # Es el gemelo, del lado de respuesta, de la lección de FORWARDED_REQUEST_HEADERS
 # (E20: una cabecera propia que cruza el gateway necesita estar en la lista Y
@@ -73,6 +79,7 @@ FORWARDED_RESPONSE_HEADERS = {
     "x-total-count",
     "x-truncated",
     "x-faltantes",
+    "x-sellado-diferido-count",
     # La respuesta se reenvía **cruda** (`aiter_raw`), sin descomprimir: es lo que
     # permite no materializarla en memoria. Por eso `content-encoding` tiene que
     # viajar — sin ella el cliente recibiría bytes gzip anunciados como texto plano

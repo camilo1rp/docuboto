@@ -4921,7 +4921,11 @@ class ArchiveService:
                     service="archive-service",
                     action="archive.eliminacion_expediente_fallida",
                     object_type="expediente",
-                    object_ref=str(expediente_id),
+                    # El CÓDIGO, no el identificador. Aquí importa el doble: tras el
+                    # borrado la fila del expediente ya no existe, así que su UUID no
+                    # lo puede resolver nadie nunca más — y el asiento de una
+                    # destrucción es justo el que hay que poder encontrar.
+                    object_ref=item["expediente_code"],
                     actor=str(actor),
                     payload={
                         "lote": lote["codigo"],
@@ -5023,7 +5027,11 @@ class ArchiveService:
                 service="archive-service",
                 action="archive.expediente_eliminado_trd",
                 object_type="expediente",
-                object_ref=str(expediente_id),
+                # El CÓDIGO, no el identificador. Aquí importa el doble: tras el
+                # borrado la fila del expediente ya no existe, así que su UUID no
+                # lo puede resolver nadie nunca más — y el asiento de una
+                # destrucción es justo el que hay que poder encontrar.
+                object_ref=item["expediente_code"],
                 actor=str(actor),
                 payload={
                     "expediente_code": item["expediente_code"],
@@ -5254,7 +5262,8 @@ class ArchiveService:
                 service="archive-service",
                 action="archive.disposicion_decidida",
                 object_type="expediente",
-                object_ref=str(expediente_id),
+                # El CÓDIGO, no el identificador (ver `IndexService._ref_de_expediente`).
+                object_ref=fila["code"],
                 actor=str(actor),
                 payload={
                     "fase": fase,

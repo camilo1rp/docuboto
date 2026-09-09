@@ -85,18 +85,54 @@ export async function load({ cookies, parent, fetch }) {
 
   const doFetch = (path) => fetch(`${API_V1}${path}`, { headers });
 
+  // La cola de pendientes se pide aparte de las demás facetas porque de su
+  // respuesta interesa también una CABECERA, no solo el cuerpo: cuántos
+  // índices acabó sellando el job en vez del acto del cierre. Sin ese número,
+  // una cola vacía se lee como «nunca ha fallado nada», y durante dos días
+  // significó «el compensador está reparando todos los cierres».
+  const pendientesFirmaPromise = (async () => {
+    const res = await doFetch("/expedientes/indices/pendientes-firma?page=1&size=20");
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({
+        error: "upstream_error",
+        detail: `HTTP ${res.status}`,
+        status: res.status,
+      }));
+      throw {
+        code: codigoError(body) ?? "upstream_error",
+        detail: mensajeError(body, `HTTP ${res.status}`),
+        status: res.status,
+      };
+    }
+    const crudo = res.headers.get("X-Sellado-Diferido-Count");
+    const selladoDiferido = crudo !== null && crudo !== "" ? Number(crudo) : null;
+    return {
+      items: await res.json(),
+      // `null` y `0` NO son lo mismo y no deben pintarse igual: `null` es «el
+      // gateway no reenvió la cabecera o el backend no la emite», y decir «0»
+      // ahí sería afirmar que nunca hizo falta el compensador sin saberlo.
+      selladoDiferido: Number.isFinite(selladoDiferido) ? selladoDiferido : null,
+    };
+  })();
+
   const [planResult, versionsResult, pendientesFirmaResult, pendientesRenovacionResult] =
     await Promise.allSettled([
       fetchJson(doFetch, "/preservacion/plan"),
       fetchJson(doFetch, "/preservacion/plan/versions"),
-      fetchJson(doFetch, "/expedientes/indices/pendientes-firma?page=1&size=20"),
+      pendientesFirmaPromise,
       fetchJson(doFetch, "/expedientes/indices/pendientes-renovacion?page=1&size=20"),
     ]);
+
+  const pendientesFirma = settle(pendientesFirmaResult);
 
   return {
     plan: settle(planResult),
     versions: settle(versionsResult),
-    pendientesFirma: settle(pendientesFirmaResult),
+    pendientesFirma: {
+      data: pendientesFirma.data?.items ?? null,
+      error: pendientesFirma.error,
+    },
+    selladoDiferido: pendientesFirma.data?.selladoDiferido ?? null,
     pendientesRenovacion: settle(pendientesRenovacionResult),
   };
 }

@@ -183,6 +183,15 @@
   export let rows = [];
 
   export let totalCount = 0;
+  /**
+   * El backend NO expone un total: `totalCount` es solo cuántas filas trajo
+   * esta consulta, no cuántas hay. Sin esto, el resumen pinta «1–50 de 50»
+   * sobre una ventana de las últimas 50 notificaciones de 420 — y afirmar un
+   * total falso es peor que no darlo, porque quien lo lee deja de buscar. El
+   * historial de envíos lo declara así; `/anulaciones` NO, porque su total sí
+   * es real aunque también desactive la navegación.
+   */
+  export let totalDesconocido = false;
   export let page = 1;
   export let pageSize = 20;
   export let loading = false;
@@ -840,7 +849,12 @@
   {#if totalCount > 0 && !loading}
     <nav class="op-datatable__pagination" aria-label="Paginación de resultados">
       <span class="op-datatable__count">
-        {start}–{end} de {totalCount}
+        {#if totalDesconocido}
+          {totalCount.toLocaleString("es-CO")}
+          {totalCount === 1 ? "registro" : "registros"} en esta consulta
+        {:else}
+          {start}–{end} de {totalCount}
+        {/if}
         {#if enableFilters && activeFilterCount > 0}
           <span class="op-datatable__count-filtered"
             >({displayRows.length} filtradas en esta página)</span

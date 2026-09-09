@@ -46,9 +46,17 @@ export async function GET({ locals, url }) {
     );
     const data = await res.json().catch(() => ({}));
     const totalCount = res.headers.get("X-Total-Count");
+    // Cuántos índices acabó sellando el job en vez del acto del cierre. Viaja
+    // con la cola porque responde lo que la cola no puede: una cola vacía no
+    // distingue «nunca hubo pendientes» de «el compensador los vació».
+    const diferidos = res.headers.get("X-Sellado-Diferido-Count");
+    /** @type {Record<string, string>} */
+    const cabeceras = {};
+    if (totalCount) cabeceras["X-Total-Count"] = totalCount;
+    if (diferidos) cabeceras["X-Sellado-Diferido-Count"] = diferidos;
     return json(data, {
       status: res.status,
-      headers: totalCount ? { "X-Total-Count": totalCount } : undefined,
+      headers: Object.keys(cabeceras).length > 0 ? cabeceras : undefined,
     });
   } catch {
     return json(

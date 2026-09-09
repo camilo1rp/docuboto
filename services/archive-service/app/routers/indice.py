@@ -367,10 +367,22 @@ async def list_indices_pendientes_firma(
     ruta de este router — todas exigen un segundo segmento literal
     (`indice`, `indice.xml`, ...) distinto de `pendientes-firma`.
     """
-    items, total = await IndexService(conn, tenant_slug).list_pendientes_firma(
+    service = IndexService(conn, tenant_slug)
+    items, total = await service.list_pendientes_firma(
         page=page, size=size, user_id=user_id
     )
     response.headers["X-Total-Count"] = str(total)
+    # Cuántos índices los selló el JOB y no el cierre. Viaja en la MISMA
+    # respuesta y no en un endpoint aparte porque responde a la pregunta que
+    # esta pantalla deja abierta: una cola vacía no dice si nunca hubo cola o
+    # si el compensador la vació. Ver `IndexRepository.count_sellado_diferido`.
+    # `None` = no se puede saber (el catálogo de firmas no está en este
+    # despliegue). La cabecera se OMITE en ese caso en vez de decir "0": un
+    # cero afirmaría que el compensador nunca actuó, y eso es justo lo que no
+    # se sabe.
+    diferidos = await service.count_sellado_diferido(user_id=user_id)
+    if diferidos is not None:
+        response.headers["X-Sellado-Diferido-Count"] = str(diferidos)
     return items
 
 
