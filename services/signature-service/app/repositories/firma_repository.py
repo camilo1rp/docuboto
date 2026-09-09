@@ -156,4 +156,44 @@ class FirmaRepository:
         return row
 
     async def get(self, firma_id: uuid.UUID) -> asyncpg.Record | None:
-        return await self._conn.fetchrow(f"SELECT {_COLS} FROM firma WHERE id = $1", firma_id)
+        """La firma, con el NOMBRE de quien firmó resuelto.
+
+        El comprobante de firma titulaba «Firmante» y enseñaba
+        `50b64803-568d-49f7-9299-cb140279d947`: un certificado que no dice
+        quién firmó no certifica nada. La fila guarda el identificador y así
+        debe seguir —una firma es un hecho fechado y su fila no se toca—, así
+        que el nombre se resuelve al LEER. `LEFT JOIN` y por TEXTO, mismo
+        criterio que los lectores de la pista de acceso: el firmante puede no
+        ser un usuario del catálogo (firmas del sistema, sellos
+        institucionales) y un `::uuid` haría fallar la consulta entera por una
+        fila que ni se estaba preguntando.
+
+        El JOIN va SOLO aquí y no en `_COLS`: las demás consultas de este
+        repositorio son del motor de firma, no de una pantalla, y no necesitan
+        pagar la unión.
+        """
+        cols = ", ".join(f"f.{c.strip()}" for c in _COLS.split(","))
+        # `auth_users` la crea AUTH-SERVICE: en una entidad real está en el
+        # mismo schema, pero un despliegue parcial no la tiene. Una firma se
+        # lee para verificarla, y que falte una tabla de otro servicio no puede
+        # impedirlo — el nombre se degrada a ausente, que es lo mismo que
+        # devuelve el JOIN para un sello del sistema.
+        # Se comprueba la COLUMNA y no la tabla, por el mismo motivo que en
+        # `TransferenciaRepository.get_acta`: la tabla puede existir sin ella.
+        if await self._conn.fetchval(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'auth_users'
+                      AND column_name = 'username')"""
+        ):
+            return await self._conn.fetchrow(
+                f"""SELECT {cols}, u.username AS firmante_nombre
+                      FROM firma f
+                      LEFT JOIN auth_users u ON u.id::text = f.firmante_id::text
+                     WHERE f.id = $1""",
+                firma_id,
+            )
+        return await self._conn.fetchrow(
+            f"SELECT {cols} FROM firma f WHERE f.id = $1", firma_id
+        )

@@ -494,7 +494,12 @@
               <span>Expediente <code>{expedienteEtiqueta}</code></span>
             </div>
             <div class="trd-certificate__field">
-              <span class="trd-certificate__label">Entre dependencias</span>
+              <!-- Decía «Entre dependencias» y pinta las UBICACIONES físicas
+                   (depósito, estante, entrepaño), que no son dependencias: la
+                   unidad administrativa y la oficina productora son campos
+                   propios de la cabecera del FUID y hoy viajan vacíos. Se
+                   nombra lo que de verdad se muestra. -->
+              <span class="trd-certificate__label">Entre ubicaciones</span>
               <span>
                 {ubicacionEtiqueta(transferencia.ubicacion_origen_id)} → {ubicacionEtiqueta(
                   transferencia.ubicacion_destino_id,
@@ -561,16 +566,35 @@
                 {#each ROLES_CERTIFICADO as rol (rol)}
                   {@const firma = firmaPersonalDe(rol)}
                   {@const esMiRol = misRoles.includes(rol)}
-                  {@const nombre =
+                  <!-- La variable se llamaba `nombre` y llevaba el
+                       identificador interno: los tres responsables del acta
+                       —elaborador, remitente y receptor— se pintaban como
+                       `50b64803-568d-49f7-9299-cb140279d947`. Un acta de
+                       entrega es el documento que dice QUIÉN entregó y quién
+                       recibió; contestarlo con un identificador es no
+                       contestarlo. El acta congela el identificador a
+                       propósito (es probatoria, no se toca) y el nombre se
+                       resuelve al leer, en el backend. El identificador sigue
+                       a mano en el `title`: es la clave con la que se cruza
+                       el acta con el registro de firmas. -->
+                  {@const identificador =
                     rol === "elabora"
                       ? actaEfectiva.elaborado_por
                       : rol === "entrega"
                         ? actaEfectiva.entregado_por
                         : actaEfectiva.recibido_por}
+                  {@const nombre =
+                    rol === "elabora"
+                      ? actaEfectiva.elaborado_por_nombre
+                      : rol === "entrega"
+                        ? actaEfectiva.entregado_por_nombre
+                        : actaEfectiva.recibido_por_nombre}
                   <li class="trd-roles-list__item" class:trd-roles-list__item--mine={esMiRol}>
                     <div class="trd-roles-list__who">
                       <strong>{ROL_LABELS[rol]}</strong>
-                      <span class="trd-roles-list__identity">{nombre ?? "—"}</span>
+                      <span class="trd-roles-list__identity" title={identificador ?? undefined}
+                        >{nombre ?? identificador ?? "—"}</span
+                      >
                       {#if esMiRol}
                         <span class="trd-roles-list__you-badge">Usted</span>
                       {/if}

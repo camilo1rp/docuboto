@@ -67,8 +67,54 @@ EXCEPCIONES: dict[str, str] = {}
 #: censo y dejaba de vigilarse — y la prueba anti-vacuidad de abajo lo cazó al
 #: primer intento. Un censo que solo ve lo roto se vacía a medida que se
 #: arregla, y entonces el guardián deja de guardar justo cuando ya nadie mira.
-_PINTA_ACTOR = re.compile(r"\.actor(_nombre)?\b")
-_PINTA_NOMBRE = re.compile(r"\.actor_nombre\b")
+#: El censo iba atado al NOMBRE del campo (`actor`), y por eso se le escapó la
+#: ficha del acta de entrega de una transferencia, que pinta a sus tres
+#: responsables desde campos llamados `elaborado_por` / `entregado_por` /
+#: `recibido_por`. Séptima aparición del mismo defecto, y la segunda vez que el
+#: guardián mira el sitio equivocado: primero vigilaba la CAPA equivocada (los
+#: repositorios de la pista de acceso), ahora el NOMBRE equivocado. Lo que
+#: importa no es cómo se llame el campo: es que la pantalla diga quién.
+#:
+#: Se censan los campos que nombran a una PERSONA: el actor, los `*_por` de
+#: responsabilidad y el `firmante_id` de las firmas.
+_CAMPO_DE_PERSONA = (
+    r"(?:actor|firmante)(?:_nombre|_id)?"
+    r"|(?:elaborado|entregado|recibido|decidida|creada|enviada|aprobado|rechazado"
+    r"|solicitado|revisado|cerrado|abierto)_por(?:_nombre)?"
+)
+
+#: **Se mira lo que se PINTA, no lo que se menciona.** Al ensanchar el censo
+#: por nombre de campo salieron cuatro pantallas más, y tres eran falsos
+#: positivos míos: comparaban el identificador contra el del usuario en sesión
+#: (`turno.firmante_id === yo`) o lo ataban a un `<select>`. Comparar no es
+#: pintar, y un guardián que no distingue las dos cosas obliga a declarar
+#: excepciones que no lo son — y una lista de excepciones inflada es la forma
+#: en que un censo deja de leerse.
+#:
+#: Solo cuenta una interpolación de plantilla (`{...}`) en el marcado, fuera
+#: del bloque `<script>`, que de verdad se MUESTRE. Quedan fuera, y por el
+#: mismo motivo que las comparaciones:
+#:
+#:  * los bloques de lógica de Svelte —`{#each … (clave)}`, `{#if …}`,
+#:    `{@const …}`, `{:else …}`, `{/if}`—: una clave de lista y una condición
+#:    no las lee nadie;
+#:  * las directivas de atributo —`bind:`, `on:`, `use:`— y el `title=`, que
+#:    es justamente donde el identificador SÍ debe seguir estando cuando la
+#:    pantalla ya enseña el nombre.
+_INTERPOLACION = re.compile(r"\{([^{}]*)\}")
+_BLOQUE_DE_LOGICA = re.compile(r"^\s*[#/:@]")
+_ATRIBUTO_NO_VISIBLE = re.compile(r"(?:bind:|on:|use:)\w+=$|\btitle=$")
+_PINTA_CAMPO = re.compile(r"\.(?:" + _CAMPO_DE_PERSONA + r")\b")
+#: La forma corregida, de las dos maneras válidas: el backend devuelve el
+#: nombre resuelto (`*_nombre`), o la pantalla lo resuelve con un ayudante
+#: (`nombreDe(...)`) contra un catálogo que ya tiene cargado.
+_RESUELVE_EN_PANTALLA = re.compile(r"_nombre\b|\bnombre[A-Z]\w*\s*\(")
+
+
+def _marcado(texto: str) -> str:
+    """El marcado de un `.svelte`: todo lo que no es el bloque `<script>`."""
+    return re.sub(r"<script[\s\S]*?</script>", "", texto)
+
 
 #: Pantallas que pintan el identificador a propósito, con su motivo.
 PANTALLAS_EXCEPTUADAS: dict[str, str] = {
@@ -84,13 +130,26 @@ PANTALLAS_EXCEPTUADAS: dict[str, str] = {
 }
 
 
-def _pantallas_que_pintan_un_actor() -> dict[str, str]:
-    """Derivado del árbol: una pantalla nueva entra el día que existe."""
-    hallados: dict[str, str] = {}
+def _pantallas_que_pintan_un_actor() -> dict[str, list[str]]:
+    """Derivado del árbol: una pantalla nueva entra el día que existe.
+
+    Devuelve, por pantalla, las INTERPOLACIONES concretas que pintan un campo
+    de persona — no el archivo entero. Así el fallo señala la línea y no
+    obliga a leer mil líneas para encontrarla.
+    """
+    hallados: dict[str, list[str]] = {}
     for ruta in sorted(PANTALLAS.rglob("*.svelte")):
         texto = ruta.read_text(encoding="utf-8")
-        if _PINTA_ACTOR.search(texto):
-            hallados[str(ruta.relative_to(PANTALLAS))] = texto
+        marcado = _marcado(texto)
+        pintadas = [
+            m.group(1)
+            for m in _INTERPOLACION.finditer(marcado)
+            if _PINTA_CAMPO.search(m.group(1))
+            and not _BLOQUE_DE_LOGICA.search(m.group(1))
+            and not _ATRIBUTO_NO_VISIBLE.search(marcado[max(0, m.start() - 40) : m.start()])
+        ]
+        if pintadas:
+            hallados[str(ruta.relative_to(PANTALLAS))] = pintadas
     return hallados
 
 
@@ -102,9 +161,11 @@ def test_toda_pantalla_que_dice_quien_tiene_un_nombre_que_decir() -> None:
     saliendo de dos tablas distintas. Por eso el censo mira las plantillas.
     """
     culpables = [
-        rel
-        for rel, texto in _pantallas_que_pintan_un_actor().items()
-        if rel not in PANTALLAS_EXCEPTUADAS and not _PINTA_NOMBRE.search(texto)
+        f"{rel} → {{{expr.strip()}}}"
+        for rel, pintadas in _pantallas_que_pintan_un_actor().items()
+        if rel not in PANTALLAS_EXCEPTUADAS
+        for expr in pintadas
+        if not _RESUELVE_EN_PANTALLA.search(expr)
     ]
     assert not culpables, (
         "Estas pantallas pintan el identificador del actor y no tienen ningún "
@@ -193,3 +254,66 @@ def test_el_censo_encuentra_los_dos_gemelos() -> None:
         "El censo de lectores de la pista de acceso se quedó corto: el patrón "
         "de rutas dejó de casar y este guardián ya no vigila nada."
     )
+
+
+#: Quien escribe un evento de la hoja de ruta tiene una columna TIPADA para la
+#: identidad (`actor`). Meterla además en el texto libre del comentario la
+#: convierte en un UUID que ninguna pantalla puede resolver — y el comentario
+#: se pinta tal cual.
+_IDENTIDAD_EN_TEXTO_LIBRE = re.compile(
+    r'comentario\s*=\s*f?"[^"]*(firmante|actor|usuario)\s*=\s*\{', re.I
+)
+
+#: Servicios que escriben en la hoja de ruta del expediente.
+_ESCRIBE_EVENTO = re.compile(r"insert_expediente_evento\s*\(")
+
+
+def _servicios_que_escriben_la_hoja_de_ruta() -> dict[str, str]:
+    """Derivado del árbol: un servicio nuevo entra en el censo el día que existe."""
+    hallados: dict[str, str] = {}
+    for ruta in sorted(SERVICIOS.glob("*/app/services/*.py")):
+        texto = ruta.read_text(encoding="utf-8")
+        if _ESCRIBE_EVENTO.search(texto):
+            hallados[str(ruta.relative_to(SERVICIOS))] = texto
+    return hallados
+
+
+def test_ningun_evento_mete_la_identidad_en_el_texto_libre() -> None:
+    """La identidad va en la columna `actor`, no interpolada en el comentario.
+
+    `close_expediente` escribía `comentario=f"firmante={firmante}"` mientras el
+    router le pasaba el MISMO `Actor.audit_actor` a `actor_id`. En la hoja de
+    ruta se veía el resultado: el asiento «cerrado» mostraba
+    `firmante=50b64803-568d-49f7-9299-…` y, dos líneas más abajo, «OPERADOR» —
+    esa misma persona, ya resuelta. El nombre estaba al lado del identificador.
+
+    Sus dos gemelos —`transfer_expediente` y `TransferenciaService.recibir`— ya
+    lo habían retirado, y el comentario del primero lo dejaba escrito. Era el
+    tercer sitio de tres.
+    """
+    culpables = []
+    for rel, texto in _servicios_que_escriben_la_hoja_de_ruta().items():
+        for n, linea in enumerate(texto.splitlines(), 1):
+            # Las menciones en comentarios explican por qué se retiró: no son
+            # el defecto, son su lápida.
+            if linea.lstrip().startswith("#"):
+                continue
+            if _IDENTIDAD_EN_TEXTO_LIBRE.search(linea):
+                culpables.append(f"{rel}:{n} {linea.strip()[:90]}")
+
+    assert not culpables, (
+        "Estos eventos de la hoja de ruta interpolan una identidad en el texto "
+        "libre del comentario, que la pantalla pinta tal cual: un identificador "
+        "que nadie puede resolver, junto a la columna `actor` que sí se "
+        "resuelve. Quita el comentario y deja la columna tipada:\n  "
+        + "\n  ".join(sorted(culpables))
+    )
+
+
+def test_el_censo_de_la_hoja_de_ruta_encuentra_algo() -> None:
+    """Anti-vacuidad: si el patrón deja de casar, el guardián deja de guardar."""
+    assert len(_servicios_que_escriben_la_hoja_de_ruta()) >= 2, (
+        "El censo de servicios que escriben la hoja de ruta se quedó corto: el "
+        "patrón dejó de casar y este guardián ya no vigila nada."
+    )
+

@@ -141,11 +141,31 @@ class TransferenciaService:
                     },
                 )
             if exp.status != "closed":
+                # Dos situaciones distintas con dos remedios distintos, y antes
+                # las dos decían lo mismo. Sobre un expediente ya
+                # `transferred`, «solo se transfiere un expediente cerrado» se
+                # lee como «ciérrelo primero» — y no hay nada que cerrar: la
+                # custodia ya cambió por la vía corta
+                # (`ArchiveService.transfer_expediente`, el botón «Transferir
+                # expediente» de la ficha), que no produce acta ni FUID y deja
+                # este circuito inalcanzable para siempre. Quien recibe el
+                # error tiene que poder saber cuál de las dos cosas le pasó.
+                ya_transferido = exp.status == "transferred"
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
-                        "error": "expediente_not_closed",
-                        "detail": "Solo se transfiere un expediente cerrado",
+                        "error": (
+                            "expediente_ya_transferido"
+                            if ya_transferido
+                            else "expediente_not_closed"
+                        ),
+                        "detail": (
+                            "El expediente ya está transferido: su custodia cambió "
+                            "sin pasar por este circuito, así que no puede abrirse "
+                            "una transferencia con acta de entrega para él"
+                            if ya_transferido
+                            else "Solo se transfiere un expediente cerrado"
+                        ),
                         "status": 409,
                     },
                 )

@@ -180,7 +180,17 @@
         </div>
         <div class="cert-drawer__row">
           <dt>Firmante</dt>
-          <dd class="cert-drawer__mono">{cert.firmante_id ?? "—"}</dd>
+          <!-- Decía «Firmante» y enseñaba el identificador interno: un
+               comprobante que no dice quién firmó no certifica nada. El
+               nombre lo resuelve el servicio de firma al leer; el
+               identificador queda en el `title`, que es donde sigue haciendo
+               falta para cruzar el comprobante con el registro de firmas. -->
+          <dd
+            class={cert.firmante_nombre ? "" : "cert-drawer__mono"}
+            title={cert.firmante_id ?? undefined}
+          >
+            {cert.firmante_nombre ?? cert.firmante_id ?? "—"}
+          </dd>
         </div>
         <div class="cert-drawer__row">
           <dt>Fecha y hora</dt>

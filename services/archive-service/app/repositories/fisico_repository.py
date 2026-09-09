@@ -444,9 +444,27 @@ class FisicoRepository:
                            WHEN COALESCE(c.consultas, 0) >= 3  THEN 'media'
                            ELSE 'baja'
                        END AS frecuencia_consulta
-                  FROM expediente_unidad eu
-                  JOIN expedientes e ON e.id = eu.expediente_id
-                  JOIN unidad_conservacion u ON u.id = eu.unidad_id
+                  -- El inventario lo manda el EXPEDIENTE, no la unidad de
+                  -- conservación. Mientras la consulta arrancaba en
+                  -- `expediente_unidad`, un expediente sin tenencia física
+                  -- —el electrónico puro, que `TransferenciaService.create`
+                  -- admite explícitamente como «el caso de uso central de un
+                  -- DMS moderno»— no producía NINGUNA fila: el acta de
+                  -- entrega que se congela al recibir salía con la cabecera
+                  -- puesta y cero registros, se le calculaba la huella
+                  -- SHA-256, se sellaba en XAdES-T y se presentaba en
+                  -- pantalla como «Formato Único de Inventario Documental».
+                  -- Un inventario vacío no dice qué se entregó, y el sello
+                  -- sobre él es exacto y no prueba nada (Ley 594/2000 arts.
+                  -- 15/26; Ac. AGN 001/2024 Anexo FUID).
+                  --
+                  -- Con LEFT JOIN, filtrar por `u.ubicacion_id` sigue
+                  -- comportándose como la unión interna de antes (la
+                  -- condición del WHERE descarta las filas sin unidad), así
+                  -- que las puertas del archivo físico no cambian.
+                  FROM expedientes e
+                  LEFT JOIN expediente_unidad eu ON eu.expediente_id = e.id
+                  LEFT JOIN unidad_conservacion u ON u.id = eu.unidad_id
                   LEFT JOIN trd_series s ON s.id = e.trd_serie_id
                   -- Columna 9 del FUID (Ac. AGN 042/2002): frecuencia de
                   -- consulta REAL, no estimada. Sale de la pista de acceso que

@@ -1475,12 +1475,26 @@ class ArchiveService:
                 # jobs) con un `actor_id` que no sea un UUID -- parseo
                 # defensivo (`None` si no castea) en vez de reventar con un
                 # `ValueError` no capturado a mitad de la transacción.
+                # H-E' — el `comentario="firmante=<uuid>"` se retira, por el
+                # MISMO motivo por el que ya se retiró de `transfer_expediente`
+                # y de `TransferenciaService.recibir`: es texto libre redundante
+                # con la columna tipada `actor`, y el router pasa el mismo
+                # `Actor.audit_actor` a los dos parámetros (ver docstring), así
+                # que `firmante` y `actor_id` son el MISMO valor.
+                #
+                # Se vio en la hoja de ruta, que es donde importa: el asiento
+                # «cerrado» mostraba `firmante=50b64803-568d-49f7-9299-…` con
+                # «OPERADOR» —esa misma persona, ya resuelta— dos líneas más
+                # abajo. El nombre estaba al lado del identificador.
+                #
+                # Tercer sitio de tres: la corrección se había aplicado a los
+                # otros dos y aquí no, y el comentario de `transfer_expediente`
+                # ya lo dejaba escrito.
                 await self._repo.insert_expediente_evento(
                     expediente_id,
                     numero_expediente=exp.code,
                     accion="cerrado",
                     actor=_safe_uuid(actor_id),
-                    comentario=f"firmante={firmante}" if firmante else None,
                 )
                 # Índice electrónico: versión final del conjunto documental
                 # (RF-EXP-06). Los dos guards de `regenerate` se levantan aquí, y

@@ -80,3 +80,59 @@ export function opcionesSerieTrd(series) {
         (ESTADO_TEXTO[s.estado] ? ` (${ESTADO_TEXTO[s.estado]})` : ""),
     }));
 }
+
+/**
+ * Estados bajo los que un instrumento RIGE. El resto no gobierna nada: una
+ * versión derogada fue reemplazada, y una en borrador o aprobada todavía no ha
+ * sido convalidada por la instancia competente (Ac. AGN 001/2024, ADR-025).
+ */
+const ESTADOS_VIGENTES = new Set(["convalidada", "migrada"]);
+
+/**
+ * Qué decirle a quien mira una serie TRD ya asignada: bajo qué versión está y
+ * si esa versión sigue rigiendo.
+ *
+ * **Por qué hace falta.** La ficha del expediente pintaba «DEM-100 — Derechos
+ * de Petición» a secas. `EXP-2026-0001` llevaba días apuntando a la **v1
+ * derogada** —el circuito de convalidación había abierto y convalidado una v2—
+ * y la pantalla no lo decía: quien clasificaba, foliaba o decidía cerrar creía
+ * estar trabajando bajo el instrumento vigente.
+ *
+ * El cierre re-resuelve la serie por su CÓDIGO y salta a la versión vigente,
+ * así que el expediente no queda gobernado por lo derogado (verificado: el
+ * asiento del cierre lleva `trd_serie_id_previo` y `trd_serie_id` distintos).
+ * Pero eso ocurre al final y sin avisar. Entre tanto, la persona toma
+ * decisiones creyendo otra cosa, y el sistema tiene el dato para decírselo.
+ *
+ * **Tercera vez que se arregla este mismo descuido**: `opcionesSerieTrd` (aquí
+ * al lado) nació porque el desplegable mostraba dos opciones idénticas, y su
+ * comentario ya dejaba escrito que la corrección se había hecho en el asistente
+ * de radicación y no en el modal de metadatos — «mismo desplegable, misma
+ * trampa, arreglada en un sitio de dos». La ficha era el tercer sitio. Por eso
+ * esto vive aquí, con `ESTADO_TEXTO`, y no resuelto suelto en cada pantalla.
+ *
+ * No se oculta ni se bloquea nada: la decisión es del archivista. Lo único que
+ * cambia es que la toma sabiendo bajo qué instrumento está.
+ *
+ * @param {{code?: string, name?: string, version?: number, estado?: string}|null|undefined} serie
+ * @returns {{etiqueta: string|null, version: number|null, estado: string|null,
+ *   estadoTexto: string|null, rige: boolean}}
+ */
+export function vigenciaSerieTrd(serie) {
+  const base = nombreSerieTrd(serie);
+  const version = typeof serie?.version === "number" ? serie.version : null;
+  const estado = typeof serie?.estado === "string" ? serie.estado : null;
+  // La versión va pegada al código —«DEM-100 v1 — Derechos de Petición»—
+  // igual que en el desplegable, para que las dos pantallas se lean igual.
+  const etiqueta =
+    base && version && serie?.code ? base.replace(serie.code, `${serie.code} v${version}`) : base;
+  return {
+    etiqueta,
+    version,
+    estado,
+    estadoTexto: estado ? (ESTADO_TEXTO[estado] ?? estado) : null,
+    // Sin estado NO se afirma que rige: callar es mejor que asegurar de más
+    // sobre el instrumento que gobierna la retención de un expediente.
+    rige: estado ? ESTADOS_VIGENTES.has(estado) : false,
+  };
+}

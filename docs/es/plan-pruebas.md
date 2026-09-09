@@ -841,3 +841,202 @@ en `acta_comite`, una columna distinta que **no vi porque leí un `\d` truncado 
 Queda escrito porque el error es del mismo tipo que los que este plan busca —creerse una lectura
 parcial— y esta vez lo cometió quien revisaba. La corrección fue mirar el `UPDATE` real antes de
 reportar nada.
+
+---
+
+## 9. Tercera ejecución (2026-09-08/09) — B5 y B11
+
+### 9.1 Lo que se recorrió
+
+**B5, expedientes**, de nuevo y con el sistema levantado. Cinco defectos, todos
+encontrados abriendo pantallas o corriendo la suite entera, ninguno leyendo
+código:
+
+| # | Defecto | Dónde vivía |
+|---|---|---|
+| 1 | `<tipologia>` vacía en **todos** los documentos del índice electrónico | constructor del ítem |
+| 2 | La hoja de ruta contestaba «quién» con un identificador interno | `expediente_eventos` |
+| 3 | La unidad de conservación mostrada por su identificador | ficha del expediente |
+| 4 | `/expedientes/EXP-2026-0002` moría con «500 / HTTP 422» | carga de la página |
+| 5 | 29 archivos de prueba del frontend no se ejecutaban | resolución de módulos |
+
+El 1 es el más serio en términos de conformidad: el elemento es **obligatorio**
+en el XSD del perfil v4, pero de tipo `xs:string`, que **admite la cadena
+vacía**. El índice se generaba, validaba contra el perfil y se firmaba sin
+declarar la clase documental de nada de lo que ampara. *Un esquema no caza un
+elemento obligatorio que se cumple con vacío.*
+
+El 5 no era un defecto de producto —no apareció **ni una sola aserción rota** en
+todo el proceso— pero dejaba sin vigilancia a 29 guardianes, casi todos escritos
+después de un defecto que este repositorio ya había vivido.
+
+### 9.2 B11 — los actos irreversibles
+
+Se verificó la afirmación que estaba **declarada y sin comprobar**: que
+`close_expediente` re-resuelve la serie **por su código**.
+
+`EXP-2026-0001` estaba abierto apuntando a `DEM-100` **v1 derogada**, con la v2
+convalidada y vigente. Al cerrarlo desde la pantalla:
+
+- `trd_serie_id`: `51e06402…` (v1 derogada) → `19935bb2…` (**v2 convalidada**);
+- `trd_serie_code` congelado a `DEM-100` (antes nulo: solo se escribe al cerrar);
+- disposición materializada **autocontenida** — versión, estado, acto
+  administrativo, instancia convalidante, fechas de gestión (2028) y central
+  (2036) y el origen de la fecha base;
+- asiento `archive.expediente_closed` con **`trd_serie_id_previo` y
+  `trd_serie_id` distintos**: el registro documenta el traslado, no hay que
+  deducirlo.
+
+**Control positivo del gate.** `EXP-2026-0002` cuelga de `COR-200`, que solo
+tiene versión en `borrador`. Cerrarlo devuelve **409** citando el Ac. AGN
+001/2024, el mensaje **llega a la pantalla**, y el intento deja su propio
+asiento `archive.expediente_close_failed`. Auditar el intento rechazado, y no
+solo el consumado, es más de lo que suele hacerse.
+
+### 9.3 Un aviso añadido, por decisión del usuario
+
+La ficha mostraba «DEM-100 — Derechos de Petición» sin decir que la versión
+apuntada estaba **derogada**. Quien clasificaba, foliaba o decidía cerrar creía
+estar bajo el instrumento vigente. Ahora se muestra la versión y, cuando el
+instrumento no rige, se dice con la palabra que el proyecto ya usa.
+
+**No bloquea**: la decisión es del archivista, y hay una prueba que verifica que
+en ese bloque no aparece ningún `disabled`. Lo único que cambia es que lo sabe
+antes de actuar, no al leer el asiento después.
+
+Tercera aparición del mismo descuido: `opcionesSerieTrd` nació porque el
+desplegable mostraba dos versiones idénticas, y su propio comentario dejaba
+escrito que se había corregido «en un sitio de dos». La ficha era el tercero.
+
+### 9.4 Dos falsos positivos propios, anotados a propósito
+
+1. Di por defecto que el 409 del cierre **no se mostraba** en pantalla. Era mi
+   método: `get_page_text` extrae solo de `<main>` y el aviso vive fuera. El
+   mensaje aparece, completo y citando la norma.
+2. Di por defecto que faltaban huellas en el índice. Los tres documentos sin
+   huella son **exactamente** los tres radicados sin anexos, y el índice lo
+   declara. `formato`, `tamano` y `folios` son `minOccurs="0"`: opcionales por
+   diseño.
+
+Los dos se cayeron al comprobar contra la base antes de reportar. El plan
+persigue el patrón de dar por perdido un dato que sí está; conviene dejar
+escrito cuándo lo comete quien revisa.
+
+### 9.5 Límites declarados
+
+- **Exportar ZIP** no se ejercitó: es una descarga y requiere permiso explícito.
+- `CertificadoDrawer` rotula «Firmante» y pinta el identificador crudo, en un
+  comprobante de firma. Exige que signature-service devuelva el nombre: es
+  backend y pertenece al bloque de firmas, no a B5.
+- Queda **B11-6/7** (transferir y recibir/rechazar) y **B12**, que va el último
+  a propósito: reverificar la cadena de asientos es la prueba más fuerte del
+  plan.
+
+---
+
+## 10. Cuarta ejecución (2026-09-09) — B11-7, el circuito de transferencia
+
+### 10.1 Lo que se recorrió
+
+El módulo `/transferencias` completo, de punta a punta y por la pantalla:
+preparar (con el expediente identificado por su código), enviar, recibir, el
+acta de entrega congelada, su sello institucional verificado y la firma
+personal por rol. Como no había ninguna transferencia en el sistema, el
+recorrido empezó creando un expediente bajo una serie vigente, vinculándole un
+radicado y cerrándolo — que es lo que hace falta para poder abrir una
+transferencia (art. 4.3.2.4: sin índice electrónico firmado no se transfiere).
+
+### 10.2 El defecto que estaba tapado por su propia reparación
+
+Cerrar el expediente dejaba el índice en `pendiente_firma`. La llamada que lo
+sella devolvía **401** desde el primer día del endurecimiento de la identidad
+entre servicios: el middleware que verifica la firma de las cabeceras se
+dispara por la sola presencia del identificador de usuario, y siete clientes
+internos lo mandaban sin firmar. La clase que implementa esa verificación
+declaraba por escrito la premisa que lo dejó pasar — «las llamadas
+servicio-a-servicio no traen identidad de persona» —, y es falsa justo en el
+peor sitio: el sellado del índice **se atribuye a quien cierra el expediente**.
+
+Lo que hizo el defecto invisible fue el trabajo de reconciliación, pensado
+para fallos pasajeros: pasaba minutos después y sellaba el índice **como
+sistema**. En pantalla todo acababa correcto. En la base, el firmante de todos
+los índices era `00000000-…-5ec1` en vez de la archivista. El registro de
+auditoría enseña las dos formas una debajo de la otra:
+
+| Hora | Acción | Actor |
+|---|---|---|
+| 11:37:55 | `archive.indice_firma_pendiente` | la persona (falló el sellado) |
+| 11:39:44 | `archive.indice_firmado` | `…5ec1` — el sistema, dos minutos tarde |
+| 11:49:20 | `archive.indice_firmado` | la persona, **dentro del cierre** (ya corregido) |
+
+Diagnóstico probado con control negativo y positivo contra el servicio
+levantado: sin la cabecera firmada, 401; con ella, la petición llega al
+validador del cuerpo. Un control compensatorio que absorbe un fallo
+**permanente** deja de ser una red de seguridad y pasa a ser un disfraz.
+
+### 10.3 El acta que se sellaba sin decir qué se entregaba
+
+Recibida la transferencia, el acta se congeló, se le calculó la huella
+SHA-256, se selló en XAdES-T y la pantalla la presentó como «Acta de entrega —
+Formato Único de Inventario Documental». El botón «Verificar sello» dijo, con
+razón, que el sello es válido.
+
+El XML congelado tenía **cero registros**. El inventario arrancaba la consulta
+en la tabla que ata un expediente a su caja física, y un expediente
+electrónico puro —que la propia creación de la transferencia admite a
+propósito como «el caso de uso central de un DMS moderno»— no está en ninguna
+caja. Las dos mitades estaban bien; el hueco vivía entre ellas.
+
+Las pruebas del inventario no podían verlo: simulan la respuesta de la base,
+así que pasan en verde con cualquier unión. La corrección lleva cuatro pruebas
+contra Postgres real (electrónico, de papel, filtro por ubicación e inventario
+completo), verificadas por mutación.
+
+### 10.4 Lo que sí funcionó
+
+- Las cuatro transiciones dejan su asiento (`transferencia_preparada`,
+  `_enviada`, `_recibida`, `archive.expediente_transferred`) y el acta su
+  `firma.creada` + `acta_firmada`, todos con la identidad de quien actuó.
+- El gate del índice firmado se cumple de verdad, y la denegación también se
+  audita: el intento de abrir una transferencia sobre un expediente ya
+  transferido quedó registrado como `transferencia_preparada_failed`.
+- El **auto-traslado** —la misma persona envía y recibe— se detecta y se
+  muestra en la ficha con su explicación, sin impedirlo: el par de roles del
+  FUID no exige personas distintas, así que se señala y decide el archivista.
+- La derivación del rol de firma es de la **identidad congelada**, nunca del
+  parámetro del cliente, y un tercero recibe 403 sin quemar un código TOTP.
+- El certificado personal se comprueba **antes** que el segundo factor, así
+  que quien no lo tiene no gasta un código de un solo uso para enterarse.
+
+### 10.5 Anotado y no perseguido
+
+- **La cabecera del FUID viaja vacía**: unidad administrativa, oficina
+  productora y objeto son campos del formato que la transferencia no captura.
+- **La imagen de desarrollo del frontend corre Node 18** mientras la que
+  construye y sirve la aplicación corre Node 22; la suite ni siquiera carga en
+  la primera. Se descubrió al usarla para correr las pruebas.
+
+### 10.6 Los dos que quedaban anotados, cerrados en la misma sesión
+
+- **La identidad en crudo, séptima aparición** — la ficha del acta y el
+  comprobante de firma. El identificador congelado se queda (el acta es
+  probatoria, la firma es un hecho fechado) y el nombre se resuelve al leer.
+  El guardián estaba atado al NOMBRE del campo, así que se reescribió para
+  censar lo que se PINTA: al ensancharlo salieron cuatro pantallas más y tres
+  eran falsos positivos míos —comparaban el identificador o lo ataban a un
+  desplegable—, que es lo que obligó a distinguir pintar de mencionar. La
+  cuarta era real y ya estaba declarada como pendiente.
+- **El atajo de la ficha del expediente** — no se retira: una transferencia
+  puramente lógica es legítima y quitar capacidad no es decisión de una
+  pantalla. Se dice lo que hace, lo que no produce y lo que cierra, y el 409
+  pasa a distinguir «ciérrelo primero» de «ya se transfirió por la otra vía».
+
+**Dos defectos propios en el camino, anotados a propósito.** La lectura del
+acta con el nombre resuelto tumbó siete pruebas de integración: `auth_users` la
+crea otro servicio y el esquema de pruebas la provisiona con lo mínimo que
+necesita el clearance. La primera guarda miraba si la TABLA existe — y la tabla
+existía, sin la columna: comprobar la mitad y fallar igual. Y el test que
+escribí para cubrirlo creó esa tabla sin escribir el esquema en la sentencia,
+así que aterrizó en `public` —el único esquema compartido por todas las
+entidades— y tumbó ocho pruebas de otros ficheros, con el fallo apareciendo
+lejos de donde estaba la causa.

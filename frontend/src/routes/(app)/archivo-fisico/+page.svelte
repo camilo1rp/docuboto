@@ -1339,8 +1339,8 @@
                       <td>{fmtDate(row.fecha_inicial)} – {fmtDate(row.fecha_final)}</td>
                       <td>{row.signatura ?? "—"}</td>
                       <td>
-                        <code>{row.unidad_codigo}</code>
-                        <span class="af-fuid-tipo">({row.unidad_tipo})</span>
+                        <code>{row.unidad_codigo ?? "—"}</code>
+                        <span class="af-fuid-tipo">({row.unidad_tipo ?? "sin unidad"})</span>
                       </td>
                       <td>{row.soporte ?? "—"}</td>
                       <td>{rangoFolios(row)}</td>

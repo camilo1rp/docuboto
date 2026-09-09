@@ -179,10 +179,15 @@ class FuidRow(BaseModel):
     serie_code: str | None
     serie_name: str | None
     signatura: str | None
-    unidad_tipo: str
+    # Nulos cuando el expediente no tiene unidad de conservación: un
+    # expediente electrónico puro no está en ninguna caja, y decir que sí lo
+    # está —o dejarlo fuera del inventario— son las dos formas de mentir. El
+    # registro aparece con su identificación y sus columnas físicas en blanco,
+    # que es exactamente lo que hay.
+    unidad_tipo: str | None
     # El tipo dice «caja»; el código dice CUÁL caja. El inventario se coteja
     # contra el depósito con el código en la mano.
-    unidad_codigo: str
+    unidad_codigo: str | None
     soporte: str | None
     num_folios: int | None
     folio_inicio: int | None

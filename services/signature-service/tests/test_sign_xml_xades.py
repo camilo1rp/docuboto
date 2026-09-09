@@ -428,9 +428,16 @@ class _FakeFirmaTable:
             }
             self.rows[str(row["id"])] = row
             return row
-        if q.startswith("SELECT") and "FROM firma WHERE id" in q:
+        if q.startswith("SELECT") and "FROM firma" in q and "WHERE f.id" in q:
+            # La lectura resuelve el NOMBRE del firmante con un LEFT JOIN
+            # contra `auth_users` (un comprobante que dice «Firmante» y enseña
+            # un UUID no certifica nada). Esta tabla falsa no tiene catálogo de
+            # usuarios, así que devuelve `None` — que es exactamente lo que
+            # devuelve el JOIN por la izquierda cuando el firmante no es un
+            # usuario del catálogo, el caso de los sellos del sistema.
             (firma_id,) = args
-            return self.rows.get(str(firma_id))
+            row = self.rows.get(str(firma_id))
+            return None if row is None else {**row, "firmante_nombre": None}
         raise AssertionError(f"Unexpected fetchrow query in _FakeFirmaTable: {query!r}")
 
 

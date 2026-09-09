@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 import httpx
 from fastapi import status
+from orpycamcp_common import identidad
 
 from app.core.config import settings
 
@@ -127,7 +128,12 @@ async def sign_xml(
         "indice_id": indice_id,
         "version": version,
     }
-    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
+    # cuando la inyecta el gateway: el middleware que la verifica se dispara por
+    # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
+    # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
+    # llamada muere en 401 antes de tocar el handler.
+    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
     try:
         async with httpx.AsyncClient(
             base_url=settings.signature_service_url, timeout=10.0
@@ -246,7 +252,12 @@ async def sign_xml_outcome(
         "indice_id": indice_id,
         "version": version,
     }
-    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
+    # cuando la inyecta el gateway: el middleware que la verifica se dispara por
+    # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
+    # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
+    # llamada muere en 401 antes de tocar el handler.
+    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
     try:
         async with httpx.AsyncClient(
             base_url=settings.signature_service_url, timeout=10.0
@@ -463,7 +474,12 @@ async def sign_personal(
     }
     if firmante_id is not None:
         body["firmante_id"] = firmante_id
-    headers = {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}
+    # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
+    # cuando la inyecta el gateway: el middleware que la verifica se dispara por
+    # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
+    # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
+    # llamada muere en 401 antes de tocar el handler.
+    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
     if authorization:
         headers["Authorization"] = authorization
     try:

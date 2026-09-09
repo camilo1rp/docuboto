@@ -390,6 +390,10 @@
  * @property {string|null} objeto_id
  * @property {string|null} formato_solicitado
  * @property {string|null} firmante_id
+ * @property {string|null} [firmante_nombre] - resuelto al leer por el servicio
+ *   de firma; `null` cuando el firmante no es un usuario del catálogo (sello
+ *   del sistema). El identificador nunca se sustituye: sigue siendo la clave
+ *   con la que se cruza el comprobante con el registro de firmas.
  * @property {string}      payload_sha256
  * @property {'nativa'|'xades_local'|'xades_personal'} provider
  * @property {string}      sello_tiempo    — ISO 8601 UTC (fecha/hora del acto)

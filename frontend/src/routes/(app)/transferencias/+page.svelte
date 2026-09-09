@@ -242,16 +242,28 @@
 
   // Recibir
   function handleRecibir(id) {
-    openConfirm("Confirmar recepción", "¿Marcar esta transferencia como recibida?", async () => {
-      const res = await fetch(`/transferencias/api/${id}/recibir`, { method: "POST" });
-      const result = await res.json().catch(() => ({ ok: true }));
-      if (!res.ok) {
-        notifyError(mensajeError(result, "No se pudo recibir la transferencia."));
-        return;
-      }
-      notifySuccess("Transferencia recibida correctamente.");
-      await cargarTransferencias();
-    });
+    // Recibir es el acto IRREVERSIBLE del circuito, y era el que menos decía:
+    // congela el expediente en «transferido» (deja de admitir documentos),
+    // coteja la integridad del acervo contra el índice firmado y congela el
+    // acta de entrega FUID, que a partir de ahí no se regenera. La tarjeta
+    // pedía confirmar «marcar como recibida», que suena a cambiar una etiqueta
+    // — y era la única de las tres que no nombraba su consecuencia.
+    openConfirm(
+      "Confirmar recepción",
+      "¿Recibir esta transferencia? El expediente quedará CERRADO a nuevos " +
+        "documentos, se cotejará su integridad y se congelará el acta de " +
+        "entrega (FUID). Es un cambio de custodia y no tiene vuelta atrás.",
+      async () => {
+        const res = await fetch(`/transferencias/api/${id}/recibir`, { method: "POST" });
+        const result = await res.json().catch(() => ({ ok: true }));
+        if (!res.ok) {
+          notifyError(mensajeError(result, "No se pudo recibir la transferencia."));
+          return;
+        }
+        notifySuccess("Transferencia recibida correctamente.");
+        await cargarTransferencias();
+      },
+    );
   }
 
   // Rechazar (con observacion)
@@ -414,7 +426,9 @@
         <EmptyState
           icon="fas fa-exchange-alt"
           title="Sin transferencias"
-          description="No hay transferencias que coincidan con los filtros aplicados."
+          description={filtroEstado || filtroTipo
+            ? "No hay transferencias que coincidan con los filtros aplicados."
+            : "Todavía no se ha preparado ninguna transferencia."}
         />
       {:else}
         <!-- Técnica WCAG SCR29: región con overflow horizontal alcanzable con teclado (WCAG 2.1.1). -->
@@ -498,7 +512,7 @@
                         <button
                           class="button is-small is-success is-light"
                           on:click={() => handleRecibir(t.id)}
-                          aria-label="Marcar transferencia como recibida"
+                          aria-label="Recibir la transferencia: congela el expediente y el acta de entrega"
                         >
                           <i class="fas fa-check-circle" aria-hidden="true"></i>
                           <span>Recibir</span>

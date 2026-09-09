@@ -32,7 +32,7 @@
 <script>
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
-  import { nombreSerieTrd } from "$lib/utils/trd.js";
+  import { nombreSerieTrd, vigenciaSerieTrd } from "$lib/utils/trd.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
 
@@ -67,6 +67,10 @@
   // `null` si no se pudo resolver: la ficha cae entonces al UUID, que es feo
   // pero cierto, en vez de dejar el dato en blanco.
   $: serieTrdNombre = nombreSerieTrd(data.trdSerieDetail);
+  // Bajo qué VERSIÓN está el expediente y si esa versión todavía rige. No
+  // bloquea nada ni esconde nada: el archivista sigue clasificando, foliando y
+  // cerrando igual — pero sabiendo que el instrumento que ve fue reemplazado.
+  $: serieTrdVigencia = vigenciaSerieTrd(data.trdSerieDetail);
   $: facetas = data.facetas;
 
   // ---------------------------------------------------------------------------
@@ -1038,7 +1042,35 @@
               <div class="exp-meta-list__item">
                 <dt>Serie TRD</dt>
                 {#if serieTrdNombre}
-                  <dd>{serieTrdNombre}</dd>
+                  <!--
+                    Con la VERSIÓN a la vista y, cuando el instrumento ya no
+                    rige, dicho con todas las letras. `EXP-2026-0001` apuntaba a
+                    la v1 derogada mientras la ficha mostraba «DEM-100 —
+                    Derechos de Petición» a secas: quien clasificaba creía estar
+                    bajo el instrumento vigente.
+
+                    No se bloquea el trabajo — la decisión es del archivista, y
+                    el cierre además re-resuelve la serie por su código y salta
+                    a la versión vigente. Lo que cambia es que ahora lo sabe
+                    ANTES, no al leer el asiento después.
+                  -->
+                  <dd>
+                    {serieTrdVigencia.etiqueta ?? serieTrdNombre}
+                    {#if serieTrdVigencia.estadoTexto && !serieTrdVigencia.rige}
+                      <!--
+                        El `title` va en el <span> y no en <StatusChip>: el
+                        componente solo declara `status`, `label` y `dot` y no
+                        reenvía `$$restProps`, así que un atributo de más se
+                        perdería sin decir nada.
+                      -->
+                      <span
+                        title="Esta versión del instrumento ya no rige. Al cerrar, el expediente se re-resolverá a la versión vigente de {data
+                          .trdSerieDetail?.code ?? 'la serie'}."
+                      >
+                        <StatusChip status="warning" label={serieTrdVigencia.estadoTexto} />
+                      </span>
+                    {/if}
+                  </dd>
                 {:else}
                   <dd class="exp-meta-list__code" title="No se pudo resolver el nombre de la serie">
                     {expediente.trd_serie_id}
@@ -2135,9 +2167,28 @@
   size="sm"
   on:close={() => (showTransferModal = false)}
 >
+  <!-- Este botón es el ATAJO: cambia la custodia sin acta de entrega, sin
+       FUID y sin cotejo de integridad, y consume el estado `cerrado` que el
+       circuito formal necesita — después de pulsarlo, abrir una transferencia
+       con acta para este expediente es imposible para siempre. No se retira
+       (una transferencia puramente lógica es legítima y quitar capacidad no
+       es decisión de esta pantalla), pero sí se dice lo que hace y lo que
+       cierra, y se ofrece la otra puerta. -->
   <p>
     ¿Confirma la transferencia del expediente <strong>{expediente?.code}</strong>? Su estado pasará
-    a <strong>Transferido</strong>.
+    a <strong>Transferido</strong> y dejará de admitir documentos.
+  </p>
+  <p class="exp-modal__warning" role="status">
+    <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+    <!-- Toda la prosa dentro de UN `<span>`: en un contenedor flex cada tramo
+         de texto suelto se vuelve un elemento propio y la frase se parte en
+         columnas. Ya pasó cinco veces con avisos de actos irreversibles. -->
+    <span>
+      Esta vía <strong>no produce acta de entrega ni FUID</strong> y no coteja la integridad del
+      acervo. Además es de un solo sentido: después ya no se podrá abrir para este expediente una
+      transferencia con acta, porque esa exige que el expediente esté cerrado.
+      <a href="/transferencias">Preparar una transferencia con acta</a> en su lugar.
+    </span>
   </p>
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => (showTransferModal = false)} disabled={actionLoading}
@@ -3023,5 +3074,33 @@
     outline: 2px solid var(--op-primary);
     outline-offset: 4px;
     border-radius: var(--op-radius-sm);
+  }
+  .exp-modal__warning {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    margin: var(--op-space-3) 0 0;
+    padding: var(--op-space-3) var(--op-space-4);
+    border-radius: var(--op-radius);
+    background: var(--op-warning-bg);
+    color: var(--op-warning-fg);
+    font-size: var(--op-font-sm);
+    line-height: var(--op-line-height);
+
+    i {
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: underline;
+
+      &:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+        border-radius: var(--op-radius-sm);
+      }
+    }
   }
 </style>

@@ -103,6 +103,13 @@ class TransferenciaActaResponse(BaseModel):
     elaborado_por: str | None
     entregado_por: str | None
     recibido_por: str | None
+    # Resueltos al LEER (`TransferenciaRepository.get_acta`), no congelados: el
+    # acta guarda el identificador —es probatoria y no se toca— pero una ficha
+    # que dice quién elaboró, entregó y recibió no puede contestarlo con un
+    # UUID. `None` cuando el responsable no es un usuario del catálogo.
+    elaborado_por_nombre: str | None = None
+    entregado_por_nombre: str | None = None
+    recibido_por_nombre: str | None = None
     elaborado_at: datetime | None
     entregado_at: datetime | None
     recibido_at: datetime

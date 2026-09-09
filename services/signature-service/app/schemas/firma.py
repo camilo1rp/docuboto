@@ -116,6 +116,11 @@ class FirmaResponse(BaseModel):
     objeto_id: str | None
     formato_solicitado: str | None
     firmante_id: uuid.UUID | None
+    # Resuelto al LEER (`FirmaRepository.get`), nunca persistido: la fila
+    # `firma` guarda el identificador —el hecho fechado no se toca— pero el
+    # comprobante de firma tiene que decir QUIÉN firmó. `None` cuando el
+    # firmante no es un usuario del catálogo (sello institucional, sistema).
+    firmante_nombre: str | None = None
     # SHA-256 de los BYTES FIRMADOS, que NO siempre son el documento, y que
     # dependen TAMBIÉN del proveedor. Con `provider` nativa: para
     # `borrador`/`documento` se firma el texto hexadecimal de la huella, así que

@@ -408,6 +408,7 @@ async def get_firma(
         objeto_id=d.get("objeto_id"),
         formato_solicitado=d.get("formato_solicitado"),
         firmante_id=d.get("firmante_id"),
+        firmante_nombre=d.get("firmante_nombre"),
         payload_sha256=d["payload_sha256"],
         provider=d["provider"],
         sello_tiempo=d["sello_tiempo"],

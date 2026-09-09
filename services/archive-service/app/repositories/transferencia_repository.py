@@ -38,8 +38,31 @@ _COLS = (
 # XML no debe arrastrarse por el hot path de `insert`/`get`/`list`/
 # `update_estado`, ver docstring de la migración).
 _ACTA_COLS = (
-    "transferencia_id, acta_fuid_xml, acta_fuid_sha256, elaborado_por, entregado_por, "
-    "recibido_por, elaborado_at, entregado_at, recibido_at, indice_version, congelada_at"
+    "a.transferencia_id, a.acta_fuid_xml, a.acta_fuid_sha256, a.elaborado_por, "
+    "a.entregado_por, a.recibido_por, a.elaborado_at, a.entregado_at, a.recibido_at, "
+    "a.indice_version, a.congelada_at"
+)
+
+#: **Los tres responsables del FUID se resuelven a un nombre aquí, no en la
+#: pantalla.** El acta CONGELA el identificador interno de quien elaboró,
+#: entregó y recibió, y así debe seguir: es un documento probatorio y su
+#: contenido no se toca (Ley 594/2000). Pero la ficha del acta enseñaba los tres
+#: como `50b64803-568d-49f7-9299-cb140279d947`, que no responde quién —séptima
+#: aparición del mismo defecto en este repositorio—. Se resuelve al LEER, con el
+#: mismo JOIN por TEXTO y por la IZQUIERDA que ya usa `audit_read.py`: el
+#: responsable puede no ser un usuario del catálogo (actas migradas, actos del
+#: sistema) y un `::uuid` haría fallar la consulta entera por una fila que ni se
+#: estaba preguntando. El identificador congelado sigue viajando en la
+#: respuesta: es la clave con la que se cruza el acta con el registro de firmas.
+_ACTA_NOMBRES = (
+    "ue.username AS elaborado_por_nombre, "
+    "uen.username AS entregado_por_nombre, "
+    "ur.username AS recibido_por_nombre"
+)
+_ACTA_JOIN_NOMBRES = (
+    "LEFT JOIN auth_users ue ON ue.id::text = a.elaborado_por "
+    "LEFT JOIN auth_users uen ON uen.id::text = a.entregado_por "
+    "LEFT JOIN auth_users ur ON ur.id::text = a.recibido_por"
 )
 
 # Migración 026 (H-H, E06/F4): tabla HERMANA mutable de `transferencia_acta`
@@ -208,8 +231,34 @@ class TransferenciaRepository:
         se recibió (o fue rechazada, que nunca produce acta, ver
         `TransferenciaService.recibir`)."""
         await self._sp()
+        # `auth_users` la crea AUTH-SERVICE, no este servicio: en el esquema de
+        # una entidad real está —todas las migraciones aterrizan en el mismo
+        # schema— pero un despliegue parcial, o un esquema de pruebas
+        # provisionado solo con las migraciones de archivo, no la tiene. El
+        # nombre del responsable es una cortesía; el acta es el documento
+        # probatorio. Que la falta de una tabla de OTRO servicio tumbe la
+        # lectura del acta sería cambiar un dato ausente por un error, así que
+        # se comprueba antes y se degrada a leerla sin nombres.
+        # Se comprueba la COLUMNA y no la tabla: `auth_users` puede existir con
+        # otra forma (un esquema de pruebas la crea con lo mínimo que necesita
+        # el clearance), y entonces la tabla está pero `username` no — mirar
+        # solo la tabla es comprobar la mitad y fallar igual.
+        if await self._conn.fetchval(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'auth_users'
+                      AND column_name = 'username')"""
+        ):
+            return await self._conn.fetchrow(
+                f"""SELECT {_ACTA_COLS}, {_ACTA_NOMBRES}
+                      FROM transferencia_acta a
+                      {_ACTA_JOIN_NOMBRES}
+                     WHERE a.transferencia_id = $1""",
+                transferencia_id,
+            )
         return await self._conn.fetchrow(
-            f"SELECT {_ACTA_COLS} FROM transferencia_acta WHERE transferencia_id = $1",
+            f"SELECT {_ACTA_COLS} FROM transferencia_acta a WHERE a.transferencia_id = $1",
             transferencia_id,
         )
 

@@ -91,9 +91,18 @@ class IdentidadFirmadaMiddleware:
     """Verifica la firma de la identidad, si viene identidad.
 
     Se comprueba **solo cuando hay cabecera de usuario**. Las llamadas
-    servicio-a-servicio selladas con token interno no traen identidad de persona
-    y tienen su propio gate: exigirles firma las rompería sin ganar nada, y el
-    control que les corresponde ya existe.
+    servicio-a-servicio selladas con token interno y SIN identidad de persona
+    tienen su propio gate: exigirles firma las rompería sin ganar nada.
+
+    Lo que esta clase decía antes era que las llamadas servicio-a-servicio «no
+    traen identidad de persona», y es falso: siete clientes internos propagan el
+    `X-User-Id` de quien originó el acto, porque el destino lo EXIGE para
+    atribuirlo a una persona — el sellado del índice electrónico se atribuye a
+    quien cierra el expediente (RF-FIR-11/12/14), no al sistema. Con esa premisa
+    escrita, esas llamadas pasaron a morir en 401 y ningún expediente cerrado
+    volvía a tener su índice sellado. **Quien propaga una identidad, la firma**
+    (`firmar`), igual que hace el gateway; el guardián que lo censa vive en
+    `shared/tests/test_la_identidad_propagada_va_firmada.py`.
 
     Es ASGI puro y no `BaseHTTPMiddleware` para poder ir el primero sin
     interferir con el cuerpo en streaming de las subidas.

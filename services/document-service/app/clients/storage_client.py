@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from orpycamcp_common import identidad
 
 from app.core.config import settings
 
@@ -125,6 +126,10 @@ async def upload_bytes(
     headers = {"X-Tenant-Slug": tenant_slug}
     if uploaded_by is not None:
         headers["X-User-Id"] = str(uploaded_by)
+    # Firmada por el mismo motivo que en los demás clientes internos: el
+    # middleware de identidad se dispara por la presencia de `X-User-Id`, venga
+    # la llamada del gateway o de otro servicio (ver `orpycamcp_common.identidad`).
+    headers = identidad.firmar(headers)
     files = {"file": (filename, data, mime_type or "application/octet-stream")}
     async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:
         try:

@@ -71,7 +71,7 @@ def _fuid_to_xml(fuid: FuidResponse) -> str:
         ET.SubElement(e, f"{{{_FUID_NS}}}asunto").text = r.asunto
         ET.SubElement(e, f"{{{_FUID_NS}}}serie").text = r.serie_code or ""
         ET.SubElement(e, f"{{{_FUID_NS}}}signatura").text = r.signatura or ""
-        ET.SubElement(e, f"{{{_FUID_NS}}}unidad").text = r.unidad_tipo
+        ET.SubElement(e, f"{{{_FUID_NS}}}unidad").text = r.unidad_tipo or ""
         ET.SubElement(e, f"{{{_FUID_NS}}}folios").text = str(r.num_folios or "")
         ET.SubElement(e, f"{{{_FUID_NS}}}soporte").text = r.soporte or ""
         ET.SubElement(e, f"{{{_FUID_NS}}}fechaInicial").text = r.fecha_inicial.isoformat()

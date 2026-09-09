@@ -29,7 +29,13 @@ import { load } from "./+page.server.js";
 const UUID = "11111111-1111-1111-1111-111111111111";
 const CODIGO = "EXP-2026-0002";
 
-const EXPEDIENTE = { id: UUID, code: CODIGO, name: "Expediente de prueba", status: "open", radicados: [] };
+const EXPEDIENTE = {
+  id: UUID,
+  code: CODIGO,
+  name: "Expediente de prueba",
+  status: "open",
+  radicados: [],
+};
 
 function sesion(referencia) {
   return {
@@ -111,7 +117,12 @@ describe("load de /expedientes/[id] — se entra por el código, no solo por el 
       if (path.startsWith("/expedientes/search")) {
         return {
           status: 200,
-          body: { hits: [{ id: UUID, code: "EXP-2026-00021" }, { id: "otro", code: "EXP-2026-00022" }] },
+          body: {
+            hits: [
+              { id: UUID, code: "EXP-2026-00021" },
+              { id: "otro", code: "EXP-2026-00022" },
+            ],
+          },
         };
       }
       return { status: 200, body: {} };

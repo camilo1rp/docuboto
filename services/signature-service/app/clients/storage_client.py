@@ -29,6 +29,7 @@ from __future__ import annotations
 import uuid
 
 import httpx
+from orpycamcp_common import identidad
 
 from app.core.config import settings
 
@@ -71,6 +72,10 @@ async def upload_signed_xml(
     }
     if uploaded_by is not None:
         headers["X-User-Id"] = str(uploaded_by)
+    # Firmada por el mismo motivo que en los demás clientes internos: el
+    # middleware de identidad se dispara por la presencia de `X-User-Id`, venga
+    # la llamada del gateway o de otro servicio (ver `orpycamcp_common.identidad`).
+    headers = identidad.firmar(headers)
     files = {"file": (filename, content, "application/xml")}
     try:
         async with httpx.AsyncClient(
