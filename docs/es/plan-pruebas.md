@@ -1319,12 +1319,20 @@ cuando el estado no se puede leer; y mandar el código como `otp` en vez de
 ### 14.4 Anotado y no perseguido
 
 - ~~La inconsistencia de §7.7.bis~~ **CERRADA en la misma sesión** (§14.5).
-- **No hay pantalla que CREE una cadena de firma.** El proxy
-  `/firmas/api/requests` existe y está probado, y `POST /signature/requests`
-  responde; ninguna vista lo llama. La cadena de este recorrido hubo que crearla
-  por el API con la sesión real. Lo que la bandeja crea son cadenas de **visto
-  bueno**, que es otra cosa. Misma clase que PQRS y la verificación pública:
-  capacidad construida y no ofrecida.
+- **Las cadenas de firma solo se pueden crear sobre un `borrador`.** Corrijo
+  aquí lo que esta misma sección afirmó primero —«no hay pantalla que cree una
+  cadena de firma»—, que es **falso**: `/borradores` tiene su «Circuito de
+  aprobación y firma» (E23 Inc.4) y crea cadenas con turnos de visto bueno y de
+  firma; su proxy dice explícitamente que se hizo para cerrar ese hueco. Lo que
+  no tiene pantalla es la cadena sobre un **radicado**, un **expediente** o un
+  **documento**, que son los otros tres tipos que el backend admite
+  (`CADENA_OBJETO_TIPOS`); el proxy genérico `/firmas/api/requests` existe, está
+  probado y **ninguna vista lo llama**. Por eso la cadena de este recorrido hubo
+  que crearla por el API. Lo que la bandeja de trámite crea son cadenas de
+  **visto bueno** sobre el flujo, que es otra cosa distinta de las dos
+  anteriores. Si esos tres tipos deben poder firmarse desde la interfaz o el
+  circuito del borrador es la única puerta querida, es **decisión de producto**,
+  no un defecto a parchear.
 
 ### 14.5 La incoherencia de los dos extremos, cerrada
 
@@ -1363,3 +1371,64 @@ desconectarla de `firmar`; y meterla dentro de la transacción. Suite del
 servicio: 391 pruebas, `./scripts/lint.sh signature-service` limpio.
 
 **Queda de §14.4**: no hay pantalla que cree una cadena de firma.
+
+### 14.6 El tipo que se podía abrir y no se podía firmar
+
+Al ir a construirle pantalla a `documento` —el hueco que §14.4 daba por el más
+defendible— resultó que no había nada debajo que sostuviera una pantalla.
+
+**Los hechos**, en este orden:
+
+1. **No tiene productor.** Barrido de los once servicios: nadie crea, guarda ni
+   resuelve un objeto de tipo `documento`. Los únicos aciertos del término son
+   el «eje documento» de la detección de terceros duplicados, que es el
+   documento de identidad.
+2. **Su huella no la puede verificar nadie.** Lo dice el propio `constants.py`:
+   «es un tipo genérico sin productor conocido, así que la huella que declara su
+   autor es la única verdad disponible». Una pantalla para él tendría como campo
+   central un SHA-256 tecleado —justo lo contrario de lo que hace el circuito
+   del borrador, cuyo proxy documenta que **no** manda la huella porque «una
+   huella que el llamante elige no vincula a nadie».
+3. **Y la cadena no se podía firmar jamás.** Comprobado en el sistema
+   levantado, con la sesión de `operador`:
+
+   ```
+   POST /firmas/api/requests {objeto_tipo:"documento", …}  → 201 Created
+   POST /firmas/api/{id}/sign                              → 409 documento_desaparecido
+      «El objeto de esta cadena ya no existe: el borrador 298ddde9-… ya no existe»
+   ```
+
+   La guarda lo busca en `/internal/documentos/**borradores**/{id}/huella`, que
+   es lo único que ese cliente sabe leer. El mensaje llama «borrador» a algo que
+   nunca lo fue.
+
+**Decisión (del usuario)**: retirar el tipo, no construirle la pantalla. El
+criterio de admisión ya estaba escrito en ese fichero para `radicado` y
+`expediente` —«cuando cada uno tenga un artefacto canónico que firmar, entra
+aquí»— y `documento` no lo cumplía.
+
+**Lo que impide que vuelva**: las dos mitades del trato —«este tipo exige
+huella» y «alguien sabe resolvérsela»— vivían en sitios distintos y nada las
+cruzaba, así que la contradicción no la delataba ningún test. Ahora la guarda
+decide por un **mapa de resolutores**, y tres guardianes escritos por admisión
+exigen que los conjuntos formen una partición exacta del allow-set. Añadir un
+tipo obliga a decir de qué lado está.
+
+*Defecto propio, cazado por la suite*: al montar el mapa ligué la función **al
+importar**, con lo que el mapa guardaba una referencia distinta de la que usa el
+resto del módulo — 16 pruebas en rojo que sustituían el nombre y ya no
+sustituían nada. Corregido con resolución tardía. Dos nombres para la misma cosa
+que dejan de serlo es un patrón que este proyecto ya ha pagado varias veces.
+
+Tres mutaciones, las tres cazadas: readmitir `documento` sin decidir su lado;
+readmitirlo exigiendo huella y sin resolutor (el defecto original, exacto — caen
+cuatro guardianes); y declarar que un tipo con fuente autoritativa exige huella
+al llamante. Suite: 396 pruebas, lint y mypy limpios. Verificado en el sistema:
+`documento` responde `422 objeto_tipo debe ser uno de ['borrador', 'expediente',
+'radicado']`, y los otros tres siguen abriéndose.
+
+**Queda anotado, sin decidir**: el proxy genérico `/firmas/api/requests` sigue
+sin llamarlo ninguna vista. Hoy solo sirve a `radicado` y `expediente`, cuyas
+cadenas nadie abre desde la interfaz. O se le da puerta o se retira; un endpoint
+que nadie llama lo lee el siguiente como capacidad disponible.
+

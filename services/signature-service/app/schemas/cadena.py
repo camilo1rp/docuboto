@@ -105,6 +105,12 @@ class SolicitudCreate(BaseModel):
         pantalla, escrito a propósito sin dónde ponerla, se llevaba un 422 y el
         circuito no se podía abrir desde el navegador.
         """
+        # Hoy este conjunto queda VACÍO, y eso es el estado bueno: el único tipo
+        # que exige huella de contenido (`borrador`) la tiene resuelta por su
+        # productor, así que a ningún llamante se le pide ya una. La expresión
+        # se conserva porque es la que se dispararía si alguien añadiera un tipo
+        # que exige huella sin fuente autoritativa — que fue justo la
+        # contradicción de `documento`, retirado del allow-set el 2026-09-12.
         exigible = CADENA_PAYLOAD_OBLIGATORIO - CADENA_PAYLOAD_AUTORITATIVO
         if self.objeto_tipo in exigible and not self.payload_sha256:
             raise ValueError(

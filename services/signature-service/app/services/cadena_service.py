@@ -42,7 +42,6 @@ from app.core.config import settings
 from app.core.constants import (
     CADENA_NIVEL_AUTORITATIVO,
     CADENA_PAYLOAD_AUTORITATIVO,
-    CADENA_PAYLOAD_OBLIGATORIO,
 )
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
@@ -82,6 +81,28 @@ from app.services.personal_signing import sign_personal_xml
 _PERSONAL_ENVELOPE_NS = "urn:orpyca:firma-personal"
 
 logger = logging.getLogger("signature.cadena")
+
+#: Quién sabe releer la huella VIGENTE de cada tipo que la exige.
+#:
+#: Es la otra mitad de `CADENA_PAYLOAD_OBLIGATORIO`, y vive atada a ella por un
+#: guardián: exigir huella de contenido y no tener quién la resuelva es lo que
+#: dejó a `documento` creable y NO firmable —el gate lo buscaba como borrador,
+#: no lo encontraba, y contestaba que «el borrador ya no existe» sobre algo que
+#: nunca lo fue—. Un tipo nuevo que exija huella entra aquí el mismo día, o el
+#: guardián se cae.
+async def _huella_de_borrador(objeto_id: str, tenant_slug: str) -> dict:
+    """Indirección deliberada: resuelve el cliente en el momento de LLAMAR.
+
+    Meter `get_huella_borrador` directamente en el mapa lo liga al importar, y
+    entonces el mapa guarda una referencia distinta de la que usa el resto del
+    módulo: quien sustituya el nombre —un test, o un futuro decorador de
+    reintentos— cambiaría una y no la otra. Dos nombres para la misma cosa que
+    dejan de ser la misma cosa es un patrón que este proyecto ya ha pagado.
+    """
+    return await get_huella_borrador(objeto_id, tenant_slug)
+
+
+RESOLUTOR_DE_HUELLA = {"borrador": _huella_de_borrador}
 
 try:
     from orpycamcp_common import audit as _audit
@@ -773,7 +794,12 @@ class CadenaFirmaService:
         poder firmar sobre un texto modificado — el momento en que menos se
         querría poder.
         """
-        if sol["objeto_tipo"] not in CADENA_PAYLOAD_OBLIGATORIO:
+        resolutor = RESOLUTOR_DE_HUELLA.get(sol["objeto_tipo"])
+        if resolutor is None:
+            # Tipo que se firma como conjunto: no hay huella contra la que
+            # comparar y este gate no dice nada. Que la condición sea el MAPA
+            # —y no una lista escrita aparte— es lo que impide volver a admitir
+            # un tipo que exige huella sin quién se la resuelva.
             return
         esperado = sol["payload_sha256"]
         if not esperado:
@@ -793,7 +819,7 @@ class CadenaFirmaService:
             )
 
         try:
-            vigente = await get_huella_borrador(str(sol["objeto_id"]), self._tenant_slug)
+            vigente = await resolutor(str(sol["objeto_id"]), self._tenant_slug)
         except BorradorDesaparecidoError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

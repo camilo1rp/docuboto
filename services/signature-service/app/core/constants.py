@@ -77,7 +77,21 @@ XADES_ELIGIBLE_OBJETO_TIPOS = frozenset(
 # El único cliente es la UI de firmas (`frontend/.../firmas`): ningún servicio
 # interno crea cadenas — el sello institucional del índice y del acta va por
 # `/sign-xml` e `/internal/sign-indice`, con su propio allow-set arriba.
-CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador", "documento"})
+#
+# `documento` SALIÓ de este conjunto (2026-09-12). Estaba aquí sin productor:
+# ningún servicio crea, guarda ni resuelve un objeto de ese tipo, así que una
+# cadena sobre él se podía CREAR y no se podía firmar NUNCA — el gate de
+# vigencia lo buscaba como borrador, no lo encontraba, y devolvía
+# `409 documento_desaparecido` diciendo que era «un borrador que ya no existe»
+# sobre algo que jamás lo fue. Comprobado contra el sistema levantado: 201 al
+# crear, 409 al firmar, sin salida. Además su `payload_sha256` lo declaraba el
+# llamante y no había contra qué contrastarlo, que es exactamente lo que este
+# subsistema existe para impedir. El criterio de admisión ya estaba escrito
+# abajo para `radicado` y `expediente` —«cuando cada uno tenga un artefacto
+# canónico que firmar, entra aquí»— y `documento` no lo cumplía. Vuelve el día
+# que exista, con su productor y su fuente de huella, y el guardián
+# `test_todo_tipo_de_cadena_se_puede_firmar` lo exigirá.
+CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador"})
 
 # Tipos para los que `payload_sha256` es OBLIGATORIO (E23, RF-PRO-09).
 #
@@ -87,14 +101,29 @@ CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador", "document
 # circuito de aprobación existe para impedir: varios dan visto bueno, alguien
 # edita, y la firma anterior sigue en pie.
 #
-# `borrador` y `documento` son los dos que producen un fichero con huella
-# propia, así que para ellos no hay excusa. `radicado` y `expediente` se quedan
-# fuera **a propósito y con reserva**: hoy se firman como conjunto (el índice
-# electrónico del expediente tiene su propio camino sellado, `/sign-xml`), y
-# exigirles una huella aquí rompería cadenas en curso sin cerrar ninguna fuga
-# que no cierre ya su propio circuito. Cuando cada uno tenga un artefacto
-# canónico que firmar, entra aquí.
-CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador", "documento"})
+# `borrador` es el que produce un fichero con huella propia, así que para él no
+# hay excusa. `radicado` y `expediente` se quedan fuera **a propósito y con
+# reserva**: hoy se firman como conjunto (el índice electrónico del expediente
+# tiene su propio camino sellado, `/sign-xml`), y exigirles una huella aquí
+# rompería cadenas en curso sin cerrar ninguna fuga que no cierre ya su propio
+# circuito. Cuando cada uno tenga un artefacto canónico que firmar, entra aquí.
+#
+# Exigir huella y no tener quién la resuelva es la contradicción que dejó a
+# `documento` sin poder firmarse: las dos mitades del trato viven ahora atadas
+# —ver `RESOLUTOR_DE_HUELLA` en `cadena_service`— y un guardián las cruza.
+CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador"})
+
+# Tipos de cadena que se firman COMO CONJUNTO, sin huella de contenido, y que
+# por tanto no necesitan quién se la resuelva. Es la otra mitad de la partición:
+# todo tipo admitido en `CADENA_OBJETO_TIPOS` está o aquí o en
+# `CADENA_PAYLOAD_OBLIGATORIO`, nunca en ninguno y nunca en los dos.
+#
+# Se escribe por ADMISIÓN y no por omisión a propósito: `documento` vivió en el
+# allow-set exigiendo huella y sin nadie que pudiera resolverla, y nada en el
+# código ataba las dos cosas, así que la contradicción no la delataba ningún
+# test. Añadir un tipo nuevo obliga ahora a decir a cuál de los dos lados
+# pertenece, o el guardián se cae.
+CADENA_SIN_HUELLA_DECLARADA = frozenset({"radicado", "expediente"})
 
 # Tipos cuya huella tiene FUENTE AUTORITATIVA fuera de este servicio: el
 # `payload_sha256` del body se IGNORA y se resuelve contra el productor.
