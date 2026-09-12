@@ -1427,8 +1427,42 @@ al llamante. Suite: 396 pruebas, lint y mypy limpios. Verificado en el sistema:
 `documento` responde `422 objeto_tipo debe ser uno de ['borrador', 'expediente',
 'radicado']`, y los otros tres siguen abriéndose.
 
-**Queda anotado, sin decidir**: el proxy genérico `/firmas/api/requests` sigue
-sin llamarlo ninguna vista. Hoy solo sirve a `radicado` y `expediente`, cuyas
-cadenas nadie abre desde la interfaz. O se le da puerta o se retira; un endpoint
-que nadie llama lo lee el siguiente como capacidad disponible.
+### 14.7 La puerta que le faltaba al proxy sin dueño
+
+El cabo suelto de §14.6 —«el proxy genérico `/firmas/api/requests` sigue sin
+llamarlo ninguna vista»— se resolvió mirando quién lo usa de verdad antes de
+decidir si retirarlo. **El sembrado del entorno de pruebas crea las dos cadenas**
+que ese proxy sirve, y sobre el expediente dice en su propio comentario que «es
+donde una entidad la usa de verdad». No era andamio: era una capacidad
+construida, probada, sembrada y sin puerta. Así que se le dio puerta.
+
+La ficha del expediente gana un botón **«Cadena de firmas»** (`USUA_PERM_EXPEDIENTE`
++ `PERM_FIRMA`, el mismo par que firmar su índice) sobre un modal reutilizable:
+compone los turnos **en orden** —la posición ES el turno—, y todos son de firma.
+Eso es lo que lo distingue del circuito del borrador: allí hay visto bueno
+**y** firma porque el texto todavía se puede editar; aquí lo que se firma ya
+está fijado.
+
+**Comprobado de punta a punta contra el sistema**, con `operador`:
+
+| Acto | Resultado |
+|---|---|
+| Abrir cadena desde `/expedientes/{id}` | `GET …/requests?objeto…` → 404 (no hay ninguna), `POST` → **201** |
+| Bandeja del firmante | aparece como «Expediente · Turno 1 · FIRMA» |
+| Reabrir el modal sobre el mismo expediente | avisa, enumera el turno **con el nombre** de la persona y no ofrece abrir otra |
+
+La última fila importa por partida doble: es la rama que solo estaba probada con
+mocks, y es donde volvía a acechar la identidad en crudo —el turno se pinta con
+el nombre del catálogo, no con el UUID, que ya ha sido defecto siete veces en
+este proyecto—.
+
+Tres mutaciones, las tres cazadas: invertir el orden de los firmantes; permitir
+la misma persona dos veces; y dar por creada una cadena que el backend rechazó.
+Suite del frontend: 206 ficheros / 2070 pruebas, `svelte-check` 0/0, lint sin
+errores.
+
+**Queda sin puerta `radicado`**, el otro tipo que el sembrado crea («Firma de la
+respuesta», sobre una Salida). El modal es reutilizable y admite el tipo; lo que
+falta es decidir desde qué pantalla se ofrece —la bandeja de trámite es la
+candidata— y si el trámite lo quiere. Se declara, no se improvisa.
 

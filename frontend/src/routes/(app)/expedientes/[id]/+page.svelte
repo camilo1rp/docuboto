@@ -42,6 +42,7 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import { ACCESO_ACCION_LABELS } from "./acceso-labels.js";
   import Button from "$lib/components/ui/Button.svelte";
+  import CadenaFirmaModal from "$lib/components/features/firmas/CadenaFirmaModal.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import VincularRadicadosDrawer from "$lib/components/features/expedientes/VincularRadicadosDrawer.svelte";
@@ -125,6 +126,16 @@
   // POST /indice/firmar exige USUA_PERM_EXPEDIENTE Y PERM_FIRMA, ambos en
   // min_crud=1 (default; routers/indice.py líneas 194-195) — no se tocan.
   $: canFirmarIndice = can("USUA_PERM_EXPEDIENTE") && can("PERM_FIRMA");
+
+  // Cadena de firmantes SOBRE EL EXPEDIENTE (E06, RF-FIR-04), que no es lo
+  // mismo que firmar su índice electrónico: aquello es el sello institucional
+  // del instrumento, esto son varias personas comprometiéndose en orden sobre
+  // el expediente —típicamente alrededor de su cierre—. El backend lo admitía y
+  // lo sembraba el propio entorno de pruebas; lo que faltaba era la puerta.
+  // Mismo par de permisos que firmar el índice, porque el router de cadenas
+  // exige PERM_FIRMA y el objeto es un expediente.
+  $: canAbrirCadena = can("USUA_PERM_EXPEDIENTE") && can("PERM_FIRMA");
+  let showCadenaModal = false;
 
   // ---------------------------------------------------------------------------
   /** @param {any} err @param {string} fallback */
@@ -950,6 +961,11 @@
       {#if canClose}
         <Button variant="secondary" on:click={() => (showCloseModal = true)}>
           <i class="fas fa-lock" aria-hidden="true"></i> Cerrar expediente
+        </Button>
+      {/if}
+      {#if canAbrirCadena}
+        <Button variant="ghost" on:click={() => (showCadenaModal = true)}>
+          <i class="fas fa-users" aria-hidden="true"></i> Cadena de firmas
         </Button>
       {/if}
       {#if canTransfer}
@@ -2135,6 +2151,22 @@
 <!-- =========================================================================
      Modal: Confirmar cierre
      ========================================================================= -->
+{#if expediente}
+  <CadenaFirmaModal
+    open={showCadenaModal}
+    objetoTipo="expediente"
+    objetoId={expediente.id}
+    titulo={`Cadena de firmas — ${expediente.code ?? expediente.id}`}
+    on:close={() => (showCadenaModal = false)}
+    on:created={() => {
+      showCadenaModal = false;
+      notifySuccess(
+        "Cadena de firmas abierta. Cada firmante la verá en su bandeja cuando le toque.",
+      );
+    }}
+  />
+{/if}
+
 <Modal
   open={showCloseModal}
   title="Cerrar expediente"

@@ -156,6 +156,29 @@ curl -X POST 'http://localhost:19080/api/v1/signature/' \
 # Respuesta: { "firma_id": "uuid", "estado": "firmado", "sha256": "...", "firmado_at": "..." }
 ```
 
+### Abrir una cadena de firmas sobre un expediente
+
+Varias personas firman **en orden**: el turno 2 no se abre hasta que el 1 esté
+resuelto (RF-FIR-04). Cada firmante lo ve en su bandeja `/firmas` cuando le toca.
+
+```bash
+curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"objeto_tipo": "expediente", "objeto_id": "uuid-expediente",
+       "titulo": "Cierre del expediente",
+       "firmantes": ["uuid-primero", "uuid-segundo"]}'
+# Respuesta: { "solicitud_id": "uuid", "estado": "pendiente", "items": [ … ] }
+```
+
+Desde la interfaz, el mismo acto está en el botón **«Cadena de firmas»** de la
+ficha del expediente (`/expedientes/{id}`), que exige `USUA_PERM_EXPEDIENTE` y
+`PERM_FIRMA`. Si el expediente ya tiene una cadena abierta, la pantalla la
+muestra y no deja abrir otra: hay que resolverla o rechazarla antes.
+
+> `objeto_tipo` admite `expediente`, `radicado` y `borrador`. Los borradores en
+> redacción tienen su propio circuito —visto bueno **y** firma— en
+> `/borradores`, porque allí el texto todavía se puede editar.
+
 ### Consultar al asistente conversacional
 
 ```bash
