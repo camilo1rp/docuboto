@@ -842,11 +842,17 @@ class CadenaFirmaService:
         Signs the active turn for the given solicitud.
 
         Guards (in order):
-        1. 404 — solicitud not found.
+        1. 404 — solicitud not found (also the no-read-up answer).
         2. 409 — solicitud is not in 'pendiente' state.
         3. 403 no_es_firmante — actor is not in the chain at all.
         4. 403 no_es_su_turno — actor is in the chain but it's not their turn yet
            (invariant: turn N+1 only after turn N is resolved, RF-FIR-04).
+        5. 409 documento_modificado — the text changed since the circuit opened
+           (``_gate_documento_vigente``). LAST of the pre-transaction guards, and
+           deliberately so: it is the only one that describes the DOCUMENT, and
+           answering it to someone who is not part of the chain told a stranger
+           that the circuit exists and which version it is on. Authorization
+           first, state afterwards — the same order ``emitir_challenge`` uses.
 
         ``authorization`` is the raw ``Authorization`` header from the
         inbound request — forwarded verbatim to auth-service when the 2FA
@@ -902,8 +908,6 @@ class CadenaFirmaService:
                 },
             )
 
-        await self._gate_documento_vigente(sol)
-
         if not await self._repo.es_firmante(solicitud_id, actor):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -935,6 +939,21 @@ class CadenaFirmaService:
                     "status": 403,
                 },
             )
+
+        # Después de las guardas de pertenencia y turno, y no antes. Corriendo
+        # primero, este gate le contestaba `409 documento_modificado` —con el
+        # número de versión vigente— a quien NO es parte de la cadena: le
+        # confirmaba que existe un circuito de firma sobre ese objeto, que el
+        # texto cambió y por dónde va, teniendo como único requisito el nivel de
+        # acceso. `emitir_challenge`, sobre la misma solicitud y el mismo actor,
+        # respondía `no_es_firmante`; y es el criterio que ya está escrito allí:
+        # un colapso que solo existe en uno de dos caminos no es una defensa,
+        # es una incoherencia. Mover la llamada no debilita nada —quien sí es
+        # parte y sí tiene el turno sigue topándose con el mismo 409 antes de
+        # firmar— y además ahorra la consulta saliente en los casos que se van
+        # a rechazar de todos modos, igual que `turno_es_de_visto_bueno` se
+        # rechaza antes de consultar la credencial para no quemar un factor.
+        await self._gate_documento_vigente(sol)
 
         otp_fail: HTTPException | None = None
         consumed_challenge: dict | None = None
@@ -1847,10 +1866,6 @@ class CadenaFirmaService:
                 },
             )
 
-        # El mismo gate que la firma: un visto bueno sobre un texto que ya
-        # cambió no dice nada de lo que hay ahora.
-        await self._gate_documento_vigente(sol)
-
         if not await self._repo.es_firmante(solicitud_id, actor):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1860,6 +1875,16 @@ class CadenaFirmaService:
                     "status": 403,
                 },
             )
+
+        # El mismo gate que la firma: un visto bueno sobre un texto que ya
+        # cambió no dice nada de lo que hay ahora. Y, como en `firmar`, DESPUÉS
+        # de la pertenencia: corriendo antes le contaba a un ajeno a la cadena
+        # que el circuito existe y en qué versión va. Aquí el gate de turno vive
+        # dentro de la transacción (lock de fila) y no se saca fuera solo para
+        # adelantarlo, así que un miembro de la cadena a quien no le toca sí
+        # puede toparse con este 409 — pero ese ya sabe que el circuito existe,
+        # que es justo lo que no debía saber el de fuera.
+        await self._gate_documento_vigente(sol)
 
         async with self._conn.transaction():
             turno = await self._repo.turno_activo_for_update(solicitud_id)

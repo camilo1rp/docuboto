@@ -1318,12 +1318,48 @@ cuando el estado no se puede leer; y mandar el código como `otp` en vez de
 
 ### 14.4 Anotado y no perseguido
 
-- **La inconsistencia de §7.7.bis sigue viva**: un turno ajeno responde `403
-  no_es_su_turno` en `/challenge` y `409 documento_modificado` en `/sign`. Los
-  dos extremos del mismo acto comprueban las guardas en orden distinto.
+- ~~La inconsistencia de §7.7.bis~~ **CERRADA en la misma sesión** (§14.5).
 - **No hay pantalla que CREE una cadena de firma.** El proxy
   `/firmas/api/requests` existe y está probado, y `POST /signature/requests`
   responde; ninguna vista lo llama. La cadena de este recorrido hubo que crearla
   por el API con la sesión real. Lo que la bandeja crea son cadenas de **visto
   bueno**, que es otra cosa. Misma clase que PQRS y la verificación pública:
   capacidad construida y no ofrecida.
+
+### 14.5 La incoherencia de los dos extremos, cerrada
+
+Anotada en §7.7.bis como «menor» —un turno ajeno contesta `403 no_es_su_turno`
+en `/challenge` y `409 documento_modificado` en `/sign`—, al mirarla resultó ser
+una fuga pequeña pero real.
+
+`_gate_documento_vigente` corría **antes** de las guardas de pertenencia y turno,
+así que a quien no forma parte de la cadena se le contestaba `409
+documento_modificado` **con el número de versión vigente**: le confirmaba que
+existe un circuito de firma sobre ese objeto, que el texto cambió y por dónde
+va, teniendo como único requisito el nivel de acceso. `emitir_challenge`, sobre
+la misma solicitud y el mismo actor, respondía `no_es_firmante` — y el criterio
+ya estaba escrito allí: *un colapso que solo existe en uno de dos caminos no es
+una defensa, es una incoherencia*.
+
+**Lo que obligó a pensarlo dos veces**: dos pruebas existentes fijaban el orden
+anterior, una de ellas llamada `test_el_gate_corre_antes_de_mirar_si_es_firmante`.
+Su docstring daba tres razones. Dos eran equivocadas —presentaba como daño que
+un ajeno recibiera `no_es_firmante`, que es justo lo que debe recibir—. La
+tercera es de fondo y **la conserva el cambio**: la guarda va detrás del turno
+pero **delante de la transacción y del segundo factor**, así que ningún OTP ni
+TOTP se quema en un acto que se va a rechazar igual. Las dos pruebas se
+reescribieron para medir esa garantía —que `_gate_2fa` no llegue a llamarse y
+que no se abra transacción— en vez del orden que producía la fuga. Un test que
+fija un orden equivocado no se borra: se le quita lo que estaba mal y se le deja
+lo que garantizaba.
+
+El gemelo del visto bueno tenía el mismo orden y se corrigió con él
+(se arregló un gemelo y se dejó el otro: otra vez).
+
+Cinco mutaciones, las cinco cazadas: devolver la guarda delante en `firmar`;
+devolverla delante en el visto bueno; desactivar la guarda entera (control
+positivo: quien sí tiene el turno debe seguir topándose con el 409);
+desconectarla de `firmar`; y meterla dentro de la transacción. Suite del
+servicio: 391 pruebas, `./scripts/lint.sh signature-service` limpio.
+
+**Queda de §14.4**: no hay pantalla que cree una cadena de firma.

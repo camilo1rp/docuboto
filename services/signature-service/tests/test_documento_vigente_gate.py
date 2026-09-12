@@ -162,23 +162,43 @@ class TestGateConectado:
     su lógica, no que esté cableada. Desconectar la llamada de `firmar()` los
     dejaría a todos en verde — el mismo defecto que un test que mide el DOM en
     vez de la variable que se emite. Este es el que cae con esa mutación.
+
+    **Sobre el orden (B6 §14.4).** Estos tests exigían antes que el gate corriera
+    ANTES de `es_firmante`, por tres razones escritas en su docstring. Dos eran
+    equivocadas: que un ajeno a la cadena recibiera `no_es_firmante` se
+    presentaba como daño, y es lo correcto —el orden anterior le contestaba
+    `409 documento_modificado` con el número de versión, confirmándole que el
+    circuito existe y por dónde va, con el nivel de acceso como único
+    requisito—. La tercera sí era de fondo, y **sigue garantizada**: el gate
+    corre antes de la transacción y antes de `_gate_2fa`, así que ningún segundo
+    factor se consume en un acto que se va a rechazar igual. Eso es lo que mide
+    ahora el segundo test, en vez del orden que producía la incoherencia.
+    Ver `test_la_autorizacion_va_antes_que_el_estado_del_documento.py`.
     """
+
+    @staticmethod
+    def _servicio_con_turno_propio(actor, sol, monkeypatch):
+        """Servicio con las guardas de autorización ya satisfechas."""
+        servicio = _servicio()
+        servicio._repo.es_firmante = AsyncMock(return_value=True)
+        servicio._repo.turno_activo = AsyncMock(
+            return_value={"id": uuid.uuid4(), "firmante_id": actor, "rol": "firma"}
+        )
+        monkeypatch.setattr(
+            servicio, "_get_or_404", AsyncMock(return_value=sol), raising=False
+        )
+        monkeypatch.setattr(
+            servicio, "_assert_can_read", AsyncMock(return_value=None), raising=False
+        )
+        return servicio
 
     @pytest.mark.asyncio
     async def test_firmar_un_borrador_modificado_da_409(self, monkeypatch) -> None:
         from app.services import cadena_service as mod
 
         sol = _sol()
-        servicio = _servicio()
-
-        # Se corta justo después del gate: lo que se comprueba es que el gate
-        # corre ANTES de cualquier verificación de firmante o de 2FA.
-        monkeypatch.setattr(
-            servicio, "_get_or_404", AsyncMock(return_value=sol), raising=False
-        )
-        monkeypatch.setattr(
-            servicio, "_assert_can_read", AsyncMock(return_value=None), raising=False
-        )
+        actor = uuid.uuid4()
+        servicio = self._servicio_con_turno_propio(actor, sol, monkeypatch)
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
             return {"version": 7, "cuerpo_sha256": HUELLA_OTRA}
@@ -186,32 +206,31 @@ class TestGateConectado:
         monkeypatch.setattr(mod, "get_huella_borrador", _huella)
 
         with pytest.raises(Exception) as exc:
-            await servicio.firmar(sol["id"], uuid.uuid4())
+            await servicio.firmar(sol["id"], actor)
         assert exc.value.detail["error"] == "documento_modificado"
 
     @pytest.mark.asyncio
-    async def test_el_gate_corre_antes_de_mirar_si_es_firmante(
+    async def test_el_gate_corre_antes_de_consumir_ningun_segundo_factor(
         self, monkeypatch
     ) -> None:
-        """El orden importa: un texto modificado se rechaza por lo que es.
+        """Lo que de verdad no puede pasar: quemar un factor para nada.
 
-        Si el gate corriera después de `es_firmante`, alguien ajeno a la cadena
-        recibiría `403 no_es_firmante` sobre un documento ya modificado, y quien
-        sí es firmante vería primero el 403 de otra cosa. Peor: el 2FA se
-        habría consumido para un acto que se va a rechazar igual.
+        Un OTP-correo consumido, o un TOTP quemado, en un acto que el gate del
+        documento va a rechazar de todos modos, es un coste irreversible para el
+        firmante —y en el caso del correo, un desafío gastado y un correo
+        enviado por vuelta—. El gate va antes de la transacción, así que ni
+        `_gate_2fa` llega a llamarse ni se abre transacción alguna.
         """
         from app.services import cadena_service as mod
 
         sol = _sol()
-        servicio = _servicio()
-        servicio._repo.es_firmante = AsyncMock(
-            side_effect=AssertionError("es_firmante no debio consultarse")
-        )
+        actor = uuid.uuid4()
+        servicio = self._servicio_con_turno_propio(actor, sol, monkeypatch)
         monkeypatch.setattr(
-            servicio, "_get_or_404", AsyncMock(return_value=sol), raising=False
-        )
-        monkeypatch.setattr(
-            servicio, "_assert_can_read", AsyncMock(return_value=None), raising=False
+            servicio,
+            "_gate_2fa",
+            AsyncMock(side_effect=AssertionError("el 2FA no debio consultarse")),
+            raising=False,
         )
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
@@ -220,5 +239,6 @@ class TestGateConectado:
         monkeypatch.setattr(mod, "get_huella_borrador", _huella)
 
         with pytest.raises(Exception) as exc:
-            await servicio.firmar(sol["id"], uuid.uuid4())
+            await servicio.firmar(sol["id"], actor)
         assert exc.value.detail["error"] == "documento_modificado"
+        servicio._conn.transaction.assert_not_called()
