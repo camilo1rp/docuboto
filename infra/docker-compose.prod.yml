@@ -149,7 +149,13 @@ services:
     # preservación. Actualizarla pasa a ser un acto deliberado, con su ensayo.
     # Digest de esta versión (verificable con `docker image inspect`):
     #   sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Se descarga de quay.io —el registro del propio MinIO— porque Docker Hub
+    # dejó de publicar tags de `minio/minio`: el repositorio quedó VACÍO y un
+    # `pull` del tag fijo falla con «pull access denied … repository does not
+    # exist». La versión NO cambia: mismo RELEASE y mismo digest
+    # (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e),
+    # solo cambia de dónde se descarga. El pin sigue intacto.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: orpycamcp-minio-prod
     restart: unless-stopped
     command: server /data --console-address ":9001"

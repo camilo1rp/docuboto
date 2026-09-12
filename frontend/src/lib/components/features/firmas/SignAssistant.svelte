@@ -24,10 +24,15 @@
   PUBLICA); solo si el backend lo exige pasa al paso de verificación.
 
   Ese paso tiene DOS formas, y confundirlas dejaba un acto imposible:
-    - 409 `2fa_requerido` → OTP por correo (`POST .../challenge` + `otp`).
+    - 409 `2fa_requerido` → el backend admite AQUÍ los dos factores: si el
+      firmante tiene app autenticadora activa se le pide su código
+      (`totp_code`, sin emitir nada); si no, OTP por correo
+      (`POST .../challenge` + `otp`). El correo queda como salida siempre
+      alcanzable —quien no tenga el teléfono a mano no se queda sin firmar—.
     - 409 `totp_requerido` → el firmante tiene credencial personal ACTIVA, el
       acto se firma con su certificado (XAdES) y el único factor admitido es
-      el de su app autenticadora (`totp_code`, sin `/challenge` previo).
+      el de su app autenticadora (`totp_code`, sin `/challenge` previo). Aquí
+      el correo NO es alternativa y por eso no se ofrece.
   Mientras el backend devolvía `2fa_requerido` en los dos casos, este
   componente respondía al segundo con un correo: el firmante con certificado
   pegaba el código, el backend volvía a pedir `totp_code`, y así sin fin —
@@ -86,6 +91,14 @@
   // app autenticadora — el OTP-correo no vale, y pedirlo era exactamente el
   // bucle que dejaba a ese firmante sin poder firmar ninguna cadena.
   let modoTotp = false;
+  // TOTP OBLIGATORIO (`totp_requerido`): la firma es XAdES con el certificado
+  // personal y el OTP-correo no vale ahí. Es distinto del TOTP ELEGIDO sobre
+  // `2fa_requerido`, donde el correo sigue siendo una salida legítima —quien
+  // no tenga el teléfono a mano no puede quedarse sin poder firmar—.
+  let totpObligatorio = false;
+  // ¿El firmante tiene segundo factor de app activo? `null` = aún sin consultar.
+  /** @type {boolean|null} */
+  let totpDisponible = null;
   /** @type {import('$lib/types/api.js').SignatureChallengeResponse|null} */
   let challenge = null;
   let otpValue = "";
@@ -255,17 +268,22 @@
 
       const outcome = classifyError(res.status, result);
       if (outcome.kind === "need_2fa") {
+        // El backend admite AQUÍ los dos factores (`cadena_service._gate_2fa`:
+        // si llega `totp_code`, ese es el camino). Se prefiere el de la app
+        // cuando el firmante lo tiene activo: es el factor más fuerte y no ata
+        // la firma a que un correo salga, llegue y se lea a tiempo. La pantalla
+        // era el único sitio donde esa rama no existía — el segundo factor más
+        // fuerte estaba construido y sin ofrecer.
+        if (await tieneTotpActivo()) {
+          entrarModoTotp(false);
+          return;
+        }
         await solicitarChallenge();
         return;
       }
       if (outcome.kind === "need_totp") {
         // Sin `/challenge`: no hay nada que emitir ni que enviar por correo.
-        modoTotp = true;
-        challenge = null;
-        stopCountdown();
-        otpValue = "";
-        otpError = "";
-        step = 1;
+        entrarModoTotp(true);
         return;
       }
       if (outcome.kind === "otp_error") {
@@ -291,6 +309,53 @@
         confirmError = message;
       }
     }
+  }
+
+  /**
+   * ¿Puede este firmante usar el código de su app autenticadora?
+   *
+   * Se consulta una sola vez y solo cuando hace falta: si el documento no
+   * exige segundo factor, esta llamada no llega a hacerse nunca.
+   *
+   * No poder averiguarlo se resuelve como «no»: el OTP-correo es el camino
+   * que existe siempre, así que un fallo de esta lectura degrada a la vía que
+   * funciona en lugar de dejar al firmante sin ninguna. Lo que NO puede pasar
+   * es lo contrario —dar por hecho que hay app autenticadora y no ofrecer
+   * nada más—, que sería el bucle sin salida de la Fase 3 con otro disfraz.
+   */
+  async function tieneTotpActivo() {
+    if (totpDisponible !== null) return totpDisponible;
+    try {
+      const res = await fetch("/perfil/api/totp");
+      const cuerpo = res.ok ? await res.json().catch(() => null) : null;
+      totpDisponible = cuerpo?.estado === "activo";
+    } catch {
+      totpDisponible = false;
+    }
+    return totpDisponible;
+  }
+
+  /** Pasa al paso de verificación por app autenticadora, sin emitir nada. */
+  function entrarModoTotp(/** @type {boolean} */ obligatorio) {
+    modoTotp = true;
+    totpObligatorio = obligatorio;
+    challenge = null;
+    stopCountdown();
+    otpValue = "";
+    otpError = "";
+    step = 1;
+  }
+
+  /**
+   * Salida del TOTP elegido hacia el OTP-correo. Solo existe cuando el factor
+   * de app fue una PREFERENCIA, nunca cuando el backend lo exige: ahí el
+   * correo no lo admite y ofrecerlo sería prometer un camino cerrado.
+   */
+  async function pasarACorreo() {
+    modoTotp = false;
+    otpValue = "";
+    otpError = "";
+    await solicitarChallenge();
   }
 
   async function iniciarFirma() {
@@ -392,11 +457,19 @@
       </p>
 
       {#if modoTotp}
-        <p class="sign-assistant__status" aria-live="polite">
-          Tu credencial de firma electrónica exige el código de tu <strong>app autenticadora</strong
-          >. Este documento se firmará con tu certificado personal (XAdES), no con la firma nativa
-          del sistema.
-        </p>
+        {#if totpObligatorio}
+          <p class="sign-assistant__status" aria-live="polite">
+            Tu credencial de firma electrónica exige el código de tu <strong
+              >app autenticadora</strong
+            >. Este documento se firmará con tu certificado personal (XAdES), no con la firma nativa
+            del sistema.
+          </p>
+        {:else}
+          <p class="sign-assistant__status" aria-live="polite">
+            Introduce el código de tu <strong>app autenticadora</strong>. No se envió ningún correo:
+            tu segundo factor está activo y es más seguro que un código por correo.
+          </p>
+        {/if}
 
         <label class="sign-assistant__otp-label" for="sign-assistant-otp">
           Código de la app autenticadora
@@ -420,6 +493,19 @@
               ({intentosRestantes}
               {intentosRestantes === 1 ? "intento restante" : "intentos restantes"})
             {/if}
+          </p>
+        {/if}
+
+        {#if !totpObligatorio}
+          <p class="sign-assistant__alternativa">
+            <button
+              type="button"
+              class="sign-assistant__enlace"
+              on:click={pasarACorreo}
+              disabled={signing || requestingChallenge}
+            >
+              No tengo la app a mano: enviarme el código por correo
+            </button>
           </p>
         {/if}
       {:else if requestingChallenge}
@@ -564,6 +650,32 @@
     &__expired {
       color: var(--op-error);
       font-weight: var(--op-weight-medium);
+    }
+
+    &__alternativa {
+      margin: 0;
+      font-size: var(--op-font-xs);
+    }
+
+    &__enlace {
+      background: none;
+      border: 0;
+      padding: 0;
+      font: inherit;
+      color: var(--op-primary);
+      text-decoration: underline;
+      cursor: pointer;
+
+      &:disabled {
+        color: var(--op-text-secondary);
+        cursor: default;
+        text-decoration: none;
+      }
+
+      &:focus-visible {
+        outline: 2px solid var(--op-focus-ring);
+        outline-offset: 2px;
+      }
     }
 
     &__otp-label {

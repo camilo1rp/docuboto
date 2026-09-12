@@ -281,3 +281,166 @@ describe("SignAssistant — segundo factor TOTP (credencial personal activa)", (
     expect(rutas.some((r) => r.endsWith("/challenge"))).toBe(false);
   });
 });
+/**
+ * El factor más fuerte estaba construido y sin ofrecer (B6, §7.7.bis del plan
+ * de pruebas): `operador` tenía TOTP activo y su firma de cadena salía
+ * igualmente por correo, porque la rama TOTP del backend solo se entra si el
+ * cliente manda el código — y esta pantalla nunca lo mandaba. El backend SÍ lo
+ * admite aquí (`cadena_service._gate_2fa`: `totp_code` presente gana siempre).
+ */
+describe("SignAssistant — 2fa_requerido con app autenticadora activa", () => {
+  /** Mock de fetch con estado TOTP configurable. */
+  function conEstadoTotp(estado, { onSign } = {}) {
+    const llamadas = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      llamadas.push(url);
+      if (url === "/perfil/api/totp") {
+        return new Response(JSON.stringify({ estado }), { status: 200 });
+      }
+      if (url.endsWith("/sign")) {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (onSign) {
+          const r = onSign(body);
+          if (r) return r;
+        }
+        if (body.totp_code || body.otp) {
+          return new Response(JSON.stringify({ solicitud_id: SOLICITUD_ID, estado: "firmado" }), {
+            status: 200,
+          });
+        }
+        return new Response(JSON.stringify({ error: "2fa_requerido", status: 409 }), {
+          status: 409,
+        });
+      }
+      if (url.endsWith("/challenge")) {
+        return new Response(
+          JSON.stringify({
+            challenge_id: "chal-9",
+            factor_tipo: "otp_email",
+            canal: "o***@dominio.gov.co",
+            expira_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+    return llamadas;
+  }
+
+  it("no emite ningún reto por correo y pide el código de la app", async () => {
+    const llamadas = conEstadoTotp("activo");
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    await screen.findByLabelText("Código de la app autenticadora");
+    // Lo que NO debe haber ocurrido: ni un desafío emitido ni un correo salido.
+    expect(llamadas.some((u) => u.endsWith("/challenge"))).toBe(false);
+  });
+
+  it("manda el código como totp_code, no como otp", async () => {
+    let enviado = null;
+    conEstadoTotp("activo", {
+      onSign: (body) => {
+        if (body.totp_code || body.otp) enviado = body;
+        return null;
+      },
+    });
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    const input = await screen.findByLabelText("Código de la app autenticadora");
+    await fireEvent.input(input, { target: { value: "123456" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Confirmar código" }));
+
+    await waitFor(() => expect(enviado).not.toBeNull());
+    expect(enviado).toEqual({ totp_code: "123456" });
+  });
+
+  it("deja salir al correo si el firmante no tiene la app a mano", async () => {
+    const llamadas = conEstadoTotp("activo");
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+    await screen.findByLabelText("Código de la app autenticadora");
+
+    await fireEvent.click(screen.getByRole("button", { name: /enviarme el código por correo/i }));
+
+    await screen.findByLabelText("Código de verificación");
+    expect(llamadas.some((u) => u.endsWith("/challenge"))).toBe(true);
+  });
+
+  it("sin app activa se comporta como siempre: reto por correo", async () => {
+    const llamadas = conEstadoTotp("no_configurado");
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    await screen.findByLabelText("Código de verificación");
+    expect(llamadas.some((u) => u.endsWith("/challenge"))).toBe(true);
+  });
+
+  it("si no se puede averiguar el estado, degrada al correo y no deja al firmante sin vía", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "/perfil/api/totp") throw new TypeError("red caída");
+      if (url.endsWith("/sign")) {
+        return new Response(JSON.stringify({ error: "2fa_requerido", status: 409 }), {
+          status: 409,
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          challenge_id: "chal-9",
+          factor_tipo: "otp_email",
+          canal: "o***@dominio.gov.co",
+          expira_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        }),
+        { status: 200 },
+      );
+    });
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    await screen.findByLabelText("Código de verificación");
+  });
+
+  it("con credencial personal (totp_requerido) NO ofrece el correo: ahí no lo admite el backend", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "/perfil/api/totp") {
+        return new Response(JSON.stringify({ estado: "activo" }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/sign")) {
+        return new Response(JSON.stringify({ error: "totp_requerido", status: 409 }), {
+          status: 409,
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    await screen.findByLabelText("Código de la app autenticadora");
+    expect(screen.queryByRole("button", { name: /por correo/i })).toBeNull();
+  });
+});

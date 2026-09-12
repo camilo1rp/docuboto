@@ -1255,3 +1255,75 @@ entidad sobre dónde vive esa clave, no un cambio de este código.
 - **`frontend/Dockerfile.dev`**: pasa a node:22, la misma versión mayor que la
   imagen de producción. El desfase no era cosmético — la suite de pruebas no
   carga siquiera en node:18 y producía siete fallos fantasma.
+
+---
+
+## 14. El segundo factor que nadie ofrecía (2026-09-11) — B6, §7.7.bis
+
+De B6 quedaban dos cosas anotadas y no corregidas. Esta ejecución cierra la de
+fondo, recorriéndola con **`operador`**, que es el perfil donde se ve.
+
+### 14.1 Lo que el recorrido enseñó, y era peor de lo anotado
+
+`operador` tiene **TOTP activo** y **ninguna credencial personal**, así que su
+firma va por la rama nativa: la que exige segundo factor. Se creó una cadena de
+un turno sobre `2026-DEMO-S-000058` y se pulsó «Firmar» desde `/firmas`.
+
+La nota de §7.7.bis decía que el factor más fuerte «queda sin usar». Lo que
+apareció en pantalla fue una frase distinta:
+
+> «No se pudo enviar el código con el correo (notification-service)»
+
+Y ahí se acababa el acto. No es que el TOTP no se aprovechara: **con el correo
+caído, el firmante que tiene un segundo factor perfectamente válido no puede
+firmar nada**. La pantalla no le ofrecía ninguna otra vía porque no sabía
+preguntarle si la tenía.
+
+El backend, en cambio, **sí** admite los dos factores en ese punto
+(`cadena_service._gate_2fa`: si llega `totp_code`, ese es el camino, y gana
+sobre el desafío por correo). La capacidad estaba construida en el servidor y
+sin ofrecer en la pantalla — el patrón dominante de esta revisión, ahora sobre
+un factor de autenticación.
+
+### 14.2 La corrección
+
+Ante `2fa_requerido`, el asistente consulta una vez el estado del segundo factor
+del propio firmante y, si está activo, pide el código de la app **sin emitir
+nada**: ni desafío ni correo. El correo no desaparece —queda como salida
+explícita, «no tengo la app a mano»—, porque perder el teléfono no puede dejar a
+nadie sin poder firmar; y **no** se ofrece en el camino de la credencial
+personal (`totp_requerido`), donde el backend no lo admite y ofrecerlo sería
+prometer una vía cerrada. Si el estado no se puede averiguar, se degrada al
+correo, que es el camino que existe siempre.
+
+### 14.3 Comprobado contra el sistema
+
+Con el contenedor reconstruido (imagen 22:54 sobre fuente 22:28 — la trampa de
+la ejecución anterior, verificada antes de mirar nada):
+
+| Acto | Red observada |
+|---|---|
+| Firmar con TOTP activo | `POST /sign` → 409, `GET /perfil/api/totp` → 200, **ningún `/challenge`** |
+| «No tengo la app a mano» | `POST /challenge` → 201, código enviado y contando |
+| Código incorrecto a propósito | `POST /sign` → **401** «el código de tu app autenticadora no es correcto» |
+
+El último es el control negativo del cableado: el backend verifica el TOTP
+contra auth-service y responde como TOTP, no con el `2fa_requerido` que producía
+el bucle de la Fase 3.
+
+Cuatro mutaciones, las cuatro cazadas: quitar la preferencia por el TOTP;
+ofrecer el correo donde el backend no lo admite; dar por bueno que hay app
+cuando el estado no se puede leer; y mandar el código como `otp` en vez de
+`totp_code`.
+
+### 14.4 Anotado y no perseguido
+
+- **La inconsistencia de §7.7.bis sigue viva**: un turno ajeno responde `403
+  no_es_su_turno` en `/challenge` y `409 documento_modificado` en `/sign`. Los
+  dos extremos del mismo acto comprueban las guardas en orden distinto.
+- **No hay pantalla que CREE una cadena de firma.** El proxy
+  `/firmas/api/requests` existe y está probado, y `POST /signature/requests`
+  responde; ninguna vista lo llama. La cadena de este recorrido hubo que crearla
+  por el API con la sesión real. Lo que la bandeja crea son cadenas de **visto
+  bueno**, que es otra cosa. Misma clase que PQRS y la verificación pública:
+  capacidad construida y no ofrecida.
