@@ -51,6 +51,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import CadenaFirmaModal from "$lib/components/features/firmas/CadenaFirmaModal.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
   import HojaRuta from "$lib/components/workflow/HojaRuta.svelte";
@@ -1005,10 +1006,26 @@
    * @param {{doc_type?: string}} d
    */
   const admiteAnulacion = (d) => d?.doc_type === "S" || d?.doc_type === "I";
+  // Una cadena de firmas se abre sobre lo que la entidad PRODUCE: una Salida o
+  // un Interno. Sobre una Entrada no —el documento lo firmó quien lo envió, y
+  // que la entidad receptora lo firme no significa nada—.
+  //
+  // Coincide hoy con `admiteAnulacion` en los mismos dos tipos, y se escribe
+  // aparte a propósito: son dos reglas distintas que hoy dan el mismo conjunto
+  // —aquella dice «solo se anula el registro propio», esta «solo se firma lo
+  // propio»—. Fundirlas ataría dos cosas que pueden dejar de coincidir, y
+  // entonces cambiar una movería la otra sin que nadie lo pidiera.
+  const admiteCadenaFirma = (d) => d?.doc_type === "S" || d?.doc_type === "I";
   $: canDevolver = $permissions.includes("PERM_RADI");
   $: canResponder =
     $permissions.includes("PERM_RESPUESTA_VINCULADA") || $permissions.includes("PERM_RADI_SALIDA");
   $: canVoBo = $permissions.includes("PERM_RADI");
+  // El router de cadenas de firma exige PERM_FIRMA (RF-FIR-12); ver el
+  // radicado, PERM_RADI. Pedir los dos es lo que el acto necesita: ni menos
+  // —ofrecería un botón que da 403— ni más.
+  $: canAbrirCadenaFirma =
+    $permissions.includes("PERM_FIRMA") && $permissions.includes("PERM_RADI");
+  let modalCadenaFirma = false;
   // Pre-computed para evitar condiciones largas en template (printWidth)
   $: canDevolverInDrawer =
     canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
@@ -1651,6 +1668,17 @@
           Cadena VoBo
         </Button>
       {/if}
+      {#if canAbrirCadenaFirma && admiteCadenaFirma(selectedDoc) && selectedDoc.status !== "cancelled"}
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={actionLoading}
+          on:click={() => (modalCadenaFirma = true)}
+        >
+          <i class="fas fa-file-signature" aria-hidden="true"></i>
+          Cadena de firmas
+        </Button>
+      {/if}
       {#if canAnular && admiteAnulacion(selectedDoc) && selectedDoc.status !== "closed" && selectedDoc.status !== "cancelled"}
         <Button variant="danger" size="sm" disabled={actionLoading} on:click={openModalAnulacion}>
           <i class="fas fa-ban" aria-hidden="true"></i>
@@ -1959,6 +1987,26 @@
     </Button>
   </svelte:fragment>
 </Modal>
+
+<!-- Modal: Cadena de FIRMAS sobre el radicado (E06, RF-FIR-04).
+     Hermano del de abajo y deliberadamente distinto: aquel recoge vistos buenos
+     sobre el trámite, este compromete a la entidad con la firma de cada turno.
+     Reutiliza el mismo componente que la ficha del expediente. -->
+{#if selectedDoc}
+  <CadenaFirmaModal
+    open={modalCadenaFirma}
+    objetoTipo="radicado"
+    objetoId={selectedDoc.id}
+    titulo={`Cadena de firmas — ${selectedDoc.tracking_number ?? selectedDoc.id}`}
+    on:close={() => (modalCadenaFirma = false)}
+    on:created={() => {
+      modalCadenaFirma = false;
+      notifySuccess(
+        "Cadena de firmas abierta. Cada firmante la verá en su bandeja cuando le toque.",
+      );
+    }}
+  />
+{/if}
 
 <!-- Modal: Crear cadena de Visto Bueno (T-08c) -->
 <Modal

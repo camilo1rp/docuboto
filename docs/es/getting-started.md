@@ -170,9 +170,12 @@ curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
 # Respuesta: { "solicitud_id": "uuid", "estado": "pendiente", "items": [ … ] }
 ```
 
-Desde la interfaz, el mismo acto está en el botón **«Cadena de firmas»** de la
-ficha del expediente (`/expedientes/{id}`), que exige `USUA_PERM_EXPEDIENTE` y
-`PERM_FIRMA`. Si el expediente ya tiene una cadena abierta, la pantalla la
+Desde la interfaz, el mismo acto está en el botón **«Cadena de firmas»**, en la
+ficha del expediente (`/expedientes/{id}`, con `USUA_PERM_EXPEDIENTE` +
+`PERM_FIRMA`) y en el cajón de un radicado en `/bandeja` (con `PERM_RADI` +
+`PERM_FIRMA`). Sobre un radicado solo se ofrece si es **Salida o Interno**: una
+cadena de firmas se abre sobre lo que la entidad produce, y una Entrada la firmó
+quien la envió. Si el expediente ya tiene una cadena abierta, la pantalla la
 muestra y no deja abrir otra: hay que resolverla o rechazarla antes.
 
 > `objeto_tipo` admite `expediente`, `radicado` y `borrador`. Los borradores en

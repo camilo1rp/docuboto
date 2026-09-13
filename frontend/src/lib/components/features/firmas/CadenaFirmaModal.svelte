@@ -66,10 +66,24 @@
   /** @type {any|null} Cadena ya abierta sobre este objeto, si la hay. */
   let cadenaAbierta = null;
 
-  let ultimoObjeto = "";
-  $: if (open && objetoId && `${objetoTipo}:${objetoId}` !== ultimoObjeto) {
-    ultimoObjeto = `${objetoTipo}:${objetoId}`;
+  // Se relee en CADA apertura, no al cambiar de objeto.
+  //
+  // La primera versión se disparaba con la clave `tipo:id`, así que reabrirlo
+  // sobre el MISMO objeto no volvía a preguntar: conservaba la composición
+  // anterior y ofrecía «Abrir cadena» otra vez sobre un objeto que ya tenía
+  // una. El usuario se habría llevado un 409 tras rellenarlo. Salió pulsando el
+  // botón dos veces seguidas, no leyendo el código — desde el código parecía un
+  // ahorro razonable de peticiones.
+  //
+  // Y entre una apertura y otra el estado puede haber cambiado sin que esta
+  // pantalla intervenga: otra persona abre la cadena, o la resuelve. Lo que se
+  // ahorraba era precisamente la lectura que hace falta.
+  let estabaAbierto = false;
+  $: if (open && !estabaAbierto) {
+    estabaAbierto = true;
     preparar();
+  } else if (!open && estabaAbierto) {
+    estabaAbierto = false;
   }
 
   async function preparar() {
@@ -148,8 +162,11 @@
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(mensajeError(data, "No se pudo abrir la cadena de firmas."));
+      // Cerrar lo decide QUIEN abrió: los dos padres lo hacen en `on:created`.
+      // Asignar aquí la propia prop competía con ellos —el cierre llegaba
+      // después de que el padre la hubiera vuelto a abrir— y dejaba el modal
+      // cerrándose solo. Una prop tiene un dueño.
       dispatch("created", data);
-      open = false;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {

@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
+import { tick } from "svelte";
 import CadenaFirmaModal from "./CadenaFirmaModal.svelte";
 
 const EXP = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
@@ -170,5 +171,56 @@ describe("CadenaFirmaModal", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/Ya hay una cadena/i);
     expect(onCreated).not.toHaveBeenCalled();
+  });
+  it("al REABRIRLO sobre el mismo objeto vuelve a preguntar por la cadena", async () => {
+    // Defecto propio, encontrado pulsando el botón dos veces: la guarda se
+    // disparaba al cambiar de objeto, así que la segunda apertura conservaba la
+    // composición anterior y volvía a ofrecer «Abrir cadena» sobre algo que ya
+    // tenía una — un 409 esperando al final del formulario.
+    let cadena = null;
+    const gets = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url === "/borradores/api/firmantes") {
+        return new Response(JSON.stringify(PERSONAS), { status: 200 });
+      }
+      if (url.startsWith("/firmas/api/requests?")) {
+        gets.push(url);
+        return cadena
+          ? new Response(JSON.stringify(cadena), { status: 200 })
+          : new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+      }
+      if (url === "/firmas/api/requests" && init?.method === "POST") {
+        // Lo que la segunda apertura debe ver: entre una y otra, la cadena
+        // existe. Da igual quién la creara.
+        cadena = {
+          estado: "pendiente",
+          items: [{ orden: 1, firmante_id: ANA, estado: "pendiente" }],
+        };
+        return new Response(JSON.stringify({ solicitud_id: "s1", estado: "pendiente" }), {
+          status: 201,
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    const { component } = montar();
+    const creada = vi.fn();
+    component.$on("created", creada);
+    await screen.findByText(/cuando le toca/i);
+    await fireEvent.click(screen.getByRole("button", { name: /Añadir firmante/i }));
+    await elegir(1, ANA);
+    await fireEvent.click(screen.getByRole("button", { name: /Abrir cadena/i }));
+    await waitFor(() => expect(creada).toHaveBeenCalledOnce());
+
+    // Cerrar y reabrir sobre el MISMO objeto.
+    component.$set({ open: false });
+    await tick();
+    component.$set({ open: true });
+    await tick();
+
+    expect(await screen.findByText(/ya tiene una cadena abierta/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Abrir cadena/i })).toBeNull();
+    expect(gets).toHaveLength(2);
   });
 });

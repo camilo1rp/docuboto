@@ -1461,8 +1461,56 @@ la misma persona dos veces; y dar por creada una cadena que el backend rechazó.
 Suite del frontend: 206 ficheros / 2070 pruebas, `svelte-check` 0/0, lint sin
 errores.
 
-**Queda sin puerta `radicado`**, el otro tipo que el sembrado crea («Firma de la
-respuesta», sobre una Salida). El modal es reutilizable y admite el tipo; lo que
-falta es decidir desde qué pantalla se ofrece —la bandeja de trámite es la
-candidata— y si el trámite lo quiere. Se declara, no se improvisa.
+### 14.8 La otra mitad de la puerta: el radicado
+
+Cerrado lo que §14.7 dejó declarado. La cadena sobre un radicado se abre desde
+el **cajón de la bandeja**, con el mismo modal, y con dos ejes de admisión que
+no son el mismo:
+
+- **Tipo**: solo Salida e Interno. Una cadena de firmas se abre sobre lo que la
+  entidad **produce**; una Entrada la firmó quien la envió, y que el receptor la
+  firme no significa nada. Es la misma forma de regla que la anulación, y el
+  predicado se escribe **aparte** del suyo aunque hoy den el mismo par de tipos:
+  son dos reglas distintas —«solo se anula el registro propio», «solo se firma lo
+  propio»— y fundirlas ataría dos cosas que pueden dejar de coincidir.
+- **Permiso**: `PERM_RADI` más `PERM_FIRMA`, que es lo que el router de cadenas
+  exige. Pedir menos ofrecería un botón destinado al 403; pedir más lo
+  escondería a quien sí puede.
+
+Cuatro mutaciones, las cuatro cazadas: quitar la regla de tipo, quitar
+`PERM_FIRMA` del gate, ofrecerlo sobre un radicado anulado, y devolver la guarda
+que no releía al reabrir. Los tres controles positivos
+—Salida e Interno sí lo ofrecen— están, porque una regla que negara siempre
+dejaría en verde el test de la Entrada y el acto inalcanzable para todo el
+sistema.
+
+Suite del frontend: 207 ficheros / 2076 pruebas, `svelte-check` 0/0, lint sin
+errores. Y comprobado en el sistema: sobre la Entrada `2026-DEMO-E-000121` el
+botón no aparece con el cajón abierto; sobre la Salida `2026-DEMO-S-000057` sí,
+y la cadena queda en la base con sus dos turnos en el orden compuesto
+—1 OPERADOR, 2 JEFE—.
+
+**Un defecto propio, y solo apareció pulsando dos veces.** Al reabrir el modal
+sobre el **mismo** objeto seguía enseñando la composición anterior y ofrecía
+«Abrir cadena» otra vez, sobre algo que ya tenía una: el usuario habría
+rellenado el formulario entero para llevarse un `409`. La guarda se disparaba al
+cambiar de objeto —un ahorro de peticiones que desde el código parece
+razonable—, y lo que ahorraba era precisamente la lectura que hace falta: entre
+una apertura y otra el estado puede cambiar sin que esta pantalla intervenga,
+porque otra persona abre la cadena o la resuelve. Ahora se relee en **cada**
+apertura.
+
+Al arreglarlo salió un segundo, más de fondo: el componente **se cerraba a sí
+mismo** asignando su propia prop `open`, compitiendo con los dos padres que ya
+la cierran en `on:created`. El cierre llegaba después de que el padre la hubiera
+vuelto a abrir. Una prop tiene un dueño; la línea sobraba. Ninguno de los dos se
+ve leyendo el código —el primero lo destapó pulsar el botón dos veces seguidas,
+el segundo lo destapó el test del primero—.
+
+**Guarda declarada, no barrera**: la pantalla no ofrece el acto sobre un
+radicado **anulado**, y esa comprobación vive **solo en el cliente**. El backend
+no la impone: una cadena sobre un radicado sin efecto se puede crear por el API.
+Cerrarlo de verdad es trabajo de `signature-service` —consultar el estado del
+radicado al abrir la cadena, como ya consulta su nivel de seguridad— y se anota
+en vez de fingir que la pantalla lo resuelve.
 
