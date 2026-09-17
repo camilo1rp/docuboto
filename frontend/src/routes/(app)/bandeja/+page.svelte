@@ -1350,7 +1350,7 @@
                         {/if}
                       {/if}
                       <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
-                      {#if canAnular && admiteAnulacion(doc) && doc.status !== "closed" && doc.status !== "cancelled"}
+                      {#if canAnular && admiteAnulacion(doc) && doc.status !== "closed" && doc.status !== "anulado"}
                         <button
                           class="action-btn action-btn--danger"
                           type="button"
@@ -1668,7 +1668,7 @@
           Cadena VoBo
         </Button>
       {/if}
-      {#if canAbrirCadenaFirma && admiteCadenaFirma(selectedDoc) && selectedDoc.status !== "cancelled"}
+      {#if canAbrirCadenaFirma && admiteCadenaFirma(selectedDoc) && selectedDoc.status !== "anulado"}
         <Button
           variant="secondary"
           size="sm"
@@ -1679,7 +1679,7 @@
           Cadena de firmas
         </Button>
       {/if}
-      {#if canAnular && admiteAnulacion(selectedDoc) && selectedDoc.status !== "closed" && selectedDoc.status !== "cancelled"}
+      {#if canAnular && admiteAnulacion(selectedDoc) && selectedDoc.status !== "closed" && selectedDoc.status !== "anulado"}
         <Button variant="danger" size="sm" disabled={actionLoading} on:click={openModalAnulacion}>
           <i class="fas fa-ban" aria-hidden="true"></i>
           Anular

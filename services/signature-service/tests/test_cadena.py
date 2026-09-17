@@ -151,7 +151,7 @@ async def test_create_request_happy_path() -> None:
     #                  existe_abierta(None=False), audit.append→prev_hash(None)]
     # El nivel lo devuelve la tabla `radicados`, NO el body: si no resolviera, la
     # creación sería 404 (fail-closed), no una cadena de nivel 1 por defecto.
-    conn.fetchval.side_effect = [True, 1, None, None]
+    conn.fetchval.side_effect = [True, 1, None, None, None]
     conn.fetchrow.side_effect = [
         {},    # resolve_caller_clearance → PUBLICA=1 (>= nivel 1), creation gate passes
         sol,   # crear_solicitud RETURNING
@@ -213,7 +213,7 @@ async def test_create_request_nivel3_clearance1_returns_404() -> None:
 async def test_create_request_conflict_when_open_chain_exists() -> None:
     conn = _make_conn()
     # fetchval: [check_permission(True), resolver_nivel_por_objeto(1=PUBLICA), existe_abierta(1=True)]
-    conn.fetchval.side_effect = [True, 1, 1]
+    conn.fetchval.side_effect = [True, 1, None, 1]
     conn.fetchrow.side_effect = [{}]  # resolve_caller_clearance → PUBLICA=1 (gate passes)
 
     _override(conn)
@@ -491,7 +491,7 @@ async def test_create_request_multi_firmantes_ordered() -> None:
     turno2 = _turno_row(orden=2, firmante_id=FIRMANTE2)
 
     # fetchval order: [check_permission, resolver_nivel_por_objeto(1), existe_abierta(None), audit_prev(None)]
-    conn.fetchval.side_effect = [True, 1, None, None]
+    conn.fetchval.side_effect = [True, 1, None, None, None]
     conn.fetchrow.side_effect = [
         {},   # resolve_caller_clearance → PUBLICA=1 (gate passes)
         sol,  # crear_solicitud RETURNING
@@ -1073,8 +1073,9 @@ async def test_create_radicado_snaps_nivel_from_radicados_table() -> None:
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=3)  # mock DB returns the stored row
 
-    # fetchval order: [check_permission, resolver_nivel(3), existe_abierta(None), audit_prev(None)]
-    conn.fetchval.side_effect = [True, 3, None, None]
+    # fetchval order: [check_permission, resolver_nivel(3), objeto_anulado(None),
+    #                  existe_abierta(None), audit_prev(None)]
+    conn.fetchval.side_effect = [True, 3, None, None, None]
     conn.fetchrow.side_effect = [
         {"is_root": False, "max_level": 3},  # resolve_caller_clearance → 3 (>= nivel 3, gate passes)
         sol,                                  # crear_solicitud RETURNING
@@ -1352,7 +1353,9 @@ async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado(
     monkeypatch.setattr(_mod, "get_huella_borrador", _huella)
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=2)
-    conn.fetchval.side_effect = [True, None, None, None]
+    # [permiso, resolver_nivel(None: no registrado), objeto_anulado(None: no es
+    #  radicado), existe_abierta(None), audit_prev(None)]
+    conn.fetchval.side_effect = [True, None, None, None, None]
     conn.fetchrow.side_effect = [
         {"is_root": False, "max_level": 2},  # clearance 2 ≥ nivel declarado 2
         sol,

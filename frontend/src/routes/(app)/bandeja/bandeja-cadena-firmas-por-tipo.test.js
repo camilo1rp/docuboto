@@ -19,9 +19,16 @@
  * AUTORIZADA. Por eso los tres primeros conceden los dos permisos: lo que se
  * mide ahí es la regla del tipo.
  *
- * Y un tercero, propio de este acto: un radicado ANULADO no recoge firmas. Es
- * guarda de pantalla —el backend no la impone—, y por eso se declara aquí en
- * vez de fingir que es una barrera.
+ * Y un tercero, propio de este acto: un radicado ANULADO no recoge firmas.
+ *
+ * OJO CON EL VALOR: el estado es `anulado` —lo escribe document-service con
+ * `UPDATE radicados SET status='anulado'`—, NO `cancelled`, que pertenece al
+ * vocabulario de los pasos de flujo. La primera versión de esta guarda comparaba
+ * con `cancelled` y su test también, así que pasaba en verde sobre una guarda
+ * que no excluía nada: un test que codifica el valor equivocado es peor que su
+ * ausencia. Lo delató ir a implementar la barrera del backend y mirar qué
+ * escribe de verdad la anulación. Ver `radicado-estados.test.js`, que censa el
+ * vocabulario contra el servicio para que no vuelva a divergir.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
@@ -144,7 +151,7 @@ describe("bandeja — la cadena de firmas depende del TIPO y del permiso", () =>
 
   it("un radicado ANULADO no lo ofrece", async () => {
     entrar(["PERM_RADI", "PERM_FIRMA"]);
-    await abrirCajon(data("S", "cancelled"));
+    await abrirCajon(data("S", "anulado"));
 
     await waitFor(() => expect(screen.getByText("Asunto de prueba")).toBeTruthy());
     expect(screen.queryByRole("button", { name: BOTON })).toBeNull();

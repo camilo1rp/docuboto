@@ -22,12 +22,15 @@ from collections.abc import Sequence
 
 import asyncpg
 
-from app.core.constants import CADENA_NIVEL_AUTORITATIVO
+from app.core.constants import CADENA_NIVEL_AUTORITATIVO, RADICADO_ESTADO_ANULADO
 
 _SOL_COLS = (
     "id, objeto_tipo, objeto_id, titulo, payload_sha256, estado, creado_por, "
     "nivel_seguridad, created_at, updated_at"
 )
+
+#: Las mismas columnas, calificadas para cuando `firma_solicitud` va con alias.
+_SOL_COLS_S = ", ".join(f"s.{c.strip()}" for c in _SOL_COLS.split(","))
 
 _CAD_COLS = (
     "id, solicitud_id, orden, firmante_id, rol, estado, firma_id, comentario, decidido_at"
@@ -96,6 +99,30 @@ class CadenaRepository:
             # tabla para no perder las que SÍ están.
             return await self._resolver_nivel_por_tabla(objeto_id)
 
+    async def objeto_anulado(self, objeto_id: str) -> bool | None:
+        """¿El identificador apunta a un radicado ANULADO?
+
+        ``None`` significa «no se pudo establecer» —no es un radicado, o la
+        tabla no está en este schema—, nunca «no está anulado»: quien llama
+        decide qué hacer con la duda.
+
+        **No recibe `objeto_tipo`**, por el mismo motivo que
+        ``resolver_nivel_por_objeto``: ese campo lo elige el cliente, y usarlo
+        para decidir *si* se comprueba convertiría el control en algo que el
+        llamante puede apagar declarando otro tipo sobre el mismo UUID.
+        """
+        tabla, id_cols = CADENA_NIVEL_AUTORITATIVO["radicado"]
+        where = " OR ".join(f"{col} = $1" for col in id_cols)
+        try:
+            estado = await self._conn.fetchval(
+                f"SELECT status FROM {tabla} WHERE {where} LIMIT 1", objeto_id
+            )
+        except asyncpg.UndefinedTableError:
+            return None
+        if estado is None:
+            return None
+        return str(estado) == RADICADO_ESTADO_ANULADO
+
     async def _resolver_nivel_por_tabla(self, objeto_id: str) -> int | None:
         niveles: list[int] = []
         for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values():
@@ -112,10 +139,40 @@ class CadenaRepository:
         return max(niveles) if niveles else None
 
     async def get_solicitud(self, solicitud_id: uuid.UUID) -> asyncpg.Record | None:
-        return await self._conn.fetchrow(
-            f"SELECT {_SOL_COLS} FROM firma_solicitud WHERE id = $1",
-            solicitud_id,
-        )
+        """La solicitud, con el estado del radicado al que apunta si lo hay.
+
+        `radicado_status` viaja **con la fila** en vez de pedirse aparte, por dos
+        motivos. Uno: es una lectura menos en el camino más caliente del
+        servicio —firmar consulta la solicitud siempre—. Y dos, el que de verdad
+        decide: quien lee la solicitud para decidir si se firma tiene delante, en
+        el mismo objeto, el dato que lo impide; pedirlo aparte deja el control a
+        merced de que alguien se acuerde de llamar, que es exactamente cómo
+        nacen los gates que no guardan.
+
+        `NULL` cuando el objeto no es un radicado —un expediente o un borrador lo
+        son legítimamente— y también cuando `radicados` no existe en este schema.
+        Las dos cosas significan «aquí no hay nada que impedir», no «está bien».
+        """
+        tabla, id_cols = CADENA_NIVEL_AUTORITATIVO["radicado"]
+        where = " OR ".join(f"r.{col} = s.objeto_id" for col in id_cols)
+        try:
+            return await self._conn.fetchrow(
+                f"SELECT {_SOL_COLS_S}, r.status AS radicado_status "
+                f"FROM firma_solicitud s "
+                f"LEFT JOIN LATERAL ("
+                f"  SELECT status FROM {tabla} r WHERE {where} LIMIT 1"
+                f") r ON TRUE "
+                f"WHERE s.id = $1",
+                solicitud_id,
+            )
+        except asyncpg.UndefinedTableError:
+            # Schema sin `radicados` (tenant sin document-service, o entorno de
+            # test aislado): la solicitud se sirve igual y el control de arriba
+            # se queda sin dato, que es su caso `None` declarado.
+            return await self._conn.fetchrow(
+                f"SELECT {_SOL_COLS} FROM firma_solicitud WHERE id = $1",
+                solicitud_id,
+            )
 
     async def get_solicitud_for_update(self, solicitud_id: uuid.UUID) -> asyncpg.Record | None:
         """Same as get_solicitud but with a row lock (E06 Inc.2, RF-FIR-13).

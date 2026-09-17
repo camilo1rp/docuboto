@@ -1507,10 +1507,77 @@ vuelto a abrir. Una prop tiene un dueño; la línea sobraba. Ninguno de los dos 
 ve leyendo el código —el primero lo destapó pulsar el botón dos veces seguidas,
 el segundo lo destapó el test del primero—.
 
-**Guarda declarada, no barrera**: la pantalla no ofrece el acto sobre un
-radicado **anulado**, y esa comprobación vive **solo en el cliente**. El backend
-no la impone: una cadena sobre un radicado sin efecto se puede crear por el API.
-Cerrarlo de verdad es trabajo de `signature-service` —consultar el estado del
-radicado al abrir la cadena, como ya consulta su nivel de seguridad— y se anota
-en vez de fingir que la pantalla lo resuelve.
+**La guarda del radicado anulado** quedó declarada aquí como «solo en el
+cliente» y se cerró en la sesión siguiente (§14.9), donde resultó no estar
+guardando nada.
+
+### 14.9 La guarda que comparaba con un estado inexistente
+
+Al ir a implementar en el backend la barrera que §14.8 dejó declarada, lo
+primero fue mirar **qué escribe de verdad la anulación**. Y ahí se cayó todo:
+
+    UPDATE radicados SET status='anulado'   ← anulacion_repository.py:194
+
+El estado es `anulado`. `cancelled` **no es un estado de radicado**: pertenece al
+vocabulario de los pasos de flujo (`pending`, `in_progress`, `completed`,
+`cancelled`, `returned`). Y con `cancelled` estaban escritas **dos** guardas de
+la bandeja:
+
+| Guarda | Consecuencia |
+|---|---|
+| Cadena de firmas (§14.8, recién escrita) | no excluía nada |
+| **Anulación** (preexistente, en la lista y en el cajón) | ofrecía «Anular» sobre un radicado ya anulado — `409 ya_anulado` |
+
+Peor: **el test de la primera pasaba en verde** porque el propio test montaba el
+radicado con `status: "cancelled"`. Un test que codifica el valor equivocado no
+es cobertura, es una firma de conformidad sobre nada. Con el valor corregido, la
+mutación que devuelve la guarda a `cancelled` sí cae.
+
+Y un tercero, de la misma raíz: **`anulado` no estaba en el mapa de etiquetas**,
+así que el estado más consecuente de todos se pintaba crudo en pantalla — en el
+mismo fichero cuyo comentario de cabecera cuenta que eso ya pasó con
+«registered».
+
+**Lo que impide que vuelva**: un censo (`radicado-estados.test.js`) lee del
+fuente del servicio los estados que se escriben de verdad en `radicados.status`
+y exige que la UI los conozca todos. Con su control de vacuidad —un censo que no
+lee nada aprueba por vacío— y con dos controles explícitos del defecto:
+«`anulado` existe y está traducido» y «`cancelled` NO es un estado de radicado».
+Mismo patrón que el censo de estados de transferencia. El primer intento del
+censo era demasiado laxo y traía `failed`/`processing`/`success`, que son de la
+carga masiva y de otra tabla: se acotó a las sentencias que tocan `radicados`.
+
+### 14.10 Y la barrera, en los tres caminos
+
+Con el valor correcto, el control de fondo:
+
+- **abrir la cadena**, **firmar un turno** y **dar visto bueno** — los tres.
+  Solo en la creación no bastaría: anular puede ocurrir **entre** la apertura y
+  cada turno, y todas las cadenas ya abiertas quedarían firmables.
+- El estado **viaja con la fila de la solicitud** (un `LEFT JOIN` en la lectura
+  que firmar hace siempre) en vez de pedirse aparte. Una consulta menos en el
+  camino más caliente, y sobre todo el dato delante de quien decide en lugar de
+  depender de acordarse de consultarlo — que es como nacen los gates que no
+  guardan. De paso evitó tocar 46 cadenas de mocks: el primer diseño, con una
+  consulta suelta, dejaba **53 pruebas en rojo**.
+- **Después del no-read-up**, no antes: «el radicado está anulado» le confirma la
+  existencia del objeto a quien no lo alcanza. Misma corrección que §14.5.
+- **No denegar ante la duda**: `NULL` significa que el objeto no es un radicado
+  —un expediente o un borrador lo son legítimamente—, no que esté bien. Distinto
+  del gate de la huella, donde la duda sí deniega, y la diferencia está escrita
+  en el código.
+
+*Una mutación que NO cayó, y lo que enseñó*: adelantar el control por delante del
+no-read-up **en la creación** no ponía en rojo ningún test — el que existía
+cubría el camino de firmar. Un gate correcto sin test que fije su **posición**
+dura hasta la próxima refactorización. Se añadió el que faltaba.
+
+**Comprobado contra Postgres real** y no solo con mocks, que es donde este
+proyecto ya se ha quemado: el `LEFT JOIN` trae `radicado_status='anulado'` con la
+solicitud; `objeto_anulado` responde `True` sobre el anulado, `False` sobre uno
+vigente y `None` sobre un identificador que no resuelve; y el gate levanta
+`409 radicado_anulado`. El dato de prueba se restauró después.
+
+Suites: signature 403 pruebas, frontend 208 ficheros / 2080 pruebas,
+`svelte-check` 0/0, lint y mypy limpios.
 

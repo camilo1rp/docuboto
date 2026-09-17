@@ -42,6 +42,7 @@ from app.core.config import settings
 from app.core.constants import (
     CADENA_NIVEL_AUTORITATIVO,
     CADENA_PAYLOAD_AUTORITATIVO,
+    RADICADO_ESTADO_ANULADO,
 )
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
@@ -336,6 +337,27 @@ class CadenaFirmaService:
                     "error": "solicitud_not_found",
                     "detail": "No existe la solicitud de firma",
                     "status": 404,
+                },
+            )
+
+        # Abrir la cadena también se rechaza, aunque la garantía viva en el acto
+        # de firmar: dejar componer los turnos para negarlos uno a uno después es
+        # hacerle gastar el trabajo a quien ya no puede hacer nada con él.
+        #
+        # DESPUÉS del no-read-up de arriba, y no antes: «el radicado está
+        # anulado» le confirma su existencia a quien no lo alcanza. Es la misma
+        # corrección que se hizo en `firmar`, donde el estado del documento se
+        # contaba antes de comprobar quién preguntaba.
+        if await self._repo.objeto_anulado(payload.objeto_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "radicado_anulado",
+                    "detail": (
+                        "El radicado está anulado: un documento sin efecto no "
+                        "recoge firmas."
+                    ),
+                    "status": 409,
                 },
             )
 
@@ -775,6 +797,44 @@ class CadenaFirmaService:
             )
         return str(huella)
 
+    @staticmethod
+    def _gate_no_anulado(sol) -> None:
+        """Un documento sin efecto no recoge firmas (E01/RF-RAD, E06).
+
+        Anular un radicado es irreversible y conserva su número; lo que deja de
+        valer es el documento. Recoger firmas sobre él produce un acto que
+        compromete a la entidad sobre algo que ella misma ya declaró sin efecto,
+        y la firma sobrevive al motivo por el que se pidió.
+
+        Se comprueba en los DOS extremos y no solo al abrir la cadena: anular
+        puede ocurrir **entre** la apertura y cada turno, así que un control
+        únicamente en la creación dejaría firmables todas las cadenas ya
+        abiertas. Mismo criterio que `_gate_documento_vigente`, y la misma razón
+        por la que aquella no se fía del evento.
+
+        El dato llega **en la propia fila** (`radicado_status`, resuelto por
+        `get_solicitud`): quien decide tiene delante lo que lo impide, sin
+        depender de acordarse de consultar. `None` —no es un radicado, o la
+        tabla no está en este schema— significa «aquí no hay nada que impedir»,
+        no «está bien»: sobre un expediente o un borrador la pregunta no aplica.
+        """
+        try:
+            estado = sol["radicado_status"]
+        except (KeyError, IndexError, TypeError):
+            return
+        if estado == RADICADO_ESTADO_ANULADO:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "radicado_anulado",
+                    "detail": (
+                        "El radicado está anulado: un documento sin efecto no "
+                        "recoge firmas."
+                    ),
+                    "status": 409,
+                },
+            )
+
     async def _gate_documento_vigente(self, sol) -> None:
         """Lo que se firma tiene que seguir siendo lo que se aprobó (RF-PRO-11).
 
@@ -965,6 +1025,8 @@ class CadenaFirmaService:
                     "status": 403,
                 },
             )
+
+        self._gate_no_anulado(sol)
 
         # Después de las guardas de pertenencia y turno, y no antes. Corriendo
         # primero, este gate le contestaba `409 documento_modificado` —con el
@@ -1901,6 +1963,8 @@ class CadenaFirmaService:
                     "status": 403,
                 },
             )
+
+        self._gate_no_anulado(sol)
 
         # El mismo gate que la firma: un visto bueno sobre un texto que ya
         # cambió no dice nada de lo que hay ahora. Y, como en `firmar`, DESPUÉS

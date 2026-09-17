@@ -151,6 +151,17 @@ CADENA_PAYLOAD_AUTORITATIVO = frozenset({"borrador"})
 # Las columnas de identidad son dobles porque el llamante puede pasar el número
 # de radicado / el código del expediente o el UUID (mismo motivo que en la
 # consulta de auditoría de auth-service).
+# Estado de un radicado ANULADO, tal como lo escribe document-service
+# (`UPDATE radicados SET status='anulado'`). Un documento sin efecto no recoge
+# firmas: ni se le abre una cadena ni se resuelve un turno sobre él.
+#
+# El valor se escribe aquí, una vez y con su procedencia anotada, porque el
+# mismo control en el frontend se escribió contra `"cancelled"` —que es
+# vocabulario de PASOS DE FLUJO, no de radicados— y quedó inerte sin que nada
+# lo dijera: la guarda no excluía nada y su test pasaba en verde usando el mismo
+# valor equivocado.
+RADICADO_ESTADO_ANULADO = "anulado"
+
 CADENA_NIVEL_AUTORITATIVO: dict[str, tuple[str, tuple[str, ...]]] = {
     "radicado": ("radicados", ("tracking_number", "id::text")),
     "expediente": ("expedientes", ("code", "id::text")),

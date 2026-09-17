@@ -34,6 +34,12 @@ export const RADICADO_ESTADO_LABEL = {
   distributed: "Distribuido",
   in_progress: "En trámite",
   closed: "Cerrado",
+  // `anulado` lo escribe document-service al aprobar una anulación
+  // (`UPDATE radicados SET status='anulado'`). Faltaba aquí, así que el estado
+  // más consecuente de todos —el documento queda sin efecto y su número se
+  // conserva— se pintaba crudo, en el mismo fichero cuyo docstring cuenta que
+  // ya pasó con «registered».
+  anulado: "Anulado",
 };
 
 /** @type {Record<string,string>} Variante de StatusChip por `status`. */
@@ -42,6 +48,7 @@ export const RADICADO_ESTADO_CHIP = {
   distributed: "pending",
   in_progress: "active",
   closed: "closed",
+  anulado: "error",
 };
 
 /**
