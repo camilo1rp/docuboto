@@ -2,6 +2,7 @@
 .claude/
 .claudeignore
 CLAUDE.md
+CLAUDE.local.md
 memory/
 
 # ─── Environment & secrets ──────────────────────────────────────────────────────
@@ -88,10 +89,3 @@ config.txt
 # versionarse pese a estar documentada como entregada en Fase 8 (revisión UX
 # 2026-08-02, hallazgo de higiene de repo durante el lote 1).
 /documentos/
-
-# ─── Instrucciones locales de Claude Code ───────────────────────────────────
-# `CLAUDE.local.md` lleva credenciales de desarrollo y se declara a sí mismo «no
-# versionado», pero nada lo impedía: aparecía como untracked, así que un
-# `git add -A` lo habría commiteado. Anclado a la raíz, igual que /documentos/,
-# por la lección de que un patrón sin barra inicial oculta homónimos.
-/CLAUDE.local.md
