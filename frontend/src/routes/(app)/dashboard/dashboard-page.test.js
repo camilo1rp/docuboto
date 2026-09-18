@@ -294,3 +294,56 @@ describe("/dashboard — sección secundaria de métricas (progressive disclosur
     expect(screen.queryByRole("button", { name: /Métricas del tenant/ })).not.toBeInTheDocument();
   });
 });
+
+describe("/dashboard — el panel de métricas que su botón dice controlar existe", () => {
+  beforeEach(() => {
+    clearSession();
+    window.localStorage.clear();
+    resetFavorites();
+    navigatingStore.set(null);
+  });
+
+  it("plegado: el panel sigue en el árbol, oculto — no desaparece", () => {
+    // El botón declara `aria-controls="metrics-panel"`. Cuando el panel solo
+    // existía desplegado, ese identificador no resolvía: el lector anunciaba un
+    // control que gobierna algo que no puede encontrar, y quien navega con
+    // teclado no tenía forma de saltar a lo que acababa de abrir.
+    // La sección entera es espejo del RBAC: sin este permiso el gateway
+    // rechazaría el informe con 403 y la UI no la ofrece.
+    initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
+    render(DashboardPage, { data: baseData() });
+
+    const boton = screen.getByRole("button", { name: /Métricas del tenant/ });
+    expect(boton).toHaveAttribute("aria-controls", "metrics-panel");
+    expect(boton).toHaveAttribute("aria-expanded", "false");
+
+    const panel = document.getElementById("metrics-panel");
+    expect(panel).not.toBeNull();
+    // Y oculto de verdad: `hidden` lo saca del árbol de accesibilidad, así que
+    // estar presente no lo hace anunciable mientras está plegado.
+    expect(panel).toHaveAttribute("hidden");
+  });
+});
+
+describe("/dashboard — los indicadores clave no mienten sobre su semántica", () => {
+  beforeEach(() => {
+    clearSession();
+    window.localStorage.clear();
+    resetFavorites();
+    navigatingStore.set(null);
+  });
+
+  it("la fila de KPIs es un grupo con nombre, no una lista sin elementos", async () => {
+    // Llevaba `role="list"` y sus hijos son `Card`, que renderiza un `<div>` sin
+    // rol: un lector anuncia una lista y después no encuentra sus elementos, así
+    // que no se puede navegar por ella. Peor que no declarar nada.
+    initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
+    render(DashboardPage, { data: baseData({ summary: SUMMARY }) });
+    // El panel arranca plegado —y desde ahora sigue en el árbol, oculto—, así
+    // que los KPIs solo se pintan al desplegarlo.
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+
+    expect(screen.queryByRole("list", { name: /Indicadores clave/ })).toBeNull();
+    expect(screen.getByRole("group", { name: /Indicadores clave/ })).toBeInTheDocument();
+  });
+});

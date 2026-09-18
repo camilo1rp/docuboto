@@ -382,8 +382,17 @@
         </Button>
       </h2>
 
-      {#if metricsOpen}
-        <div id="metrics-panel" class="dashboard__metrics-panel">
+      <!--
+        El panel se mantiene SIEMPRE en el árbol y se oculta con `hidden`, en vez
+        de existir solo desplegado. El botón lo declara con `aria-controls`, y un
+        `aria-controls` que apunta a un identificador inexistente no es un
+        detalle de purismo: el lector de pantalla anuncia un control que gobierna
+        algo que no puede encontrar, así que la persona no tiene forma de saltar
+        a lo que acaba de abrir. `hidden` lo saca del árbol de accesibilidad
+        igual de bien cuando está plegado.
+      -->
+      <div id="metrics-panel" class="dashboard__metrics-panel" hidden={!metricsOpen}>
+        {#if metricsOpen}
           {#if summaryError && !summary}
             <EmptyState
               icon="fas fa-exclamation-circle"
@@ -396,7 +405,16 @@
             </div>
           {:else}
             <!-- Indicadores clave (KPIs) -->
-            <div class="dashboard__kpis" role="list" aria-label="Indicadores clave">
+            <!--
+              `role="group"` y no `role="list"`: una lista promete elementos de
+              lista, y los hijos aquí son `Card` —que renderiza un `<div>` y no
+              acepta rol—. Un `role="list"` sin `listitem` dentro es peor que no
+              declarar nada: el lector anuncia una lista y luego no encuentra sus
+              elementos, así que no se puede navegar por ella. `group` con
+              etiqueta dice lo que de verdad son: cuatro indicadores que van
+              juntos y tienen un nombre.
+            -->
+            <div class="dashboard__kpis" role="group" aria-label="Indicadores clave">
               <Card shadow={false}>
                 <div class="kpi">
                   <div class="kpi__icon kpi__icon--primary" aria-hidden="true">
@@ -495,8 +513,8 @@
               </Card>
             </div>
           {/if}
-        </div>
-      {/if}
+        {/if}
+      </div>
     </section>
   {/if}
 </div>

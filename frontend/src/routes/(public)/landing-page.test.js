@@ -32,7 +32,10 @@ describe("/ — landing pública", () => {
     // Button.svelte renderiza <a role="button"> cuando recibe `href`, así que
     // estos CTA son accesibles con rol "button", no "link".
     render(LandingPage);
-    const loginLinks = screen.getAllByRole("button", { name: "Iniciar sesión" });
+    // `Button` con `href` es un ENLACE y se anuncia como tal: llevaba
+    // `role="button"`, que hacía que el lector prometiera una tecla —la barra
+    // espaciadora— que en un enlace no activa nada.
+    const loginLinks = screen.getAllByRole("link", { name: "Iniciar sesión" });
     expect(loginLinks.length).toBeGreaterThanOrEqual(2);
     for (const link of loginLinks) {
       expect(link).toHaveAttribute("href", "/login");

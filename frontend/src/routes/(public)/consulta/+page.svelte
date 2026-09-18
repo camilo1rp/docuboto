@@ -160,7 +160,7 @@
       background: #fff;
       border-radius: var(--op-radius);
       border-top: 4px solid var(--op-primary);
-      box-shadow: 0 12px 32px rgba(12, 23, 16, 0.28);
+      box-shadow: var(--op-shadow-sobre-oscuro);
       padding: var(--op-space-5);
     }
 

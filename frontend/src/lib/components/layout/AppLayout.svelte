@@ -96,6 +96,18 @@
       (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
     if (isTyping) return;
 
+    // Y tampoco secuestra el foco cuando hay algo modal abierto —el asistente,
+    // el drawer de navegación, cualquier Modal—. La comprobación se hace por
+    // `aria-modal` en el DOM y no por una bandera de este componente: lo modal
+    // lo declara quien se abre, y una lista de banderas mantenida aquí se
+    // quedaría corta con el próximo que aparezca.
+    //
+    // Lo que evitaba: dentro de un diálogo modal el foco no puede salir. Pulsar
+    // «/» lo mandaba al buscador del topbar, fuera del diálogo, dejando a quien
+    // navega con teclado o lector de pantalla en un sitio que su diálogo dice
+    // que no existe.
+    if (document.querySelector('[aria-modal="true"]')) return;
+
     e.preventDefault();
     searchExpandedMobile = true;
     tick().then(() => searchInputEl?.focus());
@@ -569,7 +581,7 @@
     &__drawer-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(33, 36, 33, 0.4);
+      background: var(--op-scrim);
       z-index: 150;
     }
 

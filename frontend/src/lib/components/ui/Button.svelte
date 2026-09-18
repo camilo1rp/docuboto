@@ -51,21 +51,29 @@
   $: isDisabled = disabled || loading;
 </script>
 
+<!--
+  Con `href` esto es un ENLACE y se anuncia como tal. Llevaba `role="button"`, y
+  eso no es un matiz de etiqueta: un lector de pantalla anunciaba «botón» y la
+  persona pulsaba la barra espaciadora, que en un enlace no activa nada — la
+  tecla de un enlace es Intro. Prometer el rol obliga a implementar su teclado,
+  y aquí el elemento ya hace lo correcto siendo lo que es.
+
+  Se caen con él dos atributos que no decían nada y un trozo de código muerto:
+  esta rama solo existe cuando `!isDisabled`, y como `isDisabled = disabled ||
+  loading`, dentro de ella `aria-disabled` es siempre `false`, `aria-busy`
+  siempre `false` y el spinner de `loading` inalcanzable. Un enlace deshabilitado
+  cae a la rama `<button disabled>` de abajo, que es donde sí se puede impedir la
+  acción — un `<a>` "deshabilitado" sigue navegando.
+-->
 {#if href && !isDisabled}
   <a
     {href}
     class="op-btn op-btn--{variant} op-btn--{size}"
     class:op-btn--full={fullWidth}
-    class:op-btn--loading={loading}
-    role="button"
-    aria-disabled={isDisabled}
-    aria-busy={loading}
     on:click
     {...$$restProps}
   >
-    {#if loading}
-      <span class="op-btn__spinner" aria-hidden="true"></span>
-    {:else if icon}
+    {#if icon}
       <i class="{icon} op-btn__icon" aria-hidden="true"></i>
     {/if}
     {#if $$slots.default}

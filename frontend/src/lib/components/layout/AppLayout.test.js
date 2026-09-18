@@ -24,8 +24,9 @@
  * necesita para resolver la ruta activa — mismo patrón que SidebarNav.test.js.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { writable } from "svelte/store";
+import { tick } from "svelte";
 
 const gotoMock = vi.fn();
 vi.mock("$app/navigation", () => ({ goto: gotoMock }));
@@ -193,5 +194,58 @@ describe("AppLayout — aviso de permisos degradados", () => {
     render(AppLayout);
 
     expect(screen.getByRole("status")).toHaveTextContent(/No pudimos cargar tus permisos/);
+  });
+});
+
+describe("AppLayout — el atajo «/» no saca el foco de un diálogo modal", () => {
+  beforeEach(() => {
+    gotoMock.mockReset();
+    window.localStorage.clear();
+    resetFavorites();
+    initSession(sessionWith());
+  });
+
+  afterEach(() => {
+    clearSession();
+    document.querySelectorAll("[data-modal-de-prueba]").forEach((n) => n.remove());
+  });
+
+  it("sin nada modal abierto, «/» enfoca el buscador", async () => {
+    // Control positivo: sin él, una guarda que bloqueara siempre dejaría el
+    // test de abajo en verde con el atajo muerto para todo el mundo.
+    //
+    // El foco se pone tras un `tick()` —el campo móvil se expande primero—, así
+    // que se espera a que ocurra en vez de leerlo en el mismo latido.
+    render(AppLayout);
+    fireEvent.keyDown(document, { key: "/" });
+
+    const campo = screen.getByRole("searchbox", { name: /buscar/i });
+    await waitFor(() => expect(document.activeElement).toBe(campo));
+  });
+
+  it("con un [aria-modal] abierto, «/» no mueve el foco", async () => {
+    render(AppLayout);
+
+    // Lo que abre el asistente, el drawer de navegación o cualquier Modal:
+    // dentro de un diálogo modal el foco NO puede salir, y «/» lo mandaba al
+    // buscador del topbar — un sitio que el diálogo declara inexistente para
+    // quien navega con teclado o con lector de pantalla.
+    const dialogo = document.createElement("div");
+    dialogo.setAttribute("role", "dialog");
+    dialogo.setAttribute("aria-modal", "true");
+    dialogo.setAttribute("data-modal-de-prueba", "");
+    const dentro = document.createElement("button");
+    dialogo.appendChild(dentro);
+    document.body.appendChild(dialogo);
+    dentro.focus();
+
+    fireEvent.keyDown(document, { key: "/" });
+    // El foco se mueve tras un `tick()`, así que comprobarlo en el mismo latido
+    // pasa con guarda y sin ella: la mutación que quita la guarda NO caía. Hay
+    // que dejar correr los microtasks y mirar DESPUÉS.
+    await tick();
+    await tick();
+
+    expect(document.activeElement).toBe(dentro);
   });
 });

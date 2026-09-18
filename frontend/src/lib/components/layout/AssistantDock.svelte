@@ -460,7 +460,7 @@
     &__backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(33, 36, 33, 0.25);
+      background: var(--op-scrim-soft);
       z-index: 299;
     }
 

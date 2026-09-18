@@ -106,8 +106,10 @@ describe("/admin/pinar — estados de la vista", () => {
     // opción del filtro — se acota al chip (span.op-status-chip).
     const chip = document.querySelector(".op-status-chip");
     expect(chip).toHaveTextContent("Borrador");
-    // Button con href renderiza <a role="button"> (Button.svelte), no role="link".
-    const verLink = screen.getByRole("button", { name: /Ver/i });
+    // `Button` con `href` renderiza un <a> y se anuncia como ENLACE. Este
+    // comentario decía lo contrario —«no role="link"»— y describía el defecto
+    // como si fuera el contrato: el `role="button"` mentía sobre el teclado.
+    const verLink = screen.getByRole("link", { name: /Ver/i });
     expect(verLink.getAttribute("href")).toBe("/admin/pinar/p-1");
   });
 });

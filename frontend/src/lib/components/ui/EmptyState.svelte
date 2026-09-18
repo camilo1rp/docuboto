@@ -23,6 +23,7 @@
     default  — reemplaza el botón de acción por contenido personalizado
 -->
 <script>
+  import Button from "./Button.svelte";
   export let icon = "fas fa-inbox";
   export let title = "Sin datos";
   export let description = "";
@@ -49,9 +50,7 @@
     </div>
   {:else if action && actionHref}
     <div class="op-empty__action">
-      <a href={actionHref} class="op-btn op-btn--primary op-btn--sm">
-        {action}
-      </a>
+      <Button href={actionHref} variant="primary" size="sm">{action}</Button>
     </div>
   {/if}
 </div>
@@ -91,33 +90,11 @@
     }
   }
 
-  // Reutiliza estilos del botón primario (definidos en Button.svelte)
-  // Solo necesario en contextos donde Button.svelte no está importado
-  .op-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--op-space-2);
-    border: 1px solid transparent;
-    border-radius: var(--op-radius);
-    font-family: var(--op-font-family);
-    font-weight: var(--op-weight-medium);
-    text-decoration: none;
-    cursor: pointer;
-
-    &--primary {
-      background: var(--op-primary);
-      color: var(--op-surface);
-      border-color: var(--op-primary);
-
-      &:hover {
-        background: var(--op-primary-dark);
-      }
-    }
-
-    &--sm {
-      font-size: var(--op-font-xs);
-      padding: var(--op-space-1) var(--op-space-3);
-      height: 28px;
-    }
-  }
+  // Aquí vivía una TERCERA definición de `.op-btn`, copiada de `Button.svelte`
+  // "por si Button no está importado". El comentario describía el problema y lo
+  // daba por resuelto: tres definiciones del mismo botón divergen —cambiar el
+  // primario en una deja las otras dos con el color viejo— y el escape que
+  // justificaba la copia no existe, porque importar el componente es
+  // exactamente lo que hace falta. Ahora se usa `Button`, que es quien sabe
+  // cómo se ve un botón de este sistema.
 </style>

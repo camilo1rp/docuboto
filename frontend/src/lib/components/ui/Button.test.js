@@ -59,11 +59,17 @@ describe("Button — variantes y estados", () => {
     expect(handleClick).toHaveBeenCalledOnce();
   });
 
-  it("href: renderiza como enlace con role=button y el href indicado", () => {
+  it("href: renderiza como ENLACE y se anuncia como enlace, no como botón", () => {
+    // Llevaba `role="button"`: el lector anunciaba «botón», la persona pulsaba
+    // la barra espaciadora y no pasaba nada — la tecla de un enlace es Intro.
+    // Prometer el rol obliga a implementar su teclado; siendo lo que es, el
+    // elemento ya hace lo correcto.
     render(ButtonHarness, { props: { label: "Ir a radicar", href: "/radicar" } });
-    const link = screen.getByRole("button", { name: "Ir a radicar" });
+    const link = screen.getByRole("link", { name: "Ir a radicar" });
     expect(link.tagName).toBe("A");
     expect(link).toHaveAttribute("href", "/radicar");
+    expect(link).not.toHaveAttribute("role");
+    expect(screen.queryByRole("button", { name: "Ir a radicar" })).toBeNull();
   });
 
   it("href + disabled: cae a <button> disabled (no se puede navegar)", () => {

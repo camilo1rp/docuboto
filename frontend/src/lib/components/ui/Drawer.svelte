@@ -176,7 +176,7 @@
     &__backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(33, 36, 33, 0.35);
+      background: var(--op-scrim);
       z-index: 399;
     }
 

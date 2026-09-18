@@ -188,7 +188,7 @@
     &__overlay {
       position: fixed;
       inset: 0;
-      background: rgba(33, 36, 33, 0.5);
+      background: var(--op-scrim);
       display: flex;
       align-items: center;
       justify-content: center;

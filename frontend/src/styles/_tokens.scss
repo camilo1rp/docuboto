@@ -47,6 +47,14 @@ $op-text: #232624; // ink
 $op-text-secondary: #6e7370; // muted
 
 $op-border: #e7eae2; // hairline
+
+// Velo de los diálogos. El COLOR se declara una vez; la opacidad la elige cada
+// uso y por eso hay dos niveles con significado, no cuatro por accidente:
+// cuatro velos llevaban el mismo rgba(33,36,33,·) con 0.25, 0.35, 0.4 y 0.5, y
+// dos de ellos —los dos cajones— diferían en 0.05, que no es una decisión de
+// diseño sino deriva. Cambiar el velo del sistema obligaba a encontrar cuatro
+// literales repartidos por tres componentes y una ruta.
+$op-scrim-rgb: 33, 36, 33;
 $op-bg: #fbfcf8; // canvas
 $op-surface: #ffffff; // surface
 
@@ -157,6 +165,14 @@ $op-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); // = "md" v1.0
 $op-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.06); // alias de -lg mantenido (mismo valor que "md",
 // v1.0 no define un escalón mayor); ver $op-shadow para el uso recomendado
 
+// Sombra de las tarjetas que flotan sobre el fondo OSCURO de las pantallas
+// públicas (consulta ciudadana, ventanilla). No es un escalón más de la escala
+// de arriba: aquella está calculada sobre fondo claro con negro al 5 %, y aquí
+// hace falta más contraste y el verde profundo de la marca. Estaba escrita a
+// mano y por duplicado en dos rutas, que es como una sombra se convierte en dos
+// sombras parecidas.
+$op-shadow-sobre-oscuro: 0 12px 32px rgba(12, 23, 16, 0.28);
+
 // Movimiento v1.0 — 120ms micro (hover/foco/toggles) · 200ms estándar
 // (modales/paneles/colapsos) · 300ms pantalla completa. Easing único.
 $op-motion-fast: 120ms;
@@ -197,6 +213,11 @@ $op-breadcrumb-height: 36px;
 
   // Superficies
   --op-border: #{$op-border};
+  // Velo BLOQUEANTE: lo que hay detrás no se puede usar (Modal, cajones).
+  --op-scrim: rgba(#{$op-scrim-rgb}, 0.45);
+  // Velo de ACOMPAÑAMIENTO: el asistente se abre sobre la pantalla sin
+  // pretender que el resto desaparece, y su velo es deliberadamente más suave.
+  --op-scrim-soft: rgba(#{$op-scrim-rgb}, 0.25);
   --op-bg: #{$op-bg};
   --op-surface: #{$op-surface};
 
@@ -261,6 +282,7 @@ $op-breadcrumb-height: 36px;
   --op-radius-full: #{$op-radius-full};
 
   --op-shadow-xs: #{$op-shadow-xs};
+  --op-shadow-sobre-oscuro: #{$op-shadow-sobre-oscuro};
   --op-shadow-sm: #{$op-shadow-sm};
   --op-shadow: #{$op-shadow};
   --op-shadow-lg: #{$op-shadow-lg};
