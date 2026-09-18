@@ -38,9 +38,9 @@ el censo nunca vio.
 | Flujo | Operaciones | Herramientas | Cobertura |
 |---|---:|---:|---:|
 | **SISTEMA** (sellado, no expuesto) | 63 | 0 | — *por diseño* |
-| **F1** Ventanilla y radicación | 37 | 23 | 62 % |
+| **F1** Ventanilla y radicación | 37 | 27 | 73 % |
 | **F2** Trámite y reparto | 28 | 15 | 54 % |
-| **F3** Respuesta y despacho | 21 | 9 | 43 % |
+| **F3** Respuesta y despacho | 21 | 15 | 71 % |
 | **F4** Expediente | 31 | 21 | 68 % |
 | **F5** Archivo físico | 14 | 11 | 79 % |
 | **F6** Transferencias | 11 | 9 | 82 % |
@@ -51,7 +51,7 @@ el censo nunca vio.
 | **F11** Consulta y reportes | 9 | 5 | 56 % |
 | **F12** Administración y seguridad | 59 | 26 | 44 % |
 | **F13** Notificaciones e integración | 10 | 7 | 70 % |
-| **TOTAL** | **405** | **193** | |
+| **TOTAL** | **405** | **203** | |
 
 > **Esta tabla cambió el 2026-09-17, y varios números EMPEORARON porque se
 > volvieron ciertos.** El censo se alimentaba del OpenAPI agregado del gateway,

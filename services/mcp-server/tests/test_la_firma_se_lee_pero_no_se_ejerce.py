@@ -117,3 +117,76 @@ def test_la_ausencia_esta_declarada_y_no_solo_omitida() -> None:
             break
     else:  # pragma: no cover - lo cubre el assert de arriba
         raise AssertionError("no se encontró la exclusión de la firma")
+
+
+# ---------------------------------------------------------------------------
+# Despacho y producción documental (F3: era el flujo con menos cobertura)
+# ---------------------------------------------------------------------------
+
+
+def test_una_vista_previa_no_gasta_friccion_de_escritura() -> None:
+    """`combinar_plantilla` es POST y NO es escritura.
+
+    El método lo impone el contrato —el contexto va en el cuerpo—, pero no
+    persiste nada. Marcarla como escritura pediría confirmación para mirar, y la
+    fricción gastada donde no toca deja de funcionar donde sí: quien confirma
+    diez veces al día acaba confirmando sin leer.
+    """
+    t = _POR_NOMBRE["combinar_plantilla"]
+    assert t.method == "POST"
+    assert t.write is False
+    assert t.destructive is None  # no se declara: no es escritura
+
+
+def test_devolver_un_borrador_aprobado_avisa_de_lo_que_cuesta() -> None:
+    """No destruye el borrador, pero tira las aprobaciones ya dadas.
+
+    Volver a pedirlas a las mismas personas es el coste, y no se deshace. Es
+    alto impacto aunque no destruya: quien lo pide tiene que saberlo antes.
+    """
+    t = _POR_NOMBRE["devolver_borrador_a_edicion"]
+    assert t.write is True
+    assert t.destructive is True
+    assert "no se arrastran" in t.description.lower()
+
+
+def test_el_despacho_se_puede_seguir() -> None:
+    """Las dos preguntas distintas sobre un envío, y son distintas.
+
+    Una lee lo que el sistema tiene guardado; la otra le pregunta al operador.
+    Cuando nadie ha registrado todavía la entrega, solo la segunda contesta.
+    """
+    assert ("GET", "/api/v1/envios/{shipment_id}") in _RUTAS
+    assert ("GET", "/api/v1/envios/{shipment_id}/tracking") in _RUTAS
+
+
+def test_el_pdf_y_la_edicion_de_plantillas_quedan_declarados() -> None:
+    """Otra vez: omitir y declarar no son lo mismo.
+
+    Pedir «enséñame el oficio» es lo más natural del mundo, y la respuesta
+    —«el PDF no cabe en una conversación, pero sí el texto combinado»— solo
+    existe si alguien la escribió.
+    """
+    operaciones = " ".join(x["operacion"] for x in NO_OFRECIDAS).lower()
+    assert "pdf de un borrador" in operaciones
+    for x in NO_OFRECIDAS:
+        if "pdf de un borrador" in x["operacion"].lower():
+            assert "combinada" in x["via_alternativa"]
+            break
+    else:  # pragma: no cover - lo cubre el assert de arriba
+        raise AssertionError("no se encontró la exclusión del PDF")
+
+
+def test_el_rastreo_no_promete_un_operador_que_no_esta_conectado() -> None:
+    """Mi propia descripción prometía más de lo que el sistema entrega.
+
+    `consultar_estado` es un stub que devuelve `None` siempre, y el backend lo
+    dice con honestidad (`operador_conectado: false`). Anunciarle al modelo que
+    la herramienta «sirve para saber si ya llegó» convertía esa honestidad en
+    una promesa falsa un salto más allá: el modelo habría leído la ausencia de
+    estado como «sin novedad», que es exactamente lo que el backend se cuida de
+    no decir.
+    """
+    d = _POR_NOMBRE["rastrear_envio"].description.lower()
+    assert "stub" in d
+    assert "sin \u00absin novedad\u00bb" in d or "no significa" in d

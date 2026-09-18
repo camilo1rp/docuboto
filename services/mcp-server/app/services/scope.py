@@ -150,6 +150,24 @@ NO_OFRECIDAS: tuple[dict[str, str], ...] = (
     },
     {
         "operacion": (
+            "Ver el PDF de un borrador, y crear, importar o borrar plantillas"
+        ),
+        "motivo": (
+            "La previsualización devuelve el PDF como cuerpo, y un PDF no cabe en "
+            "una conversación: lo que llegaría es un fichero binario que nadie "
+            "puede leer aquí. Y redactar una plantilla es un trabajo de edición "
+            "—marcadores, alcance, membrete— que se hace viéndola, no "
+            "dictándola"
+        ),
+        "via_alternativa": (
+            "Sí puede verse el texto de una plantilla ya combinada con sus campos "
+            "resueltos, junto con los que NO resolvieron, que es lo que hay que "
+            "revisar antes de crear el borrador; el PDF y la edición de plantillas "
+            "están en «Borradores» y en «Administración → Plantillas»"
+        ),
+    },
+    {
+        "operacion": (
             "Firmar un turno de una cadena, darle el visto bueno o rechazarlo"
         ),
         "motivo": (

@@ -485,6 +485,24 @@ _P_EVENT_ID = Param(
 )
 
 
+_P_SHIPMENT_ID = Param(
+    name="shipment_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID del envío postal registrado.",
+    label="Envío",
+)
+_P_PLANTILLA_ID = Param(
+    name="plantilla_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la plantilla.",
+    label="Plantilla",
+)
+
+
 _P_TERCERO_ID = Param(
     name="tercero_id",
     required=True,
@@ -5690,6 +5708,154 @@ CATALOG: tuple[Tool, ...] = (
         epic="E06",
         operacion="Ver las firmas de un radicado",
         params=(_P_DOCUMENT_ID,),
+    ),
+    # ── Despacho y producción documental (E23/E11/E17) ──────────────────────
+    #
+    # F3 era el flujo con menos cobertura (43 %) y es trámite DIARIO: proyectar
+    # una respuesta, ver cómo queda, y saber dónde está lo que se envió.
+    Tool(
+        name="consultar_envio",
+        description=(
+            "Un envío postal concreto: operador, guía, estado y su historial. "
+            "Responde «¿qué pasó con lo que mandamos?» sobre un envío ya "
+            "registrado."
+        ),
+        method="GET",
+        path="/api/v1/envios/{shipment_id}",
+        path_params=("shipment_id",),
+        permission="PERM_RADI_SALIDA",
+        min_crud=1,
+        write=False,
+        epic="E11",
+        operacion="Consultar un envío",
+        params=(_P_SHIPMENT_ID,),
+    ),
+    Tool(
+        name="rastrear_envio",
+        description=(
+            "Pregunta el estado AL OPERADOR por el número de guía, en vez de "
+            "leer el último estado guardado. **Hoy el conector con el operador "
+            "es un stub** (E11, pendiente de roadmap): la respuesta trae "
+            "`operador_conectado: false` y ningún estado. Eso es una respuesta "
+            "honesta —«no hay operador conectado»— y NO significa «sin "
+            "novedad»; no debe presentarse como que el envío sigue igual."
+        ),
+        method="GET",
+        path="/api/v1/envios/{shipment_id}/tracking",
+        path_params=("shipment_id",),
+        permission="PERM_RADI_SALIDA",
+        min_crud=1,
+        write=False,
+        epic="E11",
+        operacion="Rastrear un envío con el operador",
+        params=(_P_SHIPMENT_ID,),
+    ),
+    Tool(
+        name="campos_de_plantilla",
+        description=(
+            "Qué campos se pueden usar en una plantilla y de dónde sale cada "
+            "uno. Es lo que hay que saber ANTES de redactarla: un marcador que "
+            "no existe se queda escrito tal cual en el oficio."
+        ),
+        method="GET",
+        path="/api/v1/plantillas/campos",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E23",
+        operacion="Ver los campos disponibles de una plantilla",
+    ),
+    Tool(
+        name="combinar_plantilla",
+        description=(
+            "El cuerpo de una plantilla con los campos ya resueltos para un "
+            "contexto. NO guarda nada: es ver cómo quedaría antes de crear el "
+            "borrador. Devuelve también qué campos no resolvieron, que es lo que "
+            "hay que mirar: un hueco no anunciado viaja al oficio."
+        ),
+        # POST porque el contexto va en el cuerpo, pero no escribe nada: por eso
+        # `write=False`. Marcarla como escritura pediría confirmación para una
+        # vista previa, y la fricción gastada donde no toca deja de funcionar
+        # donde sí.
+        method="POST",
+        path="/api/v1/plantillas/{plantilla_id}/combinar",
+        path_params=("plantilla_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E23",
+        operacion="Previsualizar una plantilla combinada",
+        params=(
+            _P_PLANTILLA_ID,
+            Param(
+                name="radicado_padre_id",
+                format="uuid",
+                description=(
+                    "Radicado al que se responde: de él salen los datos del "
+                    "destinatario y la referencia."
+                ),
+                label="Radicado de origen",
+            ),
+            Param(
+                name="dest_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description="Código de la dependencia destinataria, si aplica.",
+                label="Dependencia destino",
+            ),
+        ),
+    ),
+    Tool(
+        name="devolver_borrador_a_edicion",
+        description=(
+            "Devuelve a edición un borrador ya APROBADO. Rehacer un documento "
+            "aprobado es parte del trámite, no una anomalía — pero las "
+            "aprobaciones recogidas NO se arrastran: hay que volver a pedirlas."
+        ),
+        method="POST",
+        path="/api/v1/borradores/{borrador_id}/devolver",
+        path_params=("borrador_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=True,
+        # No destruye el borrador —su texto queda—, pero tira por tierra los
+        # vistos buenos ya dados, y eso no se deshace: hay que volver a pedirlos
+        # a las mismas personas. Alto impacto, y quien lo pide tiene que saberlo
+        # antes y no después.
+        destructive=True,
+        epic="E23",
+        operacion="Devolver un borrador aprobado a edición",
+        params=(_P_BORRADOR_ID,),
+    ),
+    Tool(
+        name="inventario_documental",
+        description=(
+            "Formato Único de Inventario Documental (FUID): el inventario de lo "
+            "que hay, con su ubicación y su serie. Se puede acotar por ubicación "
+            "o por serie de la TRD."
+        ),
+        method="GET",
+        path="/api/v1/fuid",
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Consultar el inventario documental",
+        params=(
+            Param(
+                name="ubicacion_id",
+                format="uuid",
+                description="Acota el inventario a una ubicación física.",
+                label="Ubicación",
+            ),
+            Param(
+                name="trd_serie_id",
+                format="uuid",
+                description="Acota el inventario a una serie de la TRD.",
+                label="Serie TRD",
+            ),
+        ),
     ),
 )
 
