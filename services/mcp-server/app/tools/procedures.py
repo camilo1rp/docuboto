@@ -217,6 +217,21 @@ PROCEDIMIENTOS: tuple[Procedimiento, ...] = (
                 label="Remitente",
             ),
             Param(name="sender_entity", description="Entidad del remitente, si aplica."),
+            # El mismo argumento que `radicar_documento`, y por el mismo motivo:
+            # un procedimiento que solo pudiera mandar el nombre en texto libre
+            # sería la fábrica de duplicados que el directorio vino a cerrar, y
+            # una ventanilla es justo donde más se repite la misma persona.
+            Param(
+                name="actores",
+                type="array",
+                description=(
+                    "Remitente tomado del DIRECTORIO, como `{tercero_id, rol}` con "
+                    "rol `remitente`. Búsquelo antes con `buscar_terceros`: el "
+                    "directorio encuentra sin tildes ni mayúsculas, que es "
+                    "exactamente como se cuelan los duplicados."
+                ),
+                label="Actores del directorio",
+            ),
             Param(name="doc_class", description="Código del tipo documental (catálogo de la TRD)."),
             # Los nombres son los que declara `radicar_documento`, no los del
             # endpoint: el procedimiento encadena TOOLS, y validar contra otra
@@ -270,6 +285,11 @@ PROCEDIMIENTOS: tuple[Procedimiento, ...] = (
                     "subject": "@subject",
                     "sender_name": "@sender_name",
                     "sender_entity": "@sender_entity",
+                    # El vínculo con el directorio viaja en la MISMA llamada que
+                    # crea el radicado: `DocumentService.create` lo congela
+                    # dentro de su transacción, así que no hay radicado sin sus
+                    # actores ni actores sin radicado.
+                    "actores": "@actores",
                     "doc_class": "@doc_class",
                     "origin_dept_code": "@origin_dept_code",
                     "dest_dept_code": "@dest_dept_code",

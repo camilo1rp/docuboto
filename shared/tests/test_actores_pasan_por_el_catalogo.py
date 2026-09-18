@@ -38,6 +38,16 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 RUTAS = RAIZ / "frontend" / "src" / "routes"
+#: El catálogo del MCP es la SEXTA puerta, y este guardián no la miraba: censaba
+#: solo pantallas. La herramienta `radicar_documento` componía el radicado con
+#: `sender_name` y sin `actores`, así que el asistente seguía siendo exactamente
+#: la fábrica de duplicados que el resto del trabajo cerró — con el guardián en
+#: verde. Un censo que no mira una puerta no informa de menos: afirma de más.
+CATALOGO_MCP = RAIZ / "services" / "mcp-server" / "app" / "tools" / "catalog.py"
+#: Y los PROCEDIMIENTOS, que declaran sus propios argumentos en vez de heredar
+#: los de la tool que encadenan: el de ventanilla ciudadana pedía el remitente en
+#: texto libre, y una ventanilla es donde más veces se repite la misma persona.
+PROCEDIMIENTOS_MCP = RAIZ / "services" / "mcp-server" / "app" / "tools" / "procedures.py"
 
 #: Composición de un cuerpo de radicación: `sender_name:` como clave de objeto.
 #: No basta con que la cadena aparezca —una pantalla puede LEER `sender_name` de
@@ -138,4 +148,75 @@ def test_el_censo_encuentra_algo() -> None:
     assert len(_archivos_que_escriben_sender()) >= 2, (
         "El censo de pantallas que componen un radicado se quedó casi vacío: el "
         "patrón dejó de casar y este guardián ya no vigila nada."
+    )
+
+
+# ---------------------------------------------------------------------------
+# La sexta puerta: el catálogo de herramientas del MCP
+# ---------------------------------------------------------------------------
+
+
+def _tool_de_radicacion() -> str:
+    """El cuerpo de la herramienta que compone un radicado.
+
+    Se busca por su RUTA y no por su nombre: renombrarla no puede sacarla del
+    censo, que es como un control por nombre se pierde sin que nadie lo note.
+    """
+    texto = CATALOGO_MCP.read_text(encoding="utf-8")
+    marca = 'path="/api/v1/documents"'
+    trozos = [
+        texto[i - 4000 : texto.index("\n    ),", i)]
+        for i in range(len(texto))
+        if texto.startswith(marca, i)
+    ]
+    for bloque in trozos:
+        inicio = bloque.rfind("Tool(")
+        cuerpo = bloque[inicio:]
+        if 'method="POST"' in cuerpo:
+            return cuerpo
+    raise AssertionError(
+        "no se encontró en el catálogo del MCP ninguna herramienta que componga "
+        "un radicado (POST /api/v1/documents). Si desapareció, este guardián "
+        "sobra; si se renombró la ruta, hay que traerlo aquí"
+    )
+
+
+def test_el_censo_del_mcp_encuentra_su_objeto() -> None:
+    """Control de vacuidad: sin él, un cambio de ruta dejaría el test en verde
+    por no encontrar nada que comprobar."""
+    cuerpo = _tool_de_radicacion()
+    assert 'name="radicar_documento"' in cuerpo
+    assert _ESCRIBE_SENDER.search(cuerpo) or 'name="sender_name"' in cuerpo
+
+
+def test_la_herramienta_que_radica_tambien_ofrece_los_actores() -> None:
+    """El asistente radica por la misma puerta que las pantallas.
+
+    Sin `actores` declarado, el modelo solo puede mandar `sender_name` —texto
+    libre— y cada radicación del asistente crea otro «José Pérez» suelto: el
+    directorio no aprende y los duplicados vuelven por donde el resto del
+    trabajo los cerró.
+    """
+    cuerpo = _tool_de_radicacion()
+    assert 'name="actores"' in cuerpo, (
+        "la herramienta de radicación del MCP no declara `actores`: el asistente "
+        "solo puede componer el remitente como texto libre"
+    )
+
+
+def test_el_procedimiento_de_ventanilla_tambien_ofrece_los_actores() -> None:
+    """Un procedimiento declara sus propios argumentos.
+
+    No hereda los de la herramienta que encadena, así que puede quedarse corto
+    sin que la herramienta lo esté — y el de ventanilla ciudadana es, de todas
+    las puertas, la que más veces ve a la misma persona.
+    """
+    texto = PROCEDIMIENTOS_MCP.read_text(encoding="utf-8")
+    assert 'name="sender_name"' in texto, (
+        "control de vacuidad: si el procedimiento de ventanilla dejó de componer "
+        "un radicado, este guardián sobra y hay que quitarlo, no dejarlo pasar"
+    )
+    assert 'name="actores"' in texto, (
+        "el procedimiento de ventanilla pide el remitente en texto libre y no "
+        "ofrece tomarlo del directorio"
     )

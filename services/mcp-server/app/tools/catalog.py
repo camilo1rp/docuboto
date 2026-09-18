@@ -485,6 +485,16 @@ _P_EVENT_ID = Param(
 )
 
 
+_P_TERCERO_ID = Param(
+    name="tercero_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la ficha del directorio de terceros.",
+    label="Contacto",
+)
+
+
 # ── Firma en cadena (E06) ───────────────────────────────────────────────────
 _P_SOLICITUD_ID = Param(
     name="solicitud_id",
@@ -650,6 +660,19 @@ CATALOG: tuple[Tool, ...] = (
                 description="Plazo de respuesta en días hábiles; si se omite, no hay plazo.",
                 label="Plazo (días hábiles)",
             ),
+        Param(
+            name="actores",
+            type="array",
+            description=(
+                "Remitentes y destinatarios tomados del DIRECTORIO, cada uno como "
+                "`{tercero_id, rol}` con rol `remitente` o `destinatario`. Se "
+                "congelan con el radicado en el mismo acto. Búsquelos primero con "
+                "`buscar_terceros`: teclear un nombre que ya existe es como se "
+                "fabrican los duplicados, y el directorio busca sin tildes ni "
+                "mayúsculas justo para encontrarlo."
+            ),
+            label="Actores del directorio",
+        ),
         ),
     ),
     Tool(
@@ -5566,6 +5589,107 @@ CATALOG: tuple[Tool, ...] = (
                 label="Firmantes (en orden)",
             ),
         ),
+    ),
+    # ── Directorio de terceros y traza de acceso (E01, RF-RAD-05, RF-BUS-10) ──
+    #
+    # Cuatro lecturas que contestan preguntas que el funcionario hace de verdad y
+    # que el asistente no podía contestar. La tercera cierra un GEMELO: el
+    # historial de acceso estaba expuesto para un EXPEDIENTE y no para un
+    # radicado suelto, que son la mayoría — la misma pregunta, contestable sobre
+    # uno y no sobre el otro.
+    Tool(
+        name="terceros_duplicados",
+        description=(
+            "Fichas del directorio que probablemente son la misma persona. Agrupa "
+            "por dos ejes que NO valen lo mismo: mismo documento de identidad es "
+            "certeza; mismo nombre normalizado —sin tildes ni mayúsculas— es "
+            "sospecha, porque puede haber homónimos. Enseña; no fusiona."
+        ),
+        method="GET",
+        path="/api/v1/terceros/duplicados",
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Ver posibles contactos duplicados",
+        params=(
+            Param(
+                name="limit",
+                type="integer",
+                minimum=1,
+                maximum=200,
+                description="Cuántos grupos devolver (máx. 200).",
+                label="Máximo de grupos",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="radicados_de_un_tercero",
+        description=(
+            "En qué radicados aparece una ficha del directorio, como remitente o "
+            "como destinatario. Es la respuesta a «¿qué le hemos enviado a esta "
+            "persona?», que sin el directorio no se podía contestar."
+        ),
+        method="GET",
+        path="/api/v1/terceros/{tercero_id}/radicados",
+        path_params=("tercero_id",),
+        permission="PERM_RADI",
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Ver en qué radicados aparece un contacto",
+        params=(
+            _P_TERCERO_ID,
+            Param(
+                name="limit",
+                type="integer",
+                minimum=1,
+                maximum=200,
+                description="Cuántos radicados devolver (máx. 200).",
+                label="Máximo",
+                show_in_card=False,
+            ),
+        ),
+    ),
+    Tool(
+        name="historial_acceso_radicado",
+        description=(
+            "Quién ha LEÍDO o descargado este radicado. Es la traza de acceso, no "
+            "la hoja de ruta: responde «¿quién vio esto?», que es la pregunta de "
+            "una investigación. Solo accesos — crear, anular o reclasificar son "
+            "actos sobre el documento, no lecturas de él."
+        ),
+        method="GET",
+        path="/api/v1/documents/{document_id}/historial-acceso",
+        path_params=("document_id",),
+        # Sin permiso, igual que las demás lecturas de este router: la línea que
+        # decide qué se ve es el clearance, dentro de la consulta. Un radicado
+        # por encima del nivel del llamante devuelve el mismo 404 que uno que no
+        # existe, para que el historial no delate lo que oculta.
+        permission=None,
+        min_crud=1,
+        write=False,
+        epic="E01",
+        operacion="Ver quién ha consultado un radicado",
+        params=(_P_DOCUMENT_ID, _P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="firmas_de_un_radicado",
+        description=(
+            "Las firmas que tiene un radicado, con su proveedor y su nivel de "
+            "conformidad. NO acredita: son firmas electrónicas simples (Ley "
+            "527/1999 art. 7, no art. 28)."
+        ),
+        method="GET",
+        path="/api/v1/documents/{document_id}/signatures",
+        path_params=("document_id",),
+        permission="PERM_FIRMA",
+        min_crud=1,
+        write=False,
+        epic="E06",
+        operacion="Ver las firmas de un radicado",
+        params=(_P_DOCUMENT_ID,),
     ),
 )
 

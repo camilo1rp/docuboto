@@ -318,9 +318,18 @@ async def get_historial_acceso(
     historial de ESE expediente. Un radicado suelto, que son la mayoría, no
     tenía respuesta.
 
-    Gate: el mismo del router (`PERM_RADI`) más **no-read-up dentro del
-    servicio**, comprobado ANTES de tocar `audit_log` — si no, el historial
-    sería un oráculo sobre radicados que el llamante no puede ver.
+    Gate: **no-read-up dentro del servicio**, comprobado ANTES de tocar
+    `audit_log` — si no, el historial sería un oráculo sobre radicados que el
+    llamante no puede ver.
+
+    Lo que este docstring decía y NO era cierto: «el mismo del router
+    (`PERM_RADI`)». Este router no declara `dependencies`, y las seis lecturas
+    que sirve —listar, consultar, anexos, descarga y este historial— no llevan
+    permiso: la línea que decide qué se ve es el clearance, dentro de la
+    consulta. Es una decisión deliberada y el catálogo del MCP ya la declara
+    así; lo que sobraba era la frase, que hacía creer protegido por permiso algo
+    que no lo está — y alguien que extienda este router apoyándose en ella daría
+    por puesto un control inexistente.
 
     Solo ACCESOS, no todo lo ocurrido: crear, anular o reclasificar son actos
     sobre el documento, no lecturas de él, y mezclarlos convertiría esto en un
