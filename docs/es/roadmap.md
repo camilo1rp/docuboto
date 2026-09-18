@@ -211,10 +211,25 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
       Al aplicarlo se barrieron **todos** los gates de escritura contra el `require_permission` real de su router, y el resultado corrige la premisa del hallazgo: la gran mayoría de las mutaciones usan `min_crud=1`, así que **solo cuatro pantallas** necesitaban nivel 3 (TVD y TRD en su circuito de convalidación, borrado de tipo documental y de elemento de metadato, y la nueva versión del plan de preservación). Poner nivel 3 donde el backend no lo exige habría sido el mismo defecto en dirección contraria. Se descubrió de paso que en `/bandeja` el gate de la UI es **más estricto** que el backend (devolver y visto bueno autorizan por tenencia del paso, sin `require_permission`): queda anotado, no tocado, porque es un cambio de comportamiento distinto.
       Dos defectos colaterales encontrados y cerrados: `radicar/+page.svelte` evaluaba `can()` dentro de un `$:` sin ninguna dependencia reactiva —`can()` usa `get()`, que no es reactivo, así que esa línea nunca se reevaluaría tras un cambio de sesión en el mismo montaje— y un em dash pegado a un parámetro JSDoc opcional (`[minCrud] —`) rompía el parser de TypeScript. Verificado además que `context/switch` **no** altera permisos ni niveles, solo `active_depe_id`.
 
+> **Barrido de verificación — 2026-09-17.** Los 18 pendientes abiertos se
+> comprobaron **uno a uno contra el código**, no por memoria. Resultado: **dos
+> estaban cerrados sin tachar** (el activo de marca y la promesa de confirmación
+> del `AssistantDock`), **uno traía las cifras caducadas** (los tamaños de H1: la
+> dispersión no se corrigió, creció), **dos son futuro** y no deuda (app móvil,
+> SSO corporativo) y **dos son decisiones tomadas** y declaradas con su motivo
+> (`/bandeja` fuera de `DataTable`, y las lecturas de TRD/PINAR). Los **once**
+> restantes siguen vivos y se confirmaron con su evidencia.
+>
+> Se anota el barrido, y no solo su resultado, porque el coste de no hacerlo ya
+> se pagó: en la misma jornada un pendiente cerrado sin tachar estuvo a punto de
+> dirigir trabajo, igual que pasó con el censo del MCP y con el guardián de
+> actores. Un pendiente sin fecha de comprobación no es un pendiente: es un
+> recuerdo.
+
 **Rendimiento y activos**
 
 - [ ] **Subset de Font Awesome**: hoy `+layout.svelte` importa el CSS **completo** de Font Awesome. La app solo usa iconos `solid` y `regular`; sustituirlo por un subset (o por importaciones por-icono) para aligerar la descarga inicial, que es la primera impresión de la landing pública.
-- [ ] **Activo de marca**: `static/orpyca-logo.png` es el **emblema circular** (100×97 px), no un logotipo completo con wordmark. Mientras no exista un wordmark, la landing y `/login` muestran el emblema a tamaño grande y el nombre de la marca no aparece por encima del pliegue. Además `apple-touch-icon.png` mide 180×176 (no 180×180 como declara `app.html`) y es RGBA: iOS lo compone sobre negro.
+- [x] **Activo de marca** (cerrado, verificado 2026-09-17): `static/brand/` tiene ya el lockup con wordmark en PNG y SVG (`orpyca-lockup`, `orpyca-lockup-vertical`) y el emblema suelto (`orpyca-mark`). El `static/orpyca-logo.png` que este pendiente nombraba ya no existe: el pendiente se resolvió y nadie lo tachó.
 
 **Migración a `DataTable`**
 
@@ -232,11 +247,11 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 - [ ] **Colores crudos `rgba(...)` fuera de tokens** en velos y superficies de marca: `Modal.svelte` (`rgba(33,36,33,.5)`) vs `Drawer.svelte` (`.35`) vs `AppLayout` (`.4`) vs `AssistantDock` (`.25`) — **cuatro opacidades para el mismo scrim**, y el color base ni siquiera coincide con `--op-text`. Más los blancos translúcidos del hero/CTA/footer de la landing. No son hex, pero son invisibles a un rebranding por tenant.
 - [x] **Token de FAMILIA monoespaciada** (cerrado 2026-08-22): `--op-font-family-mono` en `_tokens.scss` y **46** declaraciones migradas en 27 archivos — eran más de los ~16 estimados, y en tres formas distintas. De paso aparecieron dos defectos que el apunte no preveía: nueve declaraciones hacían `font-family: var(--op-font-mono, monospace)`, **inválidas y descartadas por el navegador** (el respaldo no se aplica si la variable existe, y `--op-font-mono` existe: es el tamaño), y Bulma pintaba `code` en rojo `#da1039` sobre gris — el color del error sobre el número de radicado. Guardián `styles/tokens-mono.test.js`.
 - [ ] **`<a role="button">`**: `Button.svelte` con `href` renderiza un enlace anunciado como botón — no responde a la barra espaciadora. Afecta a los CTA de la landing, a `/403` y a los enlaces de acción de `EmptyState`.
-- [ ] **Tamaño del H1 inconsistente entre pantallas** (`--op-font-lg` en 5 vistas, `--op-font-xl` en 8; ninguna usa el H1 de v1.0, `--op-font-2xl`), y **objetivos táctiles <44px** aún en los botones de paginación de `DataTable` (28px), sus casillas de selección, el `summary` de "Columnas"/"Vistas guardadas" (36px) y los controles de `AssistantDock` (~30px).
+- [ ] **Tamaño del H1 inconsistente entre pantallas** y **objetivos táctiles <44px** aún en los botones pequeños. *Recuento actualizado 2026-09-17*: `--op-font-lg` en 26 usos, `--op-font-xl` en 29 y `--op-font-2xl` en 4 — el pendiente decía «5, 8 y ninguna». La dispersión no se corrigió: creció con las pantallas nuevas.
 - [ ] **`EmptyState` reimplementa `.op-btn`** copiando los estilos de `Button.svelte` "por si Button no está importado": es una tercera definición del botón primario que se desincronizará. Se usa en 9 de 10 pantallas.
 - [ ] **Detalles ARIA**: `aria-controls` apuntando a nodos que solo existen cuando el panel está abierto (`DataTable`, `/dashboard`); `role="list"` con hijos sin `listitem`; nombres accesibles sobre `<span>`/`<div>` genéricos (`StatusChip`, `AppLayout`); casillas de `DataTable` nombradas **por posición** (`"Seleccionar fila 3"`) en vez de por registro; y el anuncio `aria-live` de edición en celda que afirma "actualizada" **antes** de que el consumidor confirme contra el gateway (miente justo si el gateway devuelve 403).
 - [ ] **Atajo `/` y trampas de foco**: con el `AssistantDock` (`aria-modal`) o el drawer móvil abiertos, pulsar `/` mueve el foco al buscador del topbar, **fuera** de la trampa de foco del diálogo.
-- [ ] **`AssistantDock` promete lo que no cumple**: su placeholder afirma que "toda acción de escritura pedirá confirmación explícita", pero no existe tal mecanismo en el componente. Hoy es inocuo (el backend v1 es solo-lectura), pero la promesa debe implementarse **antes** de habilitar tools de escritura, no después.
+- [x] **`AssistantDock` promete lo que no cumple** (cerrado, verificado 2026-09-17): el dock monta `ProposalCard` y cablea la confirmación con frase tecleada (`AssistantDock.svelte:377-382`), y el placeholder que hacía la promesa ya no está. Importa que estuviera cerrado: su condición de inocuidad era «el backend v1 es solo-lectura», y el catálogo del MCP tiene hoy herramientas de escritura.
 - [ ] **Limpiar favoritos al cerrar sesión**: `resetFavorites`/`clearPersistedFavorites` existen y están testeadas pero **ningún código de producción las llama**; en un equipo compartido la lista del usuario anterior sobrevive al logout.
 
 **Deuda de tooling y documentación**
