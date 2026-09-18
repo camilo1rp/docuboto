@@ -149,6 +149,40 @@ NO_OFRECIDAS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "operacion": (
+            "Firmar un turno de una cadena, darle el visto bueno o rechazarlo"
+        ),
+        "motivo": (
+            "Firmar consume un segundo factor —un código de un solo uso por correo, o "
+            "el de la app autenticadora—, y pedirlo por un chat lo trasladaría a un "
+            "canal que no lo custodia. El visto bueno no consume ninguno, y aun así "
+            "tampoco se ofrece: lo que afirma es «he leído este texto y lo apruebo», "
+            "queda anclado a la huella del documento, y este canal no puede poner el "
+            "documento delante de nadie — aprobar sin verlo es exactamente el defecto "
+            "que el circuito existe para impedir. Rechazar decide sobre el documento "
+            "igual que aprobar, en el otro sentido"
+        ),
+        "via_alternativa": (
+            "Puede verse qué está pendiente de la firma de cada quien, el estado de "
+            "una cadena y a quién le toca; firmar, aprobar o rechazar se hace desde "
+            "«Firmas», con la sesión y el segundo factor de la persona"
+        ),
+    },
+    {
+        "operacion": "Comprobar la integridad de una firma",
+        "motivo": (
+            "La comprobación exige el XML firmado completo como entrada. Por este "
+            "canal habría que pegarlo o inventarlo, y una verificación sobre un "
+            "documento inventado devuelve una respuesta que parece una garantía sin "
+            "serlo — el mismo motivo por el que no se ofrece sellar en WORM"
+        ),
+        "via_alternativa": (
+            "Puede consultarse el comprobante de una firma —cuándo, con qué proveedor "
+            "y con qué nivel de conformidad—; la comprobación se hace en la ficha del "
+            "expediente, que sí tiene el documento a mano"
+        ),
+    },
+    {
         "operacion": "Firmar personalmente el acta de una transferencia",
         "motivo": (
             "La firma personal es un acto de identidad con segundo factor (TOTP): "

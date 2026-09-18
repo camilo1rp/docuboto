@@ -37,21 +37,31 @@ el censo nunca vio.
 
 | Flujo | Operaciones | Herramientas | Cobertura |
 |---|---:|---:|---:|
-| **SISTEMA** (sellado, no expuesto) | 56 | 0 | — *por diseño* |
-| **F1** Ventanilla y radicación | 33 | 23 | 70 % |
+| **SISTEMA** (sellado, no expuesto) | 63 | 0 | — *por diseño* |
+| **F1** Ventanilla y radicación | 37 | 23 | 62 % |
 | **F2** Trámite y reparto | 28 | 15 | 54 % |
-| **F3** Respuesta y despacho | 15 | 9 | 60 % |
+| **F3** Respuesta y despacho | 21 | 9 | 43 % |
 | **F4** Expediente | 31 | 21 | 68 % |
 | **F5** Archivo físico | 14 | 11 | 79 % |
 | **F6** Transferencias | 11 | 9 | 82 % |
 | **F7** Disposición y eliminación | 11 | 10 | 91 % |
-| **F8** Preservación y firma | 11 | 6 | 55 % |
+| **F8** Preservación y firma | 28 | 11 | 39 % |
 | **F9** Instrumentos archivísticos | 69 | 38 | 55 % |
 | **F10** Correo institucional | 14 | 8 | 57 % |
-| **F11** Consulta y reportes | 5 | 2 | 40 % |
+| **F11** Consulta y reportes | 9 | 5 | 56 % |
 | **F12** Administración y seguridad | 59 | 26 | 44 % |
 | **F13** Notificaciones e integración | 10 | 7 | 70 % |
-| **TOTAL** | **367** | **185** | |
+| **TOTAL** | **405** | **193** | |
+
+> **Esta tabla cambió el 2026-09-17, y varios números EMPEORARON porque se
+> volvieron ciertos.** El censo se alimentaba del OpenAPI agregado del gateway,
+> que compone la documentación de siete de los once servicios: knowledge,
+> signature y el propio mcp-server no estaban. No era que el total saliera corto;
+> es que la cobertura se publicaba como porcentaje sobre un universo que no los
+> contenía. F8 decía 55 % sin haber contado ni una de las 21 operaciones del
+> circuito de firma. Ahora el censo lee el esquema de **cada servicio**
+> (`scripts/censo-esquemas.sh`) y el que no responda se dice en voz alta en vez
+> de saltarse.
 
 ## Qué queda FUERA, y por qué
 
@@ -208,7 +218,7 @@ firmada. Lo que cambia es qué se le pone delante a quien decide.
 
 **Lo que falta de F7**: solo `ejecutar`, y por decisión.
 
-### F8 · Preservación — 55 % (6 de 11)
+### F8 · Preservación y firma — 39 % (11 de 28)
 
 > Dos de las herramientas de este flujo —el AIP empaquetado y los eventos PREMIS
 > de un expediente— apuntan a las rutas **mediadas** de archive-service, porque
@@ -254,7 +264,40 @@ la firma del índice. No ofrecer el acto no puede significar dejar a ciegas.
 - **Declarar el plan de preservación tampoco**: es versionado append-only, la
   corrección es declarar otra versión y la anterior sigue ahí.
 
-**Lo que falta de F8**: solo los tres actos declarados arriba.
+#### El circuito de firma: se lee y se prepara, no se ejerce
+
+Hasta el 2026-09-17 este flujo no contaba **ninguna** de las 21 operaciones del
+servicio de firma, porque el censo no las veía. Al verlas, resultó que el
+circuito entero —trece operaciones de cadena— no tenía una sola herramienta: el
+asistente no podía contestar «¿qué tengo pendiente de firmar?», que es la
+pregunta más frecuente que hay sobre él.
+
+**Lo que ahora se ofrece** son las cinco de leer y preparar: los pendientes del
+propio turno, el estado de una cadena con sus turnos en orden, si un documento ya
+está en circuito, el comprobante de una firma, y **abrir** un circuito — que no
+firma nada ni compromete a nadie, porque cada turno lo decide su firmante y puede
+rechazarlo.
+
+**Lo que no se ofrece, y por qué son dos razones distintas**:
+
+- **Firmar un turno** consume un segundo factor de un solo uso —código por correo
+  o de la app autenticadora—. Pedirlo por un chat lo traslada a un canal que no lo
+  custodia. Es el mismo motivo, ya escrito, por el que no se ofrece firmar el acta
+  de una transferencia.
+- **Dar el visto bueno no consume ningún factor**, y aun así tampoco se ofrece.
+  Lo que afirma es «he leído este texto y lo apruebo», queda anclado a la huella
+  del documento, y este canal no puede poner el documento delante de nadie.
+  Aprobar sin verlo es exactamente el defecto que el circuito existe para
+  impedir. Rechazar decide sobre el documento igual que aprobar, en el otro
+  sentido.
+- **Comprobar la integridad de una firma** exige el XML firmado completo como
+  entrada: por aquí habría que pegarlo o inventarlo, y una verificación sobre un
+  documento inventado devuelve algo que parece una garantía sin serlo. Mismo
+  criterio que el sellado WORM.
+
+**Lo que falta de F8**: los tres actos de preservación declarados arriba, y del
+circuito de firma, nada que se deba ofrecer — lo que queda fuera está declarado
+en el marco de alcance, no omitido.
 
 ### F9 · Instrumentos archivísticos — 55 %
 
@@ -456,9 +499,15 @@ descripción prometía un vínculo que el circuito de borradores no hace.
 ## Cómo se repite este censo
 
 ```bash
-curl -s http://localhost:19080/api/v1/openapi.json -o /tmp/oa.json
-python3 scripts/censo_mcp.py     # imprime la tabla de arriba
+./scripts/censo-esquemas.sh                      # los ONCE servicios → /tmp/oa/
+python3 scripts/censo_mcp.py --openapi /tmp/oa   # imprime la tabla de arriba
 ```
+
+Con el agregado del gateway (`curl … /api/v1/openapi.json -o /tmp/oa.json`) sigue
+funcionando, pero **ciego a tres servicios**: es como se produjo la tabla anterior
+y por eso el circuito de firma no figuraba ni como hueco. Si el script avisa de
+operaciones «SIN CLASIFICAR», eso no es ruido: es que apareció superficie nueva y
+está pidiendo que alguien decida a qué flujo pertenece.
 
 El guardián que impide que el catálogo mienta sobre los permisos vive en
 `shared/tests/test_permisos_declarados.py`: cruza cada herramienta con el

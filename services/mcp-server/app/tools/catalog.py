@@ -485,6 +485,46 @@ _P_EVENT_ID = Param(
 )
 
 
+# ── Firma en cadena (E06) ───────────────────────────────────────────────────
+_P_SOLICITUD_ID = Param(
+    name="solicitud_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la solicitud de firma (la cadena, no el documento).",
+    label="Cadena de firmas",
+)
+_P_FIRMA_ID = Param(
+    name="firma_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la firma producida.",
+    label="Firma",
+)
+# El tipo de objeto va acotado al conjunto que el backend admite
+# (`CADENA_OBJETO_TIPOS`). Declararlo como enum y no como texto libre no es
+# cosmética: ahí el nivel de seguridad de la cadena se resolvía comparando este
+# campo contra un literal, y `documento` estuvo admitido sin productor —una
+# cadena que se creaba y no se podía firmar nunca— hasta que se retiró.
+_P_OBJETO_TIPO = Param(
+    name="objeto_tipo",
+    required=True,
+    enum=("radicado", "expediente", "borrador"),
+    description="Qué clase de documento se firma.",
+    label="Tipo de objeto",
+)
+_P_OBJETO_ID = Param(
+    name="objeto_id",
+    required=True,
+    description=(
+        "Identificador del documento. Admite el UUID o la identidad natural "
+        "—el número de radicado, el código del expediente—."
+    ),
+    label="Documento",
+)
+
+
 def _p_size(maximo: int) -> Param:
     return Param(
         name="size",
@@ -5389,6 +5429,141 @@ CATALOG: tuple[Tool, ...] = (
                     "backend exige un motivo sustantivo, no un carácter suelto."
                 ),
                 label="Motivo",
+            ),
+        ),
+    ),
+    # ── Firma en cadena (E06, RF-FIR-04/12/13) ──────────────────────────────
+    #
+    # El circuito de firma estaba ENTERO sin exponer: trece endpoints, cero
+    # tools. El asistente no podía contestar «¿qué tengo pendiente de firmar?»,
+    # que es la pregunta más frecuente que hay sobre él.
+    #
+    # Lo que se ofrece es LEER y PREPARAR; firmar no. El motivo ya estaba
+    # decidido en `scope.py` para la firma del acta de transferencia —«un acto
+    # de identidad con segundo factor: pedirlo por un chat trasladaría el código
+    # de un solo uso a un canal que no lo custodia»— y vale igual aquí: `sign`
+    # consume un OTP o un TOTP. Se declara en `NO_OFRECIDAS`, no se omite en
+    # silencio, para que quien pregunte sepa por dónde sí.
+    #
+    # Todo el router exige `PERM_FIRMA` sin nivel mínimo (`require_permission`
+    # con su default), así que `min_crud=1` incluso en la escritura: exigir 3
+    # aquí escondería la tool a quien el backend sí deja abrir una cadena — el
+    # defecto que falla en silencio.
+    Tool(
+        name="firmas_pendientes",
+        description=(
+            "Documentos que esperan TU firma ahora mismo: solo los turnos que te "
+            "tocan a ti, no la cadena entera. Un turno no aparece hasta que el "
+            "anterior se resuelve, así que una cadena en la que firmas tercero no "
+            "se ve hasta que los dos primeros han firmado."
+        ),
+        method="GET",
+        path="/api/v1/signature/pending",
+        permission="PERM_FIRMA",
+        min_crud=1,
+        write=False,
+        epic="E06",
+        operacion="Ver qué tengo pendiente de firmar",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="consultar_cadena_firma",
+        description=(
+            "Estado de una cadena de firmas: sus turnos EN ORDEN, quién ha "
+            "resuelto el suyo y a quién le toca. Sirve para responder «¿por qué "
+            "no me ha llegado?» — normalmente porque el turno anterior sigue "
+            "abierto."
+        ),
+        method="GET",
+        path="/api/v1/signature/requests/{solicitud_id}",
+        path_params=("solicitud_id",),
+        permission="PERM_FIRMA",
+        min_crud=1,
+        write=False,
+        epic="E06",
+        operacion="Consultar una cadena de firmas",
+        params=(_P_SOLICITUD_ID,),
+    ),
+    Tool(
+        name="cadena_firma_de_un_objeto",
+        description=(
+            "La cadena ABIERTA sobre un documento, si la hay. Devuelve 404 cuando "
+            "no hay ninguna, y eso es una respuesta y no un error: es la forma de "
+            "saber si un radicado o un expediente ya está en circuito antes de "
+            "abrirle otro."
+        ),
+        method="GET",
+        path="/api/v1/signature/requests",
+        permission="PERM_FIRMA",
+        min_crud=1,
+        write=False,
+        epic="E06",
+        operacion="Ver si un documento ya está en un circuito de firma",
+        params=(_P_OBJETO_TIPO, _P_OBJETO_ID),
+    ),
+    Tool(
+        name="consultar_comprobante_firma",
+        description=(
+            "Metadatos de una firma ya producida: cuándo, con qué proveedor y con "
+            "qué nivel de conformidad. NO acredita: esta firma es electrónica "
+            "simple (Ley 527/1999 art. 7, no art. 28) y el comprobante lo dice."
+        ),
+        method="GET",
+        path="/api/v1/signature/firmas/{firma_id}",
+        path_params=("firma_id",),
+        # Sin permiso: el endpoint tampoco lo pide. Declarar `PERM_FIRMA` aquí
+        # —como hice al escribirla— la habría escondido a quien el backend sí
+        # deja consultarla, y lo cazó `test_permisos_declarados`. La respuesta es
+        # content-free por diseño (no lleva el certificado, solo su huella), y
+        # llegar hasta aquí ya exige una sesión válida en el gateway.
+        permission=None,
+        min_crud=1,
+        write=False,
+        epic="E06",
+        operacion="Ver el comprobante de una firma",
+        params=(_P_FIRMA_ID,),
+    ),
+    Tool(
+        name="abrir_cadena_firma",
+        description=(
+            "Abre un circuito de firmas sobre un documento: varias personas firman "
+            "EN ORDEN y la posición en la lista es el turno. Abrirlo no firma nada "
+            "ni compromete a nadie — cada firmante decide cuando le toca, y puede "
+            "rechazar. Sobre un radicado anulado no se abre."
+        ),
+        method="POST",
+        path="/api/v1/signature/requests",
+        permission="PERM_FIRMA",
+        min_crud=1,
+        write=True,
+        # Reversible y sin compromiso: el turno se puede rechazar, y mientras
+        # nadie firme no hay acto jurídico ninguno. Lo irreversible es firmar, y
+        # eso no se ofrece por este canal.
+        destructive=False,
+        epic="E06",
+        operacion="Abrir un circuito de firmas",
+        fallback=(
+            "Sin permiso de firma, puede pedirse la apertura a quien deba firmar, "
+            "o abrirla desde la ficha del expediente o el radicado"
+        ),
+        params=(
+            _P_OBJETO_TIPO,
+            _P_OBJETO_ID,
+            Param(
+                name="titulo",
+                description="Título con el que los firmantes lo verán en su bandeja.",
+                label="Título",
+            ),
+            Param(
+                name="firmantes",
+                type="array",
+                required=True,
+                description=(
+                    "UUID de cada firmante, EN EL ORDEN en que deben firmar: el "
+                    "primero de la lista es el turno 1. Una misma persona no ocupa "
+                    "dos turnos."
+                ),
+                label="Firmantes (en orden)",
             ),
         ),
     ),

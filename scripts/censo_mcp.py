@@ -20,14 +20,21 @@ servicios dice quién sirve cada endpoint; lo que hay que decidir es qué necesi
 alguien que está haciendo un trabajo, y un trámite de ventanilla toca cuatro
 servicios distintos.
 
-**Límite declarado**: el agregador de OpenAPI del gateway compone la
-documentación de siete de los once servicios (faltan knowledge, signature y el
-propio mcp-server), así que el total es un SUELO. Se dice aquí para que nadie
-busque una herramienta que este censo nunca vio.
+**El punto ciego que este censo tuvo, y cómo se quitó** (2026-09-17): el
+agregador de OpenAPI del gateway compone la documentación de siete de los once
+servicios —faltan knowledge, signature y el propio mcp-server—, y eso no dejaba
+el total corto: lo dejaba MAL. El circuito de firma entero, trece operaciones, no
+figuraba como hueco sino que no figuraba, y la tabla publicaba un porcentaje
+calculado sobre un universo que no lo contenía. Un número que nadie sospecha es
+peor que ninguno.
+
+Ahora `--openapi` admite un DIRECTORIO con el esquema de cada servicio, que
+`scripts/censo-esquemas.sh` reúne preguntándoselo a cada app. Con el agregado
+sigue funcionando, con su punto ciego declarado.
 
 Uso:
-    curl -s http://localhost:19080/api/v1/openapi.json -o /tmp/oa.json
-    python3 scripts/censo_mcp.py [--openapi /tmp/oa.json] [--detalle F4]
+    ./scripts/censo-esquemas.sh                      # los once, en /tmp/oa/
+    python3 scripts/censo_mcp.py --openapi /tmp/oa [--detalle F4]
 """
 
 from __future__ import annotations
@@ -55,7 +62,14 @@ FLUJOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # operaciones que no son alcanzables ni deben serlo. Y `upload` tampoco es
     # una tool: subir un fichero por un chat exigiría que el modelo aportara los
     # bytes.
-    ("SISTEMA (sellado / no expuesto)", (r"/internal/", r"-internal$", r"^/api/v1/tenants", r"/health", r"^/api/v1/public/", r"^/api/v1/storage/")),
+    # El proxy comodín del gateway (`/api/v1/{path}` en sus cinco métodos), su
+    # OpenAPI agregado y la superficie del propio mcp-server —`/mcp/*` y
+    # `/assistant/*`— entran aquí. No son capacidades que exponer: el comodín ES
+    # la puerta por la que pasan todas las demás, y contarlo como operación
+    # pendiente sería contar el pasillo como si fuera una habitación. Aparecieron
+    # al quitarle al censo su punto ciego: antes no se veían, y el script las
+    # dejaba «SIN CLASIFICAR», que es su forma de pedir una decisión.
+    ("SISTEMA (sellado / no expuesto)", (r"/internal/", r"-internal$", r"^/api/v1/tenants", r"/health", r"^/api/v1/public/", r"^/api/v1/storage/", r"^/api/v1/\{path\}$", r"^/api/v1/openapi\.json$", r"^/api/v1/mcp/", r"^/api/v1/assistant/")),
     ("F1 Ventanilla y radicación", (r"^/api/v1/documents", r"^/api/v1/terceros", r"^/api/v1/anulaciones", r"^/api/v1/batch/documents", r"^/api/v1/import", r"^/api/v1/export")),
     ("F2 Trámite y reparto", (r"^/api/v1/workflows", r"^/api/v1/workflow/")),
     ("F3 Respuesta y despacho", (r"^/api/v1/borradores", r"^/api/v1/plantillas", r"^/api/v1/envios", r"^/api/v1/fuid")),
@@ -63,7 +77,11 @@ FLUJOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("F5 Archivo físico", (r"^/api/v1/ubicaciones", r"^/api/v1/unidades", r"^/api/v1/prestamos")),
     ("F6 Transferencias", (r"^/api/v1/transferencias",)),
     ("F7 Disposición y eliminación", (r"^/api/v1/eliminacion",)),
-    ("F8 Preservación y firma", (r"^/api/v1/preservacion", r"^/api/v1/storage", r"^/api/v1/archive/")),
+    # `signature` entra aquí y hasta 2026-09-17 no entraba en ningún sitio: el
+    # agregado del gateway no lo componía, así que sus 21 operaciones no eran un
+    # hueco, es que no existían para el censo. F8 declaraba «11 operaciones» y
+    # publicaba un 55 % calculado sin ellas.
+    ("F8 Preservación y firma", (r"^/api/v1/preservacion", r"^/api/v1/storage", r"^/api/v1/archive/", r"^/api/v1/signature")),
     ("F9 Instrumentos archivísticos", (r"^/api/v1/trd", r"^/api/v1/tvd", r"^/api/v1/tipos-documentales", r"^/api/v1/metadata", r"^/api/v1/pinar")),
     ("F10 Correo institucional", (r"^/api/v1/email",)),
     ("F11 Consulta y reportes", (r"^/api/v1/search", r"^/api/v1/reports", r"^/api/v1/knowledge")),
@@ -79,8 +97,7 @@ def normalizar(ruta: str) -> str:
     return re.sub(r"\{[^}]+\}", "{x}", ruta.rstrip("/")) or "/"
 
 
-def operaciones(openapi: pathlib.Path) -> list[tuple[str, str, str]]:
-    datos = json.loads(openapi.read_text(encoding="utf-8"))
+def _de_un_esquema(datos: dict) -> list[tuple[str, str, str]]:
     salida = []
     for ruta, item in datos.get("paths", {}).items():
         # El agregador duplica el prefijo: /api/v1/<servicio>/api/v1/<ruta real>.
@@ -90,6 +107,29 @@ def operaciones(openapi: pathlib.Path) -> list[tuple[str, str, str]]:
             if metodo in ("get", "post", "put", "patch", "delete"):
                 salida.append((metodo.upper(), real, op.get("summary") or ""))
     return salida
+
+
+def operaciones(openapi: pathlib.Path) -> list[tuple[str, str, str]]:
+    """Las operaciones del API, de UN agregado o de un DIRECTORIO de esquemas.
+
+    El directorio existe porque el agregado del gateway tiene un punto ciego: no
+    compone la documentación de knowledge, signature ni del propio mcp-server.
+    Y un censo ciego a un servicio no informa de menos — informa MAL: el circuito
+    de firma entero, trece operaciones, no aparecía como hueco sino que **no
+    aparecía**, y la tabla publicaba un porcentaje de cobertura calculado sobre
+    un universo que no lo incluía. Eso es peor que no tener censo, porque nadie
+    desconfía de un número.
+
+    Se descubrió cruzando el catálogo contra los esquemas de cada servicio por
+    separado: 391 operaciones frente a las 367 que veía el agregado.
+    """
+    if openapi.is_dir():
+        vistos: dict[tuple[str, str], tuple[str, str, str]] = {}
+        for f in sorted(openapi.glob("*.json")):
+            for op in _de_un_esquema(json.loads(f.read_text(encoding="utf-8"))):
+                vistos[(op[0], op[1])] = op
+        return list(vistos.values())
+    return _de_un_esquema(json.loads(openapi.read_text(encoding="utf-8")))
 
 
 def cubiertas() -> set[tuple[str, str]]:
@@ -116,7 +156,10 @@ def main() -> int:
     ruta_oa = pathlib.Path(args.openapi)
     if not ruta_oa.exists():
         print(
-            f"No existe {ruta_oa}. Descárgalo primero:\n"
+            f"No existe {ruta_oa}. Reúne los esquemas primero:\n"
+            "  ./scripts/censo-esquemas.sh            # los ONCE servicios → /tmp/oa/\n"
+            "  python3 scripts/censo_mcp.py --openapi /tmp/oa\n"
+            "\nO, con su punto ciego declarado (sin knowledge ni signature):\n"
             "  curl -s http://localhost:19080/api/v1/openapi.json -o /tmp/oa.json",
             file=sys.stderr,
         )
