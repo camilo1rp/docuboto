@@ -190,12 +190,33 @@ async def proxy_request(
     # USE_CLIENT_DEFAULT es el centinela de httpx para "no lo toques", y NO es
     # intercambiable con None — None significa "sin límite de tiempo", que aquí
     # dejaría cada petición al upstream colgada indefinidamente.
+    # La cadena de consulta se reenvía como LISTA DE PARES y no como `dict()`.
+    # Es un multidict: `dict()` se queda con el último valor de cada clave, así
+    # que `?status=distributed&status=in_progress` salía de aquí convertido en
+    # `{'status': 'in_progress'}` —comprobado contra Starlette—.
+    #
+    # El modo de fallo es el peor que hay: 200, sin error y con menos filas.
+    # Quien pidiera dos estados recibiría uno y creería que ese es el total. Y
+    # dejaba INALCANZABLE desde fuera cualquier parámetro repetible que un
+    # servicio declare, por bien que lo declare: el frontend y el mcp-server
+    # hablan siempre por aquí.
+    #
+    # No lo cazaba ninguna suite porque los tests de cada servicio golpean su
+    # propia app, donde el multidict llega intacto: el defecto vivía en el
+    # SALTO, que no es de nadie.
+    #
+    # El tipo se anota porque `list` es invariante: `list[tuple[str, str]]` no
+    # satisface la firma de httpx, que admite valores de varios tipos.
+    consulta: list[tuple[str, str | int | float | bool | None]] = list(
+        request.query_params.multi_items()
+    )
+
     upstream_request = http_client.build_request(
         method=request.method,
         url=upstream_url,
         headers=headers,
         content=content,
-        params=dict(request.query_params),
+        params=consulta,
         timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
     )
     try:
