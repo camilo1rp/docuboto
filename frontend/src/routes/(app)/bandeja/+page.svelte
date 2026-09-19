@@ -191,6 +191,24 @@
   let respuestas = [];
   let respuestasLoading = false;
 
+  // Actores CONGELADOS del radicado (E01, RF-RAD-05). Hasta ahora el vínculo se
+  // escribía al radicar y NO lo leía ninguna pantalla: el detalle mostraba
+  // `sender_name`, que solo lleva al principal, así que una Salida con tres
+  // destinatarios se veía idéntica a una con uno. Lo que se pinta aquí es la
+  // copia congelada —a quién iba dirigido ESTE radicado—, no la ficha vigente
+  // del catálogo; `tercero_id` viaja por si alguien quiere ir a ella.
+  /** @type {import('$lib/types/api.js').ActorRadicado[]} */
+  let actores = [];
+  let actoresLoading = false;
+
+  // El orden importa: primero de quién viene, después a quién va. Se declara
+  // como lista y no se deriva de los datos para que el detalle sea igual en
+  // todos los radicados, venga el `rol` que venga del backend.
+  const ACTOR_ROLES = [
+    { valor: "remitente", singular: "Remitente", plural: "Remitentes" },
+    { valor: "destinatario", singular: "Destinatario", plural: "Destinatarios" },
+  ];
+
   // ---------------------------------------------------------------------------
   // Acciones inline
   // ---------------------------------------------------------------------------
@@ -420,6 +438,20 @@
     } finally {
       respuestasLoading = false;
     }
+
+    // Actores del radicado. Lista vacía es un caso legítimo —un Interno no
+    // tiene actores externos, y los radicados anteriores al modelo tampoco—,
+    // así que no se avisa como error: la sección sencillamente no aparece.
+    actoresLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(doc.id)}/actores`);
+      const datos = res.ok ? await res.json() : [];
+      actores = Array.isArray(datos) ? datos : [];
+    } catch {
+      actores = [];
+    } finally {
+      actoresLoading = false;
+    }
   }
 
   function closeDrawer() {
@@ -430,6 +462,8 @@
     hasActiveStepLoading = false;
     respuestas = [];
     respuestasLoading = false;
+    actores = [];
+    actoresLoading = false;
   }
 
   /**
@@ -1531,6 +1565,56 @@
             {/each}
           </ul>
         </section>
+      {/if}
+
+      <!-- Actores del radicado: la copia CONGELADA de a quién iba dirigido.
+           Se separan por rol porque son dos preguntas distintas —de quién viene
+           y a quién va—, y porque una Salida con varios destinatarios solo se
+           puede ver como tal si se enumeran todos. -->
+      {#if actoresLoading}
+        <section class="doc-detail__section" aria-label="Actores del radicado">
+          <Loader type="skeleton" lines={2} label="Consultando actores…" />
+        </section>
+      {:else if actores.length > 0}
+        {#each ACTOR_ROLES as rol (rol.valor)}
+          {@const delRol = actores.filter((a) => a.rol === rol.valor)}
+          {#if delRol.length > 0}
+            <section class="doc-detail__section" aria-labelledby="detail-actores-{rol.valor}">
+              <h4 id="detail-actores-{rol.valor}" class="doc-detail__section-title">
+                {delRol.length === 1 ? rol.singular : rol.plural} ({delRol.length})
+              </h4>
+              <ul class="actores-list" role="list">
+                {#each delRol as actor (actor.id)}
+                  <li class="actores-list__item">
+                    <span class="actores-list__nombre">
+                      {actor.nombre}
+                      {#if actor.principal && delRol.length > 1}
+                        <span class="actores-list__principal">principal</span>
+                      {/if}
+                    </span>
+                    {#if actor.entidad}
+                      <span class="actores-list__entidad" title={actor.entidad}>
+                        {actor.entidad}
+                      </span>
+                    {/if}
+                    {#if actor.email || actor.telefono}
+                      <span class="actores-list__contacto">
+                        {[actor.email, actor.telefono].filter(Boolean).join(" · ")}
+                      </span>
+                    {/if}
+                    {#if actor.direccion || actor.municipio}
+                      <span class="actores-list__lugar">
+                        {[actor.direccion, actor.municipio, actor.departamento]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
+        {/each}
       {/if}
 
       <!-- F6: Salidas que responden a este radicado -->
@@ -2775,6 +2859,56 @@
     font-size: var(--op-font-xs);
     color: var(--op-text-secondary);
     flex-shrink: 0;
+  }
+
+  .actores-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-2);
+  }
+
+  // Cada actor va en COLUMNA y no en fila: la dirección es prosa —«Cra 7 # 32-16
+  // of. 402»— y en un contenedor horizontal se trocea en pedazos ilegibles.
+  .actores-list__item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-1);
+    font-size: var(--op-font-sm);
+    padding: var(--op-space-2) var(--op-space-3);
+    background: var(--op-bg);
+    border-radius: var(--op-radius-sm);
+    border: 1px solid var(--op-border);
+  }
+
+  .actores-list__nombre {
+    color: var(--op-text);
+    font-weight: var(--op-weight-medium);
+  }
+
+  .actores-list__principal {
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-regular);
+    color: var(--op-text-secondary);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-sm);
+    padding: 0 var(--op-space-1);
+    margin-left: var(--op-space-1);
+  }
+
+  .actores-list__entidad,
+  .actores-list__contacto,
+  .actores-list__lugar {
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+  }
+
+  .actores-list__entidad {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   // ---------------------------------------------------------------------------

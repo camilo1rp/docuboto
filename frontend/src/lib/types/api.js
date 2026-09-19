@@ -510,6 +510,34 @@
  */
 
 /**
+ * GET /api/v1/terceros/radicado/{id}/actores — un actor tal y como quedó
+ * CONGELADO en el radicado (E01, RF-RAD-05).
+ *
+ * No es la ficha vigente del catálogo: dice a quién iba dirigido ese radicado,
+ * no dónde vive hoy esa persona. `tercero_id` viaja para poder ir a la ficha
+ * actual si alguien la pide expresamente.
+ *
+ * @typedef {object} ActorRadicado
+ * @property {string} id
+ * @property {string} tercero_id
+ * @property {string} rol — `remitente` | `destinatario`
+ * @property {number} orden
+ * @property {boolean} principal
+ * @property {string|null} canal — `email` | `fisico` | `ambos`
+ * @property {string} nombre
+ * @property {string|null} entidad
+ * @property {string|null} email
+ * @property {string|null} telefono
+ * @property {string|null} direccion
+ * @property {string|null} municipio
+ * @property {string|null} departamento
+ * @property {string|null} municipio_codigo
+ * @property {string|null} departamento_codigo
+ * @property {string|null} pais
+ * @property {string} creado_at — ISO 8601 UTC
+ */
+
+/**
  * Cita de un precedente dentro de una respuesta del RAG (knowledge-service).
  *
  * @typedef {object} RagCitation
