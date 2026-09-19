@@ -192,6 +192,60 @@ async def test_list_pickable_users_perm_radi(client: AsyncClient) -> None:
     assert set(body[0].keys()) == {"id", "username"}
 
 
+@pytest.mark.asyncio
+async def test_pickable_dice_cuantos_usuarios_hay_en_total(client: AsyncClient) -> None:
+    """`X-Total-Count` lleva los usuarios ACTIVOS que hay, no los que caben.
+
+    Este endpoint no pagina: recorta con un `LIMIT` y ya está. Sin la cabecera,
+    quien no entrara en la ventana no existía para quien busca — y en un
+    selector eso no se lee como una lista corta, se lee como que esa persona no
+    está en el sistema. La cabecera es lo único que permite a la pantalla decir
+    «hay más» en vez de mentir por omisión.
+    """
+    u1 = uuid.uuid4()
+    conn = AsyncMock()
+    conn.fetch.return_value = [{"id": u1, "username": "ANA"}]
+    conn.fetchval.return_value = 940  # activos en el tenant
+    _override_caller(
+        conn,
+        Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
+    )
+
+    resp = await client.get(
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-op"}
+    )
+
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+    # Lo que hay, no lo que cupo: son números distintos y por eso sirve.
+    assert resp.headers["X-Total-Count"] == "940"
+
+
+@pytest.mark.asyncio
+async def test_pickable_cuenta_solo_los_activos(client: AsyncClient) -> None:
+    """Control positivo: el total se calcula con el MISMO filtro que la lista.
+
+    Un total que contara también los inactivos anunciaría que faltan personas
+    elegibles cuando no falta ninguna — un aviso que cansa es un aviso que se
+    ignora.
+    """
+    u1 = uuid.uuid4()
+    conn = AsyncMock()
+    conn.fetch.return_value = [{"id": u1, "username": "ANA"}]
+    conn.fetchval.return_value = 1
+    _override_caller(
+        conn,
+        Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
+    )
+
+    await client.get(
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-op"}
+    )
+
+    sql_total = conn.fetchval.await_args[0][0]
+    assert "is_active = true" in sql_total
+
+
 # --- lectura de membresías/permisos/clearance de grupo ----------------------
 @pytest.mark.asyncio
 async def test_list_group_members(client: AsyncClient) -> None:

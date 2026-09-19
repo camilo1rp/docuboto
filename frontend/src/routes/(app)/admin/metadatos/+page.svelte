@@ -742,6 +742,13 @@
       placeholder="— seleccionar serie —"
       error={expSerieError}
     />
+    {#if data.seriesIncompletas}
+      <!-- El desplegable no se ve corto: se ve como que esa serie no existe. -->
+      <p class="meta-form__aviso" role="status">
+        Se listan {series.length} de {data.seriesTotal} series. Si no encuentra la suya, la lista está
+        recortada — no significa que no exista.
+      </p>
+    {/if}
     <FormField id="exp-version" label="Versión" type="number" bind:value={expVersion} />
     <label class="meta-form__check">
       <input type="checkbox" bind:checked={expActivo} />
@@ -932,6 +939,14 @@
     tbody tr:last-child td {
       border-bottom: none;
     }
+  }
+
+  .meta-form__aviso {
+    background: var(--op-bg);
+    border-left: 3px solid var(--op-warning);
+    padding: var(--op-space-2) var(--op-space-3);
+    margin: 0 0 var(--op-space-3);
+    font-size: var(--op-font-sm);
   }
 
   .meta-form {

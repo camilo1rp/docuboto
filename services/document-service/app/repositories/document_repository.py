@@ -284,15 +284,39 @@ class DocumentRepository:
         radicado.anexos = await self._get_anexos(radicado.id)
         return radicado
 
+    # Los únicos órdenes que el listado acepta. Es un catálogo CERRADO y no un
+    # nombre de columna que llegue por la URL: lo segundo es inyección SQL con
+    # otro nombre, porque un `ORDER BY` no admite parámetro enlazado.
+    #
+    # `due_date` va con `NULLS LAST` en los dos sentidos: un radicado sin plazo
+    # no es ni el más urgente ni el más holgado — la pregunta no le aplica, y
+    # abrir con él un informe de vencimientos es ruido.
+    #
+    # En ascendente es REDUNDANTE y se escribe igual: el default de Postgres ya
+    # es `NULLS LAST` para `ASC`. Donde cambia algo es en DESCENDENTE, cuyo
+    # default es `NULLS FIRST` — sin esto, «los de plazo más lejano» abriría con
+    # los que no tienen plazo ninguno. Escribirlo en los dos evita que el
+    # comportamiento dependa de recordar cuál de los dos defaults aplica.
+    ORDENES_ADMITIDOS: dict[tuple[str, str], str] = {
+        ("registered_at", "desc"): "registered_at DESC",
+        ("registered_at", "asc"): "registered_at ASC",
+        ("due_date", "asc"): "due_date ASC NULLS LAST",
+        ("due_date", "desc"): "due_date DESC NULLS LAST",
+    }
+
     async def find_all(
         self,
         *,
         doc_type: str | None,
-        status: str | None,
+        status: list[str] | None,
         metadata_filter: dict | None,
         page: int,
         size: int,
         max_clearance: int,
+        due_from: date | None = None,
+        due_to: date | None = None,
+        order_by: str = "registered_at",
+        order_dir: str = "desc",
     ) -> tuple[list[Radicado], int]:
         conditions: list[str] = []
         params: list[object] = []
@@ -309,9 +333,30 @@ class DocumentRepository:
             params.append(doc_type)
             idx += 1
 
-        if status is not None:
-            conditions.append(f"status = ${idx}")
+        if status:
+            # `= ANY($n::text[])` y no un `IN` compuesto a mano: el número de
+            # estados lo decide quien consulta, y concatenar marcadores según
+            # ese número produce un plan distinto por cada tamaño de lista.
+            # Con UN estado se comporta igual que el `=` que había antes.
+            conditions.append(f"status = ANY(${idx}::text[])")
             params.append(status)
+            idx += 1
+
+        # Rango de fecha límite, ambos extremos INCLUSIVOS. El endpoint no
+        # decide qué significa «vencido» —el proyecto usa hoy las dos
+        # convenciones opuestas: la TRD cuenta vencido el día en que se cumple
+        # el plazo y los préstamos no—, así que lo declara quien pregunta:
+        # `due_to=<ayer>` excluye el que vence hoy y `due_to=<hoy>` lo incluye.
+        # Hornear una de las dos aquí obligaría a la otra mitad del sistema a
+        # pedir lo contrario de lo que quiere decir.
+        if due_from is not None:
+            conditions.append(f"due_date >= ${idx}")
+            params.append(due_from)
+            idx += 1
+
+        if due_to is not None:
+            conditions.append(f"due_date <= ${idx}")
+            params.append(due_to)
             idx += 1
 
         if metadata_filter:
@@ -326,6 +371,13 @@ class DocumentRepository:
         total: int = await self._conn.fetchval(
             f"SELECT COUNT(*) FROM radicados {where_clause}", *count_params
         )
+
+        # `id` como última clave SIEMPRE, incluso con el orden por defecto: sin
+        # un orden TOTAL, dos filas empatadas pueden salir en distinto orden en
+        # dos consultas, y al paginar eso significa una fila repetida en una
+        # página y otra que no aparece en ninguna. `due_date` es una fecha sin
+        # hora: los empates son la norma, no la excepción.
+        orden = self.ORDENES_ADMITIDOS[(order_by, order_dir)]
 
         offset = (page - 1) * size
         params.append(size)
@@ -343,7 +395,7 @@ class DocumentRepository:
                 publicable, publicado_at
             FROM radicados
             {where_clause}
-            ORDER BY registered_at DESC
+            ORDER BY {orden}, id DESC
             LIMIT ${idx} OFFSET ${idx + 1}
             """,
             *params,

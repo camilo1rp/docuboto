@@ -55,15 +55,24 @@ pick_router = APIRouter(
 
 @pick_router.get("/users/pickable", response_model=list[UserPickItem])
 async def list_pickable_users(
+    response: Response,
     size: int = Query(100, ge=1, le=500),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[UserPickItem]:
     """Lista mínima de usuarios activos (id + username) para selectores de UI.
 
     Gateado con `PERM_RADI` (no admin), a diferencia de `GET /users` (USUA_PERM_ADMIN).
+
+    Emite `X-Total-Count` con **cuántos usuarios activos hay**, no cuántos caben
+    en la respuesta. Sin esa cabecera, el `LIMIT` recortaba sin que nada lo
+    delatara: quien no entrara en la ventana no existía para quien busca. La
+    convención es la misma que el resto de listados del proyecto, y aquí importa
+    más que en otros porque este endpoint no pagina — la única salida del
+    llamante es saber que está viendo un recorte.
     """
     repo = RBACRepository(conn)
-    rows = await repo.list_pickable_users(limit=size)
+    rows, total = await repo.list_pickable_users(limit=size)
+    response.headers["X-Total-Count"] = str(total)
     return [UserPickItem(**dict(r)) for r in rows]
 
 

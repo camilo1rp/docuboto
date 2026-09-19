@@ -17,6 +17,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import HTTPException, status
+from orpycamcp_common import audit
 
 from app.core.database import tenant_schema
 from app.repositories.workflow_repository import WorkflowRepository
@@ -31,6 +32,27 @@ from app.schemas.rules import (
 )
 from app.services.rules_engine import rule_matches
 
+_SERVICE = "workflow-service"
+
+# Lo que de una regla hay que poder leer en el asiento para saber QUÉ decía.
+# Se enumera a propósito en vez de volcar la fila entera: `created_at`,
+# `updated_at` y `created_by` son mecánica de la tabla, no contenido de la
+# decisión, y una lista por admisión no se ensancha sola cuando alguien añade
+# una columna.
+_CAMPOS_AUDITABLES = (
+    "name",
+    "description",
+    "is_active",
+    "priority",
+    "match_mode",
+    "doc_type",
+    "doc_class",
+    "dest_dept",
+    "subject_contains",
+    "assign_to_dept",
+    "assign_notes",
+)
+
 
 def _conditions(raw: Any) -> list[dict[str, Any]]:
     if raw is None:
@@ -38,6 +60,14 @@ def _conditions(raw: Any) -> list[dict[str, Any]]:
     if isinstance(raw, list):
         return raw
     return json.loads(raw)
+
+
+def _retrato(row: asyncpg.Record) -> dict[str, Any]:
+    """Lo que la regla dice, en forma serializable para el asiento."""
+    data = dict(row)
+    retrato: dict[str, Any] = {c: data.get(c) for c in _CAMPOS_AUDITABLES}
+    retrato["conditions"] = _conditions(data.get("conditions"))
+    return retrato
 
 
 def _to_response(row: asyncpg.Record) -> WorkflowRuleResponse:
@@ -101,31 +131,57 @@ class WorkflowRulesService:
     async def create_rule(
         self, payload: WorkflowRuleCreate, created_by: UUID
     ) -> WorkflowRuleResponse:
+        """Crea una regla de enrutamiento, con su asiento en la misma transacción.
+
+        Una regla decide **a qué dependencia se asigna cada radicado entrante**:
+        quien la escribe está redirigiendo correspondencia oficial que todavía no
+        ha llegado. Es de las mutaciones que ADR-010 obliga a asentar, y el
+        servicio entero no tenía ni una referencia a `audit` mientras su hermano
+        `workflow_service` tenía cuarenta y nueve.
+
+        El asiento va DENTRO de la transacción, no después: si la cadena inmutable
+        no puede recibirlo, la regla no se crea. Es el criterio del resto del
+        servicio — una regla activa sin asiento es una decisión sin autor.
+        """
         await self._set_search_path()
         await self._validate_assign_to_dept(payload.assign_to_dept)
-        row = await self.conn.fetchrow(
-            """
-            INSERT INTO workflow_rules
-                (name, description, is_active, priority, conditions, match_mode,
-                 doc_type, doc_class, dest_dept, subject_contains,
-                 assign_to_dept, assign_notes, created_by)
-            VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
-            RETURNING *
-            """,
-            payload.name,
-            payload.description,
-            payload.is_active,
-            payload.priority,
-            json.dumps([c.model_dump() for c in payload.conditions]),
-            payload.match_mode,
-            payload.doc_type,
-            payload.doc_class,
-            payload.dest_dept,
-            payload.subject_contains,
-            payload.assign_to_dept,
-            payload.assign_notes,
-            created_by,
-        )
+        async with self.conn.transaction():
+            row = await self.conn.fetchrow(
+                """
+                INSERT INTO workflow_rules
+                    (name, description, is_active, priority, conditions, match_mode,
+                     doc_type, doc_class, dest_dept, subject_contains,
+                     assign_to_dept, assign_notes, created_by)
+                VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
+                RETURNING *
+                """,
+                payload.name,
+                payload.description,
+                payload.is_active,
+                payload.priority,
+                json.dumps([c.model_dump() for c in payload.conditions]),
+                payload.match_mode,
+                payload.doc_type,
+                payload.doc_class,
+                payload.dest_dept,
+                payload.subject_contains,
+                payload.assign_to_dept,
+                payload.assign_notes,
+                created_by,
+            )
+            await audit.append(
+                self.conn,
+                tenant_slug=self.tenant_slug,
+                service=_SERVICE,
+                action="workflow.regla_creada",
+                object_type="workflow_rule",
+                # El UUID y no el nombre: renombrar una regla no puede partir su
+                # historial en dos asientos que parezcan de objetos distintos.
+                # El nombre viaja en el retrato, que es donde se lee.
+                object_ref=str(row["id"]),
+                actor=str(created_by),
+                payload={"regla": _retrato(row)},
+            )
         return _to_response(row)
 
     async def list_rules(
@@ -150,11 +206,21 @@ class WorkflowRulesService:
         return _to_response(row) if row else None
 
     async def update_rule(
-        self, rule_id: UUID, payload: WorkflowRuleUpdate
+        self, rule_id: UUID, payload: WorkflowRuleUpdate, actor: UUID
     ) -> WorkflowRuleResponse | None:
+        """Edita una regla y asienta QUÉ cambió, con el valor anterior de cada campo.
+
+        El asiento lleva solo los campos que esta petición tocó, con su `antes` y
+        su `despues`. Volcar la regla entera enterraría el cambio —que es lo único
+        que se viene a mirar— entre once campos que siguen igual; y sin el `antes`
+        el asiento diría que alguien la editó sin decir de qué a qué, que es lo
+        mismo que no decir nada. Es el criterio que ya usa la reclasificación TRD.
+        """
         await self._set_search_path()
         data = payload.model_dump(exclude_unset=True)
         if not data:
+            # Un PATCH vacío no muta nada: no hay acto que asentar. Asentarlo
+            # llenaría la cadena de asientos que no describen ningún cambio.
             return await self.get_rule(rule_id)
 
         # PATCH parcial: solo se valida si el cliente TOCÓ `assign_to_dept` en
@@ -176,22 +242,75 @@ class WorkflowRulesService:
                 values.append(val)
             idx += 1
 
-        row = await self.conn.fetchrow(
-            f"""
-            UPDATE workflow_rules
-            SET {', '.join(set_parts)}, updated_at=now()
-            WHERE id=$1
-            RETURNING *
-            """,
-            rule_id,
-            *values,
-        )
-        return _to_response(row) if row else None
+        async with self.conn.transaction():
+            # El estado anterior se lee DENTRO de la transacción y con `FOR
+            # UPDATE`: entre leerlo y escribir no puede colarse otra edición que
+            # dejaría el asiento describiendo un `antes` que ya no era el vigente.
+            previo = await self.conn.fetchrow(
+                "SELECT * FROM workflow_rules WHERE id=$1 FOR UPDATE", rule_id
+            )
+            if previo is None:
+                return None
 
-    async def delete_rule(self, rule_id: UUID) -> bool:
+            row = await self.conn.fetchrow(
+                f"""
+                UPDATE workflow_rules
+                SET {', '.join(set_parts)}, updated_at=now()
+                WHERE id=$1
+                RETURNING *
+                """,
+                rule_id,
+                *values,
+            )
+            antes = _retrato(previo)
+            despues = _retrato(row)
+            cambios = {
+                campo: {"antes": antes.get(campo), "despues": despues.get(campo)}
+                for campo in data
+                if antes.get(campo) != despues.get(campo)
+            }
+            await audit.append(
+                self.conn,
+                tenant_slug=self.tenant_slug,
+                service=_SERVICE,
+                action="workflow.regla_modificada",
+                object_type="workflow_rule",
+                object_ref=str(rule_id),
+                actor=str(actor),
+                # `nombre` viaja fuera de `cambios` para que el asiento se pueda
+                # leer sin ir a buscar de qué regla habla — aunque el propio
+                # nombre sea lo que cambió.
+                payload={"nombre": despues.get("name"), "cambios": cambios},
+            )
+        return _to_response(row)
+
+    async def delete_rule(self, rule_id: UUID, actor: UUID) -> bool:
+        """Borra una regla dejando en el asiento QUÉ decía.
+
+        El `DELETE` es físico: después no queda dónde ir a mirar. Un asiento que
+        solo dijera «se borró la regla tal» convertiría la pregunta «¿por qué
+        dejaron de asignarse a Jurídica?» en irrespondible. Por eso el retrato
+        completo de la regla viaja en el asiento — es el único sitio donde
+        sobrevive.
+        """
         await self._set_search_path()
-        result = await self.conn.execute("DELETE FROM workflow_rules WHERE id=$1", rule_id)
-        return result == "DELETE 1"
+        async with self.conn.transaction():
+            previo = await self.conn.fetchrow(
+                "DELETE FROM workflow_rules WHERE id=$1 RETURNING *", rule_id
+            )
+            if previo is None:
+                return False
+            await audit.append(
+                self.conn,
+                tenant_slug=self.tenant_slug,
+                service=_SERVICE,
+                action="workflow.regla_eliminada",
+                object_type="workflow_rule",
+                object_ref=str(rule_id),
+                actor=str(actor),
+                payload={"regla": _retrato(previo)},
+            )
+        return True
 
     # ------------------------------------------------------------------
     # Evaluación

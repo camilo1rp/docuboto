@@ -45,6 +45,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { mensajeError } from "$lib/utils/apiError.js";
+import { traerListaCompleta } from "$lib/server/listaCompleta.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -73,11 +74,17 @@ export async function load({ cookies, parent, fetch }) {
     fetchList("/expediente-metadata/templates"),
     fetchList("/metadata/templates"),
     fetchList("/metadata/elements"),
-    fetchList("/trd?size=200"),
+    // Las series alimentan el desplegable de clasificación: si la lista llega
+    // recortada, la serie que falte no se puede elegir — y no se ve como una
+    // lista corta, se ve como que esa serie no existe. `size=200` era el TOPE
+    // del backend, no una holgura.
+    traerListaCompleta(fetch, `${API_V1}/trd`, headers, mensajeError),
     fetchList("/tipos-documentales"),
   ]);
 
   return {
+    seriesIncompletas: series.incompleta ?? false,
+    seriesTotal: series.total ?? series.items.length,
     expedienteTemplates: expedienteTemplates.items,
     expedienteTemplatesError: expedienteTemplates.error,
     documentTemplates: documentTemplates.items,

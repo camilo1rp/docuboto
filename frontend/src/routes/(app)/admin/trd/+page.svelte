@@ -677,6 +677,18 @@
     hidden={activeTab !== "series"}
     tabindex="0"
   >
+    {#if data.seriesIncompletas}
+      <!-- El árbol se arma por `parent_id`: con la lista recortada, una subserie
+           cuyo padre no llegó no aparece en NINGUNA rama. No se ve incompleto,
+           se ve distinto — por eso hay que decirlo y no dejar que se lea como el
+           catálogo entero. -->
+      <p class="trd-incompleto" role="status">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        Se están mostrando {data.series.length} de {data.seriesTotal} series. El árbol está incompleto
+        y puede faltar la rama de alguna subserie: use la búsqueda para llegar a una serie concreta.
+      </p>
+    {/if}
+
     <CatalogCrudPanel
       ariaLabel="Árbol de series TRD/CCD"
       items={seriesTree}
@@ -1434,6 +1446,14 @@
   .trd-vencidos__rechazos {
     margin: var(--op-space-2) 0 0 var(--op-space-4);
     list-style: disc;
+  }
+
+  .trd-incompleto {
+    background: var(--op-bg);
+    border-left: 3px solid var(--op-warning);
+    padding: var(--op-space-2) var(--op-space-3);
+    margin: 0 0 var(--op-space-3);
+    font-size: var(--op-font-sm);
   }
 
   .trd-vencidos__aviso {

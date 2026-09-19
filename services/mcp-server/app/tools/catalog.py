@@ -1988,6 +1988,47 @@ CATALOG: tuple[Tool, ...] = (
                 label="Tipo",
             ),
             Param(name="status", description="Estado del radicado.", label="Estado"),
+            # Plazo de respuesta (RF-RAD-04). Los dos extremos son inclusivos y
+            # el servidor NO decide qué es «vencido»: quien pregunta declara el
+            # corte. Por eso la descripción dice el día y no la palabra — con
+            # «vencidos» el modelo tendría que adivinar si el radicado que vence
+            # hoy entra, y el propio proyecto usa las dos convenciones.
+            Param(
+                name="due_from",
+                description=(
+                    "Solo radicados cuyo plazo venza EN o DESPUÉS de esta fecha "
+                    "(AAAA-MM-DD)."
+                ),
+                label="Plazo desde",
+            ),
+            Param(
+                name="due_to",
+                description=(
+                    "Solo radicados cuyo plazo venza EN o ANTES de esta fecha "
+                    "(AAAA-MM-DD). Para los ya vencidos, la fecha de ayer; para "
+                    "incluir los que vencen hoy, la de hoy."
+                ),
+                label="Plazo hasta",
+            ),
+            # Sin esto, filtrar por plazo no basta: el orden por defecto es por
+            # fecha de radicación, así que el vencido más ANTIGUO —el que
+            # importa— queda fuera de las primeras páginas por construcción.
+            Param(
+                name="order_by",
+                enum=("registered_at", "due_date"),
+                description=(
+                    "Criterio de orden. `due_date` con `order_dir=asc` pone "
+                    "primero lo que vence antes, que es el orden de un informe "
+                    "de vencimientos."
+                ),
+                label="Ordenar por",
+            ),
+            Param(
+                name="order_dir",
+                enum=("asc", "desc"),
+                description="Sentido del orden. Por defecto descendente.",
+                label="Sentido",
+            ),
             _P_PAGE,
             _p_size(100),
         ),

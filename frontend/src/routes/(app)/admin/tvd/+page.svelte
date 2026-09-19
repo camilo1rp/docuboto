@@ -347,6 +347,17 @@
     </p>
   </header>
 
+  {#if data.agrupacionesIncompletas}
+    <!-- Gemelo del aviso de /admin/trd: con la lista recortada, una agrupación
+         cuyo padre no llegó no aparece en ninguna rama — el árbol no se ve
+         incompleto, se ve distinto. -->
+    <p class="tvd-incompleto" role="status">
+      <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+      Se están mostrando {data.agrupaciones.length} de {data.agrupacionesTotal} agrupaciones. El árbol
+      está incompleto y puede faltar alguna rama.
+    </p>
+  {/if}
+
   <CatalogCrudPanel
     ariaLabel="Árbol de agrupaciones TVD"
     items={agrupacionesTree}
@@ -611,6 +622,14 @@
 </div>
 
 <style lang="scss">
+  .tvd-incompleto {
+    background: var(--op-bg);
+    border-left: 3px solid var(--op-warning);
+    padding: var(--op-space-2) var(--op-space-3);
+    margin: 0 0 var(--op-space-3);
+    font-size: var(--op-font-sm);
+  }
+
   .tvd-page {
     padding: var(--op-space-5);
     max-width: 1200px;

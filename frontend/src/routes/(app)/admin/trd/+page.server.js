@@ -13,9 +13,14 @@
  *
  * Dos catálogos independientes de archive-service:
  *   - GET /trd (paginado, X-Total-Count) — series jerárquicas (parent_id).
- *     Se pide `size=200` para traer el árbol completo de una vez: la vista
- *     construye el árbol en cliente y una paginación parcial rompería la
- *     jerarquía (una subserie visible sin su padre en la página actual).
+ *     Se traen TODAS las páginas: la vista construye el árbol en cliente y una
+ *     carga parcial rompe la jerarquía — una subserie cuyo padre quedó fuera no
+ *     aparece en ninguna rama, así que el árbol no se ve incompleto, se ve
+ *     distinto. Antes se pedía `size=200` «para traer el árbol completo de una
+ *     vez», pero 200 ES EL TOPE del backend (`le=200`), no una holgura: con más
+ *     de 200 series la vista se quedaba corta en silencio, con el
+ *     `X-Total-Count` delante sin que nadie lo mirara. Si ni siquiera así cabe,
+ *     `seriesIncompletas` lo dice en pantalla.
  *   - GET /tipos-documentales (sin paginar) — cuelgan de una serie o van sueltos.
  *
  * RBAC real (espejo, D-11): el backend gatea creación/edición con
@@ -31,6 +36,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { mensajeError } from "$lib/utils/apiError.js";
+import { traerListaCompleta } from "$lib/server/listaCompleta.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -44,19 +50,12 @@ export async function load({ cookies, parent, fetch }) {
   const headers = { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant };
   if (userId) headers["X-User-Id"] = userId;
 
-  let series = [];
-  let seriesError = null;
-  try {
-    const res = await fetch(`${API_V1}/trd?size=200`, { headers });
-    if (res.ok) {
-      series = await res.json().catch(() => []);
-    } else {
-      const body = await res.json().catch(() => ({}));
-      seriesError = mensajeError(body, `Error ${res.status}`);
-    }
-  } catch {
-    seriesError = "No se pudo conectar al servidor de TRD.";
-  }
+  const seriesCargadas = await traerListaCompleta(fetch, `${API_V1}/trd`, headers, mensajeError);
+  const series = seriesCargadas.items;
+  const seriesError =
+    seriesCargadas.error === "No se pudo conectar al servidor."
+      ? "No se pudo conectar al servidor de TRD."
+      : seriesCargadas.error;
 
   let tipos = [];
   let tiposError = null;
@@ -113,6 +112,10 @@ export async function load({ cookies, parent, fetch }) {
   return {
     series,
     seriesError,
+    // La vista lo avisa: una lista corta con cara de completa es peor que un
+    // error, porque nadie va a buscar lo que no sabe que falta.
+    seriesIncompletas: seriesCargadas.incompleta,
+    seriesTotal: seriesCargadas.total,
     tipos,
     tiposError,
     revision,

@@ -556,14 +556,18 @@ class DocumentService:
         self,
         *,
         doc_type: str | None,
-        status: str | None,
+        status: builtins.list[str] | None,
         max_clearance: int,
         metadata_filter: dict | None = None,
         page: int,
         size: int,
         user_id: uuid.UUID | None = None,
         canal: str = "system",
-    ) -> tuple[list[DocumentResponse], int]:
+        due_from: date | None = None,
+        due_to: date | None = None,
+        order_by: str = "registered_at",
+        order_dir: str = "desc",
+    ) -> tuple[builtins.list[DocumentResponse], int]:
         radicados, total = await self._repo.find_all(
             doc_type=doc_type,
             status=status,
@@ -571,6 +575,10 @@ class DocumentService:
             page=page,
             size=size,
             max_clearance=max_clearance,
+            due_from=due_from,
+            due_to=due_to,
+            order_by=order_by,
+            order_dir=order_dir,
         )
         # Filtros estructurales tal cual (no son datos personales de quien
         # consulta); de `metadata_filter` solo las CLAVES consultadas — los
@@ -582,6 +590,14 @@ class DocumentService:
                 "doc_type": doc_type,
                 "status": status,
                 "metadata_filter_keys": sorted(metadata_filter) if metadata_filter else None,
+                # El asiento describe la consulta que se hizo, no una parte de
+                # ella: un informe de vencimientos es «quién pidió ver qué
+                # plazos», y con solo `doc_type`/`status` el registro afirmaría
+                # de menos sobre lo que esa persona consultó.
+                "due_from": due_from.isoformat() if due_from else None,
+                "due_to": due_to.isoformat() if due_to else None,
+                "order_by": order_by,
+                "order_dir": order_dir,
             },
             total=total,
             page=page,

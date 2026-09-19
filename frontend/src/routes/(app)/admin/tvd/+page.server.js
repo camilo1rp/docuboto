@@ -12,10 +12,12 @@
  * (ADR-026: Tablas de Valoración Documental, fondo acumulado).
  *
  * GET /tvd (paginado, X-Total-Count) — agrupaciones jerárquicas
- * (sección→subsección→serie del fondo, `parent_id`, ADR-026 D2). Se pide
- * `size=200` para traer el árbol completo de una vez, mismo motivo que
- * admin/trd: la vista construye el árbol en cliente y una paginación
- * parcial rompería la jerarquía.
+ * (sección→subsección→serie del fondo, `parent_id`, ADR-026 D2). Se traen TODAS
+ * las páginas, mismo motivo que admin/trd: la vista construye el árbol en
+ * cliente y una carga parcial rompe la jerarquía. Antes se pedía `size=200`
+ * «para traer el árbol completo de una vez» — pero 200 es el TOPE del backend,
+ * no una holgura, así que con más agrupaciones el árbol perdía ramas en
+ * silencio. Si aun así no cabe, `agrupacionesIncompletas` lo dice en pantalla.
  *
  * RBAC real: el backend gatea creación/edición/circuito con USUA_PERM_TRD
  * -- ADR-026 reutiliza a propósito el permiso de TRD (misma potestad
@@ -26,6 +28,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { mensajeError } from "$lib/utils/apiError.js";
+import { traerListaCompleta } from "$lib/server/listaCompleta.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -39,19 +42,15 @@ export async function load({ cookies, parent, fetch }) {
   const headers = { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant };
   if (userId) headers["X-User-Id"] = userId;
 
-  let agrupaciones = [];
-  let agrupacionesError = null;
-  try {
-    const res = await fetch(`${API_V1}/tvd?size=200`, { headers });
-    if (res.ok) {
-      agrupaciones = await res.json().catch(() => []);
-    } else {
-      const body = await res.json().catch(() => ({}));
-      agrupacionesError = mensajeError(body, `Error ${res.status}`);
-    }
-  } catch {
-    agrupacionesError = "No se pudo conectar al servidor de TVD.";
-  }
+  const cargadas = await traerListaCompleta(fetch, `${API_V1}/tvd`, headers, mensajeError);
 
-  return { agrupaciones, agrupacionesError };
+  return {
+    agrupaciones: cargadas.items,
+    agrupacionesError:
+      cargadas.error === "No se pudo conectar al servidor."
+        ? "No se pudo conectar al servidor de TVD."
+        : cargadas.error,
+    agrupacionesIncompletas: cargadas.incompleta,
+    agrupacionesTotal: cargadas.total,
+  };
 }

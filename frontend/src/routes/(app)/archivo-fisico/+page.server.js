@@ -25,6 +25,7 @@
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+import { traerListaCompleta } from "$lib/server/listaCompleta.server.js";
 
 // ---------------------------------------------------------------------------
 // Helper: fetch autenticado GET desde el servidor
@@ -71,10 +72,17 @@ async function gatewayGet(path, token, tenant, extraHeaders = {}) {
 // ---------------------------------------------------------------------------
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
-export async function load({ cookies, parent }) {
+export async function load({ cookies, parent, fetch }) {
   const { user } = await parent();
   const token = cookies.get(COOKIE_ACCESS_TOKEN) ?? "";
   const tenant = user?.tenant_slug ?? "";
+
+  /** Las mismas que arma `gatewayGet`, para la faceta que no pasa por él. */
+  const cabeceras = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+    "X-Tenant-Slug": tenant,
+  };
 
   // Facetas en paralelo — allSettled: el fallo de una no tumba las demás
   const [
@@ -105,7 +113,13 @@ export async function load({ cookies, parent }) {
 
     // Faceta 5: series TRD, para el filtro del FUID. Mismo motivo que la
     // anterior: el filtro pedía el UUID de la serie escrito a mano.
-    gatewayGet("/trd?is_active=true&size=200", token, tenant),
+    //
+    // Se traen TODAS las páginas: `size=200` era el tope del backend y no una
+    // holgura, así que la serie que no entrara en el corte no se podía elegir en
+    // el filtro — indistinguible de que no exista.
+    traerListaCompleta(fetch, `${API_V1}/trd?is_active=true`, cabeceras, mensajeError).then(
+      (r) => r.items,
+    ),
   ]);
 
   // -------------------------------------------------------------------------

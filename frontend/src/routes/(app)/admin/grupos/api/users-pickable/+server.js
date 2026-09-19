@@ -33,9 +33,18 @@ export async function GET({ locals }) {
   if (userId) headers["X-User-Id"] = userId;
 
   try {
-    const res = await fetch(`${API_V1}/auth/users/pickable?size=200`, { headers });
+    // `size=500` es el tope real del backend (`le=500`). Se pedían 200, que no
+    // era ni el máximo ni una decisión: con más usuarios activos, quien no
+    // entrara en la ventana no existía para quien busca — y en un selector eso
+    // no se lee como una lista corta, se lee como que esa persona no está en el
+    // sistema. `X-Total-Count` viaja para que la pantalla pueda decirlo.
+    const res = await fetch(`${API_V1}/auth/users/pickable?size=500`, { headers });
     const data = await res.json().catch(() => []);
-    return json(data, { status: res.status });
+    const total = res.headers.get("X-Total-Count");
+    return json(data, {
+      status: res.status,
+      headers: total ? { "X-Total-Count": total } : {},
+    });
   } catch {
     return json(
       { error: "connection_error", detail: "No se pudo cargar el listado de usuarios." },

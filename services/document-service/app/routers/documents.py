@@ -20,7 +20,8 @@ to avoid FastAPI matching the literal string "by-tracking" as a UUID.
 """
 
 import uuid
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 from urllib.parse import quote
 
 import asyncpg
@@ -212,7 +213,18 @@ async def list_documents(
     request: Request,
     response: Response,
     doc_type: str | None = Query(default=None),
-    status_filter: str | None = Query(default=None, alias="status"),
+    # `status` es REPETIBLE (`?status=distributed&status=in_progress`). Una
+    # bandeja de trabajo pendiente no es un estado, son varios, y antes había
+    # que pedirla con una llamada por estado y sumar los totales en el cliente
+    # —dos ventanas de 20 que no se pueden ordenar entre sí—.
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    # Rango de fecha límite (RF-RAD-04), ambos extremos inclusivos. Lo que
+    # significa «vencido» lo declara quien pregunta, no el endpoint: ver la nota
+    # en `DocumentRepository.find_all`.
+    due_from: date | None = Query(default=None),
+    due_to: date | None = Query(default=None),
+    order_by: Literal["registered_at", "due_date"] = Query(default="registered_at"),
+    order_dir: Literal["asc", "desc"] = Query(default="desc"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -235,6 +247,10 @@ async def list_documents(
         size=size,
         user_id=_get_registered_by(request),
         canal=canal,
+        due_from=due_from,
+        due_to=due_to,
+        order_by=order_by,
+        order_dir=order_dir,
     )
     response.headers["X-Total-Count"] = str(total)
     return documents

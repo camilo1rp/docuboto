@@ -38,6 +38,10 @@ export async function load({ cookies, parent, fetch }) {
   const userId = user?.sub ?? "";
 
   let users = [];
+  // Reasignar en cascada sobre una lista recortada movería el trabajo a la
+  // persona equivocada por no encontrar a la correcta.
+  let usersIncompletos = false;
+  let usersTotal = 0;
   let loadError = null;
 
   try {
@@ -48,10 +52,18 @@ export async function load({ cookies, parent, fetch }) {
     };
     if (userId) headers["X-User-Id"] = userId;
 
-    const res = await fetch(`${API_V1}/auth/users/pickable?size=200`, { headers });
+    // `size=500` es el tope real del backend (`le=500`). Se pedían 200, que no
+    // era ni el máximo ni una decisión: con más usuarios activos, quien no
+    // entrara en la ventana no existía para quien busca — y en un selector eso
+    // no se lee como una lista corta, se lee como que esa persona no está en el
+    // sistema. `X-Total-Count` viaja para que la pantalla pueda decirlo.
+    const res = await fetch(`${API_V1}/auth/users/pickable?size=500`, { headers });
     if (res.ok) {
       const raw = await res.json().catch(() => []);
       users = (Array.isArray(raw) ? raw : []).map((u) => ({ id: u.id, username: u.username }));
+      const total = Number(res.headers.get("X-Total-Count"));
+      usersIncompletos = Number.isFinite(total) && total > users.length;
+      usersTotal = Number.isFinite(total) ? total : users.length;
     } else {
       const body = await res.json().catch(() => ({}));
       loadError = mensajeError(body, `Error ${res.status}`);
@@ -79,6 +91,8 @@ export async function load({ cookies, parent, fetch }) {
 
   return {
     users,
+    usersIncompletos,
+    usersTotal,
     dependencias,
     loadError,
     // token y tenant NO se exponen: la ejecución del cliente usa

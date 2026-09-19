@@ -44,7 +44,12 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
 
 
 def _user(x_user_id: str | None = Header(default=None)) -> UUID:
-    """Identidad del creador de la regla. Fail-closed (400) — antes degradaba en
+    """Identidad de QUIEN actúa sobre la regla — la crea, la edita o la borra.
+
+    Los tres actos la exigen: un asiento sin actor no responde «quién decidió
+    que esto se enrutara así», que es justo lo que se le pregunta a la traza.
+
+    Fail-closed (400) — antes degradaba en
     silencio a un `_NIL_USER` fijo cuando faltaba/era inválida la cabecera, lo
     que dejaba la autoría de `created_by` como un UUID nulo indistinguible de un
     usuario real. Ahora que `create_rule` está gateado por `require_permission`
@@ -196,11 +201,12 @@ async def update_rule(
     rule_id: UUID,
     payload: WorkflowRuleUpdate,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: UUID = Depends(_user),
     conn: asyncpg.Connection = Depends(get_db),
 ) -> WorkflowRuleResponse:
     """Actualiza una regla (parcial — solo los campos provistos)."""
     svc = WorkflowRulesService(conn, tenant_slug)
-    rule = await svc.update_rule(rule_id, payload)
+    rule = await svc.update_rule(rule_id, payload, user_id)
     if not rule:
         raise HTTPException(status_code=404, detail="No existe la regla")
     return rule
@@ -214,11 +220,12 @@ async def update_rule(
 async def delete_rule(
     rule_id: UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: UUID = Depends(_user),
     conn: asyncpg.Connection = Depends(get_db),
 ) -> Response:
     """Elimina una regla."""
     svc = WorkflowRulesService(conn, tenant_slug)
-    deleted = await svc.delete_rule(rule_id)
+    deleted = await svc.delete_rule(rule_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="No existe la regla")
     return Response(status_code=204)

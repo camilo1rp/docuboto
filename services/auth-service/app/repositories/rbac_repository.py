@@ -112,17 +112,30 @@ class RBACRepository:
         total: int = await self._conn.fetchval("SELECT count(*) FROM auth_users")
         return rows, total
 
-    async def list_pickable_users(self, *, limit: int) -> list[asyncpg.Record]:
+    async def list_pickable_users(self, *, limit: int) -> tuple[list[asyncpg.Record], int]:
         """Listado mínimo (id + username) de usuarios activos, para selectores de UI.
 
         D-10: alimenta el `UserPicker` (cadena de visto bueno) sin exponer `email`
         ni metadatos administrativos. Gateado con `PERM_RADI` en el router (no admin).
+
+        Devuelve también **cuántos hay en total**. El `LIMIT` recortaba en silencio:
+        quien no entrara en la ventana sencillamente no existía para quien busca —
+        y en un selector eso no se ve como una lista corta, se ve como que esa
+        persona no está en el sistema. Sin el total, ni el cliente ni la pantalla
+        tenían forma de saber que faltaba alguien.
         """
-        return await self._conn.fetch(
+        filas = await self._conn.fetch(
             "SELECT id, username FROM auth_users "
             "WHERE is_active = true ORDER BY username LIMIT $1",
             limit,
         )
+        total: int = (
+            await self._conn.fetchval(
+                "SELECT COUNT(*) FROM auth_users WHERE is_active = true"
+            )
+            or 0
+        )
+        return list(filas), total
 
     async def is_root(self, user_id: uuid.UUID) -> bool:
         val = await self._conn.fetchval("SELECT is_root FROM auth_users WHERE id = $1", user_id)

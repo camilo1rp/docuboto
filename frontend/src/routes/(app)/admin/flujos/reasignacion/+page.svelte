@@ -232,6 +232,18 @@
       </div>
     {/if}
 
+    {#if data.usersIncompletos}
+      <!-- Reasignar la carga de una dependencia eligiendo de una lista recortada
+           movería el trabajo a la persona equivocada por no encontrar a la
+           correcta. Un selector incompleto no se ve incompleto: se ve como que
+           esa persona no está. -->
+      <div class="reasig-page__aviso" role="status">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        La lista muestra {users.length} de {data.usersTotal} usuarios activos. Si no encuentra a la persona
+        de destino, no asuma que no existe.
+      </div>
+    {/if}
+
     <section class="reasig-section" aria-labelledby="reasig-origen-title">
       <h2 id="reasig-origen-title" class="reasig-section__title">1. Origen</h2>
 
@@ -419,6 +431,17 @@
       border-radius: var(--op-radius);
       font-size: var(--op-font-sm);
     }
+  }
+
+  .reasig-page__aviso {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--op-space-2);
+    background: var(--op-bg);
+    border-left: 3px solid var(--op-warning);
+    padding: var(--op-space-2) var(--op-space-3);
+    margin-bottom: var(--op-space-3);
+    font-size: var(--op-font-sm);
   }
 
   .reasig-section {

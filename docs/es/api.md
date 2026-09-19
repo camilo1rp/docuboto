@@ -166,7 +166,7 @@ El secreto TOTP (RFC 6238) es una **credencial de identidad durable** y vive en 
 
 - `POST /api/v1/auth/users` · `GET /api/v1/auth/users` (paginado, `X-Total-Count`) · `GET /api/v1/auth/users/{id}/permissions` — administración de usuarios. Todo el router exige `USUA_PERM_ADMIN`. `POST` deja asiento `rbac.usuario_creado` en `audit_log`, **atómico** con el INSERT (ver nota de auditoría abajo).
   - **`POST` con `is_root: true` → `403 forbidden` si el llamante no es ROOT** ([ADR-024](adr/ADR-024-root-fuera-de-banda.md), cierre de hallazgo Alto de auto-escalada). Un `USUA_PERM_ADMIN` no-ROOT nunca puede crear un usuario ROOT; ROOT sí. El primer ROOT de un tenant se aprovisiona fuera de banda (`app/ops/grant_root.py`, no HTTP).
-- `GET /api/v1/auth/users/pickable?size=N` — proyección mínima `[{id, username}]` de usuarios **activos**, para selectores de UI (p. ej. el `UserPicker` de cadenas de visto bueno, T-08c). Gateado con `PERM_RADI` (no admin); no expone `email` ni metadatos administrativos (D-10). `size` en `[1, 500]`.
+- `GET /api/v1/auth/users/pickable?size=N` — proyección mínima `[{id, username}]` de usuarios **activos**, para selectores de UI (p. ej. el `UserPicker` de cadenas de visto bueno, T-08c). Gateado con `PERM_RADI` (no admin); no expone `email` ni metadatos administrativos (D-10). `size` en `[1, 500]`. Emite **`X-Total-Count` con los usuarios activos que hay**, no con los que caben en la respuesta: este endpoint **no pagina**, recorta con un `LIMIT`, así que la cabecera es lo único que permite al llamante saber que está viendo un recorte. Sin ella, quien no entrara en la ventana no existía para quien busca — y en un selector eso no se lee como una lista corta, se lee como que esa persona no está en el sistema.
 
 ### URD y contexto de dependencia (E08)
 
@@ -542,6 +542,14 @@ La traza existía desde siempre. Hasta 2026-09 solo se podía consultar desde `/
 ### `GET /api/v1/documents`
 
 Listar radicados. Filtros: `?doc_type=E&status=registered&page=1&size=20`. **Filtro por metadato** (RF-MET-02): `?meta.<campo>=valor` (uno o varios) usa contención JSONB sobre el índice GIN, p. ej. `?meta.area=juridica`. **Control de acceso (RF-SEG-08):** el listado se acota por la clasificación del radicado igual que la búsqueda — cada usuario solo ve los de `nivel_seguridad ≤` su _clearance_ (_fail-closed_ a PUBLICA).
+
+**`status` es repetible**: `?status=distributed&status=in_progress` trae los de cualquiera de los dos (`status = ANY(...)`). Una bandeja de trabajo pendiente no es un estado, son varios; pedirlos por separado da dos ventanas de `size` que no se pueden ordenar entre sí, y obliga a sumar dos `X-Total-Count` — un total correcto solo mientras los estados sean disjuntos.
+
+**Plazo de respuesta** (RF-RAD-04): `?due_from=2026-01-01&due_to=2026-03-31` acota por `due_date`, con **ambos extremos inclusivos**. El endpoint **no decide qué significa «vencido»** y lo declara quien pregunta: `due_to=<ayer>` deja fuera el que vence hoy, `due_to=<hoy>` lo incluye. Es deliberado — el sistema usa hoy las dos convenciones opuestas (la TRD cuenta vencido el día en que se cumple el plazo, los préstamos no), y hornear una aquí obligaría a la otra mitad a pedir lo contrario de lo que quiere decir. Un radicado **sin** `due_date` no entra en ningún rango: la pregunta no le aplica.
+
+**Orden**: `?order_by=registered_at|due_date&order_dir=asc|desc` (por defecto `registered_at desc`). Cualquier otro valor es `422` — el catálogo es cerrado porque un `ORDER BY` no admite parámetro enlazado. `due_date` lleva `NULLS LAST` en los dos sentidos, y todos los órdenes desempatan por `id`: sin una clave única final, dos filas con el mismo plazo pueden salir en distinto orden en dos consultas y la paginación repetiría una y perdería otra.
+
+> Sin orden por plazo, un informe de vencimientos solo alcanzaba los radicados más recientes: el que llevaba más tiempo vencido se radicó antes, así que salía después. Era invisible por construcción.
 
 ### `GET` / `PATCH /api/v1/documents/{id}/disposition`
 
@@ -1773,11 +1781,15 @@ Obtener regla por UUID.
 
 ### `PATCH /api/v1/workflow/rules/{id}`
 
-Actualizar parcialmente (ej: cambiar prioridad, activar/desactivar).
+Actualizar parcialmente (ej: cambiar prioridad, activar/desactivar). El asiento registra **solo los campos que la petición tocó**, cada uno con su valor `antes` y `despues`; un `PATCH` sin campos no muta nada y no asienta.
 
 ### `DELETE /api/v1/workflow/rules/{id}`
 
-Eliminar regla. Responde `204`.
+Eliminar regla. Responde `204`. El borrado es **físico**, así que el asiento lleva el **retrato completo** de la regla — es el único sitio donde sobrevive lo que decía.
+
+> **Los tres actos de escritura dejan asiento en `public.audit_log`** (ADR-010), atómico con la escritura: `workflow.regla_creada`, `workflow.regla_modificada`, `workflow.regla_eliminada`, con `object_type="workflow_rule"` y `object_ref` = el **UUID** de la regla (no su nombre: renombrarla no puede partir su historial en dos). Si la cadena inmutable no puede recibir el asiento, la escritura revierte.
+>
+> Una regla decide a qué dependencia se asigna cada radicado entrante: crearla es redirigir correspondencia oficial que aún no ha llegado, y borrarla es dejar de redirigirla. Los tres exigen `X-User-Id` — un asiento sin actor no responde quién decidió el enrutamiento, que es lo que se le pregunta a la traza.
 
 ### `POST /api/v1/workflow/rules/evaluate`
 

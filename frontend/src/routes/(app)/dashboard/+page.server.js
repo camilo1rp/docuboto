@@ -14,8 +14,8 @@
  * métricas agregadas y pasa a mostrar los cuatro módulos personales fijos:
  *   01 Radicados pendientes  — GET /api/v1/documents?status=distributed|in_progress
  *   02 Actividad reciente    — GET /api/v1/documents (sin filtro, más recientes)
- *   03 Alertas               — derivado del campo `due_date` (RF-RAD-04) de los
- *                              radicados pendientes (ver nota de alcance abajo)
+ *   03 Alertas               — GET /api/v1/documents ordenado por `due_date`
+ *                              ascendente (RF-RAD-04), consulta PROPIA
  *   04 Favoritos             — resuelto en el cliente (favorites.js + navItems.js),
  *                              no requiere carga server-side.
  *
@@ -23,13 +23,18 @@
  * pero bajan a una sección secundaria colapsable (progressive disclosure).
  *
  * NOTA DE ALCANCE — módulo 03 "Alertas":
- * No existe hoy un endpoint dedicado de alertas/vencimientos transversal
- * (firmas + transferencias + respuesta de radicados). Se usa el dato más
- * cercano que SÍ es real: `due_date` de los radicados abiertos del tenant
- * (fecha límite de respuesta, RF-RAD-04, ya expuesta por /documents). Cuando
- * exista un endpoint de alertas dedicado (agregando también vencimientos de
- * `/signature/pending` y `/transferencias`), sustituir este cálculo por esa
- * llamada. Ver seguimiento en agent-memory (sveltekit-developer).
+ * Cubre el vencimiento del PLAZO DE RESPUESTA de un radicado (RF-RAD-04), no
+ * todos los vencimientos del sistema: los de firmas y transferencias tienen sus
+ * propias puertas. No se agregan aquí a propósito — el gateway es un proxy por
+ * prefijo, sin lógica de negocio, y un agregador cross-service tendría que
+ * repartir entre dos fuentes el gate de clearance y el recuento.
+ *
+ * Lo que sí cambió, y era un defecto: las alertas se derivaban de la MISMA
+ * ventana que los pendientes —los 20 más recientes por estado—, así que el
+ * radicado que llevaba más tiempo vencido, justo el que importa, era invisible
+ * por construcción: se radicó antes, luego salía después. Ahora son una consulta
+ * propia ordenada por plazo, que es lo que el backend no sabía hacer hasta
+ * ahora.
  */
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
@@ -39,7 +44,6 @@ import { mensajeError } from "$lib/utils/apiError.js";
 // Estados que representan un radicado "abierto" (no cerrado) — requieren acción.
 const OPEN_STATUSES = ["distributed", "in_progress"];
 
-const PENDIENTES_SCAN_SIZE = 20; // por-estado; suficiente para priorizar sin paginar
 const WIDGET_LIMIT = 5; // ítems visibles por módulo en el tablero
 
 /**
@@ -80,17 +84,32 @@ export async function load({ cookies, parent, fetch }) {
   const canSeeSummary = (user?.permissions ?? []).includes("SGD_PERM_ESTADISTICA");
 
   // ---------------------------------------------------------------------
-  // Módulo 01 + 03: radicados abiertos (una llamada por estado soportado
-  // por el backend — /documents no acepta status[] múltiple, RF-UI-03).
+  // Módulo 01: radicados pendientes. UNA sola llamada con `status` repetido.
+  //
+  // Antes era una por estado, porque el backend no aceptaba varios. Sumar dos
+  // ventanas de 20 no da las 40 más recientes —da 20 de cada una— y el total
+  // salía de sumar dos `X-Total-Count`, que solo es correcto mientras los
+  // estados sean disjuntos. Ahora el total lo cuenta la base.
   // ---------------------------------------------------------------------
-  const openStatusFetches = OPEN_STATUSES.map((status) => {
-    const params = new URLSearchParams({
-      status,
-      page: "1",
-      size: String(PENDIENTES_SCAN_SIZE),
-    });
-    return fetchDocuments(fetch, token, tenant, params);
+  const pendientesParams = new URLSearchParams({ page: "1", size: String(WIDGET_LIMIT) });
+  for (const estado of OPEN_STATUSES) pendientesParams.append("status", estado);
+  const pendientesFetch = fetchDocuments(fetch, token, tenant, pendientesParams);
+
+  // ---------------------------------------------------------------------
+  // Módulo 03: alertas. Consulta PROPIA ordenada por plazo ascendente.
+  //
+  // No se derivan de los pendientes: esa ventana trae los más RECIENTES, y lo
+  // que una alerta busca es lo contrario — lo que lleva más tiempo esperando.
+  // `order_dir=asc` pone delante las fechas pasadas, es decir, lo ya vencido.
+  // ---------------------------------------------------------------------
+  const alertasParams = new URLSearchParams({
+    page: "1",
+    size: String(WIDGET_LIMIT),
+    order_by: "due_date",
+    order_dir: "asc",
   });
+  for (const estado of OPEN_STATUSES) alertasParams.append("status", estado);
+  const alertasFetch = fetchDocuments(fetch, token, tenant, alertasParams);
 
   // ---------------------------------------------------------------------
   // Módulo 02: actividad reciente (sin filtro de estado — continuidad del
@@ -117,33 +136,31 @@ export async function load({ cookies, parent, fetch }) {
     return res.json();
   })();
 
-  const [openResults, recentResult, summaryResult] = await Promise.all([
-    Promise.allSettled(openStatusFetches),
+  const [pendientesResult, alertasResult, recentResult, summaryResult] = await Promise.all([
+    Promise.allSettled([pendientesFetch]),
+    Promise.allSettled([alertasFetch]),
     Promise.allSettled([recentFetch]),
     Promise.allSettled([summaryFetch]),
   ]);
 
   // ---- Radicados pendientes (módulo 01) --------------------------------
-  const fulfilledOpen = openResults.filter(
-    /** @returns {r is PromiseFulfilledResult<{items: any[], total: number}>} */
-    (r) => r.status === "fulfilled",
-  );
-  const firstRejectedOpen = openResults.find((r) => r.status === "rejected");
-  const openError =
-    fulfilledOpen.length === 0 && firstRejectedOpen
-      ? (firstRejectedOpen.reason?.message ?? "No se pudo conectar al servidor de documentos.")
-      : null;
+  const pendientesSettled = pendientesResult[0];
+  const pendientesOk = pendientesSettled.status === "fulfilled";
+  const openError = pendientesOk
+    ? null
+    : (pendientesSettled.reason?.message ?? "No se pudo conectar al servidor de documentos.");
 
-  const openDocuments = fulfilledOpen.flatMap((r) => r.value.items);
-  const pendientesTotal = fulfilledOpen.reduce((acc, r) => acc + r.value.total, 0);
+  const pendientesItems = pendientesOk ? pendientesSettled.value.items : [];
+  const pendientesTotal = pendientesOk ? pendientesSettled.value.total : 0;
 
-  const pendientesItems = [...openDocuments]
-    .sort((a, b) => (b.registered_at ?? "").localeCompare(a.registered_at ?? ""))
-    .slice(0, WIDGET_LIMIT);
-
-  // ---- Alertas (módulo 03) — derivadas de due_date de radicados abiertos ----
+  // ---- Alertas (módulo 03) ----------------------------------------------
+  // El orden lo da el servidor; aquí solo se traducen los días que faltan. Un
+  // radicado sin `due_date` no llega —el `NULLS LAST` del backend los manda al
+  // final y nunca entran en esta ventana—, pero el filtro se conserva porque
+  // esta vista no debe depender de esa garantía para no mostrar «NaN días».
+  const alertasSettled = alertasResult[0];
   const now = Date.now();
-  const alertasItems = openDocuments
+  const alertasItems = (alertasSettled.status === "fulfilled" ? alertasSettled.value.items : [])
     .filter((doc) => !!doc.due_date)
     .map((doc) => {
       const dueMs = new Date(doc.due_date).getTime();
@@ -152,9 +169,12 @@ export async function load({ cookies, parent, fetch }) {
         : null;
       return { ...doc, diasRestantes };
     })
-    .filter((doc) => doc.diasRestantes !== null)
-    .sort((a, b) => a.diasRestantes - b.diasRestantes)
-    .slice(0, WIDGET_LIMIT);
+    .filter((doc) => doc.diasRestantes !== null);
+
+  const alertasError =
+    alertasSettled.status === "rejected"
+      ? (alertasSettled.reason?.message ?? "No se pudo conectar al servidor de documentos.")
+      : null;
 
   // ---- Actividad reciente (módulo 02) -----------------------------------
   const recentSettled = recentResult[0];
@@ -174,7 +194,7 @@ export async function load({ cookies, parent, fetch }) {
 
   return {
     pendientes: { items: pendientesItems, total: pendientesTotal, error: openError },
-    alertas: { items: alertasItems, error: openError },
+    alertas: { items: alertasItems, error: alertasError },
     recientes: { items: recientesItems, error: recientesError },
     summary,
     summaryError,

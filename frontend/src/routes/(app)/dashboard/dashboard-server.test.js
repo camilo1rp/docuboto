@@ -11,8 +11,8 @@
  * dashboard-server.test.js — +page.server.js del panel principal (T-07, §10).
  *
  * Cubre el rediseño del tablero a los cuatro módulos personales:
- *  - 01 Radicados pendientes: dos llamadas a /documents (status=distributed
- *    e in_progress), mezcladas y ordenadas por registered_at desc, con
+ *  - 01 Radicados pendientes: UNA llamada a /documents con `status` repetido
+ *    (distributed e in_progress), con
  *    total = suma de X-Total-Count de ambas.
  *  - 02 Actividad reciente: una llamada sin filtro de estado.
  *  - 03 Alertas: derivadas de `due_date` de los radicados abiertos, con
@@ -58,15 +58,16 @@ const SUMMARY_BODY = {
 /**
  * Fake fetch que responde según el status querystring de /documents y
  * siempre resuelve /reports/radicados con SUMMARY_BODY.
- * @param {{distributed?: object[], in_progress?: object[], recent?: object[], summaryOk?: boolean}} config
+ * @param {{pendientes?: object[], pendientesTotal?: number|null, alertas?: object[], recent?: object[], summaryOk?: boolean}} config
  */
 function fakeGatewayFetch({
-  distributed = [],
-  in_progress = [],
+  pendientes = [],
+  pendientesTotal = null,
+  alertas = [],
   recent = [],
   summaryOk = true,
-  distributedOk = true,
-  inProgressOk = true,
+  pendientesOk = true,
+  alertasOk = true,
   recentOk = true,
 } = {}) {
   return vi.fn(async (input) => {
@@ -85,29 +86,40 @@ function fakeGatewayFetch({
     }
 
     if (url.pathname.endsWith("/documents")) {
-      const status = url.searchParams.get("status");
+      // `getAll` y no `get`: la cadena de consulta es un multidict y `get`
+      // devuelve solo el primer valor — mirarla con `get` reproduciría dentro
+      // del doble el mismo defecto que el gateway tenía al colapsarla.
+      const estados = url.searchParams.getAll("status");
 
-      if (status === "distributed") {
-        if (!distributedOk) {
-          return { ok: false, status: 500, json: async () => ({ detail: "Falla distributed" }) };
-        }
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: (h) => (h === "X-Total-Count" ? String(distributed.length) : null) },
-          json: async () => distributed,
-        };
+      if (estados.length === 1) {
+        throw new Error(
+          "El tablero volvió a pedir UN estado por llamada. Dos ventanas de N no son " +
+            "las N más recientes, y el total salía de sumar dos `X-Total-Count`.",
+        );
       }
 
-      if (status === "in_progress") {
-        if (!inProgressOk) {
-          return { ok: false, status: 500, json: async () => ({ detail: "Falla in_progress" }) };
+      if (estados.length > 1) {
+        // Las alertas se distinguen por pedir un orden: es su rasgo propio.
+        if (url.searchParams.get("order_by") === "due_date") {
+          if (!alertasOk) {
+            return { ok: false, status: 500, json: async () => ({ detail: "Falla alertas" }) };
+          }
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: (h) => (h === "X-Total-Count" ? String(alertas.length) : null) },
+            json: async () => alertas,
+          };
         }
+        if (!pendientesOk) {
+          return { ok: false, status: 500, json: async () => ({ detail: "Falla pendientes" }) };
+        }
+        const total = pendientesTotal ?? pendientes.length;
         return {
           ok: true,
           status: 200,
-          headers: { get: (h) => (h === "X-Total-Count" ? String(in_progress.length) : null) },
-          json: async () => in_progress,
+          headers: { get: (h) => (h === "X-Total-Count" ? String(total) : null) },
+          json: async () => pendientes,
         };
       }
 
@@ -128,40 +140,47 @@ function fakeGatewayFetch({
 }
 
 describe("dashboard/+page.server.js#load — módulo 01 Radicados pendientes", () => {
-  it("mezcla distributed + in_progress y suma los totales de ambos", async () => {
+  it("pide los dos estados en UNA llamada y toma el total del servidor", async () => {
     const fetch = fakeGatewayFetch({
-      distributed: [
+      pendientes: [
+        makeDoc({ id: "d2", status: "in_progress", registered_at: "2026-01-03T00:00:00Z" }),
         makeDoc({ id: "d1", status: "distributed", registered_at: "2026-01-02T00:00:00Z" }),
       ],
-      in_progress: [
-        makeDoc({ id: "d2", status: "in_progress", registered_at: "2026-01-03T00:00:00Z" }),
-      ],
+      // El total NO coincide con lo devuelto a propósito: son las 5 visibles de
+      // un conjunto mayor. Si el loader volviera a contar `items.length`, el
+      // tablero anunciaría como pendiente solo lo que cabe en el módulo.
+      pendientesTotal: 37,
     });
 
     const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
 
-    expect(result.pendientes.total).toBe(2);
-    expect(result.pendientes.items.map((d) => d.id)).toEqual(["d2", "d1"]); // más reciente primero
+    expect(result.pendientes.total).toBe(37);
+    expect(result.pendientes.items.map((d) => d.id)).toEqual(["d2", "d1"]);
     expect(result.pendientes.error).toBeNull();
+    // Tres llamadas a /documents: pendientes, alertas y recientes. Con una por
+    // estado serían cuatro — y el doble ya no las atiende.
+    const aDocumentos = fetch.mock.calls.filter(([u]) => String(u).includes("/documents"));
+    expect(aDocumentos).toHaveLength(3);
   });
 
-  it("limita a 5 ítems visibles aunque haya más pendientes", async () => {
-    const distributed = Array.from({ length: 6 }, (_, i) =>
-      makeDoc({
-        id: `d${i}`,
-        registered_at: `2026-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
-      }),
-    );
-    const fetch = fakeGatewayFetch({ distributed });
+  it("pide al servidor solo los 5 que caben en el módulo", async () => {
+    const fetch = fakeGatewayFetch({ pendientes: [], pendientesTotal: 6 });
 
-    const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
+    await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
 
-    expect(result.pendientes.items).toHaveLength(5);
-    expect(result.pendientes.total).toBe(6);
+    const pedido = fetch.mock.calls
+      .map(([u]) => new URL(u))
+      .find((u) => u.searchParams.getAll("status").length > 1 && !u.searchParams.get("order_by"));
+
+    // El recorte lo hace la base, no el cliente: traer 20 por estado para
+    // enseñar 5 es pedir cuatro veces lo que se usa, y la parte descartada es
+    // justamente la que decide qué se ve.
+    expect(pedido.searchParams.get("size")).toBe("5");
+    expect(pedido.searchParams.getAll("status")).toEqual(["distributed", "in_progress"]);
   });
 
-  it("si ambas llamadas de estado fallan, expone error y no rompe el resto de módulos", async () => {
-    const fetch = fakeGatewayFetch({ distributedOk: false, inProgressOk: false });
+  it("si la llamada de pendientes falla, expone error y no rompe el resto de módulos", async () => {
+    const fetch = fakeGatewayFetch({ pendientesOk: false });
 
     const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
 
@@ -184,7 +203,7 @@ describe("dashboard/+page.server.js#load — módulo 02 Actividad reciente", () 
 
   it("un fallo en recientes no afecta a pendientes", async () => {
     const fetch = fakeGatewayFetch({
-      distributed: [makeDoc({ id: "d1" })],
+      pendientes: [makeDoc({ id: "d1" })],
       recentOk: false,
     });
 
@@ -195,33 +214,66 @@ describe("dashboard/+page.server.js#load — módulo 02 Actividad reciente", () 
   });
 });
 
-describe("dashboard/+page.server.js#load — módulo 03 Alertas (derivadas de due_date)", () => {
-  it("solo incluye radicados abiertos CON due_date, ordenados por urgencia (más próximo/vencido primero)", async () => {
+describe("dashboard/+page.server.js#load — módulo 03 Alertas", () => {
+  it("son una CONSULTA PROPIA ordenada por plazo, no un subproducto de los pendientes", async () => {
+    const fetch = fakeGatewayFetch({ alertas: [] });
+
+    await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
+
+    const pedido = fetch.mock.calls
+      .map(([u]) => new URL(u))
+      .find((u) => u.searchParams.get("order_by") === "due_date");
+
+    // Es el corazón del arreglo: derivarlas de la ventana de pendientes —los
+    // más RECIENTES— dejaba fuera al que lleva más tiempo vencido, que es
+    // exactamente el que una alerta busca. Se radicó antes, luego salía después.
+    expect(pedido).toBeTruthy();
+    expect(pedido.searchParams.get("order_dir")).toBe("asc");
+    expect(pedido.searchParams.getAll("status")).toEqual(["distributed", "in_progress"]);
+  });
+
+  it("respeta el orden que da el servidor y traduce los días que faltan", async () => {
     const now = Date.now();
     const iso = (deltaDays) => new Date(now + deltaDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const distributed = [
-      makeDoc({ id: "sin-fecha", due_date: null }),
-      makeDoc({ id: "vence-en-10", due_date: iso(10) }),
-      makeDoc({ id: "vencido", due_date: iso(-2) }),
-      makeDoc({ id: "vence-en-1", due_date: iso(1) }),
-    ];
-    const fetch = fakeGatewayFetch({ distributed });
+    // Llegan ya ordenadas por el backend. El loader NO las reordena: hacerlo
+    // sobre una ventana de 5 daría un orden correcto dentro de una selección
+    // equivocada, que es el error que se acaba de quitar.
+    const fetch = fakeGatewayFetch({
+      alertas: [
+        makeDoc({ id: "vencido", due_date: iso(-2) }),
+        makeDoc({ id: "vence-en-1", due_date: iso(1) }),
+        makeDoc({ id: "vence-en-10", due_date: iso(10) }),
+      ],
+    });
 
     const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
 
     expect(result.alertas.items.map((d) => d.id)).toEqual(["vencido", "vence-en-1", "vence-en-10"]);
     expect(result.alertas.items[0].diasRestantes).toBeLessThan(0);
-    expect(result.alertas.items.some((d) => d.id === "sin-fecha")).toBe(false);
   });
 
-  it("sin ningún due_date entre los abiertos, alertas queda vacío sin error", async () => {
-    const fetch = fakeGatewayFetch({ distributed: [makeDoc({ due_date: null })] });
+  it("un radicado sin due_date no se pinta aunque llegue", async () => {
+    // El `NULLS LAST` del backend ya impide que llegue; la vista no depende de
+    // esa garantía para no mostrar «NaN días».
+    const fetch = fakeGatewayFetch({ alertas: [makeDoc({ id: "sin-fecha", due_date: null })] });
 
     const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
 
     expect(result.alertas.items).toEqual([]);
     expect(result.alertas.error).toBeNull();
+  });
+
+  it("un fallo de alertas no arrastra a los pendientes, y se dice cuál falló", async () => {
+    // Antes compartían llamada y por tanto compartían error: si fallaba, los
+    // dos módulos culpaban a lo mismo aunque uno de ellos hubiera respondido.
+    const fetch = fakeGatewayFetch({ alertasOk: false, pendientes: [makeDoc({ id: "d1" })] });
+
+    const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
+
+    expect(result.alertas.error).toBeTruthy();
+    expect(result.pendientes.error).toBeNull();
+    expect(result.pendientes.items.map((d) => d.id)).toEqual(["d1"]);
   });
 });
 
@@ -237,7 +289,7 @@ describe("dashboard/+page.server.js#load — sección secundaria (métricas agre
 
   it("un fallo de reportes no afecta a los módulos personales", async () => {
     const fetch = fakeGatewayFetch({
-      distributed: [makeDoc({ id: "d1" })],
+      pendientes: [makeDoc({ id: "d1" })],
       summaryOk: false,
     });
 
@@ -252,7 +304,7 @@ describe("dashboard/+page.server.js#load — sección secundaria (métricas agre
 describe("dashboard/+page.server.js#load — espejo del RBAC (SGD_PERM_ESTADISTICA)", () => {
   it("sin el permiso, no llama a /reports/radicados y summary/summaryError quedan null", async () => {
     const fetch = fakeGatewayFetch({
-      distributed: [makeDoc({ id: "d1" })],
+      pendientes: [makeDoc({ id: "d1" })],
       // Si el load llamara igual a /reports/radicados, fakeGatewayFetch lo
       // resolvería con SUMMARY_BODY — la aserción de abajo distingue "no
       // se llamó" de "se llamó y falló".

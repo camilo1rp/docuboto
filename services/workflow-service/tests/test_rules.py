@@ -23,7 +23,7 @@ from app.services.rules_engine import (
     matches_legacy,
     rule_matches,
 )
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, USER_ID
 
 NOW = datetime.now(tz=UTC)
 
@@ -343,9 +343,11 @@ async def test_list_rules_con_permiso_ok(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_delete_rule_con_permiso_ok(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.return_value = 1  # check_permission → True (admin)
-    # delete_rule usa el resultado de execute() ("DELETE 1") para saber si borró.
-    mock_conn.execute.return_value = "DELETE 1"
+    # 1) check_permission → True (admin); 2) prev_hash de `audit.append` → None.
+    mock_conn.fetchval.side_effect = [1, None]
+    # `delete_rule` usa `DELETE ... RETURNING *`: la fila borrada es lo que va al
+    # asiento, porque después de borrarla no queda dónde ir a mirar qué decía.
+    mock_conn.fetchrow.return_value = make_rule_record()
     resp = await client.delete(
         f"/api/v1/workflow/rules/{uuid.uuid4()}", headers=TENANT_HEADERS
     )
@@ -471,7 +473,8 @@ async def test_create_rule_dependencia_activa_ok(client_with_conn) -> None:
     rompe el flujo de creación normal (gemelo de `test_create_rule_with_conditions`)."""
     client, mock_conn, _ = client_with_conn
     rid = uuid.uuid4()
-    mock_conn.fetchval.side_effect = [1, 1]  # permiso OK, dependencia_activa → True
+    # permiso OK, dependencia_activa → True, prev_hash de `audit.append` → None
+    mock_conn.fetchval.side_effect = [1, 1, None]
     mock_conn.fetchrow.return_value = make_rule_record(rule_id=rid)
 
     resp = await client.post(
@@ -488,7 +491,9 @@ async def test_update_rule_sin_tocar_assign_to_dept_no_valida(client_with_conn) 
     romperse — solo un `fetchval` (el del gate de permiso); `dependencia_activa`
     nunca se invoca porque el PATCH no tocó el campo."""
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.return_value = 1  # solo el gate de permiso
+    # El gate de permiso y el `prev_hash` del asiento. `dependencia_activa` NO
+    # se invoca: el PATCH no tocó el campo.
+    mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.return_value = make_rule_record(name="Renombrada")
 
     resp = await client.patch(
@@ -498,7 +503,8 @@ async def test_update_rule_sin_tocar_assign_to_dept_no_valida(client_with_conn) 
     )
 
     assert resp.status_code == 200
-    assert mock_conn.fetchval.await_count == 1
+    # Dos y no tres: el gate y el asiento, sin la consulta de `dependencia_activa`.
+    assert mock_conn.fetchval.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -523,7 +529,8 @@ async def test_update_rule_con_assign_to_dept_dependencia_inexistente_422(
 @pytest.mark.asyncio
 async def test_update_rule_con_assign_to_dept_valido_ok(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.side_effect = [1, 1]  # permiso OK, dependencia_activa → True
+    # permiso OK, dependencia_activa → True, prev_hash del asiento → None
+    mock_conn.fetchval.side_effect = [1, 1, None]
     mock_conn.fetchrow.return_value = make_rule_record(assign_to_dept="Ventanilla Nueva")
 
     resp = await client.patch(
@@ -534,3 +541,205 @@ async def test_update_rule_con_assign_to_dept_valido_ok(client_with_conn) -> Non
 
     assert resp.status_code == 200
     assert resp.json()["assign_to_dept"] == "Ventanilla Nueva"
+
+
+# ---------------------------------------------------------------------------
+# Auditoría del CRUD de reglas (ADR-010)
+#
+# Una regla decide a qué dependencia se asigna cada radicado ENTRANTE: quien la
+# escribe está redirigiendo correspondencia oficial que todavía no ha llegado, y
+# quien la borra hace que deje de redirigirse. Es de las mutaciones que ADR-010
+# obliga a asentar, y este servicio no tenía ni una referencia a `audit` mientras
+# su hermano `workflow_service` tenía cuarenta y nueve.
+#
+# Los asientos se miden sobre el `INSERT INTO public.audit_log` que emite
+# `audit.append`, igual que en `test_workflow.py`.
+# ---------------------------------------------------------------------------
+
+# Posiciones de los argumentos del INSERT de `audit.append`. `args[0]` es el SQL
+# y de ahí en adelante van `$1..$11` en el orden declarado en
+# `shared/orpycamcp_common/audit.py`: tenant, service, actor, canal, action,
+# object_type, object_ref, payload, prev_hash, hash, ts.
+#
+# Se nombran porque un índice suelto no se lee, y se comprueban contra el SQL en
+# `test_los_indices_del_asiento_son_los_declarados`: escritos a ojo, el primer
+# intento los tuvo desplazados y los tests fallaban por la razón equivocada.
+_A_ACTOR = 3
+_A_ACTION = 5
+_A_OBJECT_TYPE = 6
+_A_OBJECT_REF = 7
+_A_PAYLOAD = 8
+
+
+def test_los_indices_del_asiento_son_los_declarados() -> None:
+    """Ancla los índices al SQL real, no a lo que yo recordara de él."""
+    from orpycamcp_common.audit import _INSERT_SQL
+
+    columnas = (
+        _INSERT_SQL.split("(", 1)[1].split(")", 1)[0].replace("\n", " ").replace(" ", "")
+    ).split(",")
+    # `args[0]` es el SQL, así que la columna N-ésima va en `args[N + 1]`.
+    assert columnas[_A_ACTOR - 1] == "actor"
+    assert columnas[_A_ACTION - 1] == "action"
+    assert columnas[_A_OBJECT_TYPE - 1] == "object_type"
+    assert columnas[_A_OBJECT_REF - 1] == "object_ref"
+    assert columnas[_A_PAYLOAD - 1] == "payload"
+
+
+def _asientos(mock_conn) -> list:
+    return [
+        c
+        for c in mock_conn.execute.await_args_list
+        if "INSERT INTO public.audit_log" in c.args[0]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_crear_una_regla_deja_asiento_con_lo_que_la_regla_dice(client_with_conn) -> None:
+    """El asiento lleva el CONTENIDO de la regla, no solo que se creó una.
+
+    «Se creó la regla tal» no responde la pregunta que se le hace a la traza —
+    «¿quién decidió que las tutelas fueran a Jurídica?»—; para eso hay que poder
+    leer a dónde asignaba y con qué condiciones.
+    """
+    client, mock_conn, _ = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.side_effect = [1, 1, None]  # permiso, dependencia, prev_hash
+    mock_conn.fetchrow.return_value = make_rule_record(
+        rule_id=rid, name="Entrada o Salida", assign_to_dept="Ventanilla"
+    )
+
+    resp = await client.post(
+        "/api/v1/workflow/rules", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 201
+    asientos = _asientos(mock_conn)
+    assert len(asientos) == 1
+    args = asientos[0].args
+    assert args[_A_ACTION] == "workflow.regla_creada"
+    assert args[_A_OBJECT_TYPE] == "workflow_rule"
+    # El UUID y no el nombre: renombrar la regla no puede partir su historial.
+    assert args[_A_OBJECT_REF] == str(rid)
+    assert args[_A_ACTOR] == str(USER_ID)
+    regla = json.loads(args[_A_PAYLOAD])["regla"]
+    assert regla["assign_to_dept"] == "Ventanilla"
+    assert regla["name"] == "Entrada o Salida"
+
+
+@pytest.mark.asyncio
+async def test_editar_una_regla_asienta_el_ANTES_y_el_DESPUES(client_with_conn) -> None:
+    """Sin el valor anterior, el asiento dice que alguien la editó y nada más.
+
+    Y solo los campos que esta petición tocó: volcar la regla entera enterraría
+    el cambio —lo único que se viene a mirar— entre once campos que siguen igual.
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, None]  # permiso, prev_hash
+    # 1.ª lectura: el estado previo (SELECT ... FOR UPDATE). 2.ª: la fila ya
+    # actualizada que devuelve el UPDATE.
+    mock_conn.fetchrow.side_effect = [
+        make_rule_record(name="Nombre viejo", assign_to_dept="Jurídica"),
+        make_rule_record(name="Renombrada", assign_to_dept="Jurídica"),
+    ]
+
+    resp = await client.patch(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}",
+        json=_UPDATE_PAYLOAD,  # {"name": "Renombrada"}
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    args = _asientos(mock_conn)[0].args
+    assert args[_A_ACTION] == "workflow.regla_modificada"
+    cambios = json.loads(args[_A_PAYLOAD])["cambios"]
+    assert cambios == {"name": {"antes": "Nombre viejo", "despues": "Renombrada"}}
+    # El destino no se tocó, así que no aparece: el asiento describe el cambio.
+    assert "assign_to_dept" not in cambios
+
+
+@pytest.mark.asyncio
+async def test_borrar_una_regla_conserva_en_el_asiento_lo_que_decia(client_with_conn) -> None:
+    """El `DELETE` es físico: el asiento es el ÚNICO sitio donde sobrevive.
+
+    Sin el retrato completo, «¿por qué dejaron de asignarse a Jurídica?» queda
+    sin respuesta posible — la fila ya no está en ninguna parte.
+    """
+    client, mock_conn, _ = client_with_conn
+    rid = uuid.uuid4()
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.return_value = make_rule_record(
+        rule_id=rid, name="Tutelas a Jurídica", assign_to_dept="Dirección Jurídica"
+    )
+
+    resp = await client.delete(f"/api/v1/workflow/rules/{rid}", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 204
+    args = _asientos(mock_conn)[0].args
+    assert args[_A_ACTION] == "workflow.regla_eliminada"
+    assert args[_A_OBJECT_REF] == str(rid)
+    assert args[_A_ACTOR] == str(USER_ID)
+    regla = json.loads(args[_A_PAYLOAD])["regla"]
+    assert regla["name"] == "Tutelas a Jurídica"
+    assert regla["assign_to_dept"] == "Dirección Jurídica"
+
+
+@pytest.mark.asyncio
+async def test_borrar_una_regla_inexistente_no_asienta_nada(client_with_conn) -> None:
+    """Control positivo: un 404 no es un acto, y no puede dejar rastro de uno.
+
+    Sin esto, los tests de arriba pasarían igual con un servicio que asentara en
+    todos los casos — y la cadena se llenaría de borrados que nunca ocurrieron.
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.return_value = None  # no existe
+
+    resp = await client.delete(f"/api/v1/workflow/rules/{uuid.uuid4()}", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 404
+    assert _asientos(mock_conn) == []
+
+
+@pytest.mark.asyncio
+async def test_un_patch_vacio_no_asienta_nada(client_with_conn) -> None:
+    """Gemelo del anterior por el otro lado: sin cambios no hay acto.
+
+    Un PATCH sin campos no muta nada; asentarlo llenaría la cadena de entradas
+    que no describen ningún cambio, que es la forma de volverla ilegible.
+    """
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.return_value = make_rule_record()
+
+    resp = await client.patch(
+        f"/api/v1/workflow/rules/{uuid.uuid4()}", json={}, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 200
+    assert _asientos(mock_conn) == []
+
+
+@pytest.mark.asyncio
+async def test_si_el_asiento_falla_la_regla_no_se_crea(client_with_conn, monkeypatch) -> None:
+    """Atomicidad: la regla y su asiento son un solo acto.
+
+    Es el criterio del resto del servicio y de ADR-010. Si la cadena inmutable no
+    puede recibir el asiento, la regla no debe quedar activa enrutando
+    correspondencia sin que conste quién la puso.
+    """
+    from app.services import rules_service
+
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, 1]
+    mock_conn.fetchrow.return_value = make_rule_record()
+
+    async def _falla(*a, **kw):
+        raise RuntimeError("cadena de auditoría caída")
+
+    monkeypatch.setattr(rules_service.audit, "append", _falla)
+
+    with pytest.raises(RuntimeError):
+        await client.post(
+            "/api/v1/workflow/rules", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS
+        )
