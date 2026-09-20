@@ -29,6 +29,16 @@ export async function GET({ locals, url }) {
   const estado = url.searchParams.get("estado") ?? "";
   if (estado && ESTADOS_VALIDOS.includes(estado)) params.set("estado", estado);
 
+  // Paginación: se reenvía la que pida el cliente, con `size=100` —el tope del
+  // backend— por defecto. `devuelto` es el histórico entero y antes llegaba sin
+  // `LIMIT`; el `X-Total-Count` que ahora emite el servicio es lo que permite a
+  // la pantalla decir «100 de 4.320» en vez de enseñar una ventana con cara de
+  // lista completa.
+  const page = url.searchParams.get("page");
+  params.set("page", page && /^\d+$/.test(page) ? page : "1");
+  const size = url.searchParams.get("size");
+  params.set("size", size && /^\d+$/.test(size) ? size : "100");
+
   const qs = params.toString();
 
   try {
@@ -39,7 +49,11 @@ export async function GET({ locals, url }) {
       },
     });
     const data = await res.json().catch(() => ({}));
-    return json(data, { status: res.status });
+    const total = res.headers.get("X-Total-Count");
+    return json(data, {
+      status: res.status,
+      headers: total ? { "X-Total-Count": total } : {},
+    });
   } catch {
     return json(
       { error: "connection_error", detail: "No se pudo obtener los préstamos." },

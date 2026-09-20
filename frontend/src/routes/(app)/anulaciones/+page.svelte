@@ -795,14 +795,13 @@
 
   .anulaciones-page {
     padding: var(--op-space-5);
-    max-width: 1000px;
+    max-width: var(--op-content-max);
 
     &__header {
       margin-bottom: var(--op-space-4);
     }
 
     &__title {
-      font-size: var(--op-font-lg);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;

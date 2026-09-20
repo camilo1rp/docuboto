@@ -78,7 +78,6 @@
 
   .logout__title {
     font-family: var(--op-font-display);
-    font-size: var(--op-font-xl);
     font-weight: var(--op-weight-bold);
     color: var(--op-text);
     margin: 0 0 var(--op-space-3);

@@ -586,7 +586,7 @@
 <style lang="scss">
   .usuarios-page {
     padding: var(--op-space-5);
-    max-width: 1100px;
+    max-width: var(--op-content-max);
   }
 
   .usuarios-page__username {

@@ -268,6 +268,22 @@ h3,
   font-family: var(--op-font-display);
 }
 
+// El TAMAÑO del título de una página, aquí y no en cada pantalla.
+//
+// Esta regla global solo fijaba la familia, así que el tamaño lo decidía quien
+// escribiera la pantalla: 27 con `--op-font-xl`, 16 con `--op-font-lg` y 5 sin
+// declarar nada —heredando el 2em del navegador, que a 15 px de base son 30—.
+// Tres tamaños distintos para el mismo elemento, y ninguno era una decisión.
+//
+// Va sobre `h1` a secas para que alcance también a las cinco que no declaraban
+// nada, que son las que más se salían. Una pantalla con un motivo real para
+// otro tamaño —la landing, con su `clamp()` de marca— lo declara en su propio
+// bloque y gana por especificidad, como debe ser: la excepción se escribe donde
+// se justifica.
+h1 {
+  font-size: var(--op-font-title-page);
+}
+
 // Reset de box-sizing complementario
 *,
 *::before,

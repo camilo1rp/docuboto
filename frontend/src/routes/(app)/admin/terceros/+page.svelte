@@ -302,7 +302,6 @@
     gap: var(--op-space-4);
 
     &__titulo {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       margin: 0;
     }

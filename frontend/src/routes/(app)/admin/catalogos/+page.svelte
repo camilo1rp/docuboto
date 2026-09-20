@@ -440,7 +440,7 @@
 <style lang="scss">
   .cat-page {
     padding: var(--op-space-5);
-    max-width: 1200px;
+    max-width: var(--op-content-max);
     display: flex;
     flex-direction: column;
     gap: var(--op-space-4);
@@ -452,7 +452,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;
@@ -477,9 +476,20 @@
 
   .cat-layout {
     display: grid;
-    grid-template-columns: 280px 1fr;
+    // El maestro no puede quedarse en 280 px fijos: en un móvil de 360 px
+    // dejaba menos de 80 px para el detalle, que es donde está el contenido.
+    // `minmax` deja que ceda cuando hace falta en vez de imponerse.
+    grid-template-columns: minmax(220px, 280px) 1fr;
     gap: var(--op-space-5);
     align-items: start;
+
+    // Aquí el punto de corte SÍ está justificado y no es un número inventado:
+    // dos columnas dejan de tener sentido cuando el detalle no alcanza el ancho
+    // del maestro. `auto-fit` no sirve para un maestro-detalle porque pondría
+    // las dos columnas iguales, que es justo lo que no son.
+    @media (max-width: 768px) {
+      grid-template-columns: 1fr;
+    }
   }
 
   .cat-master {

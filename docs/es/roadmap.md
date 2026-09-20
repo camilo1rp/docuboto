@@ -185,10 +185,20 @@ procedimiento, los casos y los puntos ciegos declarados quedan en
       — recurso propio, gate `PERM_PANU_CODI` (el mismo que decidir), orden FIFO y no-read-up
       aplicado por igual a las filas y al recuento. `/anulaciones` deja de ser un buscador y pasa
       a ser una bandeja de trabajo.
-- [ ] **Decisión de producto abierta**: las lecturas de TRD (4 endpoints) y PINAR (11) no exigen
-      permiso mientras la interfaz esconde esas pantallas. Ambos son instrumentos de publicación
-      obligatoria (Ac. AGN 004/2019 y 003/2015), así que puede ser deliberado — pero hay que
-      elegir: gatear las lecturas o declararlas abiertas. Esconder algo y servirlo a la vez no.
+- [x] **Lecturas de TRD y PINAR sin permiso** (cerrado; **verificado en código 2026-09-19**, la
+      casilla llevaba tiempo sin tachar). La disyuntiva «gatear o declarar abierto» estaba mal
+      planteada: las lecturas no son una sola cosa. El **vocabulario** —series, agrupaciones,
+      tipos documentales, dependencias, catálogos— queda **abierto a autenticados y declarado**,
+      porque lo consumen `/radicar` y `/expedientes`: `USUA_PERM_TRD` lo tiene quien
+      **administra** el instrumento, no quien lo usa, y gatearlo dejaría sin radicar a todo
+      operador con el síntoma lejos de la causa. El **circuito** sí se gateó
+      (`GET /trd/{code}/versiones` exige `USUA_PERM_TRD`, `archive-service/app/routers/trd.py:363`):
+      devuelve borradores y la deliberación del Comité, no el instrumento publicado. Y **PINAR se
+      cerró entero** (`USUA_PERM_ADMIN` en el `APIRouter`,
+      `tenant-service/app/routers/pinar.py:77`, gate por admisión que cubre sus 11 lecturas):
+      publicar el plan aprobado es un acto **hacia fuera**, una pantalla pública, no un GET interno
+      sin gate que se le parece por accidente. El recuento del pendiente también estaba corto —decía
+      15 y eran 33, incluidas 4 de TVD que ni mencionaba—.
 
 **Revisión de experiencia de uso del cierre del desfase API↔UI (2026-08-02)**
 
@@ -226,6 +236,21 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 > actores. Un pendiente sin fecha de comprobación no es un pendiente: es un
 > recuerdo.
 
+> **Segundo barrido (2026-09-19).** Tras cerrar la tanda de trabajo quedaban
+> **siete** casillas sin marcar, y **ninguna era trabajo pendiente**: una estaba
+> cerrada desde hacía tiempo sin tachar (las lecturas de TRD/PINAR, comprobada
+> ahora línea a línea en los dos routers), **tres eran decisiones ya tomadas con
+> la casilla mal puesta** —`/bandeja` fuera de `DataTable`, los filtros
+> server-side y los favoritos, las dos últimas incluso tachadas en su propio
+> texto mientras la casilla decía lo contrario—, dos son futuro planeado y no
+> deuda, y la última está esperando una decisión de producto.
+>
+> Lo que enseña no es el recuento sino la forma: **una lista cuya casilla
+> contradice a su propio texto no informa, desinforma**. Da la sensación de siete
+> frentes abiertos donde hay uno, y esa sensación dirige trabajo. Es el mismo
+> defecto que esta lista corrige en el producto —el dato correcto guardado donde
+> nadie lo mira— aplicado al instrumento que sirve para encontrarlo.
+
 **Rendimiento y activos**
 
 - [x] **Subset de Font Awesome** (cerrado 2026-09-18): se importan el núcleo y `solid`. El recuento del pendiente también estaba viejo —decía «solid y regular»—: hay **771** usos de `fas`/`fa-solid` y **cero** de `far`/`fab`, así que sobraban 141 KB de fuentes por visitante. Con guardián, porque un icono de familia no cargada no da error: pinta una caja vacía.
@@ -233,9 +258,9 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 
 **Migración a `DataTable`**
 
-- [ ] **`/bandeja`**: es el flujo núcleo del sistema (tramitar, devolver, anular, responder, vistos buenos). Se dejó fuera de alcance deliberadamente: migrarla exige revalidar todo ese flujo, no solo el render de la tabla.
+- [x] **`/bandeja` — decisión tomada, no se migra**: es el flujo núcleo del sistema (tramitar, devolver, anular, responder, vistos buenos). Se dejó fuera de alcance deliberadamente: migrarla exige revalidar todo ese flujo, no solo el render de la tabla.
 - [ ] **`/archivo-fisico`**: su listado es una **estructura de árbol** (ubicaciones recursivas), no una tabla plana; `DataTable` no modela jerarquía hoy. Requiere decidir antes si se añade soporte de árbol al componente o si la pantalla conserva su render propio.
-- [ ] ~~**Filtros/orden server-side en `DataTable`**~~ — *la premisa es FALSA, verificado 2026-09-18*. En 6 de las 7 tablas con `enableFilters`/`enableSort` el conjunto llega íntegro (`pageSize = rows.length`): no hay página parcial que filtrar. Y las pantallas que sí paginan de verdad —bandeja, búsqueda, expedientes, auditoría— **nunca activan esas props**: ya filtran server-side en sus loaders. Conectar los eventos a un refetch sería **regresión** en reportes, donde los datos son agregados completos y el índice de reservados es content-free e íntegro por Ley 1712. El eje «orden» es además **inejecutable hoy**: ningún router acepta parámetro de orden. Lo que queda es backend sin demanda actual, no deuda de este componente.
+- [x] ~~**Filtros/orden server-side en `DataTable`**~~ — **descartado**: — *la premisa es FALSA, verificado 2026-09-18*. En 6 de las 7 tablas con `enableFilters`/`enableSort` el conjunto llega íntegro (`pageSize = rows.length`): no hay página parcial que filtrar. Y las pantallas que sí paginan de verdad —bandeja, búsqueda, expedientes, auditoría— **nunca activan esas props**: ya filtran server-side en sus loaders. Conectar los eventos a un refetch sería **regresión** en reportes, donde los datos son agregados completos y el índice de reservados es content-free e íntegro por Ley 1712. El eje «orden» es además **inejecutable hoy**: ningún router acepta parámetro de orden. Lo que queda es backend sin demanda actual, no deuda de este componente.
 
 **Backend que falta para cerrar la UI**
 
@@ -248,12 +273,15 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 - [x] **Colores crudos `rgba(...)` en los velos** (cerrado 2026-09-18): el color del velo vive una vez (`$op-scrim-rgb`) y hay dos niveles con significado — `--op-scrim` para lo que bloquea y `--op-scrim-soft` para el asistente—, con guardián. *Queda abierto*: los `rgba(...)` de las superficies de marca de la landing y del login, que son degradados y sombras, no velos.
 - [x] **Token de FAMILIA monoespaciada** (cerrado 2026-08-22): `--op-font-family-mono` en `_tokens.scss` y **46** declaraciones migradas en 27 archivos — eran más de los ~16 estimados, y en tres formas distintas. De paso aparecieron dos defectos que el apunte no preveía: nueve declaraciones hacían `font-family: var(--op-font-mono, monospace)`, **inválidas y descartadas por el navegador** (el respaldo no se aplica si la variable existe, y `--op-font-mono` existe: es el tamaño), y Bulma pintaba `code` en rojo `#da1039` sobre gris — el color del error sobre el número de radicado. Guardián `styles/tokens-mono.test.js`.
 - [x] **`<a role="button">`** (cerrado 2026-09-18): el enlace se anuncia como enlace. Con el rol se fueron `aria-disabled` y `aria-busy` —siempre `false` en esa rama, que solo existe cuando `!isDisabled`— y el spinner de `loading`, inalcanzable por lo mismo. Dos tests afirmaban el defecto como contrato y se reescribieron.
-- [ ] **Tamaño del H1 inconsistente entre pantallas** y **objetivos táctiles <44px**. *Medido de nuevo 2026-09-18, y el pendiente no se puede ejecutar como está*: de las 48 páginas con `<h1>`, **35 no declaran tamaño** —heredan el 2em por defecto del navegador, porque la regla global solo fija `font-family`—, 11 usan `--op-font-xl` y 2 `--op-font-lg`. Además la landing usa `clamp(28px, 4vw, …)` **a propósito**, que no es deriva. Antes de tocar nada hace falta decidir cuál es el tamaño de un título de página y comprobar pantalla por pantalla: una sustitución global cambia 48 vistas que nadie ha mirado.
+- [x] **Objetivos táctiles <44px** (cerrado 2026-09-19). El criterio existía y se aplicaba **componente a componente**: 19 `@media (pointer: coarse)` en diez archivos, y un censo de los `<button>` nativos encontró **62 controles sin ningún mínimo declarado** —pestañas de `/admin`, cierres de modal y cajón, la paginación de `DataTable`, las acciones de la bandeja—. Repararlos uno a uno es cómo se llegó a 62. Cerrado con una regla en la hoja global bajo `pointer: coarse` (el escritorio no cambia ni un píxel), con `min-*` y no `height` para que un control mayor no encoja, y con casillas y radios **excluidos a propósito** —ahí lo que se agranda es el `<label>`—. Guardián `styles/el-dedo-alcanza-los-controles.test.js`, que declara además lo que NO puede medir: jsdom no calcula layout, así que vigila el CSS, no el resultado renderizado.
+- [x] **El escritorio se usaba a medias** (cerrado 2026-09-19, *reportado por el usuario*). 27 pantallas con nueve anchos distintos y 19 alineadas a la izquierda: el espacio sobrante quedaba todo a la derecha. En un portátil de 1536 px con la barra lateral (1272 px útiles), `/admin/parametros` se acotaba a 900 y desperdiciaba 372 px **con la tabla recortada al lado**. Cerrado con dos tokens —`--op-content-max` **sin techo**, para que la pantalla de datos se ajuste al dispositivo que la usa, y `--op-reading-max` 880 px para formularios y texto, donde el límite es de legibilidad y no de sitio—, más `.op-table-scroll` para las tres tablas de 17 columnas de `/admin/eliminacion`, que no desbordaban: comprimían. Guardián sobre el contenedor raíz, con excepciones declaradas.
+- [x] **Tamaño del H1** (cerrado 2026-09-19). *Las cifras del pendiente eran falsas y la premisa también*: no eran «35 sin declarar» sino **5**, y no faltaba decidir el tamaño — la escala lo decía (`$op-font-2xl: 28px; // = H1 v1.0`) y no lo usaba ni una pantalla. Cerrado con el token semántico `--op-font-title-page` aplicado por la regla global sobre `h1`, retirando las 43 declaraciones por pantalla. **Decisión tomada (opción b)**: el valor sale de la práctica (22 px, lo que ya tenían 27 de 44) y no de la tabla, y se corrigió la anotación de la escala; `$op-font-2xl` conserva sus 28 px porque cinco sitios legítimos lo usan para otra cosa. Medido en navegador real, no solo en el CSS.
+
 - [x] **`EmptyState` reimplementa `.op-btn`** (cerrado 2026-09-18): usa `Button`. La copia se justificaba «por si `Button` no está importado», y el escape era justamente importarlo.
 - [x] **Detalles ARIA — `aria-controls`** (cerrado 2026-09-18): el panel de métricas permanece en el árbol y se oculta con `hidden`, así que el identificador que el botón declara controlar existe siempre. El `role="list"` con hijos que no son `listitem` se cerró también: la fila de KPIs pasa a `role="group"`.
 - [x] **Atajo `/` y trampas de foco** (cerrado 2026-09-18): la guarda pregunta por `[aria-modal="true"]` en el DOM —no por una bandera local: lo modal lo declara quien se abre— así que con el asistente o el drawer abiertos el foco ya no sale del diálogo. La mutación que la quita solo cae si el test espera al `tick()` en el que se mueve el foco.
 - [x] **`AssistantDock` promete lo que no cumple** (cerrado, verificado 2026-09-17): el dock monta `ProposalCard` y cablea la confirmación con frase tecleada (`AssistantDock.svelte:377-382`), y el placeholder que hacía la promesa ya no está. Importa que estuviera cerrado: su condición de inocuidad era «el backend v1 es solo-lectura», y el catálogo del MCP tiene hoy herramientas de escritura.
-- [ ] ~~**Limpiar favoritos al cerrar sesión**~~ **REPLANTEADO 2026-09-18: el arreglo que este pendiente proponía sería una regresión.** Los favoritos se guardan por `orpyca:favorites:<tenant>:<usuario>`, así que la lista de otro NO se le muestra a nadie; y el logout es un `<form method=POST>` que redirige a Keycloak —navegación completa—, de modo que el estado en memoria muere solo. Llamar `clearPersistedFavorites()` al salir borraría los favoritos PROPIOS en cada cierre de sesión, que es lo contrario de por qué se persisten. Lo único real es el residuo en `localStorage` de una máquina compartida, y eso pide un acto explícito —«olvidar mis favoritos en este equipo»—, no un borrado automático. Queda como decisión de producto, no como defecto.
+- [x] ~~**Limpiar favoritos al cerrar sesión**~~ — **descartado**: **REPLANTEADO 2026-09-18: el arreglo que este pendiente proponía sería una regresión.** Los favoritos se guardan por `orpyca:favorites:<tenant>:<usuario>`, así que la lista de otro NO se le muestra a nadie; y el logout es un `<form method=POST>` que redirige a Keycloak —navegación completa—, de modo que el estado en memoria muere solo. Llamar `clearPersistedFavorites()` al salir borraría los favoritos PROPIOS en cada cierre de sesión, que es lo contrario de por qué se persisten. Lo único real es el residuo en `localStorage` de una máquina compartida, y eso pide un acto explícito —«olvidar mis favoritos en este equipo»—, no un borrado automático. Queda como decisión de producto, no como defecto.
 
 **Encontrado al verificar lo anterior (2026-09-18) — no estaba en ningún pendiente**
 
@@ -261,7 +289,7 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 
 - [x] **Las reglas de flujo se crean, editan y borran sin asiento de auditoría** (cerrado 2026-09-19). Los tres actos asientan dentro de la transacción que escriben (`workflow.regla_creada` / `_modificada` / `_eliminada`, `object_ref` = UUID de la regla). La edición registra solo los campos tocados con su `antes`/`despues`, leídos con `FOR UPDATE`; el borrado —físico— lleva el retrato completo, que pasa a ser el único sitio donde sobrevive lo que la regla decía. `PATCH` y `DELETE` exigen ahora `X-User-Id`, que `POST` ya exigía.
 - [x] **`size=200` truncaba en silencio** (cerrado 2026-09-19). Eran **ocho** pantallas, no dos: se sumaron `/archivo-fisico` y las tres de personas. 200 es el `le` del backend, no una holgura. Cerrado con `traerListaCompleta` —pagina hasta cubrir el total y **declara** la carga parcial si no cabe— más el aviso visible en las cuatro pantallas donde la lista alimenta un árbol o un selector. `GET /auth/users/pickable`, que no pagina, emite ahora `X-Total-Count` con los activos que hay: sin esa cabecera no había nada que mirar.
-- [ ] **`GET /prestamos` devuelve la lista entera sin paginar**: sin `page`/`size`, sin `X-Total-Count` y sin `LIMIT`. Cualquier recuento que se construya encima sería `items.length`, que es la ventana arbitraria que se quiere eliminar. *Comprobado y NO es una fuga*: la consulta no une `expedientes`, así que no hay nivel que filtrar — expone la caja y su préstamo, con `USUA_PERM_EXPEDIENTE`. Lo que falta es paginación, no clearance.
+- [x] **`GET /prestamos` devolvía la lista entera sin paginar** (cerrado 2026-09-19). `page`/`size` + `X-Total-Count`, con el `COUNT` compartiendo `WHERE` y desempate por `id` (`fecha_prestamo` empata para todo lo insertado en una misma transacción). El listado por unidad se deja sin paginar, declarado. En pantalla, contador del servidor y «cargar más». *Confirmado de nuevo*: no es una fuga de clearance — esa consulta no une `expedientes`.
 
 **Deuda de tooling y documentación**
 

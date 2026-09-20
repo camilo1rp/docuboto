@@ -126,7 +126,25 @@ $op-font-base: 15px; // = Body v1.0
 $op-font-md: 16px;
 $op-font-lg: 18px;
 $op-font-xl: 22px; // = H2 v1.0
-$op-font-2xl: 28px; // = H1 v1.0
+$op-font-2xl: 28px; // Cifras destacadas y titulares de la landing.
+
+// El título de una página. Existe como token PROPIO porque el tamaño de un `h1`
+// es una decisión del sistema, no de cada pantalla — y hasta ahora lo decidía
+// cada pantalla: de las 49 con `<h1>`, **27 usaban `--op-font-xl` (22 px), 16
+// `--op-font-lg` (18 px) y 5 ninguno** —heredando el 2em del navegador—.
+//
+// El valor sale de esa práctica y no de la tabla de la v1.0, que decía 28 px
+// para el H1 y **no lo aplicaba ni una sola pantalla**. Entre subir 43 vistas a
+// un tamaño que nadie ha visto nunca y adoptar el que 27 pantallas ya tienen
+// —mirado por quien las construyó, una a una— se elige lo segundo. Esa
+// anotación de la escala se corrigió en vez de dejarla prometiendo algo que el
+// producto contradice desde el primer día: un token que dice ser el H1 y que
+// ningún h1 usa es un comentario falso con forma de valor.
+//
+// `$op-font-2xl` conserva sus 28 px porque cinco sitios legítimos lo usan para
+// otra cosa (cifras destacadas, el hero de la landing); cambiarle el valor para
+// arreglar los h1 habría sido una regresión en todos ellos.
+$op-font-title-page: $op-font-xl;
 $op-font-size-display: 46px; // = Display v1.0 (cifras destacadas, hero)
 // OJO: es un TAMAÑO, no una familia. Usar `--op-font-family-mono` para
 // `font-family`; esto va en `font-size`. La confusión dejó 9 declaraciones
@@ -189,6 +207,33 @@ $op-sidebar-width: 264px;
 $op-sidebar-collapsed-width: 64px;
 $op-topbar-height: 52px;
 $op-breadcrumb-height: 36px;
+
+// Ancho del contenido de una página. DOS valores, porque son dos problemas
+// distintos y confundirlos es lo que produjo los nueve que había.
+//
+// El censo encontró **27 pantallas con nueve anchos distintos** (1200, 1100,
+// 1000, 960, 900, 820, 760, 720 y 640) y **19 de ellas alineadas a la
+// izquierda**, así que el espacio sobrante quedaba todo a la derecha. En un
+// portátil de 1536 px con la barra lateral quedan 1272 px de área útil: una
+// pantalla de datos acotada a 900 px desperdiciaba 372 px **y aun así recortaba
+// su tabla**, obligando a desplazar en horizontal con el hueco al lado.
+//
+//   · `--op-content-max` — pantallas de DATOS: tablas, listados, tableros.
+//     **No lleva techo**: la pantalla se ajusta al dispositivo que la usa, sea
+//     un portátil de 1366 o un monitor de 2560, y la tabla dispone de todo el
+//     ancho antes de tener que desplazarse. Un número fijo aquí vuelve a ser lo
+//     mismo que había —una decisión tomada por quien escribió el CSS sobre una
+//     pantalla que no tiene delante—, solo que una vez en vez de nueve. El
+//     respiro lateral lo pone el `padding` de cada página, que sí escala.
+//
+//   · `--op-reading-max` — formularios y texto seguido. Aquí el límite SÍ tiene
+//     motivo y no es el sitio disponible: un campo de una sola columna a
+//     1.200 px es incómodo de rellenar, y una línea de prosa de 200 caracteres
+//     se pierde al saltar de renglón. ~880 px son unos 80 caracteres a 15 px.
+//     Se ajusta igual hacia abajo: `max-width` nunca ensancha, así que en un
+//     móvil sigue ocupando el 100 %.
+$op-content-max: 100%;
+$op-reading-max: 880px;
 
 // -----------------------------------------------------------------------------
 // 2. CSS Custom Properties en :root (rebranding por tenant en runtime)
@@ -257,6 +302,7 @@ $op-breadcrumb-height: 36px;
   --op-font-lg: #{$op-font-lg};
   --op-font-xl: #{$op-font-xl};
   --op-font-2xl: #{$op-font-2xl};
+  --op-font-title-page: #{$op-font-title-page};
   --op-font-size-display: #{$op-font-size-display};
   --op-font-mono: #{$op-font-mono};
 
@@ -296,6 +342,8 @@ $op-breadcrumb-height: 36px;
   --op-motion-easing: #{$op-motion-easing};
 
   // Layout
+  --op-content-max: #{$op-content-max};
+  --op-reading-max: #{$op-reading-max};
   --op-sidebar-width: #{$op-sidebar-width};
   --op-sidebar-collapsed-width: #{$op-sidebar-collapsed-width};
   --op-topbar-height: #{$op-topbar-height};

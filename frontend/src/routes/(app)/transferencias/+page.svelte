@@ -806,7 +806,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       display: flex;

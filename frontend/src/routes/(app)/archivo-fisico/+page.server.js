@@ -67,6 +67,43 @@ async function gatewayGet(path, token, tenant, extraHeaders = {}) {
   return res.json();
 }
 
+/**
+ * Igual que `gatewayGet`, pero conserva el `X-Total-Count`.
+ *
+ * Existe porque `gatewayGet` devuelve `res.json()` y tira la respuesta: la
+ * cabecera con el total —lo único que distingue «no hay más» de «hay más y no
+ * caben»— se perdía antes de llegar a la pantalla.
+ *
+ * @returns {Promise<{items: any[], total: number}>}
+ */
+async function gatewayGetConTotal(path, token, tenant) {
+  const res = await fetch(`${API_V1}${path}`, {
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Tenant-Slug": tenant,
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({
+      error: "upstream_error",
+      detail: `HTTP ${res.status}`,
+      status: res.status,
+    }));
+    throw {
+      code: codigoError(body) ?? "upstream_error",
+      detail: mensajeError(body, `HTTP ${res.status}`),
+      status: res.status,
+    };
+  }
+
+  const items = await res.json();
+  const total = Number(res.headers.get("X-Total-Count"));
+  const lista = Array.isArray(items) ? items : [];
+  return { items: lista, total: Number.isFinite(total) ? total : lista.length };
+}
+
 // ---------------------------------------------------------------------------
 // load — composición SSR paralela
 // ---------------------------------------------------------------------------
@@ -99,10 +136,15 @@ export async function load({ cookies, parent, fetch }) {
     gatewayGet("/ubicaciones?activo=true&solo_raiz=true", token, tenant),
 
     // Faceta 2: Préstamos activos
-    gatewayGet("/prestamos?estado=prestado", token, tenant),
+    //
+    // `size=100` es el tope del backend. Antes no se pedía ninguno y el endpoint
+    // devolvía la tabla ENTERA sin `LIMIT`: para `prestado` y `vencido` la cota
+    // la pone la operación, pero el endpoint es el mismo que sirve `devuelto`,
+    // que es el histórico y no deja de crecer.
+    gatewayGetConTotal("/prestamos?estado=prestado&page=1&size=100", token, tenant),
 
     // Faceta 3: Préstamos vencidos
-    gatewayGet("/prestamos?estado=vencido", token, tenant),
+    gatewayGetConTotal("/prestamos?estado=vencido&page=1&size=100", token, tenant),
 
     // Faceta 4: CATÁLOGO de ubicaciones — el árbol entero, plano y con su
     // ruta. No es una duplicación de la faceta 1: aquella pinta el primer

@@ -585,24 +585,33 @@
                 description="El avance por objetivo aparecerá cuando el plan tenga objetivos con proyectos asociados (fase posterior de PINAR)."
               />
             {:else}
-              <table class="pinar-tablero-table" aria-label="Avance por objetivo">
-                <thead>
-                  <tr>
-                    <th scope="col">Objetivo</th>
-                    <th scope="col">Proyectos</th>
-                    <th scope="col">Avance</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each tablero.data.por_objetivo as fila (fila.objetivo_id ?? fila.descripcion)}
+              <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+              <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+              <div
+                class="op-table-scroll"
+                role="region"
+                aria-label="Avance por objetivo"
+                tabindex="0"
+              >
+                <table class="pinar-tablero-table" aria-label="Avance por objetivo">
+                  <thead>
                     <tr>
-                      <td>{fila.descripcion ?? "Sin objetivo asignado"}</td>
-                      <td>{fila.proyectos}</td>
-                      <td>{fila.avance_promedio.toFixed(0)}%</td>
+                      <th scope="col">Objetivo</th>
+                      <th scope="col">Proyectos</th>
+                      <th scope="col">Avance</th>
                     </tr>
-                  {/each}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {#each tablero.data.por_objetivo as fila (fila.objetivo_id ?? fila.descripcion)}
+                      <tr>
+                        <td>{fila.descripcion ?? "Sin objetivo asignado"}</td>
+                        <td>{fila.proyectos}</td>
+                        <td>{fila.avance_promedio.toFixed(0)}%</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
             {/if}
           </Card>
 
@@ -615,24 +624,33 @@
                 description="El avance por eje aparecerá cuando haya proyectos vinculados a aspectos priorizados por eje (fase posterior de PINAR)."
               />
             {:else}
-              <table class="pinar-tablero-table" aria-label="Avance por eje estratégico">
-                <thead>
-                  <tr>
-                    <th scope="col">Eje</th>
-                    <th scope="col">Proyectos</th>
-                    <th scope="col">Avance</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each tablero.data.por_eje as fila (fila.eje_code)}
+              <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+              <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+              <div
+                class="op-table-scroll"
+                role="region"
+                aria-label="Avance por eje estratégico"
+                tabindex="0"
+              >
+                <table class="pinar-tablero-table" aria-label="Avance por eje estratégico">
+                  <thead>
                     <tr>
-                      <td>{fila.nombre}</td>
-                      <td>{fila.proyectos}</td>
-                      <td>{fila.avance_promedio.toFixed(0)}%</td>
+                      <th scope="col">Eje</th>
+                      <th scope="col">Proyectos</th>
+                      <th scope="col">Avance</th>
                     </tr>
-                  {/each}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {#each tablero.data.por_eje as fila (fila.eje_code)}
+                      <tr>
+                        <td>{fila.nombre}</td>
+                        <td>{fila.proyectos}</td>
+                        <td>{fila.avance_promedio.toFixed(0)}%</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
             {/if}
           </Card>
         </div>
@@ -773,7 +791,7 @@
 <style lang="scss">
   .pinar-workspace {
     padding: var(--op-space-5);
-    max-width: 1100px;
+    max-width: var(--op-content-max);
 
     &__header {
       display: flex;
@@ -785,7 +803,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-lg);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0 0 var(--op-space-2);

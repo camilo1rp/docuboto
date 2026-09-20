@@ -321,7 +321,13 @@ async def list_prestamos_of_unit(
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[PrestamoResponse]:
-    return await FisicoService(conn, tenant_slug).list_prestamos(estado=None, unidad_id=unidad_id)
+    """Préstamos de UNA unidad. No pagina, y está declarado: la cota la pone el
+    objeto — una unidad de conservación no acumula miles de préstamos, a
+    diferencia del listado global, donde `devuelto` es el histórico entero."""
+    items, _ = await FisicoService(conn, tenant_slug).list_prestamos(
+        estado=None, unidad_id=unidad_id
+    )
+    return items
 
 
 @router.get(
@@ -330,11 +336,30 @@ async def list_prestamos_of_unit(
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def list_prestamos(
+    response: Response,
     estado: str | None = Query(default=None, description="prestado|devuelto|vencido"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[PrestamoResponse]:
-    return await FisicoService(conn, tenant_slug).list_prestamos(estado=estado, unidad_id=None)
+    """Préstamos del tenant, paginados (`page`/`size` + `X-Total-Count`).
+
+    Devolvía la tabla ENTERA sin `LIMIT`. `prestado` y `vencido` están acotados
+    por la operación, pero `devuelto` es el histórico: crece con cada préstamo
+    que se cierra y no para. Y sin `X-Total-Count` el único recuento posible era
+    `items.length`, que es el tamaño de la ventana haciéndose pasar por el de la
+    consulta.
+
+    Nota de alcance verificada: esta consulta **no une `expedientes`**, así que
+    no hay nivel de seguridad que filtrar — se creyó una fuga de clearance y no
+    lo es. Lo que faltaba era paginación, no un gate.
+    """
+    items, total = await FisicoService(conn, tenant_slug).list_prestamos(
+        estado=estado, unidad_id=None, page=page, size=size
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
 
 
 @router.post(

@@ -8,6 +8,20 @@ el `api-gateway` real.
 `testIgnore: ["**/authenticated/**"]`, para que un chequeo de PR siga siendo
 determinista y sin infraestructura. Corren con su propio config.
 
+## Qué hay aquí
+
+- `login-flow.spec.js`, `bandeja-operador.spec.js`, `asistente-dock.spec.js` — los
+  flujos de operador.
+- **`adaptabilidad-app.spec.js`** — 17 pantallas × 3 anchos (móvil 390, portátil
+  1366, escritorio 1920), midiendo desplazamiento horizontal y tablas estrujadas
+  con un navegador de verdad. Existe porque ese defecto lo reportó una persona
+  usando el producto **con la suite entera en verde**: Vitest corre sobre jsdom,
+  que no calcula layout, así que dos mil pruebas no sabían cuántos píxeles ocupa
+  nada. Su gemelo para las páginas públicas vive en `e2e/adaptabilidad.spec.js` y
+  sí corre en el smoke, porque no necesita sesión. El medidor es el mismo
+  (`e2e/_adaptabilidad.js`): copiarlo sería garantizar que dentro de un mes midan
+  cosas distintas.
+
 ## Cómo correrlos
 
 1. Levantar la pila completa desde la raíz del repo:

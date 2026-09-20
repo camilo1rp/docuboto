@@ -648,7 +648,7 @@
 <style lang="scss">
   .param-page {
     padding: var(--op-space-5);
-    max-width: 900px;
+    max-width: var(--op-content-max);
     display: flex;
     flex-direction: column;
     gap: var(--op-space-4);
@@ -660,7 +660,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;
@@ -797,7 +796,7 @@
 
     &__row {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: var(--op-space-3);
     }
 

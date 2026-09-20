@@ -287,61 +287,69 @@
         {#if (porObjetivo[objetivo.id] ?? []).length === 0}
           <p class="pinar-proy__vacio">Sin proyectos que lo cumplan todavía.</p>
         {:else}
-          <table class="pinar-proy__tabla">
-            <caption class="is-sr-only">Proyectos de: {objetivo.descripcion}</caption>
-            <thead>
-              <tr>
-                <th scope="col">Proyecto</th>
-                <th scope="col">Responsable</th>
-                <th scope="col">Plazo</th>
-                <th scope="col">Estado</th>
-                <th scope="col">Avance</th>
-                <th scope="col"><span class="is-sr-only">Acciones</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each porObjetivo[objetivo.id] ?? [] as proyecto (proyecto.id)}
+          <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+          <div class="op-table-scroll" role="region" aria-label="Proyectos del plan" tabindex="0">
+            <table class="pinar-proy__tabla">
+              <caption class="is-sr-only">Proyectos de: {objetivo.descripcion}</caption>
+              <thead>
                 <tr>
-                  <td>
-                    <strong>{proyecto.nombre}</strong>
-                    {#if proyecto.meta}<br /><span class="pinar-proy__meta">{proyecto.meta}</span
-                      >{/if}
-                  </td>
-                  <td>{proyecto.responsable ?? "—"}</td>
-                  <td>{fecha(proyecto.fecha_inicio)} – {fecha(proyecto.fecha_fin)}</td>
-                  <td>
-                    <StatusChip
-                      status={ESTADO_CHIP[proyecto.estado] ?? "neutral"}
-                      label={ESTADO_LABEL[proyecto.estado] ?? proyecto.estado}
-                    />
-                  </td>
-                  <td>{proyecto.avance_pct}%</td>
-                  <td class="pinar-proy__acciones">
-                    {#if rastreable}
-                      <Button size="sm" variant="ghost" on:click={() => abrirSeguimiento(proyecto)}>
-                        Seguimiento
-                      </Button>
-                    {/if}
-                    {#if editable}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        on:click={() => abrirArticulacion(proyecto)}
-                      >
-                        Aspectos
-                      </Button>
-                      <Button size="sm" variant="ghost" on:click={() => abrirProyecto(proyecto)}>
-                        Editar
-                      </Button>
-                      <Button size="sm" variant="ghost" on:click={() => quitarProyecto(proyecto)}>
-                        Quitar
-                      </Button>
-                    {/if}
-                  </td>
+                  <th scope="col">Proyecto</th>
+                  <th scope="col">Responsable</th>
+                  <th scope="col">Plazo</th>
+                  <th scope="col">Estado</th>
+                  <th scope="col">Avance</th>
+                  <th scope="col"><span class="is-sr-only">Acciones</span></th>
                 </tr>
-              {/each}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {#each porObjetivo[objetivo.id] ?? [] as proyecto (proyecto.id)}
+                  <tr>
+                    <td>
+                      <strong>{proyecto.nombre}</strong>
+                      {#if proyecto.meta}<br /><span class="pinar-proy__meta">{proyecto.meta}</span
+                        >{/if}
+                    </td>
+                    <td>{proyecto.responsable ?? "—"}</td>
+                    <td>{fecha(proyecto.fecha_inicio)} – {fecha(proyecto.fecha_fin)}</td>
+                    <td>
+                      <StatusChip
+                        status={ESTADO_CHIP[proyecto.estado] ?? "neutral"}
+                        label={ESTADO_LABEL[proyecto.estado] ?? proyecto.estado}
+                      />
+                    </td>
+                    <td>{proyecto.avance_pct}%</td>
+                    <td class="pinar-proy__acciones">
+                      {#if rastreable}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          on:click={() => abrirSeguimiento(proyecto)}
+                        >
+                          Seguimiento
+                        </Button>
+                      {/if}
+                      {#if editable}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          on:click={() => abrirArticulacion(proyecto)}
+                        >
+                          Aspectos
+                        </Button>
+                        <Button size="sm" variant="ghost" on:click={() => abrirProyecto(proyecto)}>
+                          Editar
+                        </Button>
+                        <Button size="sm" variant="ghost" on:click={() => quitarProyecto(proyecto)}>
+                          Quitar
+                        </Button>
+                      {/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         {/if}
       </section>
     {/each}
@@ -510,25 +518,29 @@
   {:else if seguimiento.length === 0}
     <p class="pinar-proy__vacio">Todavía no hay cortes de avance registrados.</p>
   {:else}
-    <table class="pinar-proy__tabla">
-      <caption class="is-sr-only">Histórico de avance</caption>
-      <thead>
-        <tr>
-          <th scope="col">Fecha</th>
-          <th scope="col">Avance</th>
-          <th scope="col">Observación</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each seguimiento as corte (corte.id)}
+    <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <div class="op-table-scroll" role="region" aria-label="Actividades del proyecto" tabindex="0">
+      <table class="pinar-proy__tabla">
+        <caption class="is-sr-only">Histórico de avance</caption>
+        <thead>
           <tr>
-            <td>{fecha(corte.fecha)}</td>
-            <td>{corte.avance_pct}%</td>
-            <td>{corte.observacion ?? "—"}</td>
+            <th scope="col">Fecha</th>
+            <th scope="col">Avance</th>
+            <th scope="col">Observación</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each seguimiento as corte (corte.id)}
+            <tr>
+              <td>{fecha(corte.fecha)}</td>
+              <td>{corte.avance_pct}%</td>
+              <td>{corte.observacion ?? "—"}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 
   <FormField

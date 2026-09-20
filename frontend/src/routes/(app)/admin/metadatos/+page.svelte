@@ -820,7 +820,7 @@
 <style lang="scss">
   .meta-page {
     padding: var(--op-space-5);
-    max-width: 1200px;
+    max-width: var(--op-content-max);
     display: flex;
     flex-direction: column;
     gap: var(--op-space-4);
@@ -832,7 +832,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;

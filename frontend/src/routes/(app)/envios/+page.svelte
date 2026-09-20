@@ -1093,7 +1093,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-lg);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;

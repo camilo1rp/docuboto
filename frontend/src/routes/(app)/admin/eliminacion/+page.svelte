@@ -235,38 +235,42 @@
       actionHref="/admin/trd"
     />
   {:else}
-    <table class="elim__tabla">
-      <caption class="is-sr-only">Lotes de eliminación</caption>
-      <thead>
-        <tr>
-          <th scope="col">Código</th>
-          <th scope="col">Estado</th>
-          <th scope="col">Expedientes</th>
-          <th scope="col">Publicidad hasta</th>
-          <th scope="col">Acto administrativo</th>
-          <th scope="col"><span class="is-sr-only">Acciones</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each lotes as lote (lote.id)}
-          <tr class:elim__fila--activa={lote.id === data.seleccionado}>
-            <td><strong>{lote.codigo}</strong></td>
-            <td>
-              <StatusChip
-                status={ESTADO_CHIP[lote.estado] ?? "neutral"}
-                label={ESTADO_LABEL[lote.estado] ?? lote.estado}
-              />
-            </td>
-            <td>{lote.total_items}</td>
-            <td>{lote.publicado_hasta ? fecha(lote.publicado_hasta) : "—"}</td>
-            <td>{lote.acto_administrativo ?? "—"}</td>
-            <td>
-              <a class="elim__abrir" href="/admin/eliminacion?lote={lote.id}">Abrir</a>
-            </td>
+    <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <div class="op-table-scroll" role="region" aria-label="Lotes de eliminación" tabindex="0">
+      <table class="elim__tabla">
+        <caption class="is-sr-only">Lotes de eliminación</caption>
+        <thead>
+          <tr>
+            <th scope="col">Código</th>
+            <th scope="col">Estado</th>
+            <th scope="col">Expedientes</th>
+            <th scope="col">Publicidad hasta</th>
+            <th scope="col">Acto administrativo</th>
+            <th scope="col"><span class="is-sr-only">Acciones</span></th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each lotes as lote (lote.id)}
+            <tr class:elim__fila--activa={lote.id === data.seleccionado}>
+              <td><strong>{lote.codigo}</strong></td>
+              <td>
+                <StatusChip
+                  status={ESTADO_CHIP[lote.estado] ?? "neutral"}
+                  label={ESTADO_LABEL[lote.estado] ?? lote.estado}
+                />
+              </td>
+              <td>{lote.total_items}</td>
+              <td>{lote.publicado_hasta ? fecha(lote.publicado_hasta) : "—"}</td>
+              <td>{lote.acto_administrativo ?? "—"}</td>
+              <td>
+                <a class="elim__abrir" href="/admin/eliminacion?lote={lote.id}">Abrir</a>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 
   {#if data.detalleError}
@@ -443,31 +447,35 @@
         {#if lapidas.length === 0}
           <p class="elim__sub">No se pudieron cargar las lápidas de este lote.</p>
         {:else}
-          <table class="elim__tabla">
-            <caption class="is-sr-only">Lápidas del lote {detalle.codigo}</caption>
-            <thead>
-              <tr>
-                <th scope="col">Expediente</th>
-                <th scope="col">Serie</th>
-                <th scope="col">Fechas extremas</th>
-                <th scope="col">Radicados</th>
-                <th scope="col">Anexos</th>
-                <th scope="col">Eliminado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each lapidas as l (l.expediente_id)}
+          <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+          <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+          <div class="op-table-scroll" role="region" aria-label="Expedientes del lote" tabindex="0">
+            <table class="elim__tabla">
+              <caption class="is-sr-only">Lápidas del lote {detalle.codigo}</caption>
+              <thead>
                 <tr>
-                  <td><strong>{l.expediente_code}</strong></td>
-                  <td>{l.trd_serie_code ?? "—"}</td>
-                  <td>{fecha(l.fecha_extrema_inicial)} – {fecha(l.fecha_extrema_final)}</td>
-                  <td>{l.radicados_eliminados}</td>
-                  <td>{l.anexos_eliminados}</td>
-                  <td>{fecha(l.eliminado_at)}</td>
+                  <th scope="col">Expediente</th>
+                  <th scope="col">Serie</th>
+                  <th scope="col">Fechas extremas</th>
+                  <th scope="col">Radicados</th>
+                  <th scope="col">Anexos</th>
+                  <th scope="col">Eliminado</th>
                 </tr>
-              {/each}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {#each lapidas as l (l.expediente_id)}
+                  <tr>
+                    <td><strong>{l.expediente_code}</strong></td>
+                    <td>{l.trd_serie_code ?? "—"}</td>
+                    <td>{fecha(l.fecha_extrema_inicial)} – {fecha(l.fecha_extrema_final)}</td>
+                    <td>{l.radicados_eliminados}</td>
+                    <td>{l.anexos_eliminados}</td>
+                    <td>{fecha(l.eliminado_at)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         {/if}
       {/if}
 
@@ -478,34 +486,38 @@
           declara {detalle.total_items}.
         </p>
       {:else}
-        <table class="elim__tabla">
-          <caption class="is-sr-only">Expedientes del lote {detalle.codigo}</caption>
-          <thead>
-            <tr>
-              <th scope="col">Expediente</th>
-              <th scope="col">Serie</th>
-              <th scope="col">Disposición</th>
-              <th scope="col">Fechas extremas</th>
-              <th scope="col">Radicados</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each detalle.items as item (item.expediente_id)}
+        <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+        <div class="op-table-scroll" role="region" aria-label="Radicados del lote" tabindex="0">
+          <table class="elim__tabla">
+            <caption class="is-sr-only">Expedientes del lote {detalle.codigo}</caption>
+            <thead>
               <tr>
-                <td>
-                  <strong>{item.expediente_code}</strong>
-                  {#if item.expediente_nombre}<br /><span class="elim__sub"
-                      >{item.expediente_nombre}</span
-                    >{/if}
-                </td>
-                <td>{item.trd_serie_code ?? "—"}</td>
-                <td>{item.disposition_code}</td>
-                <td>{fecha(item.fecha_extrema_inicial)} – {fecha(item.fecha_extrema_final)}</td>
-                <td>{item.radicados_incluidos ?? "—"}</td>
+                <th scope="col">Expediente</th>
+                <th scope="col">Serie</th>
+                <th scope="col">Disposición</th>
+                <th scope="col">Fechas extremas</th>
+                <th scope="col">Radicados</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each detalle.items as item (item.expediente_id)}
+                <tr>
+                  <td>
+                    <strong>{item.expediente_code}</strong>
+                    {#if item.expediente_nombre}<br /><span class="elim__sub"
+                        >{item.expediente_nombre}</span
+                      >{/if}
+                  </td>
+                  <td>{item.trd_serie_code ?? "—"}</td>
+                  <td>{item.disposition_code}</td>
+                  <td>{fecha(item.fecha_extrema_inicial)} – {fecha(item.fecha_extrema_final)}</td>
+                  <td>{item.radicados_incluidos ?? "—"}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
         {#if detalle.items.length < detalle.total_items}
           <p class="elim__sub">
             Se muestran {detalle.items.length} de {detalle.total_items}: el resto tiene un nivel de
@@ -745,7 +757,6 @@
     padding: var(--op-space-4);
   }
   .elim__titulo {
-    font-size: var(--op-font-xl);
     font-weight: var(--op-weight-bold);
     color: var(--op-text);
   }

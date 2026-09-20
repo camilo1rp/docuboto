@@ -307,8 +307,29 @@ class FisicoRepository:
         )
 
     async def list_prestamos(
-        self, *, estado: str | None, unidad_id: uuid.UUID | None
-    ) -> list[asyncpg.Record]:
+        self,
+        *,
+        estado: str | None,
+        unidad_id: uuid.UUID | None,
+        page: int | None = None,
+        size: int | None = None,
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Préstamos filtrados, y **cuántos hay**.
+
+        Devolvía la tabla entera sin `LIMIT`. Los préstamos activos y los
+        vencidos están acotados por la operación —son los que alguien tiene
+        encima de la mesa—, pero `devuelto` es el HISTÓRICO: crece con cada
+        préstamo que se cierra y no deja de crecer nunca.
+
+        El total se cuenta con el MISMO `WHERE` que las filas. Cualquier
+        recuento construido sobre `items.length` sería el tamaño de la ventana
+        haciéndose pasar por el de la consulta — y es la ventana la que se quiere
+        eliminar.
+
+        Sin `page`/`size` no se pagina: el listado por unidad lo llama así y ahí
+        la cota la pone el objeto (una unidad de conservación no acumula miles
+        de préstamos).
+        """
         await self._sp()
         conds: list[str] = []
         params: list[object] = []
@@ -316,16 +337,41 @@ class FisicoRepository:
             params.append(unidad_id)
             conds.append(f"p.unidad_id = ${len(params)}")
         if estado == "vencido":
+            # `< CURRENT_DATE`: el préstamo que vence HOY todavía está en plazo.
+            # Es la convención de préstamos; la TRD usa la contraria (`<=`) y
+            # unificarlas es una decisión de producto que sigue abierta.
             conds.append("p.estado = 'prestado' AND p.fecha_devolucion_esperada < CURRENT_DATE")
         elif estado in ("prestado", "devuelto"):
             params.append(estado)
             conds.append(f"p.estado = ${len(params)}")
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
-        return list(
-            await self._conn.fetch(
-                f"{self._PRES_SELECT} {where} ORDER BY p.fecha_prestamo DESC", *params
+
+        total: int = (
+            await self._conn.fetchval(
+                f"SELECT COUNT(*) FROM prestamo p "
+                f"JOIN unidad_conservacion u ON u.id = p.unidad_id {where}",
+                *params,
             )
+            or 0
         )
+
+        limites = ""
+        if page is not None and size is not None:
+            params.append(size)
+            params.append((page - 1) * size)
+            limites = f"LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+
+        filas = await self._conn.fetch(
+            f"{self._PRES_SELECT} {where} "
+            # `id` desempata. `fecha_prestamo` es `TIMESTAMPTZ DEFAULT now()`, y
+            # `now()` devuelve el instante de INICIO DE LA TRANSACCIÓN: varios
+            # préstamos creados en la misma transacción —un lote, un sembrado—
+            # comparten timestamp EXACTO. Sin clave única final, paginar sobre
+            # ellos repetiría uno y perdería otro, sin síntoma.
+            f"ORDER BY p.fecha_prestamo DESC, p.id DESC {limites}",
+            *params,
+        )
+        return list(filas), total
 
     # -- historial de movimientos (append-only) ------------------------
 

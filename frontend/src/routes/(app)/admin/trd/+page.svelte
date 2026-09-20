@@ -1112,36 +1112,45 @@
       </div>
 
       <div class="trd-revision__tabla">
-        <table>
-          <caption class="is-sr-only">Expedientes pendientes de revisión de TRD</caption>
-          <thead>
-            <tr>
-              <th scope="col">Expediente</th>
-              <th scope="col">Estado</th>
-              <th scope="col">Serie</th>
-              <th scope="col">Instrumento</th>
-              <th scope="col">Motivo</th>
-              <th scope="col">Cerrado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each revision as r (r.id)}
+        <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+        <div
+          class="op-table-scroll"
+          role="region"
+          aria-label="Cola de revisión de series"
+          tabindex="0"
+        >
+          <table>
+            <caption class="is-sr-only">Expedientes pendientes de revisión de TRD</caption>
+            <thead>
               <tr>
-                <td>{r.code}</td>
-                <td>{r.status}</td>
-                <td>{r.trd_serie_code ?? "— sin resolver —"}</td>
-                <td>{r.tipo_instrumento ?? "—"}</td>
-                <td>
-                  <StatusChip
-                    status={motivoInfo(r.trd_revision_motivo).chip}
-                    label={motivoInfo(r.trd_revision_motivo).etiqueta}
-                  />
-                </td>
-                <td>{formatearFecha(r.closed_at)}</td>
+                <th scope="col">Expediente</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Serie</th>
+                <th scope="col">Instrumento</th>
+                <th scope="col">Motivo</th>
+                <th scope="col">Cerrado</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each revision as r (r.id)}
+                <tr>
+                  <td>{r.code}</td>
+                  <td>{r.status}</td>
+                  <td>{r.trd_serie_code ?? "— sin resolver —"}</td>
+                  <td>{r.tipo_instrumento ?? "—"}</td>
+                  <td>
+                    <StatusChip
+                      status={motivoInfo(r.trd_revision_motivo).chip}
+                      label={motivoInfo(r.trd_revision_motivo).etiqueta}
+                    />
+                  </td>
+                  <td>{formatearFecha(r.closed_at)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     {/if}
   </div>
@@ -1208,85 +1217,94 @@
       {/if}
 
       <div class="trd-revision__tabla">
-        <table>
-          <caption class="is-sr-only">Expedientes con la retención vencida</caption>
-          <thead>
-            <tr>
-              {#if puedeDecidir}
-                <th scope="col"><span class="is-sr-only">Incluir en un lote</span></th>
-              {/if}
-              <th scope="col">Expediente</th>
-              <th scope="col">Serie</th>
-              <th scope="col">Disposición</th>
-              <th scope="col">Venció</th>
-              <th scope="col">Días</th>
-              <th scope="col">Qué corresponde</th>
-              <th scope="col">Decisión</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each vencidos as v (v.id)}
+        <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+        <div
+          class="op-table-scroll"
+          role="region"
+          aria-label="Series con disposición vencida"
+          tabindex="0"
+        >
+          <table>
+            <caption class="is-sr-only">Expedientes con la retención vencida</caption>
+            <thead>
               <tr>
                 {#if puedeDecidir}
+                  <th scope="col"><span class="is-sr-only">Incluir en un lote</span></th>
+                {/if}
+                <th scope="col">Expediente</th>
+                <th scope="col">Serie</th>
+                <th scope="col">Disposición</th>
+                <th scope="col">Venció</th>
+                <th scope="col">Días</th>
+                <th scope="col">Qué corresponde</th>
+                <th scope="col">Decisión</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each vencidos as v (v.id)}
+                <tr>
+                  {#if puedeDecidir}
+                    <td>
+                      {#if v.decision === "confirmada" && DESTRUYEN.has(v.disposition_code)}
+                        <input
+                          type="checkbox"
+                          checked={seleccion.has(v.id)}
+                          on:change={() => alternar(v.id)}
+                          aria-label={`Incluir ${v.code} en un lote de eliminación`}
+                        />
+                      {/if}
+                    </td>
+                  {/if}
+                  <td>{v.code}</td>
+                  <td>{v.trd_serie_code ?? "—"}</td>
                   <td>
-                    {#if v.decision === "confirmada" && DESTRUYEN.has(v.disposition_code)}
-                      <input
-                        type="checkbox"
-                        checked={seleccion.has(v.id)}
-                        on:change={() => alternar(v.id)}
-                        aria-label={`Incluir ${v.code} en un lote de eliminación`}
-                      />
+                    <StatusChip
+                      status={CHIP_DISPOSICION[v.disposition_code] ?? "neutral"}
+                      label={v.disposition_label ?? v.disposition_code ?? "sin declarar"}
+                    />
+                  </td>
+                  <td>{formatearFecha(v.fecha_vencimiento)}</td>
+                  <td>{v.dias_vencido}</td>
+                  <td>
+                    {v.accion}
+                    {#if v.disposition_code === "E" && !v.gobierna_eliminacion}
+                      <br />
+                      <small class="trd-vencidos__bloqueo">
+                        El instrumento congelado no está convalidado: no puede gobernar una
+                        eliminación efectiva.
+                      </small>
                     {/if}
                   </td>
-                {/if}
-                <td>{v.code}</td>
-                <td>{v.trd_serie_code ?? "—"}</td>
-                <td>
-                  <StatusChip
-                    status={CHIP_DISPOSICION[v.disposition_code] ?? "neutral"}
-                    label={v.disposition_label ?? v.disposition_code ?? "sin declarar"}
-                  />
-                </td>
-                <td>{formatearFecha(v.fecha_vencimiento)}</td>
-                <td>{v.dias_vencido}</td>
-                <td>
-                  {v.accion}
-                  {#if v.disposition_code === "E" && !v.gobierna_eliminacion}
-                    <br />
-                    <small class="trd-vencidos__bloqueo">
-                      El instrumento congelado no está convalidado: no puede gobernar una
-                      eliminación efectiva.
-                    </small>
-                  {/if}
-                </td>
-                <td>
-                  {#if v.decision === "confirmada"}
-                    <StatusChip status="active" label="Confirmada" />
-                  {:else if v.decision === "aplazada"}
-                    <StatusChip status="pending" label="Aplazada" />
-                    <br />
-                    <small>Se revisa el {formatearFecha(v.revisar_de_nuevo_el)}</small>
-                  {:else if puedeDecidir}
-                    <div class="trd-vencidos__acciones">
-                      <Button size="sm" on:click={() => abrirDecision(v, "confirmada")}>
-                        Confirmar
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        on:click={() => abrirDecision(v, "aplazada")}
-                      >
-                        Aplazar
-                      </Button>
-                    </div>
-                  {:else}
-                    <small>Sin decidir</small>
-                  {/if}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+                  <td>
+                    {#if v.decision === "confirmada"}
+                      <StatusChip status="active" label="Confirmada" />
+                    {:else if v.decision === "aplazada"}
+                      <StatusChip status="pending" label="Aplazada" />
+                      <br />
+                      <small>Se revisa el {formatearFecha(v.revisar_de_nuevo_el)}</small>
+                    {:else if puedeDecidir}
+                      <div class="trd-vencidos__acciones">
+                        <Button size="sm" on:click={() => abrirDecision(v, "confirmada")}>
+                          Confirmar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          on:click={() => abrirDecision(v, "aplazada")}
+                        >
+                          Aplazar
+                        </Button>
+                      </div>
+                    {:else}
+                      <small>Sin decidir</small>
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     {/if}
   </div>
@@ -1537,7 +1555,7 @@
 
   .trd-page {
     padding: var(--op-space-5);
-    max-width: 1200px;
+    max-width: var(--op-content-max);
     display: flex;
     flex-direction: column;
     gap: var(--op-space-4);
@@ -1549,7 +1567,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;
@@ -1624,7 +1641,7 @@
 
     &__row {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: var(--op-space-3);
     }
 

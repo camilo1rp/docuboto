@@ -462,10 +462,23 @@
 
   // Datos iniciales del servidor
   /** @type {any[]} */
-  let prestamosActivos = data.facetas?.prestamosActivos?.data ?? [];
+  let prestamosActivos = data.facetas?.prestamosActivos?.data?.items ?? [];
   /** @type {any[]} */
-  let prestamosVencidos = data.facetas?.prestamosVencidos?.data ?? [];
+  let prestamosVencidos = data.facetas?.prestamosVencidos?.data?.items ?? [];
   let prestamosDevueltos = /** @type {any[]} */ ([]);
+
+  // Cuántos HAY de cada estado, según el servidor — no cuántos se trajeron.
+  // El endpoint devolvía la tabla entera sin `LIMIT`, así que el único recuento
+  // posible era `items.length`: el tamaño de la ventana haciéndose pasar por el
+  // de la consulta. `devuelto` es el histórico y no deja de crecer.
+  let prestamosTotales = {
+    prestado: data.facetas?.prestamosActivos?.data?.total ?? 0,
+    vencido: data.facetas?.prestamosVencidos?.data?.total ?? 0,
+    devuelto: 0,
+  };
+  let prestamosPagina = { prestado: 1, vencido: 1, devuelto: 0 };
+
+  const PRESTAMOS_POR_PAGINA = 100;
 
   $: prestamosVisibles =
     prestamosEstado === "prestado"
@@ -476,17 +489,41 @@
 
   let prestamosLoading = false;
 
-  async function cargarPrestamos() {
+  /**
+   * Carga una página de préstamos del estado activo.
+   *
+   * `acumular` trae la SIGUIENTE y la añade a lo que ya hay — es lo que hace el
+   * botón «Cargar más». El histórico de devueltos no cabe en una pantalla y
+   * tampoco debe traerse entero de golpe; lo que no puede pasar es enseñar una
+   * ventana con cara de lista completa, y para eso está el total del servidor.
+   */
+  async function cargarPrestamos({ acumular = false } = {}) {
     if (!["prestado", "devuelto", "vencido"].includes(prestamosEstado)) return;
+    const pagina = acumular ? (prestamosPagina[prestamosEstado] ?? 0) + 1 : 1;
     prestamosLoading = true;
     try {
-      const res = await fetch(`/archivo-fisico/api/prestamos?estado=${prestamosEstado}`);
+      const res = await fetch(
+        `/archivo-fisico/api/prestamos?estado=${prestamosEstado}` +
+          `&page=${pagina}&size=${PRESTAMOS_POR_PAGINA}`,
+      );
       const data = await res.json();
       if (!res.ok) throw data;
       const lista = Array.isArray(data) ? data : (data.items ?? []);
-      if (prestamosEstado === "prestado") prestamosActivos = lista;
-      else if (prestamosEstado === "vencido") prestamosVencidos = lista;
-      else prestamosDevueltos = lista;
+      const total = Number(res.headers.get("X-Total-Count"));
+
+      const previos = acumular ? prestamosVisibles : [];
+      const combinada = [...previos, ...lista];
+      if (prestamosEstado === "prestado") prestamosActivos = combinada;
+      else if (prestamosEstado === "vencido") prestamosVencidos = combinada;
+      else prestamosDevueltos = combinada;
+
+      prestamosPagina = { ...prestamosPagina, [prestamosEstado]: pagina };
+      prestamosTotales = {
+        ...prestamosTotales,
+        // Sin cabecera se cae a lo que se tiene: decir de menos es aceptable,
+        // inventar un total no.
+        [prestamosEstado]: Number.isFinite(total) ? total : combinada.length,
+      };
     } catch (err) {
       notifyError(mensajeError(err, "No se pudieron cargar los préstamos."));
     } finally {
@@ -1135,7 +1172,7 @@
               <select
                 id="prestamos-estado"
                 bind:value={prestamosEstado}
-                on:change={cargarPrestamos}
+                on:change={() => cargarPrestamos()}
                 aria-label="Filtrar préstamos por estado"
               >
                 <option value="prestado">Prestado</option>
@@ -1224,6 +1261,27 @@
               </tbody>
             </table>
           </div>
+
+          {#if prestamosTotales[prestamosEstado] > prestamosVisibles.length}
+            <!-- El contador sale del servidor, no de `items.length`: ese era el
+                 único total posible cuando el endpoint devolvía la tabla entera,
+                 y es el tamaño de la ventana haciéndose pasar por el de la
+                 consulta. Con el histórico de devueltos la diferencia es grande. -->
+            <div class="af-prestamos-mas">
+              <span>
+                Mostrando {prestamosVisibles.length} de {prestamosTotales[prestamosEstado]}
+                préstamos.
+              </span>
+              <button
+                type="button"
+                class="button is-small"
+                disabled={prestamosLoading}
+                on:click={() => cargarPrestamos({ acumular: true })}
+              >
+                Cargar más
+              </button>
+            </div>
+          {/if}
         {/if}
       </Card>
     </div>
@@ -1735,7 +1793,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-xl);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       display: flex;
@@ -1838,6 +1895,17 @@
   }
 
   // Tabla
+  .af-prestamos-mas {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--op-space-2);
+    padding: var(--op-space-2) var(--op-space-3);
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
+  }
+
   .af-table-wrap {
     overflow-x: auto;
 

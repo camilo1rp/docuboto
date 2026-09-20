@@ -1,0 +1,180 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""Integración (Postgres REAL) de la paginación de `GET /prestamos` (RF-ARF-08).
+
+`list_prestamos` devolvía la tabla entera sin `LIMIT`. Los préstamos activos y
+los vencidos están acotados por la operación —son los que alguien tiene encima de
+la mesa—, pero `devuelto` es el HISTÓRICO: crece con cada préstamo que se cierra
+y no deja de crecer.
+
+Se prueba contra el motor porque lo que se añade son cláusulas SQL: un `COUNT`
+que tiene que compartir el `WHERE` con las filas, un `LIMIT/OFFSET` y un orden
+que tiene que ser TOTAL. Con un doble del repositorio, las tres pasarían
+igual estando mal.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import date, timedelta
+
+import asyncpg
+import pytest
+
+from app.core.database import tenant_schema
+from app.repositories.fisico_repository import FisicoRepository
+
+pytestmark = pytest.mark.integration
+
+
+async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
+    """El `search_path` se fija aquí para el SEMBRADO; el repositorio fija el suyo
+    a partir del slug, así que hay que pasarle el REAL del fixture y no uno
+    inventado — con un slug cualquiera apunta a un schema que no existe."""
+    slug, conn = tenant_ctx
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    return slug, conn
+
+
+async def _unidad(conn: asyncpg.Connection) -> uuid.UUID:
+    return await conn.fetchval(
+        "INSERT INTO unidad_conservacion (tipo, codigo, signatura) "
+        "VALUES ('caja', $1, $2) RETURNING id",
+        f"C-{uuid.uuid4().hex[:6]}",
+        f"SIG-{uuid.uuid4().hex[:8]}",
+    )
+
+
+async def _prestamo(
+    conn: asyncpg.Connection,
+    unidad_id: uuid.UUID,
+    *,
+    estado: str = "prestado",
+    vence: date | None = None,
+) -> uuid.UUID:
+    return await conn.fetchval(
+        "INSERT INTO prestamo (unidad_id, prestado_a, fecha_devolucion_esperada, estado) "
+        "VALUES ($1, 'ANA', $2, $3) RETURNING id",
+        unidad_id,
+        vence or (date.today() + timedelta(days=10)),
+        estado,
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_total_cuenta_todo_y_la_pagina_solo_su_ventana(tenant_ctx) -> None:
+    """El recuento NO es `len(items)`: es lo que hay.
+
+    Ese era el único total posible antes, y es el tamaño de la ventana haciéndose
+    pasar por el de la consulta — justo la ventana que se quiere eliminar.
+    """
+    slug, conn = await _en_tenant(tenant_ctx)
+    unidad = await _unidad(conn)
+    for _ in range(7):
+        await _prestamo(conn, unidad)
+
+    items, total = await FisicoRepository(conn, slug).list_prestamos(
+        estado="prestado", unidad_id=None, page=1, size=3
+    )
+
+    assert len(items) == 3
+    assert total == 7
+
+
+@pytest.mark.asyncio
+async def test_el_total_comparte_el_filtro_con_las_filas(tenant_ctx) -> None:
+    """Control positivo: un `COUNT` sin el `WHERE` anunciaría páginas inexistentes."""
+    slug, conn = await _en_tenant(tenant_ctx)
+    unidad = await _unidad(conn)
+    for _ in range(4):
+        await _prestamo(conn, unidad, estado="prestado")
+    for _ in range(9):
+        await _prestamo(conn, unidad, estado="devuelto")
+
+    _, total_prestados = await FisicoRepository(conn, slug).list_prestamos(
+        estado="prestado", unidad_id=None, page=1, size=50
+    )
+    _, total_devueltos = await FisicoRepository(conn, slug).list_prestamos(
+        estado="devuelto", unidad_id=None, page=1, size=50
+    )
+
+    assert total_prestados == 4
+    assert total_devueltos == 9
+
+
+@pytest.mark.asyncio
+async def test_los_empates_se_resuelven_por_un_orden_TOTAL(tenant_ctx) -> None:
+    """Con la fecha empatada, la secuencia la fija `id DESC` y no el azar.
+
+    Los empates aquí no son raros, son lo normal: `fecha_prestamo` es
+    `TIMESTAMPTZ DEFAULT now()` y `now()` devuelve el instante de INICIO DE LA
+    TRANSACCIÓN, así que todo lo insertado en una misma transacción —un lote, un
+    sembrado— comparte timestamp EXACTO. Sin una última clave única el `ORDER BY`
+    es parcial, y paginar sobre él repetiría una fila y perdería otra sin
+    síntoma: un préstamo que desaparece del listado sin que nadie lo note.
+
+    Se mide comparando la secuencia contra `id DESC`, y no paginando: dos
+    consultas con el mismo plan devuelven los empates en el mismo orden por
+    casualidad, así que una prueba por páginas daría verde con desempate y sin
+    él — comprobado, la mutación no caía.
+    """
+    slug, conn = await _en_tenant(tenant_ctx)
+    unidad = await _unidad(conn)
+    async with conn.transaction():  # mismo `now()` para los ocho
+        sembrados = [await _prestamo(conn, unidad) for _ in range(8)]
+
+    items, total = await FisicoRepository(conn, slug).list_prestamos(
+        estado="prestado", unidad_id=None, page=1, size=50
+    )
+
+    assert total == 8
+    assert [p["id"] for p in items] == sorted(sembrados, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_sin_paginacion_se_traen_todos(tenant_ctx) -> None:
+    """Control de regresión: el listado POR UNIDAD llama sin `page`/`size`.
+
+    Ahí la cota la pone el objeto —una unidad no acumula miles de préstamos—, así
+    que se deja sin paginar a propósito. Si esta rama se rompiera, esa pantalla
+    mostraría una ventana silenciosa, que es el defecto que se está cerrando.
+    """
+    slug, conn = await _en_tenant(tenant_ctx)
+    unidad = await _unidad(conn)
+    for _ in range(5):
+        await _prestamo(conn, unidad)
+
+    items, total = await FisicoRepository(conn, slug).list_prestamos(
+        estado=None, unidad_id=unidad
+    )
+
+    assert len(items) == 5
+    assert total == 5
+
+
+@pytest.mark.asyncio
+async def test_vencido_deja_fuera_al_que_vence_hoy(tenant_ctx) -> None:
+    """La convención de préstamos es `< CURRENT_DATE`: hoy todavía está en plazo.
+
+    Se fija aquí porque el proyecto usa la contraria en la TRD (`<=`), y esa
+    discrepancia es una decisión de producto abierta: si algún día se unifica,
+    este test tiene que caer y obligar a decidirlo a la vista, no en silencio.
+    """
+    slug, conn = await _en_tenant(tenant_ctx)
+    unidad = await _unidad(conn)
+    await _prestamo(conn, unidad, vence=date.today())
+    await _prestamo(conn, unidad, vence=date.today() - timedelta(days=1))
+
+    items, total = await FisicoRepository(conn, slug).list_prestamos(
+        estado="vencido", unidad_id=None, page=1, size=50
+    )
+
+    assert total == 1
+    assert items[0]["fecha_devolucion_esperada"] == date.today() - timedelta(days=1)

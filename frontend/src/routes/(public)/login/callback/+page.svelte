@@ -80,7 +80,6 @@
 
   .callback-title {
     font-family: var(--op-font-display);
-    font-size: var(--op-font-lg);
     font-weight: var(--op-weight-bold);
     color: var(--op-text);
     margin: var(--op-space-2) 0 0;

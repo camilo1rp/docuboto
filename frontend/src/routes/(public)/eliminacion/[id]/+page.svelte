@@ -87,44 +87,48 @@
   {/if}
 
   <div class="elim__tabla">
-    <table>
-      <caption class="is-sr-only">Expedientes incluidos en el lote {lote.codigo}</caption>
-      <thead>
-        <tr>
-          <th scope="col">Expediente</th>
-          <th scope="col">Descripción</th>
-          <th scope="col">Serie</th>
-          <th scope="col">Fechas extremas</th>
-          <th scope="col">Documentos</th>
-          <th scope="col">Disposición</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each items as i (i.expediente_code)}
+    <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <div class="op-table-scroll" role="region" aria-label="Expedientes del lote" tabindex="0">
+      <table>
+        <caption class="is-sr-only">Expedientes incluidos en el lote {lote.codigo}</caption>
+        <thead>
           <tr>
-            <td>{i.expediente_code}</td>
-            <td>
-              {#if i.nombre_reservado}
-                <span class="elim__reservado">Denominación reservada por ley</span>
-              {:else}
-                {i.expediente_nombre ?? "—"}
-              {/if}
-            </td>
-            <td>{i.trd_serie_code ?? "—"}</td>
-            <td>
-              {formatearFecha(i.fecha_extrema_inicial)} — {formatearFecha(i.fecha_extrema_final)}
-            </td>
-            <td>{i.radicados_incluidos ?? "—"}</td>
-            <td>
-              <StatusChip
-                status={i.disposition_code === "CT" ? "active" : "error"}
-                label={DISPOSICION[i.disposition_code] ?? i.disposition_code}
-              />
-            </td>
+            <th scope="col">Expediente</th>
+            <th scope="col">Descripción</th>
+            <th scope="col">Serie</th>
+            <th scope="col">Fechas extremas</th>
+            <th scope="col">Documentos</th>
+            <th scope="col">Disposición</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each items as i (i.expediente_code)}
+            <tr>
+              <td>{i.expediente_code}</td>
+              <td>
+                {#if i.nombre_reservado}
+                  <span class="elim__reservado">Denominación reservada por ley</span>
+                {:else}
+                  {i.expediente_nombre ?? "—"}
+                {/if}
+              </td>
+              <td>{i.trd_serie_code ?? "—"}</td>
+              <td>
+                {formatearFecha(i.fecha_extrema_inicial)} — {formatearFecha(i.fecha_extrema_final)}
+              </td>
+              <td>{i.radicados_incluidos ?? "—"}</td>
+              <td>
+                <StatusChip
+                  status={i.disposition_code === "CT" ? "active" : "error"}
+                  label={DISPOSICION[i.disposition_code] ?? i.disposition_code}
+                />
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   </div>
 </main>
 

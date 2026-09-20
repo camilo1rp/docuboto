@@ -684,7 +684,7 @@
 
   .expedientes {
     padding: var(--op-space-6);
-    max-width: 1200px;
+    max-width: var(--op-content-max);
     margin: 0 auto;
     display: flex;
     flex-direction: column;
@@ -702,7 +702,6 @@
   }
 
   .expedientes__title {
-    font-size: var(--op-font-xl);
     font-weight: var(--op-weight-bold);
     color: var(--op-text);
     margin: 0;

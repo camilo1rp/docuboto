@@ -818,3 +818,61 @@
   font-family: var(--op-font-family-mono);
   word-break: break-all;
 }
+
+// -----------------------------------------------------------------------------
+// Objetivo táctil mínimo en dispositivos de puntero grueso (WCAG 2.5.5)
+// -----------------------------------------------------------------------------
+//
+// El criterio ya existía y se aplicaba **componente a componente**: 19
+// declaraciones de `@media (pointer: coarse)` repartidas por diez archivos. Un
+// censo de los `<button>` nativos del árbol encontró **62 controles sin ningún
+// mínimo declarado** — pestañas de `/admin`, cierres de modal y cajón, la
+// paginación de `DataTable`, los botones de acción de la bandeja—. Repararlos
+// uno a uno es exactamente cómo nació el número 62: el mismo error que ya se
+// pagó con el estilo de `code`, arreglado tres veces pantalla por pantalla
+// antes de mirar la hoja global.
+//
+// Solo se aplica bajo `pointer: coarse` —dedo, lápiz—: con ratón o trackpad la
+// densidad visual del escritorio no cambia ni un píxel. Y usa `min-*` y no
+// `height`, así que un control que ya sea mayor se queda como está.
+//
+// Qué NO entra, a propósito:
+//   · `input[type="checkbox"]`/`[type="radio"]`, donde lo correcto es ampliar el
+//     área del `<label>` que los envuelve; forzar 44px pinta una casilla enorme
+//     en vez de una zona cómoda de pulsar.
+//   · Los controles nativos que el navegador ya dimensiona para el dedo
+//     (`select`, `input[type="date"]`).
+//
+// Esta regla NO sustituye a las declaraciones de los componentes: convive con
+// ellas. Las de `Button` siguen valiendo —son más específicas y ponen el mismo
+// valor— y quitar esta dejaría a los 62 igual que estaban.
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  summary {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// .op-table-scroll — una tabla ancha que no cabe se desplaza, no se estruja
+// -----------------------------------------------------------------------------
+//
+// Una `<table width: 100%>` con muchas columnas no desborda: **comprime**. Las
+// celdas se estrechan hasta que el contenido se parte por la mitad o se sale, y
+// lo que se lee es una tabla rota. Con esto la tabla conserva el ancho que
+// necesita y el contenedor se desplaza.
+//
+// El patrón ya existía con tres nombres locales distintos (`af-table-wrap` y
+// compañía). Vive aquí para que el cuarto no nazca.
+//
+// El `tabindex="0"` no es decorativo y hay que ponerlo en el marcado: una región
+// que se desplaza tiene que poder recorrerse **con el teclado** (WCAG 2.1.1,
+// técnica SCR29), y sin él solo llega quien puede arrastrar. Acompáñalo de
+// `role="region"` y un `aria-label`, o el lector de pantalla anuncia un grupo
+// sin nombre.
+.op-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}

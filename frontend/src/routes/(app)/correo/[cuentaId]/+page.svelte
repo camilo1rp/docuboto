@@ -635,7 +635,6 @@
   }
 
   .bandeja__title {
-    font-size: var(--op-font-xl);
     font-weight: 700;
   }
 

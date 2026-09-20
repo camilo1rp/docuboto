@@ -562,7 +562,7 @@
 <style lang="scss">
   .grupos-page {
     padding: var(--op-space-5);
-    max-width: 1100px;
+    max-width: var(--op-content-max);
   }
 
   .grupos-page__nombre {

@@ -440,10 +440,17 @@ class FisicoService:
         return self._prestamo_response(row)
 
     async def list_prestamos(
-        self, *, estado: str | None, unidad_id: uuid.UUID | None
-    ) -> list[PrestamoResponse]:
-        rows = await self._repo.list_prestamos(estado=estado, unidad_id=unidad_id)
-        return [self._prestamo_response(r) for r in rows]
+        self,
+        *,
+        estado: str | None,
+        unidad_id: uuid.UUID | None,
+        page: int | None = None,
+        size: int | None = None,
+    ) -> tuple[list[PrestamoResponse], int]:
+        rows, total = await self._repo.list_prestamos(
+            estado=estado, unidad_id=unidad_id, page=page, size=size
+        )
+        return [self._prestamo_response(r) for r in rows], total
 
     async def list_movimientos(self, unidad_id: uuid.UUID) -> list[MovimientoResponse]:
         rows = await self._repo.list_movimientos(unidad_id)

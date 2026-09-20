@@ -426,7 +426,7 @@
 <style lang="scss">
   .dependencias-page {
     padding: var(--op-space-5);
-    max-width: 1100px;
+    max-width: var(--op-reading-max);
 
     &__header {
       display: flex;
@@ -438,7 +438,6 @@
     }
 
     &__title {
-      font-size: var(--op-font-lg);
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0 0 var(--op-space-1);

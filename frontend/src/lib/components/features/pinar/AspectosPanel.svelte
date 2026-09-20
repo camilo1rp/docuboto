@@ -182,55 +182,59 @@
       description="Un PINAR se formula a partir de los aspectos críticos identificados: sin ellos no hay qué priorizar, ni objetivos que deriven de ellos."
     />
   {:else}
-    <table class="pinar-aspectos__tabla">
-      <caption class="is-sr-only">Aspectos críticos y su priorización</caption>
-      <thead>
-        <tr>
-          <th scope="col">Aspecto crítico</th>
-          <th scope="col">Riesgo</th>
-          {#each ejes as eje (eje.code)}
-            <th scope="col" class="pinar-aspectos__eje" title={eje.nombre}>{eje.code}</th>
-          {/each}
-          <th scope="col">Prioridad</th>
-          {#if editable}<th scope="col"><span class="is-sr-only">Acciones</span></th>{/if}
-        </tr>
-      </thead>
-      <tbody>
-        {#each aspectosOrdenados as aspecto (aspecto.id)}
-          {@const p = prioridadPorAspecto.get(aspecto.id)}
+    <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <div class="op-table-scroll" role="region" aria-label="Aspectos del diagnóstico" tabindex="0">
+      <table class="pinar-aspectos__tabla">
+        <caption class="is-sr-only">Aspectos críticos y su priorización</caption>
+        <thead>
           <tr>
-            <td>{aspecto.descripcion}</td>
-            <td>{aspecto.riesgo ?? "—"}</td>
+            <th scope="col">Aspecto crítico</th>
+            <th scope="col">Riesgo</th>
             {#each ejes as eje (eje.code)}
-              <td class="pinar-aspectos__eje">
-                {p?.impactos?.[eje.code] ?? p?.impactos?.[String(eje.code)] ?? "—"}
-              </td>
+              <th scope="col" class="pinar-aspectos__eje" title={eje.nombre}>{eje.code}</th>
             {/each}
-            <td>
-              {#if p}
-                <strong>{p.prioridad}</strong>
-              {:else}
-                <!-- Sin priorizar NO es prioridad cero: es que nadie la ha
-                     valorado todavía, y confundirlas la mandaría al final de
-                     la lista como si ya se hubiera decidido que no urge. -->
-                <span class="pinar-aspectos__sin">Sin priorizar</span>
-              {/if}
-            </td>
-            {#if editable}
-              <td class="pinar-aspectos__acciones">
-                <Button size="sm" variant="ghost" on:click={() => abrirPriorizar(aspecto)}>
-                  Priorizar
-                </Button>
-                <Button size="sm" variant="ghost" on:click={() => abrirEditar(aspecto)}>
-                  Editar
-                </Button>
-                <Button size="sm" variant="ghost" on:click={() => quitar(aspecto)}>Quitar</Button>
-              </td>
-            {/if}
+            <th scope="col">Prioridad</th>
+            {#if editable}<th scope="col"><span class="is-sr-only">Acciones</span></th>{/if}
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each aspectosOrdenados as aspecto (aspecto.id)}
+            {@const p = prioridadPorAspecto.get(aspecto.id)}
+            <tr>
+              <td>{aspecto.descripcion}</td>
+              <td>{aspecto.riesgo ?? "—"}</td>
+              {#each ejes as eje (eje.code)}
+                <td class="pinar-aspectos__eje">
+                  {p?.impactos?.[eje.code] ?? p?.impactos?.[String(eje.code)] ?? "—"}
+                </td>
+              {/each}
+              <td>
+                {#if p}
+                  <strong>{p.prioridad}</strong>
+                {:else}
+                  <!-- Sin priorizar NO es prioridad cero: es que nadie la ha
+                       valorado todavía, y confundirlas la mandaría al final de
+                       la lista como si ya se hubiera decidido que no urge. -->
+                  <span class="pinar-aspectos__sin">Sin priorizar</span>
+                {/if}
+              </td>
+              {#if editable}
+                <td class="pinar-aspectos__acciones">
+                  <Button size="sm" variant="ghost" on:click={() => abrirPriorizar(aspecto)}>
+                    Priorizar
+                  </Button>
+                  <Button size="sm" variant="ghost" on:click={() => abrirEditar(aspecto)}>
+                    Editar
+                  </Button>
+                  <Button size="sm" variant="ghost" on:click={() => quitar(aspecto)}>Quitar</Button>
+                </td>
+              {/if}
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
     <p class="pinar-aspectos__leyenda">
       Ejes: {#each ejes as eje, i (eje.code)}{i > 0 ? " · " : ""}<strong>{eje.code}</strong>
         {eje.nombre}{/each}
