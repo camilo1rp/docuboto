@@ -259,7 +259,7 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
 **Migración a `DataTable`**
 
 - [x] **`/bandeja` — decisión tomada, no se migra**: es el flujo núcleo del sistema (tramitar, devolver, anular, responder, vistos buenos). Se dejó fuera de alcance deliberadamente: migrarla exige revalidar todo ese flujo, no solo el render de la tabla.
-- [ ] **`/archivo-fisico`**: su listado es una **estructura de árbol** (ubicaciones recursivas), no una tabla plana; `DataTable` no modela jerarquía hoy. Requiere decidir antes si se añade soporte de árbol al componente o si la pantalla conserva su render propio.
+- [x] **`/archivo-fisico` — decisión tomada (2026-09-19), no se migra: conserva su render propio**. La casilla pedía decidir entre añadir soporte de árbol a `DataTable` o dejar la pantalla como está. Se deja como está, y el motivo es más fuerte que «no modela jerarquía»: el listado de ubicaciones **carga los hijos bajo demanda** al desplegar cada nodo (`toggleUbicacion`, `ubicacionChildrenLoading`), así que las filas ni siquiera están todas en memoria. `DataTable` parte de tener el conjunto y ordenarlo, filtrarlo y paginarlo; darle un árbol perezoso no es añadirle una prop, es cambiarle la premisa — y la pagaría cada una de las siete pantallas que hoy lo usan bien. Las otras cinco tablas de la vista **sí** son planas, pero migrarlas sueltas dejaría la misma pantalla hablando dos lenguajes visuales, que es peor que no migrar ninguna. *Y no queda deuda transversal escondida detrás de la decisión*: las seis tablas ya cumplen los dos contratos que el componente garantizaba — envoltorio con `overflow-x: auto` y **región enfocable con teclado** (`af-table-wrap`, técnica WCAG SCR29, `role="region"` + `tabindex=0`), y el objetivo táctil, que es una regla global bajo `pointer: coarse` y no una propiedad de `DataTable`. **Con esto la migración a `DataTable` queda cerrada**: de sus tres casillas, dos son decisiones de no migrar con su motivo escrito y la tercera se descartó por premisa falsa.
 - [x] ~~**Filtros/orden server-side en `DataTable`**~~ — **descartado**: — *la premisa es FALSA, verificado 2026-09-18*. En 6 de las 7 tablas con `enableFilters`/`enableSort` el conjunto llega íntegro (`pageSize = rows.length`): no hay página parcial que filtrar. Y las pantallas que sí paginan de verdad —bandeja, búsqueda, expedientes, auditoría— **nunca activan esas props**: ya filtran server-side en sus loaders. Conectar los eventos a un refetch sería **regresión** en reportes, donde los datos son agregados completos y el índice de reservados es content-free e íntegro por Ley 1712. El eje «orden» es además **inejecutable hoy**: ningún router acepta parámetro de orden. Lo que queda es backend sin demanda actual, no deuda de este componente.
 
 **Backend que falta para cerrar la UI**
@@ -321,3 +321,23 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
     | sed 's#src/routes##; s#/+page.svelte##; s#/(app)##; s#/(public)##' | sort -u > /tmp/rutas.txt
   grep -o '^| `[^`]*`' ../docs/es/pantallas.md | tr -d '|` ' | sort -u | comm -23 /tmp/rutas.txt -
   ```
+
+**Hallazgo abierto — 5 pantallas se desplazan en horizontal a 390 px (2026-09-19)**
+
+- [ ] La suite `frontend/e2e/authenticated/adaptabilidad-app.spec.js` deja **5 pruebas en rojo a
+      propósito**: `/admin/trd`, `/admin/tvd`, `/admin/usuarios`, `/archivo-fisico` y `/borradores`
+      desplazan el documento a lo ancho en móvil (390 px). Las otras 47 pasan.
+      **No se relaja el criterio para ponerlas en verde**: el test mide algo cierto.
+      *Impacto real, medido*: la franja desplazada está **vacía** — se capturó la página arrastrada
+      a la derecha y solo hay fondo. No hay contenido inaccesible; hay un área muerta arrastrable.
+      *Lo comprobado*: las tablas **sí** están recortadas por su contenedor (`overflow-x: auto`;
+      en `/borradores` el envoltorio mide 294 px con una tabla de 868 dentro), y aun así ocultar la
+      tabla baja `documentElement.scrollWidth` de 827 a 390 — el ancho natural de la tabla infla el
+      documento pese al recorte. *Descartado*: `min-width: 0` en la cadena del layout, `position:
+      sticky` del `thead` (no lo es) y `overflow-x: clip`/`hidden` en `html`, `body`, `.app-layout`
+      y `.app-layout__main-wrapper`. *Siguiente paso*: bisecar en el navegador el CSS de esas tablas
+      hasta dar con la propiedad que rompe el recorte.
+      **Lo que ya cerró esta misma suite**: la barra superior desbordaba en **las 17** pantallas de
+      móvil (`topbar-actions` ocupaba 385 px empezando en x=164 sobre un viewport de 390) por el
+      `min-width: auto` que traen por defecto los hijos de un contenedor flex. Corregido en
+      `AppLayout.svelte` y `DependencySwitcher.svelte`: de 17 fallos a 5.

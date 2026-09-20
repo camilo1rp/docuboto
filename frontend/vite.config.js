@@ -12,6 +12,42 @@ import { sveltekit } from "@sveltejs/kit/vite";
 import { defineConfig } from "vite";
 import { resolve } from "path";
 
+/**
+ * Node 22 o nada — y dicho con una frase, no con nueve rojos.
+ *
+ * Las dos imágenes del frontend son `node:22-alpine` y el job de CI también,
+ * pero nada impedía ejecutar la suite desde un host con otra versión. Y el
+ * fallo NO se parece a su causa: en Node 18 cinco guardianes ni siquiera
+ * cargan (`process.getBuiltinModule` llegó en 22.3) y los cuatro casos de
+ * `handleError` revientan por el `crypto` global (estable desde 19). Salen
+ * nueve pruebas en rojo repartidas por seis ficheros, ninguna relacionada con
+ * el código que se está tocando.
+ *
+ * Ha costado un diagnóstico **dos veces**: la primera quedó escrita en
+ * `Dockerfile.dev` —que por eso subió de node:18 a node:22— y aun así volvió a
+ * pasar, porque aquella corrección arregló la imagen y no la puerta por la que
+ * se cuela la versión equivocada. Un aviso que se lee una vez no es una
+ * barrera; esto sí.
+ *
+ * Va en el config de Vite —no en `engines` de `package.json`— porque `engines`
+ * sin `engine-strict` solo advierte durante la instalación, y aquí lo que hay
+ * que parar es la EJECUCIÓN: este archivo lo carga tanto `vitest` como el
+ * servidor de desarrollo y el build.
+ */
+const MAYOR_MINIMA = 22;
+const mayorActual = Number(process.versions.node.split(".")[0]);
+if (Number.isFinite(mayorActual) && mayorActual < MAYOR_MINIMA) {
+  throw new Error(
+    `Node ${process.versions.node} no sirve para este frontend: hace falta Node ${MAYOR_MINIMA} o superior ` +
+      `(es la versión de \`Dockerfile\`, \`Dockerfile.dev\` y del job \`test-frontend\` del CI).\n` +
+      `Con una versión anterior la suite no falla: se DESCOMPONE — cinco guardianes no llegan a cargar y ` +
+      `\`handleError\` revienta por el \`crypto\` global, y ninguno de esos rojos tiene que ver con tu cambio.\n` +
+      `Ejecútala en Docker, que es la regla del proyecto:\n` +
+      `  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/repo -w /repo/frontend -e HOME=/tmp \\\n` +
+      `    node:22-alpine npx vitest run`,
+  );
+}
+
 export default defineConfig({
   plugins: [sveltekit()],
   server: {

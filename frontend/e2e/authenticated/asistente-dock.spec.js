@@ -27,38 +27,46 @@
  * Requiere la pila completa (`docker compose --profile dev --profile assistant
  * up -d`) y credenciales por entorno:
  *
- *   E2E_USERNAME=jefe E2E_PASSWORD='...' \
+ *   E2E_USERNAME=operador E2E_PASSWORD='...' \
  *     npx playwright test --config=playwright.authenticated.config.js
  */
 import { test, expect } from "@playwright/test";
 
+import { ESTADO_SESION } from "./_sesion.js";
+
 const BOTON = 'button[aria-label="Abrir asistente conversacional"]';
 
-async function iniciarSesion(page) {
-  const username = process.env.E2E_USERNAME;
-  const password = process.env.E2E_PASSWORD;
-  test.skip(!username || !password, "Faltan E2E_USERNAME/E2E_PASSWORD");
+// La sesión la abre `_auth.setup.js` una sola vez para toda la suite. Este
+// fichero tenía su PROPIA copia del inicio de sesión —la cuarta, y la única que
+// el texto del helper no contaba, justamente porque era la que funcionaba y
+// nadie volvió a mirarla—. Lo que tenía de propio no era el login: era la
+// espera de hidratación de abajo, que sí se conserva.
+test.use({ storageState: ESTADO_SESION });
 
-  await page.goto("/login");
-  await page.fill("#username", username);
-  await page.fill("#password", password);
-  await Promise.all([page.waitForURL(/\/dashboard/), page.click("#kc-login")]);
+/**
+ * Abrir el tablero y esperar a que la aplicación HIDRATE, no solo a que llegue
+ * el HTML.
+ *
+ * El botón del asistente está en el HTML servido desde el primer byte, pero su
+ * `on:click` no existe hasta que Svelte toma el control: pulsarlo antes no hace
+ * nada y el test falla por un motivo que no es el que investiga. Esta espera es
+ * de ESTA spec —no del helper de sesión— porque el defecto que persigue solo
+ * aparece pulsando un botón hidratado.
+ */
+async function abrirTableroHidratado(page) {
+  await page.goto("/dashboard");
 
-  // Esperar a que la aplicación HIDRATE, no solo a que llegue el HTML. El
-  // botón del asistente está en el HTML servido desde el primer byte, pero su
-  // `on:click` no existe hasta que Svelte toma el control: pulsarlo antes no
-  // hace nada y el test falla por un motivo que no es el que investiga.
-  await expect(page.locator('button[aria-label="Abrir asistente conversacional"]')).toBeEnabled();
-  await page.waitForFunction(() => {
-    const b = document.querySelector('button[aria-label="Abrir asistente conversacional"]');
+  await expect(page.locator(BOTON)).toBeEnabled();
+  await page.waitForFunction((sel) => {
+    const b = document.querySelector(sel);
     return b !== null && b.getAttribute("aria-pressed") !== null;
-  });
+  }, BOTON);
   await page.waitForLoadState("networkidle");
 }
 
 test.describe("Asistente conversacional — apertura", () => {
   test("abrir el dock deja la página viva y muestra el marco de alcance", async ({ page }) => {
-    await iniciarSesion(page);
+    await abrirTableroHidratado(page);
 
     await page.click(BOTON);
 
@@ -79,7 +87,7 @@ test.describe("Asistente conversacional — apertura", () => {
   });
 
   test("abrir y cerrar repetidamente no degrada la página", async ({ page }) => {
-    await iniciarSesion(page);
+    await abrirTableroHidratado(page);
 
     const dock = page.locator("aside.assistant-dock");
     for (let i = 0; i < 3; i += 1) {

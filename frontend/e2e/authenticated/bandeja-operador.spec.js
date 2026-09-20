@@ -14,14 +14,14 @@
  * radicado en su bandeja. Ver e2e/authenticated/README.md.
  */
 import { test, expect } from "@playwright/test";
-import { hayCredenciales, iniciarSesion } from "./_sesion.js";
+
+import { ESTADO_SESION } from "./_sesion.js";
+
+// La sesión la abre `_auth.setup.js` una sola vez para toda la suite: estos dos
+// tests solo LEEN la bandeja, así que no necesitan una sesión recién abierta.
+test.use({ storageState: ESTADO_SESION });
 
 test.describe("Bandeja — vista consolidada de operador (requiere la pila levantada)", () => {
-  test.beforeEach(async ({ page }) => {
-    test.skip(!hayCredenciales(), "Faltan E2E_USERNAME/E2E_PASSWORD");
-    await iniciarSesion(page);
-  });
-
   test("la vista Lista muestra radicados y el detalle abre en la MISMA vista", async ({ page }) => {
     // `?vista=lista` se resuelve en SSR: la bandeja abre por defecto en
     // Tablero, no en una tabla. La primera versión de este test daba por

@@ -23,11 +23,21 @@
  * Se recorren los tres anchos que existen: el móvil de quien consulta algo de
  * pie, el portátil donde se reportó el problema y el escritorio donde más
  * espacio se desperdiciaba.
+ *
+ * HALLAZGO ABIERTO (2026-09-19): cinco pruebas quedan EN ROJO a propósito
+ * —`/admin/trd`, `/admin/tvd`, `/admin/usuarios`, `/archivo-fisico` y
+ * `/borradores` a 390 px—. El criterio NO se relaja para ponerlas en verde: un
+ * verde falso aquí es peor que el defecto, porque este fichero existe justo
+ * porque la suite entera estaba verde mientras el producto fallaba. El impacto
+ * está medido y es menor de lo que el fallo sugiere: la franja desplazada está
+ * VACÍA (se capturó la página arrastrada y solo hay fondo), así que no hay
+ * contenido inaccesible sino un área muerta arrastrable. Diagnóstico y lo ya
+ * descartado, en `docs/es/roadmap.md`.
  */
 import { test, expect } from "@playwright/test";
 
 import { ANCHOS, medir } from "../_adaptabilidad.js";
-import { iniciarSesion } from "./_sesion.js";
+import { ESTADO_SESION } from "./_sesion.js";
 
 /**
  * Las pantallas de trabajo, con la razón por la que cada una está aquí. La
@@ -56,10 +66,12 @@ const PANTALLAS = [
 
 for (const ancho of ANCHOS) {
   test.describe(`adaptabilidad de la aplicación — ${ancho.nombre} (${ancho.width}px)`, () => {
-    test.use({ viewport: { width: ancho.width, height: ancho.height } });
-
-    test.beforeEach(async ({ page }) => {
-      await iniciarSesion(page);
+    // La sesión se reutiliza del proyecto de preparación: estas 51 pruebas usan
+    // la misma identidad, y autenticarse en cada una eran 51 vueltas completas
+    // por Keycloak para comprobar anchos de pantalla.
+    test.use({
+      viewport: { width: ancho.width, height: ancho.height },
+      storageState: ESTADO_SESION,
     });
 
     for (const { ruta, nombre } of PANTALLAS) {

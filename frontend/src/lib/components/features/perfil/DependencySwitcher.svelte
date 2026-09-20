@@ -230,10 +230,28 @@
     }
 
     &--compact {
+      // En la barra superior el conmutador comparte sitio con la búsqueda, el
+      // asistente y el usuario. `min-width: 0` le permite ceder cuando no cabe
+      // —un `<select>` no encoge por debajo de su opción más larga si no se le
+      // dice—, y en pantalla estrecha se acota más: sigue siendo elegible y
+      // sigue mostrando el nombre completo al desplegarse, que es cuando hace
+      // falta leerlo. Esconderlo habría sido quitar una capacidad en el único
+      // sitio donde se cambia de dependencia.
+      min-width: 0;
+
+      .dep-switcher__control {
+        min-width: 0;
+      }
+
       .dep-switcher__select {
         min-height: 36px;
+        min-width: 0;
         max-width: 220px;
         font-size: var(--op-font-xs);
+
+        @media (max-width: 640px) {
+          max-width: 104px;
+        }
       }
     }
   }

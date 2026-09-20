@@ -528,6 +528,20 @@
       display: flex;
       align-items: center;
       gap: var(--op-space-1);
+
+      // `min-width: 0` no es decorativo: el valor por defecto de un hijo flex
+      // es `min-width: auto`, que le impide encogerse por debajo de su
+      // contenido. Sin esto, la barra superior medía 385 px empezando en la
+      // 164 —terminaba en 549 sobre un móvil de 390— y **desbordaba en las 17
+      // pantallas a la vez**, porque la barra es común a todas. Lo encontró la
+      // suite de adaptabilidad en su primera ejecución; ningún test anterior
+      // podía verlo.
+      min-width: 0;
+      flex-shrink: 1;
+
+      > * {
+        min-width: 0;
+      }
     }
 
     &__user {

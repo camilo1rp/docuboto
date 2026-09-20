@@ -17,5 +17,7 @@ vite.config.ts.timestamp-*
 
 # Salida de Playwright y huerfano root-owned de un build Docker previo — jamas commitear
 test-results/
+# Estado de sesión de Playwright: lleva cookies de una sesión viva.
+playwright/.auth/
 playwright-report/
 build-root-owned-orphan/

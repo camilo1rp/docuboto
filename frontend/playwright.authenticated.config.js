@@ -53,5 +53,15 @@ export default defineConfig({
     // el vídeo y la traza son la única forma de saber en qué paso ocurrió.
     video: "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    // Inicia sesión una vez y deja el estado en disco. Sin esto, cada prueba
+    // de la suite de adaptabilidad hacía su propio PKCE completo: 51 vueltas
+    // por Keycloak para 51 pruebas con la misma identidad.
+    { name: "setup", testMatch: /_auth\.setup\.js/ },
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+      dependencies: ["setup"],
+    },
+  ],
 });

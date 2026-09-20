@@ -10,6 +10,8 @@ determinista y sin infraestructura. Corren con su propio config.
 
 ## Qué hay aquí
 
+- `_sesion.js` (helper) y `_auth.setup.js` (proyecto `setup`) — la **única**
+  puerta de sesión de la suite.
 - `login-flow.spec.js`, `bandeja-operador.spec.js`, `asistente-dock.spec.js` — los
   flujos de operador.
 - **`adaptabilidad-app.spec.js`** — 17 pantallas × 3 anchos (móvil 390, portátil
@@ -44,10 +46,23 @@ determinista y sin infraestructura. Corren con su propio config.
    ```
 
 Las credenciales **no tienen valor por defecto a propósito**: un default
-funcional aquí acabaría commiteado y sería una cuenta conocida más. Sin ellas,
-los casos que necesitan identidad se saltan solos —esa es la única barrera que
-queda—, y los que no la necesitan (credenciales inválidas vuelven a `/login`)
-siguen corriendo.
+funcional aquí acabaría commiteado y sería una cuenta conocida más.
+
+**La sesión se abre una sola vez** (2026-09-19). El proyecto `setup` del config
+ejecuta `_auth.setup.js`, que inicia sesión y guarda el estado en
+`playwright/.auth/` (ignorado por git); las demás specs lo heredan con
+`test.use({ storageState: ESTADO_SESION })` y **ninguna teclea credenciales**.
+Antes cada prueba hacía su propio login contra Keycloak: con 51 casos eran 51
+inicios de sesión. Un guardián de Vitest lo mantiene así
+(`src/pruebas/una-sola-puerta-de-sesion.test.js`), con las tres excepciones
+declaradas: el helper, el setup y `login-flow.spec.js`, que **se aísla del
+estado guardado a propósito** porque su objeto es el inicio de sesión y heredar
+una sesión abierta la dejaría midiendo nada.
+
+Sin credenciales, el proyecto `setup` **falla y se lleva la suite entera**, en
+vez de saltarse en silencio. Es deliberado: una suite que se salta sola informa
+igual que una en verde, y este directorio existe porque un «todo pasa» tapó un
+defecto que el usuario sí veía.
 
 > **Histórico, y la mitad que faltaba.** Estos tests estuvieron apagados con
 > **triple freno**: `testIgnore`, `test.describe.skip` en cada archivo y
@@ -64,16 +79,30 @@ siguen corriendo.
 > **Tablero**. Reactivar una suite sin correrla es media corrección: hoy pasan
 > las seis, y el inicio de sesión vive en **un solo sitio** (`_sesion.js`) en
 > vez de copiado en tres.
+>
+> Aquel «en vez de copiado en tres» era **la mitad de la historia**: había una
+> cuarta copia, en `asistente-dock.spec.js`, y se quedó fuera precisamente
+> porque era la que funcionaba, así que nada la delató. Retirada en 2026-09-19,
+> ya con guardián: un recuento que se cree completo no informa de menos, afirma
+> de más.
 
-## Estado verificado (agosto 2026)
+## Estado verificado (2026-09-19)
 
 ```
-E2E_USERNAME=jefe E2E_PASSWORD='…' npx playwright test --config=playwright.authenticated.config.js
-  6 passed (14s)
+E2E_USERNAME=operador E2E_PASSWORD='…' npx playwright test --config=playwright.authenticated.config.js
+  47 passed, 5 failed (1.2 min)
 ```
 
-Sin credenciales: **5 saltan y 1 corre** — la de credenciales inválidas, que no
-necesita identidad. Ese es el comportamiento correcto por defecto.
+Los **5 rojos son deliberados** y están documentados: `/admin/trd`, `/admin/tvd`,
+`/admin/usuarios`, `/archivo-fisico` y `/borradores` desplazan el documento a lo
+ancho a 390 px. El criterio **no se relaja** para ponerlos en verde — el
+diagnóstico y lo ya descartado están en `docs/es/roadmap.md`. La franja
+desplazada está vacía, así que no hay contenido inaccesible.
+
+La primera corrida completa dio **35 verdes y 17 rojos**, y los 17 eran todos los
+casos de móvil: un **único** defecto global —la barra superior desbordaba por el
+`min-width: auto` por defecto de un hijo flex— que se leía como diecisiete
+defectos de pantalla.
 
 ## Por qué no corre en CI/smoke
 

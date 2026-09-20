@@ -21,6 +21,10 @@
 import { test, expect } from "@playwright/test";
 import { hayCredenciales, iniciarSesion } from "./_sesion.js";
 
+// Esta suite PRUEBA el inicio de sesión, así que arranca sin sesión: no hereda
+// el estado que el proyecto de preparación deja para el resto.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test.describe("Login PKCE (requiere la pila levantada — ver README.md)", () => {
   test("un usuario válido completa el login y llega a /dashboard con sesión", async ({ page }) => {
     test.skip(!hayCredenciales(), "Faltan E2E_USERNAME/E2E_PASSWORD");

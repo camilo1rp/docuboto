@@ -8,6 +8,15 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
+ * Dónde queda el estado de sesión que guarda `_auth.setup.js`.
+ *
+ * Vive aquí y no en el propio setup porque Playwright prohíbe que una spec
+ * importe otro fichero de test — y las specs necesitan esta ruta para declarar
+ * `storageState`. El helper no es un test, así que es el sitio.
+ */
+export const ESTADO_SESION = "playwright/.auth/operador.json";
+
+/**
  * Iniciar sesión contra el Keycloak real — UN solo sitio que sepa hacerlo.
  *
  * Estaba copiado en tres archivos, y dos de las copias usaban
@@ -16,6 +25,12 @@
  * `aria-label` es «Show password». Playwright falla en modo estricto, así que
  * los cuatro tests de esas dos copias caían antes de llegar a comprobar nada
  * — y ninguno se había ejecutado nunca desde que se escribieron.
+ *
+ * Quedaba una **cuarta** copia que este mismo texto no contaba: la de
+ * `asistente-dock.spec.js`, que era la que funcionaba y por eso nadie la
+ * miró al unificar. Retirada (2026-09-19): hoy ninguna spec inicia sesión
+ * por su cuenta — lo hace `_auth.setup.js` una sola vez y las demás heredan
+ * `ESTADO_SESION`. Este helper lo usan el setup y la prueba del propio login.
  *
  * Se localiza por los **id del formulario de Keycloak** (`#username`,
  * `#password`, `#kc-login`), que es la copia que sí funcionaba
