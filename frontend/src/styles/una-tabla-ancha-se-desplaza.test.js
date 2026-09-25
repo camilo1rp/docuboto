@@ -49,6 +49,47 @@ function sinComentarios(txt) {
   return txt.replace(/<!--[\s\S]*?-->/g, "");
 }
 
+/**
+ * Quita comentarios de CSS/SCSS además de los de marcado.
+ *
+ * Imprescindible aquí, y no por limpieza: el comentario que acompaña a la
+ * corrección **contiene la cadena `position: relative`**, así que un detector
+ * que leyera comentarios daría por cumplido cualquier bloque que lleve esa nota
+ * al lado — se aprobaría a sí mismo. Es el mismo tropiezo que ya tiene ficha en
+ * este proyecto.
+ */
+function sinComentariosCss(txt) {
+  return sinComentarios(txt)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
+/**
+ * El bloque `{ … }` que CONTIENE la posición dada.
+ *
+ * Retrocede hasta la llave que abre y avanza contando: el fin de un bloque es
+ * una llave, no una distancia — leerlo con una ventana fija de caracteres ya
+ * costó tres tropiezos en este mismo directorio.
+ */
+function bloqueQueContiene(css, i) {
+  const ini = css.lastIndexOf("{", i);
+  if (ini === -1) return "";
+  let prof = 1;
+  for (let j = ini + 1; j < css.length; j += 1) {
+    if (css[j] === "{") prof += 1;
+    else if (css[j] === "}") {
+      prof -= 1;
+      if (prof === 0) return css.slice(ini + 1, j);
+    }
+  }
+  return css.slice(ini + 1);
+}
+
+/** Ruta legible en los mensajes de fallo. */
+function relativo(f) {
+  return f.replace(`${SRC}/`, "");
+}
+
 function svelte(dir) {
   /** @type {string[]} */
   const salida = [];
@@ -113,6 +154,50 @@ describe("una tabla ancha se desplaza, no se estruja", () => {
       }
     }
     expect(incompletas).toEqual([]);
+  });
+
+  it("todo bloque con `overflow-x: auto` es su propio bloque contenedor", () => {
+    // El defecto que cierra este test tardó días en encontrarse y no se parecía
+    // a lo que era: cinco pantallas desplazaban el documento entero hacia una
+    // franja VACÍA. La causa: un `span.sr-only` —texto para lector de pantalla,
+    // 1 px, `position: absolute`— vive dentro de las cabeceras de las tablas
+    // anchas. Un `absolute` se recorta por el `overflow` de un ancestro SOLO si
+    // ese ancestro es su bloque contenedor; sin ninguno posicionado en la
+    // cadena, se resuelve contra el DOCUMENTO y el envoltorio no lo alcanza.
+    // Resultado: el envoltorio recortaba la tabla perfectamente y el documento
+    // se desplazaba igual, arrastrando a una franja sin nada que ver.
+    //
+    // Comprobado en el navegador contra las cinco pantallas: poner
+    // `position: relative` en el envoltorio baja `scrollWidth` de 827/612/708/
+    // 580/461 a 390 exacto.
+    const culpables = [];
+    for (const f of archivos) {
+      const texto = sinComentariosCss(readFileSync(f, "utf-8"));
+      for (const m of texto.matchAll(/overflow-x:\s*auto;/g)) {
+        const bloque = bloqueQueContiene(texto, m.index);
+        if (!/(?<![-\w])position:\s*(relative|absolute|fixed|sticky)/.test(bloque)) {
+          culpables.push(relativo(f));
+        }
+      }
+    }
+    expect(
+      culpables,
+      `Envoltorios que recortan sin ser bloque contenedor: ${culpables.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("control positivo: el detector reconoce un envoltorio sin posicionar", () => {
+    // Sin esto, romper el extractor dejaría el test de arriba verde para siempre.
+    const malo = ".x { overflow-x: auto; border: 1px solid red; }";
+    const bueno = ".x { overflow-x: auto; position: relative; }";
+    const falta = (t) => {
+      const m = t.match(/overflow-x:\s*auto;/);
+      return !/(?<![-\w])position:\s*(relative|absolute|fixed|sticky)/.test(
+        bloqueQueContiene(t, m.index),
+      );
+    };
+    expect(falta(malo)).toBe(true);
+    expect(falta(bueno)).toBe(false);
   });
 
   it("control de vacuidad: el censo encuentra tablas de verdad", () => {

@@ -15,11 +15,11 @@
  */
 import { test, expect } from "@playwright/test";
 
-import { ESTADO_SESION } from "./_sesion.js";
+import { IDENTIDADES, estadoDe } from "./_sesion.js";
 
 // La sesión la abre `_auth.setup.js` una sola vez para toda la suite: estos dos
 // tests solo LEEN la bandeja, así que no necesitan una sesión recién abierta.
-test.use({ storageState: ESTADO_SESION });
+test.use({ storageState: estadoDe(IDENTIDADES[1]) });
 
 test.describe("Bandeja — vista consolidada de operador (requiere la pila levantada)", () => {
   test("la vista Lista muestra radicados y el detalle abre en la MISMA vista", async ({ page }) => {

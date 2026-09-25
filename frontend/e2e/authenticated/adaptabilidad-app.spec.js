@@ -24,20 +24,28 @@
  * pie, el portátil donde se reportó el problema y el escritorio donde más
  * espacio se desperdiciaba.
  *
- * HALLAZGO ABIERTO (2026-09-19): cinco pruebas quedan EN ROJO a propósito
- * —`/admin/trd`, `/admin/tvd`, `/admin/usuarios`, `/archivo-fisico` y
- * `/borradores` a 390 px—. El criterio NO se relaja para ponerlas en verde: un
- * verde falso aquí es peor que el defecto, porque este fichero existe justo
- * porque la suite entera estaba verde mientras el producto fallaba. El impacto
- * está medido y es menor de lo que el fallo sugiere: la franja desplazada está
- * VACÍA (se capturó la página arrastrada y solo hay fondo), así que no hay
- * contenido inaccesible sino un área muerta arrastrable. Diagnóstico y lo ya
- * descartado, en `docs/es/roadmap.md`.
+ * CERRADO (2026-09-24). Cinco pantallas desplazaban el documento entero a 390 px
+ * hacia una franja VACÍA, y la causa no se parecía en nada al síntoma: un
+ * `span.sr-only` —texto para lector de pantalla, 1 px, `position: absolute`—
+ * dentro de las cabeceras de las tablas anchas. Un `absolute` lo recorta el
+ * `overflow` de un ancestro SOLO si ese ancestro es su bloque contenedor; sin
+ * ninguno posicionado, se resolvía contra el documento y el envoltorio no lo
+ * alcanzaba. Cura: `position: relative` en los envoltorios, con guardián en
+ * `src/styles/una-tabla-ancha-se-desplaza.test.js`.
+ *
+ * Lo que este fichero enseña sobre SU PROPIO instrumento, y por eso queda
+ * escrito aquí: la lista de «culpables» que imprimía era RUIDO. Sale de
+ * `getBoundingClientRect()`, que ignora el recorte de los ancestros, así que
+ * acusaba en cada corrida a una tabla perfectamente contenida. Comprobado sobre
+ * una página mínima SANA —documento a 390, sin desplazamiento— el medidor viejo
+ * acusaba al mismo reparto: `table, thead, tr, th, th`. Un culpable que aparece
+ * también cuando no hay delito no es una pista, y costó días de diagnóstico
+ * contra un inocente. Corregido en `_adaptabilidad.js`.
  */
 import { test, expect } from "@playwright/test";
 
 import { ANCHOS, medir } from "../_adaptabilidad.js";
-import { ESTADO_SESION } from "./_sesion.js";
+import { IDENTIDADES, estadoDe } from "./_sesion.js";
 
 /**
  * Las pantallas de trabajo, con la razón por la que cada una está aquí. La
@@ -64,14 +72,21 @@ const PANTALLAS = [
   { ruta: "/perfil", nombre: "perfil" }, // formulario: ancho de lectura
 ];
 
-for (const ancho of ANCHOS) {
+for (const [indice, ancho] of ANCHOS.entries()) {
   test.describe(`adaptabilidad de la aplicación — ${ancho.nombre} (${ancho.width}px)`, () => {
-    // La sesión se reutiliza del proyecto de preparación: estas 51 pruebas usan
-    // la misma identidad, y autenticarse en cada una eran 51 vueltas completas
-    // por Keycloak para comprobar anchos de pantalla.
+    // La sesión se reutiliza del proyecto de preparación —autenticarse en cada
+    // prueba eran 51 vueltas completas por Keycloak para medir anchos— y se
+    // reparte UNA IDENTIDAD POR ANCHO.
+    //
+    // El reparto no es un adorno: la cuota del gateway es por persona (120
+    // peticiones/min) y cada pantalla cuesta unas 7, así que las 17 pantallas de
+    // los tres anchos en una sola identidad se comen su propio 429 a mitad de la
+    // corrida. Con una identidad por ancho son ~119 peticiones cada una, que es
+    // lo que haría una persona trabajando deprisa. Las tres comparten grupo y
+    // permisos con `operador`, así que el sujeto de la prueba no cambia.
     test.use({
       viewport: { width: ancho.width, height: ancho.height },
-      storageState: ESTADO_SESION,
+      storageState: estadoDe(IDENTIDADES[indice % IDENTIDADES.length]),
     });
 
     for (const { ruta, nombre } of PANTALLAS) {

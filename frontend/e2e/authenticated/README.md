@@ -48,16 +48,42 @@ determinista y sin infraestructura. Corren con su propio config.
 Las credenciales **no tienen valor por defecto a propósito**: un default
 funcional aquí acabaría commiteado y sería una cuenta conocida más.
 
-**La sesión se abre una sola vez** (2026-09-19). El proyecto `setup` del config
-ejecuta `_auth.setup.js`, que inicia sesión y guarda el estado en
+**La sesión se abre una vez por IDENTIDAD** (2026-09-19, ampliado el 2026-09-24). El
+proyecto `setup` ejecuta `_auth.setup.js`, que inicia sesión y guarda el estado en
 `playwright/.auth/` (ignorado por git); las demás specs lo heredan con
-`test.use({ storageState: ESTADO_SESION })` y **ninguna teclea credenciales**.
-Antes cada prueba hacía su propio login contra Keycloak: con 51 casos eran 51
-inicios de sesión. Un guardián de Vitest lo mantiene así
+`test.use({ storageState: estadoDe(...) })` y **ninguna teclea credenciales**. Antes
+cada prueba hacía su propio login contra Keycloak: con 60 casos eran 60 inicios de
+sesión. Un guardián de Vitest lo mantiene así
 (`src/pruebas/una-sola-puerta-de-sesion.test.js`), con las tres excepciones
-declaradas: el helper, el setup y `login-flow.spec.js`, que **se aísla del
-estado guardado a propósito** porque su objeto es el inicio de sesión y heredar
-una sesión abierta la dejaría midiendo nada.
+declaradas: el helper, el setup y `login-flow.spec.js`, que **se aísla del estado
+guardado a propósito** porque su objeto es el inicio de sesión y heredar una sesión
+abierta la dejaría midiendo nada.
+
+**Y son tres identidades, no una** (`e2e1`, `e2e2`, `e2e3` — ver `IDENTIDADES` en
+`_sesion.js`). La cuota del gateway es **por persona** (120 peticiones/min) y cada
+pantalla cuesta unas **7**, así que la suite entera concentrada en una sola identidad
+se come su propio 429 a mitad de la corrida. En producción esas mismas peticiones las
+reparten veinte personas.
+
+El reparto **no esquiva el límite**: deja de pedirle a una identidad que represente a
+una oficina. Subir el tope solo para las pruebas taparía el eje que existe para que la
+cuota sea de cada quien. Las tres cuentas están en `infra/keycloak/realm-dev.json` y
+comparten **el mismo grupo** que `operador` («Demostración», los 25 permisos), para que
+repartir la carga no cambie el sujeto de la prueba — con perfiles distintos, un fallo
+de permisos se leería como un fallo de la pantalla.
+
+Si el entorno se recrea desde cero, las tres cuentas nacen del realm, pero **estar en
+Keycloak no da permisos**: el alta en el tenant es perezosa (al primer login) y llega
+sin grupo. Hay que copiarles la membresía de `operador`:
+
+```sql
+INSERT INTO tenant_demo.auth_memberships (user_id, group_id)
+SELECT u.id, (SELECT m.group_id FROM tenant_demo.auth_memberships m
+              JOIN tenant_demo.auth_users o ON o.id = m.user_id
+              WHERE o.username = 'OPERADOR' LIMIT 1)
+FROM tenant_demo.auth_users u WHERE u.username IN ('E2E1','E2E2','E2E3')
+ON CONFLICT (user_id, group_id) DO NOTHING;
+```
 
 Sin credenciales, el proyecto `setup` **falla y se lleva la suite entera**, en
 vez de saltarse en silencio. Es deliberado: una suite que se salta sola informa
@@ -90,19 +116,30 @@ defecto que el usuario sí veía.
 
 ```
 E2E_USERNAME=operador E2E_PASSWORD='…' npx playwright test --config=playwright.authenticated.config.js
-  47 passed, 5 failed (1.2 min)
+  60 passed (1.3 min)
 ```
 
-Los **5 rojos son deliberados** y están documentados: `/admin/trd`, `/admin/tvd`,
-`/admin/usuarios`, `/archivo-fisico` y `/borradores` desplazan el documento a lo
-ancho a 390 px. El criterio **no se relaja** para ponerlos en verde — el
-diagnóstico y lo ya descartado están en `docs/es/roadmap.md`. La franja
-desplazada está vacía, así que no hay contenido inaccesible.
+Verde entero, y es la primera vez. El recorrido dice más que el número: **35/17** al
+principio (la barra superior desbordaba en todas las pantallas de móvil), **47/5**
+(el `sr-only` que desplazaba el documento), **55/3** y **57/1** (la cuota del gateway,
+que iba por IP) y **60/0** con la cuota repartida por identidades.
+
+Los cinco rojos que esta suite mantuvo a propósito entre el 19 y el 24 de septiembre
+**están cerrados**: los provocaba un `span.sr-only` (1 px, `position: absolute`) dentro
+de las cabeceras de las tablas anchas, que se resolvía contra el documento en vez de
+contra el envoltorio que recorta. Detalle en [`roadmap.md`](../../../docs/es/roadmap.md).
 
 La primera corrida completa dio **35 verdes y 17 rojos**, y los 17 eran todos los
 casos de móvil: un **único** defecto global —la barra superior desbordaba por el
 `min-width: auto` por defecto de un hijo flex— que se leía como diecisiete
 defectos de pantalla.
+
+> **El instrumento también se equivocaba.** La lista de «culpables» que imprimía el
+> test salía de `getBoundingClientRect()`, que **ignora el recorte de los ancestros**:
+> acusaba a una tabla perfectamente contenida en cada corrida, y mandó el diagnóstico
+> días por el camino equivocado. Se comprobó pasándolo sobre una página mínima **sana**:
+> acusaba exactamente igual. Un culpable que aparece también cuando no hay delito no es
+> una pista.
 
 ## Por qué no corre en CI/smoke
 

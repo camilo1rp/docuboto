@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * _auth.setup.js — iniciar sesión UNA vez y guardar el estado.
+ * _auth.setup.js — iniciar sesión una vez POR IDENTIDAD y guardar cada estado.
  *
  * Por qué: la suite de adaptabilidad recorre 17 pantallas × 3 anchos, y con un
  * `beforeEach` que autentica eran **51 vueltas completas por Keycloak** —código
@@ -26,20 +26,27 @@
  * El fichero NO se versiona (lleva una sesión viva): `playwright/.auth/` está en
  * el `.gitignore`.
  *
- * Lo que NO debe usar este estado: `login-flow.spec.js`, que prueba el inicio de
- * sesión y tiene que empezar sin ninguna. Lo declara por su cuenta.
+ * Lo que NO debe usar estos estados: `login-flow.spec.js`, que prueba el inicio
+ * de sesión y tiene que empezar sin ninguna. Lo declara por su cuenta.
+ *
+ * Son TRES identidades, no una, y el motivo es la cuota del gateway: es por
+ * persona (120 peticiones/min) y cada pantalla cuesta unas 7, así que la suite
+ * entera en una sola identidad se come su propio 429 a mitad de la corrida — en
+ * producción esas mismas peticiones las reparten veinte personas. El reparto no
+ * esquiva el límite: deja de pedirle a una identidad que represente a una
+ * oficina. Ver `IDENTIDADES` en `_sesion.js`.
  */
 import { test as setup, expect } from "@playwright/test";
 
-import { ESTADO_SESION, iniciarSesion } from "./_sesion.js";
+import { IDENTIDADES, estadoDe, iniciarSesion } from "./_sesion.js";
 
-setup("iniciar sesión una vez para toda la suite", async ({ page }) => {
-  await iniciarSesion(page);
-
-  // No basta con que la navegación termine: si el canje del código falla, la
-  // aplicación devuelve a `/login` y el estado guardado sería el de una sesión
-  // que no existe — y las 51 pruebas caerían después, lejos de la causa.
-  await expect(page).toHaveURL(/\/dashboard/);
-
-  await page.context().storageState({ path: ESTADO_SESION });
-});
+// Una sesión por cada identidad de reparto. Son logins de verdad contra
+// Keycloak, pero solo TRES para toda la suite: lo que se evita es que cada una de
+// las 58 pruebas abra la suya, no el login en sí.
+for (const usuario of IDENTIDADES) {
+  setup(`iniciar sesión como ${usuario}`, async ({ page }) => {
+    await iniciarSesion(page, { usuario });
+    await expect(page).toHaveURL(/\/dashboard/);
+    await page.context().storageState({ path: estadoDe(usuario) });
+  });
+}

@@ -611,6 +611,11 @@
       padding: var(--op-space-2);
       font-size: var(--op-font-xs);
       overflow-x: auto;
+      // `position: relative` NO es cosmético: sin bloque contenedor propio, un
+      // `position: absolute` de dentro (el `sr-only` de las cabeceras) se resuelve
+      // contra el DOCUMENTO y este `overflow` no lo alcanza — desplazaba la página
+      // entera hacia una franja vacía. Ver el hallazgo de los 390 px.
+      position: relative;
       white-space: pre-wrap;
       word-break: break-word;
     }

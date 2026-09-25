@@ -32,7 +32,7 @@
  */
 import { test, expect } from "@playwright/test";
 
-import { ESTADO_SESION } from "./_sesion.js";
+import { IDENTIDADES, estadoDe } from "./_sesion.js";
 
 const BOTON = 'button[aria-label="Abrir asistente conversacional"]';
 
@@ -41,7 +41,11 @@ const BOTON = 'button[aria-label="Abrir asistente conversacional"]';
 // el texto del helper no contaba, justamente porque era la que funcionaba y
 // nadie volvió a mirarla—. Lo que tenía de propio no era el login: era la
 // espera de hidratación de abajo, que sí se conserva.
-test.use({ storageState: ESTADO_SESION });
+// Identidad propia: el asistente REENTRA por el gateway con el token del propio
+// usuario, así que cada turno consume varias unidades de su cuota además de las
+// de la pantalla. Compartir identidad con las pruebas de anchos es lo que hacía
+// que este fichero —y solo este— se llevara el 429 al final de la corrida.
+test.use({ storageState: estadoDe(IDENTIDADES[0]) });
 
 /**
  * Abrir el tablero y esperar a que la aplicación HIDRATE, no solo a que llegue

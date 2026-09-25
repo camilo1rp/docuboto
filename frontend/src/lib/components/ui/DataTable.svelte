@@ -1045,6 +1045,17 @@
 
     &__wrapper {
       overflow-x: auto;
+      /* `position: relative` NO es cosmético: sin bloque contenedor propio, un
+         `position: absolute` de dentro (el `sr-only` de las cabeceras) se resuelve
+         contra el DOCUMENTO y este `overflow` no lo alcanza — desplazaba la página
+         entera hacia una franja vacía. Ver el hallazgo de los 390 px.
+
+         Comentario de bloque y no `//` a propósito: `ssrSafety.test.js` compila
+         ESTE archivo con el compilador de Svelte **sin preprocesar el SCSS**, y
+         ahí `//` no es CSS válido — rompe el parseo con «Identifier is expected».
+         Lo mismo vale para Modal.svelte y Drawer.svelte, los otros dos que ese
+         test compila. */
+      position: relative;
       -webkit-overflow-scrolling: touch;
 
       &:focus-visible {

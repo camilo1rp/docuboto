@@ -40,11 +40,13 @@ if (Number.isFinite(mayorActual) && mayorActual < MAYOR_MINIMA) {
   throw new Error(
     `Node ${process.versions.node} no sirve para este frontend: hace falta Node ${MAYOR_MINIMA} o superior ` +
       `(es la versión de \`Dockerfile\`, \`Dockerfile.dev\` y del job \`test-frontend\` del CI).\n` +
-      `Con una versión anterior la suite no falla: se DESCOMPONE — cinco guardianes no llegan a cargar y ` +
-      `\`handleError\` revienta por el \`crypto\` global, y ninguno de esos rojos tiene que ver con tu cambio.\n` +
-      `Ejecútala en Docker, que es la regla del proyecto:\n` +
+      `Con una versión anterior la suite de Vitest no falla: se DESCOMPONE — cinco guardianes no llegan a ` +
+      `cargar y \`handleError\` revienta por el \`crypto\` global, y ninguno de esos rojos tiene que ver con ` +
+      `tu cambio. El build y \`preview\` (y por tanto el carril de Playwright, que los levanta) tampoco ` +
+      `arrancan, porque cargan este mismo archivo.\n` +
+      `Ejecuta lo que ibas a ejecutar en Docker, que es la regla del proyecto — cambia solo el último tramo:\n` +
       `  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/repo -w /repo/frontend -e HOME=/tmp \\\n` +
-      `    node:22-alpine npx vitest run`,
+      `    node:22-alpine npx vitest run          # o: npx playwright test, npm run build, …`,
   );
 }
 

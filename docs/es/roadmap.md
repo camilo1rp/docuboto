@@ -322,22 +322,47 @@ Las ~20 pantallas construidas en el cierre del desfase API↔UI (Fases 0–8) se
   grep -o '^| `[^`]*`' ../docs/es/pantallas.md | tr -d '|` ' | sort -u | comm -23 /tmp/rutas.txt -
   ```
 
-**Hallazgo abierto — 5 pantallas se desplazan en horizontal a 390 px (2026-09-19)**
+**CERRADO (2026-09-24) — el `sr-only` que desplazaba la página entera**
 
-- [ ] La suite `frontend/e2e/authenticated/adaptabilidad-app.spec.js` deja **5 pruebas en rojo a
-      propósito**: `/admin/trd`, `/admin/tvd`, `/admin/usuarios`, `/archivo-fisico` y `/borradores`
-      desplazan el documento a lo ancho en móvil (390 px). Las otras 47 pasan.
-      **No se relaja el criterio para ponerlas en verde**: el test mide algo cierto.
-      *Impacto real, medido*: la franja desplazada está **vacía** — se capturó la página arrastrada
-      a la derecha y solo hay fondo. No hay contenido inaccesible; hay un área muerta arrastrable.
-      *Lo comprobado*: las tablas **sí** están recortadas por su contenedor (`overflow-x: auto`;
-      en `/borradores` el envoltorio mide 294 px con una tabla de 868 dentro), y aun así ocultar la
-      tabla baja `documentElement.scrollWidth` de 827 a 390 — el ancho natural de la tabla infla el
-      documento pese al recorte. *Descartado*: `min-width: 0` en la cadena del layout, `position:
-      sticky` del `thead` (no lo es) y `overflow-x: clip`/`hidden` en `html`, `body`, `.app-layout`
-      y `.app-layout__main-wrapper`. *Siguiente paso*: bisecar en el navegador el CSS de esas tablas
-      hasta dar con la propiedad que rompe el recorte.
-      **Lo que ya cerró esta misma suite**: la barra superior desbordaba en **las 17** pantallas de
-      móvil (`topbar-actions` ocupaba 385 px empezando en x=164 sobre un viewport de 390) por el
+- [x] Las cinco pantallas —`/admin/trd`, `/admin/tvd`, `/admin/usuarios`, `/archivo-fisico` y
+      `/borradores`— desplazaban el documento a lo ancho en móvil hacia una franja **vacía**.
+      **El culpable era un `span.sr-only`**: texto para lector de pantalla, 1 px de ancho,
+      `position: absolute`, dentro de las cabeceras de las tablas anchas. Un `absolute` lo recorta
+      el `overflow` de un ancestro **solo si ese ancestro es su bloque contenedor**; sin ninguno
+      posicionado en la cadena se resolvía contra el **documento**, así que el envoltorio recortaba
+      la tabla a la perfección y la página se desplazaba igual.
+      *Por qué costó tanto*: los tres síntomas apuntaban al sitio equivocado. La franja salía vacía
+      (el elemento es invisible y mide 1 px); ocultar la tabla «curaba» el problema —porque el span
+      **vive dentro de ella**—, lo que puso a la tabla en el banquillo; y la lista de culpables que
+      imprimía el propio test era **ruido**, porque `getBoundingClientRect()` ignora el recorte de
+      los ancestros y acusaba a la tabla en cada corrida. Comprobado sobre una página mínima SANA:
+      el medidor viejo acusaba al mismo reparto exacto. *Un culpable que aparece también cuando no
+      hay delito no es una pista.*
+      *Cura*: `position: relative` en todo envoltorio que recorta en horizontal (20 ficheros).
+      Medido en vivo antes y después: **827/612/708/580/461 → 390 exactos**.
+      *Guardián*: `una-tabla-ancha-se-desplaza.test.js` exige que todo bloque con `overflow-x: auto`
+      sea su propio bloque contenedor — con control positivo, control de vacuidad y **quitando los
+      comentarios antes de mirar**, porque el comentario de la corrección contiene la cadena
+      `position: relative` y un detector ingenuo se aprobaría a sí mismo. Cae por mutación.
+      **Lo que cerró antes esta misma suite**: la barra superior desbordaba en **las 17** pantallas
+      de móvil (`topbar-actions` ocupaba 385 px empezando en x=164 sobre un viewport de 390) por el
       `min-width: auto` que traen por defecto los hijos de un contenedor flex. Corregido en
-      `AppLayout.svelte` y `DependencySwitcher.svelte`: de 17 fallos a 5.
+      `AppLayout.svelte` y `DependencySwitcher.svelte`: de 17 fallos a 5, y de 5 a **cero**.
+
+**Pendiente abierto — el limitador cuenta por IP, no por usuario (2026-09-24)**
+
+- [ ] `GET /api/v1/assistant/alcance` responde **429** cuando la suite autenticada corre completa,
+      y el log del gateway trae el dato que importa: `"tenant": null, "usuario": null` con 1,6 ms
+      de duración. **El limitador rechaza antes de autenticar**, así que la cuota va por **IP** y no
+      por persona. Salió de una prueba que parecía inestable —fallaba en las tres corridas completas
+      y pasaba aislada—: *una prueba que pasa aislada y falla en la suite no es flaky por
+      definición*; aquí el patrón era 3 de 3, determinista, y el motivo estaba en el log del
+      servidor. La interfaz degrada con honestidad («No se pudo consultar qué acciones tiene
+      disponibles»), así que el síntoma es suave y el motivo queda invisible.
+      *Por qué importa*: en una entidad pública lo normal es una oficina entera detrás de un NAT
+      —cincuenta funcionarios con una sola IP saliente compartiendo cuota—, y el primero que trabaje
+      deprisa deja a los demás con 429.
+      **Decisión pendiente**, no ajuste: el eje de la cuota (IP, usuario autenticado, o ambos con
+      límites distintos). Contar después de autenticar gasta validación en peticiones anónimas;
+      contar antes reparte el castigo entre inocentes. No se cierra subiendo el límite ni metiendo
+      esperas en el test — eso taparía el hallazgo.

@@ -81,6 +81,13 @@ async def test_client(mock_redis, mock_http_client):
         app.state.trusted_proxies = settings.trusted_proxies
         app.state.rate_limit_pqrs_per_ip = settings.rate_limit_pqrs_per_ip
         app.state.rate_limit_cosecha_per_ip = settings.rate_limit_cosecha_per_ip
+        # Muy holgado a propósito: la mayoría de estas pruebas no van sobre la
+        # cuota, y un tope estrecho aquí las haría fallar con 429 por un motivo
+        # que no es el suyo. Quien prueba la cuota por persona fija el suyo
+        # (`test_la_cuota_es_por_persona.py`).
+        app.state.rate_limit_per_usuario = 10_000
+        app.state.rate_limit_per_tenant = 10_000
+        app.state.rate_limit_login_per_ip = settings.rate_limit_login_per_ip
         app.state.auth_cache_ttl = settings.auth_cache_ttl
         yield client, mock_http_client, mock_redis
 

@@ -8,13 +8,35 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * Dónde queda el estado de sesión que guarda `_auth.setup.js`.
- *
- * Vive aquí y no en el propio setup porque Playwright prohíbe que una spec
- * importe otro fichero de test — y las specs necesitan esta ruta para declarar
- * `storageState`. El helper no es un test, así que es el sitio.
+ * Las rutas del estado de sesión viven aquí y no en el propio setup porque
+ * Playwright prohíbe que una spec importe otro fichero de test — y las specs
+ * necesitan esa ruta para declarar `storageState`. El helper no es un test, así
+ * que es el sitio.
  */
-export const ESTADO_SESION = "playwright/.auth/operador.json";
+/**
+ * Identidades de la suite, y por qué son VARIAS.
+ *
+ * La cuota del gateway es por persona (120 peticiones/min). Una pantalla cuesta
+ * unas 7 peticiones, así que la suite entera —58 casos en minuto y medio— hace
+ * del orden de 400 peticiones: con una sola identidad las concentra todas en un
+ * cubo y se come su propio 429 a mitad de la corrida. En producción esas mismas
+ * 400 las reparten veinte personas.
+ *
+ * Repartirlas NO es esquivar el límite: es dejar de pedirle a una identidad que
+ * represente a una oficina. Subir el tope solo para las pruebas taparía
+ * precisamente el eje que existe para que la cuota sea de cada quien.
+ *
+ * Los tres usuarios `e2eN` están en `infra/keycloak/realm-dev.json` y comparten
+ * **el mismo grupo** que `operador` —«Demostración», los 25 permisos—, así que
+ * repartir la carga no cambia el sujeto de la prueba. Si fueran perfiles
+ * distintos, un fallo de permisos se leería como un fallo de la pantalla.
+ */
+export const IDENTIDADES = ["e2e1", "e2e2", "e2e3"];
+
+/** Dónde queda el estado de sesión de cada identidad. */
+export function estadoDe(usuario) {
+  return `playwright/.auth/${usuario}.json`;
+}
 
 /**
  * Iniciar sesión contra el Keycloak real — UN solo sitio que sepa hacerlo.
@@ -42,8 +64,11 @@ export const ESTADO_SESION = "playwright/.auth/operador.json";
  * @param {{ destino?: RegExp }} [opciones] `destino` es la URL a la que se
  *   espera llegar tras entrar; por defecto `/dashboard`.
  */
-export async function iniciarSesion(page, { destino = /\/dashboard/ } = {}) {
-  const username = process.env.E2E_USERNAME;
+export async function iniciarSesion(page, { destino = /\/dashboard/, usuario } = {}) {
+  // `usuario` permite entrar como una de las identidades de reparto
+  // (`IDENTIDADES`). Sin él manda `E2E_USERNAME`, que sigue siendo quien decide
+  // con qué cuenta se prueba el inicio de sesión en sí.
+  const username = usuario ?? process.env.E2E_USERNAME;
   const password = process.env.E2E_PASSWORD;
   if (!username || !password) {
     throw new Error(

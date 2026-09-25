@@ -35,6 +35,35 @@ export const ANCHOS = [
 export async function medir(page) {
   return page.evaluate(() => {
     const raiz = document.documentElement;
+
+    /**
+     * ¿Lo recorta algún ancestro?
+     *
+     * Esto NO es un refinamiento: sin ello la lista de culpables es ruido.
+     * `getBoundingClientRect()` devuelve la geometría del elemento IGNORANDO el
+     * recorte de sus ancestros, así que una tabla de 917 px correctamente
+     * contenida en un envoltorio de 294 px con `overflow-x: auto` reporta
+     * `right = 917` y aparece acusada — aunque en pantalla no se salga ni un
+     * píxel y el documento no se desplace en absoluto.
+     *
+     * Costó cinco días de diagnóstico contra un inocente: el medidor señalaba
+     * la tabla de `/borradores` en cada corrida mientras el desbordamiento real
+     * del documento venía de otra parte. Comprobado después sobre una página
+     * mínima SANA (documento a 390 px, sin desplazamiento): el medidor viejo
+     * acusaba igualmente a `table, thead, tr, th, th`. Un culpable que también
+     * aparece cuando no hay delito no es una pista.
+     */
+    function recortadoPorAncestro(el, caja) {
+      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX;
+        if (ox === "visible") continue;
+        // El ancestro recorta en X. Si su borde derecho no se sale, lo de dentro
+        // tampoco se ve salir: se desplaza dentro de él, que es lo correcto.
+        if (p.getBoundingClientRect().right <= window.innerWidth + 2) return true;
+      }
+      return false;
+    }
+
     const desbordan = [];
     for (const el of document.querySelectorAll("body *")) {
       const caja = el.getBoundingClientRect();
@@ -43,6 +72,7 @@ export async function medir(page) {
       // elemento oculto en el flanco) no cuenta: solo lo que sobresale por la
       // derecha estando visible.
       if (caja.right > window.innerWidth + 2 && getComputedStyle(el).visibility !== "hidden") {
+        if (recortadoPorAncestro(el, caja)) continue;
         desbordan.push(
           `${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} (${Math.round(caja.right)}px)`,
         );

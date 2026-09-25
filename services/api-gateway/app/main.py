@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.middleware.auth import JWTValidationMiddleware
 from app.middleware.path_guard import PathNormalizationMiddleware
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware, RateLimitPorUsuarioMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.routers import health, openapi, proxy
 
@@ -43,6 +43,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
     app.state.rate_limit_per_ip = settings.rate_limit_per_ip
     app.state.rate_limit_global = settings.rate_limit_global
+    app.state.rate_limit_per_usuario = settings.rate_limit_per_usuario
+    app.state.rate_limit_per_tenant = settings.rate_limit_per_tenant
+    app.state.rate_limit_login_per_ip = settings.rate_limit_login_per_ip
     app.state.max_request_body_bytes = settings.max_request_body_bytes
     app.state.max_public_body_bytes = settings.max_public_body_bytes
     app.state.max_upload_body_bytes = settings.max_upload_body_bytes
@@ -83,6 +86,11 @@ app = FastAPI(
 # orden INVERSO al que corren. El guard de ruta va antes de la autenticación y
 # del ruteo a propósito: son las dos decisiones que un salto `..` engaña (ver
 # middleware/path_guard.py).
+# Registrado ANTES de la validación del JWT, y por eso se ejecuta DESPUÉS de
+# ella: Starlette aplica los middlewares en orden inverso al de registro, así
+# que el primero registrado es el más interno. Necesita la identidad ya
+# resuelta y firmada para contar por persona en vez de por dirección de red.
+app.add_middleware(RateLimitPorUsuarioMiddleware)
 app.add_middleware(JWTValidationMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(PathNormalizationMiddleware)

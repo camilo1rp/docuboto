@@ -29,8 +29,54 @@ class Settings(BaseSettings):
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
 
-    rate_limit_per_ip: int = 100
-    rate_limit_global: int = 1000
+    #: Tope por IP y minuto. Es un freno ANTI-AVALANCHA, no el regulador del uso
+    #: normal — para eso está `rate_limit_per_usuario`.
+    #:
+    #: Estaba en 100 y era el único eje, lo que lo convertía en un defecto
+    #: operativo medido: una pantalla del sistema cuesta **7 peticiones al
+    #: gateway** (media sobre tablero, bandeja, búsqueda, expedientes y
+    #: borradores), así que 100/min son **14 pantallas por minuto**. Un solo
+    #: funcionario las agota en un rato, y en una entidad pública lo normal es una
+    #: oficina entera tras un NAT: con 50 personas compartiendo IP saliente, el
+    #: sistema daba una pantalla cada 36 segundos **para todos juntos**.
+    rate_limit_per_ip: int = 1200
+
+    #: Tope por USUARIO AUTENTICADO y minuto — el que regula el uso normal.
+    #:
+    #: Existe porque el eje IP no puede distinguir a cincuenta funcionarios detrás
+    #: de una misma IP saliente, y el castigo recaía sobre inocentes: el primero
+    #: que trabajara deprisa dejaba a los demás con 429. A 7 peticiones por
+    #: pantalla, 120 son ~17 pantallas por minuto y por persona.
+    rate_limit_per_usuario: int = 120
+
+    #: Tope por ENTIDAD y minuto. Entre la persona y la plataforma.
+    #:
+    #: Sin este escalón, el techo de una entidad era el cubo global de TODAS:
+    #: 4000/120 ≈ 33 personas de una sola entidad trabajando a la vez dejaban a
+    #: las demás en 429, sin abuso ninguno. En multi-tenant eso es aislamiento de
+    #: disponibilidad, y el recurso compartido tiene que estar particionado.
+    rate_limit_per_tenant: int = 3000
+
+    #: Freno anti-catástrofe de la plataforma entera. NO es el regulador de nadie:
+    #: para eso están los cubos por persona y por entidad.
+    #:
+    #: Con `per_ip` a 1200 y el global a 4000, bastaban 3,3 IPs para saturar la
+    #: plataforma — antes hacían falta 10. Un global que se alcanza con el tráfico
+    #: legítimo de unas pocas entidades no protege: denega.
+    rate_limit_global: int = 20_000
+
+    #: Tope propio para el login (`POST /auth/token` y `/refresh`), por IP.
+    #:
+    #: Existe porque son las dos únicas rutas ANÓNIMAS caras que heredaban el cubo
+    #: general: cada petición es un password-grant contra Keycloak, con hash de
+    #: contraseña (PBKDF2, decenas de miles de iteraciones) sobre el componente que
+    #: no tiene réplicas. Al subir el cubo general de 100 a 1200 por el problema
+    #: del NAT, eso pasó a ser amplificación de CPU x12 — una puerta que estaba
+    #: cerrada y que abrió un cambio hecho para otra cosa.
+    #:
+    #: `bruteForceProtected` de Keycloak mitiga el bloqueo POR CUENTA, no el costo
+    #: ni el rociado de una contraseña sobre muchas cuentas distintas.
+    rate_limit_login_per_ip: int = 20
 
     # Orígenes autorizados a llamar al gateway desde un navegador (CSV).
     #

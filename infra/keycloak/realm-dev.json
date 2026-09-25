@@ -215,6 +215,75 @@
           "demo"
         ]
       }
+    },
+    {
+      "username": "e2e1",
+      "email": "e2e1@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Pruebas 1",
+      "lastName": "E2E",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "operator"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
+    },
+    {
+      "username": "e2e2",
+      "email": "e2e2@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Pruebas 2",
+      "lastName": "E2E",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "operator"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
+    },
+    {
+      "username": "e2e3",
+      "email": "e2e3@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Pruebas 3",
+      "lastName": "E2E",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "operator"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
     }
   ],
   "loginTheme": "orpyca",

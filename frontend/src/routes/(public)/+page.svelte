@@ -632,6 +632,11 @@
 
     &__table-wrap {
       overflow-x: auto;
+      // `position: relative` NO es cosmético: sin bloque contenedor propio, un
+      // `position: absolute` de dentro (el `sr-only` de las cabeceras) se resuelve
+      // contra el DOCUMENTO y este `overflow` no lo alcanza — desplazaba la página
+      // entera hacia una franja vacía. Ver el hallazgo de los 390 px.
+      position: relative;
     }
 
     &__table {
