@@ -231,8 +231,6 @@ def _make_mock_minio() -> MagicMock:
     minio = MagicMock()
     minio.bucket_exists = AsyncMock(return_value=True)
     minio.make_bucket = AsyncMock()
-    # `.version_id` mimics miniopy_async's real ObjectWriteResult (WORM tests read it).
-    minio.put_object = AsyncMock(return_value=MagicMock(version_id="v1"))
     # Server-side copy for the LOCAL AIP replica target (E10 Increment C1b).
     minio.copy_object = AsyncMock(return_value=MagicMock(version_id="v1"))
     minio.presigned_get_object = AsyncMock(return_value="http://minio/presigned-url")
@@ -244,7 +242,46 @@ def _make_mock_minio() -> MagicMock:
     # E10 debt (renovación de retención WORM para series CT): distinto de
     # `put_object` -- `PreservationWormService.renovar_retencion` SOLO llama
     # esto (nunca vuelve a subir bytes), ver tests/test_preservacion_worm_renovacion.py.
-    minio.set_object_retention = AsyncMock()
+    # Registra igual que `put_object`: la renovación también se relee, así que un
+    # doble que aceptara la extensión sin recordarla haría fallar al verificador
+    # por una carencia del doble y no del código.
+    def _recordar_extension(*args, **kwargs):
+        for candidato in args[2:]:
+            if hasattr(candidato, "mode"):
+                minio._ultima_retencion = candidato
+                break
+        if kwargs.get("config") is not None:
+            minio._ultima_retencion = kwargs["config"]
+
+    minio.set_object_retention = AsyncMock(side_effect=_recordar_extension)
+
+    # Read-back de la retención: el doble RECUERDA lo que se le pidió y lo
+    # devuelve, es decir, representa a un almacén que CUMPLE.
+    #
+    # No es un detalle de fontanería. `verificar_retencion_aplicada` relee la
+    # retención recién escrita y aborta si no coincide, porque hasta entonces el
+    # sistema asentaba `retention_mode='COMPLIANCE'` y un evento PREMIS en `ok`
+    # sobre la palabra del almacén. Un doble que devolviera cualquier cosa haría
+    # fallar a todos los tests por un motivo que no es el suyo; y uno que
+    # devolviera siempre «correcto» sin mirar lo pedido sería una afirmación
+    # gratuita sobre el colaborador.
+    #
+    # Que el almacén REAL cumpla no lo prueba este doble —no puede—: lo prueba la
+    # batería de `tests/integration/test_worm_object_lock_real_s3.py` contra un S3
+    # de verdad. Aquí solo se sostiene el contrato para que los tests de la lógica
+    # midan la lógica.
+    def _recordar_retencion(*args, **kwargs):
+        retencion = kwargs.get("retention")
+        if retencion is not None:
+            minio._ultima_retencion = retencion
+        return MagicMock(version_id="v1")
+
+    minio.put_object = AsyncMock(side_effect=_recordar_retencion)
+
+    async def _leer_retencion(*_args, **_kwargs):
+        return getattr(minio, "_ultima_retencion", None)
+
+    minio.get_object_retention = AsyncMock(side_effect=_leer_retencion)
     return minio
 
 

@@ -59,7 +59,11 @@ from miniopy_async.retention import Retention
 from orpycamcp_common import audit
 
 from app.core.config import settings
-from app.core.minio_client import ensure_object_lock_bucket, get_minio
+from app.core.minio_client import (
+    ensure_object_lock_bucket,
+    get_minio,
+    verificar_retencion_aplicada,
+)
 from app.models.file_record import FileRecord
 from app.repositories.file_repository import FileRepository
 from app.repositories.preservacion_repository import PreservacionRepository
@@ -424,6 +428,23 @@ class AipService:
             legal_hold=payload.legal_hold,
         )
         version_id = getattr(write_result, "version_id", None)
+
+        # Mismo read-back fail-closed que en `preservation_worm_service`: el AIP es
+        # el paquete de archivo, y darlo por protegido sobre la palabra del almacén
+        # es exactamente lo que el acta no puede permitirse afirmar. Va aquí
+        # también —y no solo en el otro servicio— porque son DOS caminos que
+        # escriben retención, y verificar uno solo deja el gemelo abierto.
+        #
+        # Antes de la réplica a propósito: replicar un objeto cuya protección no se
+        # pudo confirmar sería propagar la duda a la segunda copia.
+        await verificar_retencion_aplicada(
+            minio,
+            bucket,
+            object_key,
+            version_id=version_id,
+            modo_esperado=mode,
+            hasta_esperado=retain_until,
+        )
 
         # Réplica best-effort del AIP ya sellado (E10 Increment C1b). Se
         # dispara AQUÍ, ANTES de abrir la transacción crítica de abajo —

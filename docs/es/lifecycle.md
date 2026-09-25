@@ -37,7 +37,7 @@ El caso más común: un ciudadano o entidad externa envía una comunicación.
 2. RADICACIÓN
    Se asigna el número: 2024-ENTIDAD-E-000001
    Se registra: remitente, fecha, asunto, tipo documental, dependencia destino.
-   Se digitalizan los anexos (PDF) → almacenados en MinIO con SHA-256.
+   Se digitalizan los anexos (PDF) → almacenados en el almacén de objetos con SHA-256.
 
 3. DISTRIBUCIÓN (Flujo)
    El sistema o el operador envía el radicado a la dependencia responsable.

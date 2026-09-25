@@ -4,7 +4,7 @@
 
 - Docker 24+ and Docker Compose v2
 - 4 GB RAM minimum (8 GB recommended in production)
-- Free ports: 19080, 19180, 15432, 19900, 19901, 16379
+- Free ports: 19080, 19180, 15432, 19900, 16379
 
 > Internal services keep listening on 8001-8011/8080 inside the `orpycamcp-net`
 > Docker network; what changes is the port **published** to the host (19xxx /
@@ -21,6 +21,10 @@ cd orfeo_mcp
 # 2. Start the full infrastructure
 docker compose --profile dev up -d
 
+# 2.bis (optional) In-house voice dictation: it downloads a transcription model
+# and uses CPU, which is why it starts switched off (ADR-020).
+docker compose --profile assistant up -d whisper-service
+
 # 3. Verify the services are running
 docker compose ps
 ```
@@ -32,7 +36,12 @@ docker compose ps
 | API Gateway (docs) | http://localhost:19080/docs | — |
 | Frontend (SvelteKit) | http://localhost:19300 | — |
 | Keycloak Admin | http://localhost:19180/admin | admin / orpycamcp_dev |
-| MinIO Console | http://localhost:19901 | orpycamcp / orpycamcp_dev |
+| Object store (S3 API) | http://localhost:19900 | orpycamcp / orpycamcp_dev |
+
+> The object store is **RustFS** since ADR-027 (MinIO archived its open-source project and
+> pulled its images). It has **no web console** — port 19901 is gone: use `aws-cli` against
+> `http://localhost:19900` to inspect buckets.
+
 | PostgreSQL | localhost:15432 | orpycamcp / orpycamcp |
 | MailHog (email dev) | http://localhost:8025 | — |
 
@@ -159,6 +168,33 @@ curl -X POST 'http://localhost:19080/api/v1/signature/' \
   -d '{"radicado_id": "uuid-radicado"}'
 # Response: { "firma_id": "uuid", "estado": "firmado", "sha256": "...", "firmado_at": "..." }
 ```
+
+### Open a signature chain over an expediente
+
+Several people sign **in order**: turn 2 does not open until turn 1 is resolved
+(RF-FIR-04). Each signer sees it in their `/firmas` inbox when their turn comes.
+
+```bash
+curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"objeto_tipo": "expediente", "objeto_id": "uuid-expediente",
+       "titulo": "Cierre del expediente",
+       "firmantes": ["uuid-first", "uuid-second"]}'
+# Response: { "solicitud_id": "uuid", "estado": "pendiente", "items": [ … ] }
+```
+
+From the UI, the same act sits behind the **"Cadena de firmas"** button, on the
+expediente record (`/expedientes/{id}`, with `USUA_PERM_EXPEDIENTE` +
+`PERM_FIRMA`) and in a radicado's drawer in `/bandeja` (with `PERM_RADI` +
+`PERM_FIRMA`). Over a radicado it is offered only for **Salida or Interno**: a
+signature chain is opened over what the institution *produces*, and an incoming
+document was signed by whoever sent it. If the expediente already has an open
+chain, the screen shows it and will not let you open another: it must be resolved
+or rejected first.
+
+> `objeto_tipo` accepts `expediente`, `radicado` and `borrador`. Drafts still being
+> written have their own circuit — visto bueno **and** signature — under
+> `/borradores`, because the text can still be edited there.
 
 ### Query the conversational assistant
 

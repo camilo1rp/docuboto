@@ -25,7 +25,7 @@ Para una institución pequeña a mediana (< 5000 usuarios):
 
 - **CPU**: 4 cores (x86-64 o ARM64)
 - **RAM**: 16 GB
-- **Almacenamiento**: 500 GB SSD para PostgreSQL + 1-5 TB para MinIO (según volumen de documentos)
+- **Almacenamiento**: 500 GB SSD para PostgreSQL + 1-5 TB para el almacén de objetos (según volumen de documentos)
 - **Ancho de banda**: 100 Mbps
 
 ### Software
@@ -101,7 +101,7 @@ sudo ufw allow 443/tcp
 sudo ufw deny 5432  # PostgreSQL
 sudo ufw deny 6379  # Redis
 sudo ufw deny 8080  # API Gateway sin proxy
-sudo ufw deny 9000  # MinIO
+sudo ufw deny 9000  # almacén de objetos (S3)
 
 sudo ufw enable
 ```
@@ -134,7 +134,7 @@ cp infra/.env.example .env
 # 2. Generar contraseñas fuertes
 openssl rand -base64 32  # PostgreSQL password
 openssl rand -base64 32  # Redis password
-openssl rand -base64 32  # MinIO password
+openssl rand -base64 32  # clave del almacén de objetos
 openssl rand -base64 32  # Keycloak admin password
 
 # 3. Editar .env con valores reales
@@ -148,7 +148,7 @@ nano .env
 | `DB_USER` | Usuario PostgreSQL | `orpycamcp_prod` |
 | `DB_PASSWORD` | Contraseña PostgreSQL (32+ caracteres) | `<openssl rand -base64 32>` |
 | `REDIS_PASSWORD` | Contraseña Redis (32+ caracteres) | `<openssl rand -base64 32>` |
-| `MINIO_ROOT_PASSWORD` | Contraseña MinIO | `<openssl rand -base64 32>` |
+| `MINIO_ROOT_PASSWORD` | Clave raíz del almacén de objetos (el prefijo `MINIO_` es histórico, ADR-027) | `<openssl rand -base64 32>` |
 | `KEYCLOAK_HOSTNAME` | Dominio FQDN de Keycloak | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Contraseña admin Keycloak | `<secure password>` |
 | `KEYCLOAK_*_SECRET` | Secrets de clientes OAuth2 | `<32 char hex>` |
@@ -164,7 +164,7 @@ nano .env
 
 Tres secretos tenían **valor por defecto funcional** en el código, publicado en un
 repositorio AGPL: `SIGNATURE_SECRET` valía `change-me-in-production` y las
-credenciales de MinIO eran las de desarrollo que aparecen en el propio
+credenciales del almacén de objetos eran las de desarrollo que aparecen en el propio
 `CLAUDE.md`. Un despliegue que se olvidara de definirlos **no fallaba**: arrancaba
 y firmaba —o guardaba los anexos oficiales— con una clave que cualquiera puede
 leer en GitHub.
@@ -325,8 +325,11 @@ docker compose logs -f api-gateway   # Errores de ruteo
 # Probar health check (a través de Nginx si está configurado)
 curl -k https://keycloak.yourdomain.com/health
 
-# Verificar que MinIO está funcionando
-docker compose exec minio mc ls minio
+# Verificar que el almacén de objetos está funcionando
+#
+# Ya no hay cliente `mc` dentro del contenedor: el motor es RustFS (ADR-027) y
+# MinIO retiró también su cliente de los registros. Se usa `aws-cli`.
+docker compose exec minio curl -fsS http://localhost:9000/health
 
 # Verificar que Redis está funcionando
 docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
@@ -425,7 +428,7 @@ document-service:
 > **Los scripts existen y están probados.** `infra/backup.sh` y `infra/restore.sh`
 > son ficheros ejecutables del repositorio, no fragmentos para copiar y pegar. La
 > versión anterior de esta sección era un bloque de bash que **nunca se había
-> ejecutado**: usaba el usuario de desarrollo, volcaba MinIO a una ruta que ningún
+> ejecutado**: usaba el usuario de desarrollo, volcaba el almacén a una ruta que ningún
 > contenedor monta con un cliente que esa imagen no trae, no llevaba
 > `set -euo pipefail` —así que un volcado fallido producía un `.gz` vacío pero
 > válido— y purgaba los respaldos de más de 30 días **pase lo que pase**. En cron,
@@ -440,7 +443,7 @@ ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 ```
 
 Vuelca PostgreSQL (todos los schemas: `public` con el registro de tenants y el
-`audit_log`, más un `tenant_*` por institución) y espeja MinIO. Tres garantías que
+`audit_log`, más un `tenant_*` por institución) y espeja el almacén. Tres garantías que
 conviene conocer porque cambian cómo se opera:
 
 1. **El volcado se verifica antes de darse por bueno** (`pg_restore --list` parsea
@@ -467,7 +470,7 @@ En cron, redirigiendo a un log **que alguien mire**:
 ENV_FILE=infra/.env ./infra/restore.sh /srv/orpyca/backups/20260808_020000
 ```
 
-Para las aplicaciones y Keycloak pero **deja en pie Postgres y MinIO**, que son el
+Para las aplicaciones y Keycloak pero **deja en pie Postgres y el almacén**, que son el
 destino del trabajo. Exige confirmación escrita: restaurar destruye el estado
 actual y es irreversible.
 
@@ -627,7 +630,7 @@ Configurar alertas para:
 
 - [ ] Todos los servicios tienen TLS habilitado
 - [ ] PostgreSQL no es accesible externamente
-- [ ] MinIO requiere autenticación (sin acceso público)
+- [ ] El almacén de objetos requiere autenticación (sin acceso público)
 - [ ] Redis requiere contraseña
 - [ ] Keycloak usa HTTPS con certificado válido
 - [ ] Firewall bloquea puertos internos (5432, 6379, 9000)
@@ -696,19 +699,34 @@ docker compose exec postgres psql -U postgres -c \
   "ALTER USER orpycamcp PASSWORD 'new-password';"
 ```
 
-### MinIO no se sincroniza con buckets
+### El almacén de objetos no se sincroniza con buckets
+
+El motor es **RustFS** desde el ADR-027 y no incluye el cliente `mc`, así que estas
+comprobaciones se hacen con `aws-cli` desde un contenedor efímero en la misma red.
 
 ```bash
-# Verificar estado de MinIO
-docker compose exec minio mc status minio
+# Alias para no repetir el invocatorio
+alias s3orp='docker run --rm --network orpycamcp-net \
+  -e AWS_ACCESS_KEY_ID="$MINIO_ROOT_USER" \
+  -e AWS_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
+  amazon/aws-cli --endpoint-url http://minio:9000'
+
+# Salud del almacén
+docker compose exec minio curl -fsS http://localhost:9000/health
 
 # Listar buckets
-docker compose exec minio mc ls minio/
+s3orp s3 ls
 
-# Recrear bucket si está corrupto
-docker compose exec minio mc rb minio/orpycamcp-tenant-documents
-docker compose exec minio mc mb minio/orpycamcp-tenant-documents
+# Recrear un bucket: **con Object Lock**, o deja de ser un bucket de preservación.
+# El bloqueo SOLO se puede habilitar al crear — no hay forma de activarlo después
+# sin perder el contenido.
+s3orp s3api create-bucket --bucket orpycamcp-tenant-documents \
+  --object-lock-enabled-for-bucket
 ```
+
+> **No borre un bucket de preservación para «recrearlo limpio».** Sus objetos están
+> bajo retención en modo COMPLIANCE: no se pueden borrar ni reescribir, y si lo
+> consigue es que el almacén no está aplicando la garantía que el acta afirma.
 
 ### Alto uso de memoria
 

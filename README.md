@@ -1,7 +1,7 @@
 # OrpycaMCP
 
 > **Free, open-source Document Management System (DMS / SGDEA) for Latin American institutions**
-> FastAPI microservices · PostgreSQL · MinIO · Keycloak · Redis
+> FastAPI microservices · PostgreSQL · RustFS (S3) · Keycloak · Redis
 > Published under **AGPL v3**
 
 [![CI/CD](https://img.shields.io/badge/CI%2FCD-GitLab%20CI-blue)](https://gitlab.com/orpyca/orfeo_mcp)
@@ -49,7 +49,7 @@ docker compose logs -f api-gateway
 | API Gateway | http://localhost:19080 | — |
 | API Docs (aggregated) | http://localhost:19080/docs | — |
 | Keycloak Admin | http://localhost:19180/admin | `admin` / `orpycamcp_dev` |
-| MinIO Console | http://localhost:19901 | `orpycamcp` / `orpycamcp_dev` |
+| Object store (S3 API) | http://localhost:19900 | `orpycamcp` / `orpycamcp_dev` |
 | MailHog (email capture) | http://localhost:8025 | — |
 | PostgreSQL | `localhost:15432` | `orpycamcp` / `orpycamcp` (db `orpycamcp_db`) |
 
@@ -75,14 +75,14 @@ docker compose -f infra/docker-compose.prod.yml up -d
 | **tenant-service** | 8002 | Institutions, dependencias (org tree), catalogs, parameters, holidays/business days |
 | **document-service** | 8003 | Radicación E/S/I, metadata (JSONB), drafts, anulación, quick reply, PQRSD, IMAP intake, postal |
 | **archive-service** | 8004 | Expedientes, TRD/CCD, electronic index, transfers, physical archive (FUID) |
-| **storage-service** | 8005 | MinIO upload/download, SHA-256 checksums, versioning, preservation (plan + PREMIS) |
+| **storage-service** | 8005 | Object-store upload/download, SHA-256 checksums, versioning, preservation (plan + PREMIS) |
 | **workflow-service** | 8006 | Routing flows, rules engine, append-only history, returns, sequential approvals (vistos buenos) |
 | **notification-service** | 8007 | Email/alerts, Redis Stream consumers, signed outbound webhooks (HMAC) |
 | **signature-service** | 8008 | Native electronic signature (SHA-256 + identity + timestamp); PKI/XAdES pluggable |
 | **mcp-server** | 8009 | MCP layer: declarative tool catalog over the gateway (stdio + HTTP), per-permission scope |
 | **knowledge-service** | 8011 | Knowledge layer (pgvector): semantic retrieval with **server-side ACL pre-filter** |
 
-Supporting infrastructure: **PostgreSQL** (one schema per tenant), **Redis** (event streams), **MinIO** (S3-compatible storage), **Keycloak** (OIDC), **MailHog** (dev email).
+Supporting infrastructure: **PostgreSQL** (one schema per tenant), **Redis** (event streams), **RustFS** (S3-compatible object store; replaced MinIO, see ADR-027), **Keycloak** (OIDC), **MailHog** (dev email).
 
 A **frontend** (SvelteKit SSR, ADR-011/ADR-020) lives in `frontend/` and consumes only the gateway — currently a planning scaffold, implemented in its own phase.
 
@@ -94,7 +94,7 @@ A **frontend** (SvelteKit SSR, ADR-011/ADR-020) lives in `frontend/` and consume
 | **Expediente** | Logical grouping of related radicados (`open → closed → transferred`) with an electronic index |
 | **TRD / CCD** | Retention schedule + classification scheme: series ↔ subseries, two-phase retention, AGN disposition |
 | **Flujo** | Distribution route between dependencias, with an append-only history |
-| **Anexo** | File attachment in MinIO, SHA-256 checksummed and versioned |
+| **Anexo** | File attachment in the object store, SHA-256 checksummed and versioned |
 | **Firma** | Electronic signature (hash + identity + timestamp); index signing at closure |
 | **FUID** | Formato Único de Inventario Documental — canonical inventory export |
 
@@ -105,14 +105,14 @@ A **frontend** (SvelteKit SSR, ADR-011/ADR-020) lives in `frontend/` and consume
 - **Database**: PostgreSQL 15 — multi-tenancy via **schema isolation** (`tenant_{slug}`, ADR-002)
 - **Search**: **PostgreSQL FTS** (`tsvector` + `pg_trgm` + JSONB/GIN), not Elasticsearch (ADR-014)
 - **Knowledge / AI**: **pgvector** embeddings, pluggable provider (ADR-006); MCP via the official SDK (ADR-019)
-- **Object storage**: MinIO (S3-compatible)
+- **Object storage**: RustFS (S3-compatible; replaced MinIO after it archived its open-source project — ADR-027)
 - **Auth**: Keycloak (OAuth2, JWT) — authentication in Keycloak, **authorization resolved in the DB** (ADR-013)
 - **Events**: Redis Streams; signed outbound webhooks (HMAC-SHA256, ADR-018)
 - **Quality**: `ruff`, `mypy`, `pytest` — all run inside Docker
 
 ### Multi-tenancy
 
-Each institution gets its own **PostgreSQL schema** (`tenant_{slug}`): complete data isolation, per-tenant MinIO buckets (`orpycamcp-{slug}-documents`), automatic schema provisioning, and `search_path` switched per request from the JWT claims.
+Each institution gets its own **PostgreSQL schema** (`tenant_{slug}`): complete data isolation, per-tenant object-store buckets (`orpycamcp-{slug}-documents`), automatic schema provisioning, and `search_path` switched per request from the JWT claims.
 
 ### Security & access control
 

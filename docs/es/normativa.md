@@ -73,7 +73,7 @@ Da valor legal al documento electrónico cuando cumple con:
 
 **Qué implementa OrpycaMCP de esta ley:**
 - Checksum SHA-256 de cada anexo para garantizar integridad
-- Almacenamiento en MinIO con control de versiones
+- Almacenamiento en el almacén de objetos S3 con control de versiones
 - Trazabilidad de quién cargó cada archivo y cuándo
 
 ---

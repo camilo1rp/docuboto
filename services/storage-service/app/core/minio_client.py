@@ -8,6 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 import logging
+from datetime import datetime, timedelta
 
 from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 
@@ -24,6 +25,79 @@ class ObjectLockNotEnabledError(Exception):
     creado con ``object_lock=True`` desde el principio. Si esto ocurre, seguir
     adelante daría una falsa sensación de inmutabilidad — se aborta en su lugar.
     """
+
+
+class RetencionNoVerificadaError(Exception):
+    """El almacén aceptó la orden de retención y no la confirma al releerla.
+
+    Es el modo de fallo más grave de un almacén de objetos, y no es teórico:
+    SeaweedFS aceptaba ``PutObjectRetention`` con ``Mode=COMPLIANCE`` devolviendo
+    200 y permitía borrar el objeto igualmente. Con un almacén así, el sistema
+    escribiría ``retention_mode='COMPLIANCE'`` en ``preservacion_worm_objeto`` y
+    un evento PREMIS ``FIJACION`` en ``ok`` sobre una protección **inexistente**:
+    el acta de transferencia, con su huella y su firma XAdES, afirmaría una
+    garantía que el almacén no aplica. Un documento criptográficamente impecable
+    y falso en su contenido es peor que no tener WORM.
+
+    Por eso esto aborta en vez de continuar: el Ac. AGN 001/2024 art. 4.3.2.4 P1
+    exige que el expediente no pueda ser «modificado, eliminado ni reemplazado»,
+    y de esos tres verbos la firma solo cubre dos — «eliminado» lo cierra el
+    almacén o no lo cierra nadie.
+    """
+
+
+async def verificar_retencion_aplicada(
+    minio: Minio,
+    bucket: str,
+    object_key: str,
+    *,
+    version_id: str | None,
+    modo_esperado: str,
+    hasta_esperado: datetime,
+    tolerancia: timedelta = timedelta(minutes=1),
+) -> None:
+    """Relee la retención recién escrita y aborta si no coincide.
+
+    Hasta esta comprobación el sistema **ordenaba** la retención y no volvía a
+    mirarla nunca: ``set_object_retention`` aparecía en tres ficheros y
+    ``get_object_retention`` en ninguno. Era tolerable mientras el motor fuera uno
+    solo y conocido; dejó de serlo al cambiar de almacén, porque los candidatos
+    fallan precisamente aquí.
+
+    Es el mismo patrón fail-closed que ya se aplica a la fixity antes de fijar:
+    ante la duda, no se fija y no se asienta.
+
+    La ``tolerancia`` existe porque un almacén puede redondear el instante al
+    guardarlo; lo que no se tolera es otro **modo** ni una fecha **anterior** a la
+    pedida, que sería una retención más corta que la que la entidad fijó.
+    """
+    try:
+        aplicada = await minio.get_object_retention(bucket, object_key, version_id=version_id)
+    except S3Error as exc:
+        raise RetencionNoVerificadaError(
+            f"El almacén no devuelve la retención de {bucket}/{object_key} que acaba "
+            f"de aceptar ({exc.code}): no se puede afirmar que el objeto esté protegido."
+        ) from exc
+
+    if aplicada is None:
+        raise RetencionNoVerificadaError(
+            f"El almacén aceptó la retención de {bucket}/{object_key} y la reporta "
+            "como inexistente al releerla."
+        )
+
+    modo_real = getattr(aplicada, "mode", None)
+    if modo_real != modo_esperado:
+        raise RetencionNoVerificadaError(
+            f"El almacén aplicó el modo {modo_real!r} en vez del pedido "
+            f"{modo_esperado!r} sobre {bucket}/{object_key}."
+        )
+
+    hasta_real = getattr(aplicada, "retain_until_date", None)
+    if hasta_real is None or hasta_real < hasta_esperado - tolerancia:
+        raise RetencionNoVerificadaError(
+            f"El almacén aplicó una retención más corta de la pedida sobre "
+            f"{bucket}/{object_key}: hasta {hasta_real}, se pidió {hasta_esperado}."
+        )
 
 
 async def ensure_object_lock_bucket(minio: Minio, bucket: str) -> None:

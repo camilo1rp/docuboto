@@ -41,7 +41,12 @@ from miniopy_async.retention import Retention
 from orpycamcp_common import audit
 
 from app.core.config import settings
-from app.core.minio_client import ObjectLockNotEnabledError, ensure_object_lock_bucket, get_minio
+from app.core.minio_client import (
+    ObjectLockNotEnabledError,
+    ensure_object_lock_bucket,
+    get_minio,
+    verificar_retencion_aplicada,
+)
 from app.repositories.file_repository import FileRepository
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
@@ -276,6 +281,23 @@ class PreservationWormService:
         )
         version_id = getattr(write_result, "version_id", None)
 
+        # El almacén dijo que sí. Ahora se comprueba.
+        #
+        # Sin esto, la fila de `preservacion_worm_objeto` y el evento PREMIS
+        # `FIJACION` en `ok` se escribían sobre la PALABRA del almacén: si aceptaba
+        # la orden y no la cumplía, el sistema quedaba atestiguando una protección
+        # inexistente, y el acta de transferencia —firmada— la daría por buena.
+        # Fail-closed, igual que la fixity de arriba: si no se puede verificar, no
+        # se asienta.
+        await verificar_retencion_aplicada(
+            minio,
+            bucket,
+            object_key,
+            version_id=version_id,
+            modo_esperado=mode,
+            hasta_esperado=retain_until,
+        )
+
         row = await self._worm_repo.insert(
             expediente_id=payload.expediente_id,
             tipo=payload.tipo,
@@ -435,6 +457,21 @@ class PreservationWormService:
             existing["object_key"],
             retention,
             version_id=existing["version_id"],
+        )
+
+        # Y se relee, igual que al proteger. El comentario de arriba dice que esta
+        # llamada «ya confirmó la extensión del lado del servidor» — eso es
+        # exactamente lo que una respuesta 200 NO demuestra, y lo que este
+        # read-back convierte en comprobado. Sin él, una renovación que el almacén
+        # acepta y no aplica dejaría el registro diciendo que el expediente está
+        # protegido hasta una fecha que solo existe en nuestra base.
+        await verificar_retencion_aplicada(
+            minio,
+            existing["bucket"],
+            existing["object_key"],
+            version_id=existing["version_id"],
+            modo_esperado=existing["retention_mode"],
+            hasta_esperado=nueva,
         )
 
         # Atomicidad del asiento (remediación de auditoría de seguridad, Baja):

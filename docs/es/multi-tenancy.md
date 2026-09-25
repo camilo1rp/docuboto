@@ -28,13 +28,13 @@ Esto:
 1. Inserta en `public.tenants`
 2. Crea el schema `tenant_gobernacion_caldas`
 3. Ejecuta las migraciones Alembic en ese schema
-4. Crea el bucket MinIO `orpycamcp-gobernacion_caldas-documents`
+4. Crea el bucket `orpycamcp-gobernacion_caldas-documents` en el almacén de objetos
 
 ## ¿Qué puede salir mal?
 
 - **Slug duplicado**: el sistema devuelve `409 Conflict`
 - **Schema ya existe**: el provisioning es idempotente, no falla
-- **MinIO no disponible**: la creación del tenant falla y se hace rollback de la BD
+- **Almacén de objetos no disponible**: la creación del tenant falla y se hace rollback de la BD
 
 ## ¿Cómo funciona el aislamiento en cada request?
 
@@ -51,8 +51,8 @@ Todas las queries de esa sesión operan en el schema correcto automáticamente.
 | Recurso | Patrón | Ejemplo |
 |---|---|---|
 | Schema PostgreSQL | `tenant_{slug}` | `tenant_gobernacion_caldas` |
-| Bucket MinIO documentos | `orpycamcp-{slug}-documents` | `orpycamcp-gobernacion_caldas-documents` |
-| Bucket MinIO plantillas | `orpycamcp-{slug}-templates` | `orpycamcp-gobernacion_caldas-templates` |
+| Bucket de documentos | `orpycamcp-{slug}-documents` | `orpycamcp-gobernacion_caldas-documents` |
+| Bucket de plantillas | `orpycamcp-{slug}-templates` | `orpycamcp-gobernacion_caldas-templates` |
 | Stream Redis | `orpycamcp.{slug}.{service}.events` | `orpycamcp.gcal.document.events` |
 
 <!-- TODO: translate to English -->

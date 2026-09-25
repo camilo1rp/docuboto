@@ -4,7 +4,7 @@
 
 - Docker 24+ y Docker Compose v2
 - 4 GB RAM mínimo (8 GB recomendado en producción)
-- Puertos libres: 19080, 19180, 15432, 19900, 19901, 16379
+- Puertos libres: 19080, 19180, 15432, 19900, 16379
 
 > Los servicios internos siguen escuchando en 8001-8011/8080 dentro de la red Docker
 > `orpycamcp-net`; lo que cambia son los puertos **publicados** al host (rango 19xxx /
@@ -21,6 +21,10 @@ cd orfeo_mcp
 # 2. Levantar la infraestructura completa
 docker compose --profile dev up -d
 
+# 2.bis (opcional) Dictado por voz dentro de la instalación: descarga un modelo
+# de transcripción y consume CPU, por eso arranca apagado (ADR-020).
+docker compose --profile assistant up -d whisper-service
+
 # 3. Verificar que los servicios estén corriendo
 docker compose ps
 ```
@@ -32,7 +36,12 @@ docker compose ps
 | API Gateway (docs) | http://localhost:19080/docs | — |
 | Frontend (SvelteKit) | http://localhost:19300 | — |
 | Keycloak Admin | http://localhost:19180/admin | admin / orpycamcp_dev |
-| MinIO Console | http://localhost:19901 | orpycamcp / orpycamcp_dev |
+| Almacén de objetos (API S3) | http://localhost:19900 | orpycamcp / orpycamcp_dev |
+
+> El almacén de objetos es **RustFS** desde el ADR-027 (MinIO archivó su proyecto libre y
+> retiró sus imágenes). **No tiene consola web** —el 19901 ya no se usa—: para mirar los
+> buckets, `aws-cli` contra `http://localhost:19900`.
+
 | PostgreSQL | localhost:15432 | orpycamcp / orpycamcp |
 | MailHog (email dev) | http://localhost:8025 | — |
 

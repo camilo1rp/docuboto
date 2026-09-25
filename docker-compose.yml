@@ -9,7 +9,11 @@ networks:
 
 volumes:
   postgres-data:
+  # `minio-data` se conserva DECLARADO aunque ya no lo monte nadie: guarda el
+  # fondo de pruebas del motor anterior y borrarlo sería irreversible. Se retira
+  # cuando la migración a RustFS esté asentada y alguien lo decida a sabiendas.
   minio-data:
+  objectstore-data:
   keycloak-data:
   redis-data:
   # El modelo de Whisper se baja al primer arranque y se queda aquí: empaquetarlo
@@ -65,30 +69,52 @@ services:
       retries: 5
 
   minio:
-    # Mismo tag fijo que producción: probar contra una versión distinta de la
-    # que se despliega es probar otra cosa, y aquí lo que se prueba es el
-    # Object-Lock (E10).
-    # Se descarga de quay.io —el registro del propio MinIO— porque Docker Hub
-    # dejó de publicar tags de `minio/minio`: el repositorio quedó VACÍO y un
-    # `pull` del tag fijo falla con «pull access denied … repository does not
-    # exist». La versión NO cambia: mismo RELEASE y mismo digest
-    # (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e),
-    # solo cambia de dónde se descarga. El pin sigue intacto.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # RustFS, no MinIO — y el nombre del servicio se conserva a propósito.
+    #
+    # Por qué se cambió de motor: MinIO **archivó su proyecto de código abierto**
+    # y retiró sus imágenes de TODOS los registros públicos. quay.io —donde este
+    # compose ya se había mudado cuando Docker Hub se vació— responde `denied`,
+    # su API lista cero tags, y el rescate por el digest que este bloque tenía
+    # anotado tampoco funciona. Hasta el binario de `dl.min.io` da 410. Sin la
+    # imagen en caché local, la pila entera dejaba de arrancar: un pin protege de
+    # que te cambien la versión, no de que te la quiten.
+    #
+    # Por qué RustFS y no otro: lo decide una batería de conformidad WORM contra
+    # el almacén REAL (`services/storage-service/tests/integration/
+    # test_worm_object_lock_real_s3.py`), no un folleto. Resultado medido:
+    # RustFS 1.0.0 **7/7**, MinIO **7/7** (línea base), Garage **0/7** (control
+    # negativo: sin Object Lock, y por diseño no puede tenerlo). Las siete
+    # pruebas incluyen borrar la versión retenida **con credencial raíz**, que es
+    # lo que distingue COMPLIANCE de GOVERNANCE y lo que el Ac. AGN 001/2024
+    # art. 4.3.2.4 P1 exige para el verbo «eliminados».
+    #
+    # El nombre del servicio, del contenedor y las variables `MINIO_*` de los
+    # servicios NO cambian: son el contrato interno del cliente S3
+    # (`miniopy_async`, que habla S3 estándar) y aparecen en 13 ficheros de
+    # código. Renombrarlos multiplicaría el riesgo de esta migración sin ganar
+    # nada. Léase `MINIO_*` como «el almacén de objetos S3», que es lo que
+    # significa desde esta migración.
+    image: rustfs/rustfs:1.0.0
     container_name: orpycamcp-minio
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: orpycamcp
-      MINIO_ROOT_PASSWORD: orpycamcp_dev
+      RUSTFS_ACCESS_KEY: orpycamcp
+      RUSTFS_SECRET_KEY: orpycamcp_dev
+      RUSTFS_VOLUMES: /data
     ports:
       - "19900:9000"
-      - "19901:9001"
     volumes:
-      - minio-data:/data
+      # Volumen NUEVO, no el `minio-data` anterior: la compatibilidad on-disk de
+      # RustFS con MinIO está marcada como preview por sus propios autores, así
+      # que el fondo se resiembra en vez de reinterpretarse. `minio-data` se deja
+      # intacto —no se borra— por si hiciera falta volver atrás.
+      - objectstore-data:/data
     networks:
       - orpycamcp-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # `/health` es el propio de RustFS. También responde `/minio/health/live`
+      # por compatibilidad, pero usar ese nombre aquí sería describir el
+      # despliegue con el motor que ya no está.
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 3

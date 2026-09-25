@@ -171,8 +171,27 @@ fi
 CREDENCIALES="$(mktemp)"
 chmod 600 "$CREDENCIALES"
 trap 'rm -f "$CREDENCIALES"; limpiar_descifrado' EXIT
-printf 'MC_HOST_orpyca=http://%s:%s@minio:9000\n' \
-    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" > "$CREDENCIALES"
+# Credenciales en formato de la CLI de AWS.
+#
+# El cliente pasó de `mc` (MinIO) a `aws-cli`: la imagen `minio/mc` ya no existe
+# —MinIO archivó su proyecto libre y retiró todas sus imágenes—, así que este
+# script estaba roto y no se había notado. `aws-cli` es Apache 2.0, está mantenida
+# y cubre `put-object-retention`, sin lo cual la inmutabilidad no se puede reponer.
+{
+    printf 'AWS_ACCESS_KEY_ID=%s\n' "$MINIO_ROOT_USER"
+    printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$MINIO_ROOT_PASSWORD"
+    printf 'AWS_DEFAULT_REGION=%s\n' "${MINIO_REGION:-us-east-1}"
+    printf 'AWS_EC2_METADATA_DISABLED=true\n'
+} > "$CREDENCIALES"
+
+# Un solo sitio que sepa invocar el cliente S3.
+S3_IMAGEN="${S3_CLI_IMAGEN:-amazon/aws-cli:latest}"
+S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
+
+s3api() {
+    docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
+        "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@" 2>/dev/null
+}
 
 # ── El bloqueo se habilita ANTES del espejo, y el orden no es un detalle ────
 #
@@ -198,48 +217,69 @@ else
     while IFS="$(printf '\t')" read -r TIPO BUCKET MODO _; do
         [ "$TIPO" = "BUCKET" ] || continue
         case "$MODO" in COMPLIANCE|GOVERNANCE) ;; *) continue ;; esac
-        docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-            --entrypoint sh minio/mc -c \
-            "mc mb --with-lock orpyca/$BUCKET; mc retention set --default $MODO 1d orpyca/$BUCKET" \
-            >/dev/null 2>&1 || true
+        # El bloqueo SOLO se puede habilitar al crear el bucket: no hay forma de
+        # activarlo después sin perder su contenido. Por eso se recrea antes de
+        # volcar los objetos y no al revés.
+        s3api create-bucket --bucket "$BUCKET" --object-lock-enabled-for-bucket >/dev/null || true
+        s3api put-object-lock-configuration --bucket "$BUCKET" \
+            --object-lock-configuration "{\"ObjectLockEnabled\":\"Enabled\",\"Rule\":{\"DefaultRetention\":{\"Mode\":\"$MODO\",\"Days\":1}}}" \
+            >/dev/null || true
         echo "   $BUCKET: bloqueo $MODO"
     done < "$ORIGEN/minio-retencion.tsv"
 fi
 
 echo "── Restaurando MinIO..."
-docker run --rm "${RED_ARG[@]}" \
-    -v "$ORIGEN/minio:/respaldo:ro" \
-    --env-file "$CREDENCIALES" \
-    --entrypoint sh minio/mc -c 'mc mirror --quiet --overwrite --remove /respaldo orpyca'
+# El respaldo guarda `<origen>/minio/<bucket>/...`, así que se vuelca bucket a
+# bucket: `aws s3 sync` no tiene un equivalente de `mc mirror` sobre el alias.
+for D in "$ORIGEN"/minio/*/; do
+    [ -d "$D" ] || continue
+    B="$(basename "$D")"
+    s3api create-bucket --bucket "$B" >/dev/null || true
+    docker run --rm "${RED_ARG[@]}" \
+        -v "$D:/respaldo:ro" \
+        --env-file "$CREDENCIALES" \
+        "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" \
+        s3 sync /respaldo "s3://$B" --delete --only-show-errors || true
+done
 
 # ── Y la retención de cada objeto ──────────────────────────────────────────
 #
-# La orden solo admite una DURACIÓN en días o años, no la fecha guardada. Se
-# calcula lo que falta desde ahora y se redondea HACIA ARRIBA: en modo de
-# cumplimiento una retención no se puede acortar, y redondear a la baja
-# debilitaría en silencio un plazo que la entidad fijó una vez. Un objeto cuya
-# retención ya venció se deja como está: reponerla sería inventar un plazo nuevo.
+# Se repone el INSTANTE EXACTO que el respaldo guardó, no una duración.
+#
+# El cliente anterior (`mc retention set`) solo aceptaba días o años, así que
+# había que calcular lo que faltaba y redondear hacia arriba —nunca a la baja, que
+# habría debilitado en silencio un plazo fijado una sola vez—. Ese redondeo movía
+# la fecha de vencimiento en cada restauración. `put-object-retention` admite
+# `RetainUntilDate`, así que el plazo vuelve a ser el que la entidad fijó y no uno
+# derivado del momento en que se restauró.
+#
+# Un objeto cuya retención ya venció se deja como está: reponerla sería inventar
+# un plazo nuevo.
 if [ -f "$ORIGEN/minio-retencion.tsv" ]; then
     echo "── Reponiendo la retención de cada objeto..."
     REPUESTOS=0
     while IFS="$(printf '\t')" read -r TIPO OBJETO MODO HASTA; do
         [ "$TIPO" = "OBJETO" ] || continue
         [ -n "$MODO" ] && [ -n "$HASTA" ] || continue
-        DIAS="$(python3 - "$HASTA" <<'PYDIAS'
-import datetime, math, sys
+        # Solo se repone si la fecha guardada sigue en el futuro; la comprobación
+        # va aquí y no en el cliente para que un respaldo antiguo no intente
+        # revivir plazos ya vencidos.
+        VIGENTE="$(python3 - "$HASTA" <<'PYFECHA'
+import datetime, sys
 try:
     hasta = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
 except ValueError:
     raise SystemExit(0)
-faltan = (hasta - datetime.datetime.now(datetime.UTC)).total_seconds()
-if faltan > 0:
-    print(max(1, math.ceil(faltan / 86400)))
-PYDIAS
+if hasta > datetime.datetime.now(datetime.UTC):
+    print(hasta.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PYFECHA
 )"
-        [ -n "$DIAS" ] || continue
-        docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-            --entrypoint mc minio/mc retention set "$MODO" "${DIAS}d" "orpyca/$OBJETO" \
-            >/dev/null 2>&1 && REPUESTOS=$((REPUESTOS + 1)) || true
+        [ -n "$VIGENTE" ] || continue
+        BK="${OBJETO%%/*}"
+        LLAVE="${OBJETO#*/}"
+        s3api put-object-retention --bucket "$BK" --key "$LLAVE" \
+            --retention "{\"Mode\":\"$MODO\",\"RetainUntilDate\":\"$VIGENTE\"}" \
+            >/dev/null && REPUESTOS=$((REPUESTOS + 1)) || true
     done < "$ORIGEN/minio-retencion.tsv"
     echo "   $REPUESTOS objetos con su retención repuesta"
     [ "$RETENCION_REPUESTA" = "no aplica" ] && RETENCION_REPUESTA="sí ($REPUESTOS objetos)"

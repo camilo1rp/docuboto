@@ -1,5 +1,11 @@
 # Clasificación del API por flujos de trabajo (para las herramientas del MCP)
 
+> **Spanish only.** This page has no English translation: MkDocs falls back to the
+> Spanish version inside the English site (`fallback_to_default: true`). It is a working
+> document about the MCP tool catalogue, written against Spanish domain vocabulary
+> (`radicado`, `expediente`, `TRD`) that the API reference already defines in English.
+> Stated here rather than left for the reader to discover.
+
 ## Por qué esta clasificación, y por qué por FLUJOS
 
 El `mcp-server` traduce el API a herramientas que un modelo puede usar. La

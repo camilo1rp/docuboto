@@ -92,6 +92,7 @@ plugins:
             ADR-024 ROOT fuera de banda: ADR-024 Out-of-band ROOT
             ADR-025 TRD como instrumento convalidado: ADR-025 TRD as a convalidated instrument
             ADR-026 TVD de fondo acumulado: ADR-026 TVD for accumulated fonds
+            ADR-027 Sustitución del almacén de objetos: ADR-027 Object store replacement
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -144,6 +145,7 @@ nav:
     - ADR-024 ROOT fuera de banda: adr/ADR-024-root-fuera-de-banda.md
     - ADR-025 TRD como instrumento convalidado: adr/ADR-025-trd-instrumento-convalidado-versionado.md
     - ADR-026 TVD de fondo acumulado: adr/ADR-026-tvd-fondo-acumulado.md
+    - ADR-027 Sustitución del almacén de objetos: adr/ADR-027-sustitucion-almacen-objetos-rustfs.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

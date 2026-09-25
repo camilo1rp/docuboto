@@ -85,7 +85,7 @@ OrpycaMCP reimplementa el [Orfeo GPL](https://github.com/orfeosgd/orfeo) origina
 |---|---|---|
 | Stack | PHP 7 + Apache | FastAPI (Python 3.11) |
 | Arquitectura | Monolítico | Microservicios |
-| Almacenamiento de archivos | Sistema de archivos del servidor | MinIO (S3-compatible) |
+| Almacenamiento de archivos | Sistema de archivos del servidor | RustFS (S3-compatible, ADR-027) |
 | Autenticación | Sesiones PHP + LDAP opcional | Keycloak (SSO, LDAP, OAuth2) |
 | Multi-entidad | Una instalación por entidad | Multi-tenant nativo |
 | API | Sin API REST estándar | OpenAPI / REST completo |

@@ -28,7 +28,12 @@ volumes:
   postgres-data:
     # In production, use named volumes on persistent storage
     # E.g., AWS EBS, Google Persistent Disk, etc.
+  # `minio-data` se conserva DECLARADO aunque ya no lo monte nadie: en un
+  # despliegue real guarda el fondo del motor anterior, y bajo Object-Lock en
+  # COMPLIANCE sus objetos NO se pueden borrar ni reescribir. Retirarlo es una
+  # decisión de la entidad, después de migrar y con acta.
   minio-data:
+  objectstore-data:
   redis-data:
   # Keycloak uses external PostgreSQL, no separate volume
 
@@ -142,39 +147,59 @@ services:
         max-file: "3"
 
   minio:
-    # Tag FIJO, no `latest`. Aquí vive el Object-Lock en modo COMPLIANCE, donde
-    # una retención mal aplicada es IRREVERSIBLE durante décadas: que la imagen
-    # cambie sola en el siguiente `pull` —con el comportamiento de retención que
-    # traiga esa versión— no es un riesgo aceptable para el almacén de
-    # preservación. Actualizarla pasa a ser un acto deliberado, con su ensayo.
+    # RustFS, no MinIO. Tag FIJO y con digest, no `latest`: aquí vive el
+    # Object-Lock en modo COMPLIANCE, donde una retención mal aplicada es
+    # IRREVERSIBLE durante décadas. Que la imagen cambie sola en el siguiente
+    # `pull` —con el comportamiento de retención que traiga esa versión— no es un
+    # riesgo aceptable para el almacén de preservación. Actualizarla es un acto
+    # deliberado, con su ensayo y con la batería de conformidad WORM de nuevo en
+    # verde ANTES de desplegar.
     # Digest de esta versión (verificable con `docker image inspect`):
-    #   sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    # Se descarga de quay.io —el registro del propio MinIO— porque Docker Hub
-    # dejó de publicar tags de `minio/minio`: el repositorio quedó VACÍO y un
-    # `pull` del tag fijo falla con «pull access denied … repository does not
-    # exist». La versión NO cambia: mismo RELEASE y mismo digest
-    # (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e),
-    # solo cambia de dónde se descarga. El pin sigue intacto.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    #   sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    #
+    # Por qué se cambió de motor: MinIO **archivó su proyecto de código abierto**
+    # y retiró sus imágenes de todos los registros públicos —quay.io responde
+    # `denied`, Docker Hub 404, el binario de dl.min.io 410 y el digest anotado
+    # tampoco resuelve—. La lección, anotada aquí porque es donde más importa: un
+    # registro público es un canal de distribución, **no un archivo**. Para un
+    # almacén de preservación que debe durar décadas, la entidad debería guardar
+    # su propia copia de la imagen (`docker save`) junto al resto de sus
+    # instrumentos de recuperación.
+    #
+    # Por qué RustFS: lo decidió una batería de conformidad WORM contra el
+    # almacén REAL (`services/storage-service/tests/integration/
+    # test_worm_object_lock_real_s3.py`). Medido: RustFS 1.0.0 **7/7**, MinIO
+    # **7/7** (línea base), Garage **0/7** (control negativo). Las siete pruebas
+    # incluyen borrar la versión retenida con credencial RAÍZ, que es lo que
+    # distingue COMPLIANCE de GOVERNANCE y lo que el Ac. AGN 001/2024
+    # art. 4.3.2.4 P1 exige para el verbo «eliminados».
+    #
+    # Las variables `MINIO_*` de los demás servicios NO cambian: son el contrato
+    # interno del cliente S3. Léanse como «el almacén de objetos».
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     container_name: orpycamcp-minio-prod
     restart: unless-stopped
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MinIO root user required}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MinIO root password required}
-      # Enable access logs for audit trail
-      MINIO_LOG_QUERY_STRING: "on"
+      # Mismos nombres de variable que antes —el operador no tiene que rehacer su
+      # `.env`— y misma exigencia: sin secreto, el servicio no arranca.
+      RUSTFS_ACCESS_KEY: ${MINIO_ROOT_USER:?usuario raíz del almacén de objetos requerido}
+      RUSTFS_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?clave raíz del almacén de objetos requerida}
+      RUSTFS_VOLUMES: /data
     networks:
       - orpycamcp-net
     volumes:
-      - minio-data:/data
-    # SECURITY: Only expose S3 API and console to internal network
-    # Use a reverse proxy (Nginx) for external access
+      # Volumen nuevo: la compatibilidad on-disk de RustFS con MinIO la marcan sus
+      # propios autores como preview, así que NO se reinterpreta el fondo
+      # existente. En un despliegue con datos reales esto exige una migración
+      # explícita (`mc mirror` u homólogo) y re-sellar la retención, que es una
+      # decisión de la entidad y no un efecto colateral de un `up -d`.
+      - objectstore-data:/data
+    # SECURITY: Only expose the S3 API to the internal network.
+    # Use a reverse proxy (Nginx) for external access.
     expose:
       - "9000"
-      - "9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 3

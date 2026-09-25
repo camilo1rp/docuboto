@@ -39,7 +39,7 @@ The most common case: a citizen or external entity sends a communication.
 2. REGISTRATION (Radicación)
    The number is assigned: 2024-ENTIDAD-E-000001
    Recorded: sender, date, subject, document type, destination dependencia.
-   Attachments (anexos) are digitized (PDF) → stored in MinIO with SHA-256.
+   Attachments (anexos) are digitized (PDF) → stored in the object store with SHA-256.
 
 3. DISTRIBUTION (Flujo)
    The system or the operator sends the radicado to the responsible dependencia.

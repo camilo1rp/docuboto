@@ -175,7 +175,7 @@ Effective destruction (final disposition; today with no job to execute it) requi
 
 ### Anexo
 
-Binary file attached to a radicado, stored in MinIO.
+Binary file attached to a radicado, stored in the S3 object store.
 
 **What does it do?** It preserves the physical document (PDF, image, scanned letter) linked to the radicado, with integrity guaranteed by checksum.
 
@@ -311,6 +311,6 @@ Per-tenant subscription to domain events: OrpycaMCP delivers the event to extern
 | **Signatura topográfica** | Topographic call number — code that unambiguously locates a conservation unit in the physical archive |
 | **OAIS** | Open Archival Information System (ISO 14721) — long-term preservation model (SIP/AIP/DIP) |
 | **PREMIS** | Preservation metadata standard (objects, events, agents, rights) |
-| **WORM** | Write Once Read Many — immutable storage (MinIO Object Lock) for preservation |
+| **WORM** | Write Once Read Many — immutable storage (S3 Object Lock) for preservation |
 | **PDF/A** | PDF profile for long-term archiving (validatable with veraPDF) |
 | **Webhook** | Signed HTTP delivery of domain events to external systems |

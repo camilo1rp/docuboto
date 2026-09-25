@@ -141,7 +141,7 @@ echo "   volcado legible: $OBJETOS entradas en el índice"
 # MinIO no trae el cliente, que es por lo que el procedimiento anterior no podía
 # funcionar. El directorio de respaldo se monta en ESE contenedor, no en MinIO.
 
-echo "── MinIO (mc mirror)..."
+echo "── Almacén de objetos (espejo S3)..."
 RED="$("${COMPOSE[@]}" config --format json \
     | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin)["networks"])))' 2>/dev/null \
     || echo "")"
@@ -164,8 +164,31 @@ CREDENCIALES="$(mktemp)"
 chmod 600 "$CREDENCIALES"
 borrar_credenciales() { rm -f "$CREDENCIALES"; }
 trap 'borrar_credenciales; marcar_parcial' EXIT
-printf 'MC_HOST_orpyca=http://%s:%s@minio:9000\n' \
-    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" > "$CREDENCIALES"
+# Credenciales en formato de la CLI de AWS.
+#
+# El cliente pasó de `mc` (MinIO) a `aws-cli`: la imagen `minio/mc` **ya no
+# existe** —MinIO archivó su proyecto libre y retiró todas sus imágenes—, así que
+# estos scripts estaban rotos y no se había notado porque el arranque falla antes.
+# `aws-cli` es Apache 2.0, está mantenida y es la única alternativa que cubre
+# `get-object-retention` / `put-object-retention`, sin lo cual el respaldo no
+# puede guardar la inmutabilidad ni la restauración reponerla.
+{
+    printf 'AWS_ACCESS_KEY_ID=%s\n' "$MINIO_ROOT_USER"
+    printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$MINIO_ROOT_PASSWORD"
+    printf 'AWS_DEFAULT_REGION=%s\n' "${MINIO_REGION:-us-east-1}"
+    printf 'AWS_EC2_METADATA_DISABLED=true\n'
+} > "$CREDENCIALES"
+
+# Un solo sitio que sepa invocar el cliente S3. Antes cada llamada repetía el
+# `docker run` entero con su imagen y sus credenciales: seis copias que había que
+# cambiar a la vez, y la migración de cliente lo demostró.
+S3_IMAGEN="${S3_CLI_IMAGEN:-amazon/aws-cli:latest}"
+S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
+
+s3api() {
+    docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
+        "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@" 2>/dev/null
+}
 
 # `--user` no es cosmético.
 #
@@ -175,12 +198,21 @@ printf 'MC_HOST_orpyca=http://%s:%s@minio:9000\n' \
 # lo que este script trata de impedir— y encima no editable ni purgable sin
 # privilegios. Se comprobó ejecutándolo: los anexos salían `-rw-r--r-- root`.
 # Dárselo al usuario que invoca hace que hereden su umask y su propiedad.
-docker run --rm "${RED_ARG[@]}" \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -v "$DESTINO/minio:/respaldo" \
-    --env-file "$CREDENCIALES" \
-    --entrypoint sh minio/mc -c 'mc mirror --quiet orpyca /respaldo'
+# `aws s3 sync` trabaja bucket a bucket (no hay equivalente de `mc mirror` sobre
+# el alias entero), así que se enumeran primero y se sincroniza cada uno a su
+# subcarpeta. Mantener la jerarquía `<destino>/minio/<bucket>/...` importa: es la
+# que `restore.sh` espera.
+BUCKETS_ESPEJO="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' || true)"
+for B in $BUCKETS_ESPEJO; do
+    mkdir -p "$DESTINO/minio/$B"
+    docker run --rm "${RED_ARG[@]}" \
+        --user "$(id -u):$(id -g)" \
+        -e HOME=/tmp \
+        -v "$DESTINO/minio/$B:/respaldo" \
+        --env-file "$CREDENCIALES" \
+        "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" \
+        s3 sync "s3://$B" /respaldo --only-show-errors
+done
 
 # Cinturón y tirantes: si una versión futura del cliente volviera a escribir con
 # otro umask, esto lo corrige en vez de dejarlo pasar en silencio.
@@ -210,19 +242,12 @@ echo "── Retención del almacén (lo que el espejo no copia)..."
 : > "$DESTINO/minio-retencion.tsv"
 chmod 600 "$DESTINO/minio-retencion.tsv"
 
-BUCKETS="$(docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-    --entrypoint mc minio/mc ls --json orpyca 2>/dev/null \
-    | python3 -c 'import json,sys
-for l in sys.stdin:
-    try: d=json.loads(l)
-    except ValueError: continue
-    k=(d.get("key") or "").rstrip("/")
-    if k: print(k)' || true)"
+BUCKETS="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' || true)"
 
 for B in $BUCKETS; do
-    MODO="$(docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-        --entrypoint mc minio/mc retention info --default --json "orpyca/$B" 2>/dev/null \
-        | tr -d '\r' | tr '\n' ' ' || true)"
+    # `get-object-lock-configuration` falla en un bucket sin bloqueo, y eso es
+    # justo lo que queremos: la ausencia se distingue del error.
+    MODO="$(s3api get-object-lock-configuration --bucket "$B" --output json | tr -d '\r' | tr '\n' ' ' || true)"
     case "$MODO" in
         *COMPLIANCE*) M=COMPLIANCE ;;
         *GOVERNANCE*) M=GOVERNANCE ;;
@@ -233,26 +258,20 @@ for B in $BUCKETS; do
 
     # Solo se recorren objeto a objeto los buckets que SÍ tienen bloqueo: en los
     # demás no hay nada que reponer y el recorrido sería gratuito y lento.
-    docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-        --entrypoint mc minio/mc ls --json --recursive "orpyca/$B" 2>/dev/null \
-        | python3 -c 'import json,sys
-for l in sys.stdin:
-    try: d=json.loads(l)
-    except ValueError: continue
-    k=d.get("key")
-    if k: print(k)' \
+    s3api list-objects-v2 --bucket "$B" --query 'Contents[].Key' --output text \
+        | tr '\t' '\n' | grep -v '^None$' \
         | while read -r K; do
-            # `--json` y no el texto legible: éste dice «expiring in 29 days»,
-            # una duración RELATIVA al momento de leerla. Reponerla con eso
-            # correría la fecha de vencimiento hacia adelante en cada
-            # restauración, alargando en silencio una retención archivística que
-            # la entidad fijó una vez. El JSON trae el instante exacto.
-            INFO="$(docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-                --entrypoint mc minio/mc retention info --json "orpyca/$B/$K" 2>/dev/null \
+            [ -z "$K" ] && continue
+            # Se guarda el INSTANTE exacto (`RetainUntilDate`, ISO 8601), no una
+            # duración. Una duración relativa —«vence en 29 días»— correría la
+            # fecha hacia adelante en cada restauración, alargando en silencio una
+            # retención archivística que la entidad fijó una sola vez.
+            INFO="$(s3api get-object-retention --bucket "$B" --key "$K" --output json \
                 | python3 -c 'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: raise SystemExit(0)
-m,u=d.get("mode"),d.get("until")
+r=d.get("Retention") or {}
+m,u=r.get("Mode"),r.get("RetainUntilDate")
 if m and u: print(f"{m}\t{u}")' || true)"
             [ -n "$INFO" ] && printf 'OBJETO\t%s\t%s\n' "$B/$K" "$INFO" \
                 >> "$DESTINO/minio-retencion.tsv"

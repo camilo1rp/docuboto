@@ -33,9 +33,10 @@ Every item below is delivered unless explicitly marked as pending. Scope stateme
 #### E18 — MCP layer and conversational assistant
 
 - **Official MCP SDK binding** ✅ (stdio / HTTP-streamable, `initialize`/capabilities), plus resources, prompts and per-session OAuth.
-- **Conversational assistant — end-to-end backend** ✅ (ADR-019/ADR-020): `POST /api/v1/assistant/message` (routed by the gateway → mcp-server) drives a **Claude LLM loop** that runs the catalog's **read-only** tools as gateway calls **re-propagating the user's token** (as-the-user; every tool revalidates RBAC/clearance). Prompt-injection boundary (tool content is data, never instructions), RF-SEG-08 non-oracle responses, ephemeral history **isolated per tenant**, and **honest degradation** (`503 assistant_unavailable` without `ANTHROPIC_API_KEY` or on SDK failure — never a simulated answer, RF-FIR-15).
+- **Conversational assistant — end-to-end backend** ✅ (ADR-019/ADR-020): `POST /api/v1/assistant/message` (routed by the gateway → mcp-server) drives a **Claude LLM loop** that runs the catalogue's tools as gateway calls **re-propagating the user's token** (as-the-user; every tool revalidates RBAC/clearance). Prompt-injection boundary (tool content is data, never instructions), RF-SEG-08 non-oracle responses, ephemeral history **isolated per tenant**, and **honest degradation** (`503 assistant_unavailable` without `ANTHROPIC_API_KEY` or on SDK failure — never a simulated answer, RF-FIR-15).
 - **Connected to E21** ✅: the `buscar_conocimiento` tool (`POST /api/v1/knowledge/search` via the gateway, read-only) performs semantic retrieval _as-the-user_ with server-side ACL; results are labelled as hints from a **derived** index, to be confirmed against the authoritative source (ADR-006).
-- **Deferred**: SSE streaming; persistent history (today in-process memory, not multi-replica → move to Redis); enabling write tools behind double confirmation.
+- **Catalogue by capability** ✅: from 9 tools to **206, 74 of them writes** (as of 2026-09-25), covering **203 of the 342 operations the gateway exposes — 59 %**; the per-workflow breakdown is in [API by workflow](mcp-flujos.md) (Spanish only). **Writes are never dispatched**: they return a signed proposal (HMAC-SHA256) that the person confirms, 26 of them declared irreversible and 5 requiring a value typed from the card itself. **15 acts stay out by decision**, each published with its reason and its alternative route rather than silently missing.
+- **Deferred**: SSE streaming; persistent history (today in-process memory, not multi-replica → move to Redis).
 
 #### E21 — Knowledge layer (knowledge-service)
 
@@ -248,3 +249,47 @@ Every item is recorded with its file and its reason. Apart from the block above,
 **Tooling and documentation debt**
 
 - [ ] **`npm run lint` never reaches ESLint**: the script is `prettier --check . && eslint .`, and there are **17 files with pre-existing formatting differences** that break the chain at the `&&`. ESLint on its own reports 3 errors + 1 warning, **all pre-existing and identical to those on `HEAD`**. Run `prettier --write` over those 17 files in a separate formatting commit (or split the two scripts) so CI validates ESLint again.
+
+**Object store replacement — MinIO → RustFS (2026-09-25)**
+
+- [x] **MinIO archived its open-source project and pulled its images from every registry.**
+      The whole stack stopped booting and the installation could not be rebuilt from scratch.
+      Replaced with **RustFS 1.0.0** (Apache 2.0). Decision and rejected alternatives in
+      [ADR-027](adr/ADR-027-sustitucion-almacen-objetos-rustfs.md).
+      *The engine was chosen by tests, not by a datasheet*: a WORM conformance battery against a
+      **real** S3 (`services/storage-service/tests/integration/test_worm_object_lock_real_s3.py`)
+      — RustFS **7/7**, MinIO **7/7** (baseline), Garage **0/7** (negative control).
+- [x] **`backup.sh` and `restore.sh` were broken** and nobody had noticed: they used the
+      `minio/mc` image, also removed. Migrated to `aws-cli`. Along the way, retention is now
+      restored with the **exact instant** instead of days rounded up, which moved the expiry date
+      on every restore.
+- [x] **Retention read-back**, missing since before this decision: the system ordered the
+      retention and never looked again, yet recorded `retention_mode='COMPLIANCE'` and a PREMIS
+      event as `ok`. It is now re-read, and aborts fail-closed on any mismatch.
+
+- [ ] **Pending validation with the stack up** (deliberately deferred: the machine could not
+      sustain it). The battery already ran against all three engines in standalone containers,
+      but **the full service has not yet been exercised against RustFS**.
+- [ ] **The `MINIO_*` names outlive the engine that named them** (13 source files, the compose
+      service and the buckets). Kept on purpose so as not to compound the risk of this migration;
+      declared debt, not an oversight.
+
+**English translation brought to parity (2026-09-25)**
+
+- [x] **`docs/en/api.md` was 21 endpoints behind** the Spanish page. Translated and placed in
+      their sections: third-party directory (duplicates, a record's radicados, merge), E23
+      templates and document merging, the draft circuit (preview, register, send back), E19 mail
+      accounts and OAuth, signature *visto bueno*, a radicado's access history, internal file
+      content, and the internal render/digest routes.
+      **Cross-check verified: 338 = 338, matching in both directions.**
+- [x] **`docs/en/pantallas.md` was missing three screens** — `/correo`, `/admin/terceros` and the
+      application-wide error page — **and the citizen-procedures section**. That last one was not
+      formatting: the paragraph explaining why those screens ask for no account (**Ley
+      1755/2015**) had been lost and did not appear once in the English page. Restored.
+- [x] **`docs/en/getting-started.md` was missing the signature-chain section.** Translated.
+- [x] **`mcp-flujos.md` and `plan-pruebas.md` exist only in Spanish** and, with
+      `fallback_to_default: true`, MkDocs served them in Spanish inside the English site **without
+      saying so**. They now declare it in their header, as the changelog declares its own scope.
+- [x] *Declared, not hidden*: English prose is denser for a handful of endpoints — a bullet where
+      the Spanish page gives a section with more rationale. No endpoint, parameter, status code or
+      gate is missing; some of the *why* is. The scope note sits at the top of `docs/en/api.md`.

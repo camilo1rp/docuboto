@@ -31,12 +31,13 @@ graph TB
         SIG["signature-service"]
         MCP["mcp-server"]
         KNO["knowledge-service"]
+        WHI["whisper-service<br/>(assistant profile)"]
     end
 
     subgraph infra["Infrastructure"]
         PG[("PostgreSQL 15<br/>+ pgvector")]
         REDIS[("Redis<br/>Streams + cache")]
-        MINIO[("MinIO<br/>Object Storage")]
+        MINIO[("RustFS<br/>S3 Object Store")]
         KC["Keycloak<br/>OIDC"]
         MAIL["MailHog<br/>(dev only)"]
     end
@@ -86,16 +87,17 @@ would.
 | `tenant-service` | 8002 | **19002** | Institution/tenant onboarding, dependencias, catalogs, PINAR |
 | `document-service` | 8003 | **19003** | E/S/I registration, attachments, replies, annulment, import/export, IMAP intake, OAI-PMH/CMIS |
 | `archive-service` | 8004 | **19004** | Expedientes, TRD/CCD, electronic index, physical archive, transfers |
-| `storage-service` | 8005 | **19005** | Upload/download of files in MinIO, preservation (WORM/Object-Lock) |
+| `storage-service` | 8005 | **19005** | Upload/download of files in the object store, preservation (WORM/Object-Lock) |
 | `workflow-service` | 8006 | **19006** | Distribution flows, approvals (vistos buenos), rules, dead-letter |
 | `notification-service` | 8007 | **19007** | Email/alerts, outgoing webhooks, dead-letter |
 | `signature-service` | 8008 | **19008** | Electronic signature (personal XAdES-B/T and institutional seal of the index/transfer minutes) |
 | `mcp-server` | 8009 | **19009** | Model Context Protocol layer + conversational assistant (E18, ADR-019) |
 | `knowledge-service` | 8011 | **19011** | pgvector, RAG with ACL, semantic retrieval with citations (E21) |
+| `whisper-service` | 8012 | _not published_ | Speech transcription **inside the installation** (`faster-whisper` on CPU). Profile `assistant`: starts **off** and is **not routed through the gateway** — only mcp-server talks to it (ADR-020) |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — presentation layer (E22) |
 | PostgreSQL | 5432 | **15432** | Single database, multi-schema |
 | Redis | 6379 | **16379** | Event streams + cache |
-| MinIO | 9000 / 9001 (console) | **19900 / 19901** | Object storage |
+| RustFS | 9000 | **19900** | S3 object store (replaced MinIO, ADR-027). No web console: inspect with `aws-cli` |
 | Keycloak | 8080 | **19180** | Identity Provider (OIDC) |
 | MailHog | 1025 (SMTP) / 8025 (web) | 1025 / 8025 | Email capture in development |
 
@@ -160,7 +162,7 @@ Summary of what each one exposes:
 ### `storage-service`
 | Router | What it manages |
 |---|---|
-| `storage` | Mediated upload / download of attachments in MinIO |
+| `storage` | Mediated upload / download of attachments in the object store |
 | `preservacion` | WORM/Object-Lock, BagIt/PREMIS AIP packaging |
 
 ### `workflow-service`
@@ -196,6 +198,34 @@ Summary of what each one exposes:
 |---|---|
 | `knowledge` | `/search`, `/antecedentes`, `/rag` (exposed); `/ingest` internal, event-driven |
 
+### `whisper-service`
+
+| Router | What it manages |
+|---|---|
+| `main` | `GET /health`, `GET /ready` (is the model loaded?), `POST /transcribe` (audio → text) |
+
+**The twelfth service, and the only one that never touches the gateway.** It exists because the
+browser's own speech recogniser **does not meet the sovereignty decision**: in Chrome and Edge
+the classic Web Speech API ships the audio to a Google service, so the dictation button is only
+offered where the browser recognises *on the device*. For everyone else the voice arrives here
+and never leaves the installation.
+
+Three traits set it apart from the other services, all deliberate:
+
+- **It starts switched off** (`assistant` profile, ADR-020). A minimal install runs without it
+  and without downloading any model; `POST /api/v1/assistant/transcribe` answers `503`
+  explaining how to enable it. **There is no transcription `stub`** — it would have to invent
+  what was said.
+- **It is neither routed through the gateway nor published to the host**: only `mcp-server`
+  talks to it, with `INTERNAL_SERVICE_TOKEN`. Same criterion as `storage-service`, which serves
+  bytes only to `document-service`'s mediator (D-02): network surface nobody needs is surface
+  somebody will eventually use.
+- **It is the only service with no database and no per-tenant schema.** It takes audio, returns
+  text and stores nothing; hence its absence from the migration and write censuses.
+
+Measured: ~9 s per ~5 s of audio on 4 CPUs with the `small` model. **Unverified**: quality on
+human speech — the test used synthetic voice.
+
 ## Gateway proxy pattern
 
 The `api-gateway` exposes a single catch-all endpoint:
@@ -223,7 +253,7 @@ Security rules **by design** in the proxy (not accidental):
   `POST /api/v1/storage/upload`. Downloading bytes **always** goes through
   `document-service` (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), which
   revalidates the user's clearance before requesting the file from
-  `storage-service` — MinIO is never reached directly from outside.
+  `storage-service` — the object store is never reached directly from outside.
 - **`mcp-server` scoped down**: only `/api/v1/assistant/*` is routed; the raw
   MCP catalog/protocol (`/api/v1/mcp`, `/mcp`) is deliberately kept out of the
   gateway — the assistant is the only entry point for external clients.
@@ -292,7 +322,7 @@ graph LR
 
 On every request, each service's middleware switches the asyncpg connection's
 `search_path` according to the JWT's `tenant_slug` claim — the tenant is never
-taken from the body nor from a client-manipulable header. MinIO mirrors the same
+taken from the body nor from a client-manipulable header. The object store mirrors the same
 separation with prefixed buckets: `orpycamcp-{slug}-documents`.
 
 ## Authentication flow

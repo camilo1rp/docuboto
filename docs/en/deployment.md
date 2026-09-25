@@ -25,7 +25,7 @@ For a small to medium institution (< 5000 users):
 
 - **CPU**: 4 cores (x86-64 or ARM64)
 - **RAM**: 16 GB
-- **Storage**: 500 GB SSD for PostgreSQL + 1-5 TB for MinIO (depending on document volume)
+- **Storage**: 500 GB SSD for PostgreSQL + 1-5 TB for the object store (depending on document volume)
 - **Bandwidth**: 100 Mbps
 
 ### Software
@@ -101,7 +101,7 @@ sudo ufw allow 443/tcp
 sudo ufw deny 5432  # PostgreSQL
 sudo ufw deny 6379  # Redis
 sudo ufw deny 8080  # API Gateway sin proxy
-sudo ufw deny 9000  # MinIO
+sudo ufw deny 9000  # object store (S3)
 
 sudo ufw enable
 ```
@@ -134,7 +134,7 @@ cp infra/.env.example .env
 # 2. Generate strong passwords
 openssl rand -base64 32  # PostgreSQL password
 openssl rand -base64 32  # Redis password
-openssl rand -base64 32  # MinIO password
+openssl rand -base64 32  # object-store password
 openssl rand -base64 32  # Keycloak admin password
 
 # 3. Edit .env with the real values
@@ -148,7 +148,7 @@ nano .env
 | `DB_USER` | PostgreSQL user | `orpycamcp_prod` |
 | `DB_PASSWORD` | PostgreSQL password (32+ characters) | `<openssl rand -base64 32>` |
 | `REDIS_PASSWORD` | Redis password (32+ characters) | `<openssl rand -base64 32>` |
-| `MINIO_ROOT_PASSWORD` | MinIO password | `<openssl rand -base64 32>` |
+| `MINIO_ROOT_PASSWORD` | Object-store root password (the `MINIO_` prefix is historical, ADR-027) | `<openssl rand -base64 32>` |
 | `KEYCLOAK_HOSTNAME` | Keycloak FQDN domain | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password | `<secure password>` |
 | `KEYCLOAK_*_SECRET` | OAuth2 client secrets | `<32 char hex>` |
@@ -163,7 +163,7 @@ nano .env
 ### Variables that block startup when missing
 
 Three secrets used to ship with a **working default** published in an AGPL
-repository: `SIGNATURE_SECRET` was `change-me-in-production`, and the MinIO
+repository: `SIGNATURE_SECRET` was `change-me-in-production`, and the object-store
 credentials were the development ones printed in `CLAUDE.md` itself. A deployment
 that forgot to set them **did not fail** — it started up and signed (or stored
 official attachments) with a key anyone can read on GitHub.
@@ -326,8 +326,11 @@ docker compose logs -f api-gateway   # Errores de ruteo
 # Try the health check (through Nginx if it is configured)
 curl -k https://keycloak.yourdomain.com/health
 
-# Verify MinIO is running
-docker compose exec minio mc ls minio
+# Verify the object store is running
+#
+# There is no `mc` client inside the container any more: the engine is RustFS
+# (ADR-027) and MinIO pulled its client from the registries too. Use `aws-cli`.
+docker compose exec minio curl -fsS http://localhost:9000/health
 
 # Verify Redis is running
 docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
@@ -421,7 +424,7 @@ document-service:
 > **The scripts exist and have been exercised.** `infra/backup.sh` and
 > `infra/restore.sh` are executable files in the repository, not snippets to copy
 > and paste. The previous version of this section was a bash block that had **never
-> been run**: it used the development database user, mirrored MinIO to a path no
+> been run**: it used the development database user, mirrored the object store to a path no
 > container mounts using a client that image does not ship, lacked
 > `set -euo pipefail` —so a failed dump produced an empty but valid `.gz`— and
 > pruned backups older than 30 days **regardless**. In cron, at 2 a.m., that is a
@@ -436,7 +439,7 @@ ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 ```
 
 Dumps PostgreSQL (every schema: `public`, holding the tenant registry and the
-`audit_log`, plus one `tenant_*` per institution) and mirrors MinIO. Three
+`audit_log`, plus one `tenant_*` per institution) and mirrors the object store. Three
 guarantees worth knowing because they change how you operate it:
 
 1. **The dump is verified before it is accepted** (`pg_restore --list` parses the
@@ -462,7 +465,7 @@ In cron, redirected to a log **someone actually reads**:
 ENV_FILE=infra/.env ./infra/restore.sh /srv/orpyca/backups/20260808_020000
 ```
 
-Stops the application services and Keycloak but **leaves Postgres and MinIO
+Stops the application services and Keycloak but **leaves Postgres and the object store
 running**, since they are the target of the work. It requires a typed
 confirmation: restoring destroys the current state and is irreversible.
 
@@ -622,7 +625,7 @@ Configure alerts for:
 
 - [ ] All services have TLS enabled
 - [ ] PostgreSQL is not externally accessible
-- [ ] MinIO requires authentication (no public access)
+- [ ] The object store requires authentication (no public access)
 - [ ] Redis requires a password
 - [ ] Keycloak uses HTTPS with a valid certificate
 - [ ] Firewall blocks internal ports (5432, 6379, 9000)
@@ -692,19 +695,32 @@ docker compose exec postgres psql -U postgres -c \
   "ALTER USER orpycamcp PASSWORD 'new-password';"
 ```
 
-### MinIO won't sync with buckets
+### The object store won't sync with buckets
+
+The engine is **RustFS** since ADR-027 and ships no `mc` client, so these checks run
+with `aws-cli` from a throwaway container on the same network.
 
 ```bash
-# Check MinIO's status
-docker compose exec minio mc status minio
+alias s3orp='docker run --rm --network orpycamcp-net \
+  -e AWS_ACCESS_KEY_ID="$MINIO_ROOT_USER" \
+  -e AWS_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
+  amazon/aws-cli --endpoint-url http://minio:9000'
+
+# Object-store health
+docker compose exec minio curl -fsS http://localhost:9000/health
 
 # List the buckets
-docker compose exec minio mc ls minio/
+s3orp s3 ls
 
-# Recreate the bucket if it is corrupted
-docker compose exec minio mc rb minio/orpycamcp-tenant-documents
-docker compose exec minio mc mb minio/orpycamcp-tenant-documents
+# Recreate a bucket: **with Object Lock**, or it stops being a preservation bucket.
+# Locking can ONLY be enabled at creation time.
+s3orp s3api create-bucket --bucket orpycamcp-tenant-documents \
+  --object-lock-enabled-for-bucket
 ```
+
+> **Never delete a preservation bucket to "recreate it clean".** Its objects are under
+> COMPLIANCE retention: they cannot be deleted or overwritten — and if you manage to,
+> the store is not enforcing the guarantee the transfer record asserts.
 
 ### High memory usage
 

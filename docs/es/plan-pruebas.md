@@ -1,5 +1,10 @@
 # Plan de pruebas funcionales — OrpycaMCP
 
+> **Spanish only.** This page has no English translation: MkDocs falls back to the
+> Spanish version inside the English site (`fallback_to_default: true`). It is an internal
+> test-plan runbook, not reference documentation. Stated here rather than left for the
+> reader to discover.
+
 > **Qué es este documento.** El recorrido completo del sistema _desde el navegador_, bloque por
 > bloque, tal y como lo haría una entidad que lo estrena. No es una lista de deseos: es el plan
 > que se ejecutó contra `tenant_demo` en agosto de 2026, con los actos reales —incluidos los
@@ -24,7 +29,7 @@ Un solo comando reconstruye el entorno entero desde cero:
 ./scripts/reset-entorno.sh --radicados 400 --expedientes 30
 ```
 
-**Destruye los volúmenes** de Postgres, MinIO y Redis, y pide una frase tecleada antes de
+**Destruye los volúmenes** de Postgres, el almacén de objetos y Redis, y pide una frase tecleada antes de
 hacerlo. Recrear en vez de restaurar un *snapshot* es deliberado: `public.audit_log` es
 append-only por Ley 594 —ni el `--purge` del seed lo toca—, así que la única forma de dejarlo
 limpio es recrear la base; sembrar por la API hace que cada documento **nazca con su asiento y
@@ -45,7 +50,7 @@ encadena, no los sustituye.
 | Aplicación    | http://localhost:19300       | todo el plan                                                |
 | Gateway / API | http://localhost:19080/docs  | verificación fuera de pantalla                              |
 | MailHog       | http://localhost:8025        | **el único sitio donde se ve** que las notificaciones salen |
-| MinIO         | http://localhost:19901       | anexos, índices firmados, actas                             |
+| Almacén (S3)  | http://localhost:19900       | anexos, índices firmados, actas (sin consola: `aws-cli`)    |
 | Keycloak      | http://localhost:19180/admin | identidad                                                   |
 
 El entorno crea **cinco perfiles deliberadamente distintos**. No son cinco copias con nombres

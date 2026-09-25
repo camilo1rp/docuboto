@@ -4,6 +4,13 @@
 
 **Fecha**: 2026-07-06.
 
+> **Actualizado por [ADR-027](ADR-027-sustitucion-almacen-objetos-rustfs.md) (2026-09-25).**
+> El motor ya **no es MinIO**: archivó su proyecto de código abierto y retiró sus imágenes de
+> todos los registros. El almacén es **RustFS**, elegido por una batería de conformidad WORM
+> contra un S3 real. **Lo que este ADR decide no cambia** —Object Lock en modo COMPLIANCE por
+> objeto, retención derivada de la TRD, gate de disposición—: cambia quién lo implementa, y
+> desde ADR-027 esa garantía se **verifica** (read-back) en vez de suponerse.
+
 **Contexto normativo**: Ley 594/2000 (Ley General de Archivos), Acuerdo AGN 060/2001, ISO 14721 (OAIS), RFC 8493 (BagIt), PREMIS v3.
 
 ---

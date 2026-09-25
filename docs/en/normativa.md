@@ -73,7 +73,7 @@ It gives legal value to the electronic document when it complies with:
 
 **What OrpycaMCP implements from this law:**
 - SHA-256 checksum of each anexo to guarantee integrity
-- Storage in MinIO with version control
+- Storage in the S3 object store with version control
 - Traceability of who uploaded each file and when
 
 ---

@@ -23,19 +23,19 @@ Principio común: el contrato (firmas de función / endpoints REST) **no cambia*
 
 ---
 
-## 2. WORM / inmutabilidad (MinIO Object Lock) — `storage-service`
+## 2. WORM / inmutabilidad (S3 Object Lock) — `storage-service`
 
 | | |
 |---|---|
 | Estado actual | Plan de preservación + eventos PREMIS + AIP/BagIt. El evento `WORM` se registra, pero **no** hay Object Lock real. |
-| Punto de swap | `storage-service` (cliente MinIO + bucket de preservación; al persistir el AIP). |
+| Punto de swap | `storage-service` (cliente S3 + bucket de preservación; al persistir el AIP). |
 | Norma | Acuerdo AGN 001/2024 Art. 4.3.2.6; Decreto 2609/2012 Art. 26. |
 
 **Para activar WORM:**
 1. Crear un **bucket de preservación** con *versioning* y **Object Lock** habilitado (modo *compliance*).
 2. Al empaquetar el AIP (`POST /api/v1/preservacion/aip`), subir el objeto con `retention until` derivado de la **TRD** (E04, `archivo_central_years`) y, si aplica, *legal hold*.
 3. Registrar el evento `WORM` (ya soportado) con la fecha de retención aplicada.
-4. Requiere MinIO/S3 con Object Lock; el cálculo de retención ya existe (E04 `GET /trd/{id}/retention`).
+4. Requiere un almacén S3 con Object Lock **verificado** (batería de conformidad, ADR-027); el cálculo de retención ya existe (E04 `GET /trd/{id}/retention`).
 
 ---
 
@@ -166,7 +166,7 @@ fuera es el traductor** desde el sistema de origen hacia ese formato.
 | Capacidad | Servicio | Swap | Necesita |
 |---|---|---|---|
 | Firma digital PKI | signature-service | `signer.py` | cert X.509 + TSA + lib |
-| WORM (Object Lock) | storage-service | cliente MinIO | MinIO con Object Lock |
+| WORM (Object Lock) | storage-service | cliente S3 | RustFS con Object Lock (ADR-027) |
 | PDF/A | storage-service | normalización | veraPDF |
 | Protocolo MCP (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | hecho (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
 | Embeddings/RAG | knowledge-service | `embeddings.py` | modelo/LLM |

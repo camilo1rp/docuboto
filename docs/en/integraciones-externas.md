@@ -23,19 +23,19 @@ Common principle: the contract (function signatures / REST endpoints) **does not
 
 ---
 
-## 2. WORM / immutability (MinIO Object Lock) — `storage-service`
+## 2. WORM / immutability (S3 Object Lock) — `storage-service`
 
 | | |
 |---|---|
 | Current state | Preservation plan + PREMIS events + AIP/BagIt. The `WORM` event is recorded, but there is **no** real Object Lock. |
-| Swap point | `storage-service` (MinIO client + preservation bucket; when persisting the AIP). |
+| Swap point | `storage-service` (S3 client + preservation bucket; when persisting the AIP). |
 | Regulation | Acuerdo AGN 001/2024 (Colombian National Archive agreement) Art. 4.3.2.6; Decreto 2609/2012 Art. 26. |
 
 **To enable WORM:**
 1. Create a **preservation bucket** with *versioning* and **Object Lock** enabled (*compliance* mode).
 2. When packaging the AIP — Archival Information Package — (`POST /api/v1/preservacion/aip`), upload the object with a `retention until` derived from the **TRD** (E04, `archivo_central_years`) and, if applicable, a *legal hold*.
 3. Record the `WORM` event (already supported) with the applied retention date.
-4. Requires MinIO/S3 with Object Lock; the retention calculation already exists (E04 `GET /trd/{id}/retention`).
+4. Requires an S3 store with **verified** Object Lock (conformance battery, ADR-027); the retention calculation already exists (E04 `GET /trd/{id}/retention`).
 
 ---
 
@@ -165,7 +165,7 @@ the translator** from the source system into that format.
 | Capability | Service | Swap | Needs |
 |---|---|---|---|
 | PKI digital signature | signature-service | `signer.py` | X.509 cert + TSA + lib |
-| WORM (Object Lock) | storage-service | MinIO client | MinIO with Object Lock |
+| WORM (Object Lock) | storage-service | S3 client | RustFS with Object Lock (ADR-027) |
 | PDF/A | storage-service | normalization | veraPDF |
 | MCP protocol (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | done (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
 | Embeddings/RAG | knowledge-service | `embeddings.py` | model/LLM |

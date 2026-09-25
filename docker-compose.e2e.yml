@@ -53,21 +53,18 @@ services:
       retries: 5
 
   minio:
-    # Mismo tag fijo que producción: probar contra una versión distinta de la
-    # que se despliega es probar otra cosa, y aquí lo que se prueba es el
-    # Object-Lock (E10).
-    # Se descarga de quay.io —el registro del propio MinIO— porque Docker Hub
-    # dejó de publicar tags de `minio/minio`: el repositorio quedó VACÍO y un
-    # `pull` del tag fijo falla con «pull access denied … repository does not
-    # exist». La versión NO cambia: mismo RELEASE y mismo digest
-    # (sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e),
-    # solo cambia de dónde se descarga. El pin sigue intacto.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # RustFS, no MinIO — ver el motivo completo en `docker-compose.yml`: MinIO
+    # archivó su proyecto libre y retiró sus imágenes de todos los registros, así
+    # que el pin dejó de poder descargarse. El sustituto se eligió midiendo
+    # (RustFS 7/7 en la batería de conformidad WORM, misma que MinIO; Garage 0/7).
+    # El nombre del servicio y las variables `MINIO_*` se conservan: son el
+    # contrato interno del cliente S3.
+    image: rustfs/rustfs:1.0.0
     container_name: e2e-minio
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: orpycamcp
-      MINIO_ROOT_PASSWORD: orpycamcp_dev
+      RUSTFS_ACCESS_KEY: orpycamcp
+      RUSTFS_SECRET_KEY: orpycamcp_dev
+      RUSTFS_VOLUMES: /data
     ports:
       - "9002:9000"
     volumes:
@@ -75,7 +72,7 @@ services:
     networks:
       - e2e-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 5s
       timeout: 3s
       retries: 5

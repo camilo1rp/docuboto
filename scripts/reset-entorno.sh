@@ -250,7 +250,7 @@ cat <<FIN
 
   Interfaz     http://localhost:19300
   MailHog      http://localhost:8025      (los OTP por correo llegan aquí)
-  MinIO        http://localhost:19901
+  Almacén S3   http://localhost:19900  (RustFS, sin consola web — ver ADR-027)
   Keycloak     http://localhost:19180/admin
 
   Los perfiles y sus secretos TOTP están en la tarjeta de arriba.
