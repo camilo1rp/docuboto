@@ -140,8 +140,12 @@ describe("AssistantDock — envío de mensajes", () => {
 
   it("backend ausente (assistant_unavailable) → banner honesto, sin turno de asistente fabricado", async () => {
     const { AssistantError } = await import("$lib/services/assistant.service.js");
+    // El motivo viaja en `detail` desde el backend: es lo que el banner enseña.
+    const motivo =
+      "Esta instalación no tiene configurado un modelo de lenguaje, así que el asistente " +
+      "no puede responder. Quien administra el sistema puede activarlo.";
     sendMessageMock.mockRejectedValue(
-      new AssistantError("unavailable", "El asistente aún no está disponible.", null),
+      new AssistantError("unavailable", "El asistente aún no está disponible.", motivo),
     );
 
     render(AssistantDock, { props: { open: true, onClose: vi.fn() } });
@@ -154,11 +158,10 @@ describe("AssistantDock — envío de mensajes", () => {
     await Promise.resolve();
     await tick();
 
-    expect(
-      screen.getByText(
-        "El asistente aún no está disponible. Esta función se activará próximamente.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(motivo)).toBeInTheDocument();
+    // Y ya no promete lo que no depende del producto: la función existe; lo que
+    // falta es configurarla en esta instalación.
+    expect(screen.queryByText(/se activará próximamente/i)).toBeNull();
     // El turno del usuario se conserva; no se fabrica un turno de asistente.
     const log = screen.getByRole("log");
     expect(within(log).queryAllByText(/asistente/i)).toHaveLength(0);

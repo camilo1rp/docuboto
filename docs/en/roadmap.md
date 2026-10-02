@@ -28,6 +28,15 @@ OrpycaMCP has followed **two complementary plans**:
 
 ### specDrive status by epic (and what is still pending)
 
+> **Open domain decision (2026-10-01): radicado status and workflow progress do not talk to each
+> other.** Distributing and processing on the board advance the steps (`flow_steps`); the
+> radicado stays `registered` unless someone manually presses "Distribute"/"In progress" in the
+> inbox List view. The dashboard no longer depends on it — it reads the inbox and alerts from
+> `registered` — but the inbox drawer's "Return" button and the search status filters still do.
+> The two ways out are not equivalent: have the workflow move the radicado's status (as in Orfeo,
+> where distributing is a status change) or drop `distributed`/`in_progress` from the radicado and
+> derive "where it stands" from its steps.
+
 Every item below is delivered unless explicitly marked as pending. Scope statements are deliberately honest (RF-FIR-15): where something is _verifiable but not accredited_, it says so.
 
 #### E18 — MCP layer and conversational assistant

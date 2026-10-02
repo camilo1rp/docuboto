@@ -2109,10 +2109,16 @@ Evalúa varios radicados (1-500) contra el mismo conjunto de reglas en una sola 
 >
 > El `503 assistant_unavailable` sigue existiendo, pero ya no significa "el backend
 > no está construido": lo devuelve el propio mcp-server cuando le falta
-> `ANTHROPIC_API_KEY` o el SDK falla (degradación honesta, RF-FIR-15). El proxy
-> SvelteKit traduce además a ese mismo código cualquier ausencia de ruta
-> (404/501/5xx/conexión rehusada) — la UI muestra "asistente no disponible", nunca
-> una respuesta simulada.
+> `ANTHROPIC_API_KEY` o el SDK falla (degradación honesta, RF-FIR-15). **Las dos
+> causas comparten código pero no mensaje**, porque piden cosas distintas a quien
+> lee: sin modelo configurado, `detail` dice que la instalación no lo tiene y que
+> quien la administra puede activarlo —esperar no lo arregla—; con el proveedor
+> caído, que se reintente en unos minutos. El proxy SvelteKit **reenvía** ese
+> motivo al panel (solo el del sobre propio del asistente, acotado a 300
+> caracteres) y traduce cualquier otra ausencia de ruta (404/501/5xx/conexión
+> rehusada) a «El servicio del asistente no responde». Hasta 2026-10 el proxy lo
+> sustituía por un texto fijo y la interfaz prometía que la función «se activará
+> próximamente», un resto de cuando el backend no existía.
 
 ### `POST /api/v1/assistant/message`
 

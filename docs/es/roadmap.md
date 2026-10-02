@@ -26,6 +26,15 @@ OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
 ### Pendientes del specDrive (dependen de integraciones/infra externas)
 
+> **Decisión de dominio abierta (2026-10-01): el estado del radicado y el avance del flujo no se
+> hablan.** Repartir y tramitar por el tablero avanzan los pasos (`flow_steps`); el radicado se
+> queda en `registered` salvo que alguien pulse a mano «Distribuir»/«En trámite» en la vista Lista
+> de la bandeja. El panel ya no depende de ello —lee la bandeja de entrada y alerta desde
+> `registered`—, pero siguen colgando de esos estados el botón «Devolver» del cajón de la bandeja
+> y los filtros por estado de la búsqueda. Hay dos salidas y no son equivalentes: que el flujo
+> mueva el estado del radicado (como en Orfeo, donde repartir es un cambio de estado) o retirar
+> `distributed`/`in_progress` del radicado y derivar el «en qué va» de sus pasos.
+
 > **El hueco de producto más grande, y no depende de nadie de fuera (anotado el 2026-08-28).**
 > **La disposición final no se ejecuta.** El sistema tiene el calendario —al cerrar un expediente
 > congela en `expedientes.disposition` su `fin_archivo_gestion`, su `fin_archivo_central`, el código

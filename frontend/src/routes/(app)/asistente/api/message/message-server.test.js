@@ -210,6 +210,32 @@ describe("POST /asistente/api/message — backend ausente/degradado → estado h
     },
   );
 
+  it("el 503 del backend llega con SU motivo, no con un texto fijo", async () => {
+    // El backend distingue «sin modelo configurado» de «proveedor caído», que
+    // piden cosas distintas a quien lee. Este proxy los aplastaba en un texto
+    // único, y la interfaz prometía encima que la función «se activará
+    // próximamente».
+    const motivo = "Esta instalación no tiene configurado un modelo de lenguaje.";
+    stubFetch(async () =>
+      jsonResponse(503, {
+        detail: { error: "assistant_unavailable", detail: motivo, status: 503 },
+      }),
+    );
+    const res = await POST({ locals: SESSION_LOCALS, request: requestWith({ mensaje: "hola" }) });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "assistant_unavailable", detail: motivo });
+  });
+
+  it("un 503 sin el sobre del asistente no reenvía texto ajeno", async () => {
+    // Solo se reenvía el motivo del sobre PROPIO: un 503 de otro salto (un
+    // proxy intermedio, el propio gateway) no debe poner su texto en el panel.
+    stubFetch(async () => jsonResponse(503, { detail: "upstream connect error" }));
+    const res = await POST({ locals: SESSION_LOCALS, request: requestWith({ mensaje: "hola" }) });
+    const data = await res.json();
+    expect(data.detail).not.toContain("upstream");
+    expect(data.detail).toMatch(/no responde/);
+  });
+
   it("401 del gateway se propaga tal cual (sesión inválida)", async () => {
     stubFetch(async () =>
       jsonResponse(401, { error: "unauthenticated", detail: "token expirado" }),

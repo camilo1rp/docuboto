@@ -11,9 +11,9 @@
  * dashboard-server.test.js — +page.server.js del panel principal (T-07, §10).
  *
  * Cubre el rediseño del tablero a los cuatro módulos personales:
- *  - 01 Radicados pendientes: UNA llamada a /documents con `status` repetido
- *    (distributed e in_progress), con
- *    total = suma de X-Total-Count de ambas.
+ *  - 01 Radicados pendientes: la bandeja de entrada del flujo
+ *    (/workflows/inbox), la MISMA fuente que el tablero de /bandeja, con el
+ *    total que da el servidor.
  *  - 02 Actividad reciente: una llamada sin filtro de estado.
  *  - 03 Alertas: derivadas de `due_date` de los radicados abiertos, con
  *    `diasRestantes` calculado y orden ascendente (más urgente primero).
@@ -32,14 +32,21 @@ const parentWithUser =
   (tenant_slug = "icetex", permissions = ["SGD_PERM_ESTADISTICA"]) =>
   async () => ({ user: { tenant_slug, permissions } });
 
-/** Construye un documento mínimo de /documents. */
+/**
+ * Construye un documento mínimo de /documents.
+ *
+ * `registered` por defecto, que es el estado que el sistema escribe al radicar.
+ * El doble usaba `distributed`: un estado al que el flujo no lleva nunca (solo un
+ * botón manual de la vista Lista), y con él la suite aprobaba un panel que en la
+ * base real no mostraba nada.
+ */
 function makeDoc(overrides = {}) {
   return {
     id: "doc-1",
     tracking_number: "2026-ICETEX-E-000001",
     doc_type: "E",
     subject: "Asunto de prueba",
-    status: "distributed",
+    status: "registered",
     registered_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     due_date: null,
@@ -85,6 +92,19 @@ function fakeGatewayFetch({
       };
     }
 
+    if (url.pathname.endsWith("/workflows/inbox")) {
+      if (!pendientesOk) {
+        return { ok: false, status: 500, json: async () => ({ detail: "Falla pendientes" }) };
+      }
+      const total = pendientesTotal ?? pendientes.length;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (h) => (h === "X-Total-Count" ? String(total) : null) },
+        json: async () => pendientes,
+      };
+    }
+
     if (url.pathname.endsWith("/documents")) {
       // `getAll` y no `get`: la cadena de consulta es un multidict y `get`
       // devuelve solo el primer valor — mirarla con `get` reproduciría dentro
@@ -111,16 +131,10 @@ function fakeGatewayFetch({
             json: async () => alertas,
           };
         }
-        if (!pendientesOk) {
-          return { ok: false, status: 500, json: async () => ({ detail: "Falla pendientes" }) };
-        }
-        const total = pendientesTotal ?? pendientes.length;
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: (h) => (h === "X-Total-Count" ? String(total) : null) },
-          json: async () => pendientes,
-        };
+        throw new Error(
+          "Una consulta de /documents con varios estados y sin orden por plazo: los " +
+            "pendientes salen de /workflows/inbox, no de un filtro de estado del radicado.",
+        );
       }
 
       // Sin filtro de estado -> actividad reciente
@@ -139,28 +153,56 @@ function fakeGatewayFetch({
   });
 }
 
+/** Construye un paso mínimo de /workflows/inbox (forma real del servicio). */
+function makePaso(overrides = {}) {
+  return {
+    id: "paso-1",
+    radicado_id: "rad-1",
+    tracking_number: "2026-ICETEX-E-000001",
+    doc_type: "E",
+    to_dept: "Subdirección Financiera",
+    notes: "Reparto",
+    status: "pending",
+    due_at: null,
+    ...overrides,
+  };
+}
+
 describe("dashboard/+page.server.js#load — módulo 01 Radicados pendientes", () => {
-  it("pide los dos estados en UNA llamada y toma el total del servidor", async () => {
+  it("sale de la bandeja de entrada del flujo, la misma fuente que el tablero", async () => {
     const fetch = fakeGatewayFetch({
-      pendientes: [
-        makeDoc({ id: "d2", status: "in_progress", registered_at: "2026-01-03T00:00:00Z" }),
-        makeDoc({ id: "d1", status: "distributed", registered_at: "2026-01-02T00:00:00Z" }),
-      ],
+      pendientes: [makePaso({ id: "p2" }), makePaso({ id: "p1", status: "in_progress" })],
       // El total NO coincide con lo devuelto a propósito: son las 5 visibles de
       // un conjunto mayor. Si el loader volviera a contar `items.length`, el
       // tablero anunciaría como pendiente solo lo que cabe en el módulo.
-      pendientesTotal: 37,
+      pendientesTotal: 101,
     });
 
     const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
 
-    expect(result.pendientes.total).toBe(37);
-    expect(result.pendientes.items.map((d) => d.id)).toEqual(["d2", "d1"]);
+    expect(result.pendientes.total).toBe(101);
+    expect(result.pendientes.items.map((d) => d.id)).toEqual(["p2", "p1"]);
     expect(result.pendientes.error).toBeNull();
-    // Tres llamadas a /documents: pendientes, alertas y recientes. Con una por
-    // estado serían cuatro — y el doble ya no las atiende.
-    const aDocumentos = fetch.mock.calls.filter(([u]) => String(u).includes("/documents"));
-    expect(aDocumentos).toHaveLength(3);
+    // Y NO de un filtro de estado del radicado: el flujo no mueve el radicado a
+    // `distributed`/`in_progress`, y por ahí el panel decía «Vas al día» a quien
+    // tenía 101 pasos pendientes (medido el 2026-10-01).
+    const aBandeja = fetch.mock.calls.filter(([u]) => String(u).includes("/workflows/inbox"));
+    expect(aBandeja).toHaveLength(1);
+  });
+
+  it("titula cada fila con el destino del paso, como la tarjeta del tablero", async () => {
+    const fetch = fakeGatewayFetch({
+      pendientes: [makePaso({ to_dept: "Control Interno", due_at: "2026-10-09T00:00:00Z" })],
+    });
+
+    const result = await load({ cookies: { get: () => "tok" }, parent: parentWithUser(), fetch });
+
+    expect(result.pendientes.items[0]).toMatchObject({
+      tracking_number: "2026-ICETEX-E-000001",
+      detalle: "Control Interno",
+      status: "pending",
+      due_date: "2026-10-09T00:00:00Z",
+    });
   });
 
   it("pide al servidor solo los 5 que caben en el módulo", async () => {
@@ -170,13 +212,9 @@ describe("dashboard/+page.server.js#load — módulo 01 Radicados pendientes", (
 
     const pedido = fetch.mock.calls
       .map(([u]) => new URL(u))
-      .find((u) => u.searchParams.getAll("status").length > 1 && !u.searchParams.get("order_by"));
+      .find((u) => u.pathname.endsWith("/workflows/inbox"));
 
-    // El recorte lo hace la base, no el cliente: traer 20 por estado para
-    // enseñar 5 es pedir cuatro veces lo que se usa, y la parte descartada es
-    // justamente la que decide qué se ve.
     expect(pedido.searchParams.get("size")).toBe("5");
-    expect(pedido.searchParams.getAll("status")).toEqual(["distributed", "in_progress"]);
   });
 
   it("si la llamada de pendientes falla, expone error y no rompe el resto de módulos", async () => {
@@ -229,7 +267,14 @@ describe("dashboard/+page.server.js#load — módulo 03 Alertas", () => {
     // exactamente el que una alerta busca. Se radicó antes, luego salía después.
     expect(pedido).toBeTruthy();
     expect(pedido.searchParams.get("order_dir")).toBe("asc");
-    expect(pedido.searchParams.getAll("status")).toEqual(["distributed", "in_progress"]);
+    // `registered` incluido: es donde se quedan los radicados que avanzan por el
+    // flujo, y un plazo de respuesta corre desde que se radica. Sin él las
+    // alertas pedían dos estados vacíos en la base: 127 vencidos invisibles.
+    expect(pedido.searchParams.getAll("status")).toEqual([
+      "registered",
+      "distributed",
+      "in_progress",
+    ]);
   });
 
   it("respeta el orden que da el servidor y traduce los días que faltan", async () => {

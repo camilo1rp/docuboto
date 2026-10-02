@@ -270,6 +270,13 @@ def _make_mock_minio() -> MagicMock:
     # batería de `tests/integration/test_worm_object_lock_real_s3.py` contra un S3
     # de verdad. Aquí solo se sostiene el contrato para que los tests de la lógica
     # midan la lógica.
+    # `None` EXPLÍCITO: `minio` es un `MagicMock`, así que el default de
+    # `getattr` de abajo nunca se aplica y «nadie guardó retención» sería
+    # indistinguible de «guardó algo». Sin esto el read-back compara el modo
+    # contra un mock fantasma, y su mensaje de error no deja ver la causa —
+    # medido en `tests/integration/test_aip_concurrent_real_sql.py`.
+    minio._ultima_retencion = None
+
     def _recordar_retencion(*args, **kwargs):
         retencion = kwargs.get("retention")
         if retencion is not None:

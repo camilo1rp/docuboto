@@ -2002,9 +2002,16 @@ Evaluates several radicados (1-500) against the same set of rules in a single ca
 > The `503 assistant_unavailable` still exists, but it no longer means "the
 > backend is not built": the mcp-server itself returns it when
 > `ANTHROPIC_API_KEY` is missing or the SDK fails (honest degradation,
-> RF-FIR-15). The SvelteKit proxy additionally translates any absent route
-> (404/501/5xx/connection refused) into that same code — the UI shows "assistant
-> unavailable", never a simulated answer.
+> RF-FIR-15). **Both causes share the code but not the message**, because they
+> ask different things of the reader: with no model configured, `detail` says the
+> installation lacks one and that whoever administers it can enable it — waiting
+> does not fix it; with the provider down, it says to retry in a few minutes. The
+> SvelteKit proxy **forwards** that reason to the panel (only from the assistant's
+> own envelope, capped at 300 characters) and translates any other absent route
+> (404/501/5xx/connection refused) into "the assistant service is not
+> responding". Until 2026-10 the proxy replaced it with a fixed text and the UI
+> promised the feature "will be enabled soon" — a leftover from when the backend
+> did not exist.
 
 ### `POST /api/v1/assistant/message`
 

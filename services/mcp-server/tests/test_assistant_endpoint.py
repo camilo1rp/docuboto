@@ -25,6 +25,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.routers.assistant import FALLO_PROVEEDOR, SIN_MODELO
 from tests._assistant_fakes import (
     FakeAnthropic,
     RaisingAnthropic,
@@ -59,6 +60,8 @@ async def test_503_cuando_asistente_no_disponible(api: AsyncClient) -> None:
 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "assistant_unavailable"
+    # Dice la CAUSA y a quién acudir: esperar no arregla una instalación sin modelo.
+    assert resp.json()["detail"]["detail"] == SIN_MODELO
 
 
 @pytest.mark.asyncio
@@ -70,6 +73,10 @@ async def test_503_cuando_el_sdk_falla(api: AsyncClient) -> None:
 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "assistant_unavailable"
+    # Y no el mismo texto que la instalación sin modelo: aquí sí basta reintentar.
+    assert resp.json()["detail"]["detail"] == FALLO_PROVEEDOR
+    # Ni filtra la excepción interna al cliente.
+    assert "boom" not in resp.text
 
 
 # -- guardas de identidad ---------------------------------------------

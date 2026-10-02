@@ -69,8 +69,38 @@ def _make_mock_minio() -> MagicMock:
     minio = MagicMock()
     minio.bucket_exists = AsyncMock(return_value=True)
     minio.make_bucket = AsyncMock()
-    minio.put_object = AsyncMock(return_value=MagicMock(version_id="v1"))
     minio.get_object_lock_config = AsyncMock(return_value=MagicMock())
+
+    # El doble RECUERDA la retención que se le pidió y la devuelve al releerla,
+    # es decir, representa a un almacén que CUMPLE — mismo criterio que el doble
+    # compartido de `tests/conftest.py`, y por la misma razón: `aip_service`
+    # relee la retención tras sellar el AIP y aborta si no coincide, así que un
+    # doble que devolviera lo esperado sin haberlo guardado dejaría esa
+    # verificación muda justo aquí, donde se prueba la concurrencia.
+    #
+    # Sin esto, `get_object_retention` caía al `MagicMock` genérico, que no es
+    # awaitable: `TypeError: object MagicMock can't be used in 'await'
+    # expression`. Solo se veía con `RUN_INTEGRATION=1`, que es la razón de que
+    # el read-back entrara al repositorio sin que nada lo delatara.
+    # `None` EXPLÍCITO, y no por gusto: `minio` es un `MagicMock`, así que
+    # `getattr(minio, "_ultima_retencion", None)` devuelve un mock recién
+    # fabricado en vez del default — «nadie guardó nada» era indistinguible de
+    # «guardó algo», y el read-back comparaba el modo contra un `MagicMock` cuyo
+    # mensaje de error no dejaba ver la causa. Inicializarlo hace que la falta de
+    # retención sea observable, que es lo que el fail-closed tiene que ver.
+    minio._ultima_retencion = None
+
+    def _recordar_retencion(*_args, **kwargs):
+        retencion = kwargs.get("retention")
+        if retencion is not None:
+            minio._ultima_retencion = retencion
+        return MagicMock(version_id="v1")
+
+    async def _leer_retencion(*_args, **_kwargs):
+        return getattr(minio, "_ultima_retencion", None)
+
+    minio.put_object = AsyncMock(side_effect=_recordar_retencion)
+    minio.get_object_retention = AsyncMock(side_effect=_leer_retencion)
 
     async def _get_object(_bucket: str, _key: str):
         obj = MagicMock()
@@ -217,9 +247,15 @@ async def test_empaquetar_aip_holds_advisory_lock_on_server_during_put_object(
 
     mock_minio = _make_mock_minio()
 
-    async def _slow_put_object(*_args, **_kwargs):
+    async def _slow_put_object(*_args, **kwargs):
         put_object_entered.set()
         await release_put_object.wait()
+        # Recuerda la retención igual que el doble base: esta prueba sustituye
+        # `put_object` para poder frenarlo a mitad, y sustituirlo no puede
+        # desactivar de paso el read-back que corre justo después.
+        retencion = kwargs.get("retention")
+        if retencion is not None:
+            mock_minio._ultima_retencion = retencion
         return MagicMock(version_id="v1")
 
     mock_minio.put_object = AsyncMock(side_effect=_slow_put_object)

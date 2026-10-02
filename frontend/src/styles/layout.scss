@@ -330,32 +330,15 @@
   }
 }
 
-// ── Dock del asistente (panel lateral derecho, inicialmente vacío) ────────────
-
-.assistant-dock {
-  position: fixed;
-  top: var(--op-topbar-height);
-  right: 0;
-  bottom: 0;
-  z-index: 80;
-  width: 360px;
-  background: var(--op-surface);
-  border-left: 1px solid var(--op-border);
-  box-shadow: var(--op-shadow-lg);
-  display: flex;
-  flex-direction: column;
-  transform: translateX(100%);
-  transition: transform var(--op-transition);
-
-  &.is-open {
-    transform: translateX(0);
-  }
-
-  @media (max-width: 768px) {
-    width: 100%;
-    top: var(--op-topbar-height);
-  }
-}
+// ── Dock del asistente: sus estilos viven SOLO en `AssistantDock.svelte` ─────
+//
+// Aquí había una regla `.assistant-dock` del andamiaje, de un diseño en el que el
+// panel estaba siempre montado y se mostraba con `.is-open`. El componente actual
+// se monta con `{#if open}` y nunca pone esa clase, así que heredaba de esta hoja
+// global un `transform: translateX(100%)` que su propio estilo no pisaba: el fondo
+// se oscurecía y el panel quedaba fuera de la pantalla. El asistente era
+// inalcanzable desde la interfaz (medido el 2026-10-01: `x=1901` con un viewport
+// de 1916). Lo vigila `src/pruebas/el-panel-del-asistente-no-lo-estila-una-hoja-global.test.js`.
 
 // ── Utilidades de layout ──────────────────────────────────────────────────────
 

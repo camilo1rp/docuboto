@@ -394,7 +394,12 @@
     {#if $assistantState.estado === "unavailable"}
       <div class="assistant-dock__banner assistant-dock__banner--info" role="status">
         <i class="fas fa-circle-info" aria-hidden="true"></i>
-        <span>El asistente aún no está disponible. Esta función se activará próximamente.</span>
+        <!-- El motivo lo da el backend (sin modelo configurado / proveedor caído).
+             Aquí decía «Esta función se activará próximamente», un resto de cuando
+             el backend no existía que hoy prometía algo falso. -->
+        <span
+          >{$assistantState.errorDetail ?? "El asistente no está disponible en este momento."}</span
+        >
       </div>
     {:else if $assistantState.estado === "error"}
       <div class="assistant-dock__banner assistant-dock__banner--error" role="alert">

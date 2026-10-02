@@ -74,9 +74,13 @@ test.describe("Asistente conversacional — apertura", () => {
 
     await page.click(BOTON);
 
-    // 1. El panel aparece.
+    // 1. El panel aparece — DENTRO de la pantalla. `toBeVisible()` solo comprueba
+    //    que el elemento tenga caja y no esté oculto: daba por visible un panel
+    //    desplazado fuera del viewport por una regla global, y con él esta prueba
+    //    aprobaba un asistente que nadie podía ver (2026-10-01).
     const dock = page.locator("aside.assistant-dock");
     await expect(dock).toBeVisible();
+    await expect(dock).toBeInViewport({ ratio: 1 });
 
     // 2. Y —esto es lo que fallaba— la página SIGUE RESPONDIENDO. Si el
     //    renderizador está en un bucle, este `evaluate` nunca vuelve y el test
@@ -96,7 +100,7 @@ test.describe("Asistente conversacional — apertura", () => {
     const dock = page.locator("aside.assistant-dock");
     for (let i = 0; i < 3; i += 1) {
       await page.click(BOTON);
-      await expect(dock).toBeVisible();
+      await expect(dock).toBeInViewport({ ratio: 1 });
       await page.keyboard.press("Escape");
       await expect(dock).toBeHidden();
     }

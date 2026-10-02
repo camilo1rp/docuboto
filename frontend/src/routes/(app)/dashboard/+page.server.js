@@ -12,7 +12,9 @@
  *
  * REDISEÑO (Sistema de Diseño §10): el tablero deja de ser un panel de
  * métricas agregadas y pasa a mostrar los cuatro módulos personales fijos:
- *   01 Radicados pendientes  — GET /api/v1/documents?status=distributed|in_progress
+ *   01 Radicados pendientes  — GET /api/v1/workflows/inbox (la MISMA fuente que el
+ *                              tablero de la bandeja: pasos asignados a mí o a mi
+ *                              dependencia)
  *   02 Actividad reciente    — GET /api/v1/documents (sin filtro, más recientes)
  *   03 Alertas               — GET /api/v1/documents ordenado por `due_date`
  *                              ascendente (RF-RAD-04), consulta PROPIA
@@ -41,8 +43,18 @@ import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { mensajeError } from "$lib/utils/apiError.js";
 
-// Estados que representan un radicado "abierto" (no cerrado) — requieren acción.
-const OPEN_STATUSES = ["distributed", "in_progress"];
+// Estados de un radicado ABIERTO —ni cerrado ni anulado—, para las alertas de plazo.
+//
+// `registered` va el PRIMERO y no es un descuido. Repartir y tramitar por el flujo
+// avanzan los PASOS (`flow_steps`), no el radicado: el estado del radicado solo
+// pasa a `distributed`/`in_progress` si alguien pulsa a mano los botones de la
+// vista Lista de la bandeja, un camino paralelo al tablero que casi nadie usa. Con
+// la lista anterior (`distributed`, `in_progress`) el módulo pedía estados que en
+// la práctica no se alcanzan: medido el 2026-10-01, los 208 radicados en
+// `registered`, 127 con el plazo VENCIDO y el panel diciendo «No hay radicados con
+// fecha límite de respuesta cercana». Un plazo de respuesta corre desde que se
+// radica, no desde que alguien lo toca.
+const ALERT_STATUSES = ["registered", "distributed", "in_progress"];
 
 const WIDGET_LIMIT = 5; // ítems visibles por módulo en el tablero
 
@@ -70,6 +82,44 @@ async function fetchDocuments(fetchFn, token, tenant, params) {
   return { items: Array.isArray(items) ? items : [], total };
 }
 
+/**
+ * Pasos activos asignados al llamante o a su dependencia, normalizados a una fila
+ * del panel. `detalle` es el destino del paso —lo mismo que titula la tarjeta en
+ * el tablero—: el paso no trae el asunto, y pedirlo radicado por radicado serían
+ * cinco llamadas más para un módulo de resumen.
+ *
+ * @param {typeof fetch} fetchFn
+ * @param {string} token
+ * @param {string} tenant
+ */
+async function fetchInbox(fetchFn, token, tenant) {
+  const params = new URLSearchParams({ page: "1", size: String(WIDGET_LIMIT) });
+  const res = await fetchFn(`${API_V1}/workflows/inbox?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-Tenant-Slug": tenant,
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(mensajeError(body, `Error ${res.status}`));
+  }
+
+  const total = Number(res.headers.get("X-Total-Count") ?? 0);
+  const pasos = await res.json();
+  const items = (Array.isArray(pasos) ? pasos : []).map((paso) => ({
+    id: paso.id,
+    radicado_id: paso.radicado_id,
+    tracking_number: paso.tracking_number,
+    doc_type: paso.doc_type,
+    detalle: paso.to_dept ?? paso.notes ?? "",
+    status: paso.status,
+    due_date: paso.due_at ?? null,
+  }));
+  return { items, total };
+}
+
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
   // Heredar user del layout — en particular tenant_slug y verificación de sesión.
@@ -84,16 +134,17 @@ export async function load({ cookies, parent, fetch }) {
   const canSeeSummary = (user?.permissions ?? []).includes("SGD_PERM_ESTADISTICA");
 
   // ---------------------------------------------------------------------
-  // Módulo 01: radicados pendientes. UNA sola llamada con `status` repetido.
+  // Módulo 01: lo que le toca hacer a ESTA persona. Sale de la bandeja de
+  // entrada del flujo, la misma consulta que pinta el tablero de `/bandeja`.
   //
-  // Antes era una por estado, porque el backend no aceptaba varios. Sumar dos
-  // ventanas de 20 no da las 40 más recientes —da 20 de cada una— y el total
-  // salía de sumar dos `X-Total-Count`, que solo es correcto mientras los
-  // estados sean disjuntos. Ahora el total lo cuenta la base.
+  // Antes salía de `/documents` filtrando por `distributed`/`in_progress`, estados
+  // que el flujo no mueve nunca (ver `ALERT_STATUSES`): el módulo decía
+  // «Vas al día» a una persona con 101 pasos pendientes en su bandeja. Era además
+  // una lista del TENANT, no de la persona — el filtro por estado no dice a quién
+  // le toca. Que el panel y la bandeja cuenten desde la misma fuente es lo que
+  // impide que vuelvan a contradecirse.
   // ---------------------------------------------------------------------
-  const pendientesParams = new URLSearchParams({ page: "1", size: String(WIDGET_LIMIT) });
-  for (const estado of OPEN_STATUSES) pendientesParams.append("status", estado);
-  const pendientesFetch = fetchDocuments(fetch, token, tenant, pendientesParams);
+  const pendientesFetch = fetchInbox(fetch, token, tenant);
 
   // ---------------------------------------------------------------------
   // Módulo 03: alertas. Consulta PROPIA ordenada por plazo ascendente.
@@ -108,7 +159,7 @@ export async function load({ cookies, parent, fetch }) {
     order_by: "due_date",
     order_dir: "asc",
   });
-  for (const estado of OPEN_STATUSES) alertasParams.append("status", estado);
+  for (const estado of ALERT_STATUSES) alertasParams.append("status", estado);
   const alertasFetch = fetchDocuments(fetch, token, tenant, alertasParams);
 
   // ---------------------------------------------------------------------

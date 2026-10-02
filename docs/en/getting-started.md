@@ -53,11 +53,11 @@ A `radicado` is an official document registered with a unique, immutable trackin
 # 1. Obtain an access token (via the gateway, not directly against the service)
 TOKEN=$(curl -s -X POST 'http://localhost:19080/api/v1/auth/token' \
   -H 'Content-Type: application/json' \
-  -d '{"username": "operador", "password": "orpycamcp_dev"}' \
+  -d '{"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "demo"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 # 2. Register an incoming document
-curl -X POST 'http://localhost:19080/api/v1/documents/' \
+curl -X POST 'http://localhost:19080/api/v1/documents' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -75,7 +75,7 @@ The response includes the assigned `radicado` (tracking) number (e.g.: `2024-DEM
 A `tenant` is an institution served by a shared OrpycaMCP installation.
 
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/tenants/' \
+curl -X POST 'http://localhost:19080/api/v1/tenants' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -144,7 +144,7 @@ behind each entity is in [Document domain](domain.md).
 
 ```bash
 # 1. Create the expediente (requires a TRD configured for the series)
-curl -X POST 'http://localhost:19080/api/v1/expedientes/' \
+curl -X POST 'http://localhost:19080/api/v1/expedientes' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"nombre": "Contract 2024-001 — Office supplies", "serie_id": "uuid-serie"}'
 # Response: { "id": "uuid-expediente", "estado": "open", ... }
@@ -162,12 +162,33 @@ curl -X PATCH 'http://localhost:19080/api/v1/expedientes/uuid-expediente' \
 
 ### Electronically sign a radicado
 
+**There is no one-shot "sign".** Signing means resolving a turn of a circuit, and the
+circuit is opened first — even when a single person signs. That is deliberate: the
+signature is anchored to the digest of the current text, so the turn that records
+*what* was signed and *who* held it has to exist.
+
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/signature/' \
+# 1. Open the circuit over the radicado (Salida or Interno: what the institution
+#    produces; an incoming document was signed by whoever sent it)
+curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"radicado_id": "uuid-radicado"}'
-# Response: { "firma_id": "uuid", "estado": "firmado", "sha256": "...", "firmado_at": "..." }
+  -d '{"objeto_tipo": "radicado", "objeto_id": "uuid-radicado",
+       "titulo": "Signature of the reply letter",
+       "firmantes": ["uuid-signer"]}'
+# Response: { "solicitud_id": "uuid", "estado": "pendiente", "items": [ … ] }
+
+# 2. Request the second factor for your own turn (OTP by email, or TOTP)
+curl -X POST 'http://localhost:19080/api/v1/signature/requests/uuid-solicitud/challenge' \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Sign the turn with the code received
+curl -X POST 'http://localhost:19080/api/v1/signature/requests/uuid-solicitud/sign' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"totp_code": "123456"}'
 ```
+
+Requires `PERM_FIRMA`. If the text changed after the circuit was opened, step 3
+answers `409 documento_modificado` instead of signing something else.
 
 ### Open a signature chain over an expediente
 
@@ -233,9 +254,9 @@ has to do, not the tenant's figures:
 
 | Module | What it shows |
 |---|---|
-| 01 Pending radicados | Radicados distributed or in progress awaiting action |
+| 01 Pending radicados | The workflow steps assigned to the person or their dependency — the **same** query as the `/bandeja` board (`GET /workflows/inbox`), so both count alike |
 | 02 Recent activity | The latest radicados that saw movement |
-| 03 Alerts | Open radicados whose due date (`due_date`, RF-RAD-04) is near or past |
+| 03 Alerts | Open radicados — neither closed nor annulled, **including freshly registered ones** — whose due date (`due_date`, RF-RAD-04) is near or past, most overdue first |
 | 04 Favourites | The navigation destinations the user has pinned in the sidebar |
 
 The **tenant-wide aggregate metrics** (radicados by status, top dependencias, monthly

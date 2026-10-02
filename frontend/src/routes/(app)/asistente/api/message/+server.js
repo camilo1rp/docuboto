@@ -106,11 +106,35 @@ function isUnavailableStatus(status) {
   return status === 404 || status === 501 || status === 502 || status === 503 || status === 504;
 }
 
-function unavailableResponse() {
-  return json(
-    { error: "assistant_unavailable", detail: "El asistente aún no está disponible." },
-    { status: 503 },
-  );
+/** Cuando el servicio del asistente ni siquiera contesta, no hay causa que reenviar. */
+const SIN_RESPUESTA = "El servicio del asistente no responde en este momento.";
+
+/** @param {string} [detalle] */
+function unavailableResponse(detalle = SIN_RESPUESTA) {
+  return json({ error: "assistant_unavailable", detail: detalle }, { status: 503 });
+}
+
+/**
+ * El motivo que el backend da para su 503, si lo da.
+ *
+ * El backend distingue dos causas que piden cosas distintas a quien lee —una
+ * instalación sin modelo configurado (esperar no la arregla: hay que avisar a
+ * quien administra) y un proveedor caído (basta con reintentar)—. Este proxy las
+ * aplastaba en un texto fijo, y la interfaz lo remataba prometiendo que la
+ * función «se activará próximamente», un resto de cuando el backend no existía.
+ * Solo se reenvía el texto del sobre propio del asistente, acotado: cualquier
+ * otra cosa cae al genérico.
+ *
+ * @param {Response} res
+ */
+async function motivoDelBackend(res) {
+  const data = await res.json().catch(() => null);
+  const sobre = data?.detail;
+  if (sobre?.error === "assistant_unavailable" && typeof sobre.detail === "string") {
+    const texto = sobre.detail.trim().slice(0, 300);
+    if (texto) return texto;
+  }
+  return SIN_RESPUESTA;
 }
 
 /** @type {import('./$types').RequestHandler} */
@@ -170,6 +194,9 @@ export async function POST({ locals, request }) {
     return unavailableResponse();
   }
 
+  if (res.status === 503) {
+    return unavailableResponse(await motivoDelBackend(res));
+  }
   if (isUnavailableStatus(res.status)) {
     return unavailableResponse();
   }

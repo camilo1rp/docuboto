@@ -51,11 +51,11 @@ docker compose ps
 # 1. Obtener token de acceso (vía el gateway, no directo al servicio)
 TOKEN=$(curl -s -X POST 'http://localhost:19080/api/v1/auth/token' \
   -H 'Content-Type: application/json' \
-  -d '{"username": "operador", "password": "orpycamcp_dev"}' \
+  -d '{"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "demo"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 # 2. Radicar un documento de entrada
-curl -X POST 'http://localhost:19080/api/v1/documents/' \
+curl -X POST 'http://localhost:19080/api/v1/documents' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -71,7 +71,7 @@ La respuesta incluye el número de radicado asignado (ej: `2024-DEMO-E-000001`).
 ## Agregar un tenant (institución) / Add a tenant (institution)
 
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/tenants/' \
+curl -X POST 'http://localhost:19080/api/v1/tenants' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -140,7 +140,7 @@ cada entidad está en [Dominio documental](domain.md).
 
 ```bash
 # 1. Crear el expediente (requiere TRD configurada para la serie)
-curl -X POST 'http://localhost:19080/api/v1/expedientes/' \
+curl -X POST 'http://localhost:19080/api/v1/expedientes' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"nombre": "Contrato 2024-001 — Suministro de papelería", "serie_id": "uuid-serie"}'
 # Respuesta: { "id": "uuid-expediente", "estado": "open", ... }
@@ -158,12 +158,33 @@ curl -X PATCH 'http://localhost:19080/api/v1/expedientes/uuid-expediente' \
 
 ### Firmar electrónicamente un radicado
 
+**No hay un «firmar» de un paso.** Firmar es resolver un turno de un circuito, y el
+circuito se abre primero — incluso cuando firma una sola persona. Es deliberado: la
+firma se ancla a la huella del texto vigente, así que tiene que existir el turno que
+dice *qué* se firmó y *quién* lo tenía asignado.
+
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/signature/' \
+# 1. Abrir el circuito sobre el radicado (Salida o Interno: se firma lo que la
+#    entidad produce; una Entrada la firmó quien la envió)
+curl -X POST 'http://localhost:19080/api/v1/signature/requests' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"radicado_id": "uuid-radicado"}'
-# Respuesta: { "firma_id": "uuid", "estado": "firmado", "sha256": "...", "firmado_at": "..." }
+  -d '{"objeto_tipo": "radicado", "objeto_id": "uuid-radicado",
+       "titulo": "Firma del oficio de respuesta",
+       "firmantes": ["uuid-firmante"]}'
+# Respuesta: { "solicitud_id": "uuid", "estado": "pendiente", "items": [ … ] }
+
+# 2. Pedir el segundo factor del turno propio (OTP por correo o TOTP)
+curl -X POST 'http://localhost:19080/api/v1/signature/requests/uuid-solicitud/challenge' \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Firmar el turno con el código recibido
+curl -X POST 'http://localhost:19080/api/v1/signature/requests/uuid-solicitud/sign' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"totp_code": "123456"}'
 ```
+
+Requiere `PERM_FIRMA`. Si el texto cambió después de abrirse el circuito, el paso 3
+responde `409 documento_modificado` en vez de firmar otra cosa.
 
 ### Abrir una cadena de firmas sobre un expediente
 
@@ -227,9 +248,9 @@ hacer a *este* usuario, no las cifras del tenant:
 
 | Módulo | Qué muestra |
 |---|---|
-| 01 Radicados pendientes | Radicados distribuidos o en trámite que esperan acción |
+| 01 Radicados pendientes | Los pasos de trámite asignados a la persona o a su dependencia — la **misma** consulta que el tablero de `/bandeja` (`GET /workflows/inbox`), así que los dos cuentan igual |
 | 02 Actividad reciente | Últimos radicados sobre los que hubo movimiento |
-| 03 Alertas | Radicados abiertos cuya fecha de vencimiento (`due_date`, RF-RAD-04) está próxima o vencida |
+| 03 Alertas | Radicados abiertos —ni cerrados ni anulados, **incluidos los recién radicados**— cuya fecha de vencimiento (`due_date`, RF-RAD-04) está próxima o vencida, el más vencido primero |
 | 04 Favoritos | Los destinos de navegación que el usuario haya fijado en el sidebar |
 
 Las **métricas agregadas del tenant** (radicados por estado, top dependencias, actividad

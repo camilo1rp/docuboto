@@ -61,9 +61,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
-from miniopy_async.commonconfig import GOVERNANCE, ENABLED  # type: ignore[attr-defined]
-from miniopy_async.retention import Retention  # type: ignore[attr-defined]
 from miniopy_async.objectlockconfig import COMPLIANCE  # type: ignore[attr-defined]
+from miniopy_async.retention import Retention  # type: ignore[attr-defined]
 
 pytestmark = pytest.mark.asyncio
 
@@ -118,7 +117,7 @@ async def cliente(gate):
     modos, que es justo lo que la norma obliga a distinguir (ver el dictamen del
     Ac. AGN 001/2024 art. 4.3.2.4 P1 en `docs/es/`).
     """
-    return Minio(
+    c = Minio(
         _endpoint(),
         access_key=os.environ.get("MINIO_ACCESS_KEY", "orpycamcp"),
         secret_key=os.environ.get("MINIO_SECRET_KEY", "orpycamcp_dev"),
@@ -129,6 +128,23 @@ async def cliente(gate):
         # WORM cuando en realidad no llegó ni a probarlo.
         region=os.environ.get("MINIO_REGION") or None,
     )
+    try:
+        yield c
+    finally:
+        # Cerrar la sesión aiohttp al terminar. Sin esto la corrida denuncia
+        # sesiones y conectores abiertos al recolectar basura, y ese ruido en una
+        # batería de conformidad es caro: es justo donde hay que poder leer un
+        # fallo real de un motor sin buscarlo entre trazas propias.
+        #
+        # MEDIDO contra RustFS 1.0.0 en pie: la corrida pasa de 6 avisos a **0**.
+        #
+        # La primera medición dijo «baja de 6 a 3» y era falsa: se tomó sobre una
+        # imagen construida ANTES de este `finally`, así que midió el código
+        # anterior y le atribuyó el residuo a `miniopy_async`. Es la misma trampa
+        # del contenedor más viejo que su imagen, esta vez estropeando la medida
+        # en lugar del resultado. Tras cada cambio en tests, `docker compose
+        # build` antes de creer un número.
+        await c.close_session()
 
 
 def _nombre(prefijo: str) -> str:

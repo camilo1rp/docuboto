@@ -50,12 +50,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/assistant", tags=["assistant"])
 
 
-def _unavailable() -> HTTPException:
+# Las dos causas de un 503 comparten código —el contrato no cambia— pero NO
+# comparten mensaje, porque quien lo lee tiene que hacer cosas distintas: sin
+# modelo configurado, esperar no arregla nada y hay que avisar a quien administra;
+# con el proveedor caído, basta con reintentar. El texto anterior, «aún no está
+# disponible», servía para las dos y no decía la verdad de ninguna — la interfaz
+# lo remataba con «se activará próximamente», un resto de cuando el backend no
+# existía.
+SIN_MODELO = (
+    "Esta instalación no tiene configurado un modelo de lenguaje, así que el asistente "
+    "no puede responder. Quien administra el sistema puede activarlo."
+)
+FALLO_PROVEEDOR = (
+    "El asistente no pudo responder ahora mismo: el proveedor del modelo no contestó. "
+    "Inténtalo de nuevo en unos minutos."
+)
+
+
+def _unavailable(detalle: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={
             "error": "assistant_unavailable",
-            "detail": "El asistente aún no está disponible.",
+            "detail": detalle,
             "status": 503,
         },
     )
@@ -190,7 +207,7 @@ async def assistant_message(
     # configurado, el asistente "no está disponible" (nunca un 500 ni una
     # respuesta simulada). `assistant_available` lo fija el lifespan.
     if not getattr(request.app.state, "assistant_available", False):
-        raise _unavailable()
+        raise _unavailable(SIN_MODELO)
 
     # La identidad la valida el api-gateway aguas arriba (reescribe X-User-Id/
     # X-Tenant-Slug tras validar el token); estos guardas son defensa en
@@ -239,7 +256,7 @@ async def assistant_message(
         # degradación honesta 503, NUNCA un 500 crudo ni una respuesta fingida
         # (RF-FIR-15). Se registra con traza para diagnóstico.
         logger.warning("assistant run_turn failed -> 503 assistant_unavailable", exc_info=True)
-        raise _unavailable() from exc
+        raise _unavailable(FALLO_PROVEEDOR) from exc
 
 
 @router.get(

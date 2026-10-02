@@ -79,6 +79,9 @@
     in_progress: "active",
     closed: "closed",
   };
+  // El módulo 01 lista PASOS del flujo, no radicados: sus estados son otros.
+  const STEP_LABELS = { pending: "Pendiente", in_progress: "En trámite" };
+  const STEP_CHIP_MAP = { pending: "pending", in_progress: "active" };
 
   /** @param {string|null|undefined} iso */
   function formatDate(iso) {
@@ -197,12 +200,12 @@
               <li class="doc-list__item">
                 <div class="doc-list__main">
                   <span class="doc-list__tracking">{doc.tracking_number}</span>
-                  <span class="doc-list__subject" title={doc.subject}>{doc.subject}</span>
+                  <span class="doc-list__subject" title={doc.detalle}>{doc.detalle}</span>
                 </div>
                 <div class="doc-list__meta">
                   <StatusChip
-                    status={STATUS_CHIP_MAP[doc.status] ?? "neutral"}
-                    label={STATUS_LABELS[doc.status] ?? doc.status}
+                    status={STEP_CHIP_MAP[doc.status] ?? "neutral"}
+                    label={STEP_LABELS[doc.status] ?? doc.status}
                     dot={true}
                   />
                   {#if doc.due_date}
@@ -215,7 +218,9 @@
         {/if}
 
         <svelte:fragment slot="footer">
-          <a href="/bandeja?status=distributed" class="module-link">
+          <!-- Al tablero, no a `?status=distributed`: el flujo no lleva el radicado
+               a ese estado, así que ese filtro abría la bandeja vacía. -->
+          <a href="/bandeja" class="module-link">
             Ver toda la bandeja
             <i class="fas fa-arrow-right" aria-hidden="true"></i>
           </a>
