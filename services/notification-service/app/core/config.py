@@ -91,6 +91,22 @@ class Settings(BaseSettings):
     # would widen the purge window to include very recent closures.
     retention_deadletter_days: int = Field(default=90, ge=1)
 
+    # ── Secreto HMAC de los webhooks, cifrado en reposo ───────────────────
+    # El secreto con el que se firma cada entrega se guarda cifrado (AES-256-GCM,
+    # AAD = tenant + id del webhook) con una KEK de ESTE servicio, que vive en el
+    # entorno y NUNCA en la base: quien lea un respaldo, la base o una inyección
+    # no puede forjar entregas. Mismo esquema que la custodia de la firma
+    # personal de auth-service (`orpycamcp_common.kek`).
+    #
+    # `webhook_secret_kek` es la versión 1 (base64 de 32 bytes). `..._keks` es un
+    # JSON `{"2": "<base64>"}` con las versiones >= 2 (la 1 no se redefine ahí).
+    # `..._active_version` es la KEK con la que se cifra lo nuevo y a la que
+    # converge `python -m app.ops.rewrap_webhook_secrets`. Vacía = el servicio NO
+    # arranca (ver `app.core.webhook_secrets.validate_kek_at_startup`).
+    webhook_secret_kek: str = ""
+    webhook_secret_keks: dict[int, str] = {}
+    webhook_secret_kek_active_version: int = 1
+
     @property
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")

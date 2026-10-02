@@ -53,6 +53,7 @@ const SUMMARY = {
   by_status: { registered: 2, distributed: 3, in_progress: 4, closed: 1 },
   by_month: [{ month: "2026-01", count: 10 }],
   by_dependencia: { Tesorería: 4 },
+  by_ubicacion: { "Control Interno": 3 },
 };
 
 /** @param {Partial<import('./$types').PageData>} overrides */
@@ -345,5 +346,36 @@ describe("/dashboard — los indicadores clave no mienten sobre su semántica", 
 
     expect(screen.queryByRole("list", { name: /Indicadores clave/ })).toBeNull();
     expect(screen.getByRole("group", { name: /Indicadores clave/ })).toBeInTheDocument();
+  });
+});
+
+describe("/dashboard — dónde está el trámite (ADR-029)", () => {
+  it("la tarjeta lee by_ubicacion (ubicación actual), no la dependencia de radicación", async () => {
+    initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
+    render(DashboardPage, { data: baseData() });
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+
+    expect(screen.getByText("Dónde está el trámite")).toBeInTheDocument();
+    expect(screen.getByText("Control Interno")).toBeInTheDocument();
+    expect(screen.queryByText("Tesorería")).not.toBeInTheDocument();
+  });
+
+  it("sin by_ubicacion en el summary dice «No disponible», no «Sin radicados en trámite»", async () => {
+    initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
+    const { by_ubicacion: _omitido, ...sinUbicacion } = SUMMARY;
+    render(DashboardPage, { data: baseData({ summary: sinUbicacion }) });
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+
+    expect(screen.getByTestId("ubicacion-no-disponible")).toBeInTheDocument();
+    expect(screen.queryByText("Sin radicados en trámite.")).not.toBeInTheDocument();
+  });
+
+  it("con by_ubicacion vacío SÍ afirma que no hay radicados en trámite", async () => {
+    initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
+    render(DashboardPage, { data: baseData({ summary: { ...SUMMARY, by_ubicacion: {} } }) });
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+
+    expect(screen.getByText("Sin radicados en trámite.")).toBeInTheDocument();
+    expect(screen.queryByTestId("ubicacion-no-disponible")).not.toBeInTheDocument();
   });
 });

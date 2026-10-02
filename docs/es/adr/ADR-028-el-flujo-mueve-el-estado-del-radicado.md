@@ -3,7 +3,7 @@
 **Estado**: Aceptado
 **Fecha**: 2026-10-02
 **Autores**: Giampiero (mantenedor principal); diseño de `orfeo-architect`
-**Relacionados**: [ADR-009](ADR-009-historial-flujos-eventos.md) (historial de flujos como eventos), [ADR-010](ADR-010-libreria-compartida.md) (auditoría inmutable), E05 (flujos), E01 (radicación), RF-SEG-08 (no-read-up)
+**Relacionados**: [ADR-009](ADR-009-historial-flujos-eventos.md) (historial de flujos como eventos), [ADR-010](ADR-010-libreria-compartida.md) (auditoría inmutable), E05 (flujos), E01 (radicación), RF-SEG-08 (no-read-up); continuado por [ADR-029](ADR-029-ubicacion-actual-del-radicado.md) (la ubicación actual se escribe en el mismo `UPDATE` que el estado)
 
 ---
 
@@ -82,6 +82,8 @@ reconstruirla desde los pasos, y es lo que el funcionario de Orfeo ya espera.
    `RAISE NOTICE` de los terminales que aún tienen paso activo (los sanea la migración 015, R7).
 10. **MCP**: `actualizar_radicado` pierde `status`; nueva tool `finalizar_tramite`
     (`destructive=True`, irreversible, tarjeta de confirmación).
+
+> **Ubicación (2026-10-02, [ADR-029](ADR-029-ubicacion-actual-del-radicado.md)).** El mismo `sincronizar_estado_radicado` escribe también dónde está el radicado (`flujo_dept`, `flujo_dept_code`, `flujo_usuario`) en el mismo `UPDATE` que `status`.
 
 ## Declarado fuera (a propósito, no un olvido)
 

@@ -45,7 +45,7 @@ def _caller_id(request: Request) -> uuid.UUID | None:
 async def _build_summary(
     conn: asyncpg.Connection, date_from: date | None, date_to: date | None
 ) -> ReportSummary:
-    by_type, by_status, by_month, by_dep = await ReportRepository(conn).radicado_summary(
+    by_type, by_status, by_month, by_dep, by_ubic = await ReportRepository(conn).radicado_summary(
         date_from, date_to
     )
     by_doc_type = {r["doc_type"]: r["n"] for r in by_type}
@@ -55,6 +55,7 @@ async def _build_summary(
         by_status={r["status"]: r["n"] for r in by_status},
         by_month=[MonthCount(month=r["month"], count=r["n"]) for r in by_month],
         by_dependencia={r["dep"]: r["n"] for r in by_dep},
+        by_ubicacion={r["dep"]: r["n"] for r in by_ubic},
     )
 
 
@@ -85,7 +86,8 @@ async def radicado_report(
     date_to: date | None = Query(None, description="registered_at <= (ISO date)"),
     conn: asyncpg.Connection = Depends(get_db),
 ) -> ReportSummary:
-    """Resumen estadístico: conteos por tipo, estado, mes y dependencia."""
+    """Resumen estadístico: conteos por tipo, estado, mes, dependencia de radicación y
+    ubicación actual (lo que sigue en trámite)."""
     return await _build_summary(conn, date_from, date_to)
 
 
@@ -110,8 +112,12 @@ async def radicado_report_csv(
         writer.writerow(["estado", k, v])
     for m in summary.by_month:
         writer.writerow(["mes", m.month, m.count])
+    # `dependencia` pasó a `dependencia_radicacion`: era ambigua (a quién iba
+    # dirigido el documento, no dónde está). La ubicación actual es nueva.
     for k, v in summary.by_dependencia.items():
-        writer.writerow(["dependencia", k, v])
+        writer.writerow(["dependencia_radicacion", k, v])
+    for k, v in summary.by_ubicacion.items():
+        writer.writerow(["ubicacion_actual", k, v])
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",

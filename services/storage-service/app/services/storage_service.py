@@ -30,7 +30,8 @@ import hashlib
 import io
 import uuid
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import asyncpg
 from orpycamcp_common import audit
@@ -56,6 +57,14 @@ from app.services.pdfa_ingest_service import (
 
 _BUCKET_PREFIX = "orpycamcp"
 _SERVICE = "storage-service"
+
+
+@dataclass(frozen=True)
+class PurgaHuerfano:
+    file_id: uuid.UUID
+    # purgado | no_encontrado | preexistente | referenciado | protegido_worm | error
+    resultado: str
+    detalle: str | None = None
 
 
 class WormLockActiveError(Exception):
@@ -149,7 +158,12 @@ class StorageService:
 
         existing = await self._repo.find_by_sha256(sha256)
         if existing is not None:
-            return _to_response(existing), False, False
+            # La marca de dedup toma el bloqueo de fila: serializa con la purga de
+            # huérfanos (ver `FileRepository.mark_dedup_hit`). `None` = la purga lo
+            # borró entre la búsqueda y la marca: el contenido se sube de nuevo.
+            reutilizado = await self._repo.mark_dedup_hit(existing.id)
+            if reutilizado is not None:
+                return _to_response(reutilizado), False, False
 
         is_pdf = looks_like_pdf(content)
         pdfa_gate_active = settings.preservation_pdfa_validation_enabled and is_pdf
@@ -484,6 +498,73 @@ class StorageService:
             },
         )
         return True
+
+    async def purge_orphan(
+        self,
+        file_id: uuid.UUID,
+        *,
+        referencia: str,
+        motivo: str,
+        actor: uuid.UUID | None,
+        subido_desde: datetime,
+    ) -> PurgaHuerfano:
+        """Borrado físico SEGURO de un binario que quedó sin radicado (import fallido).
+
+        storage deduplica por SHA-256: el `file_id` que devolvió la subida puede ser
+        un objeto que sostiene anexos de otros radicados. Por eso solo se borra si
+        TODO esto se cumple, dentro de UNA transacción con la fila bloqueada:
+          1. existe y NO es anterior a `subido_desde` (lo creó esa importación; una
+             coincidencia de hash con algo preexistente nunca se toca);
+          2. nada lo referencia (`FileRepository.referencias`: anexos de cualquier
+             radicado, correos, borradores, WORM, migraciones, versiones);
+          3. ningún `upload` lo devolvió por deduplicación (`files.dedup_hit_at`, mig. 017):
+             un objeto COMPARTIDO por dedup se conserva siempre, aunque la otra
+             operación aún no haya commiteado su referencia. La marca la escribe un
+             UPDATE que toma el bloqueo de fila, por eso se serializa con el `FOR UPDATE`
+             de esta transacción;
+          4. el borrado en el almacén tiene éxito. El bucket está VERSIONADO: un
+             `remove_object` sin `versionId` NO borra nada protegido, solo crea un
+             delete marker; lo que de verdad impide perder un objeto bajo WORM es
+             `preservacion_worm_objeto` en `referencias()` (paso 2), no el almacén.
+        Fila, objeto y asiento (`file.purgado_huerfano`) van juntos: si el asiento
+        falla, la fila se conserva y el reintento repite el borrado del objeto, que
+        es idempotente. Nunca lanza por un caso esperado: lo describe en el resultado."""
+        repo = self._repo
+        async with self._conn.transaction():
+            record = await repo.lock_any_state(file_id)
+            if record is None:
+                return PurgaHuerfano(file_id, "no_encontrado")
+            if record.uploaded_at < subido_desde:
+                return PurgaHuerfano(file_id, "preexistente")
+            if await repo.fue_reutilizado_por_dedup(file_id):
+                return PurgaHuerfano(file_id, "referenciado", "files.dedup_hit_at")
+            fuentes = await repo.referencias(file_id)
+            if fuentes:
+                worm = any(f.startswith("preservacion_worm_objeto") for f in fuentes)
+                return PurgaHuerfano(
+                    file_id, "protegido_worm" if worm else "referenciado", ", ".join(fuentes)
+                )
+            try:
+                await get_minio().remove_object(record.bucket, record.object_key)
+            except Exception as exc:  # noqa: BLE001 — red, permisos, almacén: se informa
+                return PurgaHuerfano(file_id, "error", f"{type(exc).__name__}: {exc}"[:300])
+            await repo.purge(file_id)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="file.purgado_huerfano",
+                object_type="file",
+                object_ref=str(file_id),
+                actor=str(actor) if actor else None,
+                payload={
+                    "filename": record.filename,
+                    "sha256": record.sha256,
+                    "referencia": referencia,
+                    "motivo": motivo,
+                },
+            )
+        return PurgaHuerfano(file_id, "purgado")
 
 
 async def _ensure_bucket(minio: Minio, bucket: str) -> None:

@@ -84,25 +84,46 @@ class PostalService:
         )
 
     async def create(
-        self, radicado_id: uuid.UUID, payload: ShipmentCreate, clearance: int = 3
+        self,
+        radicado_id: uuid.UUID,
+        payload: ShipmentCreate,
+        clearance: int = 3,
+        actor: uuid.UUID | None = None,
     ) -> ShipmentResponse:
         # clearance=3 (CLASIFICADA) = sin restricción; el router pasa el real.
         # No-read-up: un radicado sobre-clearance devuelve el MISMO 404
         # `radicado_not_found` que uno inexistente (indistinguibles, no-oráculo).
-        guia = generar_guia(payload.operador, radicado_id)
+        guia = generar_guia(payload.operador, uuid.uuid4())
         no_encontrado = HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "radicado_not_found", "detail": str(radicado_id), "status": 404},
         )
         try:
-            row = await self._repo.insert(
-                radicado_id=radicado_id,
-                operador=payload.operador,
-                guia=guia,
-                destinatario=payload.destinatario,
-                direccion=payload.direccion,
-                max_clearance=clearance,
-            )
+            # Envío, evento inicial y asiento son un solo acto (ADR-010).
+            async with self._conn.transaction():
+                row = await self._repo.insert(
+                    radicado_id=radicado_id,
+                    operador=payload.operador,
+                    guia=guia,
+                    destinatario=payload.destinatario,
+                    direccion=payload.direccion,
+                    max_clearance=clearance,
+                )
+                if row is not None:
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._slug or "",
+                        service=_SERVICE,
+                        action="document.envio_registrado",
+                        object_type="postal_shipment",
+                        object_ref=guia,
+                        actor=str(actor) if actor else None,
+                        payload={
+                            "shipment_id": str(row["id"]),
+                            "radicado_id": str(radicado_id),
+                            "operador": payload.operador,
+                        },
+                    )
         except asyncpg.ForeignKeyViolationError:
             raise no_encontrado
         except asyncpg.UniqueViolationError:
@@ -144,7 +165,11 @@ class PostalService:
         return [await self._response(r) for r in rows], total
 
     async def update_estado(
-        self, shipment_id: uuid.UUID, payload: ShipmentStatusUpdate, clearance: int = 3
+        self,
+        shipment_id: uuid.UUID,
+        payload: ShipmentStatusUpdate,
+        clearance: int = 3,
+        actor: uuid.UUID | None = None,
     ) -> ShipmentResponse:
         # RF-SEG-08 (cierra el residual D-14): la transición manual usa el
         # clearance REAL del llamante — un envío cuyo radicado supera su clearance
@@ -164,12 +189,44 @@ class PostalService:
                     "status": 409,
                 },
             )
-        row = await self._repo.update_estado(
-            shipment_id,
-            payload.estado,
-            payload.descripcion,
-            motivo_devolucion=payload.motivo,
-        )
+        # Transición, evento y asiento atómicos. El UPDATE compara el estado
+        # previo y el clearance en su `WHERE`: si entre la lectura de arriba y
+        # aquí cambió el estado (p. ej. el callback del operador dejó `devuelto`)
+        # o el radicado se reclasificó, no devuelve fila y se responde 409 en
+        # vez de pisar un estado terminal.
+        async with self._conn.transaction():
+            row = await self._repo.update_estado(
+                shipment_id,
+                payload.estado,
+                payload.descripcion,
+                motivo_devolucion=payload.motivo,
+                estado_previo=current["estado"],
+                max_clearance=clearance,
+            )
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "transicion_invalida",
+                        "detail": "El envío cambió de estado mientras se registraba la transición",
+                        "status": 409,
+                    },
+                )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug or "",
+                service=_SERVICE,
+                action="document.envio_estado",
+                object_type="postal_shipment",
+                object_ref=current["guia"],
+                actor=str(actor) if actor else None,
+                payload={
+                    "shipment_id": str(shipment_id),
+                    "de": current["estado"],
+                    "a": payload.estado,
+                    "motivo": payload.motivo,
+                },
+            )
         return await self._response(row)
 
     async def tracking(self, shipment_id: uuid.UUID, clearance: int = 3) -> TrackingResponse:
@@ -282,13 +339,27 @@ class PostalService:
                 return CallbackResult(
                     status="duplicate", shipment_id=shipment["id"], estado=current
                 )
+            aplicado = None
             if interno in _VALID.get(current, set()):
                 # Transición válida: se aplica y se audita. `motivo` sólo se
-                # persiste cuando el estado resuelto es 'devuelto'.
+                # persiste cuando el estado resuelto es 'devuelto'. El UPDATE
+                # compara el estado previo: si una transición manual se coló
+                # entre la lectura y aquí, no devuelve fila y se cae a la rama
+                # «no aplicada» con el estado REAL, sin pisarlo.
                 motivo = payload.motivo if interno == "devuelto" else None
-                await self._repo.update_estado(
-                    shipment["id"], interno, payload.descripcion, motivo
+                aplicado = await self._repo.update_estado(
+                    shipment["id"],
+                    interno,
+                    payload.descripcion,
+                    motivo,
+                    estado_previo=current,
+                    max_clearance=None,  # acto de sistema autenticado por HMAC
                 )
+                if aplicado is None:
+                    fresco = await self._repo.find_by_guia(payload.operador, payload.guia)
+                    if fresco is not None:
+                        current = fresco["estado"]
+            if aplicado is not None:
                 await self._repo.mark_delivery_applied(delivery_id)
                 await audit.append(
                     self._conn,

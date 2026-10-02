@@ -50,6 +50,16 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { presentacionDelItem, detalleDelItem } from "$lib/utils/loteJob.js";
+  import {
+    loteTermino,
+    puedeReprocesar,
+    itemsFallidos,
+    itemsAProcesar,
+    motivoDelFallo,
+    textoConfirmacion,
+    mensajeReproceso,
+    asuntoDelItem,
+  } from "$lib/utils/loteReproceso.js";
   import { vigilarInactividad } from "$lib/utils/inactividad.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { permissions } from "$lib/stores/auth.js";
@@ -281,7 +291,10 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         return {
-          pollError: mensajeError(data, `No se pudo consultar el estado (HTTP ${res.status}).`),
+          pollError:
+            res.status === 404
+              ? mensajeReproceso(404, data)
+              : mensajeError(data, `No se pudo consultar el estado (HTTP ${res.status}).`),
           status: undefined,
         };
       }
@@ -338,7 +351,7 @@
     }
     docsJobPollError = "";
     docsJobStatus = result.status;
-    if (docsJobStatus?.status === "completed" || docsJobStatus?.status === "failed") {
+    if (loteTermino(docsJobStatus?.status)) {
       docsJobStop();
     }
   }
@@ -453,6 +466,43 @@
   let loteDocsSubmitting = false;
   let loteDocsConfirmOpen = false;
   let loteDocsValidationError = "";
+
+  // Reanudación de un lote con errores (decisión del usuario): se confirma,
+  // se hace el POST al proxy y se vuelve a sondear hasta que termine.
+  let reprocesoConfirmOpen = false;
+  let reprocesoEnviando = false;
+  $: reprocesable = puedeReprocesar(docsJobStatus, $permissions);
+  $: faltantes = itemsAProcesar(docsJobStatus);
+
+  async function reprocesarLoteDocs() {
+    if (!docsJobId) return;
+    reprocesoEnviando = true;
+    try {
+      const res = await fetch(
+        `/admin/interoperabilidad/api/lotes/documentos/${docsJobId}/reprocesar`,
+        {
+          method: "POST",
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notifyError(mensajeReproceso(res.status, data));
+        reprocesoConfirmOpen = false;
+        // 409: el estado del lote cambió; se refresca lo que se muestra.
+        if (res.status === 409) await docsPollOnce();
+        return;
+      }
+      notifySuccess(
+        `Se reanudó el lote: ${data.items_a_procesar ?? faltantes} documento(s) en proceso.`,
+      );
+      reprocesoConfirmOpen = false;
+      docsJobStart(docsJobId);
+    } catch {
+      notifyError(mensajeReproceso(503, {}));
+    } finally {
+      reprocesoEnviando = false;
+    }
+  }
 
   function agregarDocRow() {
     if (loteDocs.length >= 1000) return;
@@ -576,13 +626,15 @@
     pending: "pending",
     processing: "pending",
     completed: "success",
+    completado_con_errores: "warning",
     failed: "error",
   };
   const JOB_STATUS_LABEL = {
     pending: "Pendiente",
     processing: "Procesando",
     completed: "Completado",
-    failed: "Con errores",
+    completado_con_errores: "Terminó con errores",
+    failed: "Fallido",
   };
 
   onMount(() => {
@@ -1003,9 +1055,70 @@
                   >{s.processed_items} / {s.total_items} procesados · {s.failed_items} con error</span
                 >
               </div>
+              {#if s.status === "completado_con_errores" || s.status === "failed"}
+                <p class="interop-alert interop-alert--error" role="alert">
+                  <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+                  <span>
+                    El lote terminó con errores: <strong
+                      >{s.failed_items} documento{s.failed_items === 1 ? "" : "s"} sin radicar</strong
+                    >. Los demás ya quedaron radicados.
+                  </span>
+                </p>
+                {#if itemsFallidos(s).length > 0}
+                  <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado. -->
+                  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+                  <div
+                    class="op-table-scroll"
+                    role="region"
+                    aria-label="Documentos del lote que no se radicaron"
+                    tabindex="0"
+                  >
+                    <table class="table is-fullwidth interop-job__fallidos">
+                      <caption class="is-sr-only">Documentos del lote que no se radicaron</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">#</th>
+                          <th scope="col">Asunto</th>
+                          <th scope="col">Motivo</th>
+                          <th scope="col">Intentos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each itemsFallidos(s) as item (item.item_index)}
+                          {@const f = motivoDelFallo(item)}
+                          <tr>
+                            <td>{item.item_index + 1}</td>
+                            <td>{asuntoDelItem(item)}</td>
+                            <td>
+                              <span class="interop-job__item-error">{f.motivo}</span>
+                              {#if f.detalle}
+                                <small class="interop-job__detalle"
+                                  >Detalle técnico: {f.detalle}</small
+                                >
+                              {/if}
+                            </td>
+                            <td>{item.intentos ?? "—"}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                {/if}
+                {#if reprocesable}
+                  <div class="interop-actions">
+                    <Button
+                      icon="fas fa-rotate-right"
+                      on:click={() => (reprocesoConfirmOpen = true)}
+                    >
+                      Procesar los faltantes
+                    </Button>
+                  </div>
+                {/if}
+              {/if}
               {#if s.items?.length > 0}
                 <ul class="interop-job__items" role="list">
-                  {#each s.items as item (item.item_index)}
+                  <!-- Los fallidos ya están en la tabla de arriba con su motivo. -->
+                  {#each s.items.filter((it) => it.status !== "failed" || itemsFallidos(s).length === 0) as item (item.item_index)}
                     {@const p = presentacionDelItem(item.status)}
                     <li class="interop-job__item" role="listitem">
                       <StatusChip status={p.chip} label={p.etiqueta} />
@@ -1027,6 +1140,21 @@
           </div>
         {/if}
       </div>
+
+      <Modal
+        open={reprocesoConfirmOpen}
+        title="Procesar los faltantes"
+        size="sm"
+        on:close={() => (reprocesoConfirmOpen = false)}
+      >
+        <p>{textoConfirmacion(faltantes)}</p>
+        <svelte:fragment slot="footer">
+          <Button variant="ghost" on:click={() => (reprocesoConfirmOpen = false)}>Cancelar</Button>
+          <Button icon="fas fa-check" loading={reprocesoEnviando} on:click={reprocesarLoteDocs}
+            >Procesar {faltantes} faltante{faltantes === 1 ? "" : "s"}</Button
+          >
+        </svelte:fragment>
+      </Modal>
 
       <Modal
         open={loteDocsConfirmOpen}
@@ -1459,6 +1587,14 @@
     margin-bottom: var(--op-space-5);
   }
 
+  .interop-actions {
+    margin: var(--op-space-3) 0;
+  }
+  .interop-job__detalle {
+    display: block;
+    color: var(--op-text-secondary);
+    word-break: break-word;
+  }
   .interop-job {
     border-top: 1px solid var(--op-border);
     padding-top: var(--op-space-4);

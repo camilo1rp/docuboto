@@ -35,6 +35,7 @@ The full files are in `docs/es/adr/`.
 | [ADR-026](adr/ADR-026-tvd-fondo-acumulado.md) | The TVD is the same instrument with different content: a `tipo_instrumento` discriminator on `trd_series`, not its own table (registration and convalidation circuit for an accumulated fonds) | Implemented (Increment 1) |
 | [ADR-027](adr/ADR-027-sustitucion-almacen-objetos-rustfs.md) | MinIO archived its open-source project and pulled its images: the object store moves to **RustFS**, and the engine is chosen by a WORM conformance battery against a real S3 (RustFS 7/7, MinIO 7/7, Garage 0/7), not by a datasheet | Implemented |
 | [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md) | The workflow moves the radicado's status: one pure function written in the same transaction as the step, closing only via an explicit "Finish processing", `closed`/`anulado` terminal (409) and holder-only `marcar_leido`; audit remediation: clearance and holder gates on `assign`/`transfer`, annulment cancels the step, immutable backfill evidence | Implemented |
+| [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md) | Current location of the radicado: three `flujo_*` columns written by workflow-service in the same `UPDATE` as the status, two generated `ubicacion_*` columns (computed as pairs), one pure `derivar_ubicacion` function (last step by when it closed, not by its number), code only when the name is unique, backfill with insert-only evidence, and kept out of everything public | Implemented |
 
 ## How to propose a new ADR
 

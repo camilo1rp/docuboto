@@ -37,13 +37,15 @@ salta por encima en vez de chocar. Sin eso, la unicidad evitaba la corrupción a
 de que la radicación siguiente FALLARA sobre un consecutivo ya consumido — y un número
 de radicado es inmutable por Ley 594, no se devuelve."""
 
+import asyncio
 import hashlib
 import io
 import json
+import logging
 import re
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -53,7 +55,9 @@ from orpycamcp_common import audit
 from app.clients import storage_client
 from app.repositories.import_repository import ImportRepository
 from app.services.export_service import RADICADO_SCHEMA
+from app.services.import_huerfanos_service import ImportHuerfanosService
 
+logger = logging.getLogger(__name__)
 _SERVICE = "document-service"
 _VALIDATOR = Draft202012Validator(RADICADO_SCHEMA)
 
@@ -65,6 +69,19 @@ MAX_TOTAL_UNCOMPRESSED = 256 * 1024 * 1024  # 256 MiB
 MAX_FILE_UNCOMPRESSED = 64 * 1024 * 1024  # 64 MiB por miembro
 
 _TRACKING_RE = re.compile(r"^(\d{4})-(.+)-([ESI])-(\d+)$")
+
+# Techo del consecutivo: `{SEQUENCE:06d}` y `tracking_sequences.last_seq` es INTEGER.
+# Un paquete fabricado con `...-E-2147483647` dejaba el contador en INT_MAX y la
+# siguiente radicación NATIVA fallaba con «integer out of range» (todo el año del
+# tipo caído); con 999999 rompía el formato y dejaba un hueco irreversible.
+MAX_SECUENCIA = 999_999
+# Con el código de ESTA entidad el contador sí se mueve: el siguiente nativo es
+# last_seq + 1, así que un propio en 999_999 lo dejaría en `-E-1000000` (7 dígitos,
+# fuera del formato oficial, Ac. AGN 060/2001). El techo propio deja cabida a uno más.
+MAX_SECUENCIA_PROPIA = MAX_SECUENCIA - 1
+MIN_ANIO = 1900
+# Holgura al fijar `subido_desde` (relojes de document-service y storage).
+MARGEN_RELOJ = timedelta(seconds=30)
 _MEMBER_RE = re.compile(r"^(manifiesto\.json|LEEME\.txt|checksums\.txt|esquema/[\w.-]+|"
                         r"radicados/[\w.-]+\.json|anexos/[\w.-]+/[\w.\- ]+)$")
 
@@ -95,6 +112,12 @@ class ImportService:
         self._conn = conn
         self._repo = ImportRepository(conn)
         self._slug = tenant_slug
+        self._tenant_code: str | None = None
+        self._huerfanos = ImportHuerfanosService(conn, tenant_slug)
+        # Desde cuándo cuenta un objeto como CREADO por esta importación (storage no
+        # borra nada anterior). Se fija antes de la primera subida, con margen por
+        # desfase de relojes entre servicios.
+        self._subido_desde = datetime.now(tz=UTC)
 
     # --- fase 1: abrir + validar (sin tocar la BD) -------------------------
     def _open_safe(self, zip_bytes: bytes) -> zipfile.ZipFile:
@@ -173,11 +196,18 @@ class ImportService:
     async def import_package(
         self, *, zip_bytes: bytes, max_clearance: int, actor: uuid.UUID | None
     ) -> dict[str, Any]:
-        zf = self._open_safe(zip_bytes)
-        entities = self._validate(zf)  # fase 1: fixity + esquema, todo-o-nada
+        # Fase 1 en un hilo: abrir el ZIP, hashear cada binario con SHA-256 y validar
+        # contra el esquema es CPU puro sobre hasta 256 MiB; en el event loop
+        # congelaba el servicio entero —todos los tenants— mientras duraba.
+        zf = await asyncio.to_thread(self._open_safe, zip_bytes)
+        entities = await asyncio.to_thread(self._validate, zf)  # fixity + esquema, todo-o-nada
 
         omit_existentes: list[str] = []
         omit_clearance: list[str] = []
+
+        # El contador solo se reconcilia con números de ESTA entidad: el de otra
+        # vive en otro espacio de numeración y no puede mover el nuestro.
+        self._tenant_code = await self._repo.get_tenant_code(self._slug)
 
         # Fase 2a: disposición (lecturas, SIN tx) — parse + no-write-up + colisión.
         plan: list[tuple[dict[str, Any], Any]] = []
@@ -186,6 +216,18 @@ class ImportService:
             m = _TRACKING_RE.match(tracking)
             if not m:
                 raise PackageValidationError(f"número de radicado con formato inválido: {tracking}")
+            anio, secuencia = int(m.group(1)), int(m.group(4))
+            if not MIN_ANIO <= anio <= datetime.now(tz=UTC).year:
+                raise PackageValidationError(f"año fuera de rango en el número de radicado: {tracking}")
+            if secuencia > MAX_SECUENCIA:
+                raise PackageValidationError(
+                    f"secuencia fuera de rango (máximo {MAX_SECUENCIA}) en el número de radicado: {tracking}"
+                )
+            if m.group(2) == self._tenant_code and secuencia > MAX_SECUENCIA_PROPIA:
+                raise PackageValidationError(
+                    "secuencia propia agota el año del tipo "
+                    f"(máximo {MAX_SECUENCIA_PROPIA}) en el número de radicado: {tracking}"
+                )
             if entity["nivel_seguridad"] > max_clearance:  # no-write-up
                 omit_clearance.append(tracking)
                 continue
@@ -196,14 +238,37 @@ class ImportService:
 
         # Fase 2b: SUBIR binarios FUERA de la transacción (Seg #2: no sostener la tx
         # de BD abierta a través de llamadas HTTP a storage). Un fallo de subida aborta
-        # antes de tocar la BD; los blobs ya subidos quedan huérfanos (deuda declarada).
+        # antes de tocar la BD; los blobs ya subidos se ASIENTAN como huérfanos (document.import_binarios_sin_radicado).
         subidos_por_entity: dict[int, list[tuple[uuid.UUID, dict[str, Any]]]] = {}
+        import_uuid = str(uuid.uuid4())
+        self._subido_desde = datetime.now(tz=UTC) - MARGEN_RELOJ
+        try:
+            return await self._ingerir(
+                zf, plan, subidos_por_entity, import_uuid, actor,
+                omit_existentes, omit_clearance,
+            )
+        except Exception:
+            # Reversión total: lo ya subido no tiene radicado. Se ASIENTA (ningún byte
+            # del tenant queda sin traza, MoReq/ISO 15489) y se PURGA: storage
+            # deduplica por hash, así que el borrado lo decide él comprobando que
+            # ningún anexo del tenant lo referencie (AREA-09-14).
+            todos = [
+                (fid, anexo) for subs in subidos_por_entity.values() for fid, anexo in subs
+            ]
+            await self._asentar_huerfanos_tras_reversion(import_uuid, actor, todos)
+            await self._purgar_sin_enmascarar(import_uuid)
+            raise
+
+    async def _ingerir(
+        self, zf, plan, subidos_por_entity, import_uuid, actor, omit_existentes, omit_clearance
+    ) -> dict[str, Any]:
         for entity, _m in plan:
             subidos: list[tuple[uuid.UUID, dict[str, Any]]] = []
+            subidos_por_entity[id(entity)] = subidos  # visible aunque falle a mitad
             for anexo in entity.get("anexos", []):
                 if anexo.get("ausente"):
                     continue
-                blob = zf.read(anexo["archivo"])  # ya verificado en fase 1
+                blob = await asyncio.to_thread(zf.read, anexo["archivo"])  # ya verificado en fase 1
                 result = await storage_client.upload_bytes(
                     tenant_slug=self._slug,
                     filename=anexo.get("nombre_original", "anexo"),
@@ -216,7 +281,6 @@ class ImportService:
                 # test la tapaba porque su mock la devolvía. El cliente traduce
                 # ahora el formato de cable en un solo sitio.
                 subidos.append((result.file_id, anexo))
-            subidos_por_entity[id(entity)] = subidos
 
         # Fase 2c: transacción de BD (rápida, sin HTTP). Un SAVEPOINT por-ítem absorbe
         # la carrera de unicidad del tracking (Seg #1): un import concurrente que metió
@@ -230,6 +294,7 @@ class ImportService:
         pendientes_antecedente: list[tuple[uuid.UUID, str]] = []
         relaciones = 0
         no_resueltos: list[str] = []
+        huerfanos: list[tuple[uuid.UUID, dict[str, Any]]] = []
         async with self._conn.transaction():
             for entity, m in plan:
                 tracking = entity["numero_radicado"]
@@ -238,6 +303,7 @@ class ImportService:
                         rid = await self._insert(entity, m, subidos_por_entity[id(entity)])
                 except asyncpg.UniqueViolationError:
                     omit_existentes.append(tracking)  # carrera con otro import
+                    huerfanos.extend(subidos_por_entity[id(entity)])
                     continue
                 importados.append(tracking)
                 status_origen[tracking] = (entity.get("metadata_sistema") or {}).get(
@@ -256,7 +322,8 @@ class ImportService:
                 else:
                     no_resueltos.append(ant_tracking)
 
-            import_uuid = str(uuid.uuid4())
+            if huerfanos:
+                await self._asentar_huerfanos(import_uuid, actor, huerfanos)
             # Auditoría DURA (no best-effort) DENTRO de la tx: si el asiento del acto de
             # ingesta masiva falla, TODO el import revierte — nunca datos sin traza.
             await self._audit(
@@ -269,6 +336,11 @@ class ImportService:
                 status_origen,
             )
 
+        if huerfanos:
+            # Ya con la transacción confirmada: los binarios de los ítems omitidos por
+            # carrera no tienen radicado. La purga es HTTP y no puede sostener la tx.
+            await self._purgar_sin_enmascarar(import_uuid)
+
         return {
             "import_uuid": import_uuid,
             "importados": len(importados),
@@ -277,6 +349,54 @@ class ImportService:
             "relaciones_reconstruidas": relaciones,
             "antecedentes_no_resueltos": no_resueltos,
         }
+
+    async def _asentar_huerfanos(
+        self, import_uuid: str, actor: uuid.UUID | None, huerfanos: list[tuple[uuid.UUID, dict[str, Any]]]
+    ) -> None:
+        """Asiento content-free de binarios subidos que NO quedaron ligados a un radicado
+        + su fila en la cola de purga (`import_binario_huerfano`), en la MISMA
+        transacción que llama: si el asiento falla, tampoco queda pendiente de purga."""
+        await self._huerfanos.registrar(
+            uuid.UUID(import_uuid),
+            actor,
+            [(fid, anexo.get("sha256")) for fid, anexo in huerfanos],
+            self._subido_desde,
+        )
+        await audit.append(
+            self._conn,
+            tenant_slug=self._slug,
+            service=_SERVICE,
+            action="document.import_binarios_sin_radicado",
+            object_type="import",
+            object_ref=import_uuid,
+            actor=str(actor) if actor else None,
+            payload={
+                "import_uuid": import_uuid,
+                "binarios": [
+                    {"file_id": str(fid), "sha256": anexo.get("sha256")} for fid, anexo in huerfanos
+                ],
+            },
+        )
+
+    async def _asentar_huerfanos_tras_reversion(
+        self, import_uuid: str, actor: uuid.UUID | None, huerfanos: list[tuple[uuid.UUID, dict[str, Any]]]
+    ) -> None:
+        if not huerfanos:
+            return
+        try:
+            async with self._conn.transaction():
+                await self._asentar_huerfanos(import_uuid, actor, huerfanos)
+        except Exception:  # no enmascara el fallo original del import
+            logger.exception("no se pudo asentar los binarios huérfanos del import %s", import_uuid)
+
+    async def _purgar_sin_enmascarar(self, import_uuid: str) -> None:
+        """Intenta purgar ya los binarios de ESTA importación. Best-effort: si storage
+        no responde (o lo que sea), las filas quedan 'pendiente' y las recoge el
+        barrido; el fallo original del import (o el éxito) no se enmascara."""
+        try:
+            await self._huerfanos.purgar(import_uuid=uuid.UUID(import_uuid))
+        except Exception:
+            logger.exception("no se pudo purgar de inmediato los huérfanos del import %s", import_uuid)
 
     async def _reconciliar_secuencia(self, *, year: int, doc_type: str, sequence: int) -> None:
         """Adelanta el contador nativo si el número importado lo alcanza o supera.
@@ -348,9 +468,10 @@ class ImportService:
         # transacción del ítem: si la inserción se revierte por su savepoint, el
         # contador tampoco se mueve. Adelantarlo antes dejaría huecos por
         # radicados que al final no entraron.
-        await self._reconciliar_secuencia(
-            year=int(m.group(1)), doc_type=entity["tipo"], sequence=int(m.group(4))
-        )
+        if m.group(2) == self._tenant_code:
+            await self._reconciliar_secuencia(
+                year=int(m.group(1)), doc_type=entity["tipo"], sequence=int(m.group(4))
+            )
         return rid
 
     async def _audit(

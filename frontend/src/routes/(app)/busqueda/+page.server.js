@@ -19,7 +19,7 @@
  *
  * Endpoints reales:
  *   - Exacta:       GET  /api/v1/search — q (≥2 chars), doc_type, status,
- *     date_from, date_to, dest_dept_code, page, size.
+ *     date_from, date_to, dest_dept_code, ubicacion_dept_code, page, size.
  *   - Semántica:     POST /api/v1/knowledge/search — { query, top_k } →
  *     `list[SearchHit]` ({ id, source_type, source_ref, texto, metadata, score }).
  *   - Antecedentes:  POST /api/v1/knowledge/antecedentes — { query|radicado_ref,
@@ -159,6 +159,12 @@ export async function load({ cookies, parent, url }) {
     rawDeptCode !== "" && /^\d+$/.test(rawDeptCode.trim())
       ? String(Math.floor(Number(rawDeptCode)))
       : "";
+  // ubicacion_dept_code (ADR-029): dónde está AHORA el radicado; mismo saneo que arriba
+  const rawUbicCode = url.searchParams.get("ubicacion_dept_code") ?? "";
+  const ubicacionDeptCode =
+    rawUbicCode !== "" && /^\d+$/.test(rawUbicCode.trim())
+      ? String(Math.floor(Number(rawUbicCode)))
+      : "";
   const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
   const size = 20;
 
@@ -176,6 +182,7 @@ export async function load({ cookies, parent, url }) {
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
     if (destDeptCode) params.set("dest_dept_code", destDeptCode);
+    if (ubicacionDeptCode) params.set("ubicacion_dept_code", ubicacionDeptCode);
 
     try {
       const res = await fetch(`${API_V1}/search?${params.toString()}`, {
@@ -207,13 +214,39 @@ export async function load({ cookies, parent, url }) {
     }
   }
 
+  // Catálogo de dependencias activas para el filtro «Ubicación actual». Un fallo
+  // degrada a lista vacía: el filtro queda en «Cualquiera», la búsqueda sigue.
+  /** @type {Array<{codigo:number, nombre:string}>} */
+  let dependencias = [];
+  try {
+    const depRes = await fetch(`${API_V1}/dependencias?activo=true`, {
+      headers: { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant },
+    });
+    if (depRes.ok) {
+      const lista = await depRes.json().catch(() => []);
+      dependencias = Array.isArray(lista) ? lista : [];
+    }
+  } catch {
+    dependencias = [];
+  }
+
   return {
     tab,
     results,
+    dependencias,
     total,
     loadError,
     // Filtros activos para inicializar el formulario en el cliente
-    initialFilters: { q, docType, status, dateFrom, dateTo, destDeptCode, page },
+    initialFilters: {
+      q,
+      docType,
+      status,
+      dateFrom,
+      dateTo,
+      destDeptCode,
+      ubicacionDeptCode,
+      page,
+    },
 
     // Pestaña Semántica
     semanticaResults: semantica.results,

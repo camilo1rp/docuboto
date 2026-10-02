@@ -127,7 +127,7 @@ async def test_el_superviviente_HEREDA_los_radicados_al_leer(
     resultado = await servicio.fusionar(vive, muere, actor=None)
     assert resultado["vinculos_heredados"] == 1
 
-    asuntos = {r["subject"] for r in await servicio.radicados_de(vive)}
+    asuntos = {r["subject"] for r in await servicio.radicados_de(vive, max_clearance=3)}
     assert asuntos == {"Escrito de la que vive", "Escrito de la que muere"}, (
         "el superviviente tiene que ver AMBOS historiales; si no, fusionar "
         "esconde documentos"

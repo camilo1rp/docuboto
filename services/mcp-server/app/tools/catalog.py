@@ -647,7 +647,10 @@ CATALOG: tuple[Tool, ...] = (
                 type="integer",
                 minimum=1,
                 maximum=999999,
-                description="Código de la dependencia destino en el organigrama.",
+                description=(
+                    "Código de la dependencia destino en el organigrama (la de "
+                    "RADICACIÓN: queda como instantánea; repartir no la cambia)."
+                ),
                 label="Dependencia destino",
             ),
             Param(
@@ -872,8 +875,11 @@ CATALOG: tuple[Tool, ...] = (
             Param(
                 name="dest_dept",
                 max_length=100,
-                description="Nombre de la dependencia destino.",
-                label="Dependencia destino",
+                description=(
+                    "Nombre de la dependencia destino DE RADICACIÓN (a quién iba "
+                    "dirigido). No mueve el radicado: dónde está lo decide el flujo."
+                ),
+                label="Dependencia de radicación",
             ),
             Param(
                 name="observations",
@@ -929,8 +935,24 @@ CATALOG: tuple[Tool, ...] = (
             Param(
                 name="dest_dept_code",
                 type="integer",
-                description="Código de la dependencia destino.",
-                label="Dependencia destino",
+                description=(
+                    "Código de la dependencia de RADICACIÓN (a quién iba dirigido el "
+                    "documento). Para dónde está ahora, `ubicacion_dept_code`."
+                ),
+                label="Dependencia de radicación",
+            ),
+            Param(
+                name="ubicacion_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description=(
+                    "Código de la dependencia donde ESTÁ el radicado ahora (donde lo "
+                    "dejó el reparto o la devolución; sin movimientos, la de "
+                    "radicación). No es `dest_dept_code`, que es a quién iba dirigido "
+                    "y no cambia al repartir."
+                ),
+                label="Dependencia donde está",
             ),
             _P_PAGE,
             _p_size(100),
@@ -2058,6 +2080,19 @@ CATALOG: tuple[Tool, ...] = (
                 ),
                 label="Plazo hasta",
             ),
+            Param(
+                name="ubicacion_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description=(
+                    "Código de la dependencia donde ESTÁ el radicado ahora (donde lo "
+                    "dejó el reparto o la devolución; sin movimientos, la de "
+                    "radicación). No es `dest_dept_code`, que es a quién iba dirigido "
+                    "y no cambia al repartir."
+                ),
+                label="Dependencia donde está",
+            ),
             # Sin esto, filtrar por plazo no basta: el orden por defecto es por
             # fecha de radicación, así que el vencido más ANTIGUO —el que
             # importa— queda fuera de las primeras páginas por construcción.
@@ -2594,7 +2629,7 @@ CATALOG: tuple[Tool, ...] = (
         path="/api/v1/documents/{document_id}/envios",
         path_params=("document_id",),
         permission="PERM_RADI_SALIDA",
-        min_crud=1,
+        min_crud=3,
         write=True,
         destructive=False,
         epic="E20",
@@ -2623,7 +2658,7 @@ CATALOG: tuple[Tool, ...] = (
         path="/api/v1/envios/{shipment_id}/estado",
         path_params=("shipment_id",),
         permission="PERM_RADI_SALIDA",
-        min_crud=1,
+        min_crud=3,
         write=True,
         destructive=False,
         epic="E20",
@@ -5784,8 +5819,10 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="firmas_de_un_radicado",
         description=(
-            "Las firmas que tiene un radicado, con su proveedor y su nivel de "
-            "conformidad. NO acredita: son firmas electrónicas simples (Ley "
+            "Las firmas declarativas que tiene un radicado: quién firmó, cuándo, "
+            "sobre qué anexo y la huella SHA-256 que el servidor resolvió. No "
+            "trae proveedor ni nivel de conformidad (no existen en este "
+            "registro). NO acredita: son firmas electrónicas simples (Ley "
             "527/1999 art. 7, no art. 28)."
         ),
         method="GET",

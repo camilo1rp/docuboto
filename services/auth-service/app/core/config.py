@@ -7,24 +7,16 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from orpycamcp_common import kek as _kek
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _decode_aes256(b64: str, label: str) -> bytes:
     """Decodifica un base64 a exactamente 32 bytes (AES-256) o lanza
     ``RuntimeError`` explícito — criterio único compartido por todas las claves
-    AES del servicio (KEK de custodia y su llavero de rotación). Nunca cae a una
-    clave derivada/implícita (RF-SEG)."""
-    import base64
-    import binascii
-
-    try:
-        key = base64.b64decode(b64, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise RuntimeError(f"{label} no es base64 válido") from exc
-    if len(key) != 32:
-        raise RuntimeError(f"{label} debe decodificar a 32 bytes (AES-256)")
-    return key
+    AES del servicio. Vive en ``orpycamcp_common.kek`` (mismo esquema que usa
+    notification-service para el secreto de los webhooks)."""
+    return _kek.decode_aes256(b64, label)
 
 
 class Settings(BaseSettings):
@@ -177,16 +169,13 @@ class Settings(BaseSettings):
         """Llavero completo {version: 32B}. La v1 sale del campo legacy; las
         v>=2 del JSON ``signing_key_encryption_keys``. Fail-closed por entrada;
         la clave 1 en el JSON está prohibida (reservada al campo legacy)."""
-        ring: dict[int, bytes] = {1: self.signing_key_encryption_key_bytes()}
-        for raw_ver, b64 in self.signing_key_encryption_keys.items():
-            ver = int(raw_ver)
-            if ver <= 1:
-                raise RuntimeError(
-                    "signing_key_encryption_keys: la versión <=1 está reservada al "
-                    "campo signing_key_encryption_key (no redefinir aquí)"
-                )
-            ring[ver] = _decode_aes256(b64, f"signing_key_encryption_keys[{ver}]")
-        return ring
+        self.signing_key_encryption_key_bytes()  # v1 ausente => su propio error
+        return _kek.build_keyring(
+            self.signing_key_encryption_key,
+            self.signing_key_encryption_keys,
+            v1_label="signing_key_encryption_key",
+            extra_label="signing_key_encryption_keys",
+        )
 
     def signing_key_for_version(self, version: int) -> bytes:
         """KEK de una versión concreta (la de la fila al descifrar). Fail-closed

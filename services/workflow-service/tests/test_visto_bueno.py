@@ -59,8 +59,9 @@ async def test_crear_cadena(
 ) -> None:
     client, mock_conn, _ = client_with_conn
     # D-09: require_permission consume el 1.er fetchval (RBAC → True); luego el
-    # servicio consulta exists (2.º fetchval → None), crea (execute) y get (fetch).
-    mock_conn.fetchval.side_effect = [True, None]
+    # servicio comprueba que el radicado es visible (2.º → 1, no-read-up), consulta
+    # exists (3.º → None), crea (execute) y get (fetch).
+    mock_conn.fetchval.side_effect = [True, 1, None, 0]
     mock_conn.fetch.return_value = [_row(1, REV1), _row(2, REV2)]
 
     # La auditoría forense (audit.append) se ejercita en sus propios tests; aquí se
@@ -87,8 +88,8 @@ async def test_crear_cadena_duplicada_409(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
-    # RBAC (True) + exists (True) → 409
-    mock_conn.fetchval.side_effect = [True, 1]
+    # RBAC (True) + radicado visible (1) + exists (1) → 409
+    mock_conn.fetchval.side_effect = [True, 1, 1]
     resp = await client.post(
         f"/api/v1/workflows/{RAD}/vistos-buenos",
         json={"revisores": [str(REV1)]},
@@ -284,3 +285,102 @@ async def test_decidir_sin_traza_no_decide(
             json={"aprobar": True, "comentario": "Ok"},
             headers={**TENANT_HEADERS, "X-User-Id": str(REV1)},
         )
+
+
+# --- AREA-01-N1 / AREA-01-06: el no-read-up va en el SQL de la cadena ----------
+
+
+def _sqls(mock_conn: AsyncMock) -> list[str]:
+    return [
+        c.args[0]
+        for meth in (mock_conn.fetch, mock_conn.fetchrow, mock_conn.fetchval)
+        for c in meth.call_args_list
+        if c.args and isinstance(c.args[0], str)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_cadena_lleva_el_clearance_en_el_join(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = [_row(1, REV1)]
+    resp = await client.get(f"/api/v1/workflows/{RAD}/vistos-buenos", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    listados = [q for q in _sqls(mock_conn) if "FROM visto_bueno" in q]
+    assert listados, "no se consultó la cadena: la prueba no mide nada"
+    assert all("nivel_seguridad <=" in q for q in listados)
+
+
+@pytest.mark.asyncio
+async def test_get_cadena_de_un_reservado_para_otro_es_404_neutro(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """El JOIN no devuelve filas para el clearance del llamante: mismo 404 que un
+    radicado sin cadena; el SQL recibe el clearance resuelto (PUBLICA=1)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetch.return_value = []
+    resp = await client.get(
+        f"/api/v1/workflows/{RAD}/vistos-buenos",
+        headers={**TENANT_HEADERS, "X-User-Id": str(REV1)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "sin_cadena"
+    llamada = next(c for c in mock_conn.fetch.call_args_list if "FROM visto_bueno" in c.args[0])
+    assert llamada.args[1:] == (RAD, 1)
+
+
+@pytest.mark.asyncio
+async def test_decidir_sobre_radicado_que_no_puede_leer_es_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un revisor designado sin clearance suficiente no aprueba lo que no puede
+    leer: `active()` (con el JOIN) no devuelve el paso → 404, y no se decide."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchrow.return_value = None
+    mock_conn.fetchval.return_value = 1  # is_reviewer
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
+        json={"aprobar": True},
+        headers={**TENANT_HEADERS, "X-User-Id": str(REV1)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "sin_pendiente"
+    assert any("nivel_seguridad <=" in q for q in _sqls(mock_conn) if "pendiente" in q)
+    assert not any("UPDATE visto_bueno" in str(c) for c in mock_conn.execute.call_args_list)
+    # El servicio pasa el clearance DEL LLAMANTE (1), no uno amplio: sin esto el JOIN
+    # existe pero el parámetro lo vuelve inerte.
+    consulta = [c for c in mock_conn.fetchrow.call_args_list if "pendiente" in str(c.args[:1])]
+    assert consulta and consulta[0].args[-1] == 1
+
+
+@pytest.mark.asyncio
+async def test_crear_cadena_de_radicado_no_visible_es_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [True, None]  # RBAC ok; radicado no visible
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos",
+        json={"revisores": [str(REV1)]},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 404
+    assert not any("INSERT INTO visto_bueno" in str(c) for c in mock_conn.execute.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_crear_cadena_con_revisor_sin_habilitacion_es_422(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un revisor sin clearance para el radicado bloquearía la cadena (decidir daría 404)."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [True, 1, None, 1]  # RBAC, visible, sin cadena, 1 sin nivel
+    resp = await client.post(
+        f"/api/v1/workflows/{RAD}/vistos-buenos",
+        json={"revisores": [str(REV1)]},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "revisor_sin_habilitacion"
+    assert not any("INSERT INTO visto_bueno" in str(c) for c in mock_conn.execute.call_args_list)

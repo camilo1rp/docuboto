@@ -157,3 +157,112 @@ describe("/admin/interoperabilidad — carga masiva de documentos: el panel de p
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reanudación de lotes con errores: se muestra el fallo, se ofrece procesar los
+// faltantes solo si el backend dice `reprocesable`, se confirma con la cuenta y
+// el aviso de que lo radicado conserva su número, y se vuelve a sondear.
+// ---------------------------------------------------------------------------
+describe("/admin/interoperabilidad — lote con errores: procesar los faltantes", () => {
+  const JOB_ID = "22222222-2222-2222-2222-222222222222";
+  const conErrores = (extra = {}) => ({
+    status: "completado_con_errores",
+    total_items: 3,
+    processed_items: 3,
+    failed_items: 2,
+    pending_items: 2,
+    reprocesable: true,
+    items: [
+      { item_index: 0, status: "success", result_id: "2026-X-E-000001" },
+      {
+        item_index: 1,
+        status: "failed",
+        subject: "Oficio uno",
+        error_message: "La dependencia destino no existe.",
+        error_tipo: "validacion",
+        intentos: 1,
+      },
+      {
+        item_index: 2,
+        status: "failed",
+        subject: "Oficio dos",
+        error_message: "asyncpg.exceptions.ConnectionDoesNotExistError: closed",
+        intentos: 2,
+      },
+    ],
+    ...extra,
+  });
+
+  async function crearLote(estado) {
+    const llamadas = [];
+    globalThis.fetch = vi.fn(async (url, init) => {
+      const href = String(url);
+      llamadas.push({ href, method: init?.method ?? "GET" });
+      if (href.endsWith("/reprocesar")) {
+        return new Response(
+          JSON.stringify({ job_id: JOB_ID, status: "pending", items_a_procesar: 2 }),
+          { status: 202 },
+        );
+      }
+      if (href.includes("/lotes/documentos/")) {
+        return new Response(JSON.stringify(estado), { status: 200 });
+      }
+      return new Response(JSON.stringify({ job_id: JOB_ID }), { status: 202 });
+    });
+    render(InteroperabilidadPage);
+    await fireEvent.click(screen.getByRole("tab", { name: /Carga masiva de documentos/i }));
+    await fireEvent.input(screen.getByLabelText(/^Asunto/i), { target: { value: "x" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^Crear 1 documento$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /Confirmar y crear/i }));
+    return llamadas;
+  }
+
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI"] }));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("muestra el aviso, los fallidos con su motivo y el detalle técnico aparte", async () => {
+    await crearLote(conErrores());
+    await waitFor(() => expect(screen.getByText(/El lote terminó con errores/i)).toBeTruthy());
+    expect(screen.getByText("La dependencia destino no existe.")).toBeTruthy();
+    expect(screen.getByText("Oficio dos")).toBeTruthy();
+    expect(screen.getAllByText(/Detalle técnico/i).length).toBeGreaterThan(0);
+  });
+
+  it("ofrece «Procesar los faltantes», confirma con la cuenta y vuelve a sondear", async () => {
+    const llamadas = await crearLote(conErrores());
+    const boton = await screen.findByRole("button", { name: /Procesar los faltantes/i });
+    await fireEvent.click(boton);
+    expect(screen.getByText(/Se procesarán 2 documentos/i)).toBeTruthy();
+    expect(screen.getByText(/conservan su número/i)).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: /^Procesar 2 faltantes$/i }));
+    await waitFor(() =>
+      expect(llamadas.some((c) => c.method === "POST" && c.href.endsWith("/reprocesar"))).toBe(
+        true,
+      ),
+    );
+    // Tras el 202 se reinicia el sondeo: hay una consulta de estado posterior.
+    const iPost = llamadas.findIndex((c) => c.href.endsWith("/reprocesar"));
+    await waitFor(() =>
+      expect(llamadas.slice(iPost + 1).some((c) => c.href.includes("/lotes/documentos/"))).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("un asunto null (radicado reservado) se lee «Asunto reservado», no un hueco", async () => {
+    const est = conErrores();
+    est.items[1].subject = null;
+    est.errores = [est.items[1], est.items[2]];
+    await crearLote(est);
+    await waitFor(() => expect(screen.getByText("Asunto reservado")).toBeTruthy());
+  });
+
+  it("sin `reprocesable` no hay botón aunque haya fallidos", async () => {
+    await crearLote(conErrores({ reprocesable: false }));
+    await waitFor(() => expect(screen.getByText(/El lote terminó con errores/i)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /Procesar los faltantes/i })).toBeNull();
+  });
+});

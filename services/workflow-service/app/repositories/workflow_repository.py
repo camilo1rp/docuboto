@@ -20,20 +20,30 @@ import asyncpg
 from app.core.clearance import resolve_caller_clearance
 from app.core.database import tenant_schema
 from app.models.flow import FlowStep
-from app.services.estado_radicado import ESTADOS_TERMINALES, derivar_estado_radicado
+from app.services.estado_radicado import (
+    ESTADOS_TERMINALES,
+    PasoUbicacion,
+    Ubicacion,
+    derivar_estado_radicado,
+    derivar_ubicacion,
+)
 
 
 def _clearance_condition(idx: int) -> str:
     """Predicado no-read-up (RF-SEG-08) correlacionado con `flow_steps.radicado_id`.
 
-    COALESCE a PUBLICA(1) si el radicado no está clasificado/replicado (mismo
-    criterio que `list_flow_events`). Factorizado porque lo reutilizan
+    COALESCE a CLASIFICADA(3) si no hay fila de radicado (mismo criterio que
+    `list_flow_events`): `radicados.nivel_seguridad` es NOT NULL, así que una fila
+    AUSENTE nunca significa «sin clasificar» sino que el radicado se purgó (TRD)
+    y dejó huérfanos append-only —que, tratados como públicos, convertían en
+    legible la hoja de ruta de un reservado—. No es «dato aún no replicado»:
+    `radicados` vive en el MISMO schema. Factorizado porque lo reutilizan
     `list_pending`, `list_inbox`, `get_history` y `get_current` — así el
     predicado no puede divergir entre call sites.
     """
     return (
         f"COALESCE((SELECT nivel_seguridad FROM radicados "
-        f"WHERE id = flow_steps.radicado_id), 1) <= ${idx}"
+        f"WHERE id = flow_steps.radicado_id), 3) <= ${idx}"
     )
 
 
@@ -171,6 +181,21 @@ class WorkflowRepository:
         await self._set_search_path()
         return await resolve_caller_clearance(self._conn, user_id)
 
+    async def nivel_radicado(self, radicado_id: uuid.UUID) -> int | None:
+        """`nivel_seguridad` del radicado para el sobre de los eventos que salen.
+
+        `None` si no se puede resolver: el consumidor (notification) trata un
+        evento de radicado sin nivel como clasificado (fail-closed), así que la
+        ausencia aquí jamás vuelve público algo.
+        """
+        try:
+            nivel = await self._conn.fetchval(
+                "SELECT nivel_seguridad FROM radicados WHERE id = $1", radicado_id
+            )
+        except Exception:  # noqa: BLE001 — best-effort, el evento es posterior al commit.
+            return None
+        return nivel if isinstance(nivel, int) and not isinstance(nivel, bool) else None
+
     async def lock_radicado(self, radicado_id: uuid.UUID) -> None:
         """Serializa los actos sobre un radicado dentro de la transacción.
 
@@ -204,7 +229,8 @@ class WorkflowRepository:
     async def sincronizar_estado_radicado(
         self, radicado_id: uuid.UUID, *, finalizar: bool = False
     ) -> tuple[str, str] | None:
-        """Escribe `radicados.status` según el paso activo (ADR-028) y devuelve
+        """Escribe `radicados.status` según el paso activo (ADR-028) y la ubicación
+        actual `flujo_*` (ADR-029, en el MISMO `UPDATE`); devuelve
         `(antes, despues)`; `None` si el radicado no existe.
 
         Debe llamarse DENTRO de la transacción del acto, DESPUÉS de mutar los
@@ -218,7 +244,9 @@ class WorkflowRepository:
         """
         await self._set_search_path()
         row = await self._conn.fetchrow(
-            "SELECT status FROM radicados WHERE id = $1 FOR UPDATE", radicado_id
+            "SELECT status, flujo_dept, flujo_dept_code, flujo_usuario "
+            "FROM radicados WHERE id = $1 FOR UPDATE",
+            radicado_id,
         )
         if row is None:
             return None
@@ -238,14 +266,57 @@ class WorkflowRepository:
             tiene_pasos=bool(pasos and pasos["tiene_pasos"]),
             finalizar=finalizar,
         )
-        if despues != actual and actual not in ESTADOS_TERMINALES:
-            await self._conn.execute(
-                "UPDATE radicados SET status = $2, updated_at = now() "
-                "WHERE id = $1 AND status IS DISTINCT FROM $2",
-                radicado_id,
-                despues,
-            )
+        if actual in ESTADOS_TERMINALES:
+            # Terminal: ni estado ni ubicación se mueven (el servicio responde 409).
+            return actual, despues
+
+        # Ubicación actual (ADR-029): MISMO UPDATE que `status`, misma transacción.
+        ubicacion = derivar_ubicacion(
+            actual,
+            await self._pasos_para_ubicacion(radicado_id),
+            congelada=_ubicacion_de_fila(row),
+        )
+        await self._conn.execute(
+            "UPDATE radicados SET status = $2, flujo_dept = $3, flujo_dept_code = $4, "
+            "flujo_usuario = $5, updated_at = now() "
+            "WHERE id = $1 AND (status IS DISTINCT FROM $2 "
+            "OR flujo_dept IS DISTINCT FROM $3 "
+            "OR flujo_dept_code IS DISTINCT FROM $4 "
+            "OR flujo_usuario IS DISTINCT FROM $5)",
+            radicado_id,
+            despues,
+            ubicacion.dept if ubicacion else None,
+            ubicacion.dept_code if ubicacion else None,
+            ubicacion.usuario if ubicacion else None,
+        )
         return actual, despues
+
+    async def _pasos_para_ubicacion(self, radicado_id: uuid.UUID) -> list[PasoUbicacion]:
+        """Pasos del radicado con los códigos de las dependencias ACTIVAS que
+        llevan exactamente el nombre de `to_dept` (el paso no guarda código)."""
+        rows = await self._conn.fetch(
+            """
+            SELECT s.step_number, s.status, s.to_dept, s.assigned_to, s.completed_at,
+                   COALESCE((SELECT array_agg(d.codigo::integer)
+                               FROM dependencias d
+                              WHERE d.nombre = s.to_dept AND d.activo = TRUE),
+                            '{}'::integer[]) AS candidatos
+              FROM flow_steps s
+             WHERE s.radicado_id = $1
+            """,
+            radicado_id,
+        )
+        return [
+            PasoUbicacion(
+                step_number=r["step_number"],
+                status=r["status"],
+                to_dept=r["to_dept"],
+                assigned_to=r["assigned_to"],
+                completed_at=r["completed_at"],
+                codigos_candidatos=tuple(r["candidatos"]),
+            )
+            for r in rows
+        ]
 
     async def es_poseedor(
         self, radicado_id: uuid.UUID, actor: uuid.UUID | None, *, max_clearance: int
@@ -382,6 +453,14 @@ class WorkflowRepository:
             "en_expediente": await self._leer_opcional(
                 "SELECT EXISTS (SELECT 1 FROM expediente_radicados "
                 "WHERE radicado_id = $1 AND estado = 'vinculado')",
+                radicado_id,
+            ),
+            # Vencimiento LEGAL del radicado (días hábiles, document-service). El
+            # plazo de un paso es interno y casi nunca existe: medido en la pila,
+            # el corpus entero tenía `flow_steps.due_at` NULL y el asiento decía
+            # «no consta» sobre radicados vencidos hacía dos semanas.
+            "radicado_vencido": await self._leer_opcional(
+                "SELECT due_date < CURRENT_DATE FROM radicados WHERE id = $1",
                 radicado_id,
             ),
         }
@@ -605,9 +684,9 @@ class WorkflowRepository:
     ) -> list[asyncpg.Record]:
         # Canal B (E08 §9): la hoja de ruta solo es visible si el radicado lo es para el
         # clearance del llamante (no read-up, RF-SEG-08). El nivel del radicado vive en la
-        # tabla `radicados` (document-service, mismo schema tenant); COALESCE a PUBLICA(1)
-        # si no hay fila (radicado sin clasificar / dato aún no replicado). max_clearance=3
-        # (CLASIFICADA) = sin restricción para llamantes internos/sistema.
+        # tabla `radicados` (document-service, mismo schema tenant, NOT NULL); COALESCE a
+        # CLASIFICADA(3) si no hay fila: ausente = purgado por TRD con huérfanos, nunca
+        # «sin clasificar». max_clearance=3 = sin restricción para llamantes internos/sistema.
         await self._set_search_path()
         return list(
             await self._conn.fetch(
@@ -617,7 +696,7 @@ class WorkflowRepository:
                 FROM flow_events
                 WHERE radicado_id = $1
                   AND COALESCE(
-                        (SELECT nivel_seguridad FROM radicados WHERE id = $1), 1
+                        (SELECT nivel_seguridad FROM radicados WHERE id = $1), 3
                       ) <= $2
                 ORDER BY ts ASC, id ASC
                 """,
@@ -1221,6 +1300,17 @@ class WorkflowRepository:
                         )
                     )
         return result
+
+
+def _ubicacion_de_fila(row: asyncpg.Record) -> Ubicacion | None:
+    """`flujo_*` ya escritas en el radicado, o `None` si nunca se escribieron."""
+    if row["flujo_dept"] is None:
+        return None
+    return Ubicacion(
+        dept=row["flujo_dept"],
+        dept_code=row["flujo_dept_code"],
+        usuario=row["flujo_usuario"],
+    )
 
 
 def _row_to_model(row: asyncpg.Record) -> FlowStep:

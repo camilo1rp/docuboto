@@ -100,6 +100,20 @@ Example: 2024-ICETEX-E-001234
 
 `closed` and `anulado` are **terminal**: no processing act moves them (`409 radicado_terminal`). The only way to close is "Finish processing"; completing the last step does not close. **Holder** = has the step assigned, or the step belongs to their dependencia and nobody holds it. **Outgoing** and **internal** radicados have no outward distribution: their status only moves when a step touches them. Annulment does not cancel the active step (declared). See [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md).
 
+
+#### Current location of the radicado (ADR-029)
+
+`dest_dept` / `dest_dept_code` are the **registration** dependencia: who the document was addressed to, a legal snapshot fixed at registration that does not change. **Where the radicado is now** is a different thing —in Orfeo, `radi_depe_actu` / `radi_usua_actu`— and the workflow writes it.
+
+| Situation | Current location |
+|---|---|
+| No steps (just registered) | The registration dependencia (destination; failing that, origin) |
+| There is an active step | The dependencia (and holder) of the highest-numbered step |
+| No active step | The step that **closed most recently**, in any status (not the highest-numbered one: after a rollback the cancelled step has the highest number but closed earlier) |
+| `closed` | The dependencia where it was finished (frozen) |
+| `anulado` | The dependencia where it was when annulled (annulment does not rewrite it) |
+
+The step stores the dependencia **name** and `dependencias.nombre` is not unique: the code is only resolved when the name matches **one** active dependencia; otherwise it is `null` and the name is the snapshot. The location is **not public**: neither verification by code, nor OAI-PMH, nor CMIS expose it, and who holds the procedure (`flujo_usuario`) only appears in the authenticated detail. It can be filtered and counted (`?ubicacion_dept_code=`; the "Current location" report, which excludes closed and annulled). See [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
 ---
 
 ### Expediente

@@ -737,6 +737,14 @@ services:
       # del OTP de 2FA). Mismo secreto que signature-service.NOTIFICATION_INTERNAL_TOKEN.
       # Fail-closed: vacío ⇒ /send rechaza toda llamada (401). Dev-only.
       - INTERNAL_SERVICE_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
+      # KEK que cifra en reposo el secreto HMAC de los webhooks (AES-256-GCM, base64
+      # de 32 bytes). Propia de ESTE servicio, nunca en la base. El default es
+      # SOLO de desarrollo; en producción es obligatoria (infra/docker-compose.prod.yml).
+      # Rotación: WEBHOOK_SECRET_KEKS='{"2":"<base64>"}' + WEBHOOK_SECRET_KEK_ACTIVE_VERSION=2
+      # y `python -m app.ops.rewrap_webhook_secrets` (docs/es/deployment.md).
+      - WEBHOOK_SECRET_KEK=${WEBHOOK_SECRET_KEK:-FdATFrQDjvyBfvHjjZSLjrLyIQct0+dgsMz2TOycUnk=}
+      - WEBHOOK_SECRET_KEKS=${WEBHOOK_SECRET_KEKS:-{}}
+      - WEBHOOK_SECRET_KEK_ACTIVE_VERSION=${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
     networks:
       - orpycamcp-net
     depends_on:

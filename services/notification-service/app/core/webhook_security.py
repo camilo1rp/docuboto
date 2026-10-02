@@ -35,11 +35,11 @@ arbitrario: amplificación/ruido contra la propia red.
   caso de **DNS rebinding** (un dominio que resolvía a una IP pública al crear
   la suscripción y luego se re-apunta a una IP interna).
 
-**Limitación aceptada y documentada, no cerrada**: existe una ventana TOCTOU
-entre esta validación y la conexión real que hace `httpx` (milisegundos
-después). Cerrarla del todo requeriría fijar (pin) la conexión a la IP ya
-resuelta y validada en el momento del handshake TCP, lo cual excede el
-alcance de este hallazgo Media no bloqueante. Se acepta el residual.
+**TOCTOU cerrado (AREA-10-11)**: `validate_webhook_target` devuelve la IP que
+validó y `webhook_service._deliver_one` conecta a ESA IP (URL con IP literal,
+cabecera `Host` y SNI originales). `httpx` ya no vuelve a resolver el nombre,
+así que un DNS con TTL 0 que responde primero pública y luego interna no puede
+re-apuntar la conexión entre la validación y el `connect`.
 """
 
 from __future__ import annotations
@@ -64,7 +64,9 @@ from orpycamcp_common.red_interna import (  # noqa: E402
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 
-def validate_webhook_target(url: str, *, allow_private: bool, resolve: bool = True) -> None:
+def validate_webhook_target(
+    url: str, *, allow_private: bool, resolve: bool = True
+) -> str | None:
     """Rechaza destinos internos/no enrutables para un webhook saliente.
 
     Lanza `ValueError` con un mensaje que explica el motivo del rechazo (el
@@ -77,6 +79,10 @@ def validate_webhook_target(url: str, *, allow_private: bool, resolve: bool = Tr
 
     `resolve=False` omite la resolución DNS (usado en la validación de
     creación, ver el docstring del módulo).
+
+    Devuelve la IP validada a la que hay que CONECTAR (literal del host, o la
+    primera resuelta; todas las resueltas pasaron el filtro), o `None` cuando no
+    hay nada que fijar (`allow_private` o `resolve=False`).
     """
     parts = urlsplit(url)
     if parts.scheme not in _ALLOWED_SCHEMES:
@@ -88,7 +94,7 @@ def validate_webhook_target(url: str, *, allow_private: bool, resolve: bool = Tr
         raise ValueError("la URL del webhook no tiene un host válido")
 
     if allow_private:
-        return
+        return None
 
     host_lower = host.lower()
     if host_lower in _DOCKER_SERVICE_HOSTNAMES:
@@ -106,10 +112,10 @@ def validate_webhook_target(url: str, *, allow_private: bool, resolve: bool = Tr
             raise ValueError(
                 f"el host '{host}' es una IP en {reason}, no permitida como destino de webhook"
             )
-        return
+        return str(literal_ip)
 
     if not resolve:
-        return
+        return None
 
     try:
         addrinfo = socket.getaddrinfo(host, None)
@@ -124,3 +130,4 @@ def validate_webhook_target(url: str, *, allow_private: bool, resolve: bool = Tr
                 f"el host '{host}' resuelve a {ip} ({reason}), no permitido como "
                 "destino de webhook"
             )
+    return str(ipaddress.ip_address(addrinfo[0][4][0]))

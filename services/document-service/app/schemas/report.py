@@ -22,4 +22,8 @@ class ReportSummary(BaseModel):
     by_doc_type: dict[str, int]
     by_status: dict[str, int]
     by_month: list[MonthCount]
+    # Dependencia de RADICACIÓN (a quién iba dirigido; instantánea legal).
     by_dependencia: dict[str, int] = {}
+    # Dónde está AHORA lo que sigue en trámite (excluye cerrados y anulados): la
+    # carga de trabajo real de cada dependencia (ADR-029).
+    by_ubicacion: dict[str, int] = {}

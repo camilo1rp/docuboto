@@ -24,7 +24,12 @@ from pydantic import BaseModel, Field
 
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_tenant_conn
-from app.services.export_service import ExportService, ExportTooLargeError
+from app.core.operacion_pesada import OperacionPesadaOcupadaError, una_operacion_pesada
+from app.services.export_service import (
+    ExportBytesTooLargeError,
+    ExportService,
+    ExportTooLargeError,
+)
 
 router = APIRouter(prefix="/api/v1/export", tags=["export"])
 
@@ -50,7 +55,7 @@ def _get_registered_by(request: Request) -> uuid.UUID | None:
 
 @router.post(
     "",
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
     summary="Exportar radicados a un paquete interoperable (E11, RF-INT-01)",
 )
 async def export_radicados(
@@ -63,12 +68,32 @@ async def export_radicados(
     clearance = await resolve_caller_clearance(conn, actor)
     svc = ExportService(conn, tenant_slug)
     try:
-        zip_bytes, export_uuid, num, excluidos = await svc.build_export(
-            max_clearance=clearance,
-            comentario=payload.comentario,
-            year=payload.year,
-            doc_type=payload.doc_type,
-            actor=str(actor) if actor else None,
+        async with una_operacion_pesada():
+            zip_bytes, export_uuid, num, excluidos = await svc.build_export(
+                max_clearance=clearance,
+                comentario=payload.comentario,
+                year=payload.year,
+                doc_type=payload.doc_type,
+                actor=str(actor) if actor else None,
+            )
+    except OperacionPesadaOcupadaError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": "30"},
+            detail={
+                "error": "operacion_ocupada",
+                "detail": "Hay otra importación o exportación en curso; reintente en unos segundos.",
+                "status": 429,
+            },
+        )
+    except ExportBytesTooLargeError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "export_demasiado_grande",
+                "detail": "Los anexos exceden el tope de bytes; acote con year/doc_type.",
+                "status": 422,
+            },
         )
     except ExportTooLargeError as exc:
         raise HTTPException(

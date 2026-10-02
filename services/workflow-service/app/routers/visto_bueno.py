@@ -103,9 +103,12 @@ async def crear_cadena(
 async def get_cadena(
     radicado_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> CadenaResponse:
-    return await VistoBuenoService(conn, tenant_slug).get(radicado_id)
+    # Sin identidad el clearance es PUBLICA (fail-closed): solo ve cadenas de
+    # radicados públicos. Los comentarios de los revisores heredan la clasificación.
+    return await VistoBuenoService(conn, tenant_slug).get(radicado_id, actor)
 
 
 @router.post(

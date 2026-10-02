@@ -64,6 +64,32 @@ def _configure_internal_token() -> AsyncGenerator[None, None]:
     settings.internal_service_token = previo
 
 
+#: KEK de pruebas del secreto de los webhooks (base64 de 32 bytes). La v2 sirve a
+#: las pruebas de rotación.
+TEST_WEBHOOK_KEK_V1 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+TEST_WEBHOOK_KEK_V2 = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
+
+
+@pytest.fixture(autouse=True)
+def _configure_webhook_kek() -> AsyncGenerator[None, None]:
+    """Deja el llavero de los secretos de webhook configurado en TODAS las pruebas
+    (crear un webhook con secreto cifra y, sin KEK, falla cerrado)."""
+    previos = (
+        settings.webhook_secret_kek,
+        settings.webhook_secret_keks,
+        settings.webhook_secret_kek_active_version,
+    )
+    settings.webhook_secret_kek = TEST_WEBHOOK_KEK_V1
+    settings.webhook_secret_keks = {}
+    settings.webhook_secret_kek_active_version = 1
+    yield
+    (
+        settings.webhook_secret_kek,
+        settings.webhook_secret_keks,
+        settings.webhook_secret_kek_active_version,
+    ) = previos
+
+
 def make_redis_mock() -> MagicMock:
     mock = MagicMock()
     mock.ping = AsyncMock()

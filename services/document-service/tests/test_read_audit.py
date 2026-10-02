@@ -62,6 +62,10 @@ def _hit_row(**kw) -> dict:
         "sender_entity": "Ciudadano",
         "doc_class": "COR-PET",
         "dest_dept": "Jurídica",
+        # La proyección real trae la ubicación ACTUAL (ADR-029), distinta de la
+        # dependencia de radicación `dest_dept` cuando el flujo movió el radicado.
+        "ubicacion_dept_code": 120,
+        "ubicacion_dept": "Jurídica",
         "status": "registered",
         "registered_at": datetime.now(tz=UTC),
         "rank": 0.5,
@@ -413,6 +417,7 @@ def _respuesta_row(**kw) -> dict:
         "tracking_number": "2024-DEMO-S-000009",
         "doc_type": "S",
         "subject": "Respuesta a la tutela",
+        "nivel_seguridad": 1,
         "status": "registered",
         "registered_at": datetime.now(tz=UTC),
     }

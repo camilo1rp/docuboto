@@ -32,5 +32,7 @@ class RespuestaItem(BaseModel):
     tracking_number: str
     doc_type: str
     subject: str
+    #: Declarado: la barrera de residencia del asistente recorta por este campo.
+    nivel_seguridad: int
     status: str
     registered_at: datetime

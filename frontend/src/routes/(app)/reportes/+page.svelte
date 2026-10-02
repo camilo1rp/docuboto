@@ -16,7 +16,8 @@
     - Tipo (E/S/I)
     - Estado (registered / distributed / in_progress / closed)
     - Mes (por fecha de radicación)
-    - Dependencia destino
+    - Ubicación actual (solo lo que sigue en trámite, ADR-029)
+    - Dependencia de radicación (a quién iba dirigido; instantánea al radicar)
 
   El botón "Descargar CSV" del encabezado apunta a /reportes/api/csv (proxy SSR)
   que lee el token de la cookie httpOnly — el token nunca alcanza el cliente
@@ -283,6 +284,12 @@
   /** Máximo de los conteos de dependencia (para las barras) */
   $: maxDeptCount = Math.max(...filasDeMapa(data.summary?.by_dependencia).map((d) => d.count), 0);
 
+  /** Máximo de los conteos de ubicación actual (para las barras) */
+  $: maxUbicacionCount = Math.max(
+    ...filasDeMapa(data.summary?.by_ubicacion).map((d) => d.count),
+    0,
+  );
+
   /** Máximo de los conteos por mes (para las barras) */
   $: maxMonthCount = (() => {
     const months = data.summary?.by_month ?? [];
@@ -331,6 +338,19 @@
     };
   });
 
+  // by_ubicacion (ADR-029): dónde está AHORA lo que sigue en trámite (sin cerrados ni
+  // anulados). A diferencia de by_dependencia, que es la de radicación.
+  $: ubicacionRows = filasDeMapa(data.summary?.by_ubicacion).map((row) => {
+    const count = row.count ?? 0;
+    const share = maxUbicacionCount > 0 ? Math.round((count / maxUbicacionCount) * 100) : 0;
+    return {
+      ubicacion: row.clave || null,
+      ubicacion_label: row.clave || "Sin ubicación",
+      count,
+      share_label: `${share}%`,
+    };
+  });
+
   $: deptRows = filasDeMapa(data.summary?.by_dependencia).map((row) => {
     const count = row.count ?? 0;
     const share = maxDeptCount > 0 ? Math.round((count / maxDeptCount) * 100) : 0;
@@ -360,10 +380,21 @@
     { key: "share_label", label: "Distribución", sortable: true },
   ];
 
+  const ubicacionColumns = [
+    {
+      key: "ubicacion_label",
+      label: "Ubicación actual",
+      sortable: true,
+      filterType: /** @type {const} */ ("text"),
+    },
+    { key: "count", label: "En trámite", sortable: true },
+    { key: "share_label", label: "Distribución", sortable: true },
+  ];
+
   const deptColumns = [
     {
       key: "dept_label",
-      label: "Dependencia",
+      label: "Dependencia de radicación",
       sortable: true,
       filterType: /** @type {const} */ ("text"),
     },
@@ -703,10 +734,57 @@
           </section>
 
           <!-- =================================================================
-          Panel: Por dependencia destino
+          Panel: Por ubicación actual (ADR-029) — lo que sigue en trámite
+        ================================================================= -->
+          <section class="report-panel report-panel--wide" aria-labelledby="panel-ubic-heading">
+            <h2 id="panel-ubic-heading" class="report-panel__title">
+              Por ubicación actual (en trámite)
+            </h2>
+            <p class="report-panel__note">
+              Dónde está ahora cada radicado que sigue en trámite. No incluye cerrados ni anulados.
+            </p>
+            <DataTable
+              tableId="reportes-ubicacion"
+              columns={ubicacionColumns}
+              rows={ubicacionRows}
+              totalCount={ubicacionRows.length}
+              pageSize={Math.max(ubicacionRows.length, 1)}
+              enableSort
+              enableFilters
+              enableExport
+              virtualize
+              exportFilename="reportes-por-ubicacion-actual.csv"
+              caption="Radicados en trámite por ubicación actual"
+            >
+              <svelte:fragment slot="row" let:row>
+                <td class="op-datatable__td">{row.ubicacion_label}</td>
+                <td class="op-datatable__td report-cell--num"
+                  >{row.count.toLocaleString("es-CO")}</td
+                >
+                <td class="op-datatable__td">
+                  <span class="bar-visual" aria-hidden="true">
+                    <span
+                      class="bar-visual__fill"
+                      style="width: {barWidth(row.count, maxUbicacionCount)}"
+                    ></span>
+                  </span>
+                  <span class="pct-text">{row.share_label}</span>
+                </td>
+              </svelte:fragment>
+            </DataTable>
+          </section>
+
+          <!-- =================================================================
+          Panel: Por dependencia de radicación
         ================================================================= -->
           <section class="report-panel report-panel--wide" aria-labelledby="panel-dept-heading">
-            <h2 id="panel-dept-heading" class="report-panel__title">Por dependencia destino</h2>
+            <h2 id="panel-dept-heading" class="report-panel__title">
+              Por dependencia de radicación
+            </h2>
+            <p class="report-panel__note">
+              A quién iba dirigido cada radicado al registrarlo; no cambia aunque el trámite se
+              mueva.
+            </p>
             <DataTable
               tableId="reportes-dependencia"
               columns={deptColumns}
@@ -717,8 +795,8 @@
               enableFilters
               enableExport
               virtualize
-              exportFilename="reportes-por-dependencia.csv"
-              caption="Radicados por dependencia destino"
+              exportFilename="reportes-por-dependencia-radicacion.csv"
+              caption="Radicados por dependencia de radicación"
             >
               <svelte:fragment slot="row" let:row>
                 <td class="op-datatable__td">{row.dept_label}</td>
@@ -1147,6 +1225,12 @@
     &--wide {
       grid-column: 1 / -1;
     }
+  }
+
+  .report-panel__note {
+    margin: 0;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
   }
 
   .report-panel__title {

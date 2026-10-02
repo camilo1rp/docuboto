@@ -171,7 +171,24 @@ class PostalRepository:
         estado: str,
         descripcion: str | None,
         motivo_devolucion: str | None = None,
+        *,
+        estado_previo: str,
+        max_clearance: int | None,
     ) -> asyncpg.Record | None:
+        """Aplica la transición SOLO si el envío sigue en `estado_previo`.
+
+        La máquina de estados se valida en el servicio contra una lectura previa;
+        entre esa lectura y este UPDATE puede colarse el callback del operador
+        (`devuelto`, terminal) y, sin la condición de estado en el `WHERE`, el
+        último en escribir pisaba un estado terminal. Con ella, quien llega
+        segundo recibe `None` y el servicio responde 409.
+
+        `max_clearance` va en el mismo `WHERE` (RF-SEG-08: el gate es la
+        mutación, no una comprobación previa). `None` solo lo pasa el callback
+        autenticado del operador: es un acto de SISTEMA, no una lectura humana
+        (ver `find_by_guia`); es explícito y sin valor por defecto para que
+        olvidarlo no abra el gate en silencio.
+        """
         async with self._conn.transaction():
             # `motivo_devolucion` sólo se fija cuando el llamante lo pasa (el
             # servicio lo hace únicamente para 'devuelto'); COALESCE conserva el
@@ -179,10 +196,16 @@ class PostalRepository:
             row = await self._conn.fetchrow(
                 f"UPDATE postal_shipment SET estado = $2, updated_at = now(), "
                 f"motivo_devolucion = COALESCE($3, motivo_devolucion) "
-                f"WHERE id = $1 RETURNING {_COLS}",
+                f"WHERE id = $1 AND estado = $4 "
+                f"AND ($5::int IS NULL OR EXISTS ("
+                f"SELECT 1 FROM radicados r WHERE r.id = postal_shipment.radicado_id "
+                f"AND r.nivel_seguridad <= $5)) "
+                f"RETURNING {_COLS}",
                 shipment_id,
                 estado,
                 motivo_devolucion,
+                estado_previo,
+                max_clearance,
             )
             if row is None:
                 return None

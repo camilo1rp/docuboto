@@ -50,9 +50,19 @@ class BatchItemResult(BaseModel):
     """Result of a single item in batch."""
 
     item_index: int
-    status: str  # 'success' or 'failed'
+    status: str  # 'pending' | 'success' | 'failed'
     result_id: UUID | None = None  # UUID of created radicado/expediente
     error_message: str | None = None
+    #: Clase de la excepción del último fallo (`ValidationError`, `RuntimeError`...).
+    error_tipo: str | None = None
+    #: Veces que se intentó el ítem (el primer intento cuenta 1).
+    intentos: int = 0
+    #: Asunto del documento del ítem: lo que la pantalla muestra junto al error.
+    subject: str | None = None
+    #: Nivel de seguridad del radicado creado (1..3); `null` si el ítem aún no tiene
+    #: radicado o este supera el nivel de acceso del llamante (el `subject` también
+    #: viene `null` en ese caso).
+    nivel_seguridad: int | None
 
 
 class BatchJobStatusResponse(BaseModel):
@@ -60,14 +70,26 @@ class BatchJobStatusResponse(BaseModel):
 
     job_id: UUID
     job_type: str
-    status: str  # pending, processing, completed, failed
+    #: pending | processing | completed | completado_con_errores | failed
+    #: (`failed` = el lote reventó fuera de los ítems; con ítems fallidos el lote
+    #: TERMINA como `completado_con_errores`).
+    status: str
     total_items: int
     processed_items: int
     failed_items: int
+    #: Ítems aún sin procesar (faltantes: lote interrumpido).
+    pending_items: int = 0
+    #: `true` si el lote terminó con ítems fallidos/faltantes que `POST
+    #: /batch/documents/{id}/reprocesar` puede retomar («Procesar los faltantes»).
+    reprocesable: bool = False
+    reanudaciones: int = 0
+    reprocesado_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
     items: list[BatchItemResult] = Field(default_factory=list)
+    #: Subconjunto de `items` con `status == 'failed'`, con su motivo.
+    errores: list[BatchItemResult] = Field(default_factory=list)
     error_message: str | None = None
 
     @property
@@ -76,6 +98,15 @@ class BatchJobStatusResponse(BaseModel):
         if self.total_items == 0:
             return 0
         return int((self.processed_items / self.total_items) * 100)
+
+
+class BatchReprocesarResponse(BaseModel):
+    """Respuesta de `POST /api/v1/batch/documents/{job_id}/reprocesar` (202)."""
+
+    job_id: UUID
+    status: str = "pending"
+    #: Ítems que se van a procesar: los fallidos devueltos a pendiente + los faltantes.
+    items_a_procesar: int
 
 
 class BatchExpedienteCreate(BaseModel):

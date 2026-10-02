@@ -36,14 +36,23 @@ def _sig_row(**kw) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_sign_document(client_with_conn) -> None:
+async def test_sign_document(client_with_conn, monkeypatch) -> None:
+    from app.clients import storage_client
+
+    async def _huella(*, tenant_slug, file_id):
+        return _HASH
+
+    monkeypatch.setattr(storage_client, "fetch_file_sha256", _huella)
     client, mock_conn = client_with_conn
-    mock_conn.fetchrow.return_value = _sig_row()
+    # fetchval: PERM_FIRMA (nivel 2) concedido → file_id del anexo.
+    mock_conn.fetchval.side_effect = [True, uuid.uuid4(), None]  # + hash previo del audit
+    # fetchrow: clearance del llamante → fila insertada.
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}, _sig_row()]
     headers = {**TENANT_HEADERS, "X-User-Id": _USER, "X-Username": "Ana Firmante"}
 
     resp = await client.post(
         f"/api/v1/documents/{uuid.uuid4()}/signatures",
-        json={"content_hash": _HASH, "reason": "Aprobación"},
+        json={"anexo_id": str(uuid.uuid4()), "reason": "Aprobación"},
         headers=headers,
     )
     assert resp.status_code == 201
@@ -115,7 +124,7 @@ async def test_firmas_exigen_perm_firma(client_with_conn, metodo, ruta) -> None:
     url = ruta.format(rid=uuid.uuid4())
     headers = {**TENANT_HEADERS, "X-User-Id": _USER}
     resp = await (
-        client.post(url, json={"content_hash": _HASH}, headers=headers)
+        client.post(url, json={"anexo_id": str(uuid.uuid4())}, headers=headers)
         if metodo == "post"
         else client.get(url, headers=headers)
     )
@@ -165,19 +174,18 @@ async def test_verify_de_radicado_sobre_clearance_404(client_with_conn) -> None:
 async def test_firmar_radicado_sobre_clearance_404(client_with_conn) -> None:
     """El INSERT condicional no encuentra radicado visible → None → 404 neutro."""
     client, mock_conn = client_with_conn
-    mock_conn.fetchval.return_value = True  # PERM_FIRMA concedido
-    # clearance del llamante; luego el INSERT ... WHERE EXISTS no devuelve fila.
-    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}, None]
+    # PERM_FIRMA concedido; el anexo NO se resuelve (radicado invisible → None).
+    mock_conn.fetchval.side_effect = [True, None]
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]
 
     resp = await client.post(
         f"/api/v1/documents/{uuid.uuid4()}/signatures",
-        json={"content_hash": _HASH, "reason": "intento"},
+        json={"anexo_id": str(uuid.uuid4()), "reason": "intento"},
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "document_not_found"
 
-    # El gate viaja DENTRO del INSERT (atomicidad), no como consulta previa.
-    sql = mock_conn.fetchrow.call_args[0][0]
-    assert "INSERT INTO signatures" in sql
-    assert "nivel_seguridad <= $7" in sql
+    # El gate viaja en el WHERE de la resolución del anexo, no como consulta previa.
+    sql = mock_conn.fetchval.call_args[0][0]
+    assert "nivel_seguridad <= $3" in sql

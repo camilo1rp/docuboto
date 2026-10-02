@@ -28,6 +28,9 @@ class SearchHit(BaseModel):
     # así que si no sale por aquí no hay forma de que llegue al <tipologia>.
     doc_class: str | None = None
     dest_dept: str | None
+    # Dónde está el radicado AHORA (ADR-029); `dest_dept` es la de radicación.
+    ubicacion_dept_code: int | None = None
+    ubicacion_dept: str | None = None
     status: str
     registered_at: datetime
     rank: float = Field(description="Relevance score (0.0 - 1.0)")

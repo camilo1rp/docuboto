@@ -16,15 +16,16 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.core.clearance import require_permission
+from app.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from app.core.database import acquire_tenant
 from app.core.database import get_tenant_conn as get_db
 from app.schemas.batch import (
     BatchDocumentsRequest,
     BatchJobResponse,
     BatchJobStatusResponse,
+    BatchReprocesarResponse,
 )
-from app.services.batch_service import BatchService
+from app.services.batch_service import BatchService, LoteError
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,18 @@ async def _marcar_job_fallido(tenant_slug: str, job_id: UUID, motivo: str) -> No
             )
     except Exception:  # noqa: BLE001
         logger.exception("No se pudo marcar como fallido el lote %s", job_id)
+
+
+def _lote_no_encontrado() -> HTTPException:
+    """404 NEUTRO: el mismo para un lote que no existe y para uno de otra persona."""
+    return HTTPException(
+        status_code=404,
+        detail={
+            "error": "lote_no_encontrado",
+            "detail": "No existe el trabajo solicitado",
+            "status": 404,
+        },
+    )
 
 
 @router.post(
@@ -148,17 +161,80 @@ async def get_batch_status(
     - `pending` — Queued, not started
     - `processing` — Currently processing
     - `completed` — All items succeeded
-    - `failed` — Some or all items failed
+    - `completado_con_errores` — Terminó, pero hay ítems fallidos (ver `errores`)
+    - `failed` — El lote reventó fuera de los ítems (ver `error_message`)
+
+    **404** `lote_no_encontrado` si no existe o no es del llamante (solo su creador, o
+    quien tiene `PERM_RADI` con nivel CRUD >= 3). El `subject` de un ítem cuyo radicado
+    está por encima del nivel de acceso del llamante viene `null`.
+
+    `reprocesable` indica que `POST /batch/documents/{job_id}/reprocesar` puede retomar los
+    ítems fallidos/faltantes sin renumerar los ya radicados.
     """
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    user_id = request.headers.get("X-User-Id", "")
 
-    if not tenant_slug:
-        raise HTTPException(status_code=400, detail="Falta el contexto de entidad")
+    if not tenant_slug or not user_id:
+        raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
 
+    caller = UUID(user_id)
     service = BatchService(conn, tenant_slug)
-    job = await service.get_job_status(job_id)
+    job = await service.get_job_status(
+        job_id,
+        caller=caller,
+        clearance=await resolve_caller_clearance(conn, caller),
+        ve_ajenos=await check_permission(conn, caller, "PERM_RADI", min_crud=3),
+    )
 
     if not job:
-        raise HTTPException(status_code=404, detail="No existe el trabajo solicitado")
+        raise _lote_no_encontrado()
 
     return BatchJobStatusResponse(**job)
+
+
+@router.post(
+    "/documents/{job_id}/reprocesar",
+    response_model=BatchReprocesarResponse,
+    status_code=202,
+    dependencies=[Depends(require_permission("PERM_RADI"))],
+)
+async def reprocesar_batch(
+    job_id: UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_db),
+) -> BatchReprocesarResponse:
+    """Reprocesa SOLO los ítems fallidos o faltantes de un lote («Procesar los faltantes»).
+
+    Mismo permiso que crear el lote (`PERM_RADI`). Idempotente: cada ítem ya radicado
+    conserva su número y no se vuelve a numerar. Deja el asiento
+    `document.lote_reprocesado` (actor = quien lo pide, que pasa a ser el responsable
+    de los radicados nuevos de este reproceso).
+
+    **202** — encolado; seguir con `GET /batch/documents/{job_id}/status`.
+    **409** `lote_en_proceso` (se está procesando) | `nada_que_reprocesar` (sin
+    fallidos ni faltantes). **404** `lote_no_encontrado` si el lote no existe **o no es
+    del llamante**: solo su creador, o quien tiene `PERM_RADI` con nivel CRUD >= 3,
+    puede verlo o reprocesarlo.
+    """
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    user_id = request.headers.get("X-User-Id", "")
+    if not tenant_slug or not user_id:
+        raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
+
+    caller = UUID(user_id)
+    try:
+        pendientes = await BatchService(conn, tenant_slug).reprocesar(
+            job_id,
+            caller,
+            ve_ajenos=await check_permission(conn, caller, "PERM_RADI", min_crud=3),
+        )
+    except LoteError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.codigo, "detail": exc.detalle, "status": exc.status},
+        ) from exc
+
+    tarea = asyncio.create_task(_procesar_lote(tenant_slug, job_id))
+    _tareas_en_curso.add(tarea)
+    tarea.add_done_callback(_tareas_en_curso.discard)
+    return BatchReprocesarResponse(job_id=job_id, status="pending", items_a_procesar=pendientes)

@@ -58,4 +58,12 @@ class Radicado:
     # publicar sigue sin publicarse.
     publicable: bool = False
     publicado_at: datetime | None = None
+    # Ubicación actual (ADR-029). `flujo_*` las escribe SOLO workflow-service;
+    # `ubicacion_*` son columnas generadas (flujo si lo hay, si no radicación).
+    # `flujo_usuario` solo se lee en el detalle, nunca en listados.
+    flujo_dept_code: int | None = None
+    flujo_dept: str | None = None
+    flujo_usuario: uuid.UUID | None = None
+    ubicacion_dept_code: int | None = None
+    ubicacion_dept: str | None = None
     anexos: list[Anexo] = field(default_factory=list)

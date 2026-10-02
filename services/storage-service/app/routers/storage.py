@@ -36,6 +36,9 @@ from app.schemas.storage import (
     PresignedUrlResponse,
     PurgaDisposicionRequest,
     PurgaDisposicionResponse,
+    PurgaHuerfanoItem,
+    PurgaHuerfanosRequest,
+    PurgaHuerfanosResponse,
 )
 from app.services.pdfa_ingest_service import (
     PdfaNonConformantError,
@@ -631,3 +634,36 @@ async def purgar_disposicion(
             ) from exc
         (purgados if ok else no_encontrados).append(file_id)
     return PurgaDisposicionResponse(purgados=purgados, no_encontrados=no_encontrados)
+
+
+@router.post(
+    "/internal/purgar-huerfanos",
+    response_model=PurgaHuerfanosResponse,
+    summary="Borrado seguro de binarios huérfanos de una importación fallida (internal only)",
+    # Sellado con `X-Internal-Token` (D-02) y NO enrutado por el gateway. Quien lo
+    # pide es document-service tras revertir una importación (AREA-09-14).
+    dependencies=[Depends(_require_internal_token)],
+)
+async def purgar_huerfanos(
+    payload: PurgaHuerfanosRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> PurgaHuerfanosResponse:
+    """Un archivo a la vez, cada uno en su transacción: el fallo de uno no frena a
+    los demás. `error` es lo ÚNICO que quien orquesta debe reintentar; `referenciado`,
+    `protegido_worm` y `preexistente` son decisiones correctas (el objeto lo sostiene
+    otro) y `no_encontrado` es el estado que se buscaba."""
+    service = StorageService(conn, tenant_slug)
+    resultados: list[PurgaHuerfanoItem] = []
+    for file_id in dict.fromkeys(payload.file_ids):  # sin duplicados, en orden
+        r = await service.purge_orphan(
+            file_id,
+            referencia=payload.referencia,
+            motivo=payload.motivo,
+            actor=payload.actor,
+            subido_desde=payload.subido_desde,
+        )
+        resultados.append(
+            PurgaHuerfanoItem(file_id=r.file_id, resultado=r.resultado, detalle=r.detalle)
+        )
+    return PurgaHuerfanosResponse(resultados=resultados)

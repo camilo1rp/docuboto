@@ -100,8 +100,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "radicaría en el archivo equivocado)"
             )
 
+    # Barrido de fondo: purga de binarios huérfanos de importaciones fallidas y
+    # reanudación/retención de lotes (AREA-09-14 / AREA-09-15). Ver `app/services/barrido.py`.
+    app.state.tarea_barrido = None
+    if settings.barrido_enabled:
+        from app.services.barrido import bucle_de_barrido
+
+        app.state.tarea_barrido = asyncio.create_task(bucle_de_barrido())
+
     yield
     logger.info("document-service shutting down")
+    if app.state.tarea_barrido is not None:
+        app.state.tarea_barrido.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await app.state.tarea_barrido
     if app.state.tarea_sondeo is not None:
         app.state.tarea_sondeo.cancel()
         with contextlib.suppress(asyncio.CancelledError):

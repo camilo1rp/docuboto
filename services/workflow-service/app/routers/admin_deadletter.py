@@ -31,7 +31,6 @@ import asyncpg
 from fastapi import (
     APIRouter,
     Depends,
-    Header,
     HTTPException,
     Query,
     Request,
@@ -79,16 +78,6 @@ router = APIRouter(
 )
 
 
-def _actor(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    """Extrae el UUID interno del llamante desde X-User-Id (None si ausente/inválido)."""
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        return None
-
-
 def _as_dict(value: object) -> dict:
     """asyncpg JSONB → dict (ya parseado), o str → json.loads. Defensa robusta."""
     if isinstance(value, dict):
@@ -129,10 +118,9 @@ async def list_dead_letters(
     Fail-closed: cualquier duda al resolver el nivel de una fila la excluye (se
     trata como CLASIFICADA).
 
-    Identidad (ADR-021, pulido Fase 5 "Baja" [3]): a diferencia de detail/replay/
-    discard (que siguen usando el ``_actor`` local, opcional), el listado exige
-    ``X-User-Id`` vía ``get_actor`` (401 si falta/ inválido) — unifica la fuente
-    de identidad con signature-service/notification-service. En la práctica el
+    Identidad (ADR-021, pulido Fase 5 "Baja" [3]; AREA-01-07): las cuatro rutas
+    exigen ``X-User-Id`` vía ``get_actor`` (401 si falta/ inválido) — una sola
+    fuente de identidad, como signature-service/notification-service. En la práctica el
     gate ``require_permission`` (dependencia de router, se resuelve antes) ya
     garantiza un ``X-User-Id`` válido con permiso, así que esta rama 401 no es
     observable hoy en las rutas ya protegidas — ver docstring de ``get_actor``.
@@ -186,7 +174,7 @@ async def list_dead_letters(
 async def get_dead_letter(
     event_id: str,
     request: Request,
-    actor: uuid.UUID | None = Depends(_actor),
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> DeadLetterDetail:
     """Detalle completo de un dead-letter (payload + failure), tras gate de clearance."""
@@ -216,7 +204,7 @@ async def get_dead_letter(
                 action="evento.dead_letter.viewed",
                 object_type="evento",
                 object_ref=event_id,
-                actor=str(actor) if actor else None,
+                actor=str(actor),
                 canal="api",
                 payload={
                     "previous_status": row["status"],
@@ -244,7 +232,7 @@ async def get_dead_letter(
 async def replay_dead_letter(
     event_id: str,
     request: Request,
-    actor: uuid.UUID | None = Depends(_actor),
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> DeadLetterActionResult:
     """Reprocesa un dead-letter pendiente de forma atómica (handler + estado + audit)."""
@@ -322,7 +310,7 @@ async def replay_dead_letter(
                 action="evento.dead_letter.replayed",
                 object_type="evento",
                 object_ref=event_id,
-                actor=str(actor) if actor else None,
+                actor=str(actor),
                 canal="api",
                 payload={
                     "previous_status": row["status"],
@@ -347,7 +335,7 @@ async def discard_dead_letter(
     event_id: str,
     body: DiscardRequest,
     request: Request,
-    actor: uuid.UUID | None = Depends(_actor),
+    actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> DeadLetterActionResult:
     """Descarta deliberadamente un dead-letter pendiente (con motivo, auditado)."""
@@ -390,7 +378,7 @@ async def discard_dead_letter(
                 action="evento.dead_letter.discarded",
                 object_type="evento",
                 object_ref=event_id,
-                actor=str(actor) if actor else None,
+                actor=str(actor),
                 canal="api",
                 payload={
                     "previous_status": previous_status,

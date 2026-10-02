@@ -347,3 +347,35 @@ async def two_tenant_ctx(
     finally:
         await _drop_tenant_schema(db_conn, schema_a)
         await _drop_tenant_schema(db_conn, schema_b)
+
+
+_FLUJO_MINIMO_DDL = """
+CREATE TABLE IF NOT EXISTS flow_steps (
+    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL DEFAULT '',
+    step_number INTEGER NOT NULL, to_dept VARCHAR(100) NOT NULL,
+    assigned_to UUID, status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    completed_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS dependencias (
+    codigo INT PRIMARY KEY, nombre TEXT NOT NULL,
+    activo BOOLEAN NOT NULL DEFAULT true, depe_rad_tp2 BOOLEAN NOT NULL DEFAULT false
+);
+CREATE TABLE IF NOT EXISTS urd_usuaroldep (
+    user_id UUID NOT NULL, depe_id INTEGER NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE
+);
+"""
+
+
+@pytest_asyncio.fixture
+async def tenant_flujo(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> tuple[str, asyncpg.Connection]:
+    """`tenant_ctx` + los MÍNIMOS de las tablas de otros servicios que lee la
+    tenencia de un borrador (`flow_steps` del workflow-service, `urd_usuaroldep`
+    de auth y `dependencias` de tenant-service). Su DDL no viaja en esta imagen;
+    se declaran con las columnas que el predicado usa."""
+    slug, conn = tenant_ctx
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(_FLUJO_MINIMO_DDL)
+    return slug, conn

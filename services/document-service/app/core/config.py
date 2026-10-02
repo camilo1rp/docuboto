@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
 
+    # --- Barrido de fondo (AREA-09-14 / AREA-09-15) ---
+    # Un bucle por réplica: purga los binarios huérfanos de importaciones fallidas
+    # que storage no pudo borrar en el momento, reanuda los lotes de radicados
+    # interrumpidos (reinicio del servicio) y retira los lotes terminados antiguos.
+    # Varias réplicas conviven: cada lote se toma con un advisory lock.
+    barrido_enabled: bool = True
+    barrido_intervalo_segundos: int = 300
+    barrido_retraso_inicial_segundos: int = 20
+    # Reintentos de purga de un binario antes de pasarlo a 'agotado' (revisión manual).
+    purga_huerfanos_max_intentos: int = 20
+    # Un lote 'pending'/'processing' más joven que esto no se reanuda: lo está
+    # arrancando su propia petición.
+    batch_reanudar_despues_segundos: int = 120
+    # Retención de lotes COMPLETADOS sin errores (0 = no se purgan). Los que
+    # terminaron con errores se conservan: alguien tiene que revisarlos.
+    batch_retencion_dias: int = 90
+
     service_port: int = 8003
     log_level: str = "info"
 

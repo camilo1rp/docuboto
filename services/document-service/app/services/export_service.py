@@ -24,6 +24,7 @@ Empaquetado FÍSICO: ZIP en memoria, síncrono. El BagIt/OAIS + WORM lo provee E
 (deuda de roadmap); aquí se define el CONTENIDO LÓGICO y el contrato de esquema.
 """
 
+import asyncio
 import hashlib
 import io
 import json
@@ -49,6 +50,13 @@ SCHEMA_VERSION = "1.0"
 # sin filtros sobre un tenant grande bloquearía el event-loop del worker compartido.
 # El streaming/async es deuda de roadmap; hasta entonces, 422 si excede.
 MAX_EXPORT_RADICADOS = 5000
+# Tope de bytes de ANEXOS acumulados en el ZIP en memoria. El de radicados no
+# acota nada: 5000 radicados con anexos de decenas de MiB son decenas de GiB.
+MAX_EXPORT_BYTES = 512 * 1024 * 1024
+
+
+class ExportBytesTooLargeError(Exception):
+    """Los anexos del export exceden el tope de bytes → 422 (acotar con year/doc_type)."""
 
 
 class ExportTooLargeError(Exception):
@@ -91,7 +99,14 @@ RADICADO_SCHEMA: dict[str, Any] = {
         # anulación, imposible de explicar y de deshacer. Se rechaza al validar.
         "metadata_sistema": {
             "type": "object",
-            "properties": {"status": {"enum": list(ESTADOS_IMPORTABLES)}},
+            "properties": {
+                "status": {"enum": list(ESTADOS_IMPORTABLES)},
+                # INFORMATIVOS (ADR-029): dónde estaba el radicado al exportar. El
+                # import los IGNORA —la ubicación la deriva el flujo de la entidad
+                # que recibe, no un paquete— y por eso no son `required`.
+                "ubicacion_dept": {"type": ["string", "null"]},
+                "ubicacion_dept_code": {"type": ["integer", "null"]},
+            },
         },
         "metadata_contextual": {"type": "object"},
         "disposicion": {"type": ["object", "null"]},
@@ -145,6 +160,10 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
 
 
+def _col_o_none(row: Any, nombre: str) -> Any:
+    return row[nombre] if nombre in row else None
+
+
 def _safe_leaf(name: str) -> str:
     """Nombre de archivo saneado a hoja (anti zip-slip): sin separadores ni `..`."""
     leaf = re.sub(r"[^A-Za-z0-9._-]", "_", (name or "anexo").rsplit("/", 1)[-1].rsplit("\\", 1)[-1])
@@ -162,6 +181,12 @@ def _loads(value: Any) -> Any:
     if isinstance(value, str):
         return json.loads(value)
     return value or {}
+
+
+def _escribir_binario(zf: zipfile.ZipFile, arcname: str, data: bytes) -> str:
+    digest = _sha256(data)
+    zf.writestr(arcname, data)
+    return digest
 
 
 class ExportValidationError(Exception):
@@ -207,6 +232,9 @@ class ExportService:
                 "pages": row["pages"],
                 "observations": row["observations"],
                 "tenant_code": row["tenant_code"],
+                # Informativos: el import los ignora (ADR-029).
+                "ubicacion_dept": _col_o_none(row, "ubicacion_dept"),
+                "ubicacion_dept_code": _col_o_none(row, "ubicacion_dept_code"),
             },
             "metadata_contextual": _loads(row["metadata"]),
             "disposicion": _loads(row["disposition"]) or None,
@@ -245,6 +273,7 @@ class ExportService:
         )
 
         buf = io.BytesIO()
+        bytes_acumulados = 0
         checksums: list[tuple[str, str]] = []
         manifest_entidades: list[dict[str, Any]] = []
 
@@ -271,10 +300,14 @@ class ExportService:
                     if data is None:
                         entity["anexos"].append({**base, "ausente": True})
                         continue
+                    bytes_acumulados += len(data)
+                    if bytes_acumulados > MAX_EXPORT_BYTES:
+                        raise ExportBytesTooLargeError
                     arcname = f"anexos/{tracking_safe}/{i}-{_safe_leaf(a['filename'])}"
-                    digest = _sha256(data)
+                    # SHA-256 + deflate del binario en un hilo: son CPU puro y en
+                    # el event loop congelaban el servicio para todos los tenants.
+                    digest = await asyncio.to_thread(_escribir_binario, zf, arcname, data)
                     entity["anexos"].append({**base, "archivo": arcname, "sha256": digest})
-                    zf.writestr(arcname, data)
                     checksums.append((arcname, digest))
 
                 _validate(entity)  # garantía: valida contra el esquema publicado

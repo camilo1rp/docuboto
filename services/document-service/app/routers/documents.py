@@ -57,6 +57,7 @@ from app.schemas.document import (
 )
 from app.services.document_service import (
     AnexoNoDisponibleError,
+    DestDeptImmutableError,
     DocumentAnuladoError,
     DocumentNotFoundError,
     DocumentService,
@@ -225,6 +226,10 @@ async def list_documents(
     due_to: date | None = Query(default=None),
     order_by: Literal["registered_at", "due_date"] = Query(default="registered_at"),
     order_dir: Literal["asc", "desc"] = Query(default="desc"),
+    # Dónde está el radicado AHORA (ADR-029): código de la dependencia donde lo
+    # dejó el flujo o, si el flujo no lo ha movido, la de radicación. No es
+    # `dest_dept_code`: ese es a quién iba dirigido y no cambia al repartir.
+    ubicacion_dept_code: int | None = Query(default=None, ge=1, le=999999),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
@@ -251,6 +256,7 @@ async def list_documents(
         due_to=due_to,
         order_by=order_by,
         order_dir=order_dir,
+        ubicacion_dept_code=ubicacion_dept_code,
     )
     response.headers["X-Total-Count"] = str(total)
     return documents
@@ -749,6 +755,18 @@ async def update_document(
                 "error": "metadata_validation_failed",
                 "detail": str(exc),
                 "status": 422,
+            },
+        )
+    except DestDeptImmutableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "dest_dept_immutable",
+                "detail": (
+                    f"El radicado '{exc}' está cerrado: su dependencia de "
+                    "radicación es dato histórico y no se modifica por PATCH."
+                ),
+                "status": 409,
             },
         )
     except DocumentAnuladoError as exc:

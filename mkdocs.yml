@@ -94,6 +94,7 @@ plugins:
             ADR-026 TVD de fondo acumulado: ADR-026 TVD for accumulated fonds
             ADR-027 Sustitución del almacén de objetos: ADR-027 Object store replacement
             ADR-028 El flujo mueve el estado del radicado: ADR-028 The workflow moves the radicado status
+            ADR-029 Ubicación actual del radicado: ADR-029 Current location of the radicado
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -148,6 +149,7 @@ nav:
     - ADR-026 TVD de fondo acumulado: adr/ADR-026-tvd-fondo-acumulado.md
     - ADR-027 Sustitución del almacén de objetos: adr/ADR-027-sustitucion-almacen-objetos-rustfs.md
     - ADR-028 El flujo mueve el estado del radicado: adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md
+    - ADR-029 Ubicación actual del radicado: adr/ADR-029-ubicacion-actual-del-radicado.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

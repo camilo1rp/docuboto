@@ -96,7 +96,7 @@ async def test_list_webhooks(client, db_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_delete_webhook_not_found(client, db_conn) -> None:
-    db_conn.execute.return_value = "DELETE 0"
+    db_conn.fetchrow.return_value = None  # DELETE ... RETURNING no devolvió fila
     resp = await client.delete(
         f"/api/v1/webhooks/{uuid.uuid4()}", headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
     )
@@ -334,3 +334,244 @@ async def test_dispatch_rechaza_entrega_a_destino_ahora_interno(
     )
     # Se intentó (había 1 suscripción activa) pero la entrega se rechazó por destino.
     assert n == 1
+
+
+# ---------------------------------------------------------------------------
+# OMI-03: el CRUD de webhooks deja asiento con actor y exige nivel 3 al escribir.
+# ---------------------------------------------------------------------------
+
+
+def _fila(url: str = "https://ext.example.com/hook") -> dict:
+    return {
+        "id": uuid.uuid4(),
+        "url": url,
+        "event_types": ["document.radicado.created"],
+        "active": True,
+        "created_at": NOW,
+    }
+
+
+@pytest.mark.asyncio
+async def test_crear_webhook_deja_asiento_con_actor(client, db_conn, monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    audit = AsyncMock()
+    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    db_conn.fetchrow.return_value = _fila()
+    resp = await client.post(
+        "/api/v1/webhooks",
+        json={
+            "url": "https://usuario:clave@ext.example.com/services/T0/B0/tokenpath?token=abc",
+            "event_types": ["document.radicado.created"],
+            "secret": "s3cr3t",
+        },
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)},
+    )
+    assert resp.status_code == 201
+    audit.assert_awaited_once()
+    kw = audit.await_args.kwargs
+    assert kw["action"] == "notification.webhook.created"
+    assert kw["actor"] == str(USER)
+    assert kw["object_ref"] == resp.json()["id"]
+    # El asiento es inmutable: ni el secret ni credenciales/token de la URL.
+    texto = str(kw["payload"])
+    assert "s3cr3t" not in texto and "clave" not in texto and "abc" not in texto
+    assert "tokenpath" not in texto
+    assert kw["payload"]["url"] == "https://ext.example.com"
+    assert len(kw["payload"]["url_sha256"]) == 64
+    # El INSERT y el asiento comparten transacción.
+    db_conn.transaction.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_borrar_webhook_deja_asiento_con_actor(client, db_conn, monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    audit = AsyncMock()
+    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    fila = _fila()
+    db_conn.fetchrow.return_value = fila
+    resp = await client.delete(
+        f"/api/v1/webhooks/{fila['id']}",
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)},
+    )
+    assert resp.status_code == 204
+    kw = audit.await_args.kwargs
+    assert kw["action"] == "notification.webhook.deleted"
+    assert kw["actor"] == str(USER)
+    assert kw["object_ref"] == str(fila["id"])
+    assert kw["payload"]["url"] == "https://ext.example.com"
+
+
+@pytest.mark.asyncio
+async def test_borrar_inexistente_no_deja_asiento(client, db_conn, monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    audit = AsyncMock()
+    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    db_conn.fetchrow.return_value = None
+    resp = await client.delete(
+        f"/api/v1/webhooks/{uuid.uuid4()}",
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)},
+    )
+    assert resp.status_code == 404
+    audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_escribir_exige_nivel_3_y_leer_nivel_1(client, db_conn, monkeypatch) -> None:
+    """Crear/borrar piden crud>=3 (RF-SEG-03); listar basta con 1. El nivel viaja
+    como 3.er argumento de la consulta de `check_permission`."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("app.routers.webhooks._audit.append", AsyncMock())
+    db_conn.fetchrow.return_value = _fila()
+    h = {"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
+
+    def _niveles() -> set[int]:
+        return {c.args[3] for c in db_conn.fetchval.call_args_list if len(c.args) >= 4}
+
+    await client.post("/api/v1/webhooks", json={"url": "https://e.example.com/h"}, headers=h)
+    assert _niveles() == {3}
+    db_conn.fetchval.reset_mock()
+    await client.delete(f"/api/v1/webhooks/{uuid.uuid4()}", headers=h)
+    assert _niveles() == {3}
+    db_conn.fetchval.reset_mock()
+    await client.get("/api/v1/webhooks", headers=h)
+    assert _niveles() == {1}
+
+
+@pytest.mark.asyncio
+async def test_crear_sin_identidad_401(client) -> None:
+    resp = await client.post(
+        "/api/v1/webhooks",
+        json={"url": "https://e.example.com/h"},
+        headers={"X-Tenant-Slug": "demo"},
+    )
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# AREA-10-11: la conexión sale hacia la IP que se validó (sin segunda resolución).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_la_entrega_conecta_a_la_ip_validada_no_a_la_que_resuelva_despues(
+    monkeypatch,
+) -> None:
+    import httpx
+
+    from app.services import webhook_service
+
+    respuestas = iter([_addrinfo("93.184.216.34"), _addrinfo("10.0.0.5")])
+    llamadas = []
+
+    def _gai(*a, **k):
+        llamadas.append(a)
+        return next(respuestas)
+
+    monkeypatch.setattr("app.core.webhook_security.socket.getaddrinfo", _gai)
+
+    vistas: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        vistas.append(request)
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as client:
+        ok = await webhook_service._deliver_one(
+            client,
+            {"url": "https://hook.atacante.tld:8443/p?q=1", "secret": None},
+            b"{}",
+        )
+    assert ok
+    assert len(vistas) == 1, "no se envió nada: la prueba no mide el destino"
+    req = vistas[0]
+    assert req.url.host == "93.184.216.34"
+    assert req.url.port == 8443
+    assert req.url.path == "/p" and req.url.query == b"q=1"
+    assert req.headers["Host"] == "hook.atacante.tld:8443"
+    assert req.extensions["sni_hostname"] == "hook.atacante.tld"
+    assert len(llamadas) == 1, "se resolvió el nombre más de una vez por intento"
+
+
+def test_validate_devuelve_la_ip_a_fijar(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.core.webhook_security.socket.getaddrinfo",
+        lambda *a, **k: _addrinfo("93.184.216.34"),
+    )
+    assert (
+        validate_webhook_target("https://ext.example.com/h", allow_private=False)
+        == "93.184.216.34"
+    )
+    assert validate_webhook_target("https://8.8.8.8/h", allow_private=False) == "8.8.8.8"
+    assert validate_webhook_target("http://127.0.0.1/h", allow_private=True) is None
+
+
+# ---------------------------------------------------------------------------
+# Revisión testing-engineer (T5): huecos que las pruebas anteriores dejaban.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_una_redireccion_no_se_sigue_ni_con_un_cliente_que_las_sigue(monkeypatch) -> None:
+    """`follow_redirects=False` va por petición: un 302 a una IP interna NO se sigue
+    aunque el cliente compartido las siga (la validación SSRF solo cubre el 1.er salto)."""
+    import httpx
+
+    from app.services import webhook_service
+
+    monkeypatch.setattr(
+        "app.core.webhook_security.socket.getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+    )
+    vistas: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        vistas.append(request)
+        return httpx.Response(302, headers={"Location": "http://10.0.0.5/admin"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_handler), follow_redirects=True
+    ) as client:
+        await webhook_service._deliver_one(
+            client, {"url": "https://hook.example.com/p", "secret": None}, b"{}"
+        )
+    assert len(vistas) == 1, "no se envió nada o se siguió la redirección"
+    assert vistas[0].url.host == "93.184.216.34"
+
+
+def test_pinned_request_ipv6_y_puerto_por_defecto() -> None:
+    from app.services.webhook_service import _pinned_request
+
+    url, headers, ext = _pinned_request("https://hook.example.com/p?q=1", "2606:2800:220:1::1")
+    assert url == "https://[2606:2800:220:1::1]/p?q=1"
+    assert headers == {"Host": "hook.example.com"}  # sin puerto: no se inventa uno
+    assert ext == {"sni_hostname": "hook.example.com"}
+    # Sin IP que fijar (allow_private) no se toca nada.
+    assert _pinned_request("http://localhost:8080/x", None) == ("http://localhost:8080/x", {}, {})
+
+
+@pytest.mark.asyncio
+async def test_borrar_webhook_sin_permiso_403_y_no_borra(client, db_conn) -> None:
+    db_conn.fetchval.return_value = None  # check_permission → False
+    resp = await client.delete(
+        f"/api/v1/webhooks/{uuid.uuid4()}",
+        headers={"X-Tenant-Slug": "demo", "X-User-Id": str(USER)},
+    )
+    assert resp.status_code == 403
+    db_conn.fetchrow.assert_not_awaited()  # el DELETE ... RETURNING no llegó a correr
+
+
+@pytest.mark.asyncio
+async def test_sin_modulo_de_auditoria_no_se_abre_ni_se_cierra_el_canal(
+    client, db_conn, monkeypatch
+) -> None:
+    """Fail-closed: sin `audit` el 503 sale ANTES de tocar la tabla."""
+    monkeypatch.setattr("app.routers.webhooks._AUDIT_AVAILABLE", False)
+    h = {"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
+    r1 = await client.post("/api/v1/webhooks", json={"url": "https://e.example.com/h"}, headers=h)
+    r2 = await client.delete(f"/api/v1/webhooks/{uuid.uuid4()}", headers=h)
+    assert r1.status_code == r2.status_code == 503
+    assert r1.json()["detail"]["error"] == "audit_unavailable"
+    db_conn.fetchrow.assert_not_awaited()

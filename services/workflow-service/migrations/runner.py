@@ -102,6 +102,11 @@ _ANCLAS: dict[str, tuple[str, str, str]] = {
         "workflow.estado_radicado.backfill",
         "radicado_id",
     ),
+    "016_radicado_ubicacion_desde_flujo.sql": (
+        "radicado_ubicacion_recalculo",
+        "workflow.ubicacion_radicado.backfill",
+        "radicado_id",
+    ),
     "015_sanear_pasos_zombi.sql": (
         "flow_step_saneamiento",
         "workflow.flow_step.saneamiento",

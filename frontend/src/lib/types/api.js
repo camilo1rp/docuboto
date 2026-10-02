@@ -57,9 +57,14 @@
  * @property {string}              subject
  * @property {string|null}         doc_class
  * @property {string|null}         origin_dept
- * @property {string|null}         dest_dept
+ * @property {string|null}         dest_dept           - dependencia de RADICACIÓN (a quién iba dirigido; instantánea al radicar). NO es dónde está ahora (ADR-029)
  * @property {number|null}         origin_dept_code
- * @property {number|null}         dest_dept_code
+ * @property {number|null}         dest_dept_code      - puede quedar null tras un PATCH de dest_dept cuyo nombre no identifica UNA dependencia activa
+ * @property {number|null} [flujo_dept_code]   - código del paso activo/último del flujo; null si el nombre del paso no es único (ADR-029)
+ * @property {string|null} [flujo_dept]        - nombre del paso del flujo (instantánea); null si el flujo nunca movió el radicado
+ * @property {string|null} [flujo_usuario]     - auth_users.id del poseedor; SOLO en el detalle autenticado, nunca en listados ni búsqueda
+ * @property {number|null} [ubicacion_dept_code] - código de la ubicación ACTUAL (flujo si ya lo movió; si no, radicación)
+ * @property {string|null} [ubicacion_dept]    - nombre de la ubicación ACTUAL; un cerrado la conserva donde se finalizó
  * @property {string|null}         sender_name
  * @property {string|null}         sender_entity
  * @property {string}              status              — 'registered'|'distributed'|'in_progress'|'closed'
@@ -73,6 +78,19 @@
  * @property {string|null}         due_date            — ISO date (RF-RAD-04)
  * @property {Record<string,any>}  metadata
  * @property {AnexoResponse[]}     anexos
+ */
+
+/**
+ * @typedef {object} SearchHit — fila de GET /api/v1/search (sin flujo_* ni flujo_usuario, ADR-029)
+ * @property {string}      id
+ * @property {string}      tracking_number
+ * @property {string}      doc_type
+ * @property {string}      subject
+ * @property {string|null} [dest_dept]            - dependencia de radicación
+ * @property {number|null} [ubicacion_dept_code]  - ubicación ACTUAL (código)
+ * @property {string|null} [ubicacion_dept]       - ubicación ACTUAL (nombre)
+ * @property {string}      status
+ * @property {string}      registered_at
  */
 
 /**
@@ -465,7 +483,8 @@
  * @property {Record<string,number>} by_doc_type   — { E: n, S: n, I: n }
  * @property {Record<string,number>} by_status      — { registered: n, ... }
  * @property {MonthCount[]}          by_month
- * @property {Record<string,number>} by_dependencia — { nombre_dep: n, ... }
+ * @property {Record<string,number>} by_dependencia - dependencia de RADICACIÓN: { nombre_dep: n, ... }
+ * @property {Record<string,number>} [by_ubicacion]  - ubicación ACTUAL de lo que sigue en trámite (sin cerrados ni anulados, ADR-029)
  */
 
 // ---------------------------------------------------------------------------
@@ -597,10 +616,13 @@
  *
  * @typedef {object} BatchItemResult
  * @property {number}      item_index
- * @property {'success'|'failed'} status
+ * @property {'pending'|'success'|'failed'} status
  * @property {string|null} result_id       — UUID del radicado/expediente creado
  * @property {string|null} expediente_code — solo presente en jobs de expedientes (undefined en jobs de documentos)
  * @property {string|null} error_message
+ * @property {string|null} [error_tipo] clasificación del fallo (documentos)
+ * @property {number}      [intentos] intentos de proceso (documentos)
+ * @property {string|null} [subject] asunto del documento (documentos)
  */
 
 /**
@@ -610,7 +632,7 @@
  * @typedef {object} BatchJobStatusResponse
  * @property {string}            job_id
  * @property {'documents'|'expedientes'} job_type
- * @property {'pending'|'processing'|'completed'|'failed'} status
+ * @property {'pending'|'processing'|'completed'|'completado_con_errores'|'failed'} status
  * @property {number}            total_items
  * @property {number}            processed_items
  * @property {number}            failed_items
@@ -619,6 +641,11 @@
  * @property {string|null}       completed_at
  * @property {BatchItemResult[]} items
  * @property {string|null}       error_message
+ * @property {number}            [pending_items]
+ * @property {boolean}           [reprocesable] true solo si hay ítems failed/pending y el lote terminó con errores o falló
+ * @property {number}            [reanudaciones]
+ * @property {string|null}       [reprocesado_at]
+ * @property {BatchItemResult[]} [errores] los ítems failed
  */
 
 export {};

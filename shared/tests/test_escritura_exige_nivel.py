@@ -32,7 +32,7 @@ Vigila que la lista de las que NO lo exigen **no crezca**. Las de abajo son
 excepciones DECLARADAS, no aprobadas: quedan escritas para que se vean, con el
 mismo criterio que `018_permisos_inertes_declarados.sql` usó con los permisos
 que no restringen nada. Un endpoint de escritura nuevo que nazca a nivel 1
-rompe este test; y arreglar uno de los 85 obliga a quitarlo de la lista, que es
+rompe este test; y arreglar uno de los de la lista obliga a quitarlo de la lista, que es
 como se sabe que la deuda baja.
 
 El censo se **deriva** de `services/*/app/routers/*.py` con AST-lite sobre el
@@ -75,6 +75,10 @@ SIN_NIVEL_DECLARADAS = frozenset({
     "document-service::anulacion.py::POST /{document_id}/anulacion/rechazar::PERM_PANU_CODI",
     "document-service::anulacion.py::POST /{document_id}/anulacion::PERM_SOL_ANULAR",
     "document-service::batch.py::POST /documents::PERM_RADI",
+    # Reprocesar es retomar el MISMO acto que crear el lote, al mismo nivel que
+    # radicar: su creador lo hace con PERM_RADI 1; un tercero necesita nivel 3, y
+    # ese gate va en el WHERE del servicio (404 neutro), no en el decorador.
+    "document-service::batch.py::POST /documents/{job_id}/reprocesar::PERM_RADI",
     "document-service::borradores.py::DELETE /api/v1/plantillas/{plantilla_id}::USUA_PERM_ADMIN",
     "document-service::borradores.py::PATCH /api/v1/borradores/{borrador_id}::PERM_RADI",
     "document-service::borradores.py::POST /api/v1/borradores/{borrador_id}/aprobar::PERM_RADI",
@@ -88,15 +92,10 @@ SIN_NIVEL_DECLARADAS = frozenset({
     "document-service::borradores.py::PUT /api/v1/plantillas/{plantilla_id}/alcance::USUA_PERM_ADMIN",
     "document-service::documents.py::PATCH /{document_id}::PERM_RADI",
     "document-service::documents.py::POST ::PERM_RADI",
-    "document-service::export.py::POST ::USUA_PERM_EXPEDIENTE",
-    "document-service::import_.py::POST ::USUA_PERM_EXPEDIENTE",
     "document-service::metadata.py::POST ::USUA_PERM_TRD",
     "document-service::metadata_elements.py::PATCH /{element_id}::USUA_PERM_TRD",
     "document-service::metadata_elements.py::POST ::USUA_PERM_TRD",
-    "document-service::postal.py::POST /api/v1/documents/{document_id}/envios::PERM_RADI_SALIDA",
-    "document-service::postal.py::POST /api/v1/envios/{shipment_id}/estado::PERM_RADI_SALIDA",
     "document-service::respuesta.py::POST /{document_id}/respuesta::PERM_RESPUESTA_VINCULADA",
-    "document-service::signatures.py::POST /{document_id}/signatures::PERM_FIRMA",
     "signature-service::signature.py::POST /sign-personal::PERM_FIRMA",
     "storage-service::storage.py::POST /upload::PERM_RADI",
     "tenant-service::catalogos.py::DELETE /{catalogo}/{item_id}::USUA_PERM_ADMIN",
@@ -145,12 +144,10 @@ SIN_NIVEL_DECLARADAS = frozenset({
     # (AREA-01-01). Estaban abiertas a nivel de lectura sin que el censo lo viera;
     # las de auth-service (RBAC, URD, 2FA/firma de OTRA persona) se corrigieron en
     # la misma tanda. Estas quedan declaradas, no aprobadas: subirlas a 2/3 es el
-    # barrido siguiente (cadena de firma, webhooks, DLQ, alta de terceros).
+    # barrido siguiente (cadena de firma, DLQ, alta de terceros; los webhooks ya exigen nivel 3, OMI-03).
     "document-service::terceros.py::POST ::PERM_RADI",
     "notification-service::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
     "notification-service::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
-    "notification-service::webhooks.py::DELETE /{webhook_id}::USUA_PERM_ADMIN",
-    "notification-service::webhooks.py::POST ::USUA_PERM_ADMIN",
     "signature-service::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
     "signature-service::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
     "signature-service::cadena.py::POST /batch::PERM_FIRMA",

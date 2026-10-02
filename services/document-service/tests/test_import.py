@@ -58,7 +58,8 @@ def _pkg(entities, *, tamper_binary=False, tamper_schema=False, bad_member=False
                 "tipo_entidad": "radicado", "numero_radicado": tn, "tipo": "E",
                 "asunto": "Acta", "nivel_seguridad": e.get("nivel", 1),
                 "fecha_radicacion": "2026-03-01T10:00:00Z",
-                "metadata_sistema": {"status": e.get("status", "registered"), "pages": 1},
+                "metadata_sistema": {"status": e.get("status", "registered"), "pages": 1,
+                                 **e.get("sist_extra", {})},
                 "metadata_contextual": {"k": "v"}, "disposicion": None,
                 "clasificacion": None, "antecedente": e.get("antecedente"),
                 "anexos": anexos_json, "historial": [],
@@ -277,3 +278,22 @@ async def test_el_asiento_de_importacion_registra_el_status_de_origen_de_cada_ra
         "2026-DEMO-E-000002": "registered",
     }
     assert payload["radicados_importados"] == ["2026-DEMO-E-000001", "2026-DEMO-E-000002"]
+
+
+@pytest.mark.asyncio
+async def test_la_ubicacion_informativa_del_paquete_se_ignora_al_importar() -> None:
+    """ADR-029: dónde estaba el radicado al exportar es informativo; la ubicación del
+    importado la deriva el flujo de la entidad que recibe, no un paquete."""
+    svc = _svc()
+    pkg = _pkg([{
+        "tracking": "2026-DEMO-E-000001",
+        "sist_extra": {"ubicacion_dept": "Control Interno", "ubicacion_dept_code": 500,
+                       "dest_dept": "Tecnología"},
+    }])
+
+    report = await _run(svc, pkg)
+
+    assert report["importados"] == 1
+    datos = svc._repo.insert_radicado.await_args.args[0]
+    assert not [k for k in datos if "ubicacion" in k or "flujo" in k]
+    assert datos["dest_dept"] == "Tecnología"

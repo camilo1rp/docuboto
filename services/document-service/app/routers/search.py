@@ -35,7 +35,7 @@ _TENANT_HEADER = "X-Tenant-Slug"
 
 _SELECT = (
     "id, tracking_number, doc_type, subject, sender_name, sender_entity, doc_class, "
-    "dest_dept, status, registered_at"
+    "dest_dept, ubicacion_dept_code, ubicacion_dept, status, registered_at"
 )
 
 
@@ -75,6 +75,8 @@ async def search_documents(
     date_from: date | None = Query(None, description="registered_at >= (ISO date)"),
     date_to: date | None = Query(None, description="registered_at <= (ISO date)"),
     dest_dept_code: int | None = Query(None),
+    # Dónde está AHORA (ADR-029); `dest_dept_code` es a quién iba dirigido.
+    ubicacion_dept_code: int | None = Query(None, ge=1, le=999999),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     conn: asyncpg.Connection = Depends(get_db),
@@ -129,6 +131,10 @@ async def search_documents(
         params.append(dest_dept_code)
         conds.append(f"dest_dept_code = ${idx}")
         idx += 1
+    if ubicacion_dept_code is not None:
+        params.append(ubicacion_dept_code)
+        conds.append(f"ubicacion_dept_code = ${idx}")
+        idx += 1
     meta = {
         k[len("meta.") :]: v
         for k, v in request.query_params.items()
@@ -168,6 +174,8 @@ async def search_documents(
             sender_entity=r["sender_entity"],
             doc_class=r["doc_class"],
             dest_dept=r["dest_dept"],
+            ubicacion_dept_code=r["ubicacion_dept_code"],
+            ubicacion_dept=r["ubicacion_dept"],
             status=r["status"],
             registered_at=r["registered_at"],
             rank=float(r["rank"]),
@@ -194,6 +202,7 @@ async def search_documents(
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
             "dest_dept_code": dest_dept_code,
+            "ubicacion_dept_code": ubicacion_dept_code,
             "metadata_filter_keys": sorted(meta) if meta else None,
         },
         total=total,

@@ -115,8 +115,11 @@
   $: docTypeEntries = summary
     ? Object.entries(summary.by_doc_type ?? {}).filter(([, v]) => v > 0)
     : [];
+  // Un summary SIN `by_ubicacion` (backend anterior a ADR-029) no es «cero en trámite»:
+  // es «no disponible». Solo un objeto presente, aunque vacío, afirma que no hay nada.
+  $: ubicacionDisponible = !!summary?.by_ubicacion && typeof summary.by_ubicacion === "object";
   $: topDependencias = summary
-    ? Object.entries(summary.by_dependencia ?? {})
+    ? Object.entries(summary.by_ubicacion ?? {})
         .sort(([, a], [, b]) => b - a)
         .slice(0, 5)
     : [];
@@ -477,9 +480,13 @@
 
             <!-- Top dependencias + Actividad mensual -->
             <div class="dashboard__grid-2">
-              <Card title="Top dependencias" shadow={false}>
-                {#if topDependencias.length === 0}
-                  <p class="dashboard__empty-msg">Sin datos de dependencia.</p>
+              <Card title="Dónde está el trámite" shadow={false}>
+                {#if !ubicacionDisponible}
+                  <p class="dashboard__empty-msg" data-testid="ubicacion-no-disponible">
+                    No disponible.
+                  </p>
+                {:else if topDependencias.length === 0}
+                  <p class="dashboard__empty-msg">Sin radicados en trámite.</p>
                 {:else}
                   <ol class="dep-list" role="list">
                     {#each topDependencias as [dep, count], i (dep)}

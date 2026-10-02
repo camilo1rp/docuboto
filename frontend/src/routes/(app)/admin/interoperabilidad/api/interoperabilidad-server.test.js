@@ -257,6 +257,35 @@ describe("lotes/documentos/[jobId] (sondeo)", () => {
     expect(capturedUrl).toContain(encodeURIComponent(JOB_ID));
   });
 
+  it("envía X-User-Id al backend y 401 si la sesión no trae identidad", async () => {
+    let headers;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      headers = init.headers;
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    });
+    await statusLoteDocs({ locals: SESSION_LOCALS, params: { jobId: JOB_ID } });
+    expect(headers["X-User-Id"]).toBe(SESSION_LOCALS.user.sub);
+    const res = await statusLoteDocs({
+      locals: { accessToken: "t", user: { tenant_slug: "icetex" } },
+      params: { jobId: JOB_ID },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("reenvía el 404 anidado de un lote ajeno sin alterarlo", async () => {
+    const cuerpo = {
+      detail: {
+        error: "lote_no_encontrado",
+        detail: "No existe el trabajo solicitado",
+        status: 404,
+      },
+    };
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(cuerpo), { status: 404 }));
+    const res = await statusLoteDocs({ locals: SESSION_LOCALS, params: { jobId: JOB_ID } });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(cuerpo);
+  });
+
   it("503 ante un fallo de red: nunca sintetiza un estado con contadores en 0", async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new Error("ECONNREFUSED");

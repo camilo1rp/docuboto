@@ -66,6 +66,12 @@
     puedeDevolver,
     puedeAsignarAFlujo,
   } from "$lib/utils/tenencia.js";
+  import {
+    ubicacionActual,
+    ubicacionTexto,
+    ubicacionEtiqueta,
+    responsableTexto,
+  } from "$lib/utils/ubicacionRadicado.js";
   import AsignarModal from "$lib/components/workflow/AsignarModal.svelte";
   import DisposicionRadicadoDrawer from "$lib/components/features/disposicion/DisposicionRadicadoDrawer.svelte";
   import PublicacionRadicadoDrawer from "$lib/components/features/publicacion/PublicacionRadicadoDrawer.svelte";
@@ -377,6 +383,34 @@
   // ---------------------------------------------------------------------------
 
   /**
+   * id → username para nombrar al responsable (`flujo_usuario` es un auth_users.id).
+   * Carga perezosa y UNA sola vez por sesión de la pantalla. `/bandeja/api/users` exige
+   * PERM_RADI: quien solo tiene PERM_TRAMITAR no la llama (sería un 403 en cada apertura)
+   * y, si la llamada falla por lo que sea, tampoco se repite ni se avisa: el detalle dice
+   * «a cargo de un responsable de la dependencia» (responsableTexto) en vez de un error.
+   * @type {Record<string,string>}
+   */
+  let usuariosPorId = {};
+  let usuariosPorIdIntentado = false;
+  async function cargarUsuariosPorId() {
+    if (usuariosPorIdIntentado || !$permissions.includes("PERM_RADI")) return;
+    usuariosPorIdIntentado = true;
+    try {
+      const res = await fetch("/bandeja/api/users?size=500");
+      const result = await res.json();
+      if (!res.ok) throw result;
+      usuariosPorId = Object.fromEntries(
+        (result.users ?? []).map((/** @type {{id:string; username:string}} */ u) => [
+          u.id,
+          u.username,
+        ]),
+      );
+    } catch {
+      // Silencioso a propósito (ver arriba): no se reintenta en cada apertura.
+    }
+  }
+
+  /**
    * Abre el drawer con el detalle completo del radicado.
    * Si el item ya está en el listado usamos esos datos; luego cargamos el
    * detalle completo (con anexos, metadata) en background.
@@ -402,6 +436,7 @@
       const result = await res.json();
       if (!res.ok) throw result;
       selectedDoc = result;
+      if (result?.flujo_usuario) void cargarUsuariosPorId();
     } catch (err) {
       notifyError(mensajeError(err, "No se pudo cargar el detalle del radicado."));
     } finally {
@@ -1111,7 +1146,10 @@
   // propio»—. Fundirlas ataría dos cosas que pueden dejar de coincidir, y
   // entonces cambiar una movería la otra sin que nadie lo pidiera.
   const admiteCadenaFirma = (d) => d?.doc_type === "S" || d?.doc_type === "I";
-  $: canDevolver = $permissions.includes("PERM_RADI");
+  // El backend gatea /devolver con PERM_TRAMITAR (como assign/transfer/complete),
+  // no con PERM_RADI: espejar otro permiso mostraba el botón a quien recibía 403
+  // y lo escondía a quien sí podía usarlo.
+  $: canDevolver = $permissions.includes("PERM_TRAMITAR");
   $: canResponder =
     $permissions.includes("PERM_RESPUESTA_VINCULADA") || $permissions.includes("PERM_RADI_SALIDA");
   $: canVoBo = $permissions.includes("PERM_RADI");
@@ -1403,7 +1441,7 @@
                   <th scope="col" class="bandeja-table__th">Tipo</th>
                   <th scope="col" class="bandeja-table__th">Asunto</th>
                   <th scope="col" class="bandeja-table__th bandeja-table__th--dep"
-                    >Dependencia destino</th
+                    >Ubicación actual</th
                   >
                   <th scope="col" class="bandeja-table__th">Fecha</th>
                   <th scope="col" class="bandeja-table__th">Estado</th>
@@ -1428,9 +1466,15 @@
                     </td>
                     <td class="bandeja-table__td bandeja-table__td--subject">
                       <span class="subject-text" title={doc.subject}>{doc.subject}</span>
+                      <!-- A <=768px la columna «Ubicación actual» se oculta: sube aquí. -->
+                      {#if ubicacionActual(doc)}
+                        <span class="subject-ubicacion" data-testid="fila-ubicacion-movil"
+                          >En {ubicacionActual(doc)}</span
+                        >
+                      {/if}
                     </td>
                     <td class="bandeja-table__td bandeja-table__td--dep">
-                      {doc.dest_dept ?? "—"}
+                      {ubicacionTexto(doc)}
                     </td>
                     <td class="bandeja-table__td bandeja-table__td--date">
                       <time datetime={doc.registered_at}>{formatDate(doc.registered_at)}</time>
@@ -1544,6 +1588,16 @@
       <section class="doc-detail__section" aria-labelledby="detail-meta-heading">
         <h4 id="detail-meta-heading" class="doc-detail__section-title">Información</h4>
         <dl class="doc-detail__dl">
+          <dt class="doc-detail__ubicacion-dt">Ubicación actual</dt>
+          <dd class="doc-detail__ubicacion" data-testid="detalle-ubicacion-actual">
+            {ubicacionEtiqueta(selectedDoc) ?? "—"}
+            {#if responsableTexto(selectedDoc, $userId, usuariosPorId)}
+              <span class="doc-detail__responsable" data-testid="detalle-responsable">
+                · {responsableTexto(selectedDoc, $userId, usuariosPorId)}
+              </span>
+            {/if}
+          </dd>
+
           <dt>Tipo</dt>
           <dd>{DOC_TYPE_LABELS[selectedDoc.doc_type] ?? selectedDoc.doc_type}</dd>
 
@@ -1560,11 +1614,11 @@
             </dd>
           {/if}
 
+          <dt>Dependencia de radicación</dt>
+          <dd data-testid="detalle-dependencia-radicacion">{selectedDoc.dest_dept ?? "—"}</dd>
+
           <dt>Dependencia origen</dt>
           <dd>{selectedDoc.origin_dept ?? "—"}</dd>
-
-          <dt>Dependencia destino</dt>
-          <dd>{selectedDoc.dest_dept ?? "—"}</dd>
 
           {#if selectedDoc.sender_name}
             <dt>Remitente</dt>
@@ -1767,6 +1821,14 @@
 
   <!-- Footer de acciones del drawer -->
   <svelte:fragment slot="footer">
+    {#if selectedDoc && !canManage && canDevolverInDrawer}
+      <!-- Devolver lo gatea PERM_TRAMITAR en el backend, no PERM_RADI: quien tramita
+           sin ser radicador también lo necesita (con PERM_RADI va en el bloque de abajo). -->
+      <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openModalDevolver}>
+        <i class="fas fa-undo" aria-hidden="true"></i>
+        Devolver
+      </Button>
+    {/if}
     {#if selectedDoc && canManage}
       <!-- T-08b: acciones de operador -->
       {#if canResponder && selectedDoc.doc_type === "E"}
@@ -2819,6 +2881,31 @@
     }
   }
 
+  // Ubicación actual: lo primero que se lee del detalle, destacada.
+  .doc-detail__ubicacion-dt {
+    color: var(--op-primary-dark);
+    font-weight: var(--op-weight-medium);
+  }
+
+  .doc-detail__ubicacion {
+    background: var(--op-primary-light);
+    border-radius: var(--op-radius-sm);
+    padding: var(--op-space-1) var(--op-space-2);
+    font-weight: var(--op-weight-medium);
+  }
+
+  // Línea secundaria bajo el asunto: solo cuando la columna se oculta (móvil).
+  .subject-ubicacion {
+    display: none;
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
+  }
+
+  .doc-detail__responsable {
+    color: var(--op-text-secondary);
+    font-size: var(--op-font-sm);
+  }
+
   .due-date {
     color: var(--op-warning-fg);
     font-weight: var(--op-weight-medium);
@@ -3008,6 +3095,10 @@
       &__th--dep,
       &__td--dep {
         display: none;
+      }
+
+      .subject-ubicacion {
+        display: block;
       }
     }
 

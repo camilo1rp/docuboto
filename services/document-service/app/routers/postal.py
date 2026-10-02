@@ -48,7 +48,7 @@ def _caller_id(request: Request) -> uuid.UUID | None:
     response_model=ShipmentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Despachar un radicado por operador postal (E20)",
-    dependencies=[Depends(require_permission("PERM_RADI_SALIDA"))],
+    dependencies=[Depends(require_permission("PERM_RADI_SALIDA", min_crud=3))],
 )
 async def create_envio(
     document_id: uuid.UUID,
@@ -59,7 +59,9 @@ async def create_envio(
     # RF-SEG-08: no se despacha un radicado que el llamante no puede ver — era la
     # única ruta de este archivo sin el gate que sus cinco hermanas ya aplican.
     clearance = await resolve_caller_clearance(conn, _caller_id(request))
-    return await PostalService(conn).create(document_id, payload, clearance)
+    actor = _caller_id(request)
+    svc = PostalService(conn, tenant_slug=request.headers.get("X-Tenant-Slug"))
+    return await svc.create(document_id, payload, clearance, actor)
 
 
 @router.get(
@@ -119,7 +121,7 @@ async def get_envio(
     "/api/v1/envios/{shipment_id}/estado",
     response_model=ShipmentResponse,
     summary="Actualizar estado de entrega manualmente (despacho humano) (E20)",
-    dependencies=[Depends(require_permission("PERM_RADI_SALIDA"))],
+    dependencies=[Depends(require_permission("PERM_RADI_SALIDA", min_crud=3))],
 )
 async def update_estado(
     shipment_id: uuid.UUID,
@@ -130,7 +132,9 @@ async def update_estado(
     # RF-SEG-08 (cierra D-14): la transición manual pasa el clearance del llamante
     # → un envío de radicado sobre-clearance colapsa a 404 (sin read-up en el write).
     clearance = await resolve_caller_clearance(conn, _caller_id(request))
-    return await PostalService(conn).update_estado(shipment_id, payload, clearance)
+    actor = _caller_id(request)
+    svc = PostalService(conn, tenant_slug=request.headers.get("X-Tenant-Slug"))
+    return await svc.update_estado(shipment_id, payload, clearance, actor)
 
 
 @router.get(

@@ -31,6 +31,7 @@ import binascii
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -142,6 +143,70 @@ async def upload_bytes(
             f"{resp.text[:300]!r}"
         )
     return ArchivoSubido.desde_respuesta(resp.json())
+
+
+@dataclass(frozen=True)
+class ResultadoPurga:
+    """Qué hizo storage con UN binario huérfano (AREA-09-14).
+
+    `resultado`: purgado | no_encontrado | preexistente | referenciado |
+    protegido_worm | error. Solo `error` se reintenta; el resto es una decisión
+    correcta de storage (lo sostiene otro, o ya no está)."""
+
+    file_id: uuid.UUID
+    resultado: str
+    detalle: str | None = None
+
+
+async def purgar_huerfanos(
+    *,
+    tenant_slug: str,
+    file_ids: list[uuid.UUID],
+    referencia: str,
+    motivo: str,
+    subido_desde: datetime,
+    actor: uuid.UUID | None,
+) -> list[ResultadoPurga]:
+    """Pide a storage el borrado SEGURO de binarios que una importación fallida subió
+    y que ningún radicado referencia (`POST /internal/purgar-huerfanos`, sellado con
+    `X-Internal-Token`). Storage decide por referencias del tenant entero (deduplica
+    por SHA-256) y jamás toca un objeto anterior a `subido_desde` ni uno bajo WORM.
+
+    Lanza `StorageContentError` si storage no responde 2xx: el llamante deja los
+    binarios 'pendientes' y reintenta; NUNCA da por purgado lo que no confirmó."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    body = {
+        "file_ids": [str(f) for f in file_ids],
+        "referencia": referencia,
+        "motivo": motivo,
+        "subido_desde": subido_desde.isoformat(),
+        "actor": str(actor) if actor else None,
+    }
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/storage/internal/purgar-huerfanos", headers=headers, json=body
+            )
+        except httpx.RequestError as exc:
+            raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageContentError(
+            f"storage-service → HTTP {resp.status_code} al purgar huérfanos: {resp.text[:300]!r}"
+        )
+    try:
+        return [
+            ResultadoPurga(
+                file_id=uuid.UUID(str(r["file_id"])),
+                resultado=str(r["resultado"]),
+                detalle=r.get("detalle"),
+            )
+            for r in resp.json()["resultados"]
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StorageContentError(f"respuesta inválida de purgar-huerfanos: {exc}") from exc
 
 
 async def open_content_stream(
@@ -393,3 +458,36 @@ async def purgar_disposicion(
             f"storage-service → HTTP {resp.status_code} al purgar: {resp.text[:300]!r}"
         )
     return [uuid.UUID(f) for f in resp.json().get("purgados", [])]
+
+
+async def fetch_file_sha256(*, tenant_slug: str, file_id: uuid.UUID) -> str | None:
+    """SHA-256 que storage-service CALCULÓ al subir `file_id`.
+
+    `POST /storage/internal/files/hashes` (sellado con `X-Internal-Token`). Lo
+    usa la firma declarativa para que la huella firmada la ponga el servidor y
+    no el cliente: una huella que aporta el cliente no prueba nada.
+
+    `None` si storage no conoce el fichero. A diferencia del cliente de
+    archive-service (best-effort: un índice sin huella sabe declararlo), aquí un
+    fallo NO se degrada: firmar sin saber QUÉ se firma es peor que no firmar, así
+    que ante cualquier fallo de red o HTTP != 200 se lanza `StorageContentError`
+    y el router responde 503.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=15.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/storage/internal/files/hashes",
+                json={"file_ids": [str(file_id)]},
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageContentError(
+            f"storage-service → HTTP {resp.status_code} al pedir la huella de {file_id}"
+        )
+    return (resp.json().get("hashes") or {}).get(str(file_id))

@@ -40,6 +40,19 @@ def _estado_global(items: list[VistoBuenoItem]) -> str:
     return "en_revision"
 
 
+def _sin_cadena() -> HTTPException:
+    # Neutro a propósito: «no existe», «no tiene cadena» y «no puede leerlo» se
+    # ven igual, para no confirmar la existencia de un radicado clasificado.
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "error": "sin_cadena",
+            "detail": "El radicado no tiene cadena de vistos buenos",
+            "status": 404,
+        },
+    )
+
+
 class VistoBuenoService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -49,6 +62,11 @@ class VistoBuenoService:
     async def crear(
         self, radicado_id: uuid.UUID, payload: CadenaCreate, actor: uuid.UUID | None = None
     ) -> CadenaResponse:
+        clearance = await self._repo.caller_clearance(actor)
+        # No-read-up: no se conforma (ni se lee de vuelta) la cadena de un radicado
+        # que el llamante no puede leer; 404 neutro, igual que un radicado inexistente.
+        if not await self._repo.radicado_visible(radicado_id, clearance):
+            raise _sin_cadena()
         if await self._repo.exists(radicado_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -56,6 +74,18 @@ class VistoBuenoService:
                     "error": "cadena_existente",
                     "detail": "El radicado ya tiene una cadena de vistos buenos",
                     "status": 409,
+                },
+            )
+        # La competencia del revisor se asegura al designarlo: con clearance menor al
+        # nivel del radicado su turno daría 404 en decidir() y la cadena quedaría
+        # bloqueada. Mensaje sin revelar el nivel.
+        if await self._repo.revisores_sin_habilitacion(radicado_id, payload.revisores):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "revisor_sin_habilitacion",
+                    "detail": "Algún revisor no está habilitado para este radicado",
+                    "status": 422,
                 },
             )
         # Atomicidad (hallazgo 2.1): la creación de la cadena y su traza forense
@@ -75,7 +105,7 @@ class VistoBuenoService:
                 actor=str(actor) if actor else None,
                 payload={"revisores": [str(r) for r in payload.revisores]},
             )
-        return await self.get(radicado_id)
+        return await self.get(radicado_id, actor)
 
     async def decidir(
         self, radicado_id: uuid.UUID, payload: VoBoDecision, actor: uuid.UUID | None
@@ -100,7 +130,8 @@ class VistoBuenoService:
                     "status": 403,
                 },
             )
-        active = await self._repo.active(radicado_id)
+        clearance = await self._repo.caller_clearance(actor)
+        active = await self._repo.active(radicado_id, clearance)
         if active is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -149,19 +180,13 @@ class VistoBuenoService:
                     "comentario": payload.comentario,
                 },
             )
-        return await self.get(radicado_id)
+        return await self.get(radicado_id, actor)
 
-    async def get(self, radicado_id: uuid.UUID) -> CadenaResponse:
-        rows = await self._repo.list(radicado_id)
+    async def get(self, radicado_id: uuid.UUID, actor: uuid.UUID | None) -> CadenaResponse:
+        clearance = await self._repo.caller_clearance(actor)
+        rows = await self._repo.list(radicado_id, clearance)
         if not rows:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "sin_cadena",
-                    "detail": "El radicado no tiene cadena de vistos buenos",
-                    "status": 404,
-                },
-            )
+            raise _sin_cadena()
         items = [
             VistoBuenoItem(
                 orden=r["orden"],

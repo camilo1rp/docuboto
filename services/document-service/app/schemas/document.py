@@ -164,6 +164,15 @@ class DocumentResponse(BaseModel):
     # publicado ni la interfaz ofrecer el acto sobre un estado conocido.
     publicable: bool = False
     publicado_at: datetime | None = None
+    # Ubicación actual (ADR-029): dónde está el radicado AHORA. `dest_dept` es la
+    # dependencia de RADICACIÓN (instantánea legal) y no cambia al repartir.
+    # `ubicacion_*` = `flujo_*` si el flujo lo movió, si no la de radicación.
+    # `flujo_usuario` (poseedor del paso) solo viaja en el detalle autenticado.
+    flujo_dept_code: int | None = None
+    flujo_dept: str | None = None
+    flujo_usuario: uuid.UUID | None = None
+    ubicacion_dept_code: int | None = None
+    ubicacion_dept: str | None = None
     anexos: list[AnexoResponse] = []
 
 

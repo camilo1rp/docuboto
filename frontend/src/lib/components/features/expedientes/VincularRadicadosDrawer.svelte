@@ -22,7 +22,7 @@
   anulaciones) — no se inventa un segundo camino de búsqueda. La respuesta
   real es `SearchHit` (document-service, `app/schemas/search.py`):
   { id, tracking_number, doc_type, subject, sender_name, sender_entity,
-    dest_dept, status, registered_at, rank }. `id` es el `radicado_id` que
+    dest_dept, ubicacion_dept_code, ubicacion_dept, status, registered_at, rank }. `id` es el `radicado_id` que
   exige `RadicadoLink`.
 
   El flujo prioriza el caso normal: seleccionar VARIOS resultados y
@@ -97,7 +97,7 @@
   const COLUMNS = [
     { key: "tracking_number", label: "Radicado", width: "160px" },
     { key: "subject", label: "Asunto" },
-    { key: "dest_dept", label: "Dependencia", width: "160px" },
+    { key: "ubicacion_dept", label: "Ubicación actual", width: "160px" },
     { key: "status", label: "Estado", width: "110px" },
   ];
 

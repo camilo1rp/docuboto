@@ -10,7 +10,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class FileResponse(BaseModel):
@@ -100,3 +100,42 @@ class PurgaDisposicionResponse(BaseModel):
     # No es un error: un archivo ya purgado (reintento tras un fallo a medias)
     # es el estado que se buscaba.
     no_encontrados: list[uuid.UUID]
+
+
+class PurgaHuerfanosRequest(BaseModel):
+    """`POST /api/v1/storage/internal/purgar-huerfanos` (AREA-09-14).
+
+    Binarios que una importación fallida subió y que ningún radicado referencia.
+    A diferencia de la purga por disposición NO hay expediente ni gate WORM por
+    expediente: la seguridad es la comprobación de referencias del tenant entero
+    (storage deduplica por SHA-256) y `subido_desde`, que acota el borrado a los
+    objetos CREADOS por esa importación: una coincidencia de hash con un objeto
+    anterior no se toca nunca.
+    """
+
+    file_ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+    # Identificador de la importación (import_uuid) que queda en el asiento.
+    referencia: str = Field(min_length=1, max_length=200)
+    motivo: str = Field(min_length=3, max_length=500)
+    subido_desde: datetime
+    actor: uuid.UUID | None = None
+
+    @field_validator("subido_desde")
+    @classmethod
+    def _con_zona(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            raise ValueError("subido_desde debe llevar zona horaria")
+        return v
+
+
+class PurgaHuerfanoItem(BaseModel):
+    file_id: uuid.UUID
+    resultado: str  # purgado | no_encontrado | preexistente | referenciado | protegido_worm | error
+    detalle: str | None = None
+
+
+class PurgaHuerfanosResponse(BaseModel):
+    """Un resultado POR archivo: quien orquesta decide qué reintentar (`error`) y
+    qué dar por resuelto (todo lo demás)."""
+
+    resultados: list[PurgaHuerfanoItem]

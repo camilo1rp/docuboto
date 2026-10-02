@@ -90,6 +90,9 @@ class BorradorResponse(BaseModel):
     cuerpo: str | None
     plantilla_id: uuid.UUID | None
     radicado_padre_id: uuid.UUID | None = None
+    #: Heredado del radicado padre (RF-SEG-08); la barrera de residencia del
+    #: asistente recorta el borrador por este campo.
+    nivel_seguridad: int
     estado: str
     radicado_id: uuid.UUID | None
     creado_por: uuid.UUID | None

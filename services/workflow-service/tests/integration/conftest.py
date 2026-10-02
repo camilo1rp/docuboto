@@ -486,7 +486,33 @@ CREATE TABLE radicados (
     doc_type        VARCHAR(1)  NOT NULL DEFAULT 'E',
     responde_a      UUID,
     registered_by   UUID,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    due_date        DATE,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Dependencia de radicación + ubicación actual (document-service 005 y 037,
+    -- ADR-029). `flujo_*` las escribe el workflow-service; `ubicacion_*` son
+    -- GENERADAS, con la misma expresión que la migración 037: si divergen, las
+    -- pruebas de ubicación dejan de medir lo que la base real calcula.
+    origin_dept       VARCHAR(100),
+    dest_dept         VARCHAR(100),
+    origin_dept_code  INTEGER,
+    dest_dept_code    INTEGER,
+    flujo_dept_code   INTEGER,
+    flujo_dept        VARCHAR(100),
+    flujo_usuario     UUID,
+    ubicacion_dept_code INTEGER GENERATED ALWAYS AS (
+        CASE
+            WHEN flujo_dept IS NOT NULL THEN flujo_dept_code
+            WHEN dest_dept IS NOT NULL OR dest_dept_code IS NOT NULL THEN dest_dept_code
+            ELSE origin_dept_code
+        END
+    ) STORED,
+    ubicacion_dept VARCHAR(100) GENERATED ALWAYS AS (
+        CASE
+            WHEN flujo_dept IS NOT NULL THEN flujo_dept
+            WHEN dest_dept IS NOT NULL OR dest_dept_code IS NOT NULL THEN dest_dept
+            ELSE origin_dept
+        END
+    ) STORED
 );
 CREATE TABLE dependencias (
     codigo  VARCHAR(20)  NOT NULL PRIMARY KEY,

@@ -18,7 +18,7 @@ hash del contenido actual (detección de alteración).
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_tenant_conn
@@ -28,6 +28,7 @@ from app.schemas.signature import (
     SignatureResponse,
     SignatureVerifyResponse,
 )
+from app.services.signature_service import SignatureService, not_found
 
 router = APIRouter(prefix="/api/v1/documents", tags=["signatures"])
 
@@ -40,24 +41,14 @@ def _signer_id(request: Request) -> uuid.UUID | None:
         return None
 
 
-def _not_found(document_id: uuid.UUID) -> HTTPException:
-    """404 NEUTRO: mismo cuerpo para «no existe» y «supera tu clearance».
-
-    Si difirieran, un actor sin nivel podría sondear el servicio para confirmar la
-    existencia de radicados reservados (RF-SEG-08, Ley 1712/2014).
-    """
-    return HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
-    )
-
-
 @router.post(
     "/{document_id}/signatures",
     response_model=SignatureResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Sign a radicado/anexo electronically (E06)",
-    dependencies=[Depends(require_permission("PERM_FIRMA"))],
+    # Nivel 2 (editar), no el de lectura por defecto: firmar es una ESCRITURA
+    # probatoria y la hacía quien tiene PERM_FIRMA en modo consulta.
+    dependencies=[Depends(require_permission("PERM_FIRMA", min_crud=2))],
 )
 async def sign_document(
     document_id: uuid.UUID,
@@ -65,24 +56,24 @@ async def sign_document(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SignatureResponse:
-    """Firma un radicado/anexo (E06).
+    """Firma declarativa de un anexo (E06): firma electrónica SIMPLE.
 
-    Exige `PERM_FIRMA` (el mismo permiso que gobierna signature-service) y respeta
-    no-read-up: no se puede firmar un radicado que no se puede ver.
+    Exige `PERM_FIRMA` a nivel 2 (escritura) y respeta no-read-up: no se puede
+    firmar un radicado que no se puede ver. La huella NO la elige el cliente: el
+    servidor la resuelve desde el SHA-256 que storage calculó al subir el anexo
+    (el `content_hash` del cuerpo se ignora). Registro y asiento
+    `document.signature_created` en `public.audit_log` son UN acto
+    (misma transacción). La firma con valor probatorio vive en signature-service.
     """
-    clearance = await resolve_caller_clearance(conn, _signer_id(request))
-    row = await SignatureRepository(conn).insert(
-        radicado_id=document_id,
-        anexo_id=payload.anexo_id,
-        signer_id=_signer_id(request),
+    signer = _signer_id(request)
+    clearance = await resolve_caller_clearance(conn, signer)
+    return await SignatureService(conn, request.headers.get("X-Tenant-Slug", "")).firmar(
+        document_id,
+        payload,
+        signer=signer,
         signer_name=request.headers.get("X-Username"),
-        content_hash=payload.content_hash.lower(),
-        reason=payload.reason,
         max_clearance=clearance,
     )
-    if row is None:
-        raise _not_found(document_id)
-    return SignatureResponse(**dict(row))
 
 
 @router.get(
@@ -106,7 +97,7 @@ async def list_signatures(
     repo = SignatureRepository(conn)
     clearance = await resolve_caller_clearance(conn, _signer_id(request))
     if not await repo.radicado_visible(document_id, clearance):
-        raise _not_found(document_id)
+        raise not_found(document_id)
     rows = await repo.list_by_radicado(document_id)
     response.headers["X-Total-Count"] = str(len(rows))
     return [SignatureResponse(**dict(r)) for r in rows]
@@ -133,7 +124,7 @@ async def verify_signature(
     repo = SignatureRepository(conn)
     clearance = await resolve_caller_clearance(conn, _signer_id(request))
     if not await repo.radicado_visible(document_id, clearance):
-        raise _not_found(document_id)
+        raise not_found(document_id)
     normalized = content_hash.lower()
     rows = await repo.list_matching(document_id, normalized)
     return SignatureVerifyResponse(

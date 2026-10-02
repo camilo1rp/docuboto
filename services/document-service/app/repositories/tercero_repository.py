@@ -394,17 +394,26 @@ class TerceroRepository:
             )
         )
 
-    async def radicados_de(self, tercero_id: uuid.UUID, *, limit: int) -> list[asyncpg.Record]:
+    async def radicados_de(
+        self, tercero_id: uuid.UUID, *, limit: int, max_clearance: int
+    ) -> list[asyncpg.Record]:
         """En qué radicados aparece esta ficha, con el rol que tuvo.
 
         Es lo que hace falta para decidir una fusión: quién ha escrito y qué se
         le ha enviado. Sin esto, fusionar sería elegir a ciegas cuál de las dos
         fichas sobrevive.
+
+        No-read-up (RF-SEG-08): `r.nivel_seguridad <= $3` va en el MISMO `WHERE`
+        que las filas, y `max_clearance` no tiene default a propósito (un default
+        que significara «sin restricción» sería fail-OPEN). El `OR` de las fichas
+        fusionadas va ENTRE PARÉNTESIS: sin ellos, `a OR b AND c` se lee
+        `a OR (b AND c)` y los vínculos de la ficha directa saltarían el gate.
         """
         return list(
             await self._conn.fetch(
                 """
-                SELECT ra.rol, ra.creado_at, r.tracking_number, r.subject, r.doc_type
+                SELECT ra.rol, ra.creado_at, r.tracking_number, r.subject, r.doc_type,
+                       r.nivel_seguridad
                 FROM radicado_actor ra
                 JOIN radicados r ON r.id = ra.radicado_id
                 -- Incluye los vínculos de las fichas ya FUSIONADAS en esta: el
@@ -413,13 +422,15 @@ class TerceroRepository:
                 -- conocimiento posterior que se resuelve al leer, no
                 -- reescribiendo. Sin este OR, consolidar dos fichas haría
                 -- DESAPARECER de la vista los radicados de la absorbida.
-                WHERE ra.tercero_id = $1
-                   OR ra.tercero_id IN (SELECT id FROM tercero WHERE fusionado_en = $1)
+                WHERE (ra.tercero_id = $1
+                       OR ra.tercero_id IN (SELECT id FROM tercero WHERE fusionado_en = $1))
+                  AND r.nivel_seguridad <= $3
                 ORDER BY ra.creado_at DESC
                 LIMIT $2
                 """,
                 tercero_id,
                 limit,
+                max_clearance,
             )
         )
 

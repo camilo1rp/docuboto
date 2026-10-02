@@ -46,6 +46,7 @@ class ReportRepository:
         list[asyncpg.Record],
         list[asyncpg.Record],
         list[asyncpg.Record],
+        list[asyncpg.Record],
     ]:
         where, params = self._date_filter(date_from, date_to)
         by_type = await self._conn.fetch(
@@ -61,9 +62,20 @@ class ReportRepository:
             f"COUNT(*) AS n FROM radicados {where} GROUP BY 1 ORDER BY 1",
             *params,
         )
+        # Dependencia de RADICACIÓN (a quién iba dirigido), no dónde está ahora.
         by_dependencia = await self._conn.fetch(
             f"SELECT COALESCE(dest_dept, '(sin asignar)') AS dep, COUNT(*) AS n "
             f"FROM radicados {where} GROUP BY 1 ORDER BY n DESC",
             *params,
         )
-        return by_type, by_status, by_month, by_dependencia
+        # Ubicación ACTUAL (ADR-029) de lo que aún está en trámite: los terminales
+        # (cerrado/anulado) ya no están «en» ninguna dependencia a efectos de carga
+        # de trabajo. La anterior agrupa por la dependencia de RADICACIÓN.
+        no_terminal = "status NOT IN ('closed', 'anulado')"
+        donde_ubicacion = f"{where} AND {no_terminal}" if where else f"WHERE {no_terminal}"
+        by_ubicacion = await self._conn.fetch(
+            f"SELECT COALESCE(ubicacion_dept, '(sin asignar)') AS dep, COUNT(*) AS n "
+            f"FROM radicados {donde_ubicacion} GROUP BY 1 ORDER BY n DESC",
+            *params,
+        )
+        return by_type, by_status, by_month, by_dependencia, by_ubicacion

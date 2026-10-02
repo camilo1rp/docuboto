@@ -63,6 +63,8 @@ def _job_row(**kw) -> dict:
         "started_at": NOW,
         "completed_at": NOW,
         "error_message": None,
+        "reanudaciones": 0,
+        "reprocesado_at": None,
     }
     base.update(kw)
     return base
@@ -174,7 +176,43 @@ async def test_get_batch_status_not_found_404(client_with_conn) -> None:
     mock_conn.fetchrow.return_value = None  # job ausente
     resp = await client.get(f"/api/v1/batch/documents/{JOB_ID}/status", headers=TENANT_HEADERS)
     assert resp.status_code == 404
-    assert "no existe" in resp.json()["detail"].lower()
+    # 404 NEUTRO: el mismo para un lote inexistente y para uno de otra persona.
+    assert resp.json()["detail"]["error"] == "lote_no_encontrado"
+
+
+@pytest.mark.asyncio
+async def test_get_batch_status_sin_usuario_400(client_with_conn) -> None:
+    """El alcance del lote (creador / PERM_RADI nivel 3) necesita saber quién pregunta."""
+    client, mock_conn = client_with_conn
+    headers = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
+    resp = await client.get(f"/api/v1/batch/documents/{JOB_ID}/status", headers=headers)
+    assert resp.status_code in (400, 403)
+
+
+@pytest.mark.asyncio
+async def test_el_estado_pide_el_alcance_en_el_where_y_el_nivel_en_los_items(client_with_conn) -> None:
+    """El predicado de alcance y el gate del `subject` viajan en el SQL (no en una
+    comprobación posterior): creador o `PERM_RADI`>=3, y `nivel_seguridad <= clearance`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _job_row()
+    mock_conn.fetch.return_value = []
+    resp = await client.get(f"/api/v1/batch/documents/{JOB_ID}/status", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    sqls = [c.args[0] for c in mock_conn.fetchrow.await_args_list] + [
+        c.args[0] for c in mock_conn.fetch.await_args_list
+    ]
+    assert any("created_by = $2 OR $3::boolean" in q and "job_type = 'documents'" in q for q in sqls)
+    assert any("LEFT JOIN radicados r ON r.id = i.result_id" in q and "r.nivel_seguridad <= $2" in q for q in sqls)
+
+
+@pytest.mark.asyncio
+async def test_reprocesar_de_un_lote_ajeno_es_el_404_neutro(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [True, True, None]  # gate RBAC, nivel 3, lote no visible
+    resp = await client.post(f"/api/v1/batch/documents/{JOB_ID}/reprocesar", headers=TENANT_HEADERS)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "lote_no_encontrado"
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +283,11 @@ async def test_process_batch_documents_emits_one_audit_entry_per_radicado() -> N
     seq_counter = {"n": 0}
 
     async def _fetchval(query, *args, **kwargs):
-        if "RETURNING created_by" in query:
+        if "pg_try_advisory_lock" in query or "pg_advisory_unlock" in query:
+            return True
+        if "FROM batch_job_items WHERE id" in query:  # reclamo del ítem (FOR UPDATE)
+            return "pending"
+        if "RETURNING COALESCE(reprocesado_por, created_by)" in query:
             return created_by
         if "SELECT code FROM tenants" in query:
             return "DEMO"
@@ -282,7 +324,9 @@ async def test_process_batch_documents_emits_one_audit_entry_per_radicado() -> N
     failed_updates = [
         c.args
         for c in conn.execute.call_args_list
-        if isinstance(c.args[0], str) and "status = 'failed'" in c.args[0]
+        if isinstance(c.args[0], str)
+        and "UPDATE batch_job_items" in c.args[0]
+        and "status = 'failed'" in c.args[0]
     ]
     assert failed_updates == []
 
@@ -334,7 +378,11 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
     seq_counter = {"n": 0}
 
     async def _fetchval(query, *args, **kwargs):
-        if "RETURNING created_by" in query:
+        if "pg_try_advisory_lock" in query or "pg_advisory_unlock" in query:
+            return True
+        if "FROM batch_job_items WHERE id" in query:  # reclamo del ítem (FOR UPDATE)
+            return "pending"
+        if "RETURNING COALESCE(reprocesado_por, created_by)" in query:
             return created_by
         if "SELECT code FROM tenants" in query:
             return "DEMO"
@@ -372,7 +420,9 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
         return [
             c.args
             for c in conn.execute.call_args_list
-            if isinstance(c.args[0], str) and pattern in c.args[0]
+            if isinstance(c.args[0], str)
+            and "UPDATE batch_job_items" in c.args[0]
+            and pattern in c.args[0]
         ]
 
     success_updates = _execute_calls("status = 'success'")

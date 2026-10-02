@@ -20,9 +20,9 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 
-from app.core.clearance import require_permission
+from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_tenant_conn
 from app.schemas.tercero import (
     ActoresVincularRequest,
@@ -43,6 +43,11 @@ router = APIRouter(
     tags=["terceros"],
     dependencies=[Depends(require_permission("PERM_RADI"))],
 )
+
+def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
+    """Canal inyectado por el gateway (D-03); ausente => 'system' (no se audita)."""
+    return x_canal or "system"
+
 
 _TENANT_HEADER = "X-Tenant-Slug"
 _USER_HEADER = "X-User-Id"
@@ -230,13 +235,22 @@ async def radicados_de_tercero(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    canal: str = Depends(_optional_canal),
 ) -> list[RadicadoDeTercero]:
     """Lo que hace falta para decidir una fusión: quién escribió y qué se envió.
 
     Sin esto, elegir cuál de dos fichas sobrevive sería a ciegas.
+
+    No-read-up (RF-SEG-08): solo los radicados cuyo nivel alcanza el clearance
+    del llamante; el asunto de un reservado no sale por esta vía.
     """
     service = TerceroService(conn, _tenant_slug(request))
-    return [RadicadoDeTercero(**r) for r in await service.radicados_de(tercero_id, limit=limit)]
+    actor = _actor(request)
+    clearance = await resolve_caller_clearance(conn, actor)
+    filas = await service.radicados_de(
+        tercero_id, max_clearance=clearance, limit=limit, user_id=actor, canal=canal
+    )
+    return [RadicadoDeTercero(**r) for r in filas]
 
 
 @router.post(

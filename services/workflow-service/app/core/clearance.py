@@ -277,9 +277,8 @@ async def get_actor(request: Request) -> uuid.UUID:
     práctica en las rutas ya protegidas por ``require_permission``; el valor de
     unificar es tener una única fuente de extracción de identidad con tipo
     NO-opcional (``uuid.UUID``, ya no ``uuid.UUID | None``), no un cambio de
-    código HTTP observable. Las rutas de detail/replay/discard de este router
-    siguen usando el ``_actor`` local (opcional) — fuera de alcance de este
-    pulido, ver ADR-021.
+    código HTTP observable. Detail/replay/discard usan también ``get_actor``
+    (AREA-01-07: se retiró el ``_actor`` local, opcional).
     """
     raw = request.headers.get("X-User-Id")
     if not raw:

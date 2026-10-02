@@ -43,6 +43,14 @@ export async function GET({ locals, params }) {
     );
   }
   const tenant = locals.user?.tenant_slug ?? "";
+  // El backend decide por creador / PERM_RADI nivel 3: exige la identidad.
+  const userId = locals.user?.sub ?? "";
+  if (!userId) {
+    return json(
+      { error: "unauthenticated", detail: "Sesión sin identidad de usuario." },
+      { status: 401 },
+    );
+  }
 
   let res;
   try {
@@ -50,6 +58,7 @@ export async function GET({ locals, params }) {
       headers: {
         Authorization: `Bearer ${token}`,
         "X-Tenant-Slug": tenant,
+        "X-User-Id": userId,
       },
     });
   } catch {

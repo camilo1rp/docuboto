@@ -85,6 +85,7 @@ async def test_listar_respuestas(client_with_conn) -> None:
             "tracking_number": "2024-DEMO-S-000010",
             "doc_type": "S",
             "subject": "RE: Solicitud",
+            "nivel_seguridad": 1,
             "status": "registered",
             "registered_at": datetime.now(tz=UTC),
         },

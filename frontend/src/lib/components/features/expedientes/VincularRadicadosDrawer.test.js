@@ -205,3 +205,31 @@ describe("VincularRadicadosDrawer — el estado se lee en español", () => {
     await waitFor(() => expect(screen.getByText("en_revision")).toBeInTheDocument());
   });
 });
+
+describe("VincularRadicadosDrawer — ubicación actual (ADR-029)", () => {
+  beforeEach(() => {
+    global.fetch = vi.fn();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("la columna es «Ubicación actual» y muestra ubicacion_dept, no dest_dept", async () => {
+    global.fetch.mockResolvedValueOnce(
+      mockSearchResponse(
+        [hit("a", { dest_dept: "Oficina de Tecnología", ubicacion_dept: "Control Interno" })],
+        1,
+      ),
+    );
+    render(VincularRadicadosDrawer, { props: { open: true, expedienteId: "exp-1" } });
+    await fireEvent.input(screen.getByRole("textbox", { name: "Buscar radicados" }), {
+      target: { value: "qq" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    await waitFor(() => screen.getByText("2024-E-a"));
+
+    expect(screen.getByRole("columnheader", { name: "Ubicación actual" })).toBeInTheDocument();
+    expect(screen.getByText("Control Interno")).toBeInTheDocument();
+    expect(screen.queryByText("Oficina de Tecnología")).not.toBeInTheDocument();
+  });
+});

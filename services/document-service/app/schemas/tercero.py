@@ -223,5 +223,8 @@ class RadicadoDeTercero(BaseModel):
     tracking_number: str
     subject: str
     doc_type: str
+    #: Declarado para que la barrera de residencia del asistente (ADR-006)
+    #: recorte `subject` en 2-3: sin el nivel, el asunto viajaba íntegro.
+    nivel_seguridad: int
     rol: str
     creado_at: datetime

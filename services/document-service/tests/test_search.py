@@ -30,6 +30,10 @@ def _hit_row(**kw) -> dict:
         # electrónico, porque archive-service no lee esta tabla.
         "doc_class": "COR-PET",
         "dest_dept": "Jurídica",
+        # La proyección real trae la ubicación ACTUAL (ADR-029), distinta de la
+        # dependencia de radicación `dest_dept` cuando el flujo movió el radicado.
+        "ubicacion_dept_code": 120,
+        "ubicacion_dept": "Jurídica",
         "status": "registered",
         "registered_at": datetime.now(tz=UTC),
         "rank": 0.5,

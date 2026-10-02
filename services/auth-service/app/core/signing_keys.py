@@ -52,17 +52,15 @@ proceso.
 
 from __future__ import annotations
 
-import secrets
-
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.x509.oid import NameOID
+from orpycamcp_common import kek as _kek
 
 KEY_SIZE = 2048  # RSA-2048 — mismo tamaño que el sello institucional (signature-service)
-NONCE_LENGTH = 12  # AESGCM standard nonce size
+NONCE_LENGTH = _kek.NONCE_LENGTH  # AESGCM standard nonce size
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +135,13 @@ def build_aad(*, tenant_slug: str, user_id: str) -> bytes:
 
 def encrypt_private_key(private_key_pem: bytes, *, key: bytes, aad: bytes) -> tuple[bytes, bytes]:
     """Devuelve ``(ciphertext, nonce)``. ``nonce`` aleatorio, 12 bytes, por fila."""
-    nonce = secrets.token_bytes(NONCE_LENGTH)
-    ciphertext = AESGCM(key).encrypt(nonce, private_key_pem, aad)
-    return ciphertext, nonce
+    return _kek.seal(private_key_pem, key=key, aad=aad)
 
 
 def decrypt_private_key(ciphertext: bytes, *, nonce: bytes, key: bytes, aad: bytes) -> bytes:
     """Lanza ``cryptography.exceptions.InvalidTag`` si ``aad`` no coincide
     (fila/tenant equivocados) o el ciphertext/nonce fue alterado."""
-    return AESGCM(key).decrypt(nonce, ciphertext, aad)
+    return _kek.unseal(ciphertext, nonce=nonce, key=key, aad=aad)
 
 
 # ---------------------------------------------------------------------------

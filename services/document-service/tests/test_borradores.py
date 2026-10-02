@@ -84,6 +84,7 @@ def _borrador_row(**kw) -> dict:
         "version": 1,
         "cuerpo_sha256": None,
         "faltantes": [],
+        "nivel_seguridad": 1,
     }
     base.update(kw)
     return base
@@ -153,6 +154,7 @@ async def test_aprobar_borrador(client_with_conn, monkeypatch) -> None:
     )
     # _require_editable (get) → set_estado (RETURNING aprobado)
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="borrador"),
         _borrador_row(id=bid, estado="aprobado"),
     ]
@@ -506,44 +508,54 @@ async def test_crear_desde_plantilla_combina_y_reporta_faltantes(client_with_con
 
 
 @pytest.mark.asyncio
-async def test_el_padre_por_encima_del_clearance_no_aporta_contexto(client_with_conn) -> None:
+async def test_el_padre_por_encima_del_clearance_no_se_puede_responder(client_with_conn) -> None:
     """El gate va en el WHERE, y su efecto es indistinguible de «no existe».
 
     Sin él, crear un borrador contra un radicado reservado escribiría su asunto
-    dentro del cuerpo de un documento legible por cualquiera: la combinación
-    sería una vía de exfiltración.
+    dentro del cuerpo de un documento legible por cualquiera, y (AREA-01-N2) el
+    borrador no tendría nivel que lo protegiera. Antes devolvía 201 con el
+    contexto vacío; ahora es 404 neutro: un borrador sobre un padre que el
+    creador no alcanza ni él mismo podría releerlo.
     """
     client, mock_conn = client_with_conn
-    pid = uuid.uuid4()
-    mock_conn.fetchrow.side_effect = [
-        {"is_root": False, "max_level": 1},
-        _plantilla_row(id=pid, cuerpo="Sobre *RAD_E*: *ASUNTO*"),
-        None,  # el WHERE nivel_seguridad <= 1 no devuelve fila
-        {"codigo": None},  # dependencia productora del llamante (E23)
-        _borrador_row(plantilla_id=pid, cuerpo="Sobre : "),
-    ]
+    mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]
+    mock_conn.fetchval.side_effect = [True, None]  # permiso; el WHERE nivel <= 1 no devuelve fila
     resp = await client.post(
         "/api/v1/borradores",
         json={
             "doc_type": "S",
             "subject": "Resp.",
-            "plantilla_id": str(pid),
             "radicado_padre_id": str(uuid.uuid4()),
         },
         headers=TENANT_HEADERS,
     )
-    assert resp.status_code == 201
-    assert set(resp.json()["faltantes"]) == {"RAD_E", "ASUNTO"}
-    cuerpo = mock_conn.fetchrow.await_args_list[-1].args[4]
-    assert "Petición" not in cuerpo
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "not_found"
 
-    # Y esto es lo que de verdad prueba el gate. Con un mock, quien decide que
-    # no hay fila es el mock, no el `WHERE`: borrar el filtro dejaría el test en
-    # verde. Así que se inspecciona el SQL **enviado** y su parámetro.
-    consulta_padre = mock_conn.fetchrow.await_args_list[2]
-    sql = " ".join(consulta_padre.args[0].split())
-    assert "nivel_seguridad <= $2" in sql, sql
-    assert consulta_padre.args[2] == 1
+    # Con un mock quien decide que no hay fila es el mock: se inspecciona el SQL
+    # ENVIADO y su parámetro.
+    consulta = mock_conn.fetchval.await_args_list[-1]
+    assert "nivel_seguridad <= $2" in " ".join(consulta.args[0].split()), consulta.args[0]
+    assert consulta.args[2] == 1
+
+
+@pytest.mark.asyncio
+async def test_el_borrador_con_padre_visible_hereda_su_nivel(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.side_effect = [
+        {"is_root": False, "max_level": 3},
+        _borrador_row(nivel_seguridad=3),
+    ]
+    mock_conn.fetchval.return_value = 3  # nivel del padre
+    resp = await client.post(
+        "/api/v1/borradores",
+        json={"doc_type": "S", "subject": "Resp.", "radicado_padre_id": str(uuid.uuid4())},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    insert = mock_conn.fetchrow.await_args_list[-1]
+    assert 3 in insert.args, "el INSERT debe llevar el nivel heredado del padre"
+    assert resp.json()["nivel_seguridad"] == 3
 
 
 @pytest.mark.asyncio
@@ -1212,6 +1224,7 @@ async def test_un_aprobado_vuelve_a_borrador_para_poder_corregirlo(client_with_c
     bid = uuid.uuid4()
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="aprobado"),
         _borrador_row(id=bid, estado="borrador"),
     ]

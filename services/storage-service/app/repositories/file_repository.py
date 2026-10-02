@@ -38,6 +38,22 @@ _COLS = (
 )
 
 
+# Quién puede REFERENCIAR un `files.id` desde fuera de esta tabla (no hay FK
+# entre servicios). Constantes, nunca entrada de usuario: se interpolan en el SQL.
+# Cada par es (tabla, columna); una tabla ausente en el tenant (a medio provisionar)
+# se trata como DESCONOCIDO y no como «nadie»: `referencias()` falla cerrado. Es la lista que
+# decide si un objeto puede borrarse sin dejar un puntero colgando: toda columna
+# nueva que guarde un `file_id` debe añadirse aquí (el test de integración lo fija).
+REFERENCIAS_DE_ARCHIVO: tuple[tuple[str, str], ...] = (
+    ("anexos", "file_id"),  # document-service: anexo de cualquier radicado
+    ("email_mensaje", "crudo_file_id"),  # document-service: correo original
+    ("borrador", "documento_file_id"),  # document-service: PDF/A del borrador
+    ("preservacion_worm_objeto", "file_id"),  # protegido bajo WORM (Object-Lock)
+    ("preservacion_migracion", "file_id_origen"),
+    ("preservacion_migracion", "file_id_destino"),
+)
+
+
 class InvalidTenantSlugError(Exception):
     pass
 
@@ -67,6 +83,34 @@ class FileRepository:
             sha256,
         )
         return _row_to_file_record(row) if row is not None else None
+
+    async def mark_dedup_hit(self, file_id: uuid.UUID) -> FileRecord | None:
+        """Deja constancia de que un `upload` reutilizó este objeto por deduplicación.
+
+        El UPDATE toma el bloqueo de FILA, así que se SERIALIZA con el `FOR UPDATE` de
+        la purga de huérfanos (`lock_any_state`): o la marca llega primero (la purga la
+        ve y conserva el objeto) o la purga llega primero (borra la fila y este UPDATE
+        no encuentra nada: `None`, y quien llama sube el contenido de nuevo en vez de
+        devolver un `file_id` que ya no existe). Sin esto la purga solo veía
+        referencias commiteadas y podía borrar lo que otra operación acababa de
+        recibir por dedup y aún no commiteaba."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "UPDATE files SET dedup_hit_at = now() "
+            f"WHERE id = $1 AND is_current AND deleted_at IS NULL RETURNING {_COLS}",
+            file_id,
+        )
+        return _row_to_file_record(row) if row is not None else None
+
+    async def fue_reutilizado_por_dedup(self, file_id: uuid.UUID) -> bool:
+        """`True` si algún `upload` devolvió ya este objeto por deduplicación. Llamar
+        con la fila bloqueada (`lock_any_state`) para que la respuesta no caduque."""
+        await self._set_search_path()
+        return bool(
+            await self._conn.fetchval(
+                "SELECT dedup_hit_at IS NOT NULL FROM files WHERE id = $1", file_id
+            )
+        )
 
     async def create(
         self,
@@ -223,6 +267,43 @@ class FileRepository:
         )
         # asyncpg returns "DELETE N"
         return result.endswith("1")
+
+    async def lock_any_state(self, file_id: uuid.UUID) -> FileRecord | None:
+        """`get_by_id_any_state` con `FOR UPDATE`: serializa dos purgas del mismo
+        objeto y la purga frente a quien actualice la fila. Solo dentro de una tx."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM files WHERE id = $1 FOR UPDATE", file_id
+        )
+        return _row_to_file_record(row) if row is not None else None
+
+    async def referencias(self, file_id: uuid.UUID) -> list[str]:
+        """Fuentes (`tabla.columna`) que referencian `file_id`; vacío = nadie.
+
+        Mira TODO el tenant —los anexos de cualquier radicado, no solo los de una
+        importación—, porque storage deduplica por SHA-256 y un mismo objeto puede
+        sostener anexos de radicados que no tienen nada que ver entre sí. FAIL-CLOSED
+        con una tabla ausente: si `anexos` (o cualquier otra de la lista) no existe en
+        el tenant, no se puede saber si algo la referencia, y «no sé» no es «nadie»:
+        se devuelve `tabla(ausente)` como fuente y el llamante conserva el objeto.
+        Incluye también las versiones encadenadas de la propia `files`
+        (`replaces_id`/`root_id`)."""
+        await self._set_search_path()
+        fuentes: list[str] = []
+        for tabla, columna in REFERENCIAS_DE_ARCHIVO:
+            if await self._conn.fetchval("SELECT to_regclass($1)", tabla) is None:
+                fuentes.append(f"{tabla}(ausente)")
+                continue
+            if await self._conn.fetchval(
+                f"SELECT 1 FROM {tabla} WHERE {columna} = $1 LIMIT 1", file_id
+            ):
+                fuentes.append(f"{tabla}.{columna}")
+        if await self._conn.fetchval(
+            "SELECT 1 FROM files WHERE replaces_id = $1 OR (root_id = $1 AND id <> $1) LIMIT 1",
+            file_id,
+        ):
+            fuentes.append("files.version")
+        return fuentes
 
     async def mark_pdfa_pending(self, file_id: uuid.UUID, *, profile: str) -> None:
         """Marca el objeto como encolado para la validación PDF/A asíncrona

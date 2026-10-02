@@ -69,6 +69,8 @@ def _row(tn="2026-DEMO-E-000001", nivel=1, con_anexo=False, antecedente=None):
         "clasificacion_causal": None,
         "clasificacion_plazo_meses": None,
         "clasificado_at": None,
+        "ubicacion_dept": None,
+        "ubicacion_dept_code": None,
         "_con_anexo": con_anexo,
     }
 

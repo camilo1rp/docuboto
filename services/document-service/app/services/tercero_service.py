@@ -52,6 +52,9 @@ logger = logging.getLogger(__name__)
 
 _SERVICE = "document-service"
 
+# Misma lista que `DocumentService`: consulta real de un usuario, no ruido interno.
+_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+
 # Campos de contacto que se congelan en el envío. Se enumeran una vez: dos
 # listas de campos se separan en cuanto alguien añade uno, y la que se quede
 # corta congelaría de menos sin que nada avisara.
@@ -368,8 +371,43 @@ class TerceroService:
             grupos.append(g)
         return grupos
 
-    async def radicados_de(self, tercero_id: uuid.UUID, *, limit: int = 50) -> list[dict]:
-        return [dict(r) for r in await self._repo.radicados_de(tercero_id, limit=limit)]
+    async def radicados_de(
+        self,
+        tercero_id: uuid.UUID,
+        *,
+        max_clearance: int,
+        limit: int = 50,
+        user_id: uuid.UUID | None = None,
+        canal: str = "system",
+    ) -> list[dict]:
+        """Radicados de la ficha que el llamante PUEDE ver (no-read-up).
+
+        Deja una traza de lectura agregada (RF-BUS-10) cuando hay un actor real
+        y un canal de usuario; best-effort, como la del resto de lecturas: un
+        fallo del asiento nunca degrada la consulta a 500.
+        """
+        filas = [
+            dict(r)
+            for r in await self._repo.radicados_de(
+                tercero_id, limit=limit, max_clearance=max_clearance
+            )
+        ]
+        if user_id is not None and canal in _CANALES_AUDITABLES:
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="document.tercero_radicados_consultado",
+                    object_type="tercero",
+                    object_ref=str(tercero_id),
+                    actor=str(user_id),
+                    canal=canal,
+                    payload={"total": len(filas), "limit": limit},
+                )
+            except Exception:
+                logger.warning("audit.append (tercero_radicados_consultado) failed", exc_info=True)
+        return filas
 
     async def fusionar(
         self,

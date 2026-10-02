@@ -48,14 +48,14 @@ async def test_con_circuito_abierto_no_se_puede_aprobar(client_with_conn, monkey
     bid = uuid.uuid4()
     sol = str(uuid.uuid4())
     _fija_circuito(monkeypatch, pendiente=True, solicitud_id=sol)
-    mock_conn.fetchrow.side_effect = [_borrador_row(id=bid, estado="borrador")]
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(id=bid, estado="borrador")]
 
     resp = await client.post(f"/api/v1/borradores/{bid}/aprobar", headers=TENANT_HEADERS)
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "circuito_pendiente"
     # Y no se tocó el estado: `set_estado` habría sido un segundo fetchrow.
-    assert mock_conn.fetchrow.call_count == 1
+    assert mock_conn.fetchrow.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -69,6 +69,7 @@ async def test_sin_circuito_se_aprueba_como_siempre(client_with_conn, monkeypatc
     bid = uuid.uuid4()
     _fija_circuito(monkeypatch)
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="borrador"),
         _borrador_row(id=bid, estado="aprobado"),
     ]
@@ -91,6 +92,7 @@ async def test_circuito_ya_completo_deja_aprobar(client_with_conn, monkeypatch):
     bid = uuid.uuid4()
     _fija_circuito(monkeypatch, pendiente=False, completo=True)
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="borrador"),
         _borrador_row(id=bid, estado="aprobado"),
     ]
@@ -115,13 +117,13 @@ async def test_si_no_se_puede_preguntar_no_se_aprueba(client_with_conn, monkeypa
         raise signature_client_mod.CircuitoNoVerificableError("signature caído")
 
     monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _cae)
-    mock_conn.fetchrow.side_effect = [_borrador_row(id=bid, estado="borrador")]
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(id=bid, estado="borrador")]
 
     resp = await client.post(f"/api/v1/borradores/{bid}/aprobar", headers=TENANT_HEADERS)
 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "circuito_no_verificable"
-    assert mock_conn.fetchrow.call_count == 1
+    assert mock_conn.fetchrow.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -142,6 +144,7 @@ async def test_la_consulta_viaja_con_el_slug_del_tenant(client_with_conn, monkey
 
     monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _fake)
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="borrador"),
         _borrador_row(id=bid, estado="aprobado"),
     ]
@@ -317,6 +320,7 @@ async def test_editar_el_texto_invalida_los_circuitos_anteriores(client_with_con
     monkeypatch.setattr(sc, "invalidar_circuitos", _invalidar)
     # Antes y después de editar: la huella CAMBIA.
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="huella-vieja"),
         _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="huella-nueva"),
     ]
@@ -353,6 +357,7 @@ async def test_guardar_sin_cambiar_el_texto_no_tira_un_circuito_vivo(
 
     monkeypatch.setattr(sc, "invalidar_circuitos", _invalidar)
     mock_conn.fetchrow.side_effect = [
+        _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="la-misma"),
         _borrador_row(id=bid, estado="aprobado", cuerpo_sha256="la-misma"),
     ]

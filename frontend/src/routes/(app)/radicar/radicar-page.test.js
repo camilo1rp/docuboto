@@ -272,6 +272,71 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
   });
 });
 
+describe("/radicar — un remitente del directorio sin envío decidido se puede radicar", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI_ENTRADA"] }));
+  });
+  afterEach(() => {
+    clearSession();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("«Sin decidir» viaja como canal null, no como cadena vacía (el backend da 422 con «»)", async () => {
+    // Hallado en la pila el 2026-10-02: toda Entrada con un remitente elegido del
+    // directorio fallaba con 422 si no se decidía antes el envío.
+    /** @type {any} */
+    let capturedBody = null;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      const href = String(url);
+      if (href.startsWith("/radicar/api/terceros?q=")) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: "t-1",
+              nombre: "María Fernanda Ruiz",
+              email: "mf@ejemplo.test",
+              direccion: "Calle 10",
+            },
+          ],
+        };
+      }
+      if (href === "/radicar/api/documents") {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({ tracking_number: "2026-ICETEX-E-000002" }) };
+      }
+      return { ok: true, json: async () => [] };
+    });
+
+    render(RadicarPage, { props: { data: baseData() } });
+    await goToMetadataStep();
+    await fireEvent.input(screen.getByLabelText("Buscar remitente", { exact: false }), {
+      target: { value: "maria fernanda" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Buscar" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Añadir" }));
+
+    for (let i = 0; i < 3; i++) {
+      await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
+    }
+    await fireEvent.click(screen.getByRole("button", { name: "Radicar" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Confirmar radicación" }));
+
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.actores).toHaveLength(1);
+    expect(capturedBody.actores[0]).toMatchObject({
+      tercero_id: "t-1",
+      rol: "remitente",
+      canal: null,
+      principal: true,
+    });
+  });
+});
+
 describe("/radicar — el desplegable de tipo documental dice QUÉ tipo es", () => {
   beforeEach(() => {
     clearSession();

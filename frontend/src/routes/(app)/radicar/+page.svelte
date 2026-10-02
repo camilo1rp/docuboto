@@ -199,10 +199,17 @@
     senderEntity = principal.entidad ?? "";
   }
 
-  /** Los actores que viajan en el POST, con el primero marcado como principal. */
+  /**
+   * Los actores que viajan en el POST, con el primero marcado como principal.
+   *
+   * «Sin decidir» es la opción vacía del selector de envío (`""`), y el backend
+   * solo admite `email|fisico|ambos` o `null`: mandar la cadena vacía hacía que
+   * TODA entrada con un remitente elegido del directorio fallara con 422 si no se
+   * decidía antes el envío (medido en la pila, 2026-10-02).
+   */
   function actoresPayload() {
     const lista = docType === "E" ? remitentes : docType === "S" ? destinatarios : [];
-    return lista.map((a, i) => ({ ...a, principal: i === 0 }));
+    return lista.map((a, i) => ({ ...a, canal: a.canal || null, principal: i === 0 }));
   }
 
   async function onDocClassChange() {

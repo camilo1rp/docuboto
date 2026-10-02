@@ -12,6 +12,13 @@ dependencies = [
     "starlette>=0.37.0",
 ]
 
+# `orpycamcp_common.kek` (AES-256-GCM con AAD) necesita `cryptography`. Es un
+# extra y no una dependencia base a propósito: solo lo importan los servicios que
+# custodian secretos en reposo (auth, notification), que ya lo declaran en su
+# propio requirements; los demás no deben cargar con él.
+[project.optional-dependencies]
+kek = ["cryptography>=42.0.0"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

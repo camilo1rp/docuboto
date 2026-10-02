@@ -25,7 +25,7 @@ _RAD_COLS = (
     "origin_dept, dest_dept, sender_name, sender_entity, status, pages, "
     "observations, registered_at, updated_at, tenant_code, nivel_seguridad, "
     "metadata, disposition, clasificacion_fundamento, clasificacion_causal, "
-    "clasificacion_plazo_meses, clasificado_at"
+    "clasificacion_plazo_meses, clasificado_at, ubicacion_dept_code, ubicacion_dept"
 )
 
 

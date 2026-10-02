@@ -70,6 +70,42 @@ validación del gateway quedó sellada e indica cuánto le queda al token, la ve
 cadena de auditoría deja de revelar a un perfil sin habilitación cuántos asientos clasificados
 existen, y quitar el segundo factor a otra persona queda siempre asentado en la misma operación.
 
+### Cierre de la auditoría del 2 de octubre de 2026 (tanda T3)
+
+Un usuario con permiso de radicación en modo consulta ya no puede ver el asunto de un radicado
+reservado por el listado de radicados de un tercero ni por el de respuestas, y esos asuntos
+dejan de viajar al proveedor externo del asistente. Los borradores de respuesta heredan la
+clasificación del radicado que responden: no se listan, leen ni editan sin el nivel
+suficiente, y editarlos deja asiento. La firma declarativa de un anexo exige nivel de edición,
+toma la huella del servidor (no del cliente) y deja asiento en la misma operación.
+
+### Cierre de la auditoría del 2 de octubre de 2026 (tanda T4)
+
+Un radicado que fallaba a mitad de la radicación ya no gasta un número de la serie oficial.
+Un paquete de importación ya no puede mover el consecutivo con números de otra entidad ni
+desbordarlo (que dejaba sin radicar todo un año). Despachar un envío o cambiar su estado a mano
+exige nivel de edición completo, deja asiento con la persona responsable y no pisa un estado
+final si el operador postal se adelantó. Importar y exportar paquetes exigen el mismo nivel,
+no congelan el servicio y se ejecutan de uno en uno.
+
+### Cierre de la auditoría del 2 de octubre de 2026 (tanda T5)
+
+Un webhook ya no se lleva la causal ni el fundamento jurídico de una reserva, ni el número y la
+ruta de dependencias de lo reservado: lo que no declara su clasificación sale mínimo. Abrir o
+cerrar un canal de salida exige nivel de edición completo y deja asiento con la persona
+responsable; la entrega se fija a la dirección que se validó. La cadena de vistos buenos y la
+hoja de ruta de un radicado ya eliminado por retención respetan el nivel de acceso de quien
+consulta.
+
+### Secreto de los webhooks cifrado en reposo
+
+La clave con la que se firma cada entrega de webhook ya no se guarda en claro: quien lea la base de
+datos o un respaldo no puede forjar entregas que el receptor aceptaría. Va cifrada con una clave de
+custodia propia del servicio (fuera de la base, versionada y rotable), atada al tenant y al
+webhook; el servicio la descifra solo en memoria para firmar y deja de entregar cualquier fila que
+aún esté en claro o que no pueda descifrar. Nunca se devuelve en una respuesta ni se escribe en
+registros o asientos de auditoría.
+
 ### Qué no cubre este resumen
 
 Por su naturaleza, esta página no detalla los vectores concretos. El informe completo,

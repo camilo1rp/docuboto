@@ -24,6 +24,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
+from orpycamcp_common import audit
 
 from app.clients import signature_client as signature_client_mod
 from app.clients.signature_client import CircuitoNoVerificableError
@@ -49,6 +50,8 @@ from app.schemas.document import DocumentCreate, DocumentResponse
 from app.services.contexto_combinacion import ContextoCombinacion
 
 logger = logging.getLogger(__name__)
+
+_SERVICE = "document-service"
 
 
 def _json_obj(raw: object) -> dict:
@@ -254,6 +257,19 @@ class BorradorService:
         cuerpo = payload.cuerpo
         faltantes: list[str] = []
 
+        # El borrador HEREDA el nivel del radicado que responde (RF-SEG-08,
+        # AREA-01-N2): su cuerpo arrastra datos del padre, así que quien no
+        # alcanza el padre no puede ni crear ni leer lo que de él cuelga. 404
+        # neutro, igual que «no existe»: el llamante no distingue.
+        nivel = 1
+        if payload.radicado_padre_id is not None:
+            nivel_padre = await self._repo.nivel_del_padre(
+                payload.radicado_padre_id, max_clearance
+            )
+            if nivel_padre is None:
+                raise _not_found("Radicado padre no encontrado")
+            nivel = int(nivel_padre)
+
         # La combinación se hace SIEMPRE que haya plantilla, aunque el cuerpo
         # venga puesto.
         #
@@ -295,27 +311,34 @@ class BorradorService:
                 "radicado_padre_id": payload.radicado_padre_id,
                 "creado_por": creado_por,
                 "faltantes": faltantes,
+                "nivel_seguridad": nivel,
             }
         )
         return _bo(row, faltantes)
 
-    async def get(self, borrador_id: uuid.UUID) -> BorradorResponse:
-        row = await self._repo.get_borrador(borrador_id)
+    async def get(self, borrador_id: uuid.UUID, *, max_clearance: int) -> BorradorResponse:
+        row = await self._repo.get_borrador(borrador_id, max_clearance)
         if row is None:
             raise _not_found(f"Borrador {borrador_id} no encontrado")
         return _bo(row)
 
-    async def listar(self, estado: str | None) -> list[BorradorResponse]:
-        return [_bo(r) for r in await self._repo.list_borradores(estado)]
+    async def listar(self, estado: str | None, *, max_clearance: int) -> list[BorradorResponse]:
+        return [_bo(r) for r in await self._repo.list_borradores(estado, max_clearance)]
 
-    async def _require_editable(self, borrador_id: uuid.UUID) -> Any:
+    async def _set_estado(self, borrador_id: uuid.UUID, estado: str, max_clearance: int) -> Any:
+        row = await self._repo.set_estado(borrador_id, estado, max_clearance=max_clearance)
+        if row is None:
+            raise _not_found(f"Borrador {borrador_id} no encontrado")
+        return row
+
+    async def _require_editable(self, borrador_id: uuid.UUID, max_clearance: int) -> Any:
         """Devuelve la fila ANTES de editar; nunca `None` (404 si no existe).
 
         El tipo de retorno se declara porque el llamante la usa: comparar la
         huella de antes con la de después es lo que distingue «cambió el texto»
         de «se guardó otro campo».
         """
-        row = await self._repo.get_borrador(borrador_id)
+        row = await self._repo.get_borrador(borrador_id, max_clearance)
         if row is None:
             raise _not_found(f"Borrador {borrador_id} no encontrado")
         if row["estado"] == "radicado":
@@ -329,15 +352,65 @@ class BorradorService:
             )
         return row
 
-    async def editar(self, borrador_id: uuid.UUID, payload: BorradorUpdate) -> BorradorResponse:
-        antes = await self._require_editable(borrador_id)
+    async def editar(
+        self,
+        borrador_id: uuid.UUID,
+        payload: BorradorUpdate,
+        *,
+        max_clearance: int,
+        actor: uuid.UUID | None = None,
+    ) -> BorradorResponse:
+        antes = await self._require_editable(borrador_id, max_clearance)
         cambios = payload.model_dump(exclude_unset=True)
-        row = await self._repo.update_borrador(borrador_id, cambios)
-        if row is None:
-            # La fila desapareció entre la guarda y la escritura. El caso ya
-            # existía —se dereferenciaba sin comprobar y habría reventado con un
-            # 500— y solo se hizo visible al necesitar la huella de después.
-            raise _not_found(f"Borrador {borrador_id} no encontrado")
+        # UPDATE y asiento son UN acto (Regla 6, ADR-010): si el asiento falla,
+        # la edición se revierte. La invalidación de circuitos va DESPUÉS del
+        # commit: es una llamada HTTP y no debe sostener la transacción abierta.
+        async with self._conn.transaction():
+            # Tenencia (AREA-01-N2): editar exige TENER el borrador (creador si no
+            # tiene padre; quien tiene el radicado padre si lo tiene) y va en el
+            # WHERE del UPDATE. `aprobar`/`devolver_a_borrador` NO la exigen a
+            # propósito: son actos de revisión (aprobar suele ser de OTRA persona,
+            # y está atado al circuito de firma); exigirles tenencia rompería esa
+            # separación de funciones.
+            row = await self._repo.update_borrador(
+                borrador_id,
+                cambios,
+                max_clearance,
+                actor=actor,
+                con_padre=antes["radicado_padre_id"] is not None,
+            )
+            if row is None:
+                # Se radicó entre la guarda y la escritura (TOCTOU): 409, igual que si
+                # la guarda lo hubiera visto. Quien llega aquí ya pasó `_require_editable`
+                # (que da el mismo 409), así que no se revela nada nuevo.
+                ahora = await self._repo.get_borrador(borrador_id, max_clearance)
+                if ahora is not None and ahora["estado"] == "radicado":
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "borrador_radicado",
+                            "detail": "El borrador ya fue radicado",
+                            "status": 409,
+                        },
+                    )
+                # No es suyo, o la fila desapareció entre la guarda y la escritura
+                # (o el nivel vigente subió): el mismo 404 neutro que un borrador
+                # inexistente. Se dereferenciaba sin comprobar y habría reventado.
+                raise _not_found(f"Borrador {borrador_id} no encontrado")
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="borrador.editado",
+                object_type="borrador",
+                object_ref=str(borrador_id),
+                actor=str(actor) if actor else None,
+                payload={
+                    "campos": sorted(cambios),
+                    "version": row["version"],
+                    "texto_cambio": antes["cuerpo_sha256"] != row["cuerpo_sha256"],
+                },
+            )
 
         # Si el TEXTO cambió, los circuitos anteriores dejan de valer.
         #
@@ -359,7 +432,36 @@ class BorradorService:
 
         return _bo(row)
 
-    async def aprobar(self, borrador_id: uuid.UUID) -> BorradorResponse:
+    async def _cambiar_estado_asentado(
+        self, antes: Any, estado: str, accion: str, max_clearance: int, actor: uuid.UUID | None
+    ) -> BorradorResponse:
+        """Cambio de estado y asiento en UNA transacción (Regla 6, ADR-010)."""
+        async with self._conn.transaction():
+            row = await self._set_estado(antes["id"], estado, max_clearance)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action=accion,
+                object_type="borrador",
+                object_ref=str(antes["id"]),
+                actor=str(actor) if actor else None,
+                payload={
+                    "estado_anterior": antes["estado"],
+                    "estado_nuevo": estado,
+                    "version": row["version"],
+                    "cuerpo_sha256": row["cuerpo_sha256"],
+                },
+            )
+        return _bo(row)
+
+    async def aprobar(
+        self,
+        borrador_id: uuid.UUID,
+        *,
+        max_clearance: int,
+        actor: uuid.UUID | None = None,
+    ) -> BorradorResponse:
         """Marca el borrador como aprobado — si nadie tiene un turno pendiente.
 
         **El circuito de visto bueno tiene que atar** (E23, RF-PRO-09). Antes
@@ -381,7 +483,7 @@ class BorradorService:
         aviso automático puede ser best-effort sin abrir ninguna ventana: la
         autoridad es la consulta, no el aviso.
         """
-        row = await self._require_editable(borrador_id)
+        row = await self._require_editable(borrador_id, max_clearance)
         if row["estado"] != "borrador":
             raise HTTPException(
                 status_code=409,
@@ -392,7 +494,9 @@ class BorradorService:
                 },
             )
         await self._gate_circuito_pendiente(borrador_id)
-        return _bo(await self._repo.set_estado(borrador_id, "aprobado"))
+        return await self._cambiar_estado_asentado(
+            row, "aprobado", "borrador.aprobado", max_clearance, actor
+        )
 
     async def _gate_circuito_pendiente(
         self, borrador_id: uuid.UUID, *, acto: str = "aprobar"
@@ -495,7 +599,13 @@ class BorradorService:
             },
         )
 
-    async def devolver_a_borrador(self, borrador_id: uuid.UUID) -> BorradorResponse:
+    async def devolver_a_borrador(
+        self,
+        borrador_id: uuid.UUID,
+        *,
+        max_clearance: int,
+        actor: uuid.UUID | None = None,
+    ) -> BorradorResponse:
         """Reabre un borrador aprobado para poder corregir el texto (RF-PRO-10).
 
         Sin esto el ciclo era de una sola dirección —`borrador → aprobado →
@@ -513,7 +623,7 @@ class BorradorService:
         hecho, no del acto: si dependiera de que alguien pulse aquí, el caso en
         que se olvida sería exactamente el caso del fraude.
         """
-        row = await self._require_editable(borrador_id)
+        row = await self._require_editable(borrador_id, max_clearance)
         if row["estado"] != "aprobado":
             raise HTTPException(
                 status_code=409,
@@ -526,7 +636,9 @@ class BorradorService:
                     "status": 409,
                 },
             )
-        return _bo(await self._repo.set_estado(borrador_id, "borrador"))
+        return await self._cambiar_estado_asentado(
+            row, "borrador", "borrador.devuelto", max_clearance, actor
+        )
 
     async def previsualizar(
         self, borrador_id: uuid.UUID, *, max_clearance: int
@@ -538,7 +650,7 @@ class BorradorService:
         por un número de ejemplo enseñaría un documento que no es el que se va a
         producir — justo lo contrario de para qué sirve previsualizar.
         """
-        row = await self._repo.get_borrador(borrador_id)
+        row = await self._repo.get_borrador(borrador_id, max_clearance)
         if row is None:
             raise _not_found(f"Borrador {borrador_id} no encontrado")
 
@@ -573,8 +685,17 @@ class BorradorService:
         *,
         max_clearance: int,
     ) -> DocumentResponse:
-        """Convierte el borrador en radicado real (reutiliza la radicación)."""
-        row = await self._repo.get_borrador(borrador_id)
+        """Convierte el borrador en radicado real (reutiliza la radicación).
+
+        Exige TENENCIA, como `editar` (AREA-01-N2): radicar es el acto irreversible
+        —consume un número inmutable, Acuerdo AGN 060/2001— y no basta tener PERM_RADI
+        ni ver el borrador: hay que ser su creador (si no responde a nada) o quien
+        tiene el radicado padre. Va en el WHERE (404 neutro). `aprobar` y
+        `devolver_a_borrador` siguen SIN tenencia a propósito: son actos de revisión,
+        y aprobar suele ser de otra persona (separación de funciones)."""
+        row = await self._repo.get_borrador_con_tenencia(
+            borrador_id, max_clearance, actor=registered_by
+        )
         if row is None:
             raise _not_found(f"Borrador {borrador_id} no encontrado")
         if row["estado"] == "radicado":
@@ -657,14 +778,46 @@ class BorradorService:
         if cuerpo.strip():
             documento = await self._producir(cuerpo, contexto, row, numero=None)
 
+        # El radicado HEREDA la clasificación del padre (RF-SEG-08, AREA-01-N2).
+        # El cuerpo que se vuelca en `observations` arrastra datos del padre: si
+        # el radicado naciera en el default (1), el acto irreversible
+        # publicaría justo lo que el gate del borrador protegía.
+        nivel = int(row["nivel_seguridad"])
+        fundamento: str | None = None
+        causal: str | None = None
+        plazo: int | None = None
+        padre_id = row["radicado_padre_id"]
+        if padre_id is not None:
+            padre = await self._repo.clasificacion_vigente_del_padre(padre_id, max_clearance)
+            if padre is None:
+                raise _not_found("Radicado padre no encontrado")
+            nivel = max(nivel, int(padre["nivel_seguridad"]))
+            if nivel >= 2:
+                fundamento = padre["clasificacion_fundamento"]
+                causal = padre["clasificacion_causal"]
+                plazo = padre["clasificacion_plazo_meses"]
+                if not (fundamento and fundamento.strip()):
+                    # Ley 1712 art. 19/28: la reserva se motiva. Un padre antiguo
+                    # sin fundamento no puede dejar al hijo en nivel 1; se motiva
+                    # por herencia y queda trazable.
+                    fundamento = (
+                        f"Heredada del radicado {padre['tracking_number']} "
+                        "(clasificación vigente del antecedente)"
+                    )[:300]
         payload = DocumentCreate(
             doc_type=row["doc_type"],
             subject=row["subject"],
             dest_dept=row["dest_dept"],
             observations=row["cuerpo"],
+            nivel_seguridad=nivel,
+            clasificacion_fundamento=fundamento,
+            clasificacion_causal=causal,
+            clasificacion_plazo_meses=plazo,
             metadata={"from_borrador": str(borrador_id)},
         )
         result = await document_service.create(payload, registered_by)
+        if padre_id is not None:
+            await document_service._repo.set_responde_a(result.id, padre_id)
 
         if documento is not None:
             if usa_diferidos:
@@ -712,7 +865,9 @@ class BorradorService:
                 combinacion=contexto,
             )
 
-        await self._repo.set_estado(borrador_id, "radicado", radicado_id=result.id)
+        await self._repo.set_estado(
+            borrador_id, "radicado", radicado_id=result.id, max_clearance=max_clearance
+        )
         return result
 
     @staticmethod

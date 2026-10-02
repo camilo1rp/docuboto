@@ -1502,3 +1502,83 @@ async def test_rollback_exige_permiso_de_tramite(
 
     assert resp.status_code == 403
     mock_conn.fetchrow.assert_not_awaited()
+
+
+# --- OMI-01: los eventos que salen declaran el nivel del radicado -------------
+
+
+@pytest.mark.asyncio
+async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
+    """Sin `nivel_seguridad` el webhook no puede decidir si tracking y ruta de
+    dependencias de un reservado salen de la entidad (notification los trata como
+    clasificados, pero el productor debe declararlo para no recortar de más)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.services.workflow_service import WorkflowService
+
+    svc = WorkflowService(AsyncMock(), "demo")
+    step = SimpleNamespace(
+        id=uuid.uuid4(),
+        radicado_id=uuid.uuid4(),
+        tracking_number="2026-DEMO-E-000001",
+        step_number=1,
+        from_dept="A",
+        to_dept="B",
+        action="assign",
+        status="pending",
+        assigned_by=None,
+    )
+    emit = AsyncMock()
+    with (
+        patch("app.services.workflow_service.events.emit", emit),
+        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=3)),
+    ):
+        await svc._publish("workflow.step.created", step)
+    assert emit.await_count == 1, "no se emitió: la prueba no mide el sobre"
+    assert emit.await_args.kwargs["payload"]["nivel_seguridad"] == 3
+
+    # Sin nivel resoluble el campo se omite (notification lo trata como clasificado).
+    emit.reset_mock()
+    with (
+        patch("app.services.workflow_service.events.emit", emit),
+        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=None)),
+    ):
+        await svc._publish("workflow.step.created", step)
+    assert "nivel_seguridad" not in emit.await_args.kwargs["payload"]
+
+
+@pytest.mark.asyncio
+async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
+    """Los otros dos productores (`_emitir_cambios`, `scan_overdue`) también llevan el nivel."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.services.workflow_service import WorkflowService
+
+    svc = WorkflowService(AsyncMock(), "demo")
+    rid = uuid.uuid4()
+    emit = AsyncMock()
+    svc._cambios = [
+        SimpleNamespace(
+            radicado_id=rid, tracking_number="T", antes="a", despues="b", flow_event_id=uuid.uuid4()
+        )
+    ]
+    overdue = SimpleNamespace(
+        id=uuid.uuid4(), radicado_id=rid, tracking_number="T", to_dept="B",
+        assigned_to=None, due_at=None,
+    )
+    with (
+        patch("app.services.workflow_service.events.emit", emit),
+        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=2)),
+        patch.object(svc._repo, "list_overdue_unnotified", new=AsyncMock(return_value=[overdue])),
+        patch.object(svc._repo, "mark_overdue_notified", new=AsyncMock()),
+    ):
+        await svc._emitir_cambios(None)
+        await svc.scan_overdue()
+    tipos = [c.args[2] for c in emit.await_args_list]
+    assert tipos == ["workflow.radicado.estado_cambiado", "workflow.step.overdue"]
+    assert [c.kwargs["payload"]["nivel_seguridad"] for c in emit.await_args_list] == [2, 2]

@@ -119,6 +119,52 @@ async def test_upload_file_deduplication(
     mock_minio.put_object.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_upload_deduplicado_deja_la_marca_de_reutilizacion(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """La rama de dedup escribe `files.dedup_hit_at` (UPDATE ... RETURNING): es lo
+    que serializa con la purga de huérfanos y protege el objeto compartido."""
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+    mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    sqls = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
+    assert any("SET dedup_hit_at" in q and "RETURNING" in q for q in sqls)
+
+
+@pytest.mark.asyncio
+async def test_upload_deduplicado_cuya_fila_se_purgo_entre_medias_sube_de_nuevo(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Si la marca no encuentra la fila (la purga la borró tras la búsqueda), el
+    contenido se sube como NUEVO en vez de devolver un `file_id` inexistente."""
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+    existing = make_file_record(file_id=FILE_ID)
+    nuevo = make_file_record(file_id=uuid.uuid4())
+    mock_minio.bucket_exists.return_value = True
+    # búsqueda -> existe; marca -> ya no está; INSERT -> fila nueva
+    mock_conn.fetchrow.side_effect = [existing, None, nuevo]
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["id"] == str(nuevo["id"])
+    mock_minio.put_object.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/storage/upload — missing X-Tenant-Slug
 # ---------------------------------------------------------------------------

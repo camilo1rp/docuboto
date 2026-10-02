@@ -19,7 +19,8 @@
     - doc_type: E | S | I
     - status: registered | distributed | in_progress | closed
     - date_from, date_to (ISO date)
-    - dest_dept_code (entero)
+    - dest_dept_code (entero) — dependencia de RADICACIÓN
+    - ubicacion_dept_code (entero) — dónde está AHORA el radicado (ADR-029)
     - page, size
 
   PATRÓN elegido (coherente con bandeja):
@@ -67,6 +68,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import DataTable from "$lib/components/ui/DataTable.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { ubicacionTexto, ubicacionActual } from "$lib/utils/ubicacionRadicado.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -114,6 +116,7 @@
   let filterDateFrom = data.initialFilters?.dateFrom ?? "";
   let filterDateTo = data.initialFilters?.dateTo ?? "";
   let filterDestDept = data.initialFilters?.destDeptCode ?? "";
+  let filterUbicacion = data.initialFilters?.ubicacionDeptCode ?? "";
   let currentPage = data.initialFilters?.page ?? 1;
   const pageSize = 20;
 
@@ -122,7 +125,8 @@
     filterStatus ||
     filterDateFrom ||
     filterDateTo ||
-    filterDestDept
+    filterDestDept ||
+    filterUbicacion
   );
 
   // ---------------------------------------------------------------------------
@@ -193,20 +197,29 @@
     { key: "tracking_number", label: "Radicado", width: "160px" },
     { key: "doc_type", label: "Tipo", width: "90px" },
     { key: "subject", label: "Asunto" },
-    { key: "dest_dept", label: "Dependencia destino", width: "180px" },
+    { key: "ubicacion_dept", label: "Ubicación actual", width: "180px" },
     { key: "registered_at", label: "Fecha", width: "110px" },
     { key: "status", label: "Estado", width: "140px" },
     { key: "actions", label: "Acciones", width: "150px" },
   ];
 
-  // La columna "Dependencia destino" se oculta en viewports estrechos — se
+  // La columna "Ubicación actual" se oculta en viewports estrechos — se
   // calcula en la FUENTE (no solo por CSS) para que el <th> generado por
   // DataTable y el <td> de la fila desaparezcan juntos y no se rompa la
   // asociación encabezado↔dato para lectores de pantalla (mismo breakpoint
   // que el resto del layout responsive de esta pantalla, 768px).
+  // Catálogo de dependencias activas para el filtro «Ubicación actual» (nombre — código).
+  // Sin catálogo (fallo de carga) el selector queda solo con «Cualquiera».
+  $: ubicacionOptions = [
+    { value: "", label: "Cualquiera" },
+    ...(data.dependencias ?? [])
+      .filter((d) => d?.codigo != null)
+      .map((d) => ({ value: String(d.codigo), label: `${d.nombre} — ${d.codigo}` })),
+  ];
+
   let isNarrowViewport = false;
   $: tableColumns = isNarrowViewport
-    ? TABLE_COLUMNS.filter((col) => col.key !== "dest_dept")
+    ? TABLE_COLUMNS.filter((col) => col.key !== "ubicacion_dept")
     : TABLE_COLUMNS;
 
   /** @param {string|null|undefined} iso */
@@ -231,6 +244,10 @@
     // dest_dept_code: solo entero positivo para evitar 422 en el gateway
     const deptCode = parseInt(filterDestDept, 10);
     if (Number.isFinite(deptCode) && deptCode > 0) params.set("dest_dept_code", String(deptCode));
+    // ubicacion_dept_code (ADR-029): mismo criterio, entero positivo
+    const ubicCode = parseInt(filterUbicacion, 10);
+    if (Number.isFinite(ubicCode) && ubicCode > 0)
+      params.set("ubicacion_dept_code", String(ubicCode));
     if (page > 1) params.set("page", String(page));
     return params;
   }
@@ -260,6 +277,7 @@
     filterDateFrom = "";
     filterDateTo = "";
     filterDestDept = "";
+    filterUbicacion = "";
     dateRangeError = "";
     currentPage = 1;
     if (q.trim().length >= 2) {
@@ -306,7 +324,8 @@
     filterStatus ||
     filterDateFrom ||
     filterDateTo ||
-    filterDestDept
+    filterDestDept ||
+    filterUbicacion
   );
   $: hasQuery = q.trim().length >= 2;
   $: searched = !!data.initialFilters?.q;
@@ -646,12 +665,20 @@
                 bind:value={filterDateTo}
               />
               <FormField
-                label="Código dependencia destino"
+                label="Ubicación actual"
+                type="select"
+                id="filter-ubicacion"
+                bind:value={filterUbicacion}
+                options={ubicacionOptions}
+                hint="Dependencia donde está ahora el radicado. Filtra por el código de la dependencia: un radicado cuyo nombre coincide con varias dependencias no tiene código único y no aparece en este filtro."
+              />
+              <FormField
+                label="Código de dependencia de radicación"
                 type="number"
                 id="filter-dest-dept"
                 bind:value={filterDestDept}
                 placeholder="Ej. 12"
-                hint="Código numérico entero de la dependencia."
+                hint="Dependencia a la que iba dirigido al radicarlo; no cambia con el trámite."
               />
             </div>
 
@@ -738,10 +765,16 @@
               </td>
               <td class="op-datatable__td search-table__td--subject">
                 <span class="subject-text" title={row.subject}>{row.subject ?? "—"}</span>
+                <!-- Sin columna «Ubicación actual» (móvil): sube bajo el asunto. -->
+                {#if isNarrowViewport && ubicacionActual(row)}
+                  <span class="subject-ubicacion" data-testid="fila-ubicacion-movil"
+                    >En {ubicacionActual(row)}</span
+                  >
+                {/if}
               </td>
               {#if !isNarrowViewport}
                 <td class="op-datatable__td search-table__td--dep">
-                  {row.dest_dept ?? "—"}
+                  {ubicacionTexto(row)}
                 </td>
               {/if}
               <td class="op-datatable__td search-table__td--date">
@@ -1363,6 +1396,13 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  // Ubicación actual bajo el asunto (solo se renderiza sin la columna, en móvil)
+  .subject-ubicacion {
+    display: block;
+    font-size: var(--op-font-xs);
+    color: var(--op-text-secondary);
   }
 
   // Enlace de acción

@@ -24,8 +24,15 @@ import uuid
 _PREFIX = {"4-72": "C472", "servientrega": "SE", "otro": "PG"}
 
 
-def generar_guia(operador: str, radicado_id: uuid.UUID) -> str:
-    h = hashlib.sha256(f"{operador}:{radicado_id}".encode()).hexdigest()[:10].upper()
+def generar_guia(operador: str, envio_id: uuid.UUID) -> str:
+    """Guía del stub, derivada del identificador del ENVÍO (no del radicado).
+
+    Derivarla de `(operador, radicado_id)` la hacía idéntica para dos envíos del
+    mismo radicado por el mismo operador —una salida con varios destinatarios, o
+    un reenvío tras `devuelto`— y el `UNIQUE (operador, guia)` los rechazaba con
+    409. Un conector real recibe la guía del operador y este stub desaparece.
+    """
+    h = hashlib.sha256(f"{operador}:{envio_id}".encode()).hexdigest()[:10].upper()
     return f"{_PREFIX.get(operador, 'PG')}-{h}"
 
 

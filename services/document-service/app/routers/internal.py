@@ -26,6 +26,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common import audit
 
 from app.clients.storage_client import StoragePurgaError
 from app.core.database import get_tenant_conn
@@ -194,6 +195,7 @@ async def huella_borrador(
 )
 async def aprobar_borrador_internal(
     borrador_id: uuid.UUID,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, object]:
     """Cierra el circuito en la única marca que radicar mira.
@@ -227,8 +229,29 @@ async def aprobar_borrador_internal(
         )
     if row["estado"] != "borrador":
         return {"borrador_id": str(borrador_id), "estado": row["estado"], "cambiado": False}
-    await conn.execute(
-        "UPDATE borrador SET estado = 'aprobado', updated_at = now() WHERE id = $1",
-        borrador_id,
-    )
+    # Acto de sistema, pero acto probatorio: cambio y asiento van juntos (ADR-010).
+    async with conn.transaction():
+        nuevo = await conn.fetchrow(
+            "UPDATE borrador SET estado = 'aprobado', updated_at = now() "
+            "WHERE id = $1 AND estado = 'borrador' RETURNING version, cuerpo_sha256",
+            borrador_id,
+        )
+        if nuevo is None:
+            return {"borrador_id": str(borrador_id), "estado": "aprobado", "cambiado": False}
+        await audit.append(
+            conn,
+            tenant_slug=request.headers.get("X-Tenant-Slug", ""),
+            service="document-service",
+            action="borrador.aprobado",
+            object_type="borrador",
+            object_ref=str(borrador_id),
+            actor=None,
+            payload={
+                "estado_anterior": "borrador",
+                "estado_nuevo": "aprobado",
+                "version": nuevo["version"],
+                "cuerpo_sha256": nuevo["cuerpo_sha256"],
+                "origen": "circuito_completado",
+            },
+        )
     return {"borrador_id": str(borrador_id), "estado": "aprobado", "cambiado": True}

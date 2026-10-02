@@ -393,4 +393,5 @@ async def test_un_cambio_de_estado_sin_causal_no_borra_la_anterior(client_with_c
     assert resp.status_code == 200
     llamadas = [c.args for c in mock_conn.fetchrow.await_args_list]
     actualizacion = next(a for a in llamadas if "UPDATE postal_shipment" in str(a[0]))
-    assert actualizacion[-1] is None
+    # args: (sql, id, estado, motivo, estado_previo, clearance)
+    assert actualizacion[3] is None

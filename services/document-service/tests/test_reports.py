@@ -17,12 +17,13 @@ from tests.conftest import TENANT_HEADERS
 @pytest.mark.asyncio
 async def test_radicado_report(client_with_conn) -> None:
     client, mock_conn = client_with_conn
-    # fetch: by_type, by_status, by_month, by_dependencia (en ese orden).
+    # fetch: by_type, by_status, by_month, by_dependencia, by_ubicacion (en ese orden).
     mock_conn.fetch.side_effect = [
         [{"doc_type": "E", "n": 5}, {"doc_type": "S", "n": 3}],
         [{"status": "registered", "n": 6}, {"status": "archived", "n": 2}],
         [{"month": "2024-01", "n": 4}, {"month": "2024-02", "n": 4}],
         [{"dep": "Jurídica", "n": 5}, {"dep": "(sin asignar)", "n": 3}],
+        [{"dep": "Archivo", "n": 4}],
     ]
 
     resp = await client.get("/api/v1/reports/radicados", headers=TENANT_HEADERS)
@@ -33,12 +34,13 @@ async def test_radicado_report(client_with_conn) -> None:
     assert body["by_status"]["registered"] == 6
     assert body["by_month"][1] == {"month": "2024-02", "count": 4}
     assert body["by_dependencia"]["Jurídica"] == 5
+    assert body["by_ubicacion"] == {"Archivo": 4}
 
 
 @pytest.mark.asyncio
 async def test_radicado_report_date_filter(client_with_conn) -> None:
     client, mock_conn = client_with_conn
-    mock_conn.fetch.side_effect = [[], [], [], []]
+    mock_conn.fetch.side_effect = [[], [], [], [], []]
 
     resp = await client.get(
         "/api/v1/reports/radicados?date_from=2024-01-01&date_to=2024-12-31",
@@ -58,6 +60,7 @@ async def test_radicado_report_csv(client_with_conn) -> None:
         [{"status": "registered", "n": 5}],
         [{"month": "2024-01", "n": 5}],
         [{"dep": "Jurídica", "n": 5}],
+        [{"dep": "Archivo", "n": 2}],
     ]
 
     resp = await client.get("/api/v1/reports/radicados.csv", headers=TENANT_HEADERS)
@@ -67,7 +70,11 @@ async def test_radicado_report_csv(client_with_conn) -> None:
     text = resp.text
     assert "seccion,clave,valor" in text
     assert "tipo,E,5" in text
-    assert "dependencia,Jurídica,5" in text
+    # La de radicación dejó de llamarse `dependencia` (ambigua) y la ubicación
+    # actual es una sección propia (ADR-029).
+    assert "dependencia_radicacion,Jurídica,5" in text
+    assert "ubicacion_actual,Archivo,2" in text
+    assert "\ndependencia," not in text
 
 
 @pytest.mark.asyncio
@@ -98,3 +105,21 @@ async def test_los_reportes_exigen_el_permiso_de_estadistica(client_with_conn) -
         assert resp.status_code == 403, ruta
         assert resp.json()["detail"]["error"] == "forbidden"
         mock_conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_la_ubicacion_actual_solo_cuenta_lo_que_sigue_en_tramite(client_with_conn) -> None:
+    """Un cerrado o anulado ya no está «en» ninguna dependencia a efectos de carga de
+    trabajo (ADR-029); la de radicación, en cambio, cuenta todos los radicados."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetch.side_effect = [[], [], [], [], []]
+
+    resp = await client.get("/api/v1/reports/radicados?date_from=2024-01-01", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    sql_radicacion = mock_conn.fetch.call_args_list[3][0][0]
+    sql_ubicacion = mock_conn.fetch.call_args_list[4][0][0]
+    assert "dest_dept" in sql_radicacion and "NOT IN ('closed', 'anulado')" not in sql_radicacion
+    assert "ubicacion_dept" in sql_ubicacion and "NOT IN ('closed', 'anulado')" in sql_ubicacion
+    # El filtro de fechas y el de terminales se COMBINAN (no se pisan).
+    assert "registered_at >=" in sql_ubicacion

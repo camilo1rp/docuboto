@@ -159,6 +159,20 @@ describe("bandeja — actos de trámite por tenencia", () => {
     expect(screen.queryByRole("button", { name: /devolver/i })).toBeNull();
   });
 
+  it("Devolver sigue a PERM_TRAMITAR (lo que gatea el backend), no a PERM_RADI", async () => {
+    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    login(["PERM_TRAMITAR"]);
+    await abrirDetalle();
+    expect(screen.getByRole("button", { name: /devolver/i })).toBeTruthy();
+  });
+
+  it("con solo PERM_RADI no se ofrece Devolver (el backend daría 403)", async () => {
+    login(["PERM_RADI"]);
+    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    await abrirDetalle();
+    expect(screen.queryByRole("button", { name: /devolver/i })).toBeNull();
+  });
+
   it("sin paso activo (404): ningún acto", async () => {
     login();
     globalThis.fetch = mockFetch(null);

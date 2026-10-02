@@ -283,10 +283,13 @@ async def crear_borrador(
     dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 async def listar_borradores(
+    request: Request,
     estado: str | None = Query(default=None),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[BorradorResponse]:
-    return await BorradorService(conn).listar(estado)
+    # No-read-up (RF-SEG-08): solo los borradores cuyo nivel alcanza el llamante.
+    clearance = await resolve_caller_clearance(conn, _user(request))
+    return await BorradorService(conn).listar(estado, max_clearance=clearance)
 
 
 @router.get(
@@ -296,9 +299,11 @@ async def listar_borradores(
 )
 async def get_borrador(
     borrador_id: uuid.UUID,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> BorradorResponse:
-    return await BorradorService(conn).get(borrador_id)
+    clearance = await resolve_caller_clearance(conn, _user(request))
+    return await BorradorService(conn).get(borrador_id, max_clearance=clearance)
 
 
 @router.patch(
@@ -309,9 +314,15 @@ async def get_borrador(
 async def editar_borrador(
     borrador_id: uuid.UUID,
     payload: BorradorUpdate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> BorradorResponse:
-    return await BorradorService(conn).editar(borrador_id, payload)
+    user_id = _user(request)
+    clearance = await resolve_caller_clearance(conn, user_id)
+    # El slug NO es decorativo: el asiento `borrador.editado` se imputa a él.
+    return await BorradorService(conn, _slug(request)).editar(
+        borrador_id, payload, max_clearance=clearance, actor=user_id
+    )
 
 
 @router.post(
@@ -377,7 +388,11 @@ async def aprobar_borrador(
     # hay un circuito de visto bueno abierto, y esa consulta viaja con
     # `X-Tenant-Slug`. Sin slug la consulta se hace contra el schema
     # equivocado, que es la forma silenciosa de que el gate no vea nada.
-    return await BorradorService(conn, _slug(request)).aprobar(borrador_id)
+    user_id = _user(request)
+    clearance = await resolve_caller_clearance(conn, user_id)
+    return await BorradorService(conn, _slug(request)).aprobar(
+        borrador_id, max_clearance=clearance, actor=user_id
+    )
 
 
 @router.post(
@@ -388,9 +403,15 @@ async def aprobar_borrador(
 )
 async def devolver_borrador(
     borrador_id: uuid.UUID,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> BorradorResponse:
-    return await BorradorService(conn).devolver_a_borrador(borrador_id)
+    user_id = _user(request)
+    clearance = await resolve_caller_clearance(conn, user_id)
+    # El slug no es decorativo: el asiento `borrador.devuelto` se imputa a él.
+    return await BorradorService(conn, _slug(request)).devolver_a_borrador(
+        borrador_id, max_clearance=clearance, actor=user_id
+    )
 
 
 @router.post(

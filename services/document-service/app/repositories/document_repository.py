@@ -117,7 +117,8 @@ class DocumentRepository:
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id,
-                publicable, publicado_at
+                publicable, publicado_at,
+                flujo_dept_code, flujo_dept, ubicacion_dept_code, ubicacion_dept
             """,
             tracking_number,
             payload.doc_type,
@@ -188,7 +189,8 @@ class DocumentRepository:
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id,
-                publicable, publicado_at
+                publicable, publicado_at,
+                flujo_dept_code, flujo_dept, flujo_usuario, ubicacion_dept_code, ubicacion_dept
             FROM radicados
             WHERE id = $1 AND nivel_seguridad <= $2
             """,
@@ -251,7 +253,7 @@ class DocumentRepository:
         """
         return list(
             await self._conn.fetch(
-                "SELECT id, tracking_number, doc_type, subject, status, registered_at "
+                "SELECT id, tracking_number, doc_type, subject, nivel_seguridad, status, registered_at "
                 "FROM radicados WHERE responde_a = $1 AND nivel_seguridad <= $2 "
                 "ORDER BY registered_at",
                 antecedente_id,
@@ -271,7 +273,8 @@ class DocumentRepository:
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id,
-                publicable, publicado_at
+                publicable, publicado_at,
+                flujo_dept_code, flujo_dept, flujo_usuario, ubicacion_dept_code, ubicacion_dept
             FROM radicados
             WHERE tracking_number = $1 AND nivel_seguridad <= $2
             """,
@@ -317,6 +320,7 @@ class DocumentRepository:
         due_to: date | None = None,
         order_by: str = "registered_at",
         order_dir: str = "desc",
+        ubicacion_dept_code: int | None = None,
     ) -> tuple[list[Radicado], int]:
         conditions: list[str] = []
         params: list[object] = []
@@ -359,6 +363,14 @@ class DocumentRepository:
             params.append(due_to)
             idx += 1
 
+        if ubicacion_dept_code is not None:
+            # Dónde está AHORA (ADR-029), no a quién iba dirigido. Va en
+            # `conditions`: lo comparten el COUNT y el SELECT, así que el total
+            # nunca cuenta filas que la página no puede mostrar.
+            conditions.append(f"ubicacion_dept_code = ${idx}")
+            params.append(ubicacion_dept_code)
+            idx += 1
+
         if metadata_filter:
             # Filtro por campo de metadato vía índice GIN (E03, RF-MET-02).
             conditions.append(f"metadata @> ${idx}::jsonb")
@@ -392,7 +404,8 @@ class DocumentRepository:
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id,
-                publicable, publicado_at
+                publicable, publicado_at,
+                flujo_dept_code, flujo_dept, ubicacion_dept_code, ubicacion_dept
             FROM radicados
             {where_clause}
             ORDER BY {orden}, id DESC
@@ -440,7 +453,16 @@ class DocumentRepository:
             idx += 1
 
         if payload.dest_dept is not None:
-            fields.append(f"dest_dept = ${idx}")
+            fields.append(f"dest_dept = ${idx}::text")
+            # El código viaja en el MISMO UPDATE y se resuelve por nombre: el par
+            # (dest_dept, dest_dept_code) alimenta la ubicación generada (ADR-029),
+            # y cambiar solo el nombre dejaba el código de OTRA dependencia. Si el
+            # nombre no identifica UNA dependencia activa el código queda NULL
+            # (honesto: ?ubicacion_dept_code= ya no lo devuelve donde no está).
+            fields.append(
+                "dest_dept_code = (SELECT min(codigo) FROM dependencias "
+                f"WHERE nombre = ${idx}::text AND activo HAVING count(*) = 1)"
+            )
             params.append(payload.dest_dept)
             idx += 1
 
@@ -499,7 +521,8 @@ class DocumentRepository:
                 sender_name, sender_entity, status, pages, nivel_seguridad, observations,
                 registered_by, registered_at, updated_at, tenant_code, due_date,
                 metadata, metadata_template_id,
-                publicable, publicado_at
+                publicable, publicado_at,
+                flujo_dept_code, flujo_dept, flujo_usuario, ubicacion_dept_code, ubicacion_dept
             """,
             *params,
         )
@@ -969,6 +992,11 @@ def _row_to_radicado(row: asyncpg.Record) -> Radicado:
         # `oai_repository` lee la columna en su propio SQL.
         publicable=bool(_col(row, "publicable", False)),
         publicado_at=_col(row, "publicado_at", None),
+        flujo_dept_code=_col(row, "flujo_dept_code", None),
+        flujo_dept=_col(row, "flujo_dept", None),
+        flujo_usuario=_col(row, "flujo_usuario", None),
+        ubicacion_dept_code=_col(row, "ubicacion_dept_code", None),
+        ubicacion_dept=_col(row, "ubicacion_dept", None),
     )
 
 

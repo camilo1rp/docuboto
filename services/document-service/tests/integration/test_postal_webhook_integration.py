@@ -91,12 +91,18 @@ async def test_motivo_devolucion_only_set_on_devuelto(tenant_ctx) -> None:
     sid = await _seed_shipment(conn, guia="C472-DEV001")
 
     # El servicio pasa motivo=None salvo en 'devuelto'; el repo COALESCE lo respeta.
-    await repo.update_estado(sid, "en_transito", "en ruta", motivo_devolucion=None)
+    await repo.update_estado(
+        sid, "en_transito", "en ruta", motivo_devolucion=None,
+        estado_previo="registrado", max_clearance=None,
+    )
     row = await conn.fetchrow("SELECT estado, motivo_devolucion FROM postal_shipment WHERE id=$1", sid)
     assert row["estado"] == "en_transito"
     assert row["motivo_devolucion"] is None  # sin motivo → permanece NULL
 
-    await repo.update_estado(sid, "devuelto", "devuelto", motivo_devolucion="Dirección errada")
+    await repo.update_estado(
+        sid, "devuelto", "devuelto", motivo_devolucion="Dirección errada",
+        estado_previo="en_transito", max_clearance=None,
+    )
     row = await conn.fetchrow("SELECT estado, motivo_devolucion FROM postal_shipment WHERE id=$1", sid)
     assert row["estado"] == "devuelto"
     assert row["motivo_devolucion"] == "Dirección errada"

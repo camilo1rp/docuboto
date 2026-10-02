@@ -168,6 +168,10 @@ class AnexoNoDisponibleError(Exception):
     """Se intenta adjuntar un fichero que ya cuelga de un radicado fuera de alcance."""
 
 
+class DestDeptImmutableError(Exception):
+    """PATCH de dest_dept sobre un radicado cerrado."""
+
+
 class DocumentAnuladoError(Exception):
     """Se intenta modificar un radicado ya anulado.
 
@@ -312,15 +316,22 @@ class DocumentService:
             clearance_anexos = await resolve_caller_clearance(self._conn, registered_by)
             await self._rechazar_anexos_fuera_de_alcance(payload.anexos, clearance_anexos)
 
-        tenant_code = await self._repo.get_tenant_code()
-        sequence = await self._repo.next_sequence(year, payload.doc_type)
-        tracking_number = f"{year}-{tenant_code}-{payload.doc_type}-{sequence:06d}"
-
         actor = str(registered_by) if registered_by else None
 
         # El radicado y su entrada de auditoría son atómicos: o se persisten
         # ambos o ninguno (la auditoría es la traza legal del radicado, ADR-008).
+        #
+        # El consecutivo se toma AQUÍ DENTRO, no antes: el UPSERT de
+        # `tracking_sequences` toma el row-lock de (año, tipo) y lo suelta en el
+        # commit o el rollback. Fuera de la transacción quedaba en autocommit y
+        # cualquier fallo posterior (un `tercero_id` inexistente aborta con 404)
+        # revertía el radicado y su asiento pero NO el número: un hueco sin
+        # asiento en la numeración oficial (Ac. AGN 060/2001). Mismo orden que
+        # `batch_service`.
         async with self._conn.transaction():
+            tenant_code = await self._repo.get_tenant_code()
+            sequence = await self._repo.next_sequence(year, payload.doc_type)
+            tracking_number = f"{year}-{tenant_code}-{payload.doc_type}-{sequence:06d}"
             radicado = await self._repo.create(
                 payload=payload,
                 tracking_number=tracking_number,
@@ -567,6 +578,7 @@ class DocumentService:
         due_to: date | None = None,
         order_by: str = "registered_at",
         order_dir: str = "desc",
+        ubicacion_dept_code: int | None = None,
     ) -> tuple[builtins.list[DocumentResponse], int]:
         radicados, total = await self._repo.find_all(
             doc_type=doc_type,
@@ -579,6 +591,7 @@ class DocumentService:
             due_to=due_to,
             order_by=order_by,
             order_dir=order_dir,
+            ubicacion_dept_code=ubicacion_dept_code,
         )
         # Filtros estructurales tal cual (no son datos personales de quien
         # consulta); de `metadata_filter` solo las CLAVES consultadas — los
@@ -598,6 +611,7 @@ class DocumentService:
                 "due_to": due_to.isoformat() if due_to else None,
                 "order_by": order_by,
                 "order_dir": order_dir,
+                "ubicacion_dept_code": ubicacion_dept_code,
             },
             total=total,
             page=page,
@@ -1113,6 +1127,11 @@ class DocumentService:
                 # encima de su clearance ya salió por el 404 neutro de arriba.
                 raise DocumentAnuladoError(previo.tracking_number)
 
+            if previo.status == "closed" and payload.dest_dept is not None:
+                # La dependencia de radicación de un radicado cerrado es dato
+                # histórico (ADR-029): su corrección no es un PATCH.
+                raise DestDeptImmutableError(previo.tracking_number)
+
             # Revalidación de metadatos. Se dispara si se toca el tipo O los
             # metadatos: cambiar solo los metadatos también tiene que cumplir la
             # plantilla vigente, o el gate de la radicación sería puenteable con un
@@ -1196,6 +1215,11 @@ def _to_response(radicado: Radicado) -> DocumentResponse:
         metadata=radicado.metadata,
         publicable=radicado.publicable,
         publicado_at=radicado.publicado_at,
+        flujo_dept_code=radicado.flujo_dept_code,
+        flujo_dept=radicado.flujo_dept,
+        flujo_usuario=radicado.flujo_usuario,
+        ubicacion_dept_code=radicado.ubicacion_dept_code,
+        ubicacion_dept=radicado.ubicacion_dept,
         anexos=[
             AnexoResponse(
                 id=a.id,

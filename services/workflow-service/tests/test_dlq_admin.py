@@ -849,3 +849,16 @@ async def test_repo_list_scoped_for_clearance_filters_origin_stream() -> None:
     sql, *params = conn.fetch.call_args[0]
     assert "origin_stream" in sql
     assert "orpycamcp.document.events" in params
+
+
+def test_las_rutas_del_dlq_toman_la_identidad_de_get_actor() -> None:
+    """AREA-01-07: detalle, replay y discard dejaron el `_actor` opcional. Ante un
+    X-User-Id ausente el gate de router da 403 antes, así que la rama 401 no se
+    observa por HTTP: se comprueba el cableado de la dependencia."""
+    from app.routers import admin_deadletter as mod
+
+    assert not hasattr(mod, "_actor")
+    for ruta in mod.router.routes:
+        if ruta.path.endswith(("/{event_id}", "/{event_id}/replay", "/{event_id}/discard")):
+            llamadas = [d.call for d in ruta.dependant.dependencies]
+            assert get_actor in llamadas, ruta.path

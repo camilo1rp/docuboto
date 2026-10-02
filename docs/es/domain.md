@@ -100,6 +100,20 @@ Ejemplo: 2024-ICETEX-E-001234
 
 `closed` y `anulado` son **terminales**: ningún acto de trámite los mueve (`409 radicado_terminal`). El único cierre es «Finalizar trámite»; completar el último paso no cierra. **Poseedor** = tiene el paso asignado, o el paso es de su dependencia y nadie lo tiene. Las **salidas** e **internos** no tienen reparto fuera: su estado solo se mueve cuando un paso los toca. **La anulación cancela el paso activo** en la misma transacción (un anulado no deja pasos zombi). Asignar o trasladar exige **tenencia** (solo el poseedor del paso activo) y **clearance** sobre el radicado; «Finalizar» exige nivel 3 y un **motivo de cierre** (`respondido`, `nrr`, `traslado_competencia`, `otro`). Completar un paso `in_progress` deja el radicado `in_progress` (declarado); reabrir un cerrado queda fuera por ahora. Ver [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md).
 
+#### Ubicación actual del radicado (ADR-029)
+
+`dest_dept` / `dest_dept_code` son la dependencia **de radicación**: a quién iba dirigido el documento, una instantánea legal que se fija al radicar y no cambia. **Dónde está el radicado ahora** es otra cosa —en Orfeo, `radi_depe_actu` / `radi_usua_actu`— y la escribe el flujo.
+
+| Situación | Ubicación actual |
+|---|---|
+| Sin pasos (recién radicado) | La dependencia de radicación (destino; a falta de él, origen) |
+| Hay paso activo | La dependencia (y el poseedor) del paso de mayor número |
+| Sin paso activo | El paso que **se cerró más recientemente**, en cualquier estado (no el de mayor número: tras un rollback el cancelado tiene el número más alto pero se cerró antes) |
+| `closed` | La dependencia donde se finalizó (se congela) |
+| `anulado` | La dependencia donde estaba al anularse (la anulación no la reescribe) |
+
+El paso guarda el **nombre** de la dependencia y `dependencias.nombre` no es único: el código solo se resuelve si el nombre casa con **una** dependencia activa; si no, queda `null` y el nombre es la instantánea. La ubicación **no es pública**: ni la verificación por código, ni OAI-PMH, ni CMIS la exponen, y quién posee el trámite (`flujo_usuario`) solo sale en el detalle autenticado. Se puede filtrar y contar por ella (`?ubicacion_dept_code=`; reporte «Ubicación actual», que excluye cerrados y anulados). Ver [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
+
 **Reclasificación de seguridad (E08).** El `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) se fija al radicar pero puede **reclasificarse** después vía `PATCH /documents/{id}/security-level` (paridad con el *Cambio Nivel de Seguridad* de Orfeo). Es un cambio del **control de acceso**, no del contenido ni del número: la inmutabilidad del radicado queda intacta. Exige permiso `PERM_RECLASIFICAR`, respeta *no-read-up* (no se puede reclasificar lo que no se puede leer → `404` neutro) y *no-write-up* (no se puede fijar por encima del propio *clearance* → `403`), y **el acto debe motivarse** (motivo obligatorio + fundamento jurídico opcional), registrándose en el `audit_log` inmutable. El cambio se propaga por evento al `signature-service`, que re-sincroniza el nivel de las cadenas de firma del objeto.
 
 ---

@@ -18,7 +18,7 @@
  * para aplicar clearance por nivel (no read-up, RF-SEG-08).
  *
  * GET → resultados de búsqueda paginados
- *   Parámetros: q (≥2), doc_type, status, date_from, date_to, dest_dept_code, page, size
+ *   Parámetros: q (≥2), doc_type, status, date_from, date_to, dest_dept_code, ubicacion_dept_code, page, size
  *   Respuesta: { results: SearchItem[], total: number }
  */
 
@@ -43,6 +43,10 @@ export async function GET({ locals, url }) {
   const rawDeptCode = url.searchParams.get("dest_dept_code") ?? "";
   const destDeptCodeNum =
     rawDeptCode !== "" && /^\d+$/.test(rawDeptCode.trim()) ? Math.floor(Number(rawDeptCode)) : null;
+  // ubicacion_dept_code (ADR-029): mismo saneo (entero positivo)
+  const rawUbicCode = url.searchParams.get("ubicacion_dept_code") ?? "";
+  const ubicacionCodeNum =
+    rawUbicCode !== "" && /^\d+$/.test(rawUbicCode.trim()) ? Math.floor(Number(rawUbicCode)) : null;
   const page = url.searchParams.get("page") ?? "1";
   // Acotar size: 1-100 para evitar peticiones abusivas al gateway
   const rawSize = url.searchParams.get("size") ?? "20";
@@ -61,6 +65,7 @@ export async function GET({ locals, url }) {
   if (dateFrom) params.set("date_from", dateFrom);
   if (dateTo) params.set("date_to", dateTo);
   if (destDeptCodeNum !== null) params.set("dest_dept_code", String(destDeptCodeNum));
+  if (ubicacionCodeNum !== null) params.set("ubicacion_dept_code", String(ubicacionCodeNum));
 
   try {
     const res = await fetch(`${API_V1}/search?${params.toString()}`, {

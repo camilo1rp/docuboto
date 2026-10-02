@@ -75,7 +75,7 @@ async def test_la_plantilla_que_cambia_no_reescribe_lo_producido(tenant_ctx) -> 
         plantilla["id"],
     )
 
-    fila = await repo.get_borrador(borrador["id"])
+    fila = await repo.get_borrador(borrador["id"], 3)
     assert fila is not None
     # Ni el documento producido ni el contexto con que se produjo se mueven.
     assert fila["documento_file_id"] == file_id
@@ -142,7 +142,7 @@ async def test_la_huella_del_documento_es_la_que_firmaria_una_cadena(tenant_ctx)
             "creado_por": None,
         }
     )
-    assert (await repo.get_borrador(borrador["id"]))["documento_sha256"] is None
+    assert (await repo.get_borrador(borrador["id"], 3))["documento_sha256"] is None
 
     await repo.set_documento(
         borrador["id"],
@@ -151,7 +151,7 @@ async def test_la_huella_del_documento_es_la_que_firmaria_una_cadena(tenant_ctx)
         formato="PDF/A-2B",
         combinacion={},
     )
-    fila = await repo.get_borrador(borrador["id"])
+    fila = await repo.get_borrador(borrador["id"], 3)
     assert fila["documento_sha256"] == "d" * 64
     assert len(fila["documento_sha256"]) == 64
 
@@ -187,7 +187,7 @@ async def test_los_faltantes_sobreviven_a_la_peticion_que_los_calculo(tenant_ctx
     )
 
     # Y siguen ahí en una LECTURA posterior, que es el caso que fallaba.
-    releido = await repo.get_borrador(borrador["id"])
+    releido = await repo.get_borrador(borrador["id"], 3)
     assert releido is not None
     assert list(releido["faltantes"]) == ["NOM_R", "ASUNTO"]
 

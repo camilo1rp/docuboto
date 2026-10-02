@@ -20,7 +20,7 @@ import uuid
 
 import asyncpg
 
-_COLS = "id, radicado_id, anexo_id, signer_id, signer_name, content_hash, reason, signed_at"
+_COLS = "id, radicado_id, anexo_id, signer_id, signer_name, content_hash, reason, signed_at, origen"
 
 
 class SignatureRepository:
@@ -40,6 +40,21 @@ class SignatureRepository:
                 radicado_id,
                 max_clearance,
             )
+        )
+
+    async def anexo_file_id(
+        self, radicado_id: uuid.UUID, anexo_id: uuid.UUID, max_clearance: int
+    ) -> uuid.UUID | None:
+        """`file_id` del anexo SI pertenece al radicado y este es visible.
+
+        `None` cubre «no existe», «es de otro radicado» y «te supera»: 404 neutro.
+        """
+        return await self._conn.fetchval(
+            "SELECT a.file_id FROM anexos a JOIN radicados r ON r.id = a.radicado_id "
+            "WHERE a.id = $1 AND a.radicado_id = $2 AND r.nivel_seguridad <= $3",
+            anexo_id,
+            radicado_id,
+            max_clearance,
         )
 
     async def insert(
@@ -63,8 +78,8 @@ class SignatureRepository:
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO signatures
-                (radicado_id, anexo_id, signer_id, signer_name, content_hash, reason)
-            SELECT $1, $2, $3, $4, $5, $6
+                (radicado_id, anexo_id, signer_id, signer_name, content_hash, reason, origen)
+            SELECT $1, $2, $3, $4, $5, $6, 'servidor'
             WHERE EXISTS (
                 SELECT 1 FROM radicados WHERE id = $1 AND nivel_seguridad <= $7
             )
@@ -91,10 +106,16 @@ class SignatureRepository:
     async def list_matching(
         self, radicado_id: uuid.UUID, content_hash: str
     ) -> list[asyncpg.Record]:
+        """Firmas cuya huella coincide Y fue resuelta por el servidor.
+
+        Las heredadas con huella del cliente (`cliente_no_verificado`) no
+        verifican: nadie comprobó qué se firmó.
+        """
         return list(
             await self._conn.fetch(
                 f"SELECT {_COLS} FROM signatures "
-                "WHERE radicado_id = $1 AND content_hash = $2 ORDER BY signed_at ASC",
+                "WHERE radicado_id = $1 AND content_hash = $2 AND origen = 'servidor' "
+                "ORDER BY signed_at ASC",
                 radicado_id,
                 content_hash,
             )

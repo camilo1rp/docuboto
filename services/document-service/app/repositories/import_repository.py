@@ -26,6 +26,14 @@ class ImportRepository:
     def __init__(self, conn: asyncpg.Connection) -> None:
         self._conn = conn
 
+    async def get_tenant_code(self, tenant_slug: str) -> str:
+        """Código de entidad del tenant (el de `public.tenants`, o el slug en
+        mayúsculas si no está registrado: mismo criterio que la radicación)."""
+        code = await self._conn.fetchval(
+            "SELECT code FROM public.tenants WHERE slug = $1", tenant_slug
+        )
+        return code if isinstance(code, str) else tenant_slug.upper()
+
     async def exists(self, tracking_number: str) -> bool:
         return await self._conn.fetchval(
             "SELECT 1 FROM radicados WHERE tracking_number = $1", tracking_number
@@ -95,3 +103,79 @@ class ImportRepository:
         await self._conn.execute(
             "UPDATE radicados SET responde_a = $2 WHERE id = $1", radicado_id, antecedente_id
         )
+
+    # --- cola de purga de binarios huérfanos (migración 038, AREA-09-14) ----------
+
+    async def registrar_huerfanos(
+        self,
+        import_uuid: uuid.UUID,
+        actor: uuid.UUID | None,
+        filas: list[tuple[uuid.UUID, str | None]],
+        subido_desde: Any,
+    ) -> None:
+        """Encola los binarios sin radicado. Idempotente por (import_uuid, file_id)."""
+        for file_id, sha256 in {f: h for f, h in filas}.items():
+            await self._conn.execute(
+                "INSERT INTO import_binario_huerfano "
+                "(import_uuid, file_id, sha256, actor, subido_desde) "
+                "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (import_uuid, file_id) DO NOTHING",
+                import_uuid,
+                file_id,
+                sha256,
+                actor,
+                subido_desde,
+            )
+
+    async def huerfanos_pendientes(
+        self, import_uuid: uuid.UUID | None, limite: int
+    ) -> list[asyncpg.Record]:
+        return list(
+            await self._conn.fetch(
+                "SELECT import_uuid, file_id, sha256, actor, subido_desde, intentos "
+                "FROM import_binario_huerfano WHERE estado = 'pendiente' "
+                "AND ($1::uuid IS NULL OR import_uuid = $1) ORDER BY created_at LIMIT $2",
+                import_uuid,
+                limite,
+            )
+        )
+
+    async def resolver_huerfanos(
+        self, import_uuid: uuid.UUID, file_ids: list[uuid.UUID], estado: str
+    ) -> list[uuid.UUID]:
+        """Pasa a un estado terminal SOLO las filas aún 'pendiente' y devuelve cuáles
+        transitaron (el asiento se escribe solo por ellas: dos barridos que coinciden
+        no duplican la traza)."""
+        rows = await self._conn.fetch(
+            "UPDATE import_binario_huerfano SET estado = $3, resuelto_at = now(), "
+            "ultimo_error = NULL WHERE import_uuid = $1 AND file_id = ANY($2::uuid[]) "
+            "AND estado = 'pendiente' RETURNING file_id",
+            import_uuid,
+            file_ids,
+            estado,
+        )
+        return [r["file_id"] for r in rows]
+
+    async def fallar_huerfanos(
+        self,
+        import_uuid: uuid.UUID,
+        file_ids: list[uuid.UUID],
+        error: str,
+        max_intentos: int,
+    ) -> list[asyncpg.Record]:
+        """Un intento fallido: suma el intento y, al agotar el máximo, pasa a 'agotado'.
+
+        Devuelve SOLO las filas que acaban de pasar a 'agotado' (`file_id`, `intentos`,
+        `ultimo_error`): es el acto que el llamante debe asentar, en la misma
+        transacción. Una fila que sigue 'pendiente' no es un acto, es un reintento."""
+        rows = await self._conn.fetch(
+            "UPDATE import_binario_huerfano SET intentos = intentos + 1, ultimo_error = $3, "
+            "estado = CASE WHEN intentos + 1 >= $4 THEN 'agotado' ELSE estado END, "
+            "resuelto_at = CASE WHEN intentos + 1 >= $4 THEN now() ELSE resuelto_at END "
+            "WHERE import_uuid = $1 AND file_id = ANY($2::uuid[]) AND estado = 'pendiente' "
+            "RETURNING file_id, intentos, ultimo_error, estado",
+            import_uuid,
+            file_ids,
+            error[:500],
+            max_intentos,
+        )
+        return [r for r in rows if r["estado"] == "agotado"]

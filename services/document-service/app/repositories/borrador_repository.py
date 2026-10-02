@@ -20,8 +20,54 @@ _PL = "id, nombre, tipo_documental, cuerpo, activo, created_at, es_global, cread
 _BO = (
     "id, doc_type, subject, dest_dept, cuerpo, plantilla_id, radicado_padre_id, "
     "estado, radicado_id, creado_por, created_at, updated_at, "
-    "documento_file_id, documento_sha256, documento_formato, combinacion, faltantes"
+    "documento_file_id, documento_sha256, documento_formato, combinacion, faltantes, "
+    "nivel_seguridad, cuerpo_sha256, version"
 )
+
+# No-read-up (RF-SEG-08) del borrador: el nivel EFECTIVO es el mayor entre la
+# instantánea propia y el VIGENTE del radicado padre, para que reclasificar el
+# padre hacia arriba cierre también sus borradores. Va en el WHERE de toda
+# lectura/escritura por id (`b` es el alias de `borrador`); el parámetro es
+# siempre el último y no tiene default en ningún método: un default que
+# significara «sin restricción» sería fail-OPEN.
+_NIVEL_EFECTIVO = (
+    "GREATEST(b.nivel_seguridad, COALESCE("
+    "(SELECT r.nivel_seguridad FROM radicados r WHERE r.id = b.radicado_padre_id), 1))"
+)
+
+# Tenencia del borrador (AREA-01-N2): editar un borrador basta con TENER el radicado
+# al que responde (ADR-028), no con tener PERM_RADI. Réplica en SQL de
+# `workflow-service/.../workflow_repository.py::_holder_condition` +
+# `puede_repartir_sin_paso_activo` (R16), correlacionada con `b.radicado_padre_id`;
+# las tablas `flow_steps`/`urd_usuaroldep`/`dependencias` viven en el MISMO schema
+# del tenant. Va en el `WHERE` de la escritura (sin ventana TOCTOU).
+#   - paso activo: asignado al actor, o sin asignar y de una dependencia suya;
+#   - sin paso activo y con historial: quien poseía el último paso (completado);
+#   - sin ningún paso: quien radicó el padre (`registered_by`).
+# Sin actor ($n NULL) ninguna rama casa (fail-closed).
+def _tenencia_del_padre(idx: int) -> str:
+    holder = (
+        f"(fs.assigned_to = ${idx} OR (fs.assigned_to IS NULL AND fs.to_dept IN ("
+        f"SELECT d.nombre FROM urd_usuaroldep u JOIN dependencias d ON d.codigo = u.depe_id "
+        f"WHERE u.user_id = ${idx} AND u.is_active = TRUE AND d.activo = TRUE)))"
+    )
+    activo = (
+        "SELECT 1 FROM flow_steps fs WHERE fs.radicado_id = b.radicado_padre_id "
+        "AND fs.status IN ('pending', 'in_progress')"
+    )
+    return (
+        f"(EXISTS ({activo} AND {holder}) "
+        f"OR (NOT EXISTS ({activo}) AND EXISTS (SELECT 1 FROM ("
+        "SELECT * FROM flow_steps WHERE radicado_id = b.radicado_padre_id "
+        "ORDER BY step_number DESC LIMIT 1) fs "
+        f"WHERE fs.status = 'completed' AND {holder})) "
+        "OR (NOT EXISTS (SELECT 1 FROM flow_steps WHERE radicado_id = b.radicado_padre_id) "
+        f"AND EXISTS (SELECT 1 FROM radicados rp WHERE rp.id = b.radicado_padre_id "
+        f"AND rp.registered_by = ${idx})))"
+    )
+
+
+_BO_B = ", ".join(f"b.{c.strip()}" for c in _BO.split(","))
 
 
 class BorradorRepository:
@@ -156,8 +202,9 @@ class BorradorRepository:
     async def insert_borrador(self, data: dict) -> asyncpg.Record:
         row = await self._conn.fetchrow(
             f"""INSERT INTO borrador (doc_type, subject, dest_dept, cuerpo, plantilla_id,
-                                     radicado_padre_id, creado_por, faltantes)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {_BO}""",
+                                     radicado_padre_id, creado_por, faltantes,
+                                     nivel_seguridad)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {_BO}""",
             data["doc_type"],
             data["subject"],
             data.get("dest_dept"),
@@ -166,34 +213,119 @@ class BorradorRepository:
             data.get("radicado_padre_id"),
             data.get("creado_por"),
             data.get("faltantes") or [],
+            data.get("nivel_seguridad", 1),
         )
         assert row is not None
         return row
 
-    async def get_borrador(self, borrador_id: uuid.UUID) -> asyncpg.Record | None:
-        return await self._conn.fetchrow(f"SELECT {_BO} FROM borrador WHERE id = $1", borrador_id)
+    async def nivel_del_padre(
+        self, radicado_id: uuid.UUID, max_clearance: int
+    ) -> int | None:
+        """Nivel del radicado padre SI el llamante lo alcanza; `None` si no existe
+        o lo supera (el llamante no distingue: 404 neutro, sin oráculo)."""
+        return await self._conn.fetchval(
+            "SELECT nivel_seguridad FROM radicados WHERE id = $1 AND nivel_seguridad <= $2",
+            radicado_id,
+            max_clearance,
+        )
 
-    async def list_borradores(self, estado: str | None) -> list[asyncpg.Record]:
-        if estado is None:
-            return list(
-                await self._conn.fetch(f"SELECT {_BO} FROM borrador ORDER BY created_at DESC")
-            )
+    async def clasificacion_vigente_del_padre(
+        self, radicado_id: uuid.UUID, max_clearance: int
+    ) -> asyncpg.Record | None:
+        """Clasificación VIGENTE del padre (nivel, fundamento, causal, plazo, número).
+
+        Es lo que el radicado que sale del borrador debe heredar (RF-SEG-08): la
+        instantánea del borrador puede haberse quedado atrás si el padre se
+        reclasificó. Lleva el gate de clearance en el WHERE aunque el borrador ya
+        lo pasó: defensa en profundidad, `None` = 404 neutro.
+        """
+        return await self._conn.fetchrow(
+            "SELECT nivel_seguridad, clasificacion_fundamento, clasificacion_causal, "
+            "clasificacion_plazo_meses, tracking_number "
+            "FROM radicados WHERE id = $1 AND nivel_seguridad <= $2",
+            radicado_id,
+            max_clearance,
+        )
+
+    async def get_borrador(
+        self, borrador_id: uuid.UUID, max_clearance: int
+    ) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(
+            f"SELECT {_BO_B} FROM borrador b "
+            f"WHERE b.id = $1 AND {_NIVEL_EFECTIVO} <= $2",
+            borrador_id,
+            max_clearance,
+        )
+
+    async def get_borrador_con_tenencia(
+        self, borrador_id: uuid.UUID, max_clearance: int, *, actor: uuid.UUID | None
+    ) -> asyncpg.Record | None:
+        """`get_borrador` + TENENCIA del actor, todo en el `WHERE` (AREA-01-N2, Acuerdo
+        AGN 060/2001): el creador si el borrador no responde a ningún radicado, o quien
+        tiene el radicado padre (`_tenencia_del_padre`). Es la guarda de `radicar`, el
+        acto IRREVERSIBLE (consume un número inmutable): `None` = 404 neutro (no existe,
+        no lo alcanza el clearance o no es suyo; el llamante no distingue). Las dos
+        variantes (con/sin padre) se unen en la misma consulta, así que no hay un
+        `con_padre` rancio que dar. `actor` sin default: nulo = fail-closed."""
+        return await self._conn.fetchrow(
+            f"SELECT {_BO_B} FROM borrador b "
+            f"WHERE b.id = $1 AND {_NIVEL_EFECTIVO} <= $2 AND ("
+            f"(b.radicado_padre_id IS NOT NULL AND {_tenencia_del_padre(3)}) "
+            "OR (b.radicado_padre_id IS NULL AND b.creado_por = $3))",
+            borrador_id,
+            max_clearance,
+            actor,
+        )
+
+    async def list_borradores(
+        self, estado: str | None, max_clearance: int
+    ) -> list[asyncpg.Record]:
         return list(
             await self._conn.fetch(
-                f"SELECT {_BO} FROM borrador WHERE estado = $1 ORDER BY created_at DESC", estado
+                f"SELECT {_BO_B} FROM borrador b "
+                f"WHERE {_NIVEL_EFECTIVO} <= $1 AND ($2::text IS NULL OR b.estado = $2) "
+                "ORDER BY b.created_at DESC",
+                max_clearance,
+                estado,
             )
         )
 
-    async def update_borrador(self, borrador_id: uuid.UUID, fields: dict) -> asyncpg.Record | None:
+    async def update_borrador(
+        self,
+        borrador_id: uuid.UUID,
+        fields: dict,
+        max_clearance: int,
+        *,
+        actor: uuid.UUID | None,
+        con_padre: bool,
+    ) -> asyncpg.Record | None:
+        """Edita SOLO si `actor` tiene el borrador (AREA-01-N2): su creador si no
+        responde a ningún radicado, o quien tiene el radicado padre
+        (`_tenencia_del_padre`). `None` = 404 neutro (no existe / no lo alcanza / no
+        es suyo). `con_padre` elige la variante de SQL, y el `WHERE` la re-comprueba
+        contra la fila (`radicado_padre_id IS [NOT] NULL`), así que un valor rancio
+        solo puede ocasionar un 404, nunca saltarse la regla. `actor` sin default."""
         if not fields:
-            return await self.get_borrador(borrador_id)
+            return await self.get_borrador(borrador_id, max_clearance)
         cols = list(fields.keys())
         sets = ", ".join(f"{c} = ${i}" for i, c in enumerate(cols, start=1))
         idx = len(cols) + 1
+        if con_padre:
+            tenencia = f"b.radicado_padre_id IS NOT NULL AND {_tenencia_del_padre(idx + 2)}"
+        else:
+            tenencia = f"b.radicado_padre_id IS NULL AND b.creado_por = ${idx + 2}"
         return await self._conn.fetchrow(
-            f"UPDATE borrador SET {sets}, updated_at=now() WHERE id=${idx} RETURNING {_BO}",
+            f"UPDATE borrador b SET {sets}, updated_at=now() "
+            f"WHERE b.id=${idx} AND {_NIVEL_EFECTIVO} <= ${idx + 1} AND {tenencia} "
+            # Un borrador YA radicado es inmutable: `_require_editable` lo comprueba
+            # antes, pero entre esa lectura y este UPDATE puede radicarse (TOCTOU) y el
+            # radicado saldría con un texto distinto del que se editó después.
+            f"AND b.estado <> 'radicado' "
+            f"RETURNING {_BO_B}",
             *fields.values(),
             borrador_id,
+            max_clearance,
+            actor,
         )
 
     async def set_documento(
@@ -229,12 +361,18 @@ class BorradorRepository:
         )
 
     async def set_estado(
-        self, borrador_id: uuid.UUID, estado: str, radicado_id: uuid.UUID | None = None
+        self,
+        borrador_id: uuid.UUID,
+        estado: str,
+        radicado_id: uuid.UUID | None = None,
+        *,
+        max_clearance: int,
     ) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
-            f"UPDATE borrador SET estado=$2, radicado_id=COALESCE($3, radicado_id), "
-            f"updated_at=now() WHERE id=$1 RETURNING {_BO}",
+            f"UPDATE borrador b SET estado=$2, radicado_id=COALESCE($3, b.radicado_id), "
+            f"updated_at=now() WHERE b.id=$1 AND {_NIVEL_EFECTIVO} <= $4 RETURNING {_BO_B}",
             borrador_id,
             estado,
             radicado_id,
+            max_clearance,
         )

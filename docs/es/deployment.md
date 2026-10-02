@@ -156,6 +156,7 @@ nano .env
 | `API_PUBLIC_HOSTNAME` | FQDN público del api-gateway que ve el navegador | `api.yourdomain.com` |
 | `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
 | `MINIO_ROOT_USER` | Usuario del almacén de objetos. **storage-service no arranca sin él** | `orpyca_prod` |
+| `WEBHOOK_SECRET_KEK` | KEK (base64 de 32 bytes) que cifra en reposo el secreto HMAC de los webhooks. **notification-service no arranca sin ella**; distinta de las demás KEK | `<openssl rand -base64 32>` |
 | `KNOWLEDGE_INTERNAL_TOKEN` | Token de ingesta interna (E21). Vacío ⇒ ingesta fail-closed | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | Host SMTP | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | Contraseña o token de aplicación SMTP | `app-specific-password` |
@@ -279,6 +280,35 @@ docker compose exec postgres psql -U orpycamcp -c "ALTER USER orpycamcp PASSWORD
 sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$NEW_PASSWORD/" .env
 docker compose restart document-service tenant-service auth-service
 ```
+
+### KEK de los secretos de webhooks (rotación)
+
+El secreto HMAC con el que notification-service firma cada entrega de webhook se guarda
+**cifrado** (AES-256-GCM; AAD `tenant:{slug}:webhook:{id}:secret`) con `WEBHOOK_SECRET_KEK`, que
+vive en el entorno del servicio y **nunca en la base**. Es el mismo esquema que la custodia de la
+firma personal (`orpycamcp_common.kek`). Respáldala con la misma disciplina que el resto de KEK:
+**si se pierde, los secretos son irrecuperables** y cada webhook con secreto hay que volver a
+darlo de alta. Mientras una fila siga en claro o no descifre, **no se entrega** (fail-closed).
+
+Rotación sin pérdida (conviven v1 y v2 durante la transición):
+
+```bash
+# 1. Añadir la KEK nueva al llavero y activarla; reiniciar notification-service.
+#    WEBHOOK_SECRET_KEKS='{"2":"<openssl rand -base64 32>"}'
+#    WEBHOOK_SECRET_KEK_ACTIVE_VERSION=2
+# 2. Re-envolver todos los secretos a la KEK activa (todos los tenants).
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+  notification-service python -m app.ops.rewrap_webhook_secrets --dry-run
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+  notification-service python -m app.ops.rewrap_webhook_secrets
+# 3. Verificar: una versión con conteo 0 es retirable (retirarla es manual).
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+  notification-service python -m app.ops.rewrap_webhook_secrets --verify
+```
+
+Cada fila se re-cifra con nonce nuevo y round-trip antes de persistir y deja el asiento
+`notification.webhook.secret_rewrapped` (solo versiones, nunca el secreto). Idempotente y
+reanudable: si falla a medias, volver a ejecutarlo recoge el remanente.
 
 ---
 
@@ -543,6 +573,15 @@ for svc in auth tenant document archive storage workflow notification signature 
   docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
     "${svc}-service" python migrations/runner.py
 done
+
+# 4b. Cifrar en reposo los secretos de webhooks heredados (una vez, tras la
+#    migración 009 de notification y ANTES de desplegar). Idempotente: escribe el
+#    asiento `notification.webhook.secret_cifrado` desde la aplicación y deja
+#    `secret` en NULL. `--verify` sale con error si queda algún secreto en claro.
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+  notification-service python -m app.ops.cifrar_webhook_secrets
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
+  notification-service python -m app.ops.cifrar_webhook_secrets --verify
 
 # 5. Desplegar.
 docker compose -f infra/docker-compose.prod.yml up -d

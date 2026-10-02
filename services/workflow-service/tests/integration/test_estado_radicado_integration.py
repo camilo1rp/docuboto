@@ -1565,6 +1565,22 @@ async def test_finalizar_sin_respuesta_ni_expediente_ni_plazo_lo_dice_tal_cual(c
     assert p["motivo_cierre"] == "nrr" and await _estado(conn, rid) == "closed"
 
 
+async def test_finalizar_sin_plazo_del_paso_usa_el_vencimiento_legal_del_radicado(ctx: Any) -> None:
+    # Hallado en la pila: el corpus tiene `flow_steps.due_at` NULL y el asiento decía
+    # «no consta» sobre radicados vencidos hacía dos semanas.
+    svc, conn, slug = ctx
+    vencido, a_tiempo = await _radicado(conn), await _radicado(conn)
+    u1 = await _user(conn, DEP_JUR[0])
+    await conn.execute("UPDATE radicados SET due_date = CURRENT_DATE - 14 WHERE id = $1", vencido)
+    await conn.execute("UPDATE radicados SET due_date = CURRENT_DATE + 5 WHERE id = $1", a_tiempo)
+    for rid in (vencido, a_tiempo):
+        await svc.assign(_assign(rid, DEP_JUR[1], u1), u1)
+        await svc.finalizar(rid, comentario="Trámite concluido", motivo_cierre="otro", actor=u1)
+    asientos = await _asientos(conn, slug, "workflow.finalizar")
+    # Control positivo y negativo: el mismo cálculo dice True y False, no un valor fijo.
+    assert sorted(a["payload"]["fuera_de_plazo"] for a in asientos) == [False, True]
+
+
 async def test_finalizar_sin_paso_activo_lo_permite_quien_poseia_el_ultimo_paso_completado(ctx: Any) -> None:
     svc, conn, slug = ctx
     rid = await _radicado(conn)

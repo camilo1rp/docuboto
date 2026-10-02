@@ -711,6 +711,13 @@ services:
       # D-02: POST /notifications/send está SELLADO servicio-a-servicio. Por ahí
       # sale el OTP del segundo factor; sin este token nadie con 2FA puede entrar.
       INTERNAL_SERVICE_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
+      # KEK que cifra en reposo el secreto HMAC de los webhooks (base64 de 32 bytes:
+      # openssl rand -base64 32). Obligatoria y DISTINTA de las demás KEK; si se
+      # pierde, los secretos de los webhooks son irrecuperables (hay que volver a
+      # darlos de alta). Rotación: docs/es/deployment.md.
+      WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?WEBHOOK_SECRET_KEK es obligatoria (openssl rand -base64 32)}
+      WEBHOOK_SECRET_KEKS: ${WEBHOOK_SECRET_KEKS:-{}}
+      WEBHOOK_SECRET_KEK_ACTIVE_VERSION: ${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net

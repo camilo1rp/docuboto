@@ -61,6 +61,7 @@ const SUMMARY_BODY = {
   by_status: { registered: 2, distributed: 3, in_progress: 4, closed: 1 },
   by_month: [{ month: "2026-01", count: 10 }],
   by_dependencia: { Tesorería: 4 },
+  by_ubicacion: { "Control Interno": 3 },
 };
 
 /**

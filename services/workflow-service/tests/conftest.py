@@ -163,7 +163,13 @@ def _sin_sincronizacion_de_estado() -> Generator[AsyncMock, None, None]:
         patch(f"{repo}.puede_repartir_sin_paso_activo", new=AsyncMock(return_value=True)),
         patch(
             f"{repo}.contexto_cierre",
-            new=AsyncMock(return_value={"tiene_respuesta": None, "en_expediente": None}),
+            new=AsyncMock(
+                return_value={
+                    "tiene_respuesta": None,
+                    "en_expediente": None,
+                    "radicado_vencido": None,
+                }
+            ),
         ),
     ):
         yield sync

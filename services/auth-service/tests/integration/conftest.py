@@ -36,6 +36,26 @@ from migrations import runner
 
 RUN_INTEGRATION = os.environ.get("RUN_INTEGRATION") == "1"
 
+
+async def ensure_audit_log(conn: asyncpg.Connection) -> None:
+    """Garantiza `public.audit_log` SIN re-ejecutar migraciones globales sobre una
+    base que ya las tiene.
+
+    Antes, dos pruebas aplicaban TODO `migrations/global/` en cada corrida «porque
+    son idempotentes». No lo son en lo que importa: la 007 hace
+    `ALTER ROLE orpycamcp_app NOLOGIN` sin condición, y esta base es la de la pila
+    de desarrollo (`orpycamcp_db`). Cada corrida del carril de integración dejaba
+    a todos los servicios sin poder conectar al recrearse (2026-10-02: dos veces
+    el mismo día, y la pila caída parecía un defecto del último despliegue).
+
+    Si la tabla existe, auth-service ya migró esta base: no se emite nada. Solo en
+    una base virgen (CI recién levantado) se aplican las globales.
+    """
+    if await conn.fetchval("SELECT to_regclass('public.audit_log')") is not None:
+        return
+    for path in runner._sql_files(runner.GLOBAL_DIR):
+        await conn.execute(path.read_text())
+
 # Este carril crea PARTICIONES y esquemas, que son actos del rol PROPIETARIO, no
 # del de la aplicación. Desde que ambos están separados, conectar con el de la
 # aplicación falla con «permission denied for schema public» — y hace bien: ése

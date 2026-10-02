@@ -235,6 +235,7 @@ class WorkflowService:
                         "tracking_number": c.tracking_number,
                         "antes": c.antes,
                         "despues": c.despues,
+                        **await self._nivel_payload(c.radicado_id),
                     },
                 )
             except Exception:  # noqa: BLE001 — best-effort tras commit.
@@ -506,6 +507,7 @@ class WorkflowService:
                             "to_dept": s.to_dept,
                             "assigned_to": str(s.assigned_to) if s.assigned_to else None,
                             "due_at": s.due_at.isoformat() if s.due_at else None,
+                            **await self._nivel_payload(s.radicado_id),
                         },
                     )
                 except Exception:  # noqa: BLE001
@@ -929,8 +931,12 @@ class WorkflowService:
                     "flow_event_id": str(flow_event_id) if flow_event_id else None,
                     "tiene_respuesta": contexto["tiene_respuesta"],
                     "en_expediente": contexto["en_expediente"],
+                    # El plazo del paso manda si existe; si no, el vencimiento
+                    # legal del radicado. `None` solo si no consta ninguno.
                     "fuera_de_plazo": (
-                        current.due_at < datetime.now(tz=UTC) if current.due_at else None
+                        current.due_at < datetime.now(tz=UTC)
+                        if current.due_at
+                        else contexto["radicado_vencido"]
                     ),
                     **({"estado_radicado": estado} if estado else {}),
                 },
@@ -1271,10 +1277,21 @@ class WorkflowService:
                     "to_dept": step.to_dept,
                     "action": step.action,
                     "status": step.status,
+                    **await self._nivel_payload(step.radicado_id),
                 },
             )
         except Exception:
             pass
+
+    async def _nivel_payload(self, radicado_id: uuid.UUID) -> dict[str, int]:
+        """`nivel_seguridad` del radicado en el sobre del evento (vacío si no consta).
+
+        Sin él, el webhook no puede decidir si el tracking y la ruta de
+        dependencias de un reservado pueden salir de la entidad: notification
+        trata la ausencia como clasificado.
+        """
+        nivel = await self._repo.nivel_radicado(radicado_id)
+        return {"nivel_seguridad": nivel} if nivel is not None else {}
 
 
 def _to_event_response(row: asyncpg.Record) -> FlowEventResponse:

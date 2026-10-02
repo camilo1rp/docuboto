@@ -31,8 +31,7 @@ import pytest
 from orpycamcp_common import audit as audit_lib
 
 from app.repositories.audit_query_repository import AuditQueryRepository
-from migrations import runner
-from tests.integration.conftest import RUN_INTEGRATION
+from tests.integration.conftest import RUN_INTEGRATION, ensure_audit_log
 
 pytestmark = pytest.mark.skipif(
     not RUN_INTEGRATION, reason="requiere Postgres real (RUN_INTEGRATION=1)"
@@ -52,11 +51,6 @@ CREATE TABLE expedientes (
 """
 
 
-async def _ensure_audit_log(conn: asyncpg.Connection) -> None:
-    """`public.audit_log` es global y la posee auth-service: aplicar sus migraciones
-    globales (idempotentes) es suficiente y no toca el schema del tenant."""
-    for path in runner._sql_files(runner.GLOBAL_DIR):
-        await conn.execute(path.read_text())
 
 
 @pytest.mark.asyncio
@@ -64,7 +58,7 @@ async def test_listado_recorta_por_clearance_y_es_fail_closed(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await _ensure_audit_log(conn)
+    await ensure_audit_log(conn)
     await conn.execute(_MINIMAL_SOURCES)
 
     rad_publico = uuid.uuid4()
@@ -171,7 +165,7 @@ async def test_sin_tablas_fuente_las_entradas_clasificables_no_se_listan(
     una entrada cuyo nivel no hay dónde consultar.
     """
     slug, conn = tenant_ctx
-    await _ensure_audit_log(conn)
+    await ensure_audit_log(conn)
 
     await audit_lib.append(
         conn,

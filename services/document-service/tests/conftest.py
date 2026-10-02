@@ -131,6 +131,9 @@ def make_radicado_record(
     metadata_template_id: uuid.UUID | None = None,
     publicable: bool = False,
     publicado_at: datetime | None = None,
+    flujo_dept: str | None = None,
+    flujo_dept_code: int | None = None,
+    flujo_usuario: uuid.UUID | None = None,
 ) -> dict:
     now = datetime.now(tz=UTC)
     return {
@@ -162,6 +165,13 @@ def make_radicado_record(
         # radicado nace NO publicado, publicar es un acto aparte.
         "publicable": publicable,
         "publicado_at": publicado_at,
+        # Ubicación actual (ADR-029): `flujo_*` las escribe workflow-service;
+        # `ubicacion_*` son GENERADAS (par: flujo si lo hay, si no radicación).
+        "flujo_dept": flujo_dept,
+        "flujo_dept_code": flujo_dept_code,
+        "flujo_usuario": flujo_usuario,
+        "ubicacion_dept": flujo_dept if flujo_dept is not None else dest_dept,
+        "ubicacion_dept_code": flujo_dept_code if flujo_dept is not None else dest_dept_code,
     }
 
 
